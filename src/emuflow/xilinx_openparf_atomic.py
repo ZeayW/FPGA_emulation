@@ -2156,7 +2156,37 @@ def _render_site_geometry(
     # and let the native carry legalizer cross a nonexistent dedicated edge.
     # Sparse rows are already supported by the patched OpenPARF site map and
     # ISM operators, so retain the complete integer grid span here.
-    y_axis = list(range(min(physical_y_values), max(physical_y_values) + 1))
+    minimum_y = min(physical_y_values)
+    maximum_y = max(physical_y_values)
+    # RapidWright's UltraScale+ inventory has empty inter-SLR seam rows.  The
+    # observed sites in consecutive SLRs start at a constant physical pitch,
+    # while the final seam has no site from which the old code could discover
+    # its extent.  Retain the internal seams (needed by CARRY_NEXT legality)
+    # and extend the final selected SLR to the same pitch.  Without this, the
+    # SLR boxes were separated by holes and the Bookshelf SLR grid failed only
+    # after an expensive per-partition mapping run.
+    slr_minimum_y: Dict[str, int] = {}
+    for coordinate, group in grouped.items():
+        region = group.get("physical_region")
+        if isinstance(region, Mapping) and isinstance(region.get("slr"), str):
+            slr = region["slr"]
+            slr_minimum_y[slr] = min(
+                coordinate[1], slr_minimum_y.get(slr, coordinate[1])
+            )
+    ordered_slr_starts = sorted(set(slr_minimum_y.values()))
+    if len(ordered_slr_starts) > 1:
+        pitches = {
+            right - left
+            for left, right in zip(ordered_slr_starts, ordered_slr_starts[1:])
+        }
+        if len(pitches) != 1:
+            raise ValidationError("ArchitectureDB SLR row pitch is inconsistent")
+        pitch = next(iter(pitches))
+        expected_maximum_y = minimum_y + pitch * len(ordered_slr_starts) - 1
+        if maximum_y > expected_maximum_y:
+            raise ValidationError("ArchitectureDB SLR sites exceed their row pitch")
+        maximum_y = expected_maximum_y
+    y_axis = list(range(minimum_y, maximum_y + 1))
     if y_axis_order == "descending":
         y_axis.reverse()
     x_index = {value: index for index, value in enumerate(x_axis)}
@@ -2354,6 +2384,30 @@ def _render_site_geometry(
                         f"ArchitectureDB SLR {slr!r} is not rectangular"
                     )
             slr_bboxes[slr] = bbox
+        # Expand an SLR's observed-site bbox over its following empty seam.
+        # The physical sites remain unchanged; only the coarse SLR ownership
+        # grid covers every Bookshelf row.  Constant pitch and equal-sized SLRs
+        # are still checked below, so malformed region metadata fails closed.
+        ordered_slrs = sorted(
+            slr_bboxes,
+            key=lambda name: (slr_bboxes[name][1], name),
+        )
+        if len(ordered_slrs) > 1:
+            starts = [slr_bboxes[name][1] for name in ordered_slrs]
+            pitches = {
+                right - left for left, right in zip(starts, starts[1:])
+            }
+            if len(pitches) != 1:
+                raise ValidationError("ArchitectureDB SLR y-axis pitch is inconsistent")
+            pitch = next(iter(pitches))
+            for index, name in enumerate(ordered_slrs):
+                xl, yl, xh, observed_yh = slr_bboxes[name]
+                expanded_yh = yl + pitch - 1
+                if observed_yh > expanded_yh:
+                    raise ValidationError(
+                        f"ArchitectureDB SLR {name!r} exceeds its y-axis pitch"
+                    )
+                slr_bboxes[name] = (xl, yl, xh, expanded_yh)
         x_spans = sorted({(bbox[0], bbox[2]) for bbox in slr_bboxes.values()})
         y_spans = sorted({(bbox[1], bbox[3]) for bbox in slr_bboxes.values()})
         expected_slr_bboxes = {

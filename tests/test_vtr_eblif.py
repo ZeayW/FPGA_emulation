@@ -205,6 +205,7 @@ class VtrEblifTest(unittest.TestCase):
             with IndexedPhysicalIR(compact_source) as indexed:
                 self.assertEqual(indexed.instance_indices["ff"], 1)
                 self.assertEqual(indexed.net_indices["q"], 5)
+                self.assertNotIn("owned-by-another-partition", indexed.nets)
                 self.assertIn(("Q", 0), _instance_pin_inventory(indexed)["ff"])
                 self.assertEqual(
                     _vpr_atom_pin(

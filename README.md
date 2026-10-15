@@ -6650,3 +6650,20 @@ The direct indexed normalizer is regression-checked against the legacy JSON
 normalizer for logical EmuIR equality, including CARRY4-to-CARRY8 lowering,
 carry route-through helpers, and INV lowering. Stream orchestration tests also
 assert that no mapped JSON artifact is created.
+
+## Large-design handoff policy
+
+Production large-design handoffs keep Python in the control plane. Phase 1
+EmuIR, Phase 2 timing paths, Phase 3 assignment, and Phase 6 split netlists use
+indexed SQLite payloads behind bounded manifests; Phase 4/5 retain only their
+system-level route and schedule records. Phase 7 queries only the original
+nets and physical cells needed by one timing or placement operation. The
+complete-flow terminal checks use set-oriented SQLite relations rather than
+reconstructing a second Python copy of the circuit.
+
+Physical timing translation treats an original net that is absent from one
+particular split FPGA as an ordinary partition-local membership miss. Required
+net batches remain fail-closed. The RapidWright/OpenPARF device adapter also
+preserves unoccupied UltraScale+ seam rows and assigns those rows to the
+constant-pitch SLR grid, so native cascade legality and SLR geometry are both
+represented without compressing physical coordinates.

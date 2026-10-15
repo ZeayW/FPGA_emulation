@@ -680,6 +680,38 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             ],
         })
 
+    def test_multi_slr_grid_preserves_and_assigns_empty_seam_rows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(
+                root, clock_regions=True, multi_slr=True
+            )
+            value = json.loads(architecture.read_text())
+            # Model the real UltraScale+ shape: each SLR has the same row
+            # pitch, with an unoccupied seam before the next SLR.  The final
+            # seam is implicit because no site occupies it.
+            for site in value["sites"]:
+                if site["physical_region"]["slr"] == "SLR1":
+                    site["tile"]["grid_row"] += 2
+            architecture.write_text(json.dumps(value))
+            output = root / "output"
+            manifest = export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output
+            )
+            sites = (output / "design.scl").read_text()
+
+        self.assertIn("SITEMAP 2 6", sites)
+        self.assertIn(
+            "SUPERLOGICREGION SLR0 ULTRASCALE_PLUS : 0 0 2 3", sites
+        )
+        self.assertIn(
+            "SUPERLOGICREGION SLR1 ULTRASCALE_PLUS : 0 1 2 3", sites
+        )
+        self.assertEqual(
+            [region["bbox"] for region in manifest["slr_contract"]["regions"]],
+            [[0, 0, 1, 2], [0, 3, 1, 5]],
+        )
+
     def test_non_degenerate_multi_slr_runtime_fixture_export_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -95,6 +95,19 @@ class _BoundedMapping(Mapping):
                 pins.add((endpoint["port"], endpoint["bit"]))
             return pins
         if self.kind == "net":
+            # Membership probes are routine while translating an original
+            # timing path into one partition: most original nets are absent
+            # from any particular split netlist.  ``selected_net_records`` is
+            # deliberately strict for required batches, so first distinguish
+            # an ordinary miss from a corrupt/missing required record.  The
+            # old implementation let its ValueError escape from ``__contains__``
+            # and made every partition eventually fail on a net owned by a
+            # different FPGA.
+            present = c.execute(
+                "SELECT 1 FROM net_records WHERE id=?", (key,)
+            ).fetchone()
+            if present is None:
+                return None
             records = selected_net_records(c, [key])
             return records.get(key)
         raise AssertionError(self.kind)
