@@ -847,11 +847,8 @@ class SplitNetlistView:
         self,
         path: Path,
         fpga: str,
-        *,
-        compact_owner_hints: bool = False,
     ):
         self.connection = open_split_netlists_sqlite(path)
-        self.compact_owner_hints = compact_owner_hints
         try:
             self.metadata = {
                 row["key"]: json.loads(row["value"])
@@ -978,10 +975,6 @@ class SplitNetlistView:
             if row["is_replica"]:
                 record["replica_of"] = row["original_id"]
                 record["replica_target_fpga"] = self.fpga
-            if self.compact_owner_hints:
-                record["__compact_source_instance_seq"] = int(
-                    row["source_instance_seq"]
-                )
             yield record
 
     def has_net(self, original_net: str) -> bool:
@@ -1072,13 +1065,6 @@ class SplitNetlistView:
                     "bit": item["bit"],
                     **json.loads(item["extras_json"]),
                 }
-                if (
-                    self.compact_owner_hints
-                    and item["source_instance_seq"] is not None
-                ):
-                    decoded["__compact_source_instance_seq"] = int(
-                        item["source_instance_seq"]
-                    )
                 record[("drivers", "sinks")[item["role"]]].append(decoded)
             if exact_digest is not None and row["original_net"] in self._cut_source:
                 if row["source_kind"] == "transport_shadow":
