@@ -82,6 +82,19 @@ class _IndexedRecords(MappingABC[str, Mapping[str, Any]]):
                 )
             yield str(row[0]), value
 
+    def items_by_id(self) -> Iterator[Tuple[str, Mapping[str, Any]]]:
+        """Stream records in canonical identity order without sorting in Python."""
+
+        for row in self.connection.execute(
+            f"SELECT id,record_json FROM {self.table} ORDER BY id"
+        ):
+            value = json.loads(row[1])
+            if not isinstance(value, dict):
+                raise ValidationError(
+                    f"indexed mapped record {row[0]!r} is invalid"
+                )
+            yield str(row[0]), value
+
     def values(self) -> Iterator[Mapping[str, Any]]:  # type: ignore[override]
         for _name, value in self.items():
             yield value

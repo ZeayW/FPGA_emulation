@@ -445,6 +445,11 @@ requirements, not optional micro-optimizations.
   that store; constructing or deep-copying a complete routed Python `EmuIR`
   graph is forbidden in the production path. JSON-only compatibility remains
   limited to small fixtures and explicit legacy inputs.
+- Derived Phase 7 adapters obey the same rule. In particular, OpenPARF atomic
+  clusters must be generated as a re-iterable indexed view and serialized
+  incrementally; production must not retain a list of one Python dictionary
+  per mapped cell, reparse the serialized atomic-source JSON, or rehash an
+  unchanged mapped netlist when its sealed digest is already available.
 - Small-design qualification may run exhaustive and deterministic event-driven
   equivalence.  Large-design production uses the constructive split
   certificate (lossless source records, exact endpoint coverage, one scheduled

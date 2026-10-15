@@ -1112,6 +1112,10 @@ read-only SQLite cell/net index. Packing, placement qualification, routing, and
 timing consumers share that bounded index instead of independently decoding the
 mapped JSON into nested Python dictionaries. After routed segment timing is
 bound, the mapped/packed/placement objects are closed before OpenSTA starts.
+The OpenPARF atomic-source adapter likewise exposes a re-iterable view over the
+mapped index and streams its external JSON artifact. It does not construct and
+then reparse a graph-sized list of singleton cluster dictionaries, and it
+reuses the mapped artifact's sealed digest instead of scanning it again.
 The OpenSTA staging graph is imported directly into compact EmuIR SQLite and
 route-delay cells are inserted there; no graph-sized `EmuIR` copy or `deepcopy`
 exists in the production path. The persisted JSON remains the external-tool

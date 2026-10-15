@@ -445,10 +445,18 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             )
             output = root / "openparf"
             manifest = export_xilinx_openparf_atomic(
-                mapped, atomic_source, architecture, output, top="top"
+                mapped, atomic_source, architecture, output, top="top",
+                packed_value=source,
+            )
+            serialized_source = json.loads(
+                atomic_source.read_text(encoding="utf-8")
             )
             imported_clocks = import_yosys_json(mapped).value["clocks"]
         self.assertEqual(source["schema"], OPENPARF_ATOMIC_SOURCE_SCHEMA)
+        self.assertNotIsInstance(source["clusters"], list)
+        self.assertEqual(
+            serialized_source["clusters"], list(source["clusters"])
+        )
         self.assertEqual(imported_clocks, [{
             "id": "clk", "name": "clk", "source_port": "clk",
             "period_ns": None,

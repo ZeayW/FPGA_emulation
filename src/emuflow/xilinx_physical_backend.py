@@ -6,7 +6,7 @@ import gc
 import math
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .architecture import ArchitectureDB
 from .errors import ValidationError
@@ -96,7 +96,7 @@ def _select_xilinx_slr_window(
         if architecture is None else architecture
     )
     clusters = packed.get("clusters")
-    if not isinstance(clusters, list) or not clusters:
+    if not isinstance(clusters, Sequence) or not clusters:
         raise ValidationError("packed partition has no clusters")
     if packed.get("schema") == "emuflow.openparf-atomic-source/v1":
         atoms = Counter(
@@ -732,6 +732,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         atomic_source_path,
         top=mapped_report["top"],
         mapped_value=mapped_value,
+        mapped_sha256=mapped_sha256,
     )
     selected_slrs = _select_xilinx_slr_window(
         atomic_source_path,
@@ -740,10 +741,6 @@ def run_rapidwright_openparf_native_candidate_backend(
         architecture=architecture,
     )
     atomic_summary = dict(atomic_source["summary"])
-    # The native qualifier consumes the serialized atomic contract. Keeping a
-    # second Python copy alive would overlap hundreds of MiB with OpenPARF.
-    del atomic_source
-    gc.collect()
     region_path = output_dir / "placement-region.json"
     write_json(region_path, {
         "schema": "emuflow.xilinx-placement-constraints/v1",
@@ -766,9 +763,15 @@ def run_rapidwright_openparf_native_candidate_backend(
         native_constraints_path=openparf_native_constraints,
         provider_manifest_path=openparf_provider_manifest,
         mapped_value=mapped_value,
+        packed_value=atomic_source,
         architecture=architecture,
         allowed_slrs=selected_slrs,
     )
+    # ``atomic_source`` is a re-iterable view backed by the mapped SQLite
+    # index, not a graph-sized list.  Release it once the exporter has consumed
+    # the view so no source adapter state overlaps RWRoute/OpenSTA.
+    del atomic_source
+    gc.collect()
     certificate_path = qualification_root / "placement-certificate.json"
     compact_qualification = _compact_openparf_qualification(
         qualification, certificate_path
