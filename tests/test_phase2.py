@@ -65,6 +65,29 @@ class ArchitectureDBTest(unittest.TestCase):
         self.assertNotIn(str(foreign_torch), paths)
         self.assertIn(str(preserved), paths)
 
+    def test_openparf_environment_prefers_explicit_cpp_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            installation = root / "openparf-install"
+            installation.mkdir()
+            python = root / "child" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.write_text("", encoding="utf-8")
+            runtime = root / "gcc-runtime"
+            runtime.mkdir()
+            with mock.patch.dict(
+                "os.environ",
+                {"EMUFLOW_OPENPARF_LIBRARY_PATH": str(runtime)},
+                clear=False,
+            ):
+                environment = _openparf_environment(
+                    installation, python
+                )
+
+        paths = environment["LD_LIBRARY_PATH"].split(os.pathsep)
+        self.assertEqual(paths[0], str(runtime))
+        self.assertEqual(paths[1], str(root / "child" / "lib"))
+
     def test_openparf_runtime_preflight_rejects_broken_python(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

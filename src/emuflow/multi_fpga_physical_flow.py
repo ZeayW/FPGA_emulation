@@ -846,6 +846,23 @@ def run_multi_fpga_physical_flow(
     runtime = build_virtual_runtime(schedule, platform, clock_periods)
     backend_descriptor = physical_backend_descriptor(backend)
     validate_physical_backend_descriptor(backend_descriptor)
+    output_dir = output_dir.resolve()
+    if output_dir.exists() and not output_dir.is_dir():
+        raise EmuFlowError(
+            f"multi-FPGA physical output must be an empty directory: {output_dir}"
+        )
+    if output_dir.exists() and any(output_dir.iterdir()) and not resume:
+        raise EmuFlowError(
+            f"multi-FPGA physical output must be an empty directory: {output_dir}"
+        )
+    if backend in {"open", "rapidwright"}:
+        # Validate the compiled OpenPARF/PyTorch runtime before reading the
+        # graph-sized EmuIR and timing databases.  A loader mismatch must fail
+        # in seconds, not after minutes of deterministic input preparation.
+        validate_openparf_runtime(
+            install_root=openparf_install,
+            python_executable=openparf_python,
+        )
     expected_fpgas = [fpga.id for fpga in platform.fpgas]
     logic_context = (
         original_ir_path,
@@ -904,25 +921,12 @@ def run_multi_fpga_physical_flow(
     if set(manifest_fpgas) != set(expected_fpgas):
         raise ValidationError("split manifest does not cover the BoardDB FPGAs")
 
-    output_dir = output_dir.resolve()
-    if output_dir.exists() and not output_dir.is_dir():
-        raise EmuFlowError(
-            f"multi-FPGA physical output must be an empty directory: {output_dir}"
-        )
-    if output_dir.exists() and any(output_dir.iterdir()) and not resume:
-        raise EmuFlowError(
-            f"multi-FPGA physical output must be an empty directory: {output_dir}"
-        )
     output_dir.mkdir(parents=True, exist_ok=True)
     architecture_path = None
     if backend == "open":
         # Import the exact analytical-placement dependency chain before any
         # expensive per-FPGA synthesis or VPR work.  A wrong Python environment
         # must fail fast rather than after all pack/place checkpoints finish.
-        validate_openparf_runtime(
-            install_root=openparf_install,
-            python_executable=openparf_python,
-        )
         architecture_root = output_dir / "architecture"
         architecture_root.mkdir(parents=True, exist_ok=True)
         if architecture is None:
@@ -946,10 +950,6 @@ def run_multi_fpga_physical_flow(
                 "input_path": str(architecture_input),
             }
     elif backend == "rapidwright":
-        validate_openparf_runtime(
-            install_root=openparf_install,
-            python_executable=openparf_python,
-        )
         if architecture is None:
             raise ValidationError(
                 "RapidWright backend requires --physical-architecture with "
