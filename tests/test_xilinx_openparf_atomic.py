@@ -470,6 +470,47 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "RAMB36E2": 1, "URAM288": 1,
         })
 
+    def test_export_scans_indexed_cells_without_per_atom_point_queries(self):
+        class SequentialOnlyCells(dict):
+            def __getitem__(self, key):
+                raise AssertionError(f"unexpected point query for {key!r}")
+
+            def get(self, key, default=None):
+                raise AssertionError(f"unexpected point query for {key!r}")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped_path, packed_path, _architecture = _fixture(root)
+            mapped = json.loads(mapped_path.read_text(encoding="utf-8"))
+            packed = json.loads(packed_path.read_text(encoding="utf-8"))
+            ordinary_cells = mapped["modules"]["top"]["cells"]
+            _top, _cells, expected_atoms = atomic_adapter._collect_atoms(
+                mapped, packed, "top"
+            )
+            names = {
+                atom["instance"]: f"a{index}"
+                for index, atom in enumerate(expected_atoms)
+            }
+            expected = (
+                atomic_adapter._render_library(ordinary_cells, expected_atoms),
+                *atomic_adapter._render_nets(
+                    ordinary_cells, expected_atoms, names
+                ),
+            )
+
+            mapped["modules"]["top"]["cells"] = SequentialOnlyCells(
+                ordinary_cells
+            )
+            _top, indexed_cells, atoms = atomic_adapter._collect_atoms(
+                mapped, packed, "top"
+            )
+            actual = atomic_adapter._render_library_and_nets(
+                indexed_cells, atoms, names
+            )
+
+        self.assertEqual(atoms, expected_atoms)
+        self.assertEqual(actual, expected)
+
     def test_non_degenerate_runtime_fixture_export_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -1605,6 +1605,17 @@ def _collect_atoms(
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped JSON cells are invalid")
+    # ``cells`` is an indexed SQLite mapping in the production Phase 7 path.
+    # Looking up every packed assignment with ``cells.get(instance)`` turns a
+    # linear validation into hundreds of thousands of individual SQL queries.
+    # Retain only the small type projection needed by this function and build
+    # it in one ordered scan.  Full cell records remain in SQLite and are
+    # streamed separately when Bookshelf pins/nets are rendered.
+    cell_types: Dict[str, str] = {}
+    for name, cell in _ordered_cell_items(cells):
+        if not isinstance(cell, Mapping) or not isinstance(cell.get("type"), str):
+            raise ValidationError("mapped JSON cell is invalid")
+        cell_types[name] = cell["type"]
     cascades = packed.get("cascade_chains", [])
     if not isinstance(cascades, list):
         raise ValidationError("atomic mixed-resource cascade constraints are invalid")
@@ -1762,8 +1773,10 @@ def _collect_atoms(
                 )
             instance = assignment.get("instance")
             cell_type = assignment.get("cell_type")
-            cell = cells.get(instance) if isinstance(instance, str) else None
-            if not isinstance(cell, Mapping) or cell.get("type") != cell_type:
+            mapped_cell_type = (
+                cell_types.get(instance) if isinstance(instance, str) else None
+            )
+            if mapped_cell_type != cell_type:
                 raise ValidationError("packed assignment does not match mapped JSON")
             if cell_type not in _SUPPORTED:
                 raise ValidationError(
@@ -1800,8 +1813,8 @@ def _collect_atoms(
     if covered_site_macros != expected_site_macros:
         raise ValidationError("connectivity-derived slice macro coverage is incomplete")
     physical_cells = {
-        name for name, cell in cells.items()
-        if isinstance(cell, Mapping) and cell.get("type") not in {"GND", "VCC"}
+        name for name, cell_type in cell_types.items()
+        if cell_type not in {"GND", "VCC"}
     }
     if seen != physical_cells:
         missing = sorted(physical_cells - seen)
@@ -2196,6 +2209,94 @@ def _render_nets(
         lines.append("endnet")
         emitted += 1
     return "\n".join(lines) + "\n", emitted, dropped_single_endpoint
+
+
+def _render_library_and_nets(
+    cells: Mapping[str, Any],
+    atoms: Sequence[Mapping[str, str]],
+    names: Mapping[str, str],
+    *,
+    platform_mux_types: Sequence[str] = (),
+) -> Tuple[str, str, int, int]:
+    """Render both Bookshelf contracts from one sequential cell scan.
+
+    The production mapped netlist is a SQLite-backed mapping.  The old code
+    called ``cells[instance]`` once while discovering primitive ports and a
+    second time while collecting net endpoints.  On a real partition that was
+    roughly two random SQL queries per atom.  Scan the indexed records once,
+    derive both products together, and retain only bounded atom metadata plus
+    the endpoint table required to emit the final nets.
+    """
+
+    atoms_by_instance = {atom["instance"]: atom for atom in atoms}
+    if len(atoms_by_instance) != len(atoms):
+        raise ValidationError("OpenPARF atom instances are duplicated")
+    ports_by_type: Dict[str, Dict[str, str]] = defaultdict(dict)
+    endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
+    seen = set()
+    for instance, cell in _ordered_cell_items(cells):
+        atom = atoms_by_instance.get(instance)
+        if atom is None:
+            continue
+        if not isinstance(cell, Mapping) or cell.get("type") != atom["cell_type"]:
+            raise ValidationError("OpenPARF atom does not match mapped JSON")
+        seen.add(instance)
+        cell_type = atom["cell_type"]
+        for port, direction, bit in _expanded_pins(cell):
+            previous = ports_by_type[cell_type].setdefault(port, direction)
+            if previous != direction:
+                raise ValidationError(
+                    f"primitive {cell_type!r} has inconsistent pin direction"
+                )
+            if isinstance(bit, int) and not isinstance(bit, bool):
+                endpoints[bit].append((names[instance], port, direction))
+    if seen != set(atoms_by_instance):
+        raise ValidationError("mapped JSON does not cover every OpenPARF atom")
+
+    for cell_type in platform_mux_types:
+        ports_by_type.setdefault(cell_type, {}).update({
+            "I0": "input", "I1": "input", "S": "input", "O": "output",
+        })
+    library_blocks = []
+    for cell_type, ports in sorted(ports_by_type.items()):
+        lines = [f"CELL {cell_type}"]
+        for port, direction in sorted(ports.items()):
+            suffix = ""
+            if cell_type in FF_TYPES and port == _FF_CLOCK:
+                suffix = " CLOCK"
+            elif cell_type in FF_TYPES and port == _FF_ENABLE:
+                suffix = " CTRL_CE"
+            elif cell_type in FF_TYPES and port == _FF_SR[cell_type]:
+                suffix = " CTRL_SR"
+            elif cell_type == "CARRY8" and port in {"CI", "CO[7]"}:
+                suffix = " CAS"
+            lines.append(f"  PIN {port} {direction.upper()}{suffix}")
+        lines.append("END CELL")
+        library_blocks.append("\n".join(lines))
+
+    net_lines = []
+    emitted = 0
+    dropped_single_endpoint = 0
+    for _bit, pins in sorted(endpoints.items()):
+        drivers = [pin for pin in pins if pin[2] == "output"]
+        if len(drivers) > 1:
+            raise ValidationError("mapped net has multiple atomic-resource drivers")
+        if len(pins) < 2:
+            dropped_single_endpoint += 1
+            continue
+        ordered = [*drivers, *(pin for pin in pins if pin[2] != "output")]
+        net_lines.append(f"net n{emitted} {len(ordered)}")
+        net_lines.extend(
+            f"  {instance} {port}" for instance, port, _direction in ordered
+        )
+        net_lines.append("endnet")
+        emitted += 1
+    return (
+        "\n\n".join(library_blocks) + "\n",
+        "\n".join(net_lines) + "\n",
+        emitted,
+        dropped_single_endpoint,
+    )
 
 
 def _render_site_geometry(
@@ -2901,9 +3002,10 @@ def export_xilinx_openparf_atomic(
     names = {
         atom["instance"]: f"a{index}" for index, atom in enumerate(atoms)
     }
-    library = _render_library(cells, atoms, platform_mux_types=mux)
-    nets, net_count, dropped_single_endpoint_nets = _render_nets(
-        cells, atoms, names
+    library, nets, net_count, dropped_single_endpoint_nets = (
+        _render_library_and_nets(
+            cells, atoms, names, platform_mux_types=mux,
+        )
     )
     coordinate_system = device_static["coordinate_system"]
     site_text = _render_sites(device_static, atoms, platform_mux_types=mux)
