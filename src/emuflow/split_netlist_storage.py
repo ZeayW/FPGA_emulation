@@ -8,6 +8,7 @@ never reconstructs the complete circuit as nested Python objects.
 from __future__ import annotations
 
 import json
+import heapq
 import os
 import sqlite3
 import uuid
@@ -842,8 +843,15 @@ def open_split_netlists_sqlite(path: Path) -> sqlite3.Connection:
 class SplitNetlistView:
     """Streaming view of one selected FPGA in the shared split database."""
 
-    def __init__(self, path: Path, fpga: str):
+    def __init__(
+        self,
+        path: Path,
+        fpga: str,
+        *,
+        compact_owner_hints: bool = False,
+    ):
         self.connection = open_split_netlists_sqlite(path)
+        self.compact_owner_hints = compact_owner_hints
         try:
             self.metadata = {
                 row["key"]: json.loads(row["value"])
@@ -903,21 +911,54 @@ class SplitNetlistView:
         self.connection.close()
 
     def instances(self):
-        for row in self.connection.execute(
-            """SELECT c.copy_id,c.is_replica,i.original_id,i.name,i.flags,i.type,
+        statement = """SELECT c.copy_id,c.is_replica,i.source_instance_seq,
+            i.original_id,i.name,i.flags,i.type,
             r.value AS resources_json,p.value AS parameters_json,
             a.value AS attributes_json,k.value AS constants_json,
             x.value AS extras_json
-            FROM instance_copies c
-            JOIN source_instances i ON i.source_instance_seq=c.source_instance_seq
+            FROM {from_clause}
             JOIN payloads r ON r.seq=i.resources_seq
             LEFT JOIN payloads p ON p.seq=i.parameters_seq
             LEFT JOIN payloads a ON a.seq=i.attributes_seq
             JOIN payloads k ON k.seq=i.constants_seq
             JOIN payloads x ON x.seq=i.extras_seq
-            WHERE c.part_index=?
-            ORDER BY COALESCE(c.copy_id,i.original_id)""",
+            WHERE c.part_index=? AND c.is_replica={replica}
+            ORDER BY {identity}"""
+        # Preserve the historical identity order without sorting the complete
+        # partition.  The base stream walks source_instances' UNIQUE identity
+        # index and probes the compact copy PK; the replica stream walks the
+        # existing (part_index,copy_id) index.  A bounded two-way merge then
+        # produces the same order as ORDER BY COALESCE(copy_id,original_id).
+        base_rows = self.connection.execute(
+            statement.format(
+                from_clause=(
+                    "source_instances i INDEXED BY "
+                    "sqlite_autoindex_source_instances_1 CROSS JOIN "
+                    "instance_copies c INDEXED BY "
+                    "sqlite_autoindex_instance_copies_1 ON "
+                    "c.source_instance_seq=i.source_instance_seq"
+                ),
+                replica=0,
+                identity="i.original_id",
+            ),
             (self.part_index,),
+        )
+        replica_rows = self.connection.execute(
+            statement.format(
+                from_clause=(
+                    "instance_copies c INDEXED BY instance_copies_identity "
+                    "CROSS JOIN source_instances i ON "
+                    "i.source_instance_seq=c.source_instance_seq"
+                ),
+                replica=1,
+                identity="c.copy_id",
+            ),
+            (self.part_index,),
+        )
+        for row in heapq.merge(
+            base_rows,
+            replica_rows,
+            key=lambda item: item["copy_id"] or item["original_id"],
         ):
             identity = row["copy_id"] or row["original_id"]
             record = {
@@ -937,6 +978,10 @@ class SplitNetlistView:
             if row["is_replica"]:
                 record["replica_of"] = row["original_id"]
                 record["replica_target_fpga"] = self.fpga
+            if self.compact_owner_hints:
+                record["__compact_source_instance_seq"] = int(
+                    row["source_instance_seq"]
+                )
             yield record
 
     def has_net(self, original_net: str) -> bool:
@@ -963,13 +1008,16 @@ class SplitNetlistView:
     def nets(self):
         endpoints = iter(
             self.connection.execute(
-                """SELECT n.original_net,e.source_net_seq,e.role,e.ordinal,e.bit,e.synthetic,
+                """SELECT n.original_net,e.source_net_seq,e.role,e.ordinal,e.bit,
+                e.synthetic,e.source_instance_seq,
                 pn.name AS port,x.value AS extras_json,
                 CASE WHEN e.synthetic=1 THEN e.synthetic_instance_id
                      WHEN e.source_instance_seq IS NULL THEN NULL
                      ELSE COALESCE(c.copy_id,i.original_id) END AS instance_id
-                FROM endpoint_segments e
-                JOIN source_nets n ON n.source_net_seq=e.source_net_seq
+                FROM source_nets n INDEXED BY sqlite_autoindex_source_nets_1
+                CROSS JOIN endpoint_segments e INDEXED BY
+                  sqlite_autoindex_endpoint_segments_1
+                  ON e.source_net_seq=n.source_net_seq
                 JOIN pin_names pn ON pn.seq=e.port_seq
                 JOIN payloads x ON x.seq=e.extras_seq
                 LEFT JOIN instance_copies c
@@ -978,10 +1026,7 @@ class SplitNetlistView:
                 LEFT JOIN source_instances i
                   ON i.source_instance_seq=e.source_instance_seq
                 WHERE e.part_index=?
-                ORDER BY n.original_net,e.role,e.synthetic,
-                (CASE WHEN e.synthetic=1 THEN e.synthetic_instance_id
-                      WHEN e.source_instance_seq IS NULL THEN NULL
-                      ELSE COALESCE(c.copy_id,i.original_id) END IS NULL),e.ordinal""",
+                ORDER BY n.original_net,e.role,e.ordinal""",
                 (self.part_index,),
             )
         )
@@ -990,8 +1035,10 @@ class SplitNetlistView:
         for row in self.connection.execute(
             """SELECT s.source_net_seq,s.source_kind,n.original_net,
             CASE WHEN n.flags & 1 THEN n.original_net ELSE n.name END AS name,
-            n.cut_class FROM net_segments s JOIN source_nets n
-            ON n.source_net_seq=s.source_net_seq
+            n.cut_class
+            FROM source_nets n INDEXED BY sqlite_autoindex_source_nets_1
+            CROSS JOIN net_segments s INDEXED BY sqlite_autoindex_net_segments_1
+              ON s.source_net_seq=n.source_net_seq
             WHERE s.part_index=? ORDER BY n.original_net""",
             (self.part_index,),
         ):
@@ -1004,14 +1051,35 @@ class SplitNetlistView:
                 "drivers": [],
                 "sinks": [],
             }
+            net_endpoints = []
             while endpoint is not None and endpoint["original_net"] == row["original_net"]:
-                record[("drivers", "sinks")[endpoint["role"]]].append({
-                    "instance": endpoint["instance_id"],
-                    "port": endpoint["port"],
-                    "bit": endpoint["bit"],
-                    **json.loads(endpoint["extras_json"]),
-                })
+                net_endpoints.append(dict(endpoint))
                 endpoint = next(endpoints, None)
+            # Match the established logical endpoint order, but sort only one
+            # net's pins in memory.  Asking SQLite for this secondary order
+            # together with identity order creates a multi-gigabyte external
+            # sort for the complete FPGA partition.
+            net_endpoints.sort(key=lambda item: (
+                item["role"],
+                item["synthetic"],
+                item["instance_id"] is None,
+                item["ordinal"],
+            ))
+            for item in net_endpoints:
+                decoded = {
+                    "instance": item["instance_id"],
+                    "port": item["port"],
+                    "bit": item["bit"],
+                    **json.loads(item["extras_json"]),
+                }
+                if (
+                    self.compact_owner_hints
+                    and item["source_instance_seq"] is not None
+                ):
+                    decoded["__compact_source_instance_seq"] = int(
+                        item["source_instance_seq"]
+                    )
+                record[("drivers", "sinks")[item["role"]]].append(decoded)
             if exact_digest is not None and row["original_net"] in self._cut_source:
                 if row["source_kind"] == "transport_shadow":
                     role = "transport_shadow_sink"

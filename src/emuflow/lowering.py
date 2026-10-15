@@ -473,7 +473,11 @@ def run_placement_ir_lowering_from_split(
     }
     removed_ports = {"source_values", "shadow_values"}
 
-    with SplitNetlistView(split_path, fpga) as split:
+    with SplitNetlistView(
+        split_path,
+        fpga,
+        compact_owner_hints=True,
+    ) as split:
         if split.metadata.get("schema") != "emuflow.split-netlists-sqlite/v2":
             raise ValidationError("invalid split-netlist storage schema")
         if split.fpga != transport.get("fpga"):

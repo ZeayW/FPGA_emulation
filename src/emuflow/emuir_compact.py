@@ -10,6 +10,7 @@ import os
 import sqlite3
 import sys
 import uuid
+from array import array
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
@@ -113,8 +114,17 @@ def write_compact_emuir(path: Path, value: Mapping[str, Any]) -> None:
             c.execute("INSERT INTO port_records VALUES (?,?)", (seq, _json({
                 **record, "constant_connections": record.get("constant_connections", [])
             })))
+        compact_owners = array("q")
         for seq, record in enumerate(value.get("instances", [])):
             counts["cell_records"] += 1
+            source_instance_seq = record.get("__compact_source_instance_seq")
+            if source_instance_seq is not None:
+                source_instance_seq = int(source_instance_seq)
+                if source_instance_seq >= len(compact_owners):
+                    compact_owners.extend(
+                        [-1] * (source_instance_seq + 1 - len(compact_owners))
+                    )
+                compact_owners[source_instance_seq] = seq
             same_name = record.get("name") == record["id"]
             # Pool complete per-cell facts, including explicit zero resource
             # keys and absent-vs-empty fields. Never infer them from cell type.
@@ -124,7 +134,7 @@ def write_compact_emuir(path: Path, value: Mapping[str, Any]) -> None:
                 payload(_json(record["parameters"])) if "parameters" in record else None,
                 payload(_json(record["attributes"])) if "attributes" in record else None,
                 payload(_json(record.get("constant_connections", []))),
-                payload(_extras(record, {"id", "name", "type", "resources", "parameters", "attributes", "constant_connections"})),
+                payload(_extras(record, {"id", "name", "type", "resources", "parameters", "attributes", "constant_connections", "__compact_source_instance_seq"})),
             ))
         owners = OrderedDict()
         for seq, record in enumerate(value.get("nets", [])):
@@ -147,7 +157,18 @@ def write_compact_emuir(path: Path, value: Mapping[str, Any]) -> None:
                     identity = endpoint.get("instance")
                     owner = None
                     if identity is not None:
-                        owner = owners.get(identity)
+                        source_instance_seq = endpoint.get(
+                            "__compact_source_instance_seq"
+                        )
+                        if (
+                            source_instance_seq is not None
+                            and int(source_instance_seq) < len(compact_owners)
+                        ):
+                            owner = compact_owners[int(source_instance_seq)]
+                            if owner < 0:
+                                owner = None
+                        else:
+                            owner = owners.get(identity)
                         if owner is None:
                             row = c.execute("SELECT seq FROM cell_records WHERE id=?", (identity,)).fetchone()
                             if row is None:
@@ -158,7 +179,7 @@ def write_compact_emuir(path: Path, value: Mapping[str, Any]) -> None:
                                 owners.popitem(last=False)
                     c.execute("INSERT INTO endpoint_records VALUES (?,?,?,?,?,?,?)", (
                         seq, role, ordinal, owner, pin(endpoint["port"]), endpoint["bit"],
-                        payload(_extras(endpoint, {"instance", "port", "bit"})),
+                        payload(_extras(endpoint, {"instance", "port", "bit", "__compact_source_instance_seq"})),
                     ))
         c.executemany("INSERT INTO clocks VALUES (?,?)", (
             (seq, _json(record)) for seq, record in enumerate(value.get("clocks", []))
