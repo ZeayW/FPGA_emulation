@@ -397,6 +397,62 @@ def _baseline_assignment(
     }
 
 
+def validate_bank_pin_assignment(
+    schedule: Mapping[str, Any], platform: Platform,
+    physical_lane_by_entry: Mapping[str, int],
+) -> None:
+    """Preserve Phase 5's whole-bank direction allocation through pin mapping."""
+    links = {link.id: link for link in platform.links if link.bank_count is not None}
+    if not links:
+        return
+    expected = {(link.id, source, sink) for link in links.values()
+                for source, sink in (link.endpoints, tuple(reversed(link.endpoints)))}
+    raw = schedule.get("bank_allocations")
+    if not isinstance(raw, list):
+        raise ValidationError("bank pin assignment requires Phase 5 bank_allocations")
+    budgets = {}
+    owners = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValidationError("bank pin allocation is malformed")
+        key = (item.get("link"), item.get("from"), item.get("to"))
+        if key not in expected or key in budgets:
+            raise ValidationError("bank pin allocation direction coverage is invalid")
+        link = links[key[0]]
+        count, offset, lanes = (item.get(field) for field in
+                               ("bank_count", "lane_offset", "lanes"))
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+               for value in (count, offset, lanes)):
+            raise ValidationError("bank pin allocation requires nonnegative integers")
+        width = link.wires_per_bank
+        if (item.get("wires_per_bank") != width or offset % width
+                or lanes != count * width
+                or offset + lanes > link.transport_bits_per_cycle_per_direction):
+            raise ValidationError("bank pin allocation disagrees with BoardDB capacity")
+        for bank in range(offset // width, (offset + lanes) // width):
+            bank_key = (link.id, bank)
+            if bank_key in owners:
+                raise ValidationError("bank pin allocation assigns one bank to both directions")
+            owners[bank_key] = key
+        budgets[key] = (offset, offset + lanes)
+    if set(budgets) != expected:
+        raise ValidationError("bank pin allocation direction coverage is incomplete")
+    for entry in schedule.get("entries", []):
+        if entry.get("link") not in links:
+            continue
+        key = (entry["link"], entry.get("from"), entry.get("to"))
+        if key not in budgets:
+            raise ValidationError("bank pin assignment has an unknown direction")
+        low, high = budgets[key]
+        for lane in (entry.get("lane"),
+                     physical_lane_by_entry.get(entry["id"], entry.get("lane"))):
+            if (isinstance(lane, bool) or not isinstance(lane, int)
+                    or not low <= lane < high):
+                raise ValidationError(
+                    "pin assignment leaves the schedule's allocated direction banks"
+                )
+
+
 def validate_pin_plan(
     schedule: Mapping[str, Any],
     platform: Platform,
@@ -456,6 +512,9 @@ def validate_pin_plan(
     expected = {entry["id"] for entry in schedule["entries"]}
     if set(by_id) != expected or len(by_id) != len(raw):
         raise ValidationError("pin plan must cover schedule entries exactly")
+    validate_bank_pin_assignment(schedule, platform, {
+        entry_id: item.get("physical_lane") for entry_id, item in by_id.items()
+    })
     link_by_id = {link.id: link for link in platform.links}
     groups: Dict[int, list[Mapping[str, Any]]] = defaultdict(list)
     collisions = set()
@@ -508,6 +567,7 @@ def validate_pin_plan(
         slots = {entry["slot"] for entry in entries}
         shared_chimew_bundle = (
             plan.get("provider") == CHIMEW_PIN_PLAN_PROVIDER
+            and link_by_id[entries[0]["link"]].bank_count is None
             and len(domains) == 2
             and len({entry["link"] for entry in entries}) == 1
             and len({physical_domain(entry) for entry in entries}) == 1

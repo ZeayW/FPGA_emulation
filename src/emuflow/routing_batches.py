@@ -37,6 +37,10 @@ def build_route_refinement_batches(
                 f"{arcs[key]['capacity_key']}@transport-round-"
                 f"{transport_round}"
             )
+            if arcs[key].get("bank_group"):
+                domains_by_demand[index].add(
+                    f"{arcs[key]['opposite_capacity_key']}@transport-round-{transport_round}"
+                )
 
     net_to_demand = {demand["net"]: index for index, demand in enumerate(demands)}
     paths_by_demand: Dict[int, Set[int]] = defaultdict(set)

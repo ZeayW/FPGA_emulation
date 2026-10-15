@@ -35,6 +35,17 @@
           "source"
         ],
         "properties": {
+          "reference_tdm_ratio": {"const": 1},
+          "tdm_delay_model": {
+            "type": "object",
+            "required": ["model", "intercept_ns", "ratio_coefficient_ns"],
+            "properties": {
+              "model": {"const": "linear-ratio-v1"},
+              "intercept_ns": {"type": "number", "minimum": 0},
+              "ratio_coefficient_ns": {"type": "number", "minimum": 0}
+            },
+            "additionalProperties": false
+          },
           "qualification": {
             "enum": [
               "model-only",

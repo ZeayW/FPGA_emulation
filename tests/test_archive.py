@@ -36,6 +36,7 @@ def _run_small_flow(output: Path) -> None:
         router=str(tlr_router()),
         frame_slots=32,
         equivalence_cycles=2,
+        mapping_profile="vtr-hard-blocks",
     )
 
 

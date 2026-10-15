@@ -9,6 +9,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .errors import ValidationError
 from .platform import Platform
+from .bank_allocation import apply_bank_domain_ratios
 from .routing import (
     _arc_key,
     _validate_route_tree,
@@ -17,6 +18,7 @@ from .routing import (
     estimate_tdm_ratio,
     normalize_route_constraints,
     route_link_delay_ns,
+    route_link_delay_coefficients_ns,
 )
 
 
@@ -138,6 +140,19 @@ def exact_route_candidate_selection(
                     break
             if not legal:
                 break
+        if legal:
+            for key, capacity in capacities.items():
+                opposite = capacity.get("opposite_capacity_key")
+                if not capacity.get("bank_group") or key >= opposite:
+                    continue
+                bank_capacity = capacity["wires_per_bank"] * constraints["frame_slots"]
+                required_banks = sum(
+                    (usage[k] + bank_capacity - 1) // bank_capacity
+                    for k in (key, opposite)
+                )
+                if required_banks > capacity["bank_count"]:
+                    legal = False
+                    break
         if not legal:
             continue
         legal_combinations += 1
@@ -151,6 +166,7 @@ def exact_route_candidate_selection(
                 is_sll=capacity["link"] in sll_links,
             )
 
+        ratios = apply_bank_domain_ratios(capacities, usage, ratios, constraints)
         route_delay = {}
         route_tdm_delay = {}
         for demand, candidate in zip(demands, selected):
@@ -167,8 +183,9 @@ def exact_route_candidate_selection(
                 tdm_edge_delay[arc_key] = edge_delay[arc_key] + (
                     0.0
                     if edge["link"] in sll_links
-                    else (1000.0 / link.fabric_clock_mhz)
-                    * (ratios[capacity_key] - 1)
+                    else route_link_delay_coefficients_ns(
+                        platform, edge["link"], edge["from"], edge["to"], constraints
+                    )[1] * (ratios[capacity_key] - 1)
                 )
             if constraints.get("tree_edge_sum_tdm", False):
                 route_tdm_delay[demand["net"]] = sum(

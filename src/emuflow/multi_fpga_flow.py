@@ -19,6 +19,7 @@ from .academic_chimew import materialize_academic_chimew_inputs
 from .chimew_pipeline import run_chimew_phase6_pipeline
 from .cross_stage import run_cross_stage_optimization
 from .cut_segment_qualification import build_cut_segment_qualification
+from .default_platform import DEFAULT_PLATFORM_PATH
 from .errors import EmuFlowError, ValidationError
 from .frame_search import (
     run_frame_length_search,
@@ -1242,8 +1243,8 @@ def validate_multi_fpga_flow_bundle(
 
 
 def run_multi_fpga_flow(
-    platform_path: Path,
-    output_dir: Path,
+    platform_path: Path = DEFAULT_PLATFORM_PATH,
+    output_dir: Optional[Path] = None,
     *,
     sources: Iterable[Path] = (),
     include_dirs: Iterable[Path] = (),
@@ -1251,8 +1252,10 @@ def run_multi_fpga_flow(
     top: Optional[str] = None,
     clocks: Iterable[str] = (),
     yosys_json: Optional[Path] = None,
+    prepared_frontend: Optional[Path] = None,
+    prepared_timing: Optional[Path] = None,
     yosys: Optional[str] = None,
-    mapping_profile: str = "vtr-hard-blocks",
+    mapping_profile: str = XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     xilinx_mapping_strategy: Optional[str] = None,
     partition_constraints: Optional[Path] = None,
     partition_provider: str = "patron",
@@ -1322,7 +1325,7 @@ def run_multi_fpga_flow(
     phase6_chimew_rudy: Optional[str] = None,
     phase6_chimew_assigner: Optional[str] = None,
     physical: bool = False,
-    physical_backend: str = "open",
+    physical_backend: str = "rapidwright",
     physical_architecture: Optional[Path] = None,
     physical_architecture_id: str = VTR_HARD_BLOCK_PROFILE,
     physical_vpr: Optional[str] = None,
@@ -1359,7 +1362,10 @@ def run_multi_fpga_flow(
     serial_bsp_runtime_sync_root: Optional[str] = None,
     serial_bsp_ready_stable_cycles: int = 4,
 ) -> Dict[str, Any]:
-    """Compile RTL/EmuIR through the checked board-independent split."""
+    """Compile RTL/EmuIR, using the bundled research BoardDB when omitted."""
+
+    if output_dir is None:
+        raise EmuFlowError("multi-FPGA compilation requires an output directory")
 
     if global_timing_engine not in {"opensta", "python"}:
         raise EmuFlowError("unsupported global timing engine")
@@ -1564,6 +1570,10 @@ def run_multi_fpga_flow(
     openroad = _resolve_partition_openroad(partition_provider, openroad)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    from functools import partial
+    from .stage_metrics import measure_stage
+    measured = partial(measure_stage, output_dir)
+
     source_list = [path.resolve() for path in sources]
     include_dir_list = [path.resolve() for path in include_dirs]
     define_list = list(defines)
@@ -1582,176 +1592,186 @@ def run_multi_fpga_flow(
     indexed_staging_transform = None
     frontend_report: Optional[Dict[str, Any]] = None
     synthesized_json_sha256: Optional[str] = None
-    if yosys_json is not None:
-        if source_list:
-            raise EmuFlowError(
-                "provide RTL sources or --yosys-json, not both"
-            )
-        if include_dir_list or define_list:
-            raise EmuFlowError(
-                "Verilog include directories and defines apply only when "
-                "compiling RTL sources"
-            )
-        source_json = yosys_json.resolve()
-        if not source_json.is_file():
-            raise EmuFlowError(f"Yosys JSON does not exist: {source_json}")
-        shutil.copyfile(source_json, synthesized_json)
-        synthesis_mode = "provided-yosys-json"
-        if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
-            synthesis_report = {
-                "status": "pass",
-                "provider": "provided-yosys-json",
-                "mapping_profile": mapping_profile,
-                "primitive_audit": audit_xilinx_mapped_json(
-                    synthesized_json, top=top
-                ),
-            }
+    if prepared_frontend is not None or prepared_timing is not None:
+        if prepared_frontend is None or prepared_timing is None or source_list or yosys_json is not None:
+            raise EmuFlowError("prepared continuation requires both Phase 1 and Phase 2 boundaries and no synthesis inputs")
+        from .prepared_inputs import bind_prepared_inputs
+        frontend_report, timing_report = bind_prepared_inputs(
+            prepared_frontend, prepared_timing, phase1_root,
+            output_dir / "timing", platform_path, clock_periods, mapping_profile,
+        )
     else:
-        if not source_list:
-            raise EmuFlowError(
-                "multi-FPGA compilation requires RTL sources or --yosys-json"
-            )
-        if top is None:
-            raise EmuFlowError("--top is required when compiling RTL sources")
-        if mapping_profile == "vtr-hard-blocks":
-            raw_json = frontend_root / "vtr-hard-block-atoms.json"
-            eblif = frontend_root / "design.eblif"
-            synthesis_report = run_vtr_yosys(
-                source_list,
-                top,
-                eblif,
-                executable=yosys,
-                log_path=frontend_root / "yosys.log",
-                hard_blocks=True,
-                json_output=raw_json,
-                include_dirs=include_dir_list,
-                defines=define_list,
-            )
-            normalization_report = normalize_vtr_hard_block_json(
-                raw_json,
-                synthesized_json,
-                top=top,
-            )
-            synthesis_mode = "vtr-lut6-ff-hard-blocks"
-        elif mapping_profile == "generic-soft":
-            synthesis_report = run_generic_yosys(
-                source_list,
-                top,
-                synthesized_json,
-                executable=yosys,
-                log_path=frontend_root / "yosys.log",
-                include_dirs=include_dir_list,
-                defines=define_list,
-            )
-            normalization_report = None
-            synthesis_mode = "generic-lut6-ff"
-        elif mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
-            indexed_staging_transform = normalize_xilinx_indexed_staging
-            synthesis_report, frontend_report = (
-                run_xilinx_ultrascaleplus_yosys_stream(
+        if yosys_json is not None:
+            if source_list:
+                raise EmuFlowError(
+                    "provide RTL sources or --yosys-json, not both"
+                )
+            if include_dir_list or define_list:
+                raise EmuFlowError(
+                    "Verilog include directories and defines apply only when "
+                    "compiling RTL sources"
+                )
+            source_json = yosys_json.resolve()
+            if not source_json.is_file():
+                raise EmuFlowError(f"Yosys JSON does not exist: {source_json}")
+            shutil.copyfile(source_json, synthesized_json)
+            synthesis_mode = "provided-yosys-json"
+            if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+                synthesis_report = {
+                    "status": "pass",
+                    "provider": "provided-yosys-json",
+                    "mapping_profile": mapping_profile,
+                    "primitive_audit": audit_xilinx_mapped_json(
+                        synthesized_json, top=top
+                    ),
+                }
+        else:
+            if not source_list:
+                raise EmuFlowError(
+                    "multi-FPGA compilation requires RTL sources or --yosys-json"
+                )
+            if top is None:
+                raise EmuFlowError("--top is required when compiling RTL sources")
+            if mapping_profile == "vtr-hard-blocks":
+                raw_json = frontend_root / "vtr-hard-block-atoms.json"
+                eblif = frontend_root / "design.eblif"
+                synthesis_report = run_vtr_yosys(
                     source_list,
                     top,
-                    lambda stream: run_phase1(
-                        Path("<yosys-stdout>"),
-                        platform_path,
-                        phase1_root,
-                        top=top,
-                        clocks=clocks,
-                        indexed_staging_transform=(
-                            normalize_xilinx_indexed_staging
-                        ),
-                        yosys_stream=stream,
-                        yosys_hierarchical_stream=True,
-                    ),
+                    eblif,
+                    executable=yosys,
+                    log_path=frontend_root / "yosys.log",
+                    hard_blocks=True,
+                    json_output=raw_json,
+                    include_dirs=include_dir_list,
+                    defines=define_list,
+                )
+                normalization_report = normalize_vtr_hard_block_json(
+                    raw_json,
+                    synthesized_json,
+                    top=top,
+                )
+                synthesis_mode = "vtr-lut6-ff-hard-blocks"
+            elif mapping_profile == "generic-soft":
+                synthesis_report = run_generic_yosys(
+                    source_list,
+                    top,
+                    synthesized_json,
                     executable=yosys,
                     log_path=frontend_root / "yosys.log",
                     include_dirs=include_dir_list,
                     defines=define_list,
-                    mapping_strategy=(
-                        xilinx_mapping_strategy or DEFAULT_XILINX_MAPPING_STRATEGY
-                    ),
                 )
-            )
-            normalization_report = None
-            synthesis_mode = "xilinx-ultrascaleplus-open"
-        else:
-            raise ValidationError("frontend mapping profile is invalid")
+                normalization_report = None
+                synthesis_mode = "generic-lut6-ff"
+            elif mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+                indexed_staging_transform = normalize_xilinx_indexed_staging
+                synthesis_report, frontend_report = (
+                    run_xilinx_ultrascaleplus_yosys_stream(
+                        source_list,
+                        top,
+                        lambda stream: run_phase1(
+                            Path("<yosys-stdout>"),
+                            platform_path,
+                            phase1_root,
+                            top=top,
+                            clocks=clocks,
+                            indexed_staging_transform=(
+                                normalize_xilinx_indexed_staging
+                            ),
+                            yosys_stream=stream,
+                            yosys_hierarchical_stream=True,
+                        ),
+                        executable=yosys,
+                        log_path=frontend_root / "yosys.log",
+                        include_dirs=include_dir_list,
+                        defines=define_list,
+                        mapping_strategy=(
+                            xilinx_mapping_strategy or DEFAULT_XILINX_MAPPING_STRATEGY
+                        ),
+                    )
+                )
+                normalization_report = None
+                synthesis_mode = "xilinx-ultrascaleplus-open"
+            else:
+                raise ValidationError("frontend mapping profile is invalid")
 
-    # Non-Xilinx frontends still use a transient interchange file. The Xilinx
-    # production path has already piped Yosys stdout directly into indexed
-    # Phase 1 above and therefore never materializes a graph JSON artifact.
-    if frontend_report is None:
-        synthesized_json_sha256 = _sha256(synthesized_json)
-        try:
-            frontend_report = run_phase1(
-                synthesized_json,
-                platform_path,
-                phase1_root,
-                top=top,
-                clocks=clocks,
-                indexed_staging_transform=indexed_staging_transform,
-            )
-        finally:
-            synthesized_json.unlink(missing_ok=True)
-    if frontend_report["status"] != "pass":
-        raise EmuFlowError(
-            "multi-FPGA frontend failed capacity or clock-topology checks"
-        )
-    if indexed_staging_transform is not None:
-        indexed_normalization = frontend_report["indexed_staging_transform"]
-        synthesis_report = {
-            **synthesis_report,
-            "normalization": indexed_normalization,
-            "primitive_audit": indexed_normalization["primitive_audit"],
-        }
-    frontend_report = {
-        **frontend_report,
-        "synthesis": {
-            "provider": "yosys",
-            "mode": synthesis_mode,
-            "mapping_profile": (
-                VTR_HARD_BLOCK_PROFILE
-                if synthesis_mode == "vtr-lut6-ff-hard-blocks"
-                else (
-                    "provided-yosys-json"
-                    if synthesis_mode == "provided-yosys-json"
-                    else mapping_profile
+        # Non-Xilinx frontends still use a transient interchange file. The Xilinx
+        # production path has already piped Yosys stdout directly into indexed
+        # Phase 1 above and therefore never materializes a graph JSON artifact.
+        if frontend_report is None:
+            synthesized_json_sha256 = _sha256(synthesized_json)
+            try:
+                frontend_report = run_phase1(
+                    synthesized_json,
+                    platform_path,
+                    phase1_root,
+                    top=top,
+                    clocks=clocks,
+                    indexed_staging_transform=indexed_staging_transform,
                 )
-            ),
-            "sources": [str(path) for path in source_list],
-            "include_dirs": [str(path) for path in include_dir_list],
-            "defines": define_list,
-            **(
-                {"yosys_json_sha256": synthesized_json_sha256}
-                if synthesized_json_sha256 is not None
-                else {}
-            ),
-            "interchange_retention": (
-                "never-materialized-stream"
-                if synthesis_mode == "xilinx-ultrascaleplus-open"
-                else "deleted-after-phase1-import"
-            ),
-            **(
-                {"tool_report": synthesis_report}
-                if yosys_json is None
-                else {}
-            ),
-            **(
-                {"normalization": normalization_report}
-                if yosys_json is None
-                and normalization_report is not None
-                else {}
-            ),
-        },
-    }
+            finally:
+                synthesized_json.unlink(missing_ok=True)
+        if frontend_report["status"] != "pass":
+            raise EmuFlowError(
+                "multi-FPGA frontend failed capacity or clock-topology checks"
+            )
+        if indexed_staging_transform is not None:
+            indexed_normalization = frontend_report["indexed_staging_transform"]
+            synthesis_report = {
+                **synthesis_report,
+                "normalization": indexed_normalization,
+                "primitive_audit": indexed_normalization["primitive_audit"],
+            }
+        frontend_report = {
+            **frontend_report,
+            "synthesis": {
+                "provider": "yosys",
+                "mode": synthesis_mode,
+                "mapping_profile": (
+                    VTR_HARD_BLOCK_PROFILE
+                    if synthesis_mode == "vtr-lut6-ff-hard-blocks"
+                    else (
+                        "provided-yosys-json"
+                        if synthesis_mode == "provided-yosys-json"
+                        else mapping_profile
+                    )
+                ),
+                "sources": [str(path) for path in source_list],
+                "include_dirs": [str(path) for path in include_dir_list],
+                "defines": define_list,
+                **(
+                    {"yosys_json_sha256": synthesized_json_sha256}
+                    if synthesized_json_sha256 is not None
+                    else {}
+                ),
+                "interchange_retention": (
+                    "never-materialized-stream"
+                    if synthesis_mode == "xilinx-ultrascaleplus-open"
+                    else "deleted-after-phase1-import"
+                ),
+                **(
+                    {"tool_report": synthesis_report}
+                    if yosys_json is None
+                    else {}
+                ),
+                **(
+                    {"normalization": normalization_report}
+                    if yosys_json is None
+                    and normalization_report is not None
+                    else {}
+                ),
+            },
+        }
     ir_path = phase1_root / "design.emuir.sqlite"
 
     timing_root = output_dir / "timing"
     path_database_path = timing_root / "path-database.json"
     cut_segment_qualification_path = None
     net_weights_path = timing_root / "partition-net-weights.json"
-    timing_report = None
-    if internal_timing_database:
+    if prepared_timing is None:
+        timing_report = None
+    if internal_timing_database and prepared_timing is None:
         timing_root.mkdir(parents=True, exist_ok=True)
         if timing_backend == "opensta":
             sta_report = run_opensta_path_database(
@@ -1898,7 +1918,7 @@ def run_multi_fpga_flow(
         )
 
     phase3_root = output_dir / "partition"
-    phase3_report = run_phase3(
+    phase3_report = measured("phase3", run_phase3,
         ir_path,
         platform_path,
         phase3_root,
@@ -2236,7 +2256,7 @@ def run_multi_fpga_flow(
         phase4_report = read_json(phase4_root / "phase4_report.json")
         phase5_report = read_json(phase5_root / "phase5_report.json")
     else:
-        phase4_report = run_phase4(
+        phase4_report = measured("phase4", run_phase4,
             assignment_path,
             platform_path,
             phase4_root,
@@ -2250,7 +2270,7 @@ def run_multi_fpga_flow(
                 route_candidate_workers if has_inter_fpga_cuts else 1
             ),
         )
-        phase5_report = run_phase5(
+        phase5_report = measured("phase5", run_phase5,
             phase4_root / "routes.json",
             platform_path,
             phase5_root,
@@ -2308,7 +2328,7 @@ def run_multi_fpga_flow(
         baseline_root = comparison_root / "baseline"
         baseline_split = baseline_root / "split"
         baseline_phase6_started = time.monotonic()
-        baseline_phase6_report = run_phase6(
+        baseline_phase6_report = measured("phase6", run_phase6,
             ir_path,
             assignment_path,
             schedule_path,
@@ -2321,7 +2341,7 @@ def run_multi_fpga_flow(
         )
         baseline_phase6_seconds = time.monotonic() - baseline_phase6_started
         baseline_physical_started = time.monotonic()
-        baseline_physical_report = run_multi_fpga_physical_flow(
+        baseline_physical_report = measured("phase7", run_multi_fpga_physical_flow,
             baseline_split,
             platform_path,
             schedule_path,
@@ -2346,7 +2366,7 @@ def run_multi_fpga_flow(
             workers=physical_workers,
         )
         baseline_physical_seconds = time.monotonic() - baseline_physical_started
-        baseline_runtime_report = run_phase7c(
+        baseline_runtime_report = measured("phase7c", run_phase7c,
             schedule_path,
             platform_path,
             phase3_root / "phase3_report.json",
@@ -2412,7 +2432,7 @@ def run_multi_fpga_flow(
         )
         adapter_root = chimew_pipeline_root / "phase6-adapter"
         chimew_phase6_started = time.monotonic()
-        phase6_report = run_phase6(
+        phase6_report = measured("phase6", run_phase6,
             ir_path,
             assignment_path,
             chimew_schedule_path,
@@ -2461,7 +2481,7 @@ def run_multi_fpga_flow(
             "chimew_phase6_runtime_seconds": chimew_phase6_seconds,
         }
     else:
-        phase6_report = run_phase6(
+        phase6_report = measured("phase6", run_phase6,
             ir_path,
             assignment_path,
             schedule_path,
@@ -2477,7 +2497,7 @@ def run_multi_fpga_flow(
     physical_summary_path = None
     if physical:
         physical_started = time.monotonic()
-        physical_report = run_multi_fpga_physical_flow(
+        physical_report = measured("phase7", run_multi_fpga_physical_flow,
             phase6_root,
             platform_path,
             schedule_path,
@@ -2577,7 +2597,7 @@ def run_multi_fpga_flow(
             )
 
     runtime_root = output_dir / "runtime"
-    runtime_report = run_phase7c(
+    runtime_report = measured("phase7c", run_phase7c,
         schedule_path,
         platform_path,
         phase3_root / "phase3_report.json",

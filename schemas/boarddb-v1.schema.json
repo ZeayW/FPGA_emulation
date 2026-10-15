@@ -3,15 +3,35 @@
   "$id": "https://emuflow.dev/schema/boarddb-v1.schema.json",
   "title": "EmuFlow virtual/hardware BoardDB v1",
   "type": "object",
-  "required": ["schema", "platform", "fpgas", "links"],
+  "required": [
+    "schema",
+    "platform",
+    "fpgas",
+    "links"
+  ],
   "properties": {
-    "schema": {"const": "emuflow.boarddb/v1"},
+    "schema": {
+      "const": "emuflow.boarddb/v1"
+    },
     "platform": {
       "type": "object",
-      "required": ["name", "kind"],
+      "required": [
+        "name",
+        "kind"
+      ],
       "properties": {
-        "name": {"type": "string"},
-        "kind": {"enum": ["virtual", "hardware"]}
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "virtual",
+            "hardware"
+          ]
+        },
+        "virtual_board_model": {
+          "const": "xcvu19p-hp-lvds-cable-v1"
+        }
       }
     },
     "fpgas": {
@@ -19,7 +39,22 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["id", "part", "capacity", "utilization_limit"]
+        "required": [
+          "id",
+          "part",
+          "capacity",
+          "utilization_limit"
+        ],
+        "properties": {
+          "hp_io_bank_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "hd_io_bank_count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
       }
     },
     "links": {
@@ -28,7 +63,10 @@
         "type": "object",
         "properties": {
           "capacity_sharing": {
-            "enum": ["per_direction", "shared_bidirectional"]
+            "enum": [
+              "per_direction",
+              "shared_bidirectional"
+            ]
           },
           "payload_bits_per_lane_per_cycle": {
             "type": "integer",
@@ -44,11 +82,25 @@
             "maxItems": 2,
             "items": {
               "type": "object",
-              "required": ["fpga", "connector", "mgt", "lanes"],
+              "required": [
+                "fpga",
+                "connector",
+                "mgt",
+                "lanes"
+              ],
               "properties": {
-                "fpga": {"type": "string", "minLength": 1},
-                "connector": {"type": "string", "minLength": 1},
-                "mgt": {"type": "string", "minLength": 1},
+                "fpga": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "connector": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mgt": {
+                  "type": "string",
+                  "minLength": 1
+                },
                 "lanes": {
                   "type": "array",
                   "minItems": 1,
@@ -60,9 +112,16 @@
                       "rx_package_pins"
                     ],
                     "properties": {
-                      "lane": {"type": "integer", "minimum": 0},
-                      "tx_package_pins": {"$ref": "#/$defs/differentialPins"},
-                      "rx_package_pins": {"$ref": "#/$defs/differentialPins"}
+                      "lane": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "tx_package_pins": {
+                        "$ref": "#/$defs/differentialPins"
+                      },
+                      "rx_package_pins": {
+                        "$ref": "#/$defs/differentialPins"
+                      }
                     },
                     "additionalProperties": false
                   }
@@ -70,6 +129,47 @@
               },
               "additionalProperties": false
             }
+          },
+          "bank_count": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Total corresponding single-direction bank groups shared by both directions; counts HP banks at each endpoint, not the sum of both endpoints."
+          },
+          "wires_per_bank": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Effective data wires per bank, after reserved pins/signals; not the device pin inventory."
+          },
+          "tdm_delay_model": {
+            "type": "object",
+            "required": [
+              "model",
+              "intercept_ns",
+              "ratio_coefficient_ns"
+            ],
+            "properties": {
+              "model": {
+                "const": "linear-ratio-v1"
+              },
+              "intercept_ns": {
+                "type": "number",
+                "minimum": 0
+              },
+              "ratio_coefficient_ns": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "cable_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "hp_banks_per_cable": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "HP I/O banks occupied at EACH endpoint of a cable; each bank has one direction, independently of other banks in the cable."
           }
         },
         "required": [
@@ -80,7 +180,25 @@
           "data_lanes_per_direction",
           "fabric_clock_mhz",
           "latency_cycles"
-        ]
+        ],
+        "dependentRequired": {
+          "bank_count": [
+            "wires_per_bank"
+          ],
+          "wires_per_bank": [
+            "bank_count"
+          ],
+          "cable_count": [
+            "hp_banks_per_cable",
+            "bank_count",
+            "wires_per_bank"
+          ],
+          "hp_banks_per_cable": [
+            "cable_count",
+            "bank_count",
+            "wires_per_bank"
+          ]
+        }
       }
     },
     "board_services": {
@@ -90,17 +208,59 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["id", "signal", "kind", "frequency_mhz", "frequency_qualification", "count", "destination", "binding_status", "qualification"],
+            "required": [
+              "id",
+              "signal",
+              "kind",
+              "frequency_mhz",
+              "frequency_qualification",
+              "count",
+              "destination",
+              "binding_status",
+              "qualification"
+            ],
             "properties": {
-              "id": {"type": "string", "minLength": 1},
-              "signal": {"type": "string", "minLength": 1},
-              "kind": {"type": "string", "minLength": 1},
-              "frequency_mhz": {"type": "number", "exclusiveMinimum": 0},
-              "frequency_qualification": {"enum": ["fixed", "documented_default", "configured"]},
-              "count": {"type": "integer", "minimum": 1},
-              "destination": {"type": "string", "minLength": 1},
-              "binding_status": {"enum": ["logical_source_without_package_pins", "package_bound"]},
-              "qualification": {"type": "string", "minLength": 1}
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "signal": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "frequency_mhz": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "frequency_qualification": {
+                "enum": [
+                  "fixed",
+                  "documented_default",
+                  "configured"
+                ]
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "destination": {
+                "type": "string",
+                "minLength": 1
+              },
+              "binding_status": {
+                "enum": [
+                  "logical_source_without_package_pins",
+                  "package_bound"
+                ]
+              },
+              "qualification": {
+                "type": "string",
+                "minLength": 1
+              }
             },
             "additionalProperties": false
           }
@@ -109,14 +269,43 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["id", "signal", "polarity", "purpose", "binding_status", "qualification"],
+            "required": [
+              "id",
+              "signal",
+              "polarity",
+              "purpose",
+              "binding_status",
+              "qualification"
+            ],
             "properties": {
-              "id": {"type": "string", "minLength": 1},
-              "signal": {"type": "string", "minLength": 1},
-              "polarity": {"enum": ["active_low", "active_high"]},
-              "purpose": {"type": "string", "minLength": 1},
-              "binding_status": {"enum": ["logical_source_without_package_pins", "package_bound"]},
-              "qualification": {"type": "string", "minLength": 1}
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "signal": {
+                "type": "string",
+                "minLength": 1
+              },
+              "polarity": {
+                "enum": [
+                  "active_low",
+                  "active_high"
+                ]
+              },
+              "purpose": {
+                "type": "string",
+                "minLength": 1
+              },
+              "binding_status": {
+                "enum": [
+                  "logical_source_without_package_pins",
+                  "package_bound"
+                ]
+              },
+              "qualification": {
+                "type": "string",
+                "minLength": 1
+              }
             },
             "additionalProperties": false
           }
@@ -128,10 +317,19 @@
   "$defs": {
     "differentialPins": {
       "type": "object",
-      "required": ["p", "n"],
+      "required": [
+        "p",
+        "n"
+      ],
       "properties": {
-        "p": {"type": "string", "minLength": 1},
-        "n": {"type": "string", "minLength": 1}
+        "p": {
+          "type": "string",
+          "minLength": 1
+        },
+        "n": {
+          "type": "string",
+          "minLength": 1
+        }
       },
       "additionalProperties": false
     }

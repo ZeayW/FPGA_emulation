@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 from .errors import ValidationError
 from .ir import EmuIR
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
+from .pin_planning import validate_bank_pin_assignment
 from .platform import Platform
 from .resources import ResourceVector
 from .tdm import TDM_SCHEDULE_SCHEMA
@@ -136,6 +137,7 @@ def build_split_artifacts(
                 "pin plan must cover every schedule entry exactly"
             )
 
+    validate_bank_pin_assignment(schedule, platform, physical_lane_by_entry)
     fpga_ids = [fpga.id for fpga in platform.fpgas]
     fpga_set = set(fpga_ids)
     instance_assignment = assignment.get("instance_assignment")

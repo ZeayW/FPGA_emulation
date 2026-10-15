@@ -1208,6 +1208,7 @@ class AcademicChimewTest(unittest.TestCase):
                     output_dir=Path(temporary_directory) / "invalid",
                     yosys_json=ROOT / "examples/yosys/counter.json",
                     phase6_provider="chimew",
+                    mapping_profile="vtr-hard-blocks",
                 )
 
 

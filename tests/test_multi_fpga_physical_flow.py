@@ -704,6 +704,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     root / "physical",
                     architecture=architecture,
                     workers=2,
+                    backend="open",
                 )
                 physical_summary = read_json(
                     root / "physical/physical-summary.json"
@@ -819,6 +820,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     PLATFORM,
                     root / "schedule.json",
                     root / "physical",
+                    backend="open",
                 )
 
     def test_nonempty_output_requires_explicit_resume(self):
@@ -857,6 +859,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     PLATFORM,
                     root / "schedule.json",
                     output,
+                    backend="open",
                 )
 
     def test_rejects_logic_database_without_complete_original_database(self):
@@ -871,6 +874,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     root / "schedule.json",
                     root / "physical",
                     logic_path_database_path=root / "cut-paths.json",
+                    backend="open",
                 )
 
 

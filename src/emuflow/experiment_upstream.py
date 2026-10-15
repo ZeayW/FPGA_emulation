@@ -192,7 +192,7 @@ def run_frontend_checkpoint(
     clocks: Iterable[str] = (),
     yosys_json: Optional[Path] = None,
     yosys: Optional[str] = None,
-    mapping_profile: str = "vtr-hard-blocks",
+    mapping_profile: str = XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     require_no_fabric_clock: bool = True,
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:

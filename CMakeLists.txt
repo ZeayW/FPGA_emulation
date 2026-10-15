@@ -293,6 +293,8 @@ file(
   CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/resources/timing/*"
   "${CMAKE_SOURCE_DIR}/resources/architectures/*"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/platforms/*.json"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/io/*.json"
   "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
   "${CMAKE_SOURCE_DIR}/scripts/yosys/*"
 )
@@ -341,6 +343,14 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy
     ${EMUFLOW_PYTHON_SOURCES}
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/src/emuflow/data/platforms"
+    "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/platforms"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/src/emuflow/data/io"
+    "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/io"
   COMMAND
     "${CMAKE_COMMAND}" -E copy
     "${CMAKE_BINARY_DIR}/emuflow"

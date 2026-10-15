@@ -67,7 +67,8 @@ def _quantized_worst_score(
                 hop["base_delay_ns"], _TIME_SCALE, "base delay"
             )
             slack -= _scaled(hop["beta_ns"], _TIME_SCALE, "beta") * (
-                slot_by_hop[index] - ready_by_hop[index]
+                hop["discrete_ratio"] - 1 if hop.get("delay_model") == "linear-ratio-v1"
+                else slot_by_hop[index] - ready_by_hop[index]
             )
         if slack >= 0:
             score = (
@@ -140,8 +141,7 @@ def solve_cp_sat_slot_schedule(
             variable,
             [
                 slots[index]
-                + oracle["link_by_id"][hop_by_index[index]["link"]]
-                .latency_cycles
+                + oracle["latency_by_hop"][index]
                 for index in sink_hops
             ],
         )
@@ -170,12 +170,12 @@ def solve_cp_sat_slot_schedule(
             model.add(ready[index] == round_ready[oracle["round_by_hop"][index]])
         else:
             parent_hop = hop_by_index[parent]
-            latency = oracle["link_by_id"][parent_hop["link"]].latency_cycles
+            latency = oracle["latency_by_hop"][parent]
             model.add(
                 ready[index]
                 == slots[parent] + latency + COMBINATIONAL_SETTLE_SLOTS
             )
-        latency = oracle["link_by_id"][hop["link"]].latency_cycles
+        latency = oracle["latency_by_hop"][index]
         model.add(slots[index] >= ready[index])
         model.add(slots[index] <= ready[index] + hop["discrete_ratio"] - 1)
         model.add(slots[index] <= last_transport_slot - latency)
@@ -215,7 +215,10 @@ def solve_cp_sat_slot_schedule(
                 hop["base_delay_ns"], _TIME_SCALE, "hop base delay"
             )
             beta = _scaled(hop["beta_ns"], _TIME_SCALE, "hop beta")
-            terms.append(beta * (ready[index] - slots[index]))
+            if hop.get("delay_model") == "linear-ratio-v1":
+                constant -= beta * (hop["discrete_ratio"] - 1)
+            else:
+                terms.append(beta * (ready[index] - slots[index]))
         beta_sum = sum(
             _scaled(hop_by_index[index]["beta_ns"], _TIME_SCALE, "hop beta")
             for index in path["hops"]

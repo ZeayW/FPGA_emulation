@@ -1,0 +1,356 @@
+"""Fixed LVDS P/N wiring for a hypothetical board using real device I/O.
+
+Each scheduled wire is one differential channel with two physical conductors.
+Phase 5 owns whole-bank direction and TDM scheduling. This module emits data
+pin constraints and a separate I/O adapter, not a complete board implementation.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import re
+from collections import defaultdict
+from pathlib import Path
+from typing import Any, Dict, Mapping
+
+from .errors import ValidationError
+from .io import read_json, write_json
+from .platform import Platform
+
+MODEL = "xcvu19p-hp-lvds-cable-v1"
+WIRING_SCHEMA = "emuflow.virtual-board-wiring/v1"
+BINDING_SCHEMA = "emuflow.virtual-board-binding/v1"
+INVENTORY_PATH = Path(__file__).parent / "data/io/xcvu19p-fsva3824-2-e.hp-pins.json"
+
+
+def _digest(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _inventory() -> Dict[str, Any]:
+    return read_json(INVENTORY_PATH)
+
+
+def _name(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_]", "_", value)
+
+
+def _bank_pairs(bank: Mapping[str, Any]) -> list:
+    """Use verified vendor pair IDs and polarities, never infer from pin ordering."""
+    pairs = defaultdict(dict)
+    for pin in bank["pins"]:
+        pair = pin.get("differential_pair_id")
+        polarity = pin.get("polarity")
+        if pair is None:
+            continue
+        if not pin["eligible_data"] or polarity not in ("p", "n"):
+            raise ValidationError("invalid differential inventory polarity or eligibility")
+        if polarity in pairs[pair]:
+            raise ValidationError("duplicate differential inventory polarity")
+        # Independent check against the package pin function from AMD's pinout.
+        match = re.match(r"IO_L(\d+)([PN])_.*_(\d+)$", pin["pin_function"] or "")
+        if (match is None or f"L{match[1]}" != pair or match[2].lower() != polarity
+                or match[3] != str(bank["id"])):
+            raise ValidationError("differential pair does not match vendor pin function")
+        pairs[pair][polarity] = {k: pin[k] for k in ("package_pin", "site", "pin_function")}
+    if any(set(pair) != {"p", "n"} for pair in pairs.values()):
+        raise ValidationError("incomplete differential pair in device inventory")
+    # Preserve the four global-clock pairs at the default 20-pair data width.
+    order = sorted(pairs, key=lambda key: ("_GC_" in pairs[key]["p"]["pin_function"], int(key[1:])))
+    return [{"pair_id": key, **pairs[key]} for key in order]
+
+
+def build_virtual_board(platform: Platform) -> Dict[str, Any]:
+    """Assign disjoint real HP banks and connect each P to P and N to N."""
+    if platform.virtual_board_model != MODEL or platform.kind != "virtual":
+        raise ValidationError(f"virtual board requires the declared {MODEL} model")
+    inventory = _inventory()
+    if any(fpga.part != inventory["part"] for fpga in platform.fpgas):
+        raise ValidationError("virtual board inventory does not match the FPGA part")
+    banks = sorted(inventory["banks"], key=lambda b: int(b["id"]))
+    if len({str(b["id"]) for b in banks}) != len(banks):
+        raise ValidationError("duplicate inventory HP bank")
+    eligible = {}
+    seen = set()
+    for bank in banks:
+        if bank["type"] != "HP":
+            raise ValidationError("virtual data wiring requires HP I/O banks")
+        for pin in bank["pins"]:
+            if pin["package_pin"] in seen or not pin["site"]:
+                raise ValidationError("invalid inventory package pin or I/O site")
+            seen.add(pin["package_pin"])
+        eligible[str(bank["id"])] = _bank_pairs(bank)
+    # Bank 65 has configuration-multiplexed I/O. Reserve it in this board model.
+    data_banks = [bank for bank in banks if str(bank["id"]) != "65"]
+    next_bank = {fpga.id: 0 for fpga in platform.fpgas}
+    allocated = defaultdict(list)
+    wires = []
+    for link in sorted(platform.links, key=lambda item: item.id):
+        if (link.capacity_sharing != "shared_bidirectional" or link.direction != "full_duplex"
+                or link.mode != "abstract" or link.cable_count != 6 or link.hp_banks_per_cable != 3
+                or link.bank_count != 18 or link.wires_per_bank is None):
+            raise ValidationError("virtual board model requires 6 cables, 3 paired HP banks per cable and shared differential channels")
+        ends = sorted(link.endpoints)
+        pair_banks = {}
+        for fpga in ends:
+            begin = next_bank[fpga]
+            if begin + link.bank_count > len(data_banks):
+                raise ValidationError(f"{fpga} has insufficient disjoint HP banks for virtual cables")
+            pair_banks[fpga] = data_banks[begin:begin + link.bank_count]
+            next_bank[fpga] += link.bank_count
+        for group in range(link.bank_count):
+            cable_index, bank_in_cable = divmod(group, link.hp_banks_per_cable)
+            cable = f"{link.id}:cable{cable_index}"
+            for fpga in ends:
+                bank = pair_banks[fpga][group]
+                if len(eligible[str(bank["id"])]) < link.wires_per_bank:
+                    raise ValidationError(f"bank {bank['id']} has insufficient eligible differential pairs")
+                allocated[fpga].append({"link": link.id, "bank_group": group, "bank": str(bank["id"]),
+                                        "cable": cable, "bank_in_cable": bank_in_cable,
+                                        "differential_pairs_used": link.wires_per_bank,
+                                        "data_pins_used": 2 * link.wires_per_bank})
+            for index in range(link.wires_per_bank):
+                wire = group * link.wires_per_bank + index
+                endpoints = []
+                for fpga in ends:
+                    bank = str(pair_banks[fpga][group]["id"])
+                    pair = eligible[bank][index]
+                    endpoints.append({"fpga": fpga, "bank": bank, **pair})
+                contact = 2 * (bank_in_cable * link.wires_per_bank + index) + 1
+                wires.append({"id": f"{link.id}:wire{wire}", "link": link.id, "wire": wire,
+                              "bank_group": group, "cable": cable, "cable_index": cable_index,
+                              "bank_in_cable": bank_in_cable, "wire_in_bank": index,
+                              "connector_data_contacts": {"p": contact, "n": contact + 1},
+                              "endpoints": endpoints})
+    return {
+        "schema": WIRING_SCHEMA, "model": MODEL, "platform": platform.name,
+        "qualification": "virtual_board_real_device_pins",
+        "source": {"inventory_file": INVENTORY_PATH.name, "inventory_sha256": _digest(inventory),
+                   "device_provenance": inventory["provenance"], "pin_screening": inventory["screening"]},
+        "assumptions": {"signaling": "differential", "iostandard": "LVDS", "vcco_v": 1.8,
+                        "wire_unit": "one differential data channel: two conductors, one bit per fabric cycle",
+                        "connectivity": "fixed P-to-P and N-to-N; direction chosen per bank by Phase 5",
+                        "connector_contacts": "data-contact ordinals, not a connector product pinout",
+                        "board_services": "clock, reset, power and ground connections are outside this data-wire table",
+                        "electrical_qualification": "assumed 1.8V bank supply and internal 100-ohm receiver termination; no board SI or vendor DRC claim",
+                        "receiver_termination": "internal_100_ohm_at_receiver",
+                        "direction_configuration": "static per generated schedule/build; not switched during a TDM frame",
+                        "pin_selection": "reserve bank 65 for configuration; prefer non-GC differential pairs within data banks",
+                        "link_timing": "uses BoardDB TDM model; no extra invented cable delay"},
+        "fpgas": [{"id": fpga.id, "part": fpga.part, "bank_assignments": allocated[fpga.id],
+                   "unallocated_hp_banks": [str(b["id"]) for b in banks
+                                            if str(b["id"]) not in {a["bank"] for a in allocated[fpga.id]}]}
+                  for fpga in sorted(platform.fpgas, key=lambda f: f.id)],
+        "wires": wires,
+        "metrics": {"links": len(platform.links), "cables": sum(l.cable_count for l in platform.links),
+                    "differential_pairs": len(wires), "physical_conductors": 2 * len(wires),
+                    "endpoint_data_pins": 4 * len(wires), "hp_banks_per_fpga": next_bank},
+    }
+
+
+def validate_virtual_board(platform: Platform, board: Mapping[str, Any]) -> Dict[str, Any]:
+    expected = build_virtual_board(platform)
+    if board != expected:
+        raise ValidationError("virtual board wiring differs from the declared model or device inventory")
+    return {"status": "pass", "qualification": expected["qualification"], **expected["metrics"]}
+
+
+def build_virtual_binding(platform: Platform, board: Mapping[str, Any], schedule: Mapping[str, Any],
+                          artifacts: Mapping[str, Any]) -> Dict[str, Any]:
+    """Bind logical transport bits to both physical pins of each differential wire."""
+    from .netlist import transport_endpoint_port
+    from .pin_planning import validate_bank_pin_assignment
+
+    validate_virtual_board(platform, board)
+    if schedule.get("platform") != platform.name:
+        raise ValidationError("virtual board schedule platform mismatch")
+    raw = artifacts["lane_map"]["entries"]
+    by_entry = {r["schedule_entry"]: r for r in raw}
+    scheduled = {r["id"]: r for r in schedule["entries"]}
+    if len(by_entry) != len(raw) or len(scheduled) != len(schedule["entries"]) or set(by_entry) != set(scheduled):
+        raise ValidationError("virtual pin binding requires exact schedule/port coverage")
+    validate_bank_pin_assignment(schedule, platform, {k: r["lane"] for k, r in by_entry.items()})
+    endpoint_by_id = {e["id"]: e for t in artifacts["transports"].values() for e in t["endpoints"]}
+    wire_by_key = {(w["link"], w["wire"]): w for w in board["wires"]}
+    links = {link.id: link for link in platform.links}
+    entries = []
+    occupied = set()
+    pin_ports = {}
+    port_pins = {}
+    direction_by_wire = {}
+    for entry_id in sorted(scheduled):
+        entry = scheduled[entry_id]
+        mapped = by_entry[entry_id]
+        wire = wire_by_key.get((entry["link"], mapped["lane"]))
+        if wire is None:
+            raise ValidationError("scheduled wire has no virtual board connection")
+        if any(mapped.get(k) != entry[k] for k in ("link", "from", "to", "slot")):
+            raise ValidationError("virtual binding lane-map identity differs from schedule")
+        key = (wire["id"], entry["slot"])
+        if key in occupied:
+            raise ValidationError("multiple communications occupy one physical wire in the same slot")
+        occupied.add(key)
+        direction = (entry["from"], entry["to"])
+        if direction_by_wire.setdefault(wire["id"], direction) != direction:
+            raise ValidationError("one physical wire cannot change direction within the schedule")
+        pins = {p["fpga"]: p for p in wire["endpoints"]}
+        bound = {}
+        for role, kind, fpga in (("source", "tx", entry["from"]), ("sink", "rx", entry["to"])):
+            endpoint = endpoint_by_id.get(mapped[f"{kind}_endpoint"])
+            peer = entry["to"] if kind == "tx" else entry["from"]
+            if endpoint is None or any(endpoint.get(k) != v for k, v in
+                    {"kind": kind, "fpga": fpga, "peer": peer, "link": entry["link"],
+                     "lane": mapped["lane"], "slot": entry["slot"], "schedule_entry": entry_id}.items()):
+                raise ValidationError("transport endpoint disagrees with virtual pin binding")
+            logical_port = f"{transport_endpoint_port(endpoint)}[{mapped['lane']}]"
+            pair = pins[fpga]
+            bound_end = {k: pair[k] for k in ("fpga", "bank", "pair_id")}
+            bound_end.update(logical_port=logical_port,
+                             logical_port_width=links[entry["link"]].transport_bits_per_cycle_per_direction)
+            for polarity in ("p", "n"):
+                pin = pair[polarity]
+                port = f"emuflow_io_{kind}_{_name(entry['link'])}_wire{wire['wire']}_{polarity}"
+                identity = (fpga, pin["package_pin"])
+                if pin_ports.setdefault(identity, port) != port:
+                    raise ValidationError("package pin is assigned to more than one RTL port")
+                if port_pins.setdefault((fpga, port), identity) != identity:
+                    raise ValidationError("physical RTL port name collides after identifier normalization")
+                bound_end[polarity] = {**pin, "port": port}
+            bound[role] = bound_end
+        entries.append({"schedule_entry": entry_id, "net": entry.get("net"), "slot": entry["slot"],
+                        "arrival_slot": entry.get("arrival_slot"), "tdm_ratio": entry.get("tdm_ratio"),
+                        "wire_id": wire["id"], "wire": wire["wire"], "link": wire["link"],
+                        "bank_group": wire["bank_group"], "cable": wire["cable"],
+                        "iostandard": board["assumptions"]["iostandard"], **bound})
+    return {"schema": BINDING_SCHEMA, "platform": platform.name, "design": schedule.get("design"),
+            "qualification": "virtual_board_real_device_pins", "status": "pass",
+            "integration_status": "differential_data_constraints_and_adapter_generated",
+            "physical_backend_status": "not_consumed_by_ooc_backend",
+            "board_services_status": "clock_reset_and_control_pins_not_bound",
+            "io_adapter_status": "standalone_adapter_requires_top_level_integration",
+            "board_sha256": _digest(board), "schedule_sha256": _digest(schedule),
+            "lane_map_sha256": _digest(artifacts["lane_map"]),
+            "entries": entries,
+            "metrics": {"scheduled_hops": len(entries), "used_differential_pairs": len(direction_by_wire),
+                        "bound_data_ports": len(pin_ports), "total_differential_pairs": len(board["wires"])}}
+
+
+def validate_virtual_binding(platform: Platform, board: Mapping[str, Any], schedule: Mapping[str, Any],
+                             artifacts: Mapping[str, Any], binding: Mapping[str, Any]) -> Dict[str, Any]:
+    expected = build_virtual_binding(platform, board, schedule, artifacts)
+    if binding != expected:
+        raise ValidationError("virtual board binding does not match schedule, ports, and fixed pin pairs")
+    return {"status": "pass", "qualification": expected["qualification"],
+            "physical_backend_status": expected["physical_backend_status"], **expected["metrics"]}
+
+
+def virtual_binding_to_xdc(binding: Mapping[str, Any], fpga: str) -> str:
+    lines = ["# Hypothetical LVDS board: vendor P/N pairs, assumed P-to-P and N-to-N cables.",
+             "# Use with virtual_differential_io.sv exposed at the physical top level.",
+             "# Data ports only; 1.8 V VCCO and internal 100-ohm receiver termination assumed.",
+             "# Clock/reset/control constraints and physical backend integration remain required."]
+    records = {}
+    for entry in binding["entries"]:
+        for role in ("source", "sink"):
+            end = entry[role]
+            if end["fpga"] == fpga:
+                for polarity in ("p", "n"):
+                    pin = end[polarity]
+                    records[pin["port"]] = (pin["package_pin"], entry["iostandard"])
+    for port, (pin, standard) in sorted(records.items()):
+        if any(c in port + pin + standard for c in "{}\n\r;"):
+            raise ValidationError("unsafe name in virtual data-pin constraint")
+        lines += [f"set_property PACKAGE_PIN {pin} [get_ports {{{port}}}]",
+                  f"set_property IOSTANDARD {standard} [get_ports {{{port}}}]"]
+    return "\n".join(lines) + "\n"
+
+
+def virtual_binding_to_systemverilog(binding: Mapping[str, Any], fpga: str) -> str:
+    """Emit a standalone data adapter; the backend must integrate it at top level."""
+    records = {}
+    for entry in binding["entries"]:
+        for role in ("source", "sink"):
+            end = entry[role]
+            if end["fpga"] == fpga:
+                records[end["p"]["port"]] = (role, end)
+    buses = {}
+    pins = []
+    body = []
+    used_rx_bits = defaultdict(set)
+    for index, (_, (role, end)) in enumerate(sorted(records.items())):
+        logical = end["logical_port"]
+        match = re.fullmatch(r"([a-zA-Z_][a-zA-Z0-9_]*)\[(\d+)\]", logical)
+        if match is None:
+            raise ValidationError("invalid differential adapter logical port")
+        bus, bit = match[1], int(match[2])
+        direction = "input" if role == "source" else "output"
+        config = (direction, end["logical_port_width"])
+        if buses.setdefault(bus, config) != config:
+            raise ValidationError("inconsistent differential adapter bus")
+        p, n = end["p"]["port"], end["n"]["port"]
+        if any(re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name) is None for name in (p, n)):
+            raise ValidationError("invalid differential adapter pin port")
+        physical_direction = "output" if role == "source" else "input"
+        pins.extend([f"  {physical_direction} wire {p}", f"  {physical_direction} wire {n}"])
+        if role == "source":
+            body.append(f'  OBUFDS #(.IOSTANDARD("LVDS")) tx_{index} (.I({logical}), .O({p}), .OB({n}));')
+        else:
+            body.append(f'  IBUFDS #(.IOSTANDARD("LVDS"), .DIFF_TERM("TRUE")) rx_{index} (.I({p}), .IB({n}), .O({logical}));')
+            used_rx_bits[bus].add(bit)
+    ports = [f"  {direction} wire [{width - 1}:0] {bus}"
+             for bus, (direction, width) in sorted(buses.items())] + pins
+    for bus, bits in sorted(used_rx_bits.items()):
+        for bit in range(buses[bus][1]):
+            if bit not in bits:
+                body.append(f"  assign {bus}[{bit}] = 1'b0;")
+    return "\n".join([
+        "// Standalone LVDS data adapter. Connect logical buses to emuflow_transport_<fpga>.",
+        "// Expose P/N ports at the physical top level before applying virtual_data_pins.xdc.",
+        "// Whole-bank directions are static for this build; internal receiver termination enabled.",
+        f"module emuflow_virtual_io_{_name(fpga)} (", ",\n".join(ports), ");", *body, "endmodule", "",
+    ])
+
+
+def write_wiring_csv(path: Path, board: Mapping[str, Any]) -> None:
+    common = ["link", "wire", "cable", "bank_group", "bank_in_cable", "wire_in_bank"]
+    fields = common + ["connector_data_contact_p", "connector_data_contact_n"]
+    for tag in ("a", "b"):
+        fields += [f"{key}_{tag}" for key in ("fpga", "bank", "pair_id")]
+        fields += [f"{key}_{tag}_{polarity}" for polarity in ("p", "n")
+                   for key in ("package_pin", "site", "pin_function")]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
+        writer.writeheader()
+        for wire in board["wires"]:
+            row = {k: wire[k] for k in common}
+            row.update({f"connector_data_contact_{pol}": wire["connector_data_contacts"][pol] for pol in ("p", "n")})
+            for tag, end in zip(("a", "b"), wire["endpoints"]):
+                for key in ("fpga", "bank", "pair_id"):
+                    row[f"{key}_{tag}"] = end[key]
+                for polarity in ("p", "n"):
+                    for key in ("package_pin", "site", "pin_function"):
+                        row[f"{key}_{tag}_{polarity}"] = end[polarity][key]
+            writer.writerow(row)
+
+
+def main() -> int:
+    from .default_platform import DEFAULT_PLATFORM_PATH
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--platform", type=Path, default=DEFAULT_PLATFORM_PATH)
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args()
+    platform = Platform.load(args.platform)
+    board = build_virtual_board(platform)
+    report = validate_virtual_board(platform, board)
+    write_json(args.out / "virtual_board_wiring.json", board)
+    write_wiring_csv(args.out / "virtual_board_wiring.csv", board)
+    write_json(args.out / "validation.json", report)
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

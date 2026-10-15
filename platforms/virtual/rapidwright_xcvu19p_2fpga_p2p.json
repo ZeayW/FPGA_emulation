@@ -3,7 +3,8 @@
   "platform": {
     "name": "rapidwright_xcvu19p_2fpga_p2p",
     "kind": "virtual",
-    "description": "Two-XCVU19P research platform using exact per-device resources and an explicitly academic point-to-point board link"
+    "description": "2-XCVU19P research model: RapidWright device resources, point-to-point link, 6 cables with 3 paired HP banks per cable, 20 effective differential data pairs per bank, and single-hop delay 30 + 0.5*R ns",
+    "virtual_board_model": "xcvu19p-hp-lvds-cable-v1"
   },
   "fpgas": [
     {
@@ -17,7 +18,9 @@
         "dsp48": 3840,
         "carry8": 510720,
         "uram288": 320
-      }
+      },
+      "hp_io_bank_count": 38,
+      "hd_io_bank_count": 4
     },
     {
       "id": "fpga1",
@@ -30,18 +33,33 @@
         "dsp48": 3840,
         "carry8": 510720,
         "uram288": 320
-      }
+      },
+      "hp_io_bank_count": 38,
+      "hd_io_bank_count": 4
     }
   ],
   "links": [
     {
       "id": "link_0_1",
-      "endpoints": ["fpga0", "fpga1"],
+      "endpoints": [
+        "fpga0",
+        "fpga1"
+      ],
       "direction": "full_duplex",
       "mode": "abstract",
-      "data_lanes_per_direction": 32,
+      "data_lanes_per_direction": 360,
+      "capacity_sharing": "shared_bidirectional",
+      "bank_count": 18,
+      "wires_per_bank": 20,
       "fabric_clock_mhz": 250.0,
-      "latency_cycles": 2
+      "latency_cycles": 8,
+      "tdm_delay_model": {
+        "model": "linear-ratio-v1",
+        "intercept_ns": 30.0,
+        "ratio_coefficient_ns": 0.5
+      },
+      "cable_count": 6,
+      "hp_banks_per_cable": 3
     }
   ]
 }

@@ -388,6 +388,19 @@ def normalize_route_constraints(
         for link in platform.links
         if link.capacity_sharing == "shared_bidirectional"
     }
+    for link in platform.links:
+        if link.bank_count is not None and link.id in raw_sll_links:
+            raise ValidationError("a shared-bank FPGA interconnect cannot be an SLL link")
+        if link.tdm_delay_model is None:
+            continue
+        declared_base = link.tdm_delay_model.delay_ns(1)
+        overrides = ([link_delays[link.id]] if link.id in link_delays else [])
+        overrides += [delay for by_sink in directed_delays.get(link.id, {}).values()
+                      for delay in by_sink.values()]
+        if any(not math.isclose(v, declared_base, abs_tol=1e-9) for v in overrides):
+            raise ValidationError(
+                f"link {link.id}: fixed delay override conflicts with its TDM ratio model; "
+                "remove the stale override and use the BoardDB model")
     return {
         "schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
         "frame_slots": raw_frame_slots,
@@ -419,7 +432,10 @@ def route_link_delay_ns(
     sink: str,
     constraints: Mapping[str, Any],
 ) -> float:
-    """Return a direction-exact delay override with legacy fallback."""
+    """Return single-hop delay at R=1 for a ratio model, else propagation delay."""
+    link = next(link for link in platform.links if link.id == link_id)
+    if link.tdm_delay_model is not None:
+        return link.tdm_delay_model.delay_ns(1)
     directed = constraints.get("directed_link_delay_ns", {})
     override = directed.get(link_id, {}).get(source, {}).get(sink)
     if override is not None:
@@ -429,6 +445,30 @@ def route_link_delay_ns(
         return float(link_override)
     link = next(link for link in platform.links if link.id == link_id)
     return link.latency_cycles * 1000.0 / link.fabric_clock_mhz
+
+
+def route_link_delay_coefficients_ns(
+    platform: Platform, link_id: str, source: str, sink: str,
+    constraints: Mapping[str, Any],
+) -> Tuple[float, float]:
+    """Coefficients for d(R)=base_at_R1+slope*(R-1), independent of slot time."""
+    link = next(link for link in platform.links if link.id == link_id)
+    base = route_link_delay_ns(platform, link_id, source, sink, constraints)
+    slope = (link.tdm_delay_model.ratio_coefficient_ns
+             if link.tdm_delay_model is not None else 1000.0 / link.fabric_clock_mhz)
+    return base, slope
+
+
+def route_hop_delay_ns(
+    platform: Platform, link_id: str, source: str, sink: str,
+    constraints: Mapping[str, Any], ratio: float,
+) -> float:
+    if (isinstance(ratio, bool) or not isinstance(ratio, (int, float))
+            or not math.isfinite(ratio) or ratio < 1):
+        raise ValidationError("net TDM ratio: expected finite value >= 1")
+    base, slope = route_link_delay_coefficients_ns(
+        platform, link_id, source, sink, constraints)
+    return base + slope * (ratio - 1)
 
 
 def load_route_constraints(
@@ -525,7 +565,9 @@ def _capacity_key(
     sink: str,
     shared_capacity_links: Set[str],
 ) -> str:
-    if link.direction == "half_duplex" or link.id in shared_capacity_links:
+    if link.bank_count is None and (
+        link.direction == "half_duplex" or link.id in shared_capacity_links
+    ):
         return f"{link.id}:shared"
     return f"{link.id}:{source}->{sink}"
 
@@ -566,6 +608,13 @@ def build_directed_graph(
                 "latency_cycles": link.latency_cycles,
                 "capacity_key": capacity_key,
             }
+            bank_metadata = ({
+                "bank_group": link.id,
+                "bank_count": link.bank_count,
+                "wires_per_bank": link.wires_per_bank,
+                "opposite_capacity_key": _capacity_key(link, sink, source, shared_capacity_links),
+            } if link.bank_count is not None else {})
+            arc.update(bank_metadata)
             arcs[_arc_key(link.id, source, sink)] = arc
             adjacency[source].append(arc)
             if capacity_key not in capacity_records:
@@ -592,7 +641,7 @@ def build_directed_graph(
                     "link": link.id,
                     "direction": (
                         "shared"
-                        if (
+                        if link.bank_count is None and (
                             link.direction == "half_duplex"
                             or link.id in shared_capacity_links
                         )
@@ -602,6 +651,7 @@ def build_directed_graph(
                         link.transport_bits_per_cycle_per_direction
                         * usable_slots
                     ),
+                    **bank_metadata,
                 }
 
     for source in adjacency:
@@ -887,6 +937,19 @@ def validate_system_routes(
     ]
     if overloaded:
         raise ValidationError(f"routes exceed modeled link capacity: {overloaded}")
+
+    for link in platform.links:
+        if link.bank_count is None or link.id in constraints["unavailable_links"]:
+            continue
+        left, right = link.endpoints
+        per_bank = link.wires_per_bank * constraints["frame_slots"]
+        banks_needed = sum(
+            (usage[f"{link.id}:{source}->{sink}"] + per_bank - 1) // per_bank
+            for source, sink in ((left, right), (right, left))
+        )
+        if banks_needed > link.bank_count:
+            raise ValidationError(f"routes exceed shared bank capacity on {link.id}: "
+                                  f"need {banks_needed}, available {link.bank_count}")
 
     expected_metrics = {
         "demands": len(expected_demands),

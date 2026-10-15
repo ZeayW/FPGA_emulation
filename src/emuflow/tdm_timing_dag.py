@@ -571,16 +571,8 @@ def build_timing_dag_ratio_plan(
             model["constraints"].get("tdm_ratio_quantum", 8)
         )
     if max_ratio is None:
-        link_by_id = {link.id: link for link in platform.links}
-        max_ratio = min(
-            maximum_schedulable_tdm_ratio(
-                model["constraints"],
-                link_by_id[hop["link"]].latency_cycles,
-                ratio_quantum=ratio_quantum,
-                minimum_ratio=min_ratio,
-            )
-            for hop in model["hops"]
-        )
+        from .tdm_ratio import _schedule_safe_max_ratio
+        max_ratio = _schedule_safe_max_ratio(model, platform, ratio_quantum)
     seed = optimize_prepared_timing_dag(
         model,
         executable=dag_executable,

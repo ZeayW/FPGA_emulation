@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/virtual-board-wiring-v1.schema.json",
+  "title": "Fixed virtual board differential P/N connections",
+  "type": "object",
+  "required": [
+    "schema",
+    "model",
+    "platform",
+    "qualification",
+    "source",
+    "assumptions",
+    "fpgas",
+    "wires",
+    "metrics"
+  ],
+  "properties": {
+    "schema": {
+      "const": "emuflow.virtual-board-wiring/v1"
+    },
+    "model": {
+      "const": "xcvu19p-hp-lvds-cable-v1"
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1
+    },
+    "qualification": {
+      "const": "virtual_board_real_device_pins"
+    },
+    "source": {
+      "type": "object"
+    },
+    "assumptions": {
+      "type": "object",
+      "required": [
+        "signaling",
+        "wire_unit",
+        "iostandard"
+      ],
+      "properties": {
+        "signaling": {
+          "const": "differential"
+        },
+        "iostandard": {
+          "const": "LVDS"
+        },
+        "wire_unit": {
+          "type": "string"
+        }
+      }
+    },
+    "fpgas": {
+      "type": "array",
+      "minItems": 1
+    },
+    "wires": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "link",
+          "wire",
+          "bank_group",
+          "cable",
+          "cable_index",
+          "bank_in_cable",
+          "wire_in_bank",
+          "endpoints",
+          "connector_data_contacts"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "link": {
+            "type": "string",
+            "minLength": 1
+          },
+          "wire": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bank_group": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cable": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cable_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bank_in_cable": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "wire_in_bank": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "endpoints": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "object",
+              "required": [
+                "fpga",
+                "bank",
+                "pair_id",
+                "p",
+                "n"
+              ],
+              "properties": {
+                "fpga": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "bank": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "pair_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "p": {
+                  "type": "object",
+                  "required": [
+                    "package_pin",
+                    "site",
+                    "pin_function"
+                  ],
+                  "properties": {
+                    "package_pin": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "site": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "pin_function": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "n": {
+                  "type": "object",
+                  "required": [
+                    "package_pin",
+                    "site",
+                    "pin_function"
+                  ],
+                  "properties": {
+                    "package_pin": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "site": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "pin_function": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "connector_data_contacts": {
+            "type": "object",
+            "required": [
+              "p",
+              "n"
+            ],
+            "properties": {
+              "p": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "n": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "differential_pairs",
+        "physical_conductors",
+        "endpoint_data_pins"
+      ],
+      "properties": {
+        "differential_pairs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "physical_conductors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endpoint_data_pins": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

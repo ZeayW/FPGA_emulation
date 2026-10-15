@@ -23,6 +23,7 @@ if [[ -e "${output_root}" ]]; then
   exit 2
 fi
 
+# Explicit small-device timing fixture; not the multi-fpga compile default.
 emuflow phase1 \
   --yosys-json examples/yosys/counter.json \
   --top counter \

@@ -20,6 +20,7 @@ if [[ -e "${output_root}" ]]; then
   exit 2
 fi
 
+# Explicit small-device fixture; independent of multi-fpga compile's default.
 platform="platforms/virtual/xcvu3p_2fpga_p2p.json"
 
 emuflow phase1 \

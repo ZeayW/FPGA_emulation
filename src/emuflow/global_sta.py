@@ -363,6 +363,7 @@ the Python event propagator or consume its per-path numerical results.
     if endpoints is None or segments is None or links is None:
         raise ValidationError("global OpenSTA requires physical logic and endpoint measurements")
     entries = {e["id"]: e for e in schedule["entries"]}
+    board_links = {link.id: link for link in platform.links}
     demand_by_net = {r["net"]: r["id"] for r in routes["routes"]}
     uncertainty = float(physical.get("static_exact_clock_uncertainty_ns", 0.0))
     if uncertainty < 0 or not math.isfinite(uncertainty):
@@ -391,6 +392,14 @@ the Python event propagator or consume its per-path numerical results.
             }
             origin = 0.0
             trailing = ()
+            ratio_mode = any(board_links[h["link"]].tdm_delay_model is not None
+                             for h in record["scheduled_hops"])
+            if ratio_mode and not all(board_links[h["link"]].tdm_delay_model is not None
+                                      for h in record["scheduled_hops"]):
+                raise ValidationError("one path cannot mix total net-ratio and fixed-slot delay models")
+            model_arcs = []
+            if ratio_mode:
+                path_metadata[member]["interconnect_delay_model"] = "linear-ratio-v1"
             periods = set()
             seen_entries = set()
             for k, net in enumerate(record["cut_nets"]):
@@ -411,12 +420,18 @@ the Python event propagator or consume its per-path numerical results.
                     tx = entry["slot"] * period
                     arcs = trailing + (float(chain[k]["delay_ns"]) if not j else
                                        endpoints[hop["tx_endpoint"]],)
+                    delay_model = board_links[hop["link"]].tdm_delay_model
+                    link_delay = (delay_model.delay_ns(entry.get("tdm_ratio"))
+                                  if delay_model is not None else
+                                  links[hop["link"], hop["from"], hop["to"]])
+                    if ratio_mode:
+                        model_arcs.extend((arcs[-1], link_delay, endpoints[hop["rx_endpoint"]]))
                     # Previous-frame registered values are stable at first TX.
                     # Only that check is exempt; relays retain current-frame causality.
                     if not (schedule["transport_semantics"] == "registered-boundary" and not j):
                         result.append(EventCheck(member, "tx", eid, origin, arcs, tx-uncertainty))
                     origin = tx
-                    trailing = (links[hop["link"], hop["from"], hop["to"]],
+                    trailing = (link_delay,
                                 endpoints[hop["rx_endpoint"]])
             if len(periods) != 1 or len(seen_entries) != len(record["scheduled_hops"]):
                 raise ValidationError("global STA incomplete event coverage or mixed slot periods")
@@ -428,7 +443,14 @@ the Python event propagator or consume its per-path numerical results.
             for role, deadline in (("target", required),
                                    ("runtime", virtual-(record["clock_period_ns"]-required)),
                                    ("commit", commit)):
-                result.append(EventCheck(member, role, "capture", origin, final_arcs, deadline))
+                # The total net-ratio model already includes TDM delay.
+                # Keep absolute TX/commit readiness checks separate; never
+                # add their slot wait again to the modeled path delay.
+                if ratio_mode and role in {"target", "runtime"}:
+                    result.append(EventCheck(member, role, "capture", 0.0,
+                        tuple(model_arcs) + (float(chain[-1]["delay_ns"]), uncertainty), deadline))
+                else:
+                    result.append(EventCheck(member, role, "capture", origin, final_arcs, deadline))
     source = None
     from .local_path_timing import validate_local_path_timing, path_id_set_sha256
     for fpga, database in physical.get("local_path_timing", {}).items():

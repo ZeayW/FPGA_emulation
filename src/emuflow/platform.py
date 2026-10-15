@@ -45,6 +45,8 @@ class FpgaNode:
     part: str
     utilization_limit: float
     capacity: Dict[str, int]
+    hp_io_bank_count: Optional[int] = None
+    hd_io_bank_count: Optional[int] = None
 
     @property
     def effective_capacity(self) -> Dict[str, int]:
@@ -54,13 +56,17 @@ class FpgaNode:
         }
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "id": self.id,
             "part": self.part,
             "utilization_limit": self.utilization_limit,
             "capacity": dict(sorted(self.capacity.items())),
             "effective_capacity": dict(sorted(self.effective_capacity.items())),
         }
+        for key in ("hp_io_bank_count", "hd_io_bank_count"):
+            if getattr(self, key) is not None:
+                result[key] = getattr(self, key)
+        return result
 
 
 @dataclass(frozen=True)
@@ -148,6 +154,39 @@ class BoardResetContract:
 
 
 @dataclass(frozen=True)
+class RatioDelayModel:
+    """Complete single-hop net delay, including its TDM ratio contribution."""
+
+    model: str
+    intercept_ns: float
+    ratio_coefficient_ns: float
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "RatioDelayModel":
+        if not isinstance(value, dict) or value.get("model") != "linear-ratio-v1":
+            raise ValidationError("tdm_delay_model: expected linear-ratio-v1")
+        if set(value) != {"model", "intercept_ns", "ratio_coefficient_ns"}:
+            raise ValidationError("tdm_delay_model: unexpected or missing fields")
+        for key in ("intercept_ns", "ratio_coefficient_ns"):
+            number = value[key]
+            if (isinstance(number, bool) or not isinstance(number, (int, float))
+                    or not math.isfinite(number) or number < 0):
+                raise ValidationError(f"tdm_delay_model.{key}: expected finite non-negative ns")
+        return cls(value["model"], float(value["intercept_ns"]),
+                   float(value["ratio_coefficient_ns"]))
+
+    def delay_ns(self, ratio: float) -> float:
+        if (isinstance(ratio, bool) or not isinstance(ratio, (int, float))
+                or not math.isfinite(ratio) or ratio < 1):
+            raise ValidationError("net TDM ratio: expected a finite value >= 1")
+        return self.intercept_ns + self.ratio_coefficient_ns * ratio
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"model": self.model, "intercept_ns": self.intercept_ns,
+                "ratio_coefficient_ns": self.ratio_coefficient_ns}
+
+
+@dataclass(frozen=True)
 class BoardLink:
     id: str
     endpoints: Tuple[str, str]
@@ -160,6 +199,11 @@ class BoardLink:
     payload_bits_per_lane_per_cycle: int = 1
     max_line_rate_gbps_per_lane: Optional[float] = None
     endpoint_bindings: Tuple[LinkEndpointBinding, ...] = ()
+    bank_count: Optional[int] = None
+    wires_per_bank: Optional[int] = None
+    tdm_delay_model: Optional[RatioDelayModel] = None
+    cable_count: Optional[int] = None
+    hp_banks_per_cable: Optional[int] = None
 
     @property
     def transport_bits_per_cycle_per_direction(self) -> int:
@@ -211,6 +255,14 @@ class BoardLink:
             result["endpoint_bindings"] = [
                 binding.to_dict() for binding in self.endpoint_bindings
             ]
+        if self.bank_count is not None:
+            result["bank_count"] = self.bank_count
+            result["wires_per_bank"] = self.wires_per_bank
+        if self.cable_count is not None:
+            result["cable_count"] = self.cable_count
+            result["hp_banks_per_cable"] = self.hp_banks_per_cable
+        if self.tdm_delay_model is not None:
+            result["tdm_delay_model"] = self.tdm_delay_model.to_dict()
         return result
 
     def endpoint_binding(self, fpga: str) -> Optional[LinkEndpointBinding]:
@@ -233,6 +285,7 @@ class Platform:
     links: Tuple[BoardLink, ...]
     clocks: Tuple[BoardClockContract, ...] = ()
     resets: Tuple[BoardResetContract, ...] = ()
+    virtual_board_model: Optional[str] = None
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "Platform":
@@ -252,6 +305,11 @@ class Platform:
         description = metadata.get("description", "")
         if not isinstance(description, str):
             raise ValidationError("platform.description: expected a string")
+        virtual_board_model = metadata.get("virtual_board_model")
+        if virtual_board_model is not None and (
+            virtual_board_model != "xcvu19p-hp-lvds-cable-v1" or kind != "virtual"
+        ):
+            raise ValidationError("platform.virtual_board_model: unsupported virtual board model")
 
         raw_fpgas = value.get("fpgas")
         if not isinstance(raw_fpgas, list) or not raw_fpgas:
@@ -300,12 +358,20 @@ class Platform:
                 raise ValidationError(
                     f"fpgas[{index}].capacity: expected at least one resource"
                 )
+            io_bank_counts = {}
+            for key in ("hp_io_bank_count", "hd_io_bank_count"):
+                count = item.get(key)
+                if count is not None and (isinstance(count, bool)
+                        or not isinstance(count, int) or count < 0):
+                    raise ValidationError(f"fpgas[{index}].{key}: expected a non-negative integer")
+                io_bank_counts[key] = count
             fpgas.append(
                 FpgaNode(
                     id=fpga_id,
                     part=part,
                     utilization_limit=float(utilization_limit),
                     capacity=capacity,
+                    **io_bank_counts,
                 )
             )
 
@@ -415,6 +481,37 @@ class Platform:
                     f"links[{index}].payload_bits_per_lane_per_cycle: "
                     "values greater than one require serial mode"
                 )
+            bank_count = item.get("bank_count")
+            wires_per_bank = item.get("wires_per_bank")
+            if bank_count is not None or wires_per_bank is not None:
+                for key, number in (("bank_count", bank_count), ("wires_per_bank", wires_per_bank)):
+                    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                        raise ValidationError(f"links[{index}].{key}: expected a positive integer")
+                if virtual_board_model == "xcvu19p-hp-lvds-cable-v1" and wires_per_bank > 24:
+                    raise ValidationError(
+                        f"links[{index}].wires_per_bank: the XCVU19P HP bank has at most 24 differential pairs"
+                    )
+                if (capacity_sharing != "shared_bidirectional" or mode == "serial"
+                        or payload_width != 1 or lanes != bank_count * wires_per_bank):
+                    raise ValidationError(
+                        f"links[{index}]: bank capacity requires shared_bidirectional, "
+                        "one bit per wire, and data_lanes_per_direction = bank_count * wires_per_bank"
+                    )
+            raw_delay_model = item.get("tdm_delay_model")
+            delay_model = (None if raw_delay_model is None else
+                           RatioDelayModel.from_dict(raw_delay_model))
+            cable_count = item.get("cable_count")
+            hp_banks_per_cable = item.get("hp_banks_per_cable")
+            if cable_count is not None or hp_banks_per_cable is not None:
+                for key, number in (("cable_count", cable_count),
+                                    ("hp_banks_per_cable", hp_banks_per_cable)):
+                    if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                        raise ValidationError(f"links[{index}].{key}: expected a positive integer")
+                if bank_count != cable_count * hp_banks_per_cable:
+                    raise ValidationError(
+                        f"links[{index}]: bank_count must equal cable_count * hp_banks_per_cable "
+                        "(corresponding bank groups, or HP banks used at each endpoint)"
+                    )
             line_rate = item.get("max_line_rate_gbps_per_lane")
             if line_rate is not None:
                 if (
@@ -579,6 +676,11 @@ class Platform:
                     fabric_clock_mhz=float(frequency),
                     latency_cycles=latency,
                     capacity_sharing=capacity_sharing,
+                    bank_count=bank_count,
+                    wires_per_bank=wires_per_bank,
+                    tdm_delay_model=delay_model,
+                    cable_count=cable_count,
+                    hp_banks_per_cable=hp_banks_per_cable,
                     payload_bits_per_lane_per_cycle=payload_width,
                     max_line_rate_gbps_per_lane=(
                         None if line_rate is None else float(line_rate)
@@ -588,6 +690,17 @@ class Platform:
                     ),
                 )
             )
+
+        for fpga in fpgas:
+            hp_banks_used = sum(link.bank_count for link in links
+                               if link.cable_count is not None and fpga.id in link.endpoints)
+            if hp_banks_used and fpga.hp_io_bank_count is None:
+                raise ValidationError(f"FPGA {fpga.id}: cable model requires hp_io_bank_count inventory")
+            if fpga.hp_io_bank_count is not None and hp_banks_used > fpga.hp_io_bank_count:
+                raise ValidationError(
+                    f"FPGA {fpga.id}: cables use {hp_banks_used} HP banks, "
+                    f"exceeding inventory {fpga.hp_io_bank_count}"
+                )
 
         raw_services = value.get("board_services", {})
         services = _require_mapping(raw_services, "board_services")
@@ -688,6 +801,7 @@ class Platform:
             links=tuple(links),
             clocks=tuple(sorted(clocks, key=lambda item: item.id)),
             resets=tuple(sorted(resets, key=lambda item: item.id)),
+            virtual_board_model=virtual_board_model,
         )
 
     @classmethod
@@ -710,6 +824,8 @@ class Platform:
                 "clocks": [clock.to_dict() for clock in self.clocks],
                 "resets": [reset.to_dict() for reset in self.resets],
             }
+        if self.virtual_board_model is not None:
+            result["platform"]["virtual_board_model"] = self.virtual_board_model
         return result
 
     def summary(self) -> Dict[str, Any]:

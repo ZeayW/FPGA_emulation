@@ -31,6 +31,7 @@ from .partition import (
     validate_partition_artifacts_online,
 )
 from .platform import Platform
+from .bank_allocation import apply_bank_domain_ratios
 from .native_tools import resolve_native_executable
 from .partition_physical_feedback import (
     PARTITION_PHYSICAL_FEEDBACK_SCHEMA,
@@ -42,6 +43,8 @@ from .routing import (
     estimate_tdm_ratio,
     normalize_route_constraints,
     route_link_delay_ns,
+    route_link_delay_coefficients_ns,
+    route_hop_delay_ns,
 )
 from .sta import (
     _normalized_slack,
@@ -520,7 +523,7 @@ def _reconstruct_partition_pressure_model(
             "max_route_hops": route_constraints.get("max_route_hops"),
             "frame_slots": route_constraints["frame_slots"],
             "tdm_ratio_quantum": route_constraints["tdm_ratio_quantum"],
-            "predicted_wait": "sum((domain_ratio-1)*link_cycle_ns)",
+            "predicted_wait": "sum((domain_ratio-1)*ratio_delay_slope_ns)",
             "path_delay": (
                 "endpoint_exact_reverse_chain_else_"
                 "sum(max_remote_sink_delay_per_path_net)"
@@ -675,24 +678,14 @@ def _predicted_route_delay(
     include_tdm_wait: bool,
     physical_hop_guard_scale_ns: float = 0.0,
 ) -> float:
-    link_by_id = {link.id: link for link in platform.links}
     delay = 0.0
     for arc in route:
         domain = domain_by_arc[(arc["link"], arc["from"], arc["to"])]
-        link = link_by_id[arc["link"]]
-        delay += route_link_delay_ns(
-            platform,
-            arc["link"],
-            arc["from"],
-            arc["to"],
-            route_constraints,
+        ratio = domain_ratios[domain] if include_tdm_wait else 1
+        delay += route_hop_delay_ns(
+            platform, arc["link"], arc["from"], arc["to"],
+            route_constraints, ratio,
         )
-        if include_tdm_wait:
-            delay += (
-                max(0, domain_ratios[domain] - 1)
-                * 1000.0
-                / link.fabric_clock_mhz
-            )
         delay += physical_hop_guard_scale_ns
     return delay
 
@@ -916,6 +909,9 @@ def evaluate_partition_pressure(
         )
         for key, load in domain_loads.items()
     }
+    domain_ratios = apply_bank_domain_ratios(
+        capacity_by_key, domain_loads, domain_ratios, route_constraints
+    )
     net_delay: Dict[str, float] = {}
     net_worst_transition: Dict[str, Tuple[str, str]] = {}
     total_bit_hops = 0
@@ -1498,7 +1494,7 @@ def _write_patron_native_input(
     max_hops = model["configuration"]["max_route_hops"]
     lines = [
         (
-            f"EMUFLOW_PATRON_INPUT_V{flow_version}"
+            f"EMUFLOW_PATRON_INPUT_V{flow_version}_BANKS_V1"
         ),
         (
             f"PARAM {len(parts)} {len(clusters)} {len(dimensions)} "
@@ -1514,7 +1510,8 @@ def _write_patron_native_input(
             f"{model['configuration']['max_scalable_sweeps']} "
             f"{model['configuration']['scalable_ejection_critical_limit']} "
             f"{model['configuration']['scalable_ejection_donor_limit']} "
-            f"{model['configuration']['max_scalable_ejections']}"
+            f"{model['configuration']['max_scalable_ejections']} "
+            f"{route_constraints.get('tdm_min_ratio', 1)}"
         ),
     ]
     if flow_refinement:
@@ -1577,7 +1574,9 @@ def _write_patron_native_input(
         lines.append(
             f"DOMAIN {index} {domain['lanes']} "
             f"{int(domain['link'] in set(route_constraints['sll_links']))} "
-            f"{1000.0 / link.fabric_clock_mhz:.17g}"
+            f"{route_link_delay_coefficients_ns(platform, link.id, link.endpoints[0], link.endpoints[1], route_constraints)[1]:.17g} "
+            f"{domain_index.get(domain.get('opposite_capacity_key'), -1)} "
+            f"{domain.get('bank_count', 0)} {domain.get('wires_per_bank', 0)}"
         )
     for source in parts:
         for sink in parts:

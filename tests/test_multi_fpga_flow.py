@@ -232,7 +232,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             )
             output = root / "flow"
             report = run_multi_fpga_flow(
-                platform_path=PLATFORM,
+                platform_path=PLATFORM, mapping_profile="vtr-hard-blocks",
                 output_dir=output,
                 yosys_json=ROOT / "examples/yosys/counter.json",
                 top="counter",
@@ -296,6 +296,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     opensta=str(FAKE_OPENSTA),
                     frame_slots=32,
                     equivalence_cycles=2,
+                    mapping_profile="vtr-hard-blocks",
                 )
 
     def test_one_command_static_exact_flow_reaches_phase7c_generation(self) -> None:
@@ -319,6 +320,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 static_exact_candidate_policy=(
                     "assignment-derived-acyclic-v2"
                 ),
+                mapping_profile="vtr-hard-blocks",
             )
             self.assertEqual(report["status"], "pass")
             self.assertEqual(
@@ -392,6 +394,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 cut_mode="static-exact-combinational",
                 max_cross_fpga_dependency_depth=2,
                 equivalence_cycles=2,
+                mapping_profile="vtr-hard-blocks",
             )
             self.assertEqual(
                 report["cross_stage"]["configuration"]["cut_mode"],
@@ -673,6 +676,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     clocks=["clk"],
                     cut_mode="static-exact-combinational",
                     slot_refinement_iterations=7,
+                    mapping_profile="vtr-hard-blocks",
                 )
 
     def test_sequential_patron_does_not_require_cross_stage_search(self):
@@ -690,6 +694,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     cut_mode="sequential-only",
                     patron_algorithm_version=6,
                     cross_stage_iterations=0,
+                    mapping_profile="vtr-hard-blocks",
                 )
 
     def test_sequential_patron_rejects_static_exact_only_version_up_front(self):
@@ -707,6 +712,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     partition_provider="patron",
                     cut_mode="sequential-only",
                     patron_algorithm_version=14,
+                    mapping_profile="vtr-hard-blocks",
                 )
 
     def test_physical_baseline_still_materializes_timing_contract(self) -> None:
@@ -837,6 +843,8 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     phase6_provider="baseline",
                     physical=True,
                     equivalence_cycles=2,
+                    mapping_profile="vtr-hard-blocks",
+                    physical_backend="open",
                 )
             self.assertFalse(report["timing"]["optimization_enabled"])
             self.assertNotIn("fpgas", report["physical"])
@@ -881,6 +889,8 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                         router=str(tlr_router()),
                         frame_slots=32,
                         physical=True,
+                        mapping_profile="vtr-hard-blocks",
+                        physical_backend="open",
                     )
             self.assertFalse(root.exists())
 
@@ -966,7 +976,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 ValidationError, "requires 3.1.0 or newer"
             ):
                 run_multi_fpga_flow(
-                    platform_path=PLATFORM,
+                    platform_path=PLATFORM, mapping_profile="vtr-hard-blocks",
                     output_dir=root,
                     yosys_json=ROOT / "examples/yosys/counter.json",
                     top="counter",
@@ -998,6 +1008,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 router=str(tlr_router()),
                 frame_slots=32,
                 equivalence_cycles=2,
+                mapping_profile="vtr-hard-blocks",
             )
             physical_root = root / "physical-resumed"
             physical_root.mkdir()
@@ -1089,6 +1100,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     "deterministic-round-barrier-earliest-slot-v2"
                 ),
                 equivalence_cycles=2,
+                mapping_profile="vtr-hard-blocks",
             )
             phase4 = report["stages"]["system_route"]
             self.assertEqual(phase4["provider"], GLOBAL_CANDIDATE_PROVIDER)
@@ -1148,6 +1160,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 router=str(tlr_router()),
                 frame_slots=16,
                 equivalence_cycles=8,
+                mapping_profile="vtr-hard-blocks",
             )
             self.assertEqual(report["summary"]["used_fpgas"], 2)
             self.assertEqual(report["summary"]["instances"], 8)
@@ -1245,6 +1258,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 router=str(tlr_router()),
                 frame_slots=32,
                 equivalence_cycles=2,
+                mapping_profile="vtr-hard-blocks",
             )
             broken = copy.deepcopy(report)
             broken["stages"]["tdm"]["platform"] = "different"
@@ -1340,6 +1354,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 partition_repair_min_used_fpgas=True,
                 partition_repair_balance=True,
                 equivalence_cycles=2,
+                mapping_profile="vtr-hard-blocks",
             )
             self.assertEqual(report["timing"]["status"], "pass")
             self.assertEqual(
@@ -1512,6 +1527,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 slot_optimizer=str(tdm_slot_optimizer()),
                 cross_stage_iterations=0,
                 equivalence_cycles=2,
+                mapping_profile="vtr-hard-blocks",
             )
             direct_projection = direct_report["timing"][
                 "cut_path_projection"
@@ -1549,6 +1565,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     timing_driven=False,
                     clock_periods={"clk": 10.0},
                     opensta=str(FAKE_OPENSTA),
+                    mapping_profile="vtr-hard-blocks",
                 )
 
     def test_compile_can_continue_into_checked_serial_bsp(self) -> None:
@@ -1628,6 +1645,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     serial_bsp_phy_provider=Path("provider.json"),
                     serial_bsp_runtime_sync_provider=Path("runtime.json"),
                     serial_bsp_yosys=Path("yosys"),
+                    mapping_profile="vtr-hard-blocks",
                 )
             self.assertEqual(report["summary"]["hardware_bsp_status"], "pass")
             self.assertTrue(

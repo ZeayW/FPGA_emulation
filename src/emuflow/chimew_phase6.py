@@ -28,6 +28,7 @@ from .pin_planning import (
     SIGNAL_POSITION_HINTS_SCHEMA,
     _assignment_metrics,
     _baseline_assignment,
+    validate_bank_pin_assignment,
     validate_pin_plan,
 )
 from .platform import Platform
@@ -768,6 +769,9 @@ def validate_chimew_phase6_binding(
         schedule_by_id
     ):
         raise ValidationError("Chimew Phase 6 electrical schedule coverage is invalid")
+    validate_bank_pin_assignment(schedule, platform, {
+        entry_id: item.get("physical_lane") for entry_id, item in plan_by_id.items()
+    })
     raw_entries = binding.get("entries")
     if not isinstance(raw_entries, list):
         raise ValidationError("Chimew Phase 6 electrical entries are missing")
@@ -823,6 +827,8 @@ def validate_chimew_phase6_binding(
         direction = record.get("direction")
         if direction not in {"a_to_b", "b_to_a", "bidirectional"}:
             raise ValidationError("Chimew electrical binding direction is invalid")
+        if direction == "bidirectional" and platform_link.bank_count is not None:
+            raise ValidationError("a shared HP-bank group must have one direction for the schedule")
         if direction == "bidirectional" and (
             platform_link.direction != "full_duplex"
             or platform_link.capacity_sharing != "shared_bidirectional"

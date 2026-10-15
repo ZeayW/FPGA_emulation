@@ -295,6 +295,7 @@ class ExperimentStagesTest(unittest.TestCase):
                 yosys_json=repository / "examples/yosys/counter.json",
                 top="counter",
                 clocks=["clk"],
+                mapping_profile="vtr-hard-blocks",
             )
             for relative in (
                 "partition/clusters.json",
@@ -419,6 +420,7 @@ class ExperimentStagesTest(unittest.TestCase):
                 yosys_json=repository / "examples/yosys/counter.json",
                 top="counter",
                 clocks=["clk"],
+                mapping_profile="vtr-hard-blocks",
             )
             self.assertEqual(report["status"], "pass")
             self.assertEqual(len(report["source_artifacts"]), 1)
@@ -522,6 +524,7 @@ class ExperimentStagesTest(unittest.TestCase):
                 yosys_json=repository / "examples/yosys/counter.json",
                 top="counter",
                 clocks=["clk"],
+                mapping_profile="vtr-hard-blocks",
             )
             report_path = output / "experiment-frontend-report.json"
             report = read_json(report_path)

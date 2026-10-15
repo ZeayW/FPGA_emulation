@@ -598,6 +598,7 @@ class MFSPartPhase3Test(unittest.TestCase):
                     router=str(tlr_router()),
                     frame_slots=32,
                     equivalence_cycles=2,
+                    mapping_profile="vtr-hard-blocks",
                 )
             self.assertTrue((root / "flow/tdm/schedule.json").is_file())
             self.assertTrue((root / "flow/runtime/qor_report.json").is_file())

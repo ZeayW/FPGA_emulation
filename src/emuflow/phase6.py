@@ -151,6 +151,43 @@ def _static_exact_equivalence_evidence(
     return evidence
 
 
+def _virtual_board_artifact_paths(platform: Platform) -> Dict[str, Any]:
+    return {
+        "wiring": "virtual_board_wiring.json",
+        "binding": "virtual_board_binding.json",
+        "xdc": {
+            fpga.id: f"{fpga.id}/virtual_data_pins.xdc"
+            for fpga in platform.fpgas
+        },
+        "differential_io": {
+            fpga.id: f"{fpga.id}/virtual_differential_io.sv"
+            for fpga in platform.fpgas
+        },
+    }
+
+
+def _validate_virtual_board_artifacts(
+    platform: Platform,
+    schedule: Mapping[str, Any],
+    artifacts: Mapping[str, Any],
+    board: Mapping[str, Any],
+    binding: Mapping[str, Any],
+) -> Dict[str, Any]:
+    from .virtual_board import validate_virtual_binding, validate_virtual_board
+
+    wiring_validation = validate_virtual_board(platform, board)
+    binding_validation = validate_virtual_binding(
+        platform, board, schedule, artifacts, binding
+    )
+    return {
+        "status": "pass",
+        "qualification": binding_validation["qualification"],
+        "physical_backend_status": binding_validation["physical_backend_status"],
+        "wiring_validation": wiring_validation,
+        "binding_validation": binding_validation,
+    }
+
+
 def run_phase6(
     ir_path: Path,
     assignment_path: Path,
@@ -329,6 +366,33 @@ def run_phase6(
         int(record_counts.get("cell_records", 0)) <= 10_000
         and int(record_counts.get("endpoint_records", 0)) <= 100_000
     )
+    virtual_board = None
+    virtual_binding = None
+    virtual_board_validation = None
+    if platform.virtual_board_model is not None:
+        from .virtual_board import build_virtual_binding, build_virtual_board
+
+        virtual_board = build_virtual_board(platform)
+        virtual_binding = build_virtual_binding(platform, virtual_board, schedule, artifacts)
+        # The constructive producer checks schedule/port/wire coverage while
+        # binding. Reuse that certificate instead of rebuilding and rehashing
+        # the same schedule. Explicit validate_phase6 independently rebuilds it.
+        virtual_board_validation = {
+            "status": "pass",
+            "qualification": virtual_binding["qualification"],
+            "physical_backend_status": virtual_binding["physical_backend_status"],
+            "wiring_validation": {
+                "status": "pass", "qualification": virtual_board["qualification"],
+                **virtual_board["metrics"],
+            },
+            "binding_validation": {
+                "status": "pass", "qualification": virtual_binding["qualification"],
+                "physical_backend_status": virtual_binding["physical_backend_status"],
+                **virtual_binding["metrics"],
+            },
+        }
+        validation["virtual_board_binding"] = virtual_board_validation
+
     if small_qualification:
         from .tdm import is_sampled_virtual_wire_schedule
 
@@ -358,6 +422,14 @@ def run_phase6(
             )
     if electrical_binding is not None:
         artifacts["manifest"]["electrical_binding"] = "electrical_binding.json"
+    if virtual_board_validation is not None:
+        artifacts["manifest"]["virtual_board_binding"] = (
+            _virtual_board_artifact_paths(platform)
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if virtual_board is not None:
+        write_json(output_dir / "virtual_board_wiring.json", virtual_board)
+        write_json(output_dir / "virtual_board_binding.json", virtual_binding)
     write_json(
         output_dir / "manifest.json",
         (
@@ -421,6 +493,20 @@ def run_phase6(
             anchors_to_xdc_template(artifacts["anchors"][fpga_id]),
             encoding="utf-8",
         )
+        if virtual_binding is not None:
+            from .virtual_board import (
+                virtual_binding_to_systemverilog,
+                virtual_binding_to_xdc,
+            )
+
+            (fpga_root / "virtual_data_pins.xdc").write_text(
+                virtual_binding_to_xdc(virtual_binding, fpga_id),
+                encoding="utf-8",
+            )
+            (fpga_root / "virtual_differential_io.sv").write_text(
+                virtual_binding_to_systemverilog(virtual_binding, fpga_id),
+                encoding="utf-8",
+            )
     report = {
         "schema": PHASE6_REPORT_SCHEMA,
         "phase": 6,
@@ -435,6 +521,11 @@ def run_phase6(
         "validation": validation,
         "equivalence": equivalence,
         "board_binding": artifacts["manifest"]["board_binding"],
+        **(
+            {"virtual_board_binding": virtual_board_validation}
+            if virtual_board_validation is not None
+            else {}
+        ),
         **(
             {"pin_plan_validation": pin_validation}
             if pin_validation is not None
@@ -451,6 +542,11 @@ def run_phase6(
             "split_netlists": "split-netlists.sqlite",
             "runtime_controller_rtl": "virtual_runtime_controller.sv",
             "report": "phase6_report.json",
+            **(
+                {"virtual_board_binding": _virtual_board_artifact_paths(platform)}
+                if virtual_board_validation is not None
+                else {}
+            ),
             **(
                 {"pin_plan": "pin_plan.json"}
                 if pin_plan is not None
@@ -601,6 +697,34 @@ def validate_phase6(
         validation["transport_cost_prediction"] = predict_transport_resources(
             transport_cost, transports
         )
+    virtual_metadata = manifest.get("virtual_board_binding")
+    if platform.virtual_board_model is not None:
+        if virtual_metadata != _virtual_board_artifact_paths(platform):
+            raise ValidationError("Phase 6 declared virtual board requires wiring, binding and pin constraints")
+        from .virtual_board import virtual_binding_to_systemverilog, virtual_binding_to_xdc
+        root = manifest_path.parent
+        artifacts = {
+            "manifest": manifest,
+            "transports": transports,
+            "lane_map": read_json(root / manifest["lane_map"]),
+        }
+        try:
+            board = read_json(root / virtual_metadata["wiring"])
+            binding = read_json(root / virtual_metadata["binding"])
+            validation["virtual_board_binding"] = _validate_virtual_board_artifacts(
+                platform, schedule, artifacts, board, binding
+            )
+            for fpga, relative in virtual_metadata["xdc"].items():
+                if (root / relative).read_text() != virtual_binding_to_xdc(binding, fpga):
+                    raise ValidationError(f"Phase 6 virtual data-pin XDC differs for {fpga}")
+            for fpga, relative in virtual_metadata["differential_io"].items():
+                if (root / relative).read_text() != virtual_binding_to_systemverilog(binding, fpga):
+                    raise ValidationError(f"Phase 6 differential I/O adapter differs for {fpga}")
+        except (OSError, ValueError) as error:
+            raise ValidationError(f"Phase 6 virtual board artifact is unreadable: {error}") from error
+    elif virtual_metadata is not None:
+        raise ValidationError("Phase 6 virtual binding requires a declared platform model")
+
     from .tdm import is_sampled_virtual_wire_schedule
 
     if replay_equivalence and is_sampled_virtual_wire_schedule(schedule):

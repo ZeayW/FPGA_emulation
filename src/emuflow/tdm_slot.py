@@ -12,6 +12,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 from .errors import EmuFlowError, ValidationError
 from .native_tools import resolve_native_executable
 from .platform import Platform
+from .tdm import tdm_hop_latency_cycles
 
 
 TDM_SLOT_OPTIMIZER_PROVIDER = "fixed-slot-event-guided-lns-v4"
@@ -163,7 +164,7 @@ def _write_native_input(
         )
     planned_ready = realization.get("source_ready_slot")
     lines = [
-        "EMUFLOW_TDM_SLOT_INPUT_V4",
+        "EMUFLOW_TDM_SLOT_INPUT_V5",
         (
             f"PARAM {frame_slots} {RUNTIME_BARRIER_SLOTS} "
             f"{COMBINATIONAL_SETTLE_SLOTS} {max_iterations} "
@@ -182,9 +183,11 @@ def _write_native_input(
             f"HOP {hop['index']} "
             f"{0 if exact_contract is not None else hop['transport_round']} "
             f"{hop['domain']} {hop['lane']} {hop['discrete_ratio']} "
-            f"{link_by_id[hop['link']].latency_cycles} "
+            f"{tdm_hop_latency_cycles(link_by_id[hop['link']], hop['discrete_ratio'], base_delay_ns=hop['base_delay_ns'])} "
             f"{release_by_index[hop['index']]} {priority[key]} "
-            f"{hop['base_delay_ns']:.17g} {hop['beta_ns']:.17g}"
+            f"{hop['base_delay_ns']:.17g} {hop['beta_ns']:.17g} "
+            f"{1000.0 / link_by_id[hop['link']].fabric_clock_mhz:.17g} "
+            f"{int(link_by_id[hop['link']].tdm_delay_model is not None)}"
         )
     dependency_delays = {}
     for parent, child, delay in dependencies:
@@ -308,7 +311,9 @@ def _apply_native_schedule(
         entry["slot"] = optimized["slot"]
         entry["ready_slot"] = optimized["ready_slot"]
         entry["arrival_slot"] = (
-            optimized["slot"] + link_by_id[entry["link"]].latency_cycles
+            optimized["slot"] + tdm_hop_latency_cycles(
+                link_by_id[entry["link"]], entry["tdm_ratio"],
+                base_delay_ns=ratio_plan["hops"][index]["base_delay_ns"])
         )
         entry["ratio_wait_slots"] = (
             optimized["slot"] - optimized["ready_slot"]

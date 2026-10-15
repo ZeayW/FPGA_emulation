@@ -55,6 +55,11 @@ from .board_link_timing import (
     validate_board_link_timing,
 )
 from .board_support import validate_board_support_overlay_file
+from .default_platform import (
+    DEFAULT_PLATFORM_PATH,
+    DEFAULT_WIRES_PER_BANK,
+    materialize_research_platform,
+)
 from .bsp import run_phase8a
 from .cross_stage import (
     evaluate_cross_stage_candidate,
@@ -619,7 +624,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "generic-soft",
             "xilinx-ultrascaleplus-open-v1",
         ),
-        default="vtr-hard-blocks",
+        default=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     )
     frontend_run.add_argument("--allow-fabric-clock", action="store_true")
     frontend_run.add_argument("--managed-dag-node", action="store_true")
@@ -1191,6 +1196,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--utilization-limit", type=float, required=True
     )
     platform_utilization.add_argument("--name", required=True)
+    platform_research = platform_subparsers.add_parser(
+        "research-model", help="materialize the shared-bank research platform"
+    )
+    platform_research.add_argument("--fpga-count", type=int, choices=(2, 4), default=4)
+    platform_research.add_argument(
+        "--wires-per-bank", type=int, default=DEFAULT_WIRES_PER_BANK,
+        help="differential data pairs per HP bank (default: 20; two pins per pair)",
+    )
+    platform_research.add_argument("--output", "-o", type=Path, required=True)
     platform_mps4 = platform_subparsers.add_parser(
         "arm-mps4-materialize",
         help="materialize Arm's documented three-MPS4 serial-link topology",
@@ -1888,13 +1902,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="source root used to resolve --benchmark-run",
     )
     multi_fpga_compile.add_argument("--top")
+    multi_fpga_compile.add_argument("--prepared-frontend", type=Path, help="completed indexed Phase 1 boundary; skips synthesis")
+    multi_fpga_compile.add_argument("--prepared-timing", type=Path, help="validated indexed Phase 2 boundary; requires --prepared-frontend")
     multi_fpga_compile.add_argument("--clock", action="append", default=[])
     multi_fpga_compile.add_argument(
         "--yosys-json",
         type=Path,
         help="use existing Yosys JSON instead of synthesizing RTL",
     )
-    multi_fpga_compile.add_argument("--platform", type=Path, required=True)
+    multi_fpga_compile.add_argument(
+        "--platform", type=Path, default=DEFAULT_PLATFORM_PATH,
+        help="BoardDB (default: bundled four-XCVU19P shared-bank research model)",
+    )
     multi_fpga_compile.add_argument("--out", type=Path, required=True)
     multi_fpga_compile.add_argument(
         "--archive-out",
@@ -1941,13 +1960,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "generic-soft",
             "xilinx-ultrascaleplus-open-v1",
         ),
-        default=None,
+        default=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
         help=(
-            "RTL mapping profile; vtr-hard-blocks preserves public VTR "
+            "RTL mapping profile (default: xilinx-ultrascaleplus-open-v1); "
+            "vtr-hard-blocks preserves public VTR "
             "multiplier/RAM blocks, while xilinx-ultrascaleplus-open-v1 "
-            "uses the fail-closed Route A primitive namespace; a checked "
-            "--benchmark-run owns this value, otherwise the default is "
-            "vtr-hard-blocks"
+            "uses the fail-closed Route A primitive namespace"
         ),
     )
     multi_fpga_compile.add_argument("--partition-constraints", type=Path)
@@ -2252,8 +2270,8 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--physical-backend",
         choices=("open", "rapidwright", "vivado"),
-        default="open",
-        help="select the provider behind the common physical/timing contract",
+        default="rapidwright",
+        help="physical/timing provider (default: rapidwright)",
     )
     multi_fpga_compile.add_argument("--physical-architecture", type=Path)
     multi_fpga_compile.add_argument(
@@ -2381,7 +2399,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     multi_fpga_physical.add_argument(
-        "--backend", choices=("open", "rapidwright", "vivado"), default="open"
+        "--backend", choices=("open", "rapidwright", "vivado"), default="rapidwright"
     )
     multi_fpga_physical.add_argument("--architecture", type=Path)
     multi_fpga_physical.add_argument(
@@ -4741,6 +4759,12 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             _print_json(report)
             return 0
+        if args.platform_command == "research-model":
+            _print_json(materialize_research_platform(
+                args.output, fpga_count=args.fpga_count,
+                wires_per_bank=args.wires_per_bank,
+            ))
+            return 0
         if args.platform_command == "arm-mps4-materialize":
             report = materialize_arm_mps4_boarddb(
                 output_path=args.output,
@@ -5743,7 +5767,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 "--clock-period": args.clock_period,
                 "--include-dir": args.include_dir,
                 "--define": args.define,
-                "--mapping-profile": args.mapping_profile,
+                "--mapping-profile": (None if args.mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE else args.mapping_profile),
                 "--yosys-json": args.yosys_json,
             }
             conflicts = [
@@ -5792,7 +5816,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 if args.clock_period
                 else None
             )
-            mapping_profile = args.mapping_profile or "vtr-hard-blocks"
+            mapping_profile = args.mapping_profile or XILINX_ULTRASCALEPLUS_OPEN_PROFILE
             timing_io = None
         if args.archive_cleanup and args.archive_out is None:
             raise EmuFlowError("--archive-cleanup requires --archive-out")
@@ -5801,6 +5825,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         report = run_multi_fpga_flow(
             platform_path=args.platform,
             output_dir=args.out,
+            prepared_frontend=args.prepared_frontend,
+            prepared_timing=args.prepared_timing,
             sources=sources,
             include_dirs=include_dirs,
             defines=defines,
