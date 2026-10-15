@@ -106,7 +106,10 @@ def write_placement_emuir_from_split(
     temporary = output_path.with_name(
         f".{output_path.name}.{uuid.uuid4().hex}.tmp"
     )
-    connection = sqlite3.connect(temporary)
+    # URI mode is required for the attached immutable read-only Phase 6
+    # database.  Some SQLite builds accept file: URIs for ATTACH implicitly,
+    # while the Linux production build correctly requires SQLITE_OPEN_URI.
+    connection = sqlite3.connect(temporary, uri=True)
     try:
         connection.executescript(
             f"""
