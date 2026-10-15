@@ -1106,7 +1106,18 @@ storage and consumption change, not a partitioning, routing, TDM, or timing
 algorithm change. Real NVDLA peak-RSS/runtime requalification of this revision
 is required before claiming an end-to-end scalability result.
 
-The same rule applies to TimingPathDB.  Phase 7 logic-segment binding now uses
+The same rule applies to TimingPathDB and the Phase 7 physical handoff. Phase 7
+now streams each compact per-FPGA EmuIR into mapped Yosys JSON while writing a
+read-only SQLite cell/net index. Packing, placement qualification, routing, and
+timing consumers share that bounded index instead of independently decoding the
+mapped JSON into nested Python dictionaries. After routed segment timing is
+bound, the mapped/packed/placement objects are closed before OpenSTA starts.
+The OpenSTA staging graph is imported directly into compact EmuIR SQLite and
+route-delay cells are inserted there; no graph-sized `EmuIR` copy or `deepcopy`
+exists in the production path. The persisted JSON remains the external-tool
+interchange and audit artifact, not the in-process data plane.
+
+Phase 7 logic-segment binding uses
 the SQLite `path_id` index to fetch only Phase 4 route members.  Same-FPGA path
 binding scans the TimingPathDB once in bounded batches, resolves each path to
 its owning FPGA, discards the graph-scale `path_nets` payload for the Xilinx
@@ -1119,10 +1130,11 @@ Routine consumers trust the producer's published payload seal and validate
 selected-record coverage and semantic identities; repeating a multi-gigabyte
 payload hash is reserved for an explicit offline audit.
 
-This does not mean that every full-graph read is forbidden.  Phase 2 placement,
-Phase 3 partitioning, OpenSTA graph export, and explicit offline forensic replay
-are algorithms whose input is the circuit itself.  They may consume the graph
-once when selected.  Routine downstream validation, identity checks, format
+This does not mean that every full-graph read is forbidden. Phase 2 placement,
+Phase 3 partitioning, and explicit offline forensic replay are algorithms whose
+input is the circuit itself. They may consume the graph once when selected.
+OpenSTA export is no longer an exception: its graph construction is an indexed
+SQLite transform. Routine downstream validation, identity checks, format
 conversion, and report generation must not materialize a second Python copy of
 the whole design.
 An explicitly requested debugging continuation can read a

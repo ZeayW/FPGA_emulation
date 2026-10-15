@@ -10,10 +10,12 @@ import emuflow.xilinx_timing as xilinx_timing
 from emuflow.errors import ValidationError
 from emuflow.opensta import render_opensta_liberty
 from emuflow.xilinx_opensta import (
+    build_xilinx_routed_opensta_indexed_inputs,
     build_xilinx_routed_opensta_inputs,
     run_xilinx_routed_opensta,
     validate_xilinx_routed_opensta_summary,
 )
+from emuflow.ir import EmuIR
 
 
 def _sha(path: Path) -> str:
@@ -173,6 +175,101 @@ def test_routed_opensta_staging_inserts_one_exact_delay_per_sink(monkeypatch):
         assert [net["id"] for net in delay_nets] == [
             "__emuflow_rw_delay_net__00000000"
         ]
+
+
+def test_indexed_routed_opensta_staging_matches_graph_semantics(tmp_path):
+    mapped = {
+        "modules": {"top": {
+            "attributes": {"top": "1"},
+            "ports": {
+                "clk": {"direction": "input", "bits": [2]},
+                "a": {"direction": "input", "bits": [3]},
+                "q": {"direction": "output", "bits": [5]},
+            },
+            "cells": {
+                "lut": {
+                    "type": "LUT1", "parameters": {"INIT": "10"},
+                    "port_directions": {"I0": "input", "O": "output"},
+                    "connections": {"I0": [3], "O": [4]},
+                },
+                "ff": {
+                    "type": "FDRE", "parameters": {"IS_C_INVERTED": "1"},
+                    "port_directions": {
+                        "C": "input", "CE": "input", "D": "input",
+                        "Q": "output", "R": "input",
+                    },
+                    "connections": {
+                        "C": [2], "CE": ["1"], "D": [4],
+                        "Q": [5], "R": ["0"],
+                    },
+                },
+            },
+            "netnames": {
+                "clk": {"bits": [2]}, "a": {"bits": [3]},
+                "n": {"bits": [4]}, "q": {"bits": [5]},
+            },
+        }},
+    }
+    mapped_path = tmp_path / "mapped.json"
+    mapped_path.write_text(json.dumps(mapped), encoding="utf-8")
+    timing_path = tmp_path / "routed-timing.json"
+    timing = {
+        "schema": "emuflow.xilinx-routed-timing/v1",
+        "status": "pass", "top": "top", "part": "xcvu19p-test",
+        "source": {
+            "mapped_sha256": _sha(mapped_path),
+            "packed_sha256": "0" * 64,
+            "placement_sha256": "1" * 64,
+            "route_sha256": "2" * 64,
+        },
+        "qualification": {
+            "provider": "rapidwright-lightweight",
+            "analysis": "setup-route-only",
+            "hold_analysis": "unavailable",
+            "hard_block_clock_timing": "unqualified",
+            "logic_coefficients_ps": {
+                "ff_clock_to_q": 25.0, "carry_co": 10.0,
+                "lut_a1": 70.0, "lut_a2": 65.0, "lut_a3": 60.0,
+                "lut_a4": 55.0, "lut_a5": 50.0, "lut_a6": 45.0,
+            },
+        },
+        "endpoints": [{
+            "id": "n4:ff/D", "net": "n4", "mapped_bit": 4,
+            "driver": {"instance": "lut", "pin": "O", "site": "S0"},
+            "sink": {"instance": "ff", "pin": "D", "site": "S1"},
+            "route_delay_ns": 0.123, "binding": "exact-site-pin",
+        }],
+        "summary": {
+            "logical_endpoints": 1, "physical_route_sinks": 1,
+            "exact_site_bindings": 1, "shared_site_bindings": 0,
+            "intra_site_endpoints": 0, "maximum_route_delay_ns": 0.123,
+        },
+    }
+    timing_path.write_text(json.dumps(timing), encoding="utf-8")
+    expected_ir, expected_model, expected_metadata = (
+        build_xilinx_routed_opensta_inputs(mapped_path, timing_path)
+    )
+    routed_path = tmp_path / "routed.emuir.sqlite"
+    actual_model, actual_metadata = build_xilinx_routed_opensta_indexed_inputs(
+        mapped_path, timing_path, routed_path, clocks={"clk": 10.0}
+    )
+    actual_ir = EmuIR.load(routed_path)
+    actual_value = actual_ir.to_dict()
+    expected_value = expected_ir.to_dict()
+    for field in ("instances", "nets"):
+        actual_value[field].sort(key=lambda record: record["id"])
+        expected_value[field].sort(key=lambda record: record["id"])
+    # ``cut_class`` is a Phase-3 partitioning annotation.  The indexed import
+    # recomputes it after inserting the timing-only route cell; compare the
+    # actual circuit graph and OpenSTA model instead.
+    for value in (actual_value, expected_value):
+        for net in value["nets"]:
+            net.pop("cut_class", None)
+    assert actual_value == expected_value
+    assert actual_model == expected_model
+    assert actual_metadata == {
+        **expected_metadata, "representation": "compact-emuir-sqlite"
+    }
 
 
 def test_dsp_timing_cell_unions_ports_across_cascade_instances():

@@ -47,8 +47,8 @@ def _placement_sites(value: Mapping[str, Any]) -> Dict[str, str]:
 def _mapped_module(value: Mapping[str, Any], instances: set[str]) -> tuple[str, Mapping[str, Any]]:
     matches = []
     for name, module in value.get("modules", {}).items():
-        cells = module.get("cells") if isinstance(module, dict) else None
-        if isinstance(cells, dict) and set(cells) == instances:
+        cells = module.get("cells") if isinstance(module, Mapping) else None
+        if isinstance(cells, Mapping) and set(cells) == instances:
             matches.append((name, module))
     if len(matches) != 1:
         raise ValidationError("mapped JSON does not uniquely match Xilinx placement")

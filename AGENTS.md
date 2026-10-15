@@ -435,6 +435,16 @@ requirements, not optional micro-optimizations.
   QoR summaries in Python.  A validator checks the emitted database and
   transport boundaries directly; it must not repeat all source joins or build
   a second Python graph merely to replay the producer.
+- Production Phase 7 follows the same data-plane rule. Per-FPGA compact EmuIR
+  is streamed into the mapped external-tool interchange while a read-only
+  SQLite cell/net index is produced for in-process consumers. Packing,
+  placement, routing, segment timing, and primitive audit share that index;
+  they must not each parse the complete mapped JSON. Close mapped, packed, and
+  placement objects before starting a graph-sized downstream engine. OpenSTA
+  staging imports directly into indexed EmuIR and inserts route-delay cells in
+  that store; constructing or deep-copying a complete routed Python `EmuIR`
+  graph is forbidden in the production path. JSON-only compatibility remains
+  limited to small fixtures and explicit legacy inputs.
 - Small-design qualification may run exhaustive and deterministic event-driven
   equivalence.  Large-design production uses the constructive split
   certificate (lossless source records, exact endpoint coverage, one scheduled

@@ -2,23 +2,158 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+import json
+import os
+import sqlite3
+import uuid
+from collections import Counter, defaultdict
+from collections.abc import Iterator, Mapping as MappingABC
 from pathlib import Path
-from typing import Any, Dict, Mapping, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
+from .emuir_compact import compact_metadata, is_compact_emuir
+from .emuir_storage import _RowsForOwner, _decode, open_emuir_sqlite_read_only
+from .equivalence import _lut_definition
 from .errors import ValidationError
-from .io import write_json
+from .io import file_sha256, write_json
 from .ir import EmuIR
+from .resources import ResourceVector
 from .vivado_netlist import lower_vivado_primitives
 from .xilinx_primitives import (
+    DEFAULT_XILINX_PRIMITIVE_LIBRARY,
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     audit_xilinx_mapped_json,
+    load_xilinx_primitive_library,
 )
 
 
 XILINX_MAPPED_NETLIST_REPORT_SCHEMA = (
     "emuflow.xilinx-mapped-netlist-report/v1"
 )
+XILINX_MAPPED_INDEX_SCHEMA = "emuflow.xilinx-mapped-index/v1"
+_NATIVE_FFS = {"FDCE", "FDPE", "FDRE", "FDSE"}
+_VTR_HARD_MACROS = {"VTR_MULTIPLY", "VTR_SP_RAM", "VTR_DP_RAM"}
+
+
+def _json(value: Any) -> str:
+    return json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+
+
+class _IndexedRecords(MappingABC[str, Mapping[str, Any]]):
+    """Read-only mapped-netlist records backed by the active scratch index."""
+
+    def __init__(self, connection: sqlite3.Connection, table: str):
+        self.connection = connection
+        self.table = table
+        self.count = int(
+            connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        )
+
+    def __getitem__(self, key: str) -> Mapping[str, Any]:
+        row = self.connection.execute(
+            f"SELECT record_json FROM {self.table} WHERE id=?", (key,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        value = json.loads(row[0])
+        if not isinstance(value, dict):
+            raise ValidationError(f"indexed mapped record {key!r} is invalid")
+        return value
+
+    def __iter__(self) -> Iterator[str]:
+        for row in self.connection.execute(
+            f"SELECT id FROM {self.table} ORDER BY seq"
+        ):
+            yield str(row[0])
+
+    def __len__(self) -> int:
+        return self.count
+
+    def items(self) -> Iterator[Tuple[str, Mapping[str, Any]]]:  # type: ignore[override]
+        for row in self.connection.execute(
+            f"SELECT id,record_json FROM {self.table} ORDER BY seq"
+        ):
+            value = json.loads(row[1])
+            if not isinstance(value, dict):
+                raise ValidationError(
+                    f"indexed mapped record {row[0]!r} is invalid"
+                )
+            yield str(row[0]), value
+
+    def values(self) -> Iterator[Mapping[str, Any]]:  # type: ignore[override]
+        for _name, value in self.items():
+            yield value
+
+
+class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
+    """Bounded read interface for a production Xilinx mapped netlist."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.connection = sqlite3.connect(
+            f"file:{path.resolve()}?mode=ro&immutable=1",
+            uri=True,
+            check_same_thread=False,
+        )
+        row = self.connection.execute(
+            "SELECT value FROM metadata WHERE key='schema'"
+        ).fetchone()
+        if row is None or row[0] != XILINX_MAPPED_INDEX_SCHEMA:
+            self.connection.close()
+            raise ValidationError("Xilinx mapped index schema is invalid")
+        metadata = dict(self.connection.execute("SELECT key,value FROM metadata"))
+        self.top = json.loads(metadata["top_json"])
+        self.creator = json.loads(metadata["creator_json"])
+        self.ports = json.loads(metadata["ports_json"])
+        if not isinstance(self.top, str) or not isinstance(self.ports, dict):
+            self.connection.close()
+            raise ValidationError("Xilinx mapped index metadata is invalid")
+        self.cells = _IndexedRecords(self.connection, "cells")
+        self.netnames = _IndexedRecords(self.connection, "netnames")
+        self.module: Mapping[str, Any] = {
+            "attributes": {"top": "1"},
+            "parameter_default_values": {},
+            "ports": self.ports,
+            "cells": self.cells,
+            "memories": {},
+            "netnames": self.netnames,
+        }
+        self.modules: Mapping[str, Any] = {self.top: self.module}
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "creator":
+            return self.creator
+        if key == "modules":
+            return self.modules
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        yield "creator"
+        yield "modules"
+
+    def __len__(self) -> int:
+        return 2
+
+    def close(self) -> None:
+        connection = getattr(self, "connection", None)
+        if connection is not None:
+            connection.close()
+            self.connection = None  # type: ignore[assignment]
+
+    def __del__(self) -> None:
+        self.close()
+
+    def __enter__(self) -> "IndexedXilinxMappedNetlist":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
+
+def open_xilinx_mapped_index(path: Path) -> IndexedXilinxMappedNetlist:
+    return IndexedXilinxMappedNetlist(path)
 
 
 def _pin_inventory(ir: EmuIR) -> Tuple[
@@ -54,10 +189,389 @@ def _pin_inventory(ir: EmuIR) -> Tuple[
     return pins, constants
 
 
+def _lower_instance(
+    instance: Mapping[str, Any], native_xilinx_cells: set[str]
+) -> Tuple[Dict[str, Any], Dict[Tuple[str, int], Tuple[str, int]]]:
+    """Lower one cell without retaining the complete EmuIR graph."""
+
+    lowered = {
+        "id": instance["id"],
+        "type": instance["type"],
+        "parameters": dict(instance.get("parameters", {})),
+        "attributes": dict(instance.get("attributes", {})),
+        "constant_connections": [
+            dict(item) for item in instance.get("constant_connections", [])
+        ],
+    }
+    remap: Dict[Tuple[str, int], Tuple[str, int]] = {}
+    cell_type = str(lowered["type"])
+    if cell_type in native_xilinx_cells:
+        return lowered, remap
+    if cell_type.startswith("LUT") or cell_type in {"$lut", "$_LUT_"}:
+        width, input_port, output_port, truth = _lut_definition(lowered)
+        if width < 1 or width > 6:
+            raise ValidationError(
+                f"Vivado LUT {instance['id']!r} has unsupported width {width}"
+            )
+        lowered["type"] = f"LUT{width}"
+        lowered["parameters"] = {"INIT": format(truth, f"0{1 << width}b")}
+        for bit in range(width):
+            source_bit = 0 if input_port == "I" else bit
+            source_port = f"I{bit}" if input_port == "I" else input_port
+            remap[(source_port, source_bit)] = (f"I{bit}", 0)
+        remap[(output_port, 0)] = ("O", 0)
+        return lowered, remap
+    if cell_type in {"$_DFF_P_", "$_DFF_N_"}:
+        lowered["type"] = "FDRE"
+        lowered["parameters"] = {
+            "INIT": "0",
+            "IS_C_INVERTED": "1" if cell_type == "$_DFF_N_" else "0",
+        }
+        lowered["constant_connections"].extend(
+            (
+                {"port": "CE", "bit": 0, "value": "1"},
+                {"port": "R", "bit": 0, "value": "0"},
+            )
+        )
+        return lowered, remap
+    if cell_type in _NATIVE_FFS or cell_type in _VTR_HARD_MACROS:
+        return lowered, remap
+    raise ValidationError(
+        f"Vivado backend does not yet lower mapped primitive type {cell_type!r}"
+    )
+
+
+def _write_object_entries(
+    stream: Any, entries: Iterator[Tuple[str, Mapping[str, Any]]]
+) -> int:
+    stream.write("{")
+    count = 0
+    for name, value in entries:
+        if count:
+            stream.write(",")
+        stream.write(_json(name))
+        stream.write(":")
+        stream.write(_json(value))
+        count += 1
+    stream.write("}")
+    return count
+
+
+def _emit_compact_xilinx_mapped_json(
+    ir_path: Path,
+    output_path: Path,
+    index_path: Path,
+) -> Dict[str, Any]:
+    """Stream compact EmuIR to Yosys JSON plus a bounded read index."""
+
+    source = open_emuir_sqlite_read_only(ir_path)
+    output_temp = output_path.with_name(
+        f".{output_path.name}.{uuid.uuid4().hex}.tmp"
+    )
+    index_temp = index_path.with_name(
+        f".{index_path.name}.{uuid.uuid4().hex}.tmp"
+    )
+    index: Optional[sqlite3.Connection] = None
+    try:
+        metadata = compact_metadata(source)
+        design = metadata.get("design")
+        if not isinstance(design, dict) or not isinstance(design.get("top"), str):
+            raise ValidationError("compact EmuIR design metadata is invalid")
+        top = design["top"]
+        ports_source = metadata.get("ports")
+        if not isinstance(ports_source, list):
+            raise ValidationError("compact EmuIR ports metadata is invalid")
+        _library, library_contract = load_xilinx_primitive_library()
+        contracts = library_contract["cells"]
+        native_xilinx_cells = set(contracts)
+
+        net_count = int(
+            source.execute("SELECT count(*) FROM net_records").fetchone()[0]
+        )
+        top_bits: Dict[Tuple[str, int], int] = {}
+        for row in source.execute(
+            """
+            SELECT e.net_seq,e.port,e.bit
+              FROM endpoints e
+             WHERE e.instance_seq IS NULL
+             ORDER BY e.net_seq,e.role,e.ordinal
+            """
+        ):
+            key = (str(row["port"]), int(row["bit"]))
+            value = int(row["net_seq"]) + 2
+            previous = top_bits.setdefault(key, value)
+            if previous != value:
+                raise ValidationError(
+                    f"Xilinx mapped top pin {key!r} has multiple nets"
+                )
+        ports: Dict[str, Any] = {}
+        unconnected_output_bits = 0
+        unconnected_input_bits = 0
+        next_dead_input_bit = net_count + 2
+        for port in ports_source:
+            if not isinstance(port, dict):
+                raise ValidationError("compact EmuIR port is invalid")
+            constants = {
+                int(item["bit"]): item["value"]
+                for item in port.get("constant_connections", [])
+            }
+            bits = []
+            for bit in range(int(port["width"])):
+                key = (str(port["id"]), bit)
+                if key in top_bits:
+                    bits.append(top_bits[key])
+                elif bit in constants:
+                    bits.append(constants[bit])
+                elif port["direction"] == "output":
+                    bits.append("x")
+                    unconnected_output_bits += 1
+                elif port["direction"] == "input":
+                    bits.append(next_dead_input_bit)
+                    next_dead_input_bit += 1
+                    unconnected_input_bits += 1
+                else:
+                    raise ValidationError(
+                        f"Xilinx mapped top pin {key!r} is unconnected"
+                    )
+            ports[str(port["id"])] = {
+                "direction": port["direction"], "bits": bits,
+            }
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index = sqlite3.connect(index_temp)
+        index.executescript(
+            """
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=FILE;
+            CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)
+              WITHOUT ROWID;
+            CREATE TABLE cells(
+              id TEXT PRIMARY KEY,seq INTEGER NOT NULL UNIQUE,type TEXT NOT NULL,
+              record_json TEXT NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE netnames(
+              id TEXT PRIMARY KEY,seq INTEGER NOT NULL UNIQUE,
+              record_json TEXT NOT NULL
+            ) WITHOUT ROWID;
+            """
+        )
+        index.executemany(
+            "INSERT INTO metadata VALUES (?,?)",
+            (
+                ("schema", XILINX_MAPPED_INDEX_SCHEMA),
+                ("top_json", _json(top)),
+                ("creator_json", _json("EmuFlow Xilinx mapped-netlist exporter")),
+                ("ports_json", _json(ports)),
+            ),
+        )
+
+        endpoint_rows = _RowsForOwner(
+            source.execute(
+                """
+                SELECT instance_seq,net_seq,role,port,bit
+                  FROM endpoints
+                 WHERE instance_seq IS NOT NULL
+                 ORDER BY instance_seq,role,ordinal
+                """
+            ),
+            "instance_seq",
+        )
+        inventory: Counter[str] = Counter()
+        hard_blocks: Counter[str] = Counter()
+
+        def cells() -> Iterator[Tuple[str, Mapping[str, Any]]]:
+            rows = source.execute(
+                """
+                SELECT c.seq,c.id,c.type,p.value AS parameters_json,
+                       a.value AS attributes_json,k.value AS constants_json
+                  FROM cell_records c
+             LEFT JOIN payloads p ON p.seq=c.parameters_seq
+             LEFT JOIN payloads a ON a.seq=c.attributes_seq
+             LEFT JOIN payloads k ON k.seq=c.constants_seq
+                 ORDER BY c.seq
+                """
+            )
+            for row in rows:
+                instance = {
+                    "id": str(row["id"]),
+                    "type": str(row["type"]),
+                    "parameters": (
+                        _decode(row["parameters_json"], "parameters")
+                        if row["parameters_json"] is not None else {}
+                    ),
+                    "attributes": (
+                        _decode(row["attributes_json"], "attributes")
+                        if row["attributes_json"] is not None else {}
+                    ),
+                    "constant_connections": _decode(
+                        row["constants_json"], "constants"
+                    ),
+                }
+                lowered, remap = _lower_instance(instance, native_xilinx_cells)
+                pin_values: Dict[str, Dict[int, Any]] = defaultdict(dict)
+                pin_directions: Dict[str, Dict[int, str]] = defaultdict(dict)
+                for endpoint in endpoint_rows.take(int(row["seq"])):
+                    port, bit = remap.get(
+                        (str(endpoint["port"]), int(endpoint["bit"])),
+                        (str(endpoint["port"]), int(endpoint["bit"])),
+                    )
+                    value = int(endpoint["net_seq"]) + 2
+                    previous = pin_values[port].setdefault(bit, value)
+                    if previous != value:
+                        raise ValidationError(
+                            f"Xilinx mapped cell {row['id']!r}.{port}[{bit}] "
+                            "has multiple nets"
+                        )
+                    direction = (
+                        "output" if int(endpoint["role"]) == 0 else "input"
+                    )
+                    observed = pin_directions[port].setdefault(bit, direction)
+                    if observed != direction:
+                        pin_directions[port][bit] = "inout"
+                for constant in lowered["constant_connections"]:
+                    port, bit = remap.get(
+                        (str(constant["port"]), int(constant["bit"])),
+                        (str(constant["port"]), int(constant["bit"])),
+                    )
+                    previous = pin_values[port].setdefault(bit, constant["value"])
+                    if previous != constant["value"]:
+                        raise ValidationError(
+                            f"Xilinx mapped cell {row['id']!r}.{port}[{bit}] "
+                            "has conflicting constant and net"
+                        )
+                    pin_directions[port].setdefault(bit, "input")
+                connections: Dict[str, Any] = {}
+                directions: Dict[str, str] = {}
+                for port, bit_values in sorted(pin_values.items()):
+                    width = max(bit_values) + 1
+                    if set(bit_values) != set(range(width)):
+                        raise ValidationError(
+                            f"Xilinx mapped cell {row['id']!r}.{port} is not contiguous"
+                        )
+                    connections[port] = [bit_values[bit] for bit in range(width)]
+                    observed = set(pin_directions[port].values())
+                    directions[port] = (
+                        "inout" if "inout" in observed or len(observed) > 1
+                        else next(iter(observed))
+                    )
+                cell = {
+                    "hide_name": 0,
+                    "type": lowered["type"],
+                    "parameters": lowered["parameters"],
+                    "attributes": lowered["attributes"],
+                    "port_directions": directions,
+                    "connections": connections,
+                }
+                cell_type = str(cell["type"])
+                contract = contracts.get(cell_type)
+                if contract is None:
+                    raise ValidationError(
+                        f"unsupported Xilinx primitive {cell_type!r} at {row['id']!r}"
+                    )
+                inventory[cell_type] += 1
+                if contract["hard_block"]:
+                    hard_blocks[cell_type] += 1
+                index.execute(
+                    "INSERT INTO cells VALUES (?,?,?,?)",
+                    (str(row["id"]), int(row["seq"]), cell_type, _json(cell)),
+                )
+                yield str(row["id"]), cell
+            endpoint_rows.finish()
+
+        def netnames() -> Iterator[Tuple[str, Mapping[str, Any]]]:
+            for row in source.execute(
+                "SELECT seq,id FROM net_records ORDER BY seq"
+            ):
+                value = {
+                    "hide_name": 0,
+                    "bits": [int(row["seq"]) + 2],
+                    "attributes": {},
+                }
+                index.execute(
+                    "INSERT INTO netnames VALUES (?,?,?)",
+                    (str(row["id"]), int(row["seq"]), _json(value)),
+                )
+                yield str(row["id"]), value
+
+        with output_temp.open("w", encoding="utf-8") as stream:
+            stream.write('{"creator":"EmuFlow Xilinx mapped-netlist exporter",')
+            stream.write('"modules":{')
+            stream.write(_json(top))
+            stream.write(':{"attributes":{"top":"1"},')
+            stream.write('"parameter_default_values":{},"ports":')
+            stream.write(_json(ports))
+            stream.write(',"cells":')
+            cell_count = _write_object_entries(stream, cells())
+            stream.write(',"memories":{},"netnames":')
+            emitted_net_count = _write_object_entries(stream, netnames())
+            stream.write("}}}\n")
+            stream.flush()
+        index.commit()
+        index.close()
+        index = None
+        with output_temp.open("rb") as stream:
+            os.fsync(stream.fileno())
+        with index_temp.open("rb") as stream:
+            os.fsync(stream.fileno())
+        os.replace(output_temp, output_path)
+        os.replace(index_temp, index_path)
+
+        resources = ResourceVector.sum(
+            ResourceVector.from_mapping(
+                {
+                    field: value * count
+                    for field, value in contracts[cell_type]["resources"].items()
+                },
+                f"primitive {cell_type!r} resources",
+            )
+            for cell_type, count in inventory.items()
+        )
+        output_sha256 = file_sha256(output_path)
+        audit = {
+            "status": "pass",
+            "schema": "emuflow.xilinx-primitive-audit/v1",
+            "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            "top": top,
+            "instances": sum(inventory.values()),
+            "cell_types": dict(sorted(inventory.items())),
+            "hard_block_cells": dict(sorted(hard_blocks.items())),
+            "resource_totals": resources.to_dict(include_zeros=False),
+            "unknown_cell_types": {},
+            "external_macros": {},
+            "mapped_json_sha256": output_sha256,
+            "mapped_representation": "yosys-json+sqlite-index",
+            "primitive_library_sha256": file_sha256(
+                DEFAULT_XILINX_PRIMITIVE_LIBRARY
+            ),
+        }
+        return {
+            "top": top,
+            "cells": cell_count,
+            "nets": emitted_net_count,
+            "ports": len(ports),
+            "unconnected_input_bits": unconnected_input_bits,
+            "unconnected_output_bits": unconnected_output_bits,
+            "output_sha256": output_sha256,
+            "index": str(index_path),
+            "index_sha256": file_sha256(index_path),
+            "audit": audit,
+        }
+    finally:
+        source.close()
+        if index is not None:
+            index.close()
+        output_temp.unlink(missing_ok=True)
+        index_temp.unlink(missing_ok=True)
+
+
 def emit_xilinx_mapped_json(
     ir_path: Path,
     output_path: Path,
     report_path: Path | None = None,
+    *,
+    index_path: Optional[Path] = None,
 ) -> Mapping[str, Any]:
     """Emit a normalized, primitive-only Yosys JSON netlist.
 
@@ -66,6 +580,22 @@ def emit_xilinx_mapped_json(
     EmuIR net and cell identity while lowering only provider-neutral LUT/FF
     spellings into the explicit UltraScale+ primitive namespace.
     """
+
+    if index_path is not None and is_compact_emuir(ir_path):
+        streamed = _emit_compact_xilinx_mapped_json(
+            ir_path, output_path, index_path
+        )
+        report = {
+            "schema": XILINX_MAPPED_NETLIST_REPORT_SCHEMA,
+            "status": "pass",
+            "provider": "emuflow-emuir-to-xilinx-yosys-json-indexed-v1",
+            "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            **streamed,
+            "output": str(output_path),
+        }
+        if report_path is not None:
+            write_json(report_path, report)
+        return report
 
     source = EmuIR.load(ir_path)
     ir = lower_vivado_primitives(source)
@@ -213,6 +743,7 @@ def emit_xilinx_mapped_json(
         "unconnected_input_bits": unconnected_input_bits,
         "unconnected_output_bits": unconnected_output_bits,
         "output": str(output_path),
+        "output_sha256": file_sha256(output_path),
         "audit": audit,
     }
     if report_path is not None:

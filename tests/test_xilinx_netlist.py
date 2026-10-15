@@ -5,11 +5,60 @@ from pathlib import Path
 
 from emuflow.io import write_json
 from emuflow.verilog import mapped_verilog
-from emuflow.xilinx_netlist import emit_xilinx_mapped_json
+from emuflow.xilinx_netlist import (
+    emit_xilinx_mapped_json,
+    open_xilinx_mapped_index,
+)
 from emuflow.yosys import import_yosys_json
 
 
 class XilinxMappedNetlistTests(unittest.TestCase):
+    def test_compact_emuir_streams_to_indexed_mapped_netlist(self) -> None:
+        mapped = {
+            "creator": "fixture",
+            "modules": {"top": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "a": {"direction": "input", "bits": [2]},
+                    "y": {"direction": "output", "bits": [3]},
+                },
+                "cells": {"lut": {
+                    "type": "LUT1", "parameters": {"INIT": "10"},
+                    "attributes": {},
+                    "port_directions": {"I0": "input", "O": "output"},
+                    "connections": {"I0": [2], "O": [3]},
+                }},
+                "netnames": {
+                    "a": {"bits": [2]}, "y": {"bits": [3]},
+                },
+            }},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.json"
+            ir_path = root / "source.emuir.sqlite"
+            output = root / "mapped.json"
+            index = root / "mapped.sqlite"
+            source.write_text(json.dumps(mapped), encoding="utf-8")
+            import_yosys_json(source).save(ir_path)
+            report = emit_xilinx_mapped_json(
+                ir_path, output, index_path=index
+            )
+            emitted = json.loads(output.read_text(encoding="utf-8"))
+            with open_xilinx_mapped_index(index) as indexed:
+                self.assertEqual(
+                    indexed["modules"]["top"]["cells"]["lut"],
+                    emitted["modules"]["top"]["cells"]["lut"],
+                )
+                self.assertEqual(len(indexed["modules"]["top"]["cells"]), 1)
+                self.assertEqual(
+                    set(indexed["modules"]["top"]["netnames"]), {"a", "y"}
+                )
+        self.assertEqual(report["provider"],
+                         "emuflow-emuir-to-xilinx-yosys-json-indexed-v1")
+        self.assertEqual(report["cells"], 1)
+        self.assertEqual(report["nets"], 2)
+
     def test_split_partition_preserves_undriven_output_bits_as_x(self) -> None:
         mapped = {
             "modules": {"top": {

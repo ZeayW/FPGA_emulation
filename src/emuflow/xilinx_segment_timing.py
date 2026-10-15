@@ -57,12 +57,14 @@ class _TimingGraph:
     ):
         modules = mapped.get("modules", {})
         top = timing.get("top")
-        module = modules.get(top) if isinstance(modules, dict) else None
-        if not isinstance(module, dict):
+        module = modules.get(top) if isinstance(modules, Mapping) else None
+        if not isinstance(module, Mapping):
             raise ValidationError("RapidWright segment timing top is absent")
         self.cells = module.get("cells", {})
         self.ports = module.get("ports", {})
-        if not isinstance(self.cells, dict) or not isinstance(self.ports, dict):
+        if not isinstance(self.cells, Mapping) or not isinstance(
+            self.ports, Mapping
+        ):
             raise ValidationError("RapidWright segment mapped netlist is invalid")
         self.edges: Dict[str, list[Tuple[str, float]]] = defaultdict(list)
         self.reverse: Dict[str, list[Tuple[str, float]]] = defaultdict(list)

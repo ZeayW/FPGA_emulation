@@ -75,11 +75,11 @@ def _sha256(path: Path) -> str:
 
 def _select_module(source: Mapping[str, Any], top: Optional[str]) -> Tuple[str, Dict[str, Any]]:
     modules = source.get("modules")
-    if not isinstance(modules, dict) or not modules:
+    if not isinstance(modules, Mapping) or not modules:
         raise ValidationError("mapped Yosys JSON contains no modules")
     if top is not None:
         module = modules.get(top)
-        if not isinstance(module, dict):
+        if not isinstance(module, Mapping):
             raise ValidationError(f"mapped Yosys JSON is missing top {top!r}")
         return top, module
     if len(modules) == 1:
@@ -88,7 +88,7 @@ def _select_module(source: Mapping[str, Any], top: Optional[str]) -> Tuple[str, 
     marked = [
         name
         for name, module in modules.items()
-        if isinstance(module, dict)
+        if isinstance(module, Mapping)
         and str(module.get("attributes", {}).get("top", "0")) not in {"", "0"}
     ]
     if len(marked) != 1:
@@ -426,7 +426,7 @@ def pack_xilinx_sites(
     )
     selected_top, module = _select_module(source, top)
     cells = module.get("cells")
-    if not isinstance(cells, dict):
+    if not isinstance(cells, Mapping):
         raise ValidationError("mapped Yosys JSON cells are invalid")
     clusters: List[Dict[str, Any]] = []
     constants = sorted(name for name, cell in cells.items() if cell.get("type") in CONSTANT_TYPES)
@@ -636,7 +636,7 @@ def validate_xilinx_packing(
     selected_top, module = _select_module(source, top)
     cells = module.get("cells")
     packed = read_json(packed_path) if packed_value is None else packed_value
-    if not isinstance(cells, dict) or not isinstance(packed, dict):
+    if not isinstance(cells, Mapping) or not isinstance(packed, dict):
         raise ValidationError("packing inputs are invalid")
     if packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA or packed.get("status") != "pass":
         raise ValidationError("PackedSiteNetlist header is invalid")

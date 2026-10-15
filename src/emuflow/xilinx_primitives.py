@@ -775,12 +775,12 @@ def audit_xilinx_mapped_json(
 ) -> Dict[str, Any]:
     """Reject every mapped cell outside the declared Route A namespace."""
     source = read_json(path) if source is None else source
-    modules = source.get("modules") if isinstance(source, dict) else None
-    if not isinstance(modules, dict) or not modules:
+    modules = source.get("modules") if isinstance(source, Mapping) else None
+    if not isinstance(modules, Mapping) or not modules:
         raise ValidationError("mapped Yosys JSON contains no modules")
     if top is not None:
         module = modules.get(top)
-        if not isinstance(module, dict):
+        if not isinstance(module, Mapping):
             raise ValidationError(f"mapped Yosys JSON is missing top {top!r}")
         selected_top = top
     elif len(modules) == 1:
@@ -789,7 +789,7 @@ def audit_xilinx_mapped_json(
         marked = [
             name
             for name, candidate in modules.items()
-            if isinstance(candidate, dict)
+            if isinstance(candidate, Mapping)
             and str(candidate.get("attributes", {}).get("top", "0"))
             not in {"", "0"}
         ]
@@ -806,7 +806,7 @@ def audit_xilinx_mapped_json(
     inventory: Counter[str] = Counter()
     hard_blocks: Counter[str] = Counter()
     for instance, raw_cell in cells.items():
-        if not isinstance(raw_cell, dict):
+        if not isinstance(raw_cell, Mapping):
             raise ValidationError(f"mapped cell {instance!r} is invalid")
         cell_type = raw_cell.get("type")
         if not isinstance(cell_type, str) or not cell_type:
@@ -818,7 +818,9 @@ def audit_xilinx_mapped_json(
             )
         directions = raw_cell.get("port_directions")
         connections = raw_cell.get("connections")
-        if not isinstance(directions, dict) or not isinstance(connections, dict):
+        if not isinstance(directions, Mapping) or not isinstance(
+            connections, Mapping
+        ):
             raise ValidationError(
                 f"mapped cell {instance!r} lacks explicit port metadata"
             )

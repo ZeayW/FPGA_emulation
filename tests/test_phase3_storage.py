@@ -227,6 +227,10 @@ class Phase3StorageTest(unittest.TestCase):
             with sqlite3.connect(root / "assignment.sqlite") as connection:
                 connection.executescript(
                     """
+                    CREATE TABLE metadata(
+                      key TEXT PRIMARY KEY,
+                      value TEXT NOT NULL
+                    );
                     CREATE TABLE parts(
                       part_index INTEGER PRIMARY KEY,
                       fpga TEXT NOT NULL UNIQUE
@@ -238,6 +242,13 @@ class Phase3StorageTest(unittest.TestCase):
                       is_replica INTEGER NOT NULL
                     );
                     """
+                )
+                connection.execute(
+                    "INSERT INTO metadata VALUES (?,?)",
+                    (
+                        "source_instance_count",
+                        json.dumps(len(assignment["instance_assignment"])),
+                    ),
                 )
                 connection.executemany(
                     "INSERT INTO parts VALUES (?,?)",
@@ -260,6 +271,7 @@ class Phase3StorageTest(unittest.TestCase):
             self.assertEqual(
                 indexed.get("top/logic_block_3/cell_1"), "fpga3"
             )
+            self.assertEqual(len(indexed), 8)
             self.assertIsNone(indexed.get("absent"))
             indexed.close()
 

@@ -326,8 +326,10 @@ class _PipOwnership:
 
 def _select_module(mapped: Mapping[str, Any], top: str) -> Mapping[str, Any]:
     modules = mapped.get("modules")
-    module = modules.get(top) if isinstance(modules, dict) else None
-    if not isinstance(module, dict) or not isinstance(module.get("cells"), dict):
+    module = modules.get(top) if isinstance(modules, Mapping) else None
+    if not isinstance(module, Mapping) or not isinstance(
+        module.get("cells"), Mapping
+    ):
         raise ValidationError(f"mapped JSON has no valid top module {top!r}")
     return module
 

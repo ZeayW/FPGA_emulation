@@ -578,6 +578,27 @@ class IndexedInstanceAssignment(Mapping[str, str]):
             uri=True,
             check_same_thread=False,
         )
+        row = self.connection.execute(
+            "SELECT value FROM metadata WHERE key='source_instance_count'"
+        ).fetchone()
+        if row is None:
+            self.connection.close()
+            raise ValueError(
+                "assignment index lacks the source instance count"
+            )
+        try:
+            count = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError) as error:
+            self.connection.close()
+            raise ValueError(
+                "assignment index source instance count is malformed"
+            ) from error
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            self.connection.close()
+            raise ValueError(
+                "assignment index source instance count is malformed"
+            )
+        self.count = count
         self.cache: OrderedDict[str, str | None] = OrderedDict()
         self.lock = threading.RLock()
 
@@ -624,12 +645,10 @@ class IndexedInstanceAssignment(Mapping[str, str]):
         return rows()
 
     def __len__(self) -> int:
-        with self.lock:
-            return int(
-                self.connection.execute(
-                    "SELECT count(*) FROM copies WHERE is_replica=0"
-                ).fetchone()[0]
-            )
+        # The producer already seals the exact primary-copy count.  Running
+        # COUNT(*) over a multi-million-row WITHOUT ROWID table turns a cheap
+        # control-plane question into a full 1.5 GiB index scan on NFS.
+        return self.count
 
     def close(self) -> None:
         with self.lock:

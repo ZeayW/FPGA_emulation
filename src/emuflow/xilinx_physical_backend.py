@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import math
 from collections import Counter
 from pathlib import Path
@@ -14,7 +15,10 @@ from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from .io import file_sha256, read_json, write_json
 from .physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA
 from .sta import iter_sta_path_database_paths
-from .xilinx_netlist import emit_xilinx_mapped_json
+from .xilinx_netlist import (
+    emit_xilinx_mapped_json,
+    open_xilinx_mapped_index,
+)
 from .xilinx_openparf import run_xilinx_openparf_guidance
 from .xilinx_openparf_atomic import (
     build_xilinx_openparf_atomic_source,
@@ -349,24 +353,6 @@ def _run_rapidwright_routed_backend_tail(
     else:
         mapped_ir = read_json(merged_ir_path)
     clocks = _physical_clock_periods(mapped_ir, runtime)
-    path_database_path = output_dir / "opensta-paths.json"
-    opensta_summary_path = output_dir / "opensta-summary.json"
-    opensta_check = run_xilinx_routed_opensta(
-        mapped_path,
-        routed_timing_path,
-        path_database_path,
-        opensta_summary_path,
-        clocks=clocks,
-        executable=opensta,
-        log_path=output_dir / "opensta.log",
-        timing_validation=timing_check,
-        mapped_value=mapped_value,
-        timing_value=routed_timing_value,
-        source_sha256={
-            "mapped_sha256": source_sha256["mapped_sha256"],
-            "routed_timing_sha256": timing_check["timing_sha256"],
-        },
-    )
     boundary_timing_path = output_dir / "boundary-timing.json"
     logic_timing_path = (
         output_dir / "logic-segment-timing.json"
@@ -399,6 +385,40 @@ def _run_rapidwright_routed_backend_tail(
         if "local_path" in segment_imports else None
     )
 
+    inventory = Counter(
+        cell["type"]
+        for cell in mapped_value["modules"][mapped_report["top"]]["cells"].values()
+    )
+    # All mapped-graph consumers have finished. Release their storage before
+    # OpenSTA stages a routed timing graph of its own.
+    close_mapped = getattr(mapped_value, "close", None)
+    if callable(close_mapped):
+        close_mapped()
+    if isinstance(mapped_value, dict):
+        mapped_value.clear()
+    if isinstance(packed_value, dict):
+        packed_value.clear()
+    if isinstance(placement_value, dict):
+        placement_value.clear()
+    gc.collect()
+
+    path_database_path = output_dir / "opensta-paths.json"
+    opensta_summary_path = output_dir / "opensta-summary.json"
+    opensta_check = run_xilinx_routed_opensta(
+        mapped_path,
+        routed_timing_path,
+        path_database_path,
+        opensta_summary_path,
+        clocks=clocks,
+        executable=opensta,
+        log_path=output_dir / "opensta.log",
+        timing_validation=timing_check,
+        timing_value=routed_timing_value,
+        source_sha256={
+            "mapped_sha256": source_sha256["mapped_sha256"],
+            "routed_timing_sha256": timing_check["timing_sha256"],
+        },
+    )
     opensta_database = read_json(path_database_path)
     critical_path_ns = max(
         (float(path.get("fixed_delay_ns", 0.0))
@@ -409,10 +429,6 @@ def _run_rapidwright_routed_backend_tail(
     )
     opensta_summary = read_json(opensta_summary_path)
     qor = opensta_summary["qor"]
-    inventory = Counter(
-        cell["type"]
-        for cell in mapped_value["modules"][mapped_report["top"]]["cells"].values()
-    )
     expansion_cells = (
         int(route_input_report["expanded_lut6_2_cells"])
         + 7 * int(route_input_report["transformed_dsp48e2_cells"])
@@ -545,12 +561,19 @@ def run_rapidwright_partition_backend(
         )
     output_dir.mkdir(parents=True, exist_ok=True)
     mapped_path = output_dir / "partition.mapped.json"
+    mapped_index_path = output_dir / "partition.mapped.sqlite"
     mapped_report = emit_xilinx_mapped_json(
         merged_ir_path,
         mapped_path,
         output_dir / "mapped-netlist-report.json",
+        index_path=mapped_index_path,
     )
-    mapped_value = read_json(mapped_path)
+    mapped_value = (
+        open_xilinx_mapped_index(mapped_index_path)
+        if mapped_report.get("index") == str(mapped_index_path)
+        and mapped_index_path.is_file()
+        else read_json(mapped_path)
+    )
     mapped_sha256 = mapped_report.get("output_sha256") or _sha256(mapped_path)
     packed_path = output_dir / "packed-sites.json"
     packed = pack_xilinx_sites(
@@ -686,16 +709,22 @@ def run_rapidwright_openparf_native_candidate_backend(
         )
     output_dir.mkdir(parents=True, exist_ok=True)
     mapped_path = output_dir / "partition.mapped.json"
+    mapped_index_path = output_dir / "partition.mapped.sqlite"
     mapped_report = emit_xilinx_mapped_json(
         merged_ir_path,
         mapped_path,
         output_dir / "mapped-netlist-report.json",
+        index_path=mapped_index_path,
     )
     # The mapped netlist is hundreds of MiB for realistic DLA partitions.
-    # Parse it once and pass the immutable object through packing, native
-    # placement, bridge, and validation instead of reparsing it at every
-    # contract boundary.
-    mapped_value = read_json(mapped_path)
+    # Production consumers share a read-only SQLite view instead of retaining
+    # one graph-sized nested Python dictionary per physical worker.
+    mapped_value = (
+        open_xilinx_mapped_index(mapped_index_path)
+        if mapped_report.get("index") == str(mapped_index_path)
+        and mapped_index_path.is_file()
+        else read_json(mapped_path)
+    )
     mapped_sha256 = mapped_report.get("output_sha256") or _sha256(mapped_path)
     atomic_source_path = output_dir / "openparf-atomic-source.json"
     atomic_source = build_xilinx_openparf_atomic_source(
@@ -710,6 +739,11 @@ def run_rapidwright_openparf_native_candidate_backend(
         packed_value=atomic_source,
         architecture=architecture,
     )
+    atomic_summary = dict(atomic_source["summary"])
+    # The native qualifier consumes the serialized atomic contract. Keeping a
+    # second Python copy alive would overlap hundreds of MiB with OpenPARF.
+    del atomic_source
+    gc.collect()
     region_path = output_dir / "placement-region.json"
     write_json(region_path, {
         "schema": "emuflow.xilinx-placement-constraints/v1",
@@ -808,7 +842,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         local_identity_path=local_identity_path,
         provider="rapidwright-rwroute-openparf-native-candidate-v1",
         packing_stage={
-            "source": atomic_source["summary"],
+            "source": atomic_summary,
             "result": packed["summary"],
             "validation": packing_check,
         },
