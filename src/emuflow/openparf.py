@@ -74,6 +74,13 @@ def _openparf_environment(
     if environment.get("PYTHONPATH"):
         python_path += os.pathsep + environment["PYTHONPATH"]
     environment["PYTHONPATH"] = python_path
+    configured_runtime = [
+        item
+        for item in environment.get(
+            "EMUFLOW_OPENPARF_LIBRARY_PATH", ""
+        ).split(os.pathsep)
+        if item
+    ]
     if python_executable is not None:
         # OpenPARF is a compiled PyTorch extension and must load the Torch ABI
         # belonging to the interpreter used when it was built.  A coordinator
@@ -87,30 +94,38 @@ def _openparf_environment(
                 "python*/site-packages/torch/lib"
             ) if path.is_dir()
         )
-        if torch_libs:
-            inherited = [
-                item for item in environment.get(
-                    "LD_LIBRARY_PATH", ""
-                ).split(os.pathsep) if item
-            ]
+        inherited = [
+            item for item in environment.get(
+                "LD_LIBRARY_PATH", ""
+            ).split(os.pathsep) if item
+        ]
 
-            def is_foreign_torch_library(item: str) -> bool:
-                path = Path(item)
-                return (
-                    path.name == "lib"
-                    and path.parent.name == "torch"
-                    and "site-packages" in path.parts
-                    and not any(path == own for own in torch_libs)
-                )
+        def is_foreign_torch_library(item: str) -> bool:
+            path = Path(item)
+            return (
+                path.name == "lib"
+                and path.parent.name == "torch"
+                and "site-packages" in path.parts
+                and not any(path == own for own in torch_libs)
+            )
 
-            paths = [str(prefix_lib), *(str(path) for path in torch_libs)]
-            paths.extend(
-                item for item in inherited
-                if not is_foreign_torch_library(item)
-            )
-            environment["LD_LIBRARY_PATH"] = os.pathsep.join(
-                dict.fromkeys(paths)
-            )
+        # A build may require a newer C++ runtime than the Conda interpreter
+        # ships.  Let the launcher provide that runtime explicitly without
+        # baking a machine-specific GCC path into the repository.  It must
+        # precede ``prefix_lib`` so the dynamic loader does not select Conda's
+        # older libstdc++ first.
+        paths = [
+            *configured_runtime,
+            str(prefix_lib),
+            *(str(path) for path in torch_libs),
+        ]
+        paths.extend(
+            item for item in inherited
+            if not is_foreign_torch_library(item)
+        )
+        environment["LD_LIBRARY_PATH"] = os.pathsep.join(
+            dict.fromkeys(paths)
+        )
     return environment
 
 
