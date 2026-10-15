@@ -23,6 +23,7 @@ from .opensta import (
     classify_through_net_timing_endpoints,
     load_timing_model,
 )
+from .phase3_storage import read_phase3_assignment_view
 from .sta import (
     iter_sta_path_database_paths,
     validate_sta_path_database_path_value,
@@ -125,7 +126,7 @@ def build_cut_segment_qualification(
         if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path)
         else EmuIR.load(ir_path)
     )
-    assignment = read_json(assignment_path)
+    assignment = read_phase3_assignment_view(assignment_path)
     database = read_json(path_database_path)
     try:
         if not input_already_validated:

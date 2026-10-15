@@ -10,6 +10,7 @@ from .cross_layer_timing import (
 from .errors import TDMScheduleInfeasibleError, ValidationError
 from .io import read_json, write_json
 from .managed_json_storage import pack_managed_json
+from .phase3_storage import read_phase3_assignment_view
 from .platform import Platform
 from .routing import semantic_contract_for_routes
 from .tdm import (
@@ -58,7 +59,7 @@ def _load_phase3_semantics(
         raise ValidationError(
             "sampled virtual-wire Phase 5 requires the Phase 3 assignment"
         )
-    assignment = read_json(assignment_path)
+    assignment = read_phase3_assignment_view(assignment_path)
     contract = semantic_contract_for_routes(assignment, routes)
     if contract is None:
         raise ValidationError("Phase 3 semantic contract is missing")

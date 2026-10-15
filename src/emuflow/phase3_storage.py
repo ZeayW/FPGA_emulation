@@ -2,14 +2,171 @@ from __future__ import annotations
 
 import base64
 import json
+import sqlite3
+import threading
 import zlib
+from collections import OrderedDict
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping
 
 
 PACKED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v1"
-PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v1"
+COMPRESSED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v2"
+LEGACY_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v1"
+PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v2"
 _COMPRESSED_JSON_CODEC = "zlib-level-1-base64-canonical-json"
+_COMPRESSED_INDEX_CODEC = "zlib-level-1-base64-unsigned-index"
+
+
+def _compress_json(value: Mapping[str, Any]) -> Dict[str, Any]:
+    """Compress canonical JSON without first materializing encoded bytes."""
+
+    compressor = zlib.compressobj(level=1)
+    chunks: List[bytes] = []
+    uncompressed_bytes = 0
+    encoder = json.JSONEncoder(
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    for fragment in encoder.iterencode(value):
+        encoded = fragment.encode("utf-8")
+        uncompressed_bytes += len(encoded)
+        chunk = compressor.compress(encoded)
+        if chunk:
+            chunks.append(chunk)
+    tail = compressor.flush()
+    if tail:
+        chunks.append(tail)
+    return {
+        "codec": _COMPRESSED_JSON_CODEC,
+        "uncompressed_bytes": uncompressed_bytes,
+        "data": base64.b64encode(b"".join(chunks)).decode("ascii"),
+    }
+
+
+def _decompress_json(value: Any, context: str) -> Dict[str, Any]:
+    if (
+        not isinstance(value, dict)
+        or value.get("codec") != _COMPRESSED_JSON_CODEC
+        or isinstance(value.get("uncompressed_bytes"), bool)
+        or not isinstance(value.get("uncompressed_bytes"), int)
+        or value["uncompressed_bytes"] < 0
+        or not isinstance(value.get("data"), str)
+    ):
+        raise ValueError(f"{context}: compressed payload is malformed")
+    expected_size = value["uncompressed_bytes"]
+    try:
+        encoded = base64.b64decode(value["data"], validate=True)
+        decompressor = zlib.decompressobj()
+        raw = decompressor.decompress(encoded, expected_size + 1)
+        if len(raw) > expected_size or decompressor.unconsumed_tail:
+            raise ValueError("compressed length exceeds the declaration")
+        raw += decompressor.flush(expected_size - len(raw) + 1)
+        if (
+            len(raw) != expected_size
+            or not decompressor.eof
+            or decompressor.unused_data
+        ):
+            raise ValueError("compressed length is inconsistent")
+        result = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, zlib.error) as error:
+        raise ValueError(f"{context}: compressed payload is invalid") from error
+    if not isinstance(result, dict):
+        raise ValueError(f"{context}: expected an object")
+    return result
+
+
+def _compress_indices(values: Iterator[int], maximum: int) -> Dict[str, Any]:
+    width = 1 if maximum < 256 else (2 if maximum < 65536 else 4)
+    compressor = zlib.compressobj(level=1)
+    chunks: List[bytes] = []
+    pending = bytearray()
+    count = 0
+    for item in values:
+        if item < 0 or item > maximum:
+            raise ValueError("packed assignment partition index is invalid")
+        pending.extend(item.to_bytes(width, "little"))
+        count += 1
+        if len(pending) >= 1024 * 1024:
+            chunk = compressor.compress(pending)
+            if chunk:
+                chunks.append(chunk)
+            pending.clear()
+    if pending:
+        chunk = compressor.compress(pending)
+        if chunk:
+            chunks.append(chunk)
+    tail = compressor.flush()
+    if tail:
+        chunks.append(tail)
+    return {
+        "codec": _COMPRESSED_INDEX_CODEC,
+        "count": count,
+        "width": width,
+        "data": base64.b64encode(b"".join(chunks)).decode("ascii"),
+    }
+
+
+def _decompress_index_bytes(
+    value: Any, context: str
+) -> tuple[bytes, int, int]:
+    if (
+        not isinstance(value, dict)
+        or value.get("codec") != _COMPRESSED_INDEX_CODEC
+        or isinstance(value.get("count"), bool)
+        or not isinstance(value.get("count"), int)
+        or value["count"] < 0
+        or value.get("width") not in {1, 2, 4}
+        or not isinstance(value.get("data"), str)
+    ):
+        raise ValueError(f"{context}: compressed index is malformed")
+    count = value["count"]
+    width = value["width"]
+    expected = count * width
+    try:
+        raw = zlib.decompress(
+            base64.b64decode(value["data"], validate=True)
+        )
+    except (ValueError, zlib.error) as error:
+        raise ValueError(f"{context}: compressed index is corrupt") from error
+    if len(raw) != expected:
+        raise ValueError(f"{context}: compressed index length disagrees")
+    return raw, count, width
+
+
+def _decompress_indices(value: Any, context: str) -> List[int]:
+    raw, count, width = _decompress_index_bytes(value, context)
+    return [
+        int.from_bytes(raw[offset : offset + width], "little")
+        for offset in range(0, count * width, width)
+    ]
+
+
+def compress_phase3_clusters(value: Mapping[str, Any]) -> Dict[str, Any]:
+    """Persist production clusters without a second graph-sized Python tree."""
+
+    clusters = value.get("clusters")
+    if not isinstance(clusters, list):
+        raise ValueError("clusters.clusters: expected an array")
+    return {
+        "schema": COMPRESSED_CLUSTERS_SCHEMA,
+        "cluster_count": len(clusters),
+        "payload": _compress_json(value),
+    }
+
+
+def expand_compressed_phase3_clusters(value: Mapping[str, Any]) -> Dict[str, Any]:
+    if value.get("schema") != COMPRESSED_CLUSTERS_SCHEMA:
+        raise ValueError("not a compressed Phase 3 clusters document")
+    result = _decompress_json(value.get("payload"), "packed clusters")
+    clusters = result.get("clusters")
+    if (
+        not isinstance(clusters, list)
+        or len(clusters) != value.get("cluster_count")
+    ):
+        raise ValueError("packed clusters count is inconsistent")
+    return result
 
 
 def _require_list(value: Any, context: str) -> List[Any]:
@@ -224,11 +381,7 @@ def pack_phase3_assignment(
         or not isinstance(partitions, list)
     ):
         raise ValueError("assignment cannot be packed: required mappings are absent")
-    cluster_ids = [cluster.get("id") for cluster in clusters]
-    if (
-        not all(isinstance(item, str) for item in cluster_ids)
-        or set(cluster_ids) != set(cluster_assignment)
-    ):
+    if len(clusters) != len(cluster_assignment):
         raise ValueError("assignment cannot be packed: cluster coverage differs")
     partition_ids = [
         partition.get("fpga") if isinstance(partition, dict) else None
@@ -242,15 +395,41 @@ def pack_phase3_assignment(
         raise ValueError("assignment cannot be packed: invalid FPGA identifier")
     part_ids = sorted(partition_ids)
     part_index = {part: index for index, part in enumerate(part_ids)}
-    for cluster in clusters:
-        part = cluster_assignment[cluster["id"]]
-        for instance in cluster.get("instances", []):
-            if instance_assignment.get(instance) != part:
-                raise ValueError("assignment cannot be packed: cluster is split")
-    expected_instances = {
-        instance for cluster in clusters for instance in cluster.get("instances", [])
-    }
-    if set(instance_assignment) != expected_instances:
+    observed_instances = 0
+    sequential_cluster_ids = all(
+        cluster.get("id") == f"c{index:06d}"
+        for index, cluster in enumerate(clusters)
+    )
+    stored_cluster_ids = (
+        None
+        if sequential_cluster_ids
+        else [cluster.get("id") for cluster in clusters]
+    )
+
+    def cluster_part_indices() -> Iterator[int]:
+        nonlocal observed_instances
+        for cluster in clusters:
+            cluster_id = cluster.get("id")
+            if (
+                not isinstance(cluster_id, str)
+                or cluster_id not in cluster_assignment
+            ):
+                raise ValueError(
+                    "assignment cannot be packed: cluster coverage differs"
+                )
+            part = cluster_assignment[cluster_id]
+            for instance in cluster.get("instances", []):
+                if instance_assignment.get(instance) != part:
+                    raise ValueError(
+                        "assignment cannot be packed: cluster is split"
+                    )
+                observed_instances += 1
+            yield part_index[part]
+
+    cluster_parts = _compress_indices(
+        cluster_part_indices(), max(0, len(part_ids) - 1)
+    )
+    if len(instance_assignment) != observed_instances:
         raise ValueError("assignment cannot be packed: instance coverage differs")
     packed_partitions = []
     for partition in partitions:
@@ -262,18 +441,7 @@ def pack_phase3_assignment(
     semantic_contract = value.get("semantic_contract")
     compressed_semantic_contract = None
     if semantic_contract is not None:
-        encoded = json.dumps(
-            semantic_contract,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        compressed_semantic_contract = {
-            "codec": _COMPRESSED_JSON_CODEC,
-            "uncompressed_bytes": len(encoded),
-            "data": base64.b64encode(zlib.compress(encoded, level=1)).decode(
-                "ascii"
-            ),
-        }
+        compressed_semantic_contract = _compress_json(semantic_contract)
     document = {
         key: item
         for key, item in value.items()
@@ -288,11 +456,10 @@ def pack_phase3_assignment(
     return {
         "schema": PACKED_ASSIGNMENT_SCHEMA,
         "document": document,
-        "cluster_count": len(cluster_ids),
+        "cluster_count": len(clusters),
+        "cluster_ids": stored_cluster_ids,
         "part_ids": part_ids,
-        "cluster_parts": [
-            part_index[cluster_assignment[cluster_id]] for cluster_id in cluster_ids
-        ],
+        "cluster_parts": cluster_parts,
         "partitions": packed_partitions,
         "semantic_contract": compressed_semantic_contract,
     }
@@ -303,12 +470,16 @@ def expand_phase3_assignment(
     path: Path,
     read_document: Callable[[Path], Dict[str, Any]],
 ) -> Dict[str, Any]:
-    if value.get("schema") != PACKED_ASSIGNMENT_SCHEMA:
+    schema = value.get("schema")
+    if schema not in {
+        LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+        PACKED_ASSIGNMENT_SCHEMA,
+    }:
         raise ValueError("not a packed Phase 3 assignment document")
     document = value.get("document")
     count = value.get("cluster_count")
     part_ids = value.get("part_ids")
-    cluster_parts = value.get("cluster_parts")
+    raw_cluster_parts = value.get("cluster_parts")
     partitions = value.get("partitions")
     compressed_semantic_contract = value.get("semantic_contract")
     if (
@@ -319,51 +490,32 @@ def expand_phase3_assignment(
         or not isinstance(part_ids, list)
         or not all(isinstance(item, str) for item in part_ids)
         or len(set(part_ids)) != len(part_ids)
-        or not isinstance(cluster_parts, list)
-        or len(cluster_parts) != count
+        or (
+            schema == LEGACY_PACKED_ASSIGNMENT_SCHEMA
+            and not isinstance(raw_cluster_parts, list)
+        )
         or not isinstance(partitions, list)
         or not all(isinstance(item, dict) for item in partitions)
     ):
         raise ValueError("packed assignment header is malformed")
+    cluster_parts = (
+        raw_cluster_parts
+        if isinstance(raw_cluster_parts, list)
+        else _decompress_indices(raw_cluster_parts, "packed assignment")
+    )
+    if len(cluster_parts) != count:
+        raise ValueError("packed assignment vector is malformed")
     semantic_contract = None
     if compressed_semantic_contract is not None:
-        if (
-            not isinstance(compressed_semantic_contract, dict)
-            or compressed_semantic_contract.get("codec")
-            != _COMPRESSED_JSON_CODEC
-            or isinstance(
-                compressed_semantic_contract.get("uncompressed_bytes"), bool
-            )
-            or not isinstance(
-                compressed_semantic_contract.get("uncompressed_bytes"), int
-            )
-            or compressed_semantic_contract["uncompressed_bytes"] < 0
-            or not isinstance(compressed_semantic_contract.get("data"), str)
-        ):
-            raise ValueError("packed assignment semantic contract is malformed")
-        expected_size = compressed_semantic_contract["uncompressed_bytes"]
         try:
-            encoded = base64.b64decode(
-                compressed_semantic_contract["data"], validate=True
+            semantic_contract = _decompress_json(
+                compressed_semantic_contract,
+                "packed assignment semantic contract",
             )
-            decompressor = zlib.decompressobj()
-            raw = decompressor.decompress(encoded, expected_size + 1)
-            if len(raw) > expected_size or decompressor.unconsumed_tail:
-                raise ValueError("compressed length exceeds the declaration")
-            raw += decompressor.flush(expected_size - len(raw) + 1)
-            if (
-                len(raw) != expected_size
-                or not decompressor.eof
-                or decompressor.unused_data
-            ):
-                raise ValueError("compressed length is inconsistent")
-            semantic_contract = json.loads(raw.decode("utf-8"))
-        except (ValueError, UnicodeError, zlib.error, json.JSONDecodeError) as error:
+        except ValueError as error:
             raise ValueError(
                 "packed assignment semantic contract is corrupt"
             ) from error
-        if not isinstance(semantic_contract, dict):
-            raise ValueError("packed assignment semantic contract is not an object")
     clusters_path = path.with_name("clusters.json")
     if not clusters_path.is_file():
         raise ValueError(
@@ -413,4 +565,235 @@ def expand_phase3_assignment(
     }
     if semantic_contract is not None:
         result["semantic_contract"] = semantic_contract
+    return result
+
+
+class IndexedInstanceAssignment(Mapping[str, str]):
+    """Lazy instance-to-FPGA relation backed by assignment.sqlite."""
+
+    def __init__(self, path: Path):
+        self.path = path.resolve()
+        self.connection = sqlite3.connect(
+            f"file:{self.path}?mode=ro&immutable=1",
+            uri=True,
+            check_same_thread=False,
+        )
+        self.cache: OrderedDict[str, str | None] = OrderedDict()
+        self.lock = threading.RLock()
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if not isinstance(key, str):
+            return default
+        with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+                value = self.cache[key]
+            else:
+                row = self.connection.execute(
+                    """SELECT p.fpga FROM copies c JOIN parts p
+                         ON p.part_index=c.part_index
+                        WHERE c.copy_id=? AND c.is_replica=0""",
+                    (key,),
+                ).fetchone()
+                value = None if row is None else str(row[0])
+                self.cache[key] = value
+                if len(self.cache) > 65536:
+                    self.cache.popitem(last=False)
+        return default if value is None else value
+
+    def __getitem__(self, key: str) -> str:
+        value = self.get(key)
+        if value is None:
+            raise KeyError(key)
+        return value
+
+    def __iter__(self) -> Iterator[str]:
+        def rows() -> Iterator[str]:
+            connection = sqlite3.connect(
+                f"file:{self.path}?mode=ro&immutable=1", uri=True
+            )
+            try:
+                for row in connection.execute(
+                    "SELECT copy_id FROM copies WHERE is_replica=0 "
+                    "ORDER BY source_instance_seq"
+                ):
+                    yield str(row[0])
+            finally:
+                connection.close()
+
+        return rows()
+
+    def __len__(self) -> int:
+        with self.lock:
+            return int(
+                self.connection.execute(
+                    "SELECT count(*) FROM copies WHERE is_replica=0"
+                ).fetchone()[0]
+            )
+
+    def close(self) -> None:
+        with self.lock:
+            self.connection.close()
+
+    def __del__(self) -> None:
+        try:
+            self.connection.close()
+        except (AttributeError, sqlite3.Error):
+            pass
+
+
+class PackedClusterAssignment(Mapping[str, str]):
+    """Read-only cluster ownership without a graph-sized Python dictionary."""
+
+    def __init__(self, value: Mapping[str, Any]):
+        self.part_ids = value.get("part_ids")
+        self.count = value.get("cluster_count")
+        self.cluster_ids = value.get("cluster_ids")
+        raw_parts = value.get("cluster_parts")
+        if (
+            not isinstance(self.part_ids, list)
+            or not all(isinstance(item, str) for item in self.part_ids)
+            or isinstance(self.count, bool)
+            or not isinstance(self.count, int)
+            or self.count < 0
+            or (
+                self.cluster_ids is not None
+                and (
+                    not isinstance(self.cluster_ids, list)
+                    or len(self.cluster_ids) != self.count
+                    or not all(
+                        isinstance(item, str) for item in self.cluster_ids
+                    )
+                )
+            )
+        ):
+            raise ValueError("packed cluster assignment header is malformed")
+        if isinstance(raw_parts, list):
+            if len(raw_parts) != self.count:
+                raise ValueError("packed cluster assignment length disagrees")
+            self.raw_parts = None
+            self.width = 0
+            self.legacy_parts = raw_parts
+        else:
+            raw, count, width = _decompress_index_bytes(
+                raw_parts, "packed cluster assignment"
+            )
+            if count != self.count:
+                raise ValueError("packed cluster assignment length disagrees")
+            self.raw_parts = raw
+            self.width = width
+            self.legacy_parts = None
+        self.id_index = (
+            None
+            if self.cluster_ids is None
+            else {
+                cluster_id: index
+                for index, cluster_id in enumerate(self.cluster_ids)
+            }
+        )
+
+    def _index(self, key: str) -> int | None:
+        if self.id_index is not None:
+            return self.id_index.get(key)
+        if not isinstance(key, str) or not key.startswith("c"):
+            return None
+        try:
+            index = int(key[1:])
+        except ValueError:
+            return None
+        if index < 0 or index >= self.count or key != f"c{index:06d}":
+            return None
+        return index
+
+    def _part(self, index: int) -> str:
+        if self.legacy_parts is not None:
+            part_index = self.legacy_parts[index]
+        else:
+            assert self.raw_parts is not None
+            offset = index * self.width
+            part_index = int.from_bytes(
+                self.raw_parts[offset : offset + self.width], "little"
+            )
+        if (
+            isinstance(part_index, bool)
+            or not isinstance(part_index, int)
+            or part_index < 0
+            or part_index >= len(self.part_ids)
+        ):
+            raise ValueError("packed cluster assignment owner is invalid")
+        return self.part_ids[part_index]
+
+    def __getitem__(self, key: str) -> str:
+        index = self._index(key)
+        if index is None:
+            raise KeyError(key)
+        return self._part(index)
+
+    def __iter__(self) -> Iterator[str]:
+        if self.cluster_ids is not None:
+            return iter(self.cluster_ids)
+        return (f"c{index:06d}" for index in range(self.count))
+
+    def __len__(self) -> int:
+        return self.count
+
+
+def read_phase3_assignment_view(
+    path: Path,
+    *,
+    include_instance_assignment: bool = False,
+    include_cluster_assignment: bool = False,
+) -> Dict[str, Any]:
+    """Read only the Phase 4--7 assignment contract.
+
+    Production consumers need cut nets, partition summaries and Static Exact
+    semantics.  Expanding the sibling clusters artifact merely to reconstruct
+    millions of cluster and instance dictionaries is not part of that
+    contract.  Callers that genuinely need instance lookup receive a lazy
+    SQLite mapping instead.
+    """
+
+    with path.open("r", encoding="utf-8") as stream:
+        value = json.load(stream)
+    if not isinstance(value, dict):
+        raise ValueError(f"{path}: expected a JSON object")
+    if value.get("schema") not in {
+        LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+        PACKED_ASSIGNMENT_SCHEMA,
+    }:
+        return value
+    document = value.get("document")
+    partitions = value.get("partitions")
+    if not isinstance(document, dict) or not isinstance(partitions, list):
+        raise ValueError("packed assignment downstream view is malformed")
+    result = {**document, "partitions": partitions}
+    compressed = value.get("semantic_contract")
+    if compressed is not None:
+        result["semantic_contract"] = _decompress_json(
+            compressed,
+            "packed assignment semantic contract",
+        )
+    if include_cluster_assignment:
+        result["cluster_assignment"] = PackedClusterAssignment(value)
+    if include_instance_assignment:
+        index_path = path.with_name("assignment.sqlite")
+        if not index_path.is_file():
+            # Explicit compatibility fallback for old/small artifacts.  Every
+            # production Phase 3 publication has the sidecar; legacy fixtures
+            # may not.  Keep their prior behavior without making the large-
+            # design path materialize the cluster graph.
+            clusters_path = path.with_name("clusters.json")
+
+            def read_clusters(candidate: Path) -> Dict[str, Any]:
+                with candidate.open("r", encoding="utf-8") as stream:
+                    clusters_value = json.load(stream)
+                schema = clusters_value.get("schema")
+                if schema == COMPRESSED_CLUSTERS_SCHEMA:
+                    return expand_compressed_phase3_clusters(clusters_value)
+                if schema == PACKED_CLUSTERS_SCHEMA:
+                    return expand_phase3_clusters(clusters_value)
+                return clusters_value
+
+            return expand_phase3_assignment(value, path, read_clusters)
+        result["instance_assignment"] = IndexedInstanceAssignment(index_path)
     return result

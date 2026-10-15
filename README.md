@@ -1094,6 +1094,18 @@ qualification still compares these indexed paths exactly against the legacy
 in-memory implementations, including fanout, transport stitches, placement
 records, timing endpoints, and generated text.
 
+The production Phase 3 handoff stores its cluster-owner vector as a compressed
+integer stream and writes assignment-index rows directly into SQLite. It does
+not accumulate millions of primary, cut, replica, or index rows in Python at
+publication time. Phase 4, Phase 5, cut-timing, Phase 7C, and physical timing
+query preparation read a bounded assignment contract that excludes the sibling
+cluster population. Consumers that need instance ownership use a bounded-cache,
+read-only `assignment.sqlite` mapping; only explicit compatibility or deep
+qualification paths reconstruct the complete assignment graph. This is a
+storage and consumption change, not a partitioning, routing, TDM, or timing
+algorithm change. Real NVDLA peak-RSS/runtime requalification of this revision
+is required before claiming an end-to-end scalability result.
+
 The same rule applies to TimingPathDB.  Phase 7 logic-segment binding now uses
 the SQLite `path_id` index to fetch only Phase 4 route members.  Same-FPGA path
 binding scans the TimingPathDB once in bounded batches, resolves each path to

@@ -15,6 +15,7 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .platform import Platform
+from .phase3_storage import read_phase3_assignment_view
 from .routing import semantic_contract_for_routes
 from .tdm_ratio import validate_tdm_ratio_plan
 from .tritonpart import PARTITION_NET_WEIGHTS_SCHEMA
@@ -452,7 +453,9 @@ def run_partition_feedback(
     routes = read_json(routes_path)
     ratio_plan = read_json(ratio_plan_path)
     assignment = (
-        read_json(assignment_path) if assignment_path is not None else None
+        read_phase3_assignment_view(assignment_path)
+        if assignment_path is not None
+        else None
     )
     platform = Platform.load(platform_path)
     artifact = build_partition_feedback(

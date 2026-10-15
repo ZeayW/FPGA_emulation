@@ -16,6 +16,7 @@ from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
+from .phase3_storage import read_phase3_assignment_view
 from .timing_routing import STA_PATHS_SCHEMA, compress_sta_paths
 
 
@@ -834,7 +835,7 @@ def write_vivado_cut_net_map(
     output_path: Path,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
-    assignment = read_json(assignment_path)
+    assignment = read_phase3_assignment_view(assignment_path)
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError(
             f"assignment.schema: expected {PARTITION_ASSIGNMENT_SCHEMA!r}"
@@ -2147,7 +2148,10 @@ def project_sta_path_database(
     input_already_validated: bool = False,
 ) -> Dict[str, Any]:
     database = read_json(database_path)
-    assignment = read_json(assignment_path)
+    assignment = read_phase3_assignment_view(
+        assignment_path,
+        include_instance_assignment=True,
+    )
     artifact, summary = project_sta_path_database_value(
         database,
         assignment,
@@ -2231,7 +2235,7 @@ def project_sta_path_database_value(
             f"{','.join(sources)}->{','.join(sinks)}"
         )
     instance_assignment = assignment.get("instance_assignment")
-    if not isinstance(instance_assignment, dict):
+    if not isinstance(instance_assignment, Mapping):
         instance_assignment = {}
 
     def path_transitions(
@@ -2457,7 +2461,7 @@ def import_vivado_sta_tsv(
     assignment_path: Path,
     output_path: Path,
 ) -> Dict[str, Any]:
-    assignment = read_json(assignment_path)
+    assignment = read_phase3_assignment_view(assignment_path)
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError(
             f"assignment.schema: expected {PARTITION_ASSIGNMENT_SCHEMA!r}"

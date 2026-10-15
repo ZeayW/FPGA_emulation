@@ -488,6 +488,7 @@ def validate_phase6(
     electrical_binding_path: Optional[Path] = None,
     *,
     replay_equivalence: bool = False,
+    schedule_value: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     source = read_compact_emuir_control_metadata(ir_path)
     design_name = source["design"]["name"]
@@ -498,7 +499,14 @@ def validate_phase6(
     )
     if not assignment_index_path.is_file():
         raise ValidationError("Phase 6 assignment.sqlite is missing")
-    schedule = read_json(schedule_path)
+    # Checkpoint orchestration may already have parsed a large schedule to
+    # validate the cross-layer contract.  Reuse that exact object instead of
+    # scanning and decoding the artifact again.
+    schedule = (
+        read_json(schedule_path)
+        if schedule_value is None
+        else schedule_value
+    )
     platform = Platform.load(platform_path)
     manifest = read_json(manifest_path)
     transports = {

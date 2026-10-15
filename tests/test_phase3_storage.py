@@ -1,14 +1,18 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from emuflow.io import read_json, write_json
 from emuflow.phase3_storage import (
+    COMPRESSED_CLUSTERS_SCHEMA,
     PACKED_ASSIGNMENT_SCHEMA,
     PACKED_CLUSTERS_SCHEMA,
+    compress_phase3_clusters,
     pack_phase3_assignment,
     pack_phase3_clusters,
+    read_phase3_assignment_view,
 )
 
 
@@ -73,6 +77,15 @@ def _large_artifacts(count: int = 1000):
 
 
 class Phase3StorageTest(unittest.TestCase):
+    def test_compressed_clusters_round_trip_without_column_copy(self) -> None:
+        clusters, _ = _large_artifacts()
+        compressed = compress_phase3_clusters(clusters)
+        self.assertEqual(compressed["schema"], COMPRESSED_CLUSTERS_SCHEMA)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "clusters.json"
+            write_json(path, compressed, compact=True)
+            self.assertEqual(read_json(path), clusters)
+
     def test_round_trip_is_lossless_and_materially_smaller(self) -> None:
         clusters, assignment = _large_artifacts()
         packed_clusters = pack_phase3_clusters(clusters)
@@ -141,7 +154,7 @@ class Phase3StorageTest(unittest.TestCase):
     def test_corrupt_cluster_vector_is_rejected(self) -> None:
         clusters, assignment = _large_artifacts(4)
         packed = pack_phase3_assignment(assignment, clusters)
-        packed["cluster_parts"][0] = 99
+        packed["cluster_parts"]["data"] = "not-valid-base64!"
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             write_json(
@@ -150,7 +163,7 @@ class Phase3StorageTest(unittest.TestCase):
                 compact=True,
             )
             write_json(root / "assignment.json", packed, compact=True)
-            with self.assertRaisesRegex(ValueError, "vector is malformed"):
+            with self.assertRaisesRegex(ValueError, "index is corrupt"):
                 read_json(root / "assignment.json")
 
     def test_corrupt_compressed_semantic_contract_is_rejected(self) -> None:
@@ -174,6 +187,81 @@ class Phase3StorageTest(unittest.TestCase):
             write_json(root / "assignment.json", packed, compact=True)
             with self.assertRaisesRegex(ValueError, "contract is corrupt"):
                 read_json(root / "assignment.json")
+
+    def test_downstream_view_does_not_expand_sibling_clusters(self) -> None:
+        clusters, assignment = _large_artifacts(4)
+        assignment["semantic_contract"] = {
+            "schema": "emuflow.static-exact-semantic-contract/v1",
+            "mode": "static-exact-combinational",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            write_json(
+                root / "assignment.json",
+                pack_phase3_assignment(assignment, clusters),
+                compact=True,
+            )
+            view = read_phase3_assignment_view(root / "assignment.json")
+            self.assertEqual(view["cut_nets"], assignment["cut_nets"])
+            self.assertEqual(
+                view["semantic_contract"], assignment["semantic_contract"]
+            )
+            self.assertNotIn("cluster_assignment", view)
+            self.assertNotIn("instance_assignment", view)
+            cluster_view = read_phase3_assignment_view(
+                root / "assignment.json",
+                include_cluster_assignment=True,
+            )["cluster_assignment"]
+            self.assertEqual(cluster_view["c000003"], "fpga3")
+            self.assertEqual(len(cluster_view), 4)
+
+    def test_downstream_view_uses_lazy_sqlite_instance_lookup(self) -> None:
+        clusters, assignment = _large_artifacts(4)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            write_json(
+                root / "assignment.json",
+                pack_phase3_assignment(assignment, clusters),
+                compact=True,
+            )
+            with sqlite3.connect(root / "assignment.sqlite") as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE parts(
+                      part_index INTEGER PRIMARY KEY,
+                      fpga TEXT NOT NULL UNIQUE
+                    );
+                    CREATE TABLE copies(
+                      source_instance_seq INTEGER NOT NULL,
+                      part_index INTEGER NOT NULL,
+                      copy_id TEXT NOT NULL,
+                      is_replica INTEGER NOT NULL
+                    );
+                    """
+                )
+                connection.executemany(
+                    "INSERT INTO parts VALUES (?,?)",
+                    enumerate(["fpga0", "fpga1", "fpga2", "fpga3"]),
+                )
+                connection.executemany(
+                    "INSERT INTO copies VALUES (?,?,?,0)",
+                    (
+                        (index, index // 2 % 4, instance)
+                        for index, instance in enumerate(
+                            assignment["instance_assignment"]
+                        )
+                    ),
+                )
+            view = read_phase3_assignment_view(
+                root / "assignment.json",
+                include_instance_assignment=True,
+            )
+            indexed = view["instance_assignment"]
+            self.assertEqual(
+                indexed.get("top/logic_block_3/cell_1"), "fpga3"
+            )
+            self.assertIsNone(indexed.get("absent"))
+            indexed.close()
 
 
 if __name__ == "__main__":

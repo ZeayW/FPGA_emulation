@@ -44,6 +44,7 @@ from .phase1 import (
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .platform import Platform
+from .phase3_storage import read_phase3_assignment_view
 from .routing import load_route_constraints, semantic_contract_for_routes
 from .sta import (
     derive_partition_net_weights,
@@ -610,7 +611,10 @@ def run_cut_timing_checkpoint(
     assignment_path = _require(partition_root, "assignment.json")
     if not managed_dag_node:
         validate_timing_checkpoint(frontend_root, timing_root)
-    assignment = read_json(assignment_path)
+    assignment = read_phase3_assignment_view(
+        assignment_path,
+        include_instance_assignment=True,
+    )
     cut_nets = sorted(
         item["net"] for item in assignment.get("cut_nets", [])
         if isinstance(item, dict) and isinstance(item.get("net"), str)
@@ -737,7 +741,10 @@ def validate_cut_timing_checkpoint(
         )
         if report.get("architecture_timing_db_sha256") != expected_architecture_sha:
             raise ValidationError("cut-timing architecture timing seal is broken")
-    assignment = read_json(assignment_path)
+    assignment = read_phase3_assignment_view(
+        assignment_path,
+        include_instance_assignment=True,
+    )
     expected_cut_nets = sorted(
         item["net"]
         for item in assignment.get("cut_nets", [])
@@ -1034,7 +1041,9 @@ def validate_tdm_checkpoint(
         route_document,
         read_json(cross_layer_timing),
         schedule_document,
-        semantic_contract_for_routes(read_json(assignment), route_document),
+        semantic_contract_for_routes(
+            read_phase3_assignment_view(assignment), route_document
+        ),
     )
     if constraints_path is not None:
         constraints = load_route_constraints(

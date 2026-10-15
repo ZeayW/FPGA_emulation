@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 from .io import read_json, write_json
 from .managed_json_storage import pack_managed_json
+from .phase3_storage import read_phase3_assignment_view
 from .platform import Platform
 from .routing import (
     demands_from_assignment,
@@ -53,7 +54,7 @@ def run_phase4(
     candidate_workers: int = 1,
     managed_storage: bool = False,
 ) -> Dict[str, Any]:
-    assignment = read_json(assignment_path)
+    assignment = read_phase3_assignment_view(assignment_path)
     platform = Platform.load(platform_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     candidate_pool_path = (
@@ -311,7 +312,7 @@ def validate_phase4(
     routes_path: Path,
     timing_paths_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    assignment = read_json(assignment_path)
+    assignment = read_phase3_assignment_view(assignment_path)
     platform = Platform.load(platform_path)
     routes = read_json(routes_path)
     provider = routes.get("provider")

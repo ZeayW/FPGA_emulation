@@ -1434,10 +1434,11 @@ def validate_phase6_checkpoint(
         raise ValidationError(
             "experiment Phase 6 cross-layer timing reference is invalid"
         )
+    schedule_value = read_json(schedule_path)
     validate_cross_layer_timing_contract(
         read_json(paths["routes"]),
         read_json(paths["cross_layer_timing"]),
-        read_json(schedule_path),
+        schedule_value,
     )
     validate_phase6(
         paths["ir"],
@@ -1446,10 +1447,11 @@ def validate_phase6_checkpoint(
         platform_path,
         manifest,
         replay_equivalence=validation_mode == "full-replay",
+        schedule_value=schedule_value,
     )
     if provider == "placement-aware":
         validate_pin_plan(
-            read_json(schedule_path),
+            schedule_value,
             Platform.load(platform_path),
             read_json(root / "placement-aware-position-hints.json"),
             read_json(root / "placement-aware-pin-plan.json"),

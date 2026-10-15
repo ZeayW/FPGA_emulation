@@ -20,6 +20,7 @@ from .partition import (
     validate_cluster_assignment_balance,
 )
 from .platform import Platform
+from .phase3_storage import read_phase3_assignment_view
 from .replication import apply_replication
 from .resources import RESOURCE_FIELDS
 from .routing import build_directed_graph, load_route_constraints
@@ -115,7 +116,7 @@ def validate_assignment_hop_constraints(
     if hop_limit is None:
         return {"status": "not-requested", "max_route_hops": None}
     audit = audit_assignment_hops(
-        read_json(assignment_path),
+        read_phase3_assignment_view(assignment_path),
         _shortest_hop_distances(platform, constraints),
         hop_limit,
     )

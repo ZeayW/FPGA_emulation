@@ -41,7 +41,11 @@ from .partition_feedback import (
     validate_partition_feedback,
 )
 from .phase3 import run_phase3
-from .phase3_storage import pack_phase3_assignment, pack_phase3_clusters
+from .phase3_storage import (
+    pack_phase3_assignment,
+    pack_phase3_clusters,
+    read_phase3_assignment_view,
+)
 from .phase4 import run_phase4
 from .phase5 import run_phase5
 from .platform import Platform
@@ -810,7 +814,11 @@ def evaluate_cross_stage_candidate(
     }
     candidate = build_cross_stage_candidate(
         _streaming_path_database(database_path),
-        read_json(assignment_path),
+        read_phase3_assignment_view(
+            assignment_path,
+            include_instance_assignment=True,
+            include_cluster_assignment=True,
+        ),
         read_json(routes_path),
         read_json(schedule_path),
         read_json(ratio_plan_path),
@@ -840,7 +848,11 @@ def validate_cross_stage_candidate(
     }
     expected = build_cross_stage_candidate(
         _streaming_path_database(database_path),
-        read_json(assignment_path),
+        read_phase3_assignment_view(
+            assignment_path,
+            include_instance_assignment=True,
+            include_cluster_assignment=True,
+        ),
         read_json(routes_path),
         read_json(schedule_path),
         read_json(ratio_plan_path),

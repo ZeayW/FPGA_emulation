@@ -23,6 +23,7 @@ from .logic_segment_timing import (
     _xilinx_object,
 )
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
+from .phase3_storage import read_phase3_assignment_view
 from .routing import system_route_timing_paths
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
@@ -416,7 +417,11 @@ def prepare_vpr_local_path_query_inputs(
     """
     if object_provider not in {"vpr", "xilinx"}:
         raise ValidationError("local path object provider is invalid")
-    assignment = assignment or read_json(assignment_path)
+    if assignment is None:
+        assignment = read_phase3_assignment_view(
+            assignment_path,
+            include_instance_assignment=True,
+        )
     database = database or read_json(path_database_path)
     routes = routes or read_json(routes_path)
     if database.get("schema") not in {
@@ -430,7 +435,7 @@ def prepare_vpr_local_path_query_inputs(
     if assignment.get("design") != database.get("design"):
         raise ValidationError("local path assignment design disagrees")
     instance_assignment = assignment.get("instance_assignment")
-    if not isinstance(instance_assignment, dict):
+    if not isinstance(instance_assignment, Mapping):
         raise ValidationError("local path instance assignment is invalid")
     raw_route_timing = system_route_timing_paths(
         routes,

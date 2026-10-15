@@ -106,7 +106,7 @@ def write_phase3_assignment_index(
     if len(part_ids) != len(partitions) or len(set(part_ids)) != len(part_ids):
         raise ValidationError("Phase 3 assignment has invalid partitions")
     part_index = {fpga: index for index, fpga in enumerate(part_ids)}
-    if set(instance_assignment.values()) - set(part_ids):
+    if any(target not in part_index for target in instance_assignment.values()):
         raise ValidationError("Phase 3 assignment references an unknown FPGA")
 
     exact_contract = static_exact_contract_from_assignment(assignment)
@@ -149,75 +149,84 @@ def write_phase3_assignment_index(
             enumerate(part_ids),
         )
 
-        primary_rows = []
-        instance_seq_by_id: dict[str, int] = {}
-        for source_seq, instance in enumerate(ir.value["instances"]):
-            identity = instance["id"]
-            target = instance_assignment.get(identity)
-            if target is None:
-                raise ValidationError(
-                    f"Phase 3 assignment omits instance {identity!r}"
-                )
-            instance_seq_by_id[identity] = source_seq
-            primary_rows.append(
-                (source_seq, part_index[target], identity, 0)
-            )
-        if set(instance_seq_by_id) != set(instance_assignment):
+        source_instances = ir.value["instances"]
+        if len(source_instances) != len(instance_assignment):
             raise ValidationError(
                 "Phase 3 assignment instance coverage disagrees with EmuIR"
             )
+
+        def primary_rows():
+            for source_seq, instance in enumerate(source_instances):
+                identity = instance["id"]
+                target = instance_assignment.get(identity)
+                if target is None:
+                    raise ValidationError(
+                        f"Phase 3 assignment omits instance {identity!r}"
+                    )
+                yield (source_seq, part_index[target], identity, 0)
+
         connection.executemany(
-            "INSERT INTO copies VALUES (?,?,?,?)", primary_rows
+            "INSERT INTO copies VALUES (?,?,?,?)", primary_rows()
         )
 
-        replica_rows = []
         replication = assignment.get("replication")
-        if isinstance(replication, Mapping):
-            for record in replication.get("replicas", []):
+        replica_records = (
+            replication.get("replicas", [])
+            if isinstance(replication, Mapping)
+            else []
+        )
+
+        def replica_rows():
+            for record in replica_records:
                 target = record.get("target_fpga")
                 if target not in part_index:
                     raise ValidationError("replica targets an unknown FPGA")
                 for item in record.get("instances", []):
                     original = item.get("original_instance")
                     copy_id = item.get("replica_instance")
-                    if original not in instance_seq_by_id or not isinstance(
+                    if not isinstance(original, str) or not isinstance(
                         copy_id, str
                     ):
                         raise ValidationError("replica instance is invalid")
-                    replica_rows.append(
-                        (
-                            instance_seq_by_id[original],
-                            part_index[target],
-                            copy_id,
-                            1,
-                        )
+                    row = connection.execute(
+                        "SELECT source_instance_seq FROM copies "
+                        "WHERE copy_id=? AND is_replica=0",
+                        (original,),
+                    ).fetchone()
+                    if row is None:
+                        raise ValidationError("replica instance is invalid")
+                    yield (
+                        int(row[0]),
+                        part_index[target],
+                        copy_id,
+                        1,
                     )
+
         connection.executemany(
-            "INSERT INTO copies VALUES (?,?,?,?)", replica_rows
+            "INSERT INTO copies VALUES (?,?,?,?)", replica_rows()
         )
 
-        cut_rows = []
-        for cut in assignment.get("cut_nets", []):
-            sources = cut.get("source_fpgas")
-            sinks = cut.get("sink_fpgas")
-            net_id = cut.get("net")
-            if (
-                not isinstance(sources, list)
-                or len(sources) != 1
-                or sources[0] not in part_index
-                or not isinstance(net_id, str)
-                or not isinstance(sinks, list)
-            ):
-                raise ValidationError("cut-net assignment is invalid")
-            source = sources[0]
-            for sink in sinks:
-                if sink not in part_index:
-                    raise ValidationError("cut net targets an unknown FPGA")
-                cut_rows.append(
-                    (net_id, part_index[source], part_index[sink])
-                )
+        def cut_rows():
+            for cut in assignment.get("cut_nets", []):
+                sources = cut.get("source_fpgas")
+                sinks = cut.get("sink_fpgas")
+                net_id = cut.get("net")
+                if (
+                    not isinstance(sources, list)
+                    or len(sources) != 1
+                    or sources[0] not in part_index
+                    or not isinstance(net_id, str)
+                    or not isinstance(sinks, list)
+                ):
+                    raise ValidationError("cut-net assignment is invalid")
+                source = sources[0]
+                for sink in sinks:
+                    if sink not in part_index:
+                        raise ValidationError("cut net targets an unknown FPGA")
+                    yield (net_id, part_index[source], part_index[sink])
+
         connection.executemany(
-            "INSERT INTO cut_sinks VALUES (?,?,?)", cut_rows
+            "INSERT INTO cut_sinks VALUES (?,?,?)", cut_rows()
         )
 
         if exact_contract is not None:
@@ -235,17 +244,17 @@ def write_phase3_assignment_index(
                     )
                 ),
             )
-            exact_rows = []
-            for segment in exact_contract["logic_segments"]:
-                source_cut = segment.get("source_cut_net")
-                fpga = segment.get("fpga")
-                if isinstance(source_cut, str) and fpga in part_index:
-                    exact_rows.append(
-                        (source_cut, part_index[fpga], segment["id"])
-                    )
+
+            def exact_rows():
+                for segment in exact_contract["logic_segments"]:
+                    source_cut = segment.get("source_cut_net")
+                    fpga = segment.get("fpga")
+                    if isinstance(source_cut, str) and fpga in part_index:
+                        yield (source_cut, part_index[fpga], segment["id"])
+
             connection.executemany(
                 "INSERT INTO exact_logic_segments VALUES (?,?,?)",
-                exact_rows,
+                exact_rows(),
             )
 
         connection.commit()

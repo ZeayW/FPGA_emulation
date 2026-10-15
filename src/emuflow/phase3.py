@@ -42,7 +42,12 @@ from .combinational_cut import (
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
-from .phase3_storage import pack_phase3_assignment, pack_phase3_clusters
+from .phase3_storage import (
+    COMPRESSED_CLUSTERS_SCHEMA,
+    PACKED_ASSIGNMENT_SCHEMA,
+    compress_phase3_clusters,
+    pack_phase3_assignment,
+)
 from .phase3_assignment_index import (
     validate_phase3_assignment_index_against_emuir,
     write_phase3_assignment_index,
@@ -1005,8 +1010,8 @@ def run_phase3(
         )
     if not retain_diagnostics:
         report["artifact_storage"] = {
-            "clusters": "emuflow.phase3-clusters-storage/v1",
-            "assignment": "emuflow.phase3-assignment-storage/v1",
+            "clusters": COMPRESSED_CLUSTERS_SCHEMA,
+            "assignment": PACKED_ASSIGNMENT_SCHEMA,
             "assignment_index": "emuflow.phase3-assignment-sqlite/v1",
             "logical_schema": "unchanged-transparent-expansion",
         }
@@ -1019,20 +1024,22 @@ def run_phase3(
     if not retain_diagnostics and hop_refinement["enabled"]:
         shutil.rmtree(output_dir / "hop-refinement", ignore_errors=True)
     persisted_clusters = (
-        clusters if retain_diagnostics else pack_phase3_clusters(clusters)
+        clusters if retain_diagnostics else compress_phase3_clusters(clusters)
     )
+    write_json(
+        output_dir / "clusters.json", persisted_clusters, compact=True
+    )
+    del persisted_clusters
+    write_json(output_dir / "constraints.normalized.json", constraints)
     persisted_assignment = (
         assignment
         if retain_diagnostics
         else pack_phase3_assignment(assignment, clusters)
     )
     write_json(
-        output_dir / "clusters.json", persisted_clusters, compact=True
-    )
-    write_json(output_dir / "constraints.normalized.json", constraints)
-    write_json(
         output_dir / "assignment.json", persisted_assignment, compact=True
     )
+    del persisted_assignment
     write_phase3_assignment_index(
         output_dir / "assignment.sqlite", ir, assignment
     )

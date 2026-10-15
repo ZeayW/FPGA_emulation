@@ -639,6 +639,23 @@ class Phase6Test(unittest.TestCase):
             )
             self.assertEqual(validation["status"], "pass")
 
+            def read_without_schedule(path: Path):
+                self.assertNotEqual(Path(path), schedule_path)
+                return read_json(Path(path))
+
+            with mock.patch(
+                "emuflow.phase6.read_json", side_effect=read_without_schedule
+            ):
+                reused = validate_phase6(
+                    ir_path,
+                    assignment_path,
+                    schedule_path,
+                    PLATFORM_PATH,
+                    output / "manifest.json",
+                    schedule_value=self.schedule,
+                )
+            self.assertEqual(reused, validation)
+
             for filename in (
                 "manifest.json",
                 "lane_map.json",

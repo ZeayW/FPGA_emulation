@@ -496,7 +496,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
             "cut_nets": [{"net": "n0"}],
         }
         database_value = {"schema": "emuflow.sta-paths/v1"}
-        read_json.side_effect = [assignment_value, database_value]
+        read_json.return_value = database_value
         build_qualification.return_value = {
             "status": "pass",
             "summary": {
@@ -541,7 +541,7 @@ class ExperimentUpstreamTest(unittest.TestCase):
             )
 
             self.assertIs(project.call_args.args[0], database_value)
-            self.assertIs(project.call_args.args[1], assignment_value)
+            self.assertEqual(project.call_args.args[1], assignment_value)
             self.assertEqual(
                 build_qualification.call_args.args[:3],
                 (

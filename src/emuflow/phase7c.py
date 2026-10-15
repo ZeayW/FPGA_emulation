@@ -12,6 +12,7 @@ from .cross_layer_timing import (
 from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import Platform
+from .phase3_storage import read_phase3_assignment_view
 from .routing import semantic_contract_for_routes
 from .runtime import (
     aggregate_qor,
@@ -122,7 +123,7 @@ def run_phase7c(
                 "sampled virtual-wire Phase 7C requires the Phase 3 assignment"
             )
         semantic_contract = semantic_contract_for_routes(
-            read_json(assignment_path), routes
+            read_phase3_assignment_view(assignment_path), routes
         )
     routes_artifact_sha256 = (
         _sha256(routes_path) if routes_path is not None else None

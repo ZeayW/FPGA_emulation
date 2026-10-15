@@ -143,6 +143,13 @@ phase, even when a run is expensive or an earlier result appears reusable.
   parse it into Python objects, and then discard it. Production protocols emit
   the final result plus constant-size counters/metrics; detailed records are an
   explicit qualification mode.
+- A packed Phase 3 assignment is not permission to call the generic JSON
+  loader from Phase 4--7: that compatibility API reconstructs the sibling
+  cluster graph and complete instance dictionary. Production consumers must
+  read the bounded downstream assignment view; consumers needing ownership
+  queries must use the read-only `assignment.sqlite` mapping. Phase 3 index
+  publication must stream rows into SQLite and must not build graph-sized
+  primary-row, cut-row, replica-row, or ID-to-sequence Python containers.
 - A fair A/B run may share immutable input files inside the same active
   experiment directory, but that sharing must not create a permanent cache of
   every phase. Run only the requested physical seed unless the user explicitly

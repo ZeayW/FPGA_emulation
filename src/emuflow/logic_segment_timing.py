@@ -20,6 +20,7 @@ from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from .indexed_physical_ir import IndexedPhysicalIR
 from .indexed_timing import IndexedTimingView
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
+from .phase3_storage import read_phase3_assignment_view
 from .placement import _vivado_mapped_name
 from .platform import Platform
 from .routing import system_route_timing_paths
@@ -736,7 +737,10 @@ def prepare_logic_segment_query_inputs(
     platform: Platform,
 ) -> LogicSegmentQueryInputs:
     """Parse and index global query inputs exactly once per physical run."""
-    assignment = read_json(assignment_path)
+    assignment = read_phase3_assignment_view(
+        assignment_path,
+        include_instance_assignment=True,
+    )
     path_database = read_json(path_database_path)
     routes = read_json(routes_path)
     schedule = read_json(schedule_path)
