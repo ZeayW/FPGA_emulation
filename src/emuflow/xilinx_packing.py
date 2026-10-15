@@ -337,17 +337,45 @@ def _cascade_signal(cell: Mapping[str, Any], port: str, index: Optional[int]) ->
     return bits
 
 
-def _derive_cascade_chains(cells: Mapping[str, Any]) -> List[Dict[str, Any]]:
+def _cascade_cells_by_type(
+    cells: Mapping[str, Any],
+) -> Dict[str, Dict[str, Mapping[str, Any]]]:
+    """Collect only dedicated-cascade cells in one streamed netlist pass."""
+
+    result: Dict[str, Dict[str, Mapping[str, Any]]] = {
+        cell_type: {} for cell_type in CASCADE_PORTS
+    }
+    for name, cell in cells.items():
+        if not isinstance(cell, Mapping):
+            continue
+        cell_type = cell.get("type")
+        if cell_type in result:
+            result[cell_type][name] = cell
+    return result
+
+
+def _derive_cascade_chains(
+    cells: Mapping[str, Any],
+    *,
+    cells_by_type: Optional[
+        Mapping[str, Mapping[str, Mapping[str, Any]]]
+    ] = None,
+) -> List[Dict[str, Any]]:
     """Derive non-branching dedicated-cascade chains from mapped connectivity."""
 
+    typed = (
+        _cascade_cells_by_type(cells)
+        if cells_by_type is None else cells_by_type
+    )
     chains: List[Dict[str, Any]] = []
     chain_index = 0
     for cell_type, ports in CASCADE_PORTS.items():
-        names = sorted(name for name, cell in cells.items() if cell.get("type") == cell_type)
+        type_cells = typed.get(cell_type, {})
+        names = sorted(type_cells)
         output_owners: Dict[Tuple[str, Tuple[Any, ...]], str] = {}
         for name in names:
             for label, output_port, _input_port, index in ports:
-                signal = _cascade_signal(cells[name], output_port, index)
+                signal = _cascade_signal(type_cells[name], output_port, index)
                 if not signal:
                     continue
                 key = (label, signal)
@@ -360,7 +388,7 @@ def _derive_cascade_chains(cells: Mapping[str, Any]) -> List[Dict[str, Any]]:
         pair_labels: Dict[Tuple[str, str], set] = defaultdict(set)
         for target in names:
             for label, _output_port, input_port, _index in ports:
-                signal = _cascade_signal(cells[target], input_port, None)
+                signal = _cascade_signal(type_cells[target], input_port, None)
                 source = output_owners.get((label, signal)) if signal else None
                 if source is not None and source != target:
                     pair_labels[(source, target)].add(label)

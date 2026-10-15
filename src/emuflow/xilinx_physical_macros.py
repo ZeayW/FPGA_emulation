@@ -20,6 +20,7 @@ from .xilinx_packing import (
     LUT_TYPES,
     MUX_TYPES,
     _bits,
+    _cascade_cells_by_type,
     _cascade_signal,
     _derive_cascade_chains,
     _mux_input_driver,
@@ -326,30 +327,46 @@ def _ramb18_site_macros(
 
 def _reject_partial_cascade_overlap(
     cells: Mapping[str, Mapping[str, Any]],
+    *,
+    cells_by_type: Optional[
+        Mapping[str, Mapping[str, Mapping[str, Any]]]
+    ] = None,
 ) -> None:
     """Reject malformed dedicated connections hidden by exact tuple matching."""
 
+    typed = (
+        _cascade_cells_by_type(cells)
+        if cells_by_type is None else cells_by_type
+    )
     for cell_type, ports in CASCADE_PORTS.items():
-        names = sorted(
-            name for name, cell in cells.items() if cell.get("type") == cell_type
-        )
+        type_cells = typed.get(cell_type, {})
+        names = sorted(type_cells)
         for label, output_port, input_port, index in ports:
             outputs = [
-                (name, _cascade_signal(cells[name], output_port, index))
+                (name, _cascade_signal(type_cells[name], output_port, index))
                 for name in names
             ]
             inputs = [
-                (name, _cascade_signal(cells[name], input_port, None))
+                (name, _cascade_signal(type_cells[name], input_port, None))
                 for name in names
             ]
+            input_indices_by_bit: Dict[Any, set[int]] = {}
+            for input_index, (_target, input_signal) in enumerate(inputs):
+                for bit in set(input_signal):
+                    input_indices_by_bit.setdefault(bit, set()).add(
+                        input_index
+                    )
             for source, output in outputs:
                 if not output:
                     continue
-                output_set = set(output)
-                for target, input_signal in inputs:
+                candidates = set()
+                for bit in set(output):
+                    candidates.update(input_indices_by_bit.get(bit, ()))
+                for input_index in sorted(candidates):
+                    target, input_signal = inputs[input_index]
                     if source == target or not input_signal:
                         continue
-                    if output_set.intersection(input_signal) and output != input_signal:
+                    if output != input_signal:
                         raise ValidationError(
                             f"{cell_type} cascade {label!r} has a partial-width "
                             f"connection from {source!r} to {target!r}"
@@ -359,8 +376,13 @@ def _reject_partial_cascade_overlap(
 def _cascade_contracts(
     cells: Mapping[str, Mapping[str, Any]],
 ) -> List[Dict[str, Any]]:
-    _reject_partial_cascade_overlap(cells)
-    base = _derive_cascade_chains(cells)
+    cells_by_type = _cascade_cells_by_type(cells)
+    _reject_partial_cascade_overlap(
+        cells, cells_by_type=cells_by_type
+    )
+    base = _derive_cascade_chains(
+        cells, cells_by_type=cells_by_type
+    )
     contracts = []
     for chain in base:
         cell_type = chain["cell_type"]

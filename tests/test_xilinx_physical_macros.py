@@ -322,6 +322,24 @@ class XilinxPhysicalMacroContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "partial-width connection"):
             self._derive(value)
 
+    def test_cascade_contract_scans_indexed_cells_once(self):
+        class CountingCells(dict):
+            def __init__(self, value):
+                super().__init__(value)
+                self.items_calls = 0
+
+            def items(self):
+                self.items_calls += 1
+                return super().items()
+
+        cells = CountingCells(
+            complete_fixture()["modules"]["top"]["cells"]
+        )
+        contracts = physical_macros._cascade_contracts(cells)
+
+        self.assertTrue(contracts)
+        self.assertEqual(cells.items_calls, 1)
+
     def test_tampering_is_rejected_by_connectivity_rederivation(self):
         mapped, contract, _report = self._derive(complete_fixture())
         value = json.loads(contract.read_text(encoding="utf-8"))
