@@ -1916,7 +1916,8 @@ def _write_atomic_source(
         with temporary:
             temporary.write("{")
             first_member = True
-            for key, item in value.items():
+            for key in sorted(value):
+                item = value[key]
                 if not first_member:
                     temporary.write(",")
                 first_member = False
