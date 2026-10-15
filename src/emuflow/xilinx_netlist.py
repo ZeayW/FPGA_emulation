@@ -169,6 +169,26 @@ def open_xilinx_mapped_index(path: Path) -> IndexedXilinxMappedNetlist:
     return IndexedXilinxMappedNetlist(path)
 
 
+def is_xilinx_mapped_index(path: Path) -> bool:
+    """Return whether ``path`` is the canonical mapped-netlist SQLite store."""
+
+    try:
+        connection = sqlite3.connect(
+            f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+    except sqlite3.Error:
+        return False
+    try:
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key='schema'"
+        ).fetchone()
+        return row is not None and row[0] == XILINX_MAPPED_INDEX_SCHEMA
+    except sqlite3.Error:
+        return False
+    finally:
+        connection.close()
+
+
 def _pin_inventory(ir: EmuIR) -> Tuple[
     Dict[str, Dict[str, Dict[int, str]]],
     Dict[Tuple[str, str, int], str],
@@ -270,16 +290,23 @@ def _write_object_entries(
     return count
 
 
-def _emit_compact_xilinx_mapped_json(
+def _emit_compact_xilinx_mapped_artifacts(
     ir_path: Path,
-    output_path: Path,
+    output_path: Optional[Path],
     index_path: Path,
 ) -> Dict[str, Any]:
-    """Stream compact EmuIR to Yosys JSON plus a bounded read index."""
+    """Stream compact EmuIR to one canonical index and optional JSON export.
+
+    The physical flow uses the SQLite index as its sole mapped-netlist
+    representation.  A JSON document is emitted only for the explicit export
+    API; producing both representations in the Phase 7 hot path duplicates
+    graph-sized serialization and I/O without adding information.
+    """
 
     source = open_emuir_sqlite_read_only(ir_path)
-    output_temp = output_path.with_name(
-        f".{output_path.name}.{uuid.uuid4().hex}.tmp"
+    output_temp = (
+        output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
+        if output_path is not None else None
     )
     index_temp = index_path.with_name(
         f".{index_path.name}.{uuid.uuid4().hex}.tmp"
@@ -350,7 +377,8 @@ def _emit_compact_xilinx_mapped_json(
                 "direction": port["direction"], "bits": bits,
             }
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_path is not None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
         index_path.parent.mkdir(parents=True, exist_ok=True)
         index = sqlite3.connect(index_temp)
         index.executescript(
@@ -508,27 +536,35 @@ def _emit_compact_xilinx_mapped_json(
                 )
                 yield str(row["id"]), value
 
-        with output_temp.open("w", encoding="utf-8") as stream:
-            stream.write('{"creator":"EmuFlow Xilinx mapped-netlist exporter",')
-            stream.write('"modules":{')
-            stream.write(_json(top))
-            stream.write(':{"attributes":{"top":"1"},')
-            stream.write('"parameter_default_values":{},"ports":')
-            stream.write(_json(ports))
-            stream.write(',"cells":')
-            cell_count = _write_object_entries(stream, cells())
-            stream.write(',"memories":{},"netnames":')
-            emitted_net_count = _write_object_entries(stream, netnames())
-            stream.write("}}}\n")
-            stream.flush()
+        if output_temp is None:
+            cell_count = sum(1 for _name, _value in cells())
+            emitted_net_count = sum(1 for _name, _value in netnames())
+        else:
+            with output_temp.open("w", encoding="utf-8") as stream:
+                stream.write(
+                    '{"creator":"EmuFlow Xilinx mapped-netlist exporter",'
+                )
+                stream.write('"modules":{')
+                stream.write(_json(top))
+                stream.write(':{"attributes":{"top":"1"},')
+                stream.write('"parameter_default_values":{},"ports":')
+                stream.write(_json(ports))
+                stream.write(',"cells":')
+                cell_count = _write_object_entries(stream, cells())
+                stream.write(',"memories":{},"netnames":')
+                emitted_net_count = _write_object_entries(stream, netnames())
+                stream.write("}}}\n")
+                stream.flush()
         index.commit()
         index.close()
         index = None
-        with output_temp.open("rb") as stream:
-            os.fsync(stream.fileno())
+        if output_temp is not None:
+            with output_temp.open("rb") as stream:
+                os.fsync(stream.fileno())
         with index_temp.open("rb") as stream:
             os.fsync(stream.fileno())
-        os.replace(output_temp, output_path)
+        if output_temp is not None and output_path is not None:
+            os.replace(output_temp, output_path)
         os.replace(index_temp, index_path)
 
         resources = ResourceVector.sum(
@@ -541,7 +577,12 @@ def _emit_compact_xilinx_mapped_json(
             )
             for cell_type, count in inventory.items()
         )
-        output_sha256 = file_sha256(output_path)
+        canonical_path = output_path if output_path is not None else index_path
+        output_sha256 = file_sha256(canonical_path)
+        representation = (
+            "yosys-json+sqlite-index"
+            if output_path is not None else "sqlite-index"
+        )
         audit = {
             "status": "pass",
             "schema": "emuflow.xilinx-primitive-audit/v1",
@@ -553,8 +594,11 @@ def _emit_compact_xilinx_mapped_json(
             "resource_totals": resources.to_dict(include_zeros=False),
             "unknown_cell_types": {},
             "external_macros": {},
-            "mapped_json_sha256": output_sha256,
-            "mapped_representation": "yosys-json+sqlite-index",
+            "mapped_sha256": output_sha256,
+            "mapped_json_sha256": (
+                output_sha256 if output_path is not None else None
+            ),
+            "mapped_representation": representation,
             "primitive_library_sha256": file_sha256(
                 DEFAULT_XILINX_PRIMITIVE_LIBRARY
             ),
@@ -575,8 +619,41 @@ def _emit_compact_xilinx_mapped_json(
         source.close()
         if index is not None:
             index.close()
-        output_temp.unlink(missing_ok=True)
+        if output_temp is not None:
+            output_temp.unlink(missing_ok=True)
         index_temp.unlink(missing_ok=True)
+
+
+def emit_xilinx_mapped_index(
+    ir_path: Path,
+    index_path: Path,
+    report_path: Path | None = None,
+) -> Mapping[str, Any]:
+    """Emit the canonical production mapped-netlist SQLite index.
+
+    Phase 7 consumers share this read-only artifact.  The routine deliberately
+    has no JSON fallback: production placement inputs must be compact EmuIR so
+    a large design cannot silently re-enter the graph-sized Python path.
+    """
+
+    if not is_compact_emuir(ir_path):
+        raise ValidationError(
+            "Xilinx mapped-index production input must be compact EmuIR"
+        )
+    streamed = _emit_compact_xilinx_mapped_artifacts(
+        ir_path, None, index_path
+    )
+    report = {
+        "schema": XILINX_MAPPED_NETLIST_REPORT_SCHEMA,
+        "status": "pass",
+        "provider": "emuflow-emuir-to-xilinx-sqlite-index-v2",
+        "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+        **streamed,
+        "output": str(index_path),
+    }
+    if report_path is not None:
+        write_json(report_path, report)
+    return report
 
 
 def emit_xilinx_mapped_json(
@@ -595,7 +672,7 @@ def emit_xilinx_mapped_json(
     """
 
     if index_path is not None and is_compact_emuir(ir_path):
-        streamed = _emit_compact_xilinx_mapped_json(
+        streamed = _emit_compact_xilinx_mapped_artifacts(
             ir_path, output_path, index_path
         )
         report = {

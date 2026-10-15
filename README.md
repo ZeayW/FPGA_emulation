@@ -1106,20 +1106,24 @@ storage and consumption change, not a partitioning, routing, TDM, or timing
 algorithm change. Real NVDLA peak-RSS/runtime requalification of this revision
 is required before claiming an end-to-end scalability result.
 
-The same rule applies to TimingPathDB and the Phase 7 physical handoff. Phase 7
-now streams each compact per-FPGA EmuIR into mapped Yosys JSON while writing a
-read-only SQLite cell/net index. Packing, placement qualification, routing, and
-timing consumers share that bounded index instead of independently decoding the
-mapped JSON into nested Python dictionaries. After routed segment timing is
-bound, the mapped/packed/placement objects are closed before OpenSTA starts.
+The same rule applies to TimingPathDB and the Phase 7 physical handoff. The
+native production backend now streams each compact per-FPGA EmuIR into one
+canonical read-only SQLite mapped-netlist index. It does not also serialize a
+graph-sized mapped Yosys JSON document. Packing, placement qualification,
+routing, segment timing, and routed OpenSTA staging share or directly attach
+that bounded index instead of independently decoding a second representation
+into nested Python dictionaries. The standalone mapped-JSON exporter remains
+an explicit interchange/debug command and is not called by the complete native
+Phase 7 flow. After routed segment timing is bound, mapped/packed/placement
+objects are closed before OpenSTA starts; OpenSTA attaches the mapped index
+directly while constructing its compact routed EmuIR database.
 The OpenPARF atomic-source adapter likewise exposes a re-iterable view over the
 mapped index and streams its external JSON artifact. It does not construct and
 then reparse a graph-sized list of singleton cluster dictionaries, and it
 reuses the mapped artifact's sealed digest instead of scanning it again.
 The OpenSTA staging graph is imported directly into compact EmuIR SQLite and
-route-delay cells are inserted there; no graph-sized `EmuIR` copy or `deepcopy`
-exists in the production path. The persisted JSON remains the external-tool
-interchange and audit artifact, not the in-process data plane.
+route-delay cells are inserted there; no graph-sized `EmuIR` copy, `deepcopy`,
+or mapped JSON intermediary exists in the production path.
 
 Phase 7 logic-segment binding uses
 the SQLite `path_id` index to fetch only Phase 4 route members.  Same-FPGA path
