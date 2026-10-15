@@ -69,7 +69,11 @@ def _site_resource(site_type: str) -> Optional[str]:
 
 
 def _select_xilinx_slr_window(
-    packed_path: Path, architecture_path: Path
+    packed_path: Path,
+    architecture_path: Path,
+    *,
+    packed_value: Optional[Mapping[str, Any]] = None,
+    architecture: Optional[ArchitectureDB] = None,
 ) -> Tuple[str, ...]:
     """Choose the smallest contiguous SLR window with explicit headroom.
 
@@ -82,8 +86,11 @@ def _select_xilinx_slr_window(
     the complete device remains the result.
     """
 
-    packed = read_json(packed_path)
-    architecture = ArchitectureDB.load(architecture_path)
+    packed = read_json(packed_path) if packed_value is None else packed_value
+    architecture = (
+        ArchitectureDB.load(architecture_path)
+        if architecture is None else architecture
+    )
     clusters = packed.get("clusters")
     if not isinstance(clusters, list) or not clusters:
         raise ValidationError("packed partition has no clusters")
@@ -272,11 +279,12 @@ def _run_rapidwright_routed_backend_tail(
     packing_stage: Mapping[str, Any],
     placement_stage: Mapping[str, Any],
     placement_artifacts: Mapping[str, Path],
+    mapped_sha256: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Route and time one already materialized packed placement."""
 
     source_sha256 = {
-        "mapped_sha256": _sha256(mapped_path),
+        "mapped_sha256": mapped_sha256 or _sha256(mapped_path),
         "packed_sha256": _sha256(packed_path),
         "placement_sha256": _sha256(placement_path),
     }
@@ -543,12 +551,29 @@ def run_rapidwright_partition_backend(
         output_dir / "mapped-netlist-report.json",
     )
     mapped_value = read_json(mapped_path)
+    mapped_sha256 = mapped_report.get("output_sha256") or _sha256(mapped_path)
     packed_path = output_dir / "packed-sites.json"
-    packed = pack_xilinx_sites(mapped_path, packed_path)
-    packing_check = validate_xilinx_packing(
-        mapped_path, packed_path, architecture_path=architecture_path
+    packed = pack_xilinx_sites(
+        mapped_path,
+        packed_path,
+        mapped_value=mapped_value,
+        mapped_sha256=mapped_sha256,
     )
-    selected_slrs = _select_xilinx_slr_window(packed_path, architecture_path)
+    packing_check = validate_xilinx_packing(
+        mapped_path,
+        packed_path,
+        architecture_path=architecture_path,
+        mapped_value=mapped_value,
+        mapped_sha256=mapped_sha256,
+        packed_value=packed,
+        architecture=architecture.value,
+    )
+    selected_slrs = _select_xilinx_slr_window(
+        packed_path,
+        architecture_path,
+        packed_value=packed,
+        architecture=architecture,
+    )
     region_path = output_dir / "placement-region.json"
     write_json(region_path, {
         "schema": "emuflow.xilinx-placement-constraints/v1",
@@ -622,6 +647,7 @@ def run_rapidwright_partition_backend(
             "validation": placement_check,
         },
         placement_artifacts={"placement_region": region_path},
+        mapped_sha256=mapped_sha256,
     )
 
 
@@ -670,6 +696,7 @@ def run_rapidwright_openparf_native_candidate_backend(
     # placement, bridge, and validation instead of reparsing it at every
     # contract boundary.
     mapped_value = read_json(mapped_path)
+    mapped_sha256 = mapped_report.get("output_sha256") or _sha256(mapped_path)
     atomic_source_path = output_dir / "openparf-atomic-source.json"
     atomic_source = build_xilinx_openparf_atomic_source(
         mapped_path,
@@ -678,7 +705,10 @@ def run_rapidwright_openparf_native_candidate_backend(
         mapped_value=mapped_value,
     )
     selected_slrs = _select_xilinx_slr_window(
-        atomic_source_path, architecture_path
+        atomic_source_path,
+        architecture_path,
+        packed_value=atomic_source,
+        architecture=architecture,
     )
     region_path = output_dir / "placement-region.json"
     write_json(region_path, {
@@ -726,6 +756,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         native_constraints_path=openparf_native_constraints,
         provider_manifest_path=openparf_provider_manifest,
         mapped_value=mapped_value,
+        mapped_sha256=mapped_sha256,
         architecture=architecture,
     )
     packed = read_json(packed_path)
@@ -735,6 +766,8 @@ def run_rapidwright_openparf_native_candidate_backend(
         packed_path,
         architecture_path=architecture_path,
         mapped_value=mapped_value,
+        mapped_sha256=mapped_sha256,
+        packed_value=packed,
         architecture=architecture.value,
     )
     placement_check = validate_xilinx_placement(
@@ -795,4 +828,5 @@ def run_rapidwright_openparf_native_candidate_backend(
             "openparf_atomic_source": atomic_source_path,
             "openparf_atomic_certificate": certificate_path,
         },
+        mapped_sha256=mapped_sha256,
     )

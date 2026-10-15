@@ -508,6 +508,7 @@ def materialize_xilinx_openparf_atomic_contract(
     native_constraints_path: Optional[Path] = None,
     provider_manifest_path: Optional[Path] = None,
     mapped_value: Optional[Mapping[str, Any]] = None,
+    mapped_sha256: Optional[str] = None,
     architecture: Optional[ArchitectureDB] = None,
 ) -> Dict[str, Any]:
     """Materialize standard physical contracts without repacking/replacing."""
@@ -520,6 +521,7 @@ def materialize_xilinx_openparf_atomic_contract(
         ArchitectureDB.load(architecture_path)
         if architecture is None else architecture
     )
+    mapped_sha = mapped_sha256 or _sha256(mapped_path)
     source_packed: Optional[Mapping[str, Any]] = None
     if source_packed_path is not None:
         loaded_source_packed = read_json(source_packed_path)
@@ -532,7 +534,7 @@ def materialize_xilinx_openparf_atomic_contract(
             source_identity.get("mapped_json_sha256")
             if loaded_source_packed.get("schema") == PACKED_SITE_NETLIST_SCHEMA
             else source_identity.get("mapped_sha256")
-        ) != _sha256(mapped_path):
+        ) != mapped_sha:
             raise ValidationError(
                 "OpenPARF atomic source PackedSiteNetlist seal is invalid"
             )
@@ -540,7 +542,7 @@ def materialize_xilinx_openparf_atomic_contract(
     source = certificate.get("source")
     if (
         not isinstance(source, Mapping)
-        or source.get("mapped_sha256") != _sha256(mapped_path)
+        or source.get("mapped_sha256") != mapped_sha
         or source.get("architecture_sha256") != _sha256(architecture_path)
         or not isinstance(source.get("native_placement_sha256"), str)
         or not isinstance(source.get("name_map_sha256"), str)
@@ -591,7 +593,6 @@ def materialize_xilinx_openparf_atomic_contract(
             "native placement certificate"
         )
     certificate_sha = _sha256(atomic_placement_path)
-    mapped_sha = _sha256(mapped_path)
     architecture_sha = _sha256(architecture_path)
     kind_counts = Counter(cluster["kind"] for cluster in clusters)
     packed = {
@@ -744,6 +745,8 @@ def materialize_xilinx_openparf_atomic_contract(
             mapped_path, packed_temp, top=selected_top,
             architecture_path=architecture_path,
             mapped_value=mapped,
+            mapped_sha256=mapped_sha,
+            packed_value=packed,
             architecture=architecture.value,
         )
         validate_xilinx_placement(

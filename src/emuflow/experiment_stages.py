@@ -66,6 +66,21 @@ _ACADEMIC_CHIMEW_LOOKAHEAD_TOOLS = (
 )
 
 
+def _files_equal(first: Path, second: Path) -> bool:
+    """Compare two stage artifacts without decoding either structured payload."""
+
+    if first.stat().st_size != second.stat().st_size:
+        return False
+    with first.open("rb") as left, second.open("rb") as right:
+        while True:
+            left_chunk = left.read(1024 * 1024)
+            right_chunk = right.read(1024 * 1024)
+            if left_chunk != right_chunk:
+                return False
+            if not left_chunk:
+                return True
+
+
 class _ValidationSession:
     """Deduplicate dependency validation within one stage process.
 
@@ -1258,7 +1273,7 @@ def run_phase6_checkpoint(
     if managed_dag_node:
         if (
             schedule_path.resolve() != paths["schedule"].resolve()
-            and read_json(schedule_path) != read_json(paths["schedule"])
+            and not _files_equal(schedule_path, paths["schedule"])
         ):
             raise ValidationError(
                 "managed Phase 6 provider changed the frozen Phase 5 schedule"

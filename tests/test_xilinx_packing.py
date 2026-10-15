@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.xilinx_packing import (
@@ -66,6 +67,26 @@ class XilinxPackingTest(unittest.TestCase):
         self.assertEqual(report["summary"]["cells"], 39)
         self.assertEqual(report["summary"]["cluster_kinds"]["slice"], 2)
         self.assertEqual(check["status"], "pass")
+
+    def test_packer_reuses_in_memory_mapped_netlist_and_digest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            mapped = Path(temporary) / "mapped.json"
+            packed = Path(temporary) / "packed.json"
+            value = self._mapped()
+            mapped.write_text(json.dumps(value), encoding="utf-8")
+            with mock.patch(
+                "emuflow.xilinx_packing.read_json",
+                side_effect=AssertionError("mapped netlist was reparsed"),
+            ):
+                report = pack_xilinx_sites(
+                    mapped,
+                    packed,
+                    top="top",
+                    mapped_value=value,
+                    mapped_sha256="a" * 64,
+                )
+        self.assertEqual(report["source"]["mapped_json_sha256"], "a" * 64)
+        self.assertEqual(report["summary"]["cells"], 39)
 
     def test_checker_rejects_duplicate_ownership(self):
         with tempfile.TemporaryDirectory() as temporary:

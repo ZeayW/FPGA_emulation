@@ -411,11 +411,19 @@ def pack_xilinx_sites(
     output: Path,
     *,
     top: Optional[str] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    mapped_sha256: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Pack normalized cells using conservative exact UltraScale+ rules."""
 
-    audit = audit_xilinx_mapped_json(mapped_json, top=top)
-    source = read_json(mapped_json)
+    source = read_json(mapped_json) if mapped_value is None else mapped_value
+    source_sha256 = mapped_sha256 or _sha256(mapped_json)
+    audit = audit_xilinx_mapped_json(
+        mapped_json,
+        top=top,
+        source=source,
+        hash_path=False,
+    )
     selected_top, module = _select_module(source, top)
     cells = module.get("cells")
     if not isinstance(cells, dict):
@@ -576,7 +584,7 @@ def pack_xilinx_sites(
         "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
         "top": selected_top,
         "source": {
-            "mapped_json_sha256": _sha256(mapped_json),
+            "mapped_json_sha256": source_sha256,
             "primitive_library_sha256": audit["primitive_library_sha256"],
         },
         "policy": {
@@ -600,7 +608,14 @@ def pack_xilinx_sites(
         },
     }
     write_json(output, value)
-    validate_xilinx_packing(mapped_json, output, top=selected_top)
+    validate_xilinx_packing(
+        mapped_json,
+        output,
+        top=selected_top,
+        mapped_value=source,
+        mapped_sha256=source_sha256,
+        packed_value=value,
+    )
     return value
 
 
@@ -611,6 +626,8 @@ def validate_xilinx_packing(
     top: Optional[str] = None,
     architecture_path: Optional[Path] = None,
     mapped_value: Optional[Mapping[str, Any]] = None,
+    mapped_sha256: Optional[str] = None,
+    packed_value: Optional[Mapping[str, Any]] = None,
     architecture: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Independently re-check ownership, capacities, BELs, and templates."""
@@ -618,14 +635,16 @@ def validate_xilinx_packing(
     source = read_json(mapped_json) if mapped_value is None else mapped_value
     selected_top, module = _select_module(source, top)
     cells = module.get("cells")
-    packed = read_json(packed_path)
+    packed = read_json(packed_path) if packed_value is None else packed_value
     if not isinstance(cells, dict) or not isinstance(packed, dict):
         raise ValidationError("packing inputs are invalid")
     if packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA or packed.get("status") != "pass":
         raise ValidationError("PackedSiteNetlist header is invalid")
     if packed.get("top") != selected_top:
         raise ValidationError("PackedSiteNetlist top does not match mapped netlist")
-    if packed.get("source", {}).get("mapped_json_sha256") != _sha256(mapped_json):
+    if packed.get("source", {}).get("mapped_json_sha256") != (
+        mapped_sha256 or _sha256(mapped_json)
+    ):
         raise ValidationError("PackedSiteNetlist source digest is invalid")
     drivers = _net_drivers(cells)
 

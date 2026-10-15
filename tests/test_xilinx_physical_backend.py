@@ -81,6 +81,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     "native_constraints_path": native_constraints,
                     "provider_manifest_path": provider_manifest,
                     "mapped_value": mapped_value,
+                    "mapped_sha256": "0" * 64,
                     "architecture": architecture_object,
                 })
                 packed.write_text(
@@ -140,7 +141,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.emit_xilinx_mapped_json",
-                    return_value={"top": "top"},
+                    return_value={"top": "top", "output_sha256": "0" * 64},
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.read_json",
@@ -405,11 +406,13 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             with (
                 mock.patch(
                     "emuflow.xilinx_physical_backend.ArchitectureDB.load",
-                    return_value=SimpleNamespace(part="xcvu19p-test"),
+                    return_value=SimpleNamespace(
+                        part="xcvu19p-test", value={"site_templates": {}}
+                    ),
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.emit_xilinx_mapped_json",
-                    return_value={"top": "top"},
+                    return_value={"top": "top", "output_sha256": "a" * 64},
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.read_json",

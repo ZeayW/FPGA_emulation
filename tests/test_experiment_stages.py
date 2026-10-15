@@ -11,6 +11,7 @@ from emuflow.cli import _Python38BooleanOptionalAction, _build_parser
 from emuflow.errors import EmuFlowError
 from emuflow.experiment_stages import (
     _ValidationSession,
+    _files_equal,
     _link_tree,
     _phase7_qor_projection,
     _physical_timing_databases,
@@ -37,6 +38,18 @@ from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 class ExperimentStagesTest(unittest.TestCase):
+    def test_large_stage_artifact_comparison_is_streaming_and_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = root / "first.json"
+            second = root / "second.json"
+            payload = b'{"entries":[' + b'0,' * 600_000 + b'0]}\n'
+            first.write_bytes(payload)
+            second.write_bytes(payload)
+            self.assertTrue(_files_equal(first, second))
+            second.write_bytes(payload[:-2] + b'1}\n')
+            self.assertFalse(_files_equal(first, second))
+
     def test_physical_lookahead_preflights_native_tools_before_backend(self) -> None:
         missing = EmuFlowError("missing exact native build product")
         with (
