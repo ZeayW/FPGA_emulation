@@ -60,13 +60,19 @@ class Phase3Test(unittest.TestCase):
             ir_path = root / "design.emuir.sqlite"
             output = root / "phase3"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            report = run_phase3(
-                ir_path,
-                PLATFORM_PATH,
-                output,
-                provider="greedy",
-                seed=7,
-            )
+            with patch(
+                "emuflow.partition_ir.EmuIR.load",
+                side_effect=AssertionError(
+                    "production Phase 3 must stream compact EmuIR"
+                ),
+            ):
+                report = run_phase3(
+                    ir_path,
+                    PLATFORM_PATH,
+                    output,
+                    provider="greedy",
+                    seed=7,
+                )
             with patch(
                 "emuflow.phase3.EmuIR.load",
                 side_effect=AssertionError(
@@ -90,6 +96,42 @@ class Phase3Test(unittest.TestCase):
                     output / "phase3_report.json",
                     output / "assignment.sqlite",
                 )
+
+    def test_static_exact_compact_input_uses_bounded_source_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.sqlite"
+            output = root / "phase3"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            with patch(
+                "emuflow.partition_ir.EmuIR.load",
+                side_effect=AssertionError(
+                    "Static Exact Phase 3 must stream compact EmuIR"
+                ),
+            ):
+                run_phase3(
+                    ir_path,
+                    PLATFORM_PATH,
+                    output,
+                    provider="greedy",
+                    seed=7,
+                    cut_mode="static-exact-combinational",
+                )
+            assignment = read_json(output / "assignment.json")
+            source = assignment["semantic_contract"]["source_identity"]
+            self.assertEqual(
+                source["emuir"],
+                {
+                    "schema": "emuflow.emuir/v1",
+                    "design": "counter",
+                    "instances": len(self.ir.value["instances"]),
+                    "nets": len(self.ir.value["nets"]),
+                    "qualification": (
+                        "phase1-index-plus-assignment-relation-v1"
+                    ),
+                },
+            )
+            self.assertNotIn("canonical_emuir_sha256", source)
 
     def test_minimum_capacity_policy_uses_one_partition_target(self) -> None:
         constraints = normalize_partition_constraints(

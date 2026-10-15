@@ -114,6 +114,26 @@ def semantic_contract_sha256(value: Mapping[str, Any]) -> str:
     return _canonical_sha256(value)
 
 
+def _bounded_emuir_identity(ir: EmuIR) -> Dict[str, Any]:
+    """Return the provenance needed by the semantic contract, not the graph.
+
+    The contract itself contains every cut, dependency, logic segment, and
+    capture fact used downstream.  Re-serializing and hashing the complete
+    multi-gigabyte EmuIR here duplicated Phase 1 work and made a source seal a
+    Phase 3 hot-path operation.  Design/schema/count identity plus the
+    independently validated assignment-index relation is the appropriate
+    bounded provenance boundary.
+    """
+
+    return {
+        "schema": ir.value["schema"],
+        "design": ir.value["design"]["name"],
+        "instances": len(ir.value["instances"]),
+        "nets": len(ir.value["nets"]),
+        "qualification": "phase1-index-plus-assignment-relation-v1",
+    }
+
+
 def _instance_class(instance: Mapping[str, Any]) -> str:
     resources = instance["resources"]
     if any(resources.get(field, 0) for field in _STATE_RESOURCES):
@@ -449,6 +469,16 @@ def _build_combinational_cut_candidate_index(
             raise ValidationError(
                 "eligible combinational-cut dependency graph is cyclic"
             )
+
+    # Phase 3 needs only the eligible net identities.  Returning the complete
+    # instance/net indices retained a second decoded copy of a production
+    # graph while cluster construction began.  The characterization path asks
+    # for dependency levels and still receives the full analysis record.
+    if not include_dependency_levels and not include_source_identity:
+        return {
+            "eligible_ids": eligible_ids,
+            "dependency_levels": {},
+        }
 
     result: Dict[str, Any] = {
         "instances": instances,
@@ -1023,7 +1053,7 @@ def build_static_exact_semantic_contract(
             "capture_requirements": len(capture_records),
         },
         "source_identity": {
-            "canonical_emuir_sha256": _canonical_sha256(ir.to_dict()),
+            "emuir": _bounded_emuir_identity(ir),
             "canonical_platform_sha256": _canonical_sha256(platform_value),
             "instance_assignment_sha256": _canonical_sha256(
                 {"instance_assignment": dict(sorted(instance_assignment.items()))}

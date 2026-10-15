@@ -2402,12 +2402,19 @@ def _render_site_geometry(
             pitch = next(iter(pitches))
             for index, name in enumerate(ordered_slrs):
                 xl, yl, xh, observed_yh = slr_bboxes[name]
-                expanded_yh = yl + pitch - 1
-                if observed_yh > expanded_yh:
+                # Dense Y may follow the native cascade direction.  With a
+                # descending axis, the implicit final physical seam appears
+                # *before* the first observed dense SLR row rather than after
+                # the last one.  Anchor ownership spans to the complete dense
+                # device extent instead of to the first observed site so both
+                # orientations cover exactly the same constant-pitch grid.
+                expanded_yl = index * pitch
+                expanded_yh = expanded_yl + pitch - 1
+                if yl < expanded_yl or observed_yh > expanded_yh:
                     raise ValidationError(
                         f"ArchitectureDB SLR {name!r} exceeds its y-axis pitch"
                     )
-                slr_bboxes[name] = (xl, yl, xh, expanded_yh)
+                slr_bboxes[name] = (xl, expanded_yl, xh, expanded_yh)
         x_spans = sorted({(bbox[0], bbox[2]) for bbox in slr_bboxes.values()})
         y_spans = sorted({(bbox[1], bbox[3]) for bbox in slr_bboxes.values()})
         expected_slr_bboxes = {

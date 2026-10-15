@@ -409,6 +409,13 @@ requirements, not optional micro-optimizations.
   exhaustive Python optimization, and complete candidate traces belong to
   small-graph algorithm qualification or explicitly requested offline studies,
   not to every managed large-design execution.
+- Production Phase 3 must read compact EmuIR through a partition-only indexed
+  view.  It may stream the minimal cell resource/type and net endpoint facts
+  required by the selected algorithm, but must not deserialize synthesis
+  parameters, attributes, aliases, constants, or other complete-circuit
+  payloads into Python.  Temporary candidate indices must be released before
+  cluster construction, and a semantic source identity must not require a
+  second whole-EmuIR serialization or hash pass.
 - If a downstream optimization directly consumes a non-winning candidate,
   retain only that candidate's compact consumer artifact behind an explicit
   request. Do not retain or recreate the provider's model, trace, hashes, or

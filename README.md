@@ -6661,9 +6661,21 @@ nets and physical cells needed by one timing or placement operation. The
 complete-flow terminal checks use set-oriented SQLite relations rather than
 reconstructing a second Python copy of the circuit.
 
+Phase 3 reads compact EmuIR through a partition-only SQLite view. Repeated
+algorithm scans decode only cell identity/type/resources and net endpoint
+identity/port/bit; synthesis parameters, attributes, aliases, names, constants,
+and other payloads never enter the partitioner. The generalized Static Exact
+candidate builder releases its temporary instance/net indices before cluster
+construction, and the semantic contract records a bounded Phase-1/assignment
+relation identity instead of serializing and hashing the entire EmuIR again.
+This changes physical storage and peak memory only; cluster membership,
+assignment, cut dependencies, routes, schedules, and QoR retain their logical
+schemas.
+
 Physical timing translation treats an original net that is absent from one
 particular split FPGA as an ordinary partition-local membership miss. Required
 net batches remain fail-closed. The RapidWright/OpenPARF device adapter also
 preserves unoccupied UltraScale+ seam rows and assigns those rows to the
-constant-pitch SLR grid, so native cascade legality and SLR geometry are both
-represented without compressing physical coordinates.
+constant-pitch SLR grid in either native Y-axis orientation, so native cascade
+legality and SLR geometry are both represented without compressing physical
+coordinates.

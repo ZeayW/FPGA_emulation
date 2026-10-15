@@ -48,6 +48,7 @@ from .phase3_assignment_index import (
     write_phase3_assignment_index,
 )
 from .phase1 import indexed_phase1_identity
+from .partition_ir import load_partition_ir
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
@@ -450,7 +451,13 @@ def run_phase3(
         raise ValueError(
             "MFSPart post-refinement requires provider='tritonpart'"
         )
-    ir = EmuIR.load(ir_path)
+    # Explicit qualification mode may request full canonical source seals and
+    # replay artifacts.  Production keeps only the partition facts resident.
+    ir = (
+        EmuIR.load(ir_path)
+        if retain_diagnostics
+        else load_partition_ir(ir_path)
+    )
     platform = Platform.load(platform_path)
     constraints = load_partition_constraints(
         constraints_path,

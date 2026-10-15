@@ -339,6 +339,36 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         ]
         self.assertEqual(rows, [(0, 0), (0, 3), (1, 0), (1, 3)])
 
+    def test_slr_seams_cover_both_dense_y_orientations(self):
+        sites = []
+        for slr_index, (slr, start) in enumerate(
+            (("SLR0", 0), ("SLR1", 4))
+        ):
+            for physical_y in range(start, start + 3):
+                sites.append(({
+                    "name": f"SLICE_X0Y{physical_y}",
+                    "type": "SLICEL",
+                    "x": 0,
+                    "y": physical_y,
+                    "tile": {"grid_col": 0, "grid_row": physical_y},
+                    "physical_region": {
+                        "slr": slr,
+                        "clock_region": f"X0Y{slr_index}",
+                    },
+                }, {"LUT": 16, "FF": 16}))
+
+        for order in ("ascending", "descending"):
+            _prefix, _suffix, coordinates = (
+                atomic_adapter._render_site_geometry(
+                    sites, y_axis_order=order
+                )
+            )
+            regions = coordinates["super_logic_regions"]["regions"]
+            self.assertEqual(
+                sorted(tuple(region["bbox"]) for region in regions),
+                [(0, 0, 0, 3), (0, 4, 0, 7)],
+            )
+
     def test_placement_geometry_does_not_materialize_every_site_bel_list(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
