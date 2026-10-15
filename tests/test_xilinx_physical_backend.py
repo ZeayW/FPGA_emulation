@@ -68,7 +68,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             def materialize(
                 mapped, architecture_path, certificate, packed, placement, **kwargs
             ):
-                self.assertEqual(mapped, physical / "partition.mapped.json")
+                self.assertEqual(mapped, physical / "partition.mapped.sqlite")
                 self.assertEqual(architecture_path, root / "architecture.json")
                 self.assertEqual(
                     certificate,
@@ -95,7 +95,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 return {"status": "pass"}
 
             def stop_at_export(mapped, packed, placement, output, **kwargs):
-                self.assertEqual(mapped, physical / "partition.mapped.json")
+                self.assertEqual(mapped, physical / "partition.mapped.sqlite")
                 self.assertEqual(packed, packed_path)
                 self.assertEqual(placement, placement_path)
                 self.assertEqual(output, physical / "rwroute.tsv")
@@ -140,13 +140,16 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     return_value=architecture_object,
                 ),
                 mock.patch(
-                    "emuflow.xilinx_physical_backend.emit_xilinx_mapped_json",
+                    "emuflow.xilinx_physical_backend.emit_xilinx_mapped_index",
                     return_value={"top": "top", "output_sha256": "0" * 64},
+                ),
+                mock.patch(
+                    "emuflow.xilinx_physical_backend.open_xilinx_mapped_index",
+                    return_value=mapped_value,
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.read_json",
                     side_effect=[
-                        mapped_value,
                         {"summary": {"clusters": 2}},
                         {"summary": {"clusters": 1}},
                     ],
@@ -233,7 +236,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 packed_value={"summary": {"clusters": 2}},
                 placement_value={"summary": {"clusters": 1}},
             )
-            self.assertEqual(read.call_count, 3)
+            self.assertEqual(read.call_count, 2)
             self.assertIs(
                 build_source.call_args.kwargs["mapped_value"], mapped_value
             )

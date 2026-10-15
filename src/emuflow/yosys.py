@@ -921,6 +921,7 @@ def import_yosys_json_indexed(
     *,
     _source_value: Optional[Mapping[str, Any]] = None,
     _source_stream: Optional[TextIO] = None,
+    _source_index_path: Optional[Path] = None,
     _expand_hierarchy: bool = False,
     staging_transform: Optional[
         Callable[
@@ -929,13 +930,15 @@ def import_yosys_json_indexed(
         ]
     ] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Import Yosys JSON directly into the indexed EmuIR representation.
+    """Import Yosys interchange directly into indexed EmuIR.
 
     Unlike :func:`import_yosys_json`, this production importer never builds a
     second, graph-sized Python ``instances``/``nets`` tree.  With an explicit
     top module, leaf records are decoded directly from the input stream;
     endpoints and name aliases are staged as normalized SQLite rows and the
-    canonical EmuIR database is then written one record at a time.
+    canonical EmuIR database is then written one record at a time.  A mapped
+    SQLite source can be attached directly so Phase 7 never serializes the
+    same graph through a temporary JSON document.
     """
 
     warnings: List[str] = []
@@ -1044,7 +1047,74 @@ def import_yosys_json_indexed(
                 ),
             )
 
-        if _expand_hierarchy:
+        if _source_index_path is not None:
+            if (
+                _source_value is not None
+                or _source_stream is not None
+                or _expand_hierarchy
+            ):
+                raise ImportError(
+                    "mapped-index import cannot be combined with another source"
+                )
+            connection.execute(
+                "ATTACH DATABASE ? AS mapped_source",
+                (str(_source_index_path.resolve()),),
+            )
+            index_metadata = dict(
+                connection.execute(
+                    "SELECT key,value FROM mapped_source.metadata"
+                )
+            )
+            if index_metadata.get("schema") != "emuflow.xilinx-mapped-index/v1":
+                raise ImportError("mapped Xilinx SQLite index schema is invalid")
+            try:
+                indexed_top = json.loads(index_metadata["top_json"])
+                indexed_creator = json.loads(index_metadata["creator_json"])
+                indexed_ports = json.loads(index_metadata["ports_json"])
+            except (KeyError, TypeError, json.JSONDecodeError) as error:
+                raise ImportError(
+                    "mapped Xilinx SQLite index metadata is invalid"
+                ) from error
+            if (
+                not isinstance(indexed_top, str)
+                or not isinstance(indexed_creator, str)
+                or not isinstance(indexed_ports, dict)
+            ):
+                raise ImportError(
+                    "mapped Xilinx SQLite index metadata has invalid types"
+                )
+            if top is not None and top != indexed_top:
+                raise ImportError(
+                    f"mapped Xilinx index top {indexed_top!r} does not match "
+                    f"requested top {top!r}"
+                )
+            top_name = indexed_top
+            creator = indexed_creator
+            raw_ports = indexed_ports
+            connection.execute(
+                """
+                INSERT INTO staging_instances(id,type,ff,bram,record_json)
+                SELECT id,type,
+                       CASE WHEN type IN ('FDCE','FDPE','FDRE','FDSE')
+                            THEN 1 ELSE 0 END,
+                       CASE WHEN type IN ('RAMB18E2','RAMB36E2','URAM288')
+                            THEN 1 ELSE 0 END,
+                       record_json
+                  FROM mapped_source.cells
+                 ORDER BY id
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO staging_names(
+                    yosys_bit,hidden,name_length,name,bus_index,bus_width
+                )
+                SELECT seq+2,0,length(id),id,0,1
+                  FROM mapped_source.netnames
+                 ORDER BY id
+                """
+            )
+        elif _expand_hierarchy:
             if top is None:
                 raise ImportError(
                     "hierarchical indexed Yosys import requires an explicit top"
@@ -1441,7 +1511,10 @@ def import_yosys_json_indexed(
             "design": {
                 "name": top_name,
                 "top": top_name,
-                "source_format": "yosys-json",
+                "source_format": (
+                    "xilinx-mapped-sqlite-index"
+                    if _source_index_path is not None else "yosys-json"
+                ),
                 "source": str(path),
                 "creator": creator,
             },

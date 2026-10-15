@@ -35,6 +35,7 @@ from .xilinx_timing import (
     iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
 )
+from .xilinx_netlist import is_xilinx_mapped_index
 from .yosys import import_yosys_json, import_yosys_json_indexed
 
 
@@ -592,6 +593,9 @@ def build_xilinx_routed_opensta_indexed_inputs(
         output_path,
         top=str(timing["top"]),
         clocks=tuple(clocks),
+        _source_index_path=(
+            mapped_path if is_xilinx_mapped_index(mapped_path) else None
+        ),
         staging_transform=stage_route_delays,
     )
     if transform_report is None or transform_report != transform_state:

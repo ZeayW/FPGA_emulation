@@ -18,6 +18,7 @@ from .io import file_sha256, read_json, write_json
 from .physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA
 from .sta import iter_sta_path_database_paths
 from .xilinx_netlist import (
+    emit_xilinx_mapped_index,
     emit_xilinx_mapped_json,
     open_xilinx_mapped_index,
 )
@@ -752,23 +753,16 @@ def run_rapidwright_openparf_native_candidate_backend(
             f"match BoardDB part {part!r}"
         )
     output_dir.mkdir(parents=True, exist_ok=True)
-    mapped_path = output_dir / "partition.mapped.json"
-    mapped_index_path = output_dir / "partition.mapped.sqlite"
-    mapped_report = emit_xilinx_mapped_json(
+    mapped_path = output_dir / "partition.mapped.sqlite"
+    mapped_report = emit_xilinx_mapped_index(
         merged_ir_path,
         mapped_path,
         output_dir / "mapped-netlist-report.json",
-        index_path=mapped_index_path,
     )
-    # The mapped netlist is hundreds of MiB for realistic DLA partitions.
-    # Production consumers share a read-only SQLite view instead of retaining
-    # one graph-sized nested Python dictionary per physical worker.
-    mapped_value = (
-        open_xilinx_mapped_index(mapped_index_path)
-        if mapped_report.get("index") == str(mapped_index_path)
-        and mapped_index_path.is_file()
-        else read_json(mapped_path)
-    )
+    # SQLite is the sole production mapped-netlist representation.  Every
+    # physical consumer shares this bounded read view; no graph-sized JSON is
+    # serialized, parsed, or retained in the Phase 7 hot path.
+    mapped_value = open_xilinx_mapped_index(mapped_path)
     mapped_sha256 = mapped_report.get("output_sha256") or _sha256(mapped_path)
     atomic_source_path = output_dir / "openparf-atomic-source.json"
     atomic_source = build_xilinx_openparf_atomic_source(

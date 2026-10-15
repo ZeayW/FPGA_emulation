@@ -16,6 +16,8 @@ from emuflow.xilinx_opensta import (
     validate_xilinx_routed_opensta_summary,
 )
 from emuflow.ir import EmuIR
+from emuflow.xilinx_netlist import emit_xilinx_mapped_index
+from emuflow.yosys import import_yosys_json
 
 
 def _sha(path: Path) -> str:
@@ -270,6 +272,93 @@ def test_indexed_routed_opensta_staging_matches_graph_semantics(tmp_path):
     assert actual_metadata == {
         **expected_metadata, "representation": "compact-emuir-sqlite"
     }
+
+
+def test_routed_opensta_stages_directly_from_mapped_sqlite(tmp_path):
+    mapped = {
+        "creator": "fixture",
+        "modules": {"top": {
+            "attributes": {"top": "1"},
+            "ports": {
+                "clk": {"direction": "input", "bits": [2]},
+                "a": {"direction": "input", "bits": [3]},
+                "q": {"direction": "output", "bits": [5]},
+            },
+            "cells": {
+                "lut": {
+                    "type": "LUT1", "parameters": {"INIT": "10"},
+                    "attributes": {},
+                    "port_directions": {"I0": "input", "O": "output"},
+                    "connections": {"I0": [3], "O": [4]},
+                },
+                "ff": {
+                    "type": "FDRE", "parameters": {}, "attributes": {},
+                    "port_directions": {
+                        "C": "input", "CE": "input", "D": "input",
+                        "Q": "output", "R": "input",
+                    },
+                    "connections": {
+                        "C": [2], "CE": ["1"], "D": [4],
+                        "Q": [5], "R": ["0"],
+                    },
+                },
+            },
+            "netnames": {
+                "clk": {"bits": [2]}, "a": {"bits": [3]},
+                "n": {"bits": [4]}, "q": {"bits": [5]},
+            },
+        }},
+    }
+    source = tmp_path / "mapped-source.json"
+    source.write_text(json.dumps(mapped), encoding="utf-8")
+    ir_path = tmp_path / "mapped-source.emuir.sqlite"
+    import_yosys_json(source, clocks=("clk",)).save(ir_path)
+    mapped_index = tmp_path / "mapped.sqlite"
+    emit_xilinx_mapped_index(ir_path, mapped_index)
+    timing_path = tmp_path / "routed-timing.json"
+    timing_path.write_text(json.dumps({
+        "schema": "emuflow.xilinx-routed-timing/v1",
+        "status": "pass", "top": "top", "part": "xcvu19p-test",
+        "source": {
+            "mapped_sha256": _sha(mapped_index),
+            "packed_sha256": "0" * 64,
+            "placement_sha256": "1" * 64,
+            "route_sha256": "2" * 64,
+        },
+        "qualification": {
+            "provider": "rapidwright-lightweight",
+            "analysis": "setup-route-only", "hold_analysis": "unavailable",
+            "hard_block_clock_timing": "unqualified",
+            "logic_coefficients_ps": {
+                "ff_clock_to_q": 25.0, "carry_co": 10.0,
+                "lut_a1": 70.0, "lut_a2": 65.0, "lut_a3": 60.0,
+                "lut_a4": 55.0, "lut_a5": 50.0, "lut_a6": 45.0,
+            },
+        },
+        "endpoints": [{
+            "id": "n4:ff/D", "net": "n", "mapped_bit": 4,
+            "driver": {"instance": "lut", "pin": "O", "site": "S0"},
+            "sink": {"instance": "ff", "pin": "D", "site": "S1"},
+            "route_delay_ns": 0.123, "binding": "exact-site-pin",
+        }],
+        "summary": {
+            "logical_endpoints": 1, "physical_route_sinks": 1,
+            "exact_site_bindings": 1, "shared_site_bindings": 0,
+            "intra_site_endpoints": 0, "maximum_route_delay_ns": 0.123,
+        },
+    }), encoding="utf-8")
+    routed_path = tmp_path / "routed.emuir.sqlite"
+    model, metadata = build_xilinx_routed_opensta_indexed_inputs(
+        mapped_index, timing_path, routed_path, clocks={"clk": 10.0}
+    )
+    routed = EmuIR.load(routed_path)
+    assert not (tmp_path / "mapped.json").exists()
+    assert metadata["inserted_route_delay_cells"] == 1
+    assert model["cells"]["EMUFLOW_RW_ROUTE_DELAY_000000"]["delay_ns"] == 0.123
+    assert any(
+        item["type"] == "EMUFLOW_RW_ROUTE_DELAY_000000"
+        for item in routed.value["instances"]
+    )
 
 
 def test_dsp_timing_cell_unions_ports_across_cascade_instances():
