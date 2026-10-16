@@ -1,8 +1,9 @@
 """Strict bridge from native OpenPARF atoms to Route A physical contracts.
 
-The bridge does not run EmuFlow's historical site packer or legalizer.  It
+The bridge does not run EmuFlow's historical site packer or site placer.  It
 independently checks a native OpenPARF atomic placement certificate, groups
-the already legal atoms by their physical site, and emits the standard
+the atoms by their certified physical site, legalizes only intra-site FF BELs
+against the device's shared MUX-select pins, and emits the standard
 PackedSiteNetlist and Xilinx placement schemas consumed by RWRoute.
 """
 
@@ -36,6 +37,7 @@ from .xilinx_packing import (
     MUX_TYPES,
     PACKED_SITE_NETLIST_SCHEMA,
     _slice_ff_control_sets,
+    legalize_xilinx_slice_site_pins,
     validate_xilinx_packing,
 )
 from .xilinx_placement import (
@@ -511,7 +513,7 @@ def materialize_xilinx_openparf_atomic_contract(
     mapped_sha256: Optional[str] = None,
     architecture: Optional[ArchitectureDB] = None,
 ) -> Dict[str, Any]:
-    """Materialize standard physical contracts without repacking/replacing."""
+    """Materialize standard contracts while preserving certified sites."""
 
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     certificate = read_json(atomic_placement_path)
@@ -592,6 +594,7 @@ def materialize_xilinx_openparf_atomic_contract(
             "OpenPARF native hardblock bridge requires a source-sealed "
             "native placement certificate"
         )
+    site_pin_legalization = legalize_xilinx_slice_site_pins(cells, clusters)
     certificate_sha = _sha256(atomic_placement_path)
     architecture_sha = _sha256(architecture_path)
     kind_counts = Counter(cluster["kind"] for cluster in clusters)
@@ -612,7 +615,8 @@ def materialize_xilinx_openparf_atomic_contract(
         "policy": {
             "provider": "openparf-native-atomic-site-group-bridge-v1",
             "source_grouping": "one-cluster-per-certified-physical-site",
-            "repacking": False,
+            "repacking": site_pin_legalization["moved_ffs"] > 0,
+            "site_pin_legalization": site_pin_legalization,
             "ff_control_set_model": (
                 "ultrascaleplus-half-slice-cksr-ff-lane-ce-v1"
             ),
@@ -709,6 +713,9 @@ def materialize_xilinx_openparf_atomic_contract(
                 "capacity_rounding": "ceil-with-one-site-minimum",
                 "packing": "native-openparf-atomic-site-groups-v1",
                 "placement_certificate": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
+                "site_pin_legalization": (
+                    "ultrascaleplus-slice-site-pin-legalizer-v1"
+                ),
             },
             "source": {
                 "packed_sha256": _sha256(packed_temp),
@@ -727,6 +734,8 @@ def materialize_xilinx_openparf_atomic_contract(
                 "fixed_clusters": 0, "cascade_chains": len(cascades),
                 "mean_guidance_displacement": None,
                 "max_guidance_displacement": None,
+                "site_pin_moved_ffs": site_pin_legalization["moved_ffs"],
+                "site_pin_repaired_sites": site_pin_legalization["sites"],
                 **local_summary,
                 "site_types": dict(sorted(Counter(
                     item["site_type"] for item in placement_clusters
@@ -784,6 +793,8 @@ def materialize_xilinx_openparf_atomic_contract(
         "placement_sha256": _sha256(placement_output_path),
         "cells": len(cells), "placed_cells": len(cells) - len(constants),
         "clusters": len(clusters),
+        "site_pin_moved_ffs": site_pin_legalization["moved_ffs"],
+        "site_pin_repaired_sites": site_pin_legalization["sites"],
         "cascade_chains": len(cascades),
         "runtime_validation": certificate["runtime_validation"],
     }

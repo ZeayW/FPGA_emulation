@@ -178,6 +178,9 @@ class XilinxPlacementTest(unittest.TestCase):
                 "capacity_rounding": "ceil-with-one-site-minimum",
                 "packing": "native-openparf-atomic-site-groups-v1",
                 "placement_certificate": "emuflow.openparf-atomic-placement/v2",
+                "site_pin_legalization": (
+                    "ultrascaleplus-slice-site-pin-legalizer-v1"
+                ),
             }
             value["source"].update({
                 "guidance_sha256": None,

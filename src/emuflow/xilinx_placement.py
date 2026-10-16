@@ -1282,6 +1282,9 @@ def validate_xilinx_placement(
         expected_policy.update({
             "packing": "native-openparf-atomic-site-groups-v1",
             "placement_certificate": "emuflow.openparf-atomic-placement/v2",
+            "site_pin_legalization": (
+                "ultrascaleplus-slice-site-pin-legalizer-v1"
+            ),
         })
     elif provider == XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER:
         expected_policy.update({

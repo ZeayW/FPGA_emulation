@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .errors import ValidationError
 from .io import file_sha256, read_json, write_json
@@ -25,6 +25,15 @@ LUT_TYPES = {f"LUT{width}" for width in range(1, 7)}
 DUAL_OUTPUT_LUT_TYPE = "LUT6_2"
 CONSTANT_TYPES = {"GND", "VCC"}
 MUX_TYPES = {"MUXF7", "MUXF8", "MUXF9"}
+SLICE_MUX_SELECT_SITE_PINS = {
+    "F7MUX_AB": "AX",
+    "F7MUX_CD": "CX",
+    "F7MUX_EF": "EX",
+    "F7MUX_GH": "GX",
+    "F8MUX_BOT": "BX",
+    "F8MUX_TOP": "FX",
+    "F9MUX": "DX",
+}
 HARD_BINDINGS = {
     "DSP48E2": (["DSP48E2"], ["DSP_ALU"]),
     "RAMB36E2": (["RAMB36"], ["RAMB36E2"]),
@@ -223,9 +232,13 @@ def _slice_cluster(
     }
 
 
-def _net_drivers(cells: Mapping[str, Any]) -> Dict[Any, str]:
+def _net_drivers(
+    cells: Mapping[str, Any], required_bits: Optional[Set[Any]] = None
+) -> Dict[Any, str]:
     drivers: Dict[Any, str] = {}
-    for name, cell in sorted(cells.items()):
+    items_by_id = getattr(cells, "items_by_id", None)
+    iterator = items_by_id() if callable(items_by_id) else sorted(cells.items())
+    for name, cell in iterator:
         directions = cell.get("port_directions")
         connections = cell.get("connections")
         if not isinstance(directions, dict) or not isinstance(connections, dict):
@@ -237,11 +250,252 @@ def _net_drivers(cells: Mapping[str, Any]) -> Dict[Any, str]:
             if not isinstance(bits, list):
                 raise ValidationError(f"cell {name!r} output {port!r} is invalid")
             for bit in bits:
-                if isinstance(bit, int):
+                if isinstance(bit, int) and (
+                    required_bits is None or bit in required_bits
+                ):
                     if bit in drivers:
                         raise ValidationError(f"mapped net bit {bit} has multiple drivers")
                     drivers[bit] = name
     return drivers
+
+
+def _slice_site_pin_conflicts(
+    cells: Mapping[str, Any],
+    clusters: Sequence[Mapping[str, Any]],
+    drivers: Mapping[Any, str],
+) -> List[Dict[str, Any]]:
+    """Return conflicting external users of UltraScale+ slice input pins.
+
+    The primary FF in each A-H lane receives its fabric bypass through the
+    corresponding AX-HX site pin.  Dedicated MUXF7/F8/F9 select inputs reuse
+    seven of those pins.  The secondary FF receives its bypass through the
+    independent A_I-H_I pin and therefore must not be aliased with the primary
+    FF.  A same-net shared pin is legal; two different external nets are not.
+    """
+
+    relevant_clusters = [
+        cluster for cluster in clusters
+        if cluster.get("kind") == "slice"
+        and any(
+            assignment.get("cell_type") in MUX_TYPES
+            for assignment in cluster.get("assignments", [])
+        )
+    ]
+    target_bits = {
+        bit
+        for cluster in relevant_clusters
+        for assignment in cluster.get("assignments", [])
+        for port in (
+            ("S",)
+            if assignment.get("cell_type") in MUX_TYPES
+            and assignment.get("bel") in SLICE_MUX_SELECT_SITE_PINS
+            else ("D",)
+            if assignment.get("cell_type") in FF_TYPES
+            else ()
+        )
+        for bit in _bits(cells[assignment["instance"]], port)
+        if isinstance(bit, int)
+    }
+    driver_instances = {
+        drivers[bit] for bit in target_bits if bit in drivers
+    }
+    owner = {
+        assignment["instance"]: cluster["id"]
+        for cluster in clusters
+        for assignment in cluster.get("assignments", [])
+        if assignment.get("instance") in driver_instances
+    }
+
+    def external_bit(
+        cluster_id: str, instance: str, port: str
+    ) -> Optional[int]:
+        bits = _bits(cells[instance], port)
+        if len(bits) != 1 or not isinstance(bits[0], int):
+            return None
+        driver = drivers.get(bits[0])
+        # A missing cell driver can be a top-level input.  Treat it as an
+        # external user conservatively; driverless nets are harmlessly
+        # over-constrained instead of escaping physical-pin validation.
+        if driver is None or owner.get(driver) != cluster_id:
+            return bits[0]
+        return None
+
+    conflicts: List[Dict[str, Any]] = []
+    for cluster in relevant_clusters:
+        assignments = cluster.get("assignments", [])
+        cluster_id = cluster.get("id")
+        mux_users: Dict[str, List[Tuple[int, str, str]]] = defaultdict(list)
+        ff_users: Dict[str, List[Tuple[int, str, str]]] = defaultdict(list)
+        for assignment in assignments:
+            instance = assignment.get("instance")
+            bel = assignment.get("bel")
+            cell_type = assignment.get("cell_type")
+            if not isinstance(instance, str):
+                continue
+            if cell_type in MUX_TYPES and bel in SLICE_MUX_SELECT_SITE_PINS:
+                bit = external_bit(cluster_id, instance, "S")
+                if bit is not None:
+                    resource = SLICE_MUX_SELECT_SITE_PINS[bel]
+                    mux_users[resource].append((bit, instance, bel))
+            elif cell_type in FF_TYPES and isinstance(bel, str) and bel in {
+                f"{letter}FF" for letter in "ABCDEFGH"
+            }:
+                bit = external_bit(cluster_id, instance, "D")
+                if bit is not None:
+                    ff_users[f"{bel[0]}X"].append((bit, instance, bel))
+        for resource in sorted(set(mux_users).intersection(ff_users)):
+            uses = [*mux_users[resource], *ff_users[resource]]
+            if len({bit for bit, _instance, _bel in uses}) > 1:
+                conflicts.append({
+                    "cluster": cluster_id,
+                    "resource": resource,
+                    "uses": [
+                        {"bit": bit, "instance": instance, "bel": bel}
+                        for bit, instance, bel in uses
+                    ],
+                })
+    return conflicts
+
+
+def legalize_xilinx_slice_site_pins(
+    cells: Mapping[str, Any], clusters: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Repair MUX-select/primary-FF site-pin conflicts within each slice.
+
+    OpenPARF chooses legal atomic BEL capacities but does not model the shared
+    AX/CX/... bypass pins.  Preserve every certified physical site and move
+    only FFs among free or swappable FF BELs in that same site.  Each candidate
+    is rechecked against the UltraScale+ half-slice clock/set-reset and lane-CE
+    rules before it is accepted.
+    """
+
+    required_bits: Set[Any] = set()
+    for cluster in clusters:
+        assignments = cluster.get("assignments", [])
+        if cluster.get("kind") != "slice" or not any(
+            assignment.get("cell_type") in MUX_TYPES
+            for assignment in assignments
+        ):
+            continue
+        for assignment in assignments:
+            instance = assignment.get("instance")
+            bel = assignment.get("bel")
+            cell_type = assignment.get("cell_type")
+            if not isinstance(instance, str):
+                continue
+            port = (
+                "S"
+                if cell_type in MUX_TYPES and bel in SLICE_MUX_SELECT_SITE_PINS
+                else "D"
+                if cell_type in FF_TYPES
+                else None
+            )
+            if port is not None:
+                required_bits.update(
+                    bit for bit in _bits(cells[instance], port)
+                    if isinstance(bit, int)
+                )
+    drivers = _net_drivers(cells, required_bits)
+    repairs: List[Dict[str, str]] = []
+    cluster_by_id = {cluster["id"]: cluster for cluster in clusters}
+    initial = _slice_site_pin_conflicts(cells, clusters, drivers)
+    for cluster_id in sorted({item["cluster"] for item in initial}):
+        cluster = cluster_by_id[cluster_id]
+        while True:
+            # Once the initial whole-design audit identifies an affected site,
+            # evaluate candidates against that one bounded 16-FF cluster.
+            # This avoids rescanning a production netlist for every repair.
+            conflicts = _slice_site_pin_conflicts(cells, [cluster], drivers)
+            if not conflicts:
+                break
+            conflict = conflicts[0]
+            assignments = cluster["assignments"]
+            ff_by_bel = {
+                assignment["bel"]: assignment
+                for assignment in assignments
+                if assignment.get("cell_type") in FF_TYPES
+            }
+            resource = conflict["resource"]
+            source_bel = f"{resource[0]}FF"
+            source = ff_by_bel.get(source_bel)
+            if source is None:
+                raise ValidationError(
+                    "slice site-pin conflict has no primary FF owner"
+                )
+            original_conflicts = len(conflicts)
+            source_index = SLICE_FF_BELS.index(source_bel)
+            candidate_bels = sorted(
+                (bel for bel in SLICE_FF_BELS if bel not in ff_by_bel),
+                key=lambda bel: (
+                    bel != f"{resource[0]}FF2",
+                    (SLICE_FF_BELS.index(bel) < 8) != (source_index < 8),
+                    abs(SLICE_FF_BELS.index(bel) - source_index),
+                    bel,
+                ),
+            )
+            accepted = False
+            for target_bel in candidate_bels:
+                source["bel"] = target_bel
+                try:
+                    _slice_ff_control_sets(cells, assignments)
+                    remaining = _slice_site_pin_conflicts(
+                        cells, [cluster], drivers
+                    )
+                except ValidationError:
+                    remaining = conflicts
+                if len(remaining) < original_conflicts:
+                    repairs.append({
+                        "cluster": cluster["id"],
+                        "instance": source["instance"],
+                        "from_bel": source_bel,
+                        "to_bel": target_bel,
+                    })
+                    accepted = True
+                    break
+                source["bel"] = source_bel
+            if accepted:
+                continue
+            for target_bel in sorted(ff_by_bel):
+                if target_bel == source_bel:
+                    continue
+                target = ff_by_bel[target_bel]
+                source["bel"], target["bel"] = target_bel, source_bel
+                try:
+                    _slice_ff_control_sets(cells, assignments)
+                    remaining = _slice_site_pin_conflicts(
+                        cells, [cluster], drivers
+                    )
+                except ValidationError:
+                    remaining = conflicts
+                if len(remaining) < original_conflicts:
+                    repairs.extend([
+                        {
+                            "cluster": cluster["id"],
+                            "instance": source["instance"],
+                            "from_bel": source_bel,
+                            "to_bel": target_bel,
+                        },
+                        {
+                            "cluster": cluster["id"],
+                            "instance": target["instance"],
+                            "from_bel": target_bel,
+                            "to_bel": source_bel,
+                        },
+                    ])
+                    accepted = True
+                    break
+                source["bel"], target["bel"] = source_bel, target_bel
+            if not accepted:
+                raise ValidationError(
+                    "slice site-pin conflict cannot be legalized within certified "
+                    f"site {cluster['id']!r} on {resource}"
+                )
+    return {
+        "provider": "ultrascaleplus-slice-site-pin-legalizer-v1",
+        "moved_ffs": len(repairs),
+        "sites": len({repair["cluster"] for repair in repairs}),
+        "repairs": repairs,
+    }
 
 
 def _mux_input_driver(
@@ -818,6 +1072,16 @@ def validate_xilinx_packing(
                 raise ValidationError("hard cluster is invalid")
         else:
             raise ValidationError(f"unknown packing cluster kind {kind!r}")
+
+    site_pin_conflicts = _slice_site_pin_conflicts(
+        cells, packed.get("clusters", []), drivers
+    )
+    if site_pin_conflicts:
+        conflict = site_pin_conflicts[0]
+        raise ValidationError(
+            "slice external site pin is assigned to different nets: "
+            f"cluster={conflict['cluster']!r} resource={conflict['resource']}"
+        )
 
     constants = packed.get("unplaced_constants")
     if not isinstance(constants, list) or any(cells.get(name, {}).get("type") not in CONSTANT_TYPES for name in constants):

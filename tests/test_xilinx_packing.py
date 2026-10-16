@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from unittest import mock
 from emuflow.errors import ValidationError
 from emuflow.xilinx_packing import (
     exhaustive_minimum_slice_count,
+    legalize_xilinx_slice_site_pins,
     pack_xilinx_sites,
     validate_xilinx_packing,
 )
@@ -134,6 +136,76 @@ class XilinxPackingTest(unittest.TestCase):
             {item["bel"] for item in assignments},
             {"A6LUT", "B6LUT", "F7MUX_AB"},
         )
+
+    def test_site_pin_legalizer_moves_primary_ff_off_mux_select_pin(self):
+        cells = {
+            "lut0": cell("LUT6", {"I0": [1], "O": [10]}),
+            "lut1": cell("LUT6", {"I0": [2], "O": [11]}),
+            "mux": cell(
+                "MUXF7", {"I0": [10], "I1": [11], "S": [3], "O": [12]}
+            ),
+            "ff": cell(
+                "FDRE", {"C": [50], "CE": [51], "R": [52], "D": [4], "Q": [13]}
+            ),
+            "sel_src": cell("LUT1", {"I0": [5], "O": [3]}),
+            "data_src": cell("LUT1", {"I0": [6], "O": [4]}),
+        }
+        mapped_value = {
+            "modules": {"top": {"attributes": {"top": "1"}, "cells": cells}}
+        }
+        control_set = json.dumps(
+            {
+                "clock": [50], "control": [52], "enable": [51],
+                "parameters": {}, "type": "FDRE",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        clusters = [
+            {
+                "id": "slice0", "kind": "slice",
+                "site_templates": ["SLICEL"], "control_set": control_set,
+                "assignments": [
+                    {"instance": "lut0", "cell_type": "LUT6", "bel": "A6LUT"},
+                    {"instance": "lut1", "cell_type": "LUT6", "bel": "B6LUT"},
+                    {"instance": "mux", "cell_type": "MUXF7", "bel": "F7MUX_AB"},
+                    {"instance": "ff", "cell_type": "FDRE", "bel": "AFF"},
+                ],
+            },
+            {
+                "id": "slice1", "kind": "slice",
+                "site_templates": ["SLICEL"], "control_set": None,
+                "assignments": [
+                    {"instance": "sel_src", "cell_type": "LUT1", "bel": "A6LUT"},
+                    {"instance": "data_src", "cell_type": "LUT1", "bel": "B6LUT"},
+                ],
+            },
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            mapped = Path(temporary) / "mapped.json"
+            packed = Path(temporary) / "packed.json"
+            mapped.write_text(json.dumps(mapped_value), encoding="utf-8")
+            value = {
+                "schema": "emuflow.packed-site-netlist/v1", "status": "pass",
+                "top": "top",
+                "source": {
+                    "mapped_json_sha256": hashlib.sha256(mapped.read_bytes()).hexdigest()
+                },
+                "clusters": clusters, "cascade_chains": [],
+                "unplaced_constants": [],
+            }
+            packed.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "external site pin"):
+                validate_xilinx_packing(mapped, packed, top="top")
+            report = legalize_xilinx_slice_site_pins(cells, clusters)
+            packed.write_text(json.dumps(value), encoding="utf-8")
+            validate_xilinx_packing(mapped, packed, top="top")
+        self.assertEqual(report["moved_ffs"], 1)
+        ff_assignment = next(
+            item for item in clusters[0]["assignments"]
+            if item["instance"] == "ff"
+        )
+        self.assertEqual(ff_assignment["bel"], "AFF2")
 
     def test_carry_cascade_is_certified_and_tampering_fails(self):
         cells = {}
