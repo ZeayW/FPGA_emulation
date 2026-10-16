@@ -6765,11 +6765,14 @@ For an explicitly requested continuation from such a completed compact EmuIR,
 `scripts/repair_xilinx_bram_ports.py --source OLD.sqlite --out NEW.sqlite
 --report recovery.json` provides an offline recovery boundary, not a normal
 flow stage or cache. It copies the database once, reads the checked-in Yosys
-RAMB18E2/RAMB36E2 declarations, removes only input bits outside those declared
-ports, and updates affected net fanouts and endpoint counts in SQL. Instance
-and net IDs, resources, parameters, attributes, clocks and top ports remain
-unchanged. Unknown ports, direction mismatches and output resizing fail
-without publishing an output. The original database is never edited. All
+RAMB18E2/RAMB36E2 declarations, truncates oversized input connections, and
+zero-extends oversized unsigned output connections according to Yosys's
+`hierarchy.cc` rule. Output extension becomes constant input/top-output bindings,
+never fictitious physical output pins. Affected net fanouts and endpoint counts
+are updated in SQL. Instance and net IDs, resources, parameters, attributes,
+clocks and top-port declarations remain unchanged. Unknown ports, direction
+mismatches and conflicting drivers fail without publishing an output.
+The original database is never edited. All
 downstream timing, dependency, route and schedule evidence must be regenerated
 from the repaired source; old path coverage cannot be relabelled as passing.
 Atomic-source construction uses aggregate SQL primitive counts and selected

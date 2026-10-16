@@ -7,7 +7,7 @@ from unittest import mock
 
 from emuflow.emuir_compact import write_compact_emuir, read_compact_emuir
 from emuflow.errors import ValidationError
-from emuflow.xilinx_bram_ports import bram_port_declarations, repair_compact_bram_input_ports
+from emuflow.xilinx_bram_ports import bram_port_declarations, repair_compact_bram_ports
 from emuflow.yosys import import_yosys_json
 
 DECLARATIONS = Path(__file__).resolve().parents[1] / "engines/yosys/techlibs/xilinx/cells_xtra.v"
@@ -43,7 +43,7 @@ class XilinxBramPortRecoveryTest(unittest.TestCase):
             source_bytes = source.read_bytes()
             # No whole EmuIR materialization is allowed in the repair path.
             with mock.patch("emuflow.emuir_compact.read_compact_emuir", side_effect=AssertionError("full graph")):
-                report = repair_compact_bram_input_ports(source, output, DECLARATIONS)
+                report = repair_compact_bram_ports(source, output, DECLARATIONS)
             self.assertEqual(source.read_bytes(), source_bytes)
             repaired = read_compact_emuir(output)
             expected = copy.deepcopy(original)
@@ -56,7 +56,7 @@ class XilinxBramPortRecoveryTest(unittest.TestCase):
                                 if not (x["instance"] == "ram" and x["port"] == "WEA" and x["bit"] >= 2)]
                 net["fanout"] = len(net["sinks"])
             self.assertEqual(repaired, expected)
-            self.assertEqual(report["removed_input_endpoints"], 2)
+            self.assertEqual(report["removed_endpoints"], 2)
             self.assertEqual(report["removed_constant_bits"], 2)
             self.assertIn("must-regenerate", report["downstream_timing"])
             # Verilog input-port sizing observes the same two low WE bits,
@@ -65,13 +65,13 @@ class XilinxBramPortRecoveryTest(unittest.TestCase):
                 before = [(value >> bit) & 1 for bit in range(4)]
                 self.assertEqual(sum(x << i for i, x in enumerate(before[:2])), value & 3)
             second = root / "second.sqlite"
-            second_report = repair_compact_bram_input_ports(output, second, DECLARATIONS)
-            self.assertEqual(second_report["removed_input_endpoints"], 0)
+            second_report = repair_compact_bram_ports(output, second, DECLARATIONS)
+            self.assertEqual(second_report["removed_endpoints"], 0)
             self.assertEqual(second_report["removed_constant_bits"], 0)
             self.assertEqual(read_compact_emuir(second), repaired)
 
-    def test_invalid_outputs_or_unknown_ports_are_not_silently_removed(self):
-        for port, direction in (("DOUTADOUT", "output"), ("UNKNOWN", "input")):
+    def test_wrong_directions_or_unknown_ports_are_not_silently_removed(self):
+        for port, direction in (("DOUTADOUT", "input"), ("UNKNOWN", "input")):
             with self.subTest(port=port), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 value = fixture()
@@ -82,7 +82,7 @@ class XilinxBramPortRecoveryTest(unittest.TestCase):
                 mapped.write_text(json.dumps(value))
                 write_compact_emuir(source, import_yosys_json(mapped).value)
                 with self.assertRaisesRegex(ValidationError, "unsupported BRAM"):
-                    repair_compact_bram_input_ports(source, output, DECLARATIONS)
+                    repair_compact_bram_ports(source, output, DECLARATIONS)
                 self.assertFalse(output.exists())
                 self.assertFalse(list(root.glob(".bram-port-recovery-*")))
 
@@ -94,7 +94,7 @@ class XilinxBramPortRecoveryTest(unittest.TestCase):
             write_compact_emuir(source, import_yosys_json(mapped).value)
             output.write_bytes(b"keep")
             with self.assertRaises(ValidationError):
-                repair_compact_bram_input_ports(source, output, DECLARATIONS)
+                repair_compact_bram_ports(source, output, DECLARATIONS)
             self.assertEqual(output.read_bytes(), b"keep")
             output.unlink()
             real_copy = __import__("shutil").copyfile
@@ -106,6 +106,34 @@ class XilinxBramPortRecoveryTest(unittest.TestCase):
 
             with mock.patch("emuflow.xilinx_bram_ports.shutil.copyfile", side_effect=changing_copy):
                 with self.assertRaisesRegex(ValidationError, "source changed"):
-                    repair_compact_bram_input_ports(source, output, DECLARATIONS)
+                    repair_compact_bram_ports(source, output, DECLARATIONS)
             self.assertFalse(output.exists())
             self.assertFalse(list(root.glob(".bram-port-recovery-*")))
+
+    def test_unsigned_output_extension_becomes_constant_consumers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = fixture()
+            module = value["modules"]["top"]
+            module["ports"] = {"result": {"direction": "output", "bits": [18]}}
+            module["cells"]["ram"]["connections"]["DOUTADOUT"] = list(range(2, 34))
+            module["cells"]["ff"]["connections"]["D"] = [18]
+            mapped, source, output = root / "mapped.json", root / "source.sqlite", root / "out.sqlite"
+            mapped.write_text(json.dumps(value))
+            original = import_yosys_json(mapped).value
+            write_compact_emuir(source, original)
+            report = repair_compact_bram_ports(source, output, DECLARATIONS)
+            repaired = read_compact_emuir(output)
+            self.assertEqual(report["zero_extended_output_nets"], 16)
+            self.assertEqual(report["added_constant_inputs"], 1)
+            self.assertEqual(report["top_constant_bits"], 1)
+            ff = next(x for x in repaired["instances"] if x["id"] == "ff")
+            self.assertIn({"port": "D", "bit": 0, "value": "0"}, ff["constant_connections"])
+            self.assertEqual(repaired["ports"][0]["constant_connections"], [{"bit": 0, "value": "0"}])
+            self.assertEqual([x["id"] for x in repaired["instances"]], [x["id"] for x in original["instances"]])
+            self.assertEqual([x["id"] for x in repaired["nets"]], [x["id"] for x in original["nets"]])
+            for net in repaired["nets"]:
+                for endpoint in net["drivers"]:
+                    self.assertFalse(endpoint["instance"] == "ram" and endpoint["port"] == "DOUTADOUT" and endpoint["bit"] >= 16)
+            from emuflow.ir import EmuIR
+            EmuIR(repaired).validate()

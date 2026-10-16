@@ -52,12 +52,14 @@ def _identity(path: Path) -> tuple:
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
-def repair_compact_bram_input_ports(source: Path, output: Path, declarations: Path) -> dict:
-    """Copy once and remove only input bits outside declared primitive ports.
+def repair_compact_bram_ports(source: Path, output: Path, declarations: Path) -> dict:
+    """Copy once and apply the public unsigned primitive port-sizing rules.
 
     Integer endpoint relations stay in SQLite. Python sees only the exceptional
     BRAM declarations and constant payloads, never ordinary cells or full nets.
-    Output-port resizing and extension are deliberately not guessed here.
+    Oversized unsigned output connections are zero-extended, exactly as
+    Yosys passes/hierarchy/hierarchy.cc does (sig.extend_u0). Their consumers
+    become constant inputs; they are not assigned fictitious physical pins.
     """
     start = time.monotonic()
     source, output = source.resolve(), output.absolute()
@@ -108,16 +110,37 @@ def repair_compact_bram_input_ports(source: Path, output: Path, declarations: Pa
             JOIN pin_names p ON p.seq=e.port_seq
             LEFT JOIN limits l ON l.type=b.type AND l.port_seq=e.port_seq
             WHERE l.width IS NULL OR e.role != CASE l.direction WHEN 'input' THEN 1 ELSE 0 END
-                OR (l.direction='output' AND e.bit>=l.width) LIMIT 1
+            LIMIT 1
         """).fetchone()
         if bad is not None:
             raise ValidationError(f"unsupported BRAM endpoint resizing/direction: {tuple(bad)!r}")
         database.executescript("""
+            CREATE TEMP TABLE zero_nets AS
+                SELECT DISTINCT e.net_seq FROM brams b
+                JOIN endpoint_records e INDEXED BY endpoint_owner ON e.instance_seq=b.seq
+                JOIN limits l ON l.type=b.type AND l.port_seq=e.port_seq
+                WHERE l.direction='output' AND e.bit>=l.width;
+            CREATE UNIQUE INDEX zero_net_seq ON zero_nets(net_seq);
+        """)
+        # A zero-extended output may not override another real driver.
+        conflict = database.execute("""
+            SELECT e.net_seq FROM zero_nets z JOIN endpoint_records e USING(net_seq)
+            WHERE e.role=0 GROUP BY e.net_seq HAVING count(*)!=1 LIMIT 1
+        """).fetchone()
+        if conflict is not None:
+            raise ValidationError("BRAM zero extension conflicts with another driver")
+        database.executescript("""
+            CREATE TEMP TABLE zero_sinks AS
+                SELECT e.instance_seq,e.port_seq,e.bit FROM zero_nets z
+                JOIN endpoint_records e USING(net_seq) WHERE e.role=1;
+            CREATE INDEX zero_sink_owner ON zero_sinks(instance_seq);
             CREATE TEMP TABLE removed AS
                 SELECT e.net_seq,e.role,e.ordinal FROM brams b
                 JOIN endpoint_records e INDEXED BY endpoint_owner ON e.instance_seq=b.seq
                 JOIN limits l ON l.type=b.type AND l.port_seq=e.port_seq
-                WHERE l.direction='input' AND e.bit>=l.width;
+                WHERE e.bit>=l.width
+                UNION SELECT e.net_seq,e.role,e.ordinal FROM zero_nets z
+                JOIN endpoint_records e USING(net_seq);
             CREATE UNIQUE INDEX removed_key ON removed(net_seq,role,ordinal);
             CREATE TEMP TABLE affected_nets AS SELECT DISTINCT net_seq FROM removed;
         """)
@@ -131,7 +154,7 @@ def repair_compact_bram_input_ports(source: Path, output: Path, declarations: Pa
             kept = []
             for item in constants:
                 definition = ports[cell_type].get(_ALIASES.get(item["port"], item["port"]))
-                if definition is None or (definition[0] == "output" and item["bit"] >= definition[1]):
+                if definition is None:
                     raise ValidationError("unsupported BRAM constant port resizing")
                 if item["bit"] < definition[1]:
                     kept.append(item)
@@ -143,16 +166,65 @@ def repair_compact_bram_input_ports(source: Path, output: Path, declarations: Pa
                 payload_seq = database.execute("SELECT seq FROM payloads WHERE value=?", (value,)).fetchone()[0]
                 database.execute("UPDATE cell_records SET constants_seq=? WHERE seq=?", (payload_seq, sequence))
                 changed_constants += 1
+        added_constant_inputs = 0
+        # Only sinks of the exceptional zero-extended outputs are touched.
+        for sequence, cell_type, payload in database.execute("""
+            SELECT c.seq,c.type,p.value FROM cell_records c
+            JOIN payloads p ON p.seq=c.constants_seq
+            WHERE c.seq IN (SELECT instance_seq FROM zero_sinks WHERE instance_seq IS NOT NULL)
+        """):
+            constants = json.loads(payload)
+            existing = {(x["port"], x["bit"]): x["value"] for x in constants}
+            for port, bit in database.execute("""
+                SELECT p.name,s.bit FROM zero_sinks s JOIN pin_names p ON p.seq=s.port_seq
+                WHERE s.instance_seq=? ORDER BY p.name,s.bit
+            """, (sequence,)):
+                definition = ports.get(cell_type, {}).get(_ALIASES.get(port, port))
+                if definition is not None and bit >= definition[1]:
+                    continue
+                if (port, bit) in existing and existing[(port, bit)] != "0":
+                    raise ValidationError("BRAM zero extension conflicts with a constant input")
+                if (port, bit) not in existing:
+                    constants.append({"port": port, "bit": bit, "value": "0"})
+                    existing[(port, bit)] = "0"
+                    added_constant_inputs += 1
+            constants.sort(key=lambda x: (x["port"], x["bit"]))
+            value = json.dumps(constants, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+            database.execute("INSERT OR IGNORE INTO payloads(value) VALUES (?)", (value,))
+            payload_seq = database.execute("SELECT seq FROM payloads WHERE value=?", (value,)).fetchone()[0]
+            database.execute("UPDATE cell_records SET constants_seq=? WHERE seq=?", (payload_seq, sequence))
+        top_constant_bits = 0
+        for sequence, payload in database.execute("SELECT seq,record_json FROM port_records"):
+            port = json.loads(payload)
+            bits = [row[0] for row in database.execute("""
+                SELECT DISTINCT s.bit FROM zero_sinks s JOIN pin_names p ON p.seq=s.port_seq
+                WHERE s.instance_seq IS NULL AND p.name=? ORDER BY s.bit
+            """, (port["id"],))]
+            if not bits:
+                continue
+            if port["direction"] != "output":
+                raise ValidationError("BRAM zero extension conflicts with a top input")
+            constants = {x["bit"]: x for x in port.get("constant_connections", [])}
+            for bit in bits:
+                if bit in constants and constants[bit]["value"] != "0":
+                    raise ValidationError("BRAM zero extension conflicts with a top constant")
+                constants[bit] = {"bit": bit, "value": "0"}
+                top_constant_bits += 1
+            port["constant_connections"] = [constants[bit] for bit in sorted(constants)]
+            database.execute("UPDATE port_records SET record_json=? WHERE seq=?",
+                             (json.dumps(port, sort_keys=True, separators=(",", ":")), sequence))
         database.execute("""DELETE FROM endpoint_records WHERE (net_seq,role,ordinal)
             IN (SELECT net_seq,role,ordinal FROM removed)""")
         database.execute("""UPDATE net_records SET fanout=(SELECT count(*)
             FROM endpoint_records e WHERE e.net_seq=net_records.seq AND e.role=1)
             WHERE seq IN (SELECT net_seq FROM affected_nets)""")
+        database.execute("UPDATE net_records SET cut_class='undriven' WHERE seq IN (SELECT net_seq FROM zero_nets)")
         counts["endpoint_records"] -= removed_endpoints
         database.execute("UPDATE metadata SET value=? WHERE key='record_counts_json'",
                          (json.dumps(counts, sort_keys=True, separators=(",", ":")),))
         bram_count = database.execute("SELECT count(*) FROM brams").fetchone()[0]
         affected_nets = database.execute("SELECT count(*) FROM affected_nets").fetchone()[0]
+        zero_nets = database.execute("SELECT count(*) FROM zero_nets").fetchone()[0]
         database.commit()
         database.close()
         database = None
@@ -163,14 +235,16 @@ def repair_compact_bram_input_ports(source: Path, output: Path, declarations: Pa
         # Atomic, non-overwriting publication; a racing destination is an error.
         os.link(temporary, output)
         return {
-            "schema": "emuflow.xilinx-bram-input-port-recovery/v1", "status": "pass",
+            "schema": "emuflow.xilinx-bram-port-recovery/v1", "status": "pass",
             "source": str(source), "output": str(output),
             "declarations_sha256": file_sha256(declarations),
-            "bram_cells": bram_count, "removed_input_endpoints": removed_endpoints,
+            "bram_cells": bram_count, "removed_endpoints": removed_endpoints,
+            "zero_extended_output_nets": zero_nets, "added_constant_inputs": added_constant_inputs,
+            "top_constant_bits": top_constant_bits,
             "removed_constant_bits": removed_constants, "changed_constant_payloads": changed_constants,
             "affected_nets": affected_nets, "source_bytes": before[2], "output_bytes": output.stat().st_size,
             "copy_seconds": copied_seconds, "total_seconds": time.monotonic()-start,
-            "unchanged": ["instance_and_net_ids", "resources", "parameters", "attributes", "clocks", "top_ports"],
+            "unchanged": ["instance_and_net_ids", "resources", "parameters", "attributes", "clocks", "top_port_declarations"],
             "downstream_timing": "must-regenerate; old timing/route/schedule reports are not evidence",
         }
     finally:
