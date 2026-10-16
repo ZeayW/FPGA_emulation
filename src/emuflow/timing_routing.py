@@ -1289,7 +1289,12 @@ def route_system_native(
             raise ValueError(
                 "zero-demand routing requires the native timing-free provider"
             )
-        _, _, capacities = build_directed_graph(platform, constraints)
+        _, _, capacities = build_directed_graph(
+            platform,
+            constraints,
+            reserve_arrival_and_commit=assignment.get("semantic_contract")
+            is not None,
+        )
         utilization = [
             {
                 **capacities[key],

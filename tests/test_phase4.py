@@ -98,6 +98,61 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_zero_demand_exact_route_preserves_reserved_link_capacity(self) -> None:
+        from emuflow.combinational_cut import (
+            build_static_exact_semantic_contract,
+            semantic_contract_sha256,
+        )
+        from tests.test_combinational_cut import _chain_ir
+
+        platform = Platform.from_dict(
+            _platform_value(
+                "zero-demand-exact",
+                ["a", "b", "c"],
+                [
+                    _link("ab", "a", "b", lanes=64, latency=2),
+                    _link("bc", "b", "c", direction="half_duplex"),
+                    _link("ac", "a", "c", direction="unidirectional"),
+                ],
+            )
+        )
+        assignment = _assignment(platform, [])
+        ir = _chain_ir()
+        contract = build_static_exact_semantic_contract(
+            ir,
+            platform.to_dict(),
+            {item["id"]: "a" for item in ir.value["instances"]},
+            [],
+            max_dependency_depth=8,
+        )
+        assignment["semantic_contract"] = contract
+        assignment["semantic_contract_sha256"] = semantic_contract_sha256(
+            contract
+        )
+        constraints = normalize_route_constraints(None, platform, frame_slots=16)
+        routes = route_system_native(
+            assignment, platform, constraints, executable="must-not-be-executed"
+        )
+
+        checked = validate_native_system_routes(assignment, platform, routes)
+        self.assertEqual(checked["status"], "pass")
+        self.assertEqual(routes["routes"], [])
+        capacity = next(
+            item for item in routes["link_utilization"] if item["link"] == "ab"
+        )
+        self.assertLess(capacity["capacity_bits"], 64 * 16)
+        self.assertEqual(
+            routes["semantic_contract_sha256"],
+            assignment["semantic_contract_sha256"],
+        )
+
+        corrupted = copy.deepcopy(routes)
+        next(
+            item for item in corrupted["link_utilization"] if item["link"] == "ab"
+        )["capacity_bits"] = 64 * 16
+        with self.assertRaisesRegex(ValidationError, "link_utilization"):
+            validate_native_system_routes(assignment, platform, corrupted)
+
     def test_native_router_materializes_valid_zero_demand_artifact(self) -> None:
         platform = Platform.from_dict(
             _platform_value(

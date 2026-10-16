@@ -6775,6 +6775,11 @@ mismatches and conflicting drivers fail without publishing an output.
 The original database is never edited. All
 downstream timing, dependency, route and schedule evidence must be regenerated
 from the repaired source; old path coverage cannot be relabelled as passing.
+The zero-demand system-routing fast path retains Static Exact's normal
+arrival/commit capacity reservation, including on directed and shared links.
+It does not invoke the native router or manufacture communication for a
+single-FPGA assignment; the independent route-capacity checker still rejects
+an unreserved capacity record.
 Atomic-source construction uses aggregate SQL primitive counts and selected
 hard-block/constant queries instead of decoding every ordinary LUT/FF record.
 The bounded `primitive_counts` inventory is consumed by SLR-window selection;
