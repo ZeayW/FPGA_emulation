@@ -28,12 +28,34 @@ from emuflow.local_path_timing import (
     prepare_vpr_local_path_query_inputs,
     validate_local_path_identity,
     validate_local_path_timing,
+    write_vpr_local_path_query,
+    write_xilinx_local_path_query,
 )
 from emuflow.routing import SYSTEM_ROUTES_SCHEMA, system_route_timing_paths
 from emuflow.platform import Platform
 
 
 class LogicSegmentTimingTest(unittest.TestCase):
+    def test_standalone_query_preserves_its_preparation_provider(self):
+        root = Path("unused")
+        for provider, writer in (
+            ("vpr", write_vpr_local_path_query),
+            ("xilinx", write_xilinx_local_path_query),
+        ):
+            with self.subTest(provider=provider), mock.patch(
+                "emuflow.local_path_timing.prepare_vpr_local_path_query_inputs",
+                side_effect=RuntimeError("preparation-observed"),
+            ) as prepare, self.assertRaisesRegex(RuntimeError, "preparation-observed"):
+                writer(
+                    root / "ir", root / "assignment", root / "paths",
+                    root / "routes", root / "merged", "F0",
+                    root / "query", root / "identity",
+                )
+            prepare.assert_called_once_with(
+                root / "ir", root / "assignment", root / "paths",
+                root / "routes", object_provider=provider,
+            )
+
     def test_compact_local_path_preparation_never_loads_whole_graph(self):
         value = {
             "schema": "emuflow.emuir/v1",

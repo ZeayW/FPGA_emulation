@@ -6750,8 +6750,9 @@ certificate assignment tree or a second whole-design certificate-by-site map.
 The normalized physical-output aggregation remains to be migrated.
 RapidWright's pre-worker local-path classification queries only selected-net
 driver owners from compact EmuIR. It does not decode each selected net's full
-fanout or extension JSON merely to determine its FPGA. Unique-driver and
-cross-partition coverage checks remain unchanged; VPR retains the complete
+fanout or extension JSON merely to determine its FPGA. Both shared production
+preparation and standalone Xilinx query writers use this projection.
+Unique-driver and cross-partition coverage checks remain unchanged; VPR retains the complete
 selected-net projection needed to reconstruct its explicit atom-pin chains.
 The CMake control-plane installation includes `emuflow/data`, including the
 UltraScale+ primitive library required by a standalone versioned install.

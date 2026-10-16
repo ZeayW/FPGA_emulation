@@ -629,6 +629,7 @@ def _write_local_path_query(
         assignment_path,
         path_database_path,
         routes_path,
+        object_provider=object_provider,
     )
     indexed_merged = (
         is_emuir_sqlite(merged_ir_path) and is_compact_emuir(merged_ir_path)
