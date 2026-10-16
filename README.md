@@ -6708,7 +6708,14 @@ schemas.
 
 The Xilinx mapped index v2 additionally normalizes every mapped primitive pin
 into `cell_pins`, keyed by integer cell sequence and integer net bit.  The
-production OpenPARF adapter invokes the in-tree
+producer bulk-projects already Xilinx-mapped compact EmuIR inside SQLite,
+including constant pins, ordered buses, direction resolution and cell records;
+ordinary circuit payloads do not pass through Python decode/re-encode loops.
+The explicit generic-cell lowering path remains available when primitive
+conversion is actually needed. The index-only producer hashes its canonical
+output once, reusing that digest for both output and index identity.
+Real-design runtime qualification of this bulk producer remains pending.
+The production OpenPARF adapter invokes the in-tree
 `emuflow_openparf_bookshelf_exporter` C++ executable, which scans those rows in
 net order and writes `design.nodes`, `design.lib`, and `design.nets` directly.
 Python passes paths and validates the bounded export report; it no longer

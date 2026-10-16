@@ -348,6 +348,118 @@ def _write_object_entries(
     return count
 
 
+def _populate_native_xilinx_index(
+    index: sqlite3.Connection, ir_path: Path,
+) -> Tuple[int, int]:
+    """Bulk-project an already mapped circuit without Python cell records."""
+
+    index.execute(
+        "ATTACH DATABASE ? AS emuir_source",
+        (f"file:{ir_path.resolve()}?mode=ro&immutable=1",),
+    )
+    orphan = index.execute(
+        "SELECT e.instance_seq FROM emuir_source.endpoint_records e "
+        "LEFT JOIN emuir_source.cell_records c ON c.seq=e.instance_seq "
+        "WHERE e.instance_seq IS NOT NULL AND c.seq IS NULL LIMIT 1"
+    ).fetchone()
+    if orphan is not None:
+        raise ValidationError("Xilinx mapped endpoint has an orphaned instance")
+    index.executescript("""
+        BEGIN;
+        CREATE TEMP TABLE native_raw_pins AS
+        SELECT e.instance_seq AS cell_seq,p.name AS port,e.bit AS bit_index,
+               e.net_seq+2 AS net_bit,NULL AS constant,
+               CASE WHEN e.role=0 THEN 'output' ELSE 'input' END AS direction
+        FROM emuir_source.endpoint_records e
+        JOIN emuir_source.pin_names p ON p.seq=e.port_seq
+        WHERE e.instance_seq IS NOT NULL
+        UNION ALL
+        SELECT c.seq,json_extract(k.value,'$.port'),
+               json_extract(k.value,'$.bit'),NULL,
+               json_extract(k.value,'$.value'),'input'
+        FROM emuir_source.cell_records c
+        JOIN emuir_source.payloads p ON p.seq=c.constants_seq,
+             json_each(p.value) k;
+        CREATE TEMP TABLE native_pins AS
+        SELECT cell_seq,port,bit_index,min(net_bit) AS net_bit,
+               min(constant) AS constant,
+               CASE WHEN count(DISTINCT direction)>1 THEN 'inout'
+                    ELSE min(direction) END AS direction,
+               count(DISTINCT net_bit) AS net_variants,
+               count(DISTINCT constant) AS constant_variants
+        FROM native_raw_pins GROUP BY cell_seq,port,bit_index;
+        DROP TABLE native_raw_pins;
+    """)
+    conflict = index.execute(
+        "SELECT cell_seq,port,bit_index FROM native_pins "
+        "WHERE net_variants>1 OR constant_variants>1 "
+        "OR (net_bit IS NOT NULL AND constant IS NOT NULL) LIMIT 1"
+    ).fetchone()
+    if conflict is not None:
+        raise ValidationError(
+            "Xilinx mapped pin has multiple nets or conflicting constant and net: "
+            f"{tuple(conflict)!r}"
+        )
+    gap = index.execute(
+        "SELECT cell_seq,port FROM native_pins GROUP BY cell_seq,port "
+        "HAVING min(bit_index)<>0 OR max(bit_index)+1<>count(*) LIMIT 1"
+    ).fetchone()
+    if gap is not None:
+        raise ValidationError(f"Xilinx mapped port is not contiguous: {tuple(gap)!r}")
+    index.executescript("""
+        CREATE TEMP TABLE native_ports AS
+        SELECT cell_seq,port,max(bit_index)+1 AS width,
+               json_group_array(CASE WHEN net_bit IS NOT NULL THEN net_bit
+                                     ELSE constant END) AS connections_json,
+               CASE WHEN count(DISTINCT direction)>1 THEN 'inout'
+                    ELSE min(direction) END AS direction
+        FROM (SELECT * FROM native_pins ORDER BY cell_seq,port,bit_index)
+        GROUP BY cell_seq,port;
+        CREATE UNIQUE INDEX native_ports_owner ON native_ports(cell_seq,port);
+        INSERT INTO cell_pins
+        SELECT p.cell_seq,
+               row_number() OVER (PARTITION BY p.cell_seq ORDER BY p.port,p.bit_index)-1,
+               p.port,p.bit_index,
+               CASE WHEN r.width=1 THEN p.port
+                    ELSE p.port||'['||p.bit_index||']' END,
+               r.direction,p.net_bit,p.constant
+        FROM native_pins p JOIN native_ports r USING(cell_seq,port)
+        ORDER BY p.cell_seq,p.port,p.bit_index;
+        CREATE TEMP TABLE native_cell_ports AS
+        SELECT cell_seq,
+               json_group_object(port,json(connections_json)) AS connections_json,
+               json_group_object(port,direction) AS directions_json
+        FROM (SELECT * FROM native_ports ORDER BY cell_seq,port)
+        GROUP BY cell_seq;
+        CREATE UNIQUE INDEX native_cell_ports_owner ON native_cell_ports(cell_seq);
+        INSERT INTO cells
+        SELECT c.id,c.seq,c.type,
+               json_object(
+                   'attributes',json(COALESCE(a.value,'{}')),
+                   'connections',json(COALESCE(r.connections_json,'{}')),
+                   'hide_name',0,
+                   'parameters',json(COALESCE(p.value,'{}')),
+                   'port_directions',json(COALESCE(r.directions_json,'{}')),
+                   'type',c.type)
+        FROM emuir_source.cell_records c
+        LEFT JOIN emuir_source.payloads p ON p.seq=c.parameters_seq
+        LEFT JOIN emuir_source.payloads a ON a.seq=c.attributes_seq
+        LEFT JOIN native_cell_ports r ON r.cell_seq=c.seq
+        ORDER BY c.seq;
+        INSERT INTO netnames
+        SELECT id,seq,json_object('attributes',json('{}'),'bits',json_array(seq+2),
+                                  'hide_name',0)
+        FROM emuir_source.net_records ORDER BY seq;
+        DROP TABLE native_cell_ports;
+        DROP TABLE native_ports;
+        DROP TABLE native_pins;
+    """)
+    return (
+        int(index.execute("SELECT count(*) FROM cells").fetchone()[0]),
+        int(index.execute("SELECT count(*) FROM netnames").fetchone()[0]),
+    )
+
+
 def _emit_compact_xilinx_mapped_artifacts(
     ir_path: Path,
     output_path: Optional[Path],
@@ -481,21 +593,21 @@ def _emit_compact_xilinx_mapped_artifacts(
             ),
         )
 
-        endpoint_rows = _RowsForOwner(
-            source.execute(
-                """
-                SELECT instance_seq,net_seq,role,port,bit
-                  FROM endpoints
-                 WHERE instance_seq IS NOT NULL
-                 ORDER BY instance_seq,role,ordinal
-                """
-            ),
-            "instance_seq",
-        )
         inventory: Counter[str] = Counter()
         hard_blocks: Counter[str] = Counter()
 
         def cells() -> Iterator[Tuple[str, Mapping[str, Any]]]:
+            endpoint_rows = _RowsForOwner(
+                source.execute(
+                    """
+                    SELECT instance_seq,net_seq,role,port,bit
+                      FROM endpoints
+                     WHERE instance_seq IS NOT NULL
+                     ORDER BY instance_seq,role,ordinal
+                    """
+                ),
+                "instance_seq",
+            )
             rows = source.execute(
                 """
                 SELECT c.seq,c.id,c.type,p.value AS parameters_json,
@@ -637,7 +749,17 @@ def _emit_compact_xilinx_mapped_artifacts(
                 )
                 yield str(row["id"]), value
 
-        if output_temp is None:
+        source_inventory = Counter(dict(source.execute(
+            "SELECT type,count(*) FROM cell_records GROUP BY type"
+        )))
+        if output_temp is None and set(source_inventory) <= native_xilinx_cells:
+            cell_count, emitted_net_count = _populate_native_xilinx_index(index, ir_path)
+            inventory.update(source_inventory)
+            hard_blocks.update({
+                cell_type: count for cell_type, count in inventory.items()
+                if contracts[cell_type]["hard_block"]
+            })
+        elif output_temp is None:
             cell_count = sum(1 for _name, _value in cells())
             emitted_net_count = sum(1 for _name, _value in netnames())
         else:
@@ -718,7 +840,9 @@ def _emit_compact_xilinx_mapped_artifacts(
             "unconnected_output_bits": unconnected_output_bits,
             "output_sha256": output_sha256,
             "index": str(index_path),
-            "index_sha256": file_sha256(index_path),
+            "index_sha256": (
+                output_sha256 if output_path is None else file_sha256(index_path)
+            ),
             "audit": audit,
         }
     finally:

@@ -445,8 +445,14 @@ requirements, not optional micro-optimizations.
   that store; constructing or deep-copying a complete routed Python `EmuIR`
   graph is forbidden in the production path. JSON-only compatibility remains
   limited to small fixtures and explicit legacy inputs.
-- Derived Phase 7 adapters obey the same rule. In particular, OpenPARF atomic
-  clusters must be generated as a re-iterable indexed view. The production
+- Derived Phase 7 adapters obey the same rule. Mapped-index production for an
+  already Xilinx-mapped compact EmuIR must perform its
+  cell/pin projection in SQLite/native code. Do not decode and re-encode each
+  ordinary cell through Python or initialize an unused compatibility endpoint
+  stream before selecting that bulk path. Explicit generic-cell conversion
+  remains a distinct lowering operation, not a reason to route native cells
+  through the Python compatibility path.
+  OpenPARF atomic clusters must be generated as a re-iterable indexed view. The production
   OpenPARF Bookshelf handoff must be emitted by the native SQLite data plane
   from normalized cell/pin rows; Python must not enumerate, group, sort, or
   serialize the complete instance/net/endpoint population. Production must
