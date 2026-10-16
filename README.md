@@ -6337,10 +6337,14 @@ whole-device selection problem.
 The production RapidWright backends now choose a compact contiguous SLR window
 from the final post-Phase-6 packed/atomic netlist, so transport cells are part
 of the decision rather than an unmodelled later addition.  The selector uses
-the exact ArchitectureDB resource inventory, requires 1.5x site headroom for
+the exact ArchitectureDB resource inventory, targets 1.5x site headroom for
 every represented slice/DSP/BRAM/URAM resource, and chooses the smallest
 capacity-feasible window (with a deterministic central tie break).  If no
-proper subset has that headroom, it retains the complete device.  This avoids
+proper subset has that headroom, it retains the complete device. The headroom
+is a compaction preference, not a new utilization limit: an actual demand
+that fits the complete device must not be rejected merely because 1.5x that
+demand does not. Actual device-capacity overflow still fails before placement,
+and final site/BEL/macro legality remains independently checked. This avoids
 spreading a sparse partition across all XCVU19P SLRs, which can multiply the
 span of reset/state distribution trees and force RWRoute into very long
 negotiated-routing recovery.  The selected inventory is source-bound once as

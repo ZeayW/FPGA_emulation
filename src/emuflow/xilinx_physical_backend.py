@@ -85,10 +85,11 @@ def _select_xilinx_slr_window(
     A sparse partition must not be analytically spread over the whole device:
     that needlessly lengthens ordinary and high-fanout nets and makes detailed
     routing recovery dominate Phase 7.  The input is the final post-Phase-6
-    packed/atomic netlist, so transport logic is included.  Require 1.5x site
+    packed/atomic netlist, so transport logic is included. Prefer 1.5x site
     headroom for every represented resource, then choose the most central
-    capacity-feasible contiguous window.  If only the complete device fits,
-    the complete device remains the result.
+    capacity-feasible contiguous window. If this preferred margin cannot fit
+    but the actual demand fits the complete device, retain the complete
+    device. Region compaction must not impose an extra hard capacity limit.
     """
 
     packed = read_json(packed_path) if packed_value is None else packed_value
@@ -164,11 +165,12 @@ def _select_xilinx_slr_window(
         if count
     })
     device_capacity = sum((capacities[name] for name in ordered), Counter())
-    if any(required[key] > device_capacity[key] for key in required):
+    if any(demand[key] > device_capacity[key] for key in demand):
         raise ValidationError(
-            "packed partition exceeds the complete Xilinx device capacity "
-            f"with {_ACTIVE_REGION_RESOURCE_HEADROOM:g}x placement headroom"
+            "packed partition exceeds the complete Xilinx device capacity"
         )
+    if any(required[key] > device_capacity[key] for key in required):
+        return tuple(ordered)
     device_center = (len(ordered) - 1) / 2.0
     for width in range(1, len(ordered) + 1):
         feasible = []
@@ -754,6 +756,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         "policy": {
             "provider": "compact-contiguous-slr-window-v1",
             "resource_headroom": _ACTIVE_REGION_RESOURCE_HEADROOM,
+            "resource_headroom_mode": "preferred-window-target",
         },
         "global": {"allowed_slrs": list(selected_slrs)},
         "clusters": [],
@@ -861,6 +864,7 @@ def run_rapidwright_openparf_native_candidate_backend(
                 "scope": "compact-contiguous-slr-window",
                 "allowed_slrs": list(selected_slrs),
                 "resource_headroom": _ACTIVE_REGION_RESOURCE_HEADROOM,
+                "resource_headroom_mode": "preferred-window-target",
             },
             "native_openparf": compact_qualification,
             "bridge": bridge,

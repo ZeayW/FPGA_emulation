@@ -713,6 +713,12 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   multiplier, gradient, and step-size calculations.  An empty active
   placement subspace is a no-op/termination condition, not a reason to divide
   a zero gradient or to hide NaN with a broad epsilon clamp.
+- Placement-region compaction headroom is a preferred window-selection target,
+  not an additional hard device-capacity or utilization limit. If the preferred
+  margin cannot fit but actual demand fits the full device, select the full
+  device and retain exact physical-legality validation. Never reject a valid
+  configured utilization merely because a compaction heuristic wants more
+  spare capacity.
 - Do not register validation outputs in `experiment-cache`, and do not create
   a persistent checkpoint graph to avoid rerunning a baseline. Keep only the
   compact terminal summary from the current comparison. A changed Phase 6

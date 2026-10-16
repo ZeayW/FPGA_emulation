@@ -358,8 +358,11 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
         )
 
         class UnreadAtomicClusters(Sequence):
+            def __init__(self, count=128):
+                self.count = count
+
             def __len__(self):
-                return 128
+                return self.count
 
             def __getitem__(self, index):
                 raise AssertionError("SLR selection enumerated atomic cells")
@@ -375,6 +378,24 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             ),
             ("SLR1",),
         )
+        dense_source = {
+            **inventory_source,
+            "clusters": UnreadAtomicClusters(320),
+            "primitive_counts": {"LUT6": 320},
+        }
+        # Forty slices fit in the complete 48-slice device even though the
+        # preferred 1.5x margin does not. The public capacity/75% policy must
+        # not be silently replaced with a 1/1.5 placement utilization limit.
+        self.assertEqual(
+            _select_xilinx_slr_window(packed, arch, packed_value=dense_source),
+            ("SLR0", "SLR1", "SLR2"),
+        )
+        with self.assertRaisesRegex(ValidationError, "exceeds the complete"):
+            _select_xilinx_slr_window(packed, arch, packed_value={
+                **dense_source,
+                "clusters": UnreadAtomicClusters(385),
+                "primitive_counts": {"LUT6": 385},
+            })
         for bad_count in (-1, True, 1.5):
             with self.subTest(bad_count=bad_count), self.assertRaisesRegex(
                 ValidationError, "primitive inventory is invalid",
