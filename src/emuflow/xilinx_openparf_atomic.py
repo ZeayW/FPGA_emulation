@@ -467,6 +467,7 @@ def _write_atomic_placement_database(
                 )
             ),
         )
+        database.execute("CREATE INDEX clusters_by_site ON clusters(site)")
         database.commit()
         with sqlite3.connect(path) as destination:
             destination.executescript("""
@@ -504,8 +505,8 @@ def write_xilinx_openparf_atomic_placement_certificate(
 
 
 def load_xilinx_openparf_atomic_placement_clusters(
-    path: Path, certificate: Mapping[str, Any]
-) -> List[Dict[str, Any]]:
+    path: Path, certificate: Mapping[str, Any], *, stream: bool = False,
+) -> Sequence[Dict[str, Any]]:
     """Load legacy inline rows or the normalized placement sidecar."""
 
     inline = certificate.get("clusters")
@@ -547,6 +548,8 @@ def load_xilinx_openparf_atomic_placement_clusters(
             raise ValidationError(
                 "OpenPARF atomic placement database metadata is invalid"
             )
+        if stream:
+            return _PlacementClusterSequence(database_path, descriptor)
         cluster_rows = list(database.execute(
             "SELECT cluster_index, cluster, site, site_type, x, y "
             "FROM clusters ORDER BY cluster_index"
@@ -617,6 +620,79 @@ def load_xilinx_openparf_atomic_placement_clusters(
             "OpenPARF atomic placement database coverage is invalid"
         )
     return clusters
+
+
+class _PlacementClusterSequence(Sequence[Dict[str, Any]]):
+    """Re-iterable site groups; at most one site's assignments are decoded."""
+
+    def __init__(self, path: Path, descriptor: Mapping[str, Any]) -> None:
+        self.path = path
+        self.count = int(descriptor["clusters"])
+        self.assignment_count = int(descriptor["assignments"])
+
+    def __len__(self) -> int:
+        return self.count
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        return self._iterate("c.cluster_index")
+
+    def iter_by_site(self) -> Iterator[Dict[str, Any]]:
+        return self._iterate("c.site")
+
+    def _iterate(self, order: str) -> Iterator[Dict[str, Any]]:
+        uri = f"file:{self.path.resolve()}?mode=ro&immutable=1"
+        connection = sqlite3.connect(uri, uri=True)
+        try:
+            cluster = None
+            previous = None
+            clusters = assignments = 0
+            for row in connection.execute(
+                "SELECT c.cluster_index,c.cluster,c.site,c.site_type,c.x,c.y,"
+                "a.instance,a.cell_type,a.bel,a.physical_site,a.placement_mode,"
+                "a.source_cluster,a.bram_tile_group FROM clusters c "
+                "LEFT JOIN assignments a ON a.cluster_index=c.cluster_index "
+                f"ORDER BY {order},a.assignment_index"
+            ):
+                if previous != row[0]:
+                    if cluster is not None:
+                        yield cluster
+                    previous = row[0]
+                    clusters += 1
+                    cluster = {
+                        "cluster": row[1], "site": row[2], "site_type": row[3],
+                        "x": row[4], "y": row[5], "assignments": [],
+                    }
+                if row[6] is None:
+                    raise ValidationError(
+                        "OpenPARF atomic placement database has an empty cluster"
+                    )
+                cluster["assignments"].append({
+                    "instance": row[6], "cell_type": row[7], "bel": row[8],
+                    "physical_site": row[9], "placement_mode": row[10],
+                    "source_cluster": row[11],
+                    "bram_tile_group": json.loads(row[12]) if row[12] is not None else None,
+                })
+                assignments += 1
+            if clusters != self.count or assignments != self.assignment_count:
+                raise ValidationError(
+                    "OpenPARF atomic placement database coverage is invalid"
+                )
+            if cluster is not None:
+                yield cluster
+        finally:
+            connection.close()
+
+    def __getitem__(self, index):  # type: ignore[no-untyped-def,override]
+        if isinstance(index, slice):
+            start, stop, step = index.indices(len(self))
+            if step < 0:
+                return [self[position] for position in range(start, stop, step)]
+            return list(itertools.islice(iter(self), start, stop, step))
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return next(itertools.islice(iter(self), index, index + 1))
 
 
 def _write_site_database(

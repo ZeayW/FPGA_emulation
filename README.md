@@ -6731,6 +6731,10 @@ it to `atom-map.sqlite3`. Placement validation streams that join without
 materializing a second full atom dictionary and raw-coordinate dictionary.
 The remaining physical-legality aggregation and bridge still use Python
 objects; their complete data-plane migration remains pending.
+The bridge now reads the normalized placement certificate as re-iterable SQL
+site groups and merges them in site order. It no longer rebuilds the entire
+certificate assignment tree or a second whole-design certificate-by-site map.
+The normalized physical-output aggregation remains to be migrated.
 The CMake control-plane installation includes `emuflow/data`, including the
 UltraScale+ primitive library required by a standalone versioned install.
 

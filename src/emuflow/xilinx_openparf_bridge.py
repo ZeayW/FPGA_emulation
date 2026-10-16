@@ -145,7 +145,7 @@ def _validate_certificate(
     architecture: ArchitectureDB,
     top: Optional[str],
     source_packed: Optional[Mapping[str, Any]] = None,
-    certificate_clusters: Optional[list[Dict[str, Any]]] = None,
+    certificate_clusters: Optional[Sequence[Dict[str, Any]]] = None,
     native_bram_groups: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Tuple[
     str, Mapping[str, Any], list[Dict[str, Any]], list[str], list[Dict[str, Any]]
@@ -232,7 +232,7 @@ def _validate_certificate(
         certificate.get("clusters")
         if certificate_clusters is None else certificate_clusters
     )
-    if not isinstance(clusters, list) or not clusters:
+    if not isinstance(clusters, Sequence) or isinstance(clusters, (str, bytes)) or not clusters:
         raise ValidationError("OpenPARF atomic placement clusters are invalid")
 
     owners: Dict[str, str] = {}
@@ -565,7 +565,7 @@ def materialize_xilinx_openparf_atomic_contract(
     ):
         raise ValidationError("OpenPARF atomic placement source identity is invalid")
     certificate_clusters = load_xilinx_openparf_atomic_placement_clusters(
-        atomic_placement_path, certificate
+        atomic_placement_path, certificate, stream=True
     )
     has_native_seal = any(
         key in source
@@ -652,14 +652,15 @@ def materialize_xilinx_openparf_atomic_contract(
 
     occupied_local = Counter()
     placement_clusters = []
-    certificate_by_site = {
-        entry["site"]: entry for entry in certificate_clusters
-    }
-    if len(certificate_by_site) != len(certificate_clusters):
-        raise ValidationError(
-            "OpenPARF atomic placement contains duplicate physical sites"
-        )
-    for cluster in clusters:
+    # Both streams use physical site order; keep only one certified site group
+    # while augmenting the already-normalized placement. The sidecar must not
+    # be rebuilt as a whole-design dictionary after its streaming validation.
+    indexed_site_order = getattr(certificate_clusters, "iter_by_site", None)
+    certificate_entries = (
+        indexed_site_order() if callable(indexed_site_order)
+        else iter(sorted(certificate_clusters, key=lambda entry: entry["site"]))
+    )
+    for cluster, certificate_entry in zip(clusters, certificate_entries):
         cluster_id = cluster["id"]
         prefix = "openparf:"
         if not cluster_id.startswith(prefix):
@@ -677,8 +678,7 @@ def materialize_xilinx_openparf_atomic_contract(
         if local_key is not None:
             occupied_local[local_key] += 1
         assignments = []
-        certificate_entry = certificate_by_site.get(site_name)
-        if certificate_entry is None:
+        if certificate_entry["site"] != site_name:
             raise ValidationError(
                 "OpenPARF bridge is missing its certified physical site"
             )

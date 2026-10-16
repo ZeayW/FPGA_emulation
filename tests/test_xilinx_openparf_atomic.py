@@ -1301,12 +1301,24 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 ),
                 returned["clusters"],
             )
+            streamed = load_xilinx_openparf_atomic_placement_clusters(
+                certificate_path, persisted, stream=True
+            )
+            self.assertNotIsInstance(streamed, list)
+            self.assertEqual(list(streamed), returned["clusters"])
+            self.assertEqual(list(streamed), list(streamed))
+            self.assertEqual(list(streamed.iter_by_site()), returned["clusters"])
+            self.assertEqual(streamed[::-1], returned["clusters"][::-1])
             database_path = output / persisted["cluster_storage"]["file"]
             with database_path.open("ab") as stream:
                 stream.write(b"tamper")
             with self.assertRaisesRegex(ValidationError, "database seal"):
                 load_xilinx_openparf_atomic_placement_clusters(
                     certificate_path, persisted
+                )
+            with self.assertRaisesRegex(ValidationError, "database seal"):
+                load_xilinx_openparf_atomic_placement_clusters(
+                    certificate_path, persisted, stream=True
                 )
 
     def test_compact_certificate_serializes_bram_tile_group(self):
