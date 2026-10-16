@@ -6763,6 +6763,11 @@ The bridge now reads the normalized placement certificate as re-iterable SQL
 site groups and merges them in site order. It no longer rebuilds the entire
 certificate assignment tree or a second whole-design certificate-by-site map.
 The normalized physical-output aggregation remains to be migrated.
+Concurrent physical workers share one process-local ArchitectureDB object:
+cold loading is mutually exclusive, so simultaneous LRU misses cannot parse
+several copies of the same device or defeat derived-geometry sharing. File
+identity changes still invalidate the parsed object; no persistent experiment
+checkpoint is created.
 RapidWright's pre-worker local-path classification queries only selected-net
 driver owners from compact EmuIR. It does not decode each selected net's full
 fanout or extension JSON merely to determine its FPGA. Both shared production

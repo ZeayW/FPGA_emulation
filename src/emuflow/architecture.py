@@ -4,6 +4,7 @@ import re
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
+from threading import RLock
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 from .errors import ImportError, ValidationError
@@ -14,6 +15,7 @@ ARCHDB_SCHEMA = "emuflow.archdb/v1"
 _SITE_NAME_RE = re.compile(r"^(?P<type>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 _LUT_BEL_RE = re.compile(r"^[A-H]6LUT$")
 _FF_BEL_RE = re.compile(r"^[A-H]FF2?$")
+_ARCHITECTURE_LOAD_LOCK = RLock()
 
 
 def compatible_cells_for_bel(bel_name: str, bel_type: str) -> List[str]:
@@ -50,14 +52,18 @@ class ArchitectureDB:
         resolved = path.resolve()
         stat = resolved.stat()
         if cls is ArchitectureDB:
-            return _load_architecture_db(
-                str(resolved),
-                stat.st_dev,
-                stat.st_ino,
-                stat.st_size,
-                stat.st_mtime_ns,
-                stat.st_ctime_ns,
-            )
+            # lru_cache protects its dictionary, not the wrapped cold load.
+            # Without this exclusion parallel workers each parse the device
+            # and obtain distinct objects, defeating geometry sharing too.
+            with _ARCHITECTURE_LOAD_LOCK:
+                return _load_architecture_db(
+                    str(resolved),
+                    stat.st_dev,
+                    stat.st_ino,
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    stat.st_ctime_ns,
+                )
         return cls(read_json(resolved))
 
     @classmethod

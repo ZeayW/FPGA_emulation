@@ -439,6 +439,9 @@ requirements, not optional micro-optimizations.
   is streamed into the mapped external-tool interchange while a read-only
   SQLite cell/net index is produced for in-process consumers. Packing,
   placement, routing, segment timing, and primitive audit share that index;
+  parallel physical workers must also share one read-only parsed device model
+  per file identity. Exclude duplicate concurrent cold loads; a thread-safe
+  LRU dictionary alone does not guarantee a single parse or a shared object.
   they must not each parse the complete mapped JSON. Close mapped, packed, and
   placement objects before starting a graph-sized downstream engine. OpenSTA
   staging imports directly into indexed EmuIR and inserts route-delay cells in

@@ -1,6 +1,9 @@
 import hashlib
 import tempfile
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +13,36 @@ from emuflow.managed_json_storage import pack_managed_json
 
 
 class JsonIoTest(unittest.TestCase):
+    def test_parallel_architecture_cold_load_parses_once(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "architecture.json"
+            write_json(path, {
+                "schema": "emuflow.archdb/v1", "part": "test-part",
+                "source": {"format": "test/v1"}, "policy": {"name": "test"},
+                "sites": [{
+                    "name": "SLICE_X0Y0", "type": "SLICEL", "x": 0, "y": 0,
+                    "bels": [{"name": "A6LUT", "type": "LUT6", "z": 0,
+                              "compatible_cells": ["LUT6"]}],
+                }],
+            })
+            start = threading.Barrier(4)
+
+            def load():
+                start.wait(timeout=5)
+                return ArchitectureDB.load(path)
+
+            def delayed_read(source):
+                # Simulate the file-read window in which parallel cold-cache
+                # misses can all enter functools.lru_cache's wrapped function.
+                time.sleep(0.05)
+                return read_json(source)
+
+            with patch("emuflow.architecture.read_json", side_effect=delayed_read) as reader:
+                with ThreadPoolExecutor(max_workers=4) as workers:
+                    values = list(workers.map(lambda _: load(), range(4)))
+            self.assertEqual(reader.call_count, 1)
+            self.assertTrue(all(value is values[0] for value in values))
+
     def test_gzip_json_round_trip_is_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "document.json.gz"
