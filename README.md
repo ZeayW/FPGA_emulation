@@ -6761,6 +6761,17 @@ the common BRAM techmap's over-wide RAMB18E2 write-enable connections. A
 plain `check` pass is not a replacement. Historical inputs exported without
 this normalization may contain nonexistent physical/STA endpoints and cannot
 be promoted by truncating route pins or silently dropping timing paths.
+For an explicitly requested continuation from such a completed compact EmuIR,
+`scripts/repair_xilinx_bram_ports.py --source OLD.sqlite --out NEW.sqlite
+--report recovery.json` provides an offline recovery boundary, not a normal
+flow stage or cache. It copies the database once, reads the checked-in Yosys
+RAMB18E2/RAMB36E2 declarations, removes only input bits outside those declared
+ports, and updates affected net fanouts and endpoint counts in SQL. Instance
+and net IDs, resources, parameters, attributes, clocks and top ports remain
+unchanged. Unknown ports, direction mismatches and output resizing fail
+without publishing an output. The original database is never edited. All
+downstream timing, dependency, route and schedule evidence must be regenerated
+from the repaired source; old path coverage cannot be relabelled as passing.
 Atomic-source construction uses aggregate SQL primitive counts and selected
 hard-block/constant queries instead of decoding every ordinary LUT/FF record.
 The bounded `primitive_counts` inventory is consumed by SLR-window selection;
