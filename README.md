@@ -6731,6 +6731,8 @@ it to `atom-map.sqlite3`. Placement validation streams that join without
 materializing a second full atom dictionary and raw-coordinate dictionary.
 The remaining physical-legality aggregation and bridge still use Python
 objects; their complete data-plane migration remains pending.
+The CMake control-plane installation includes `emuflow/data`, including the
+UltraScale+ primitive library required by a standalone versioned install.
 
 Physical timing translation treats an original net that is absent from one
 particular split FPGA as an ordinary partition-local membership miss. Required

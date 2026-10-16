@@ -297,6 +297,7 @@ file(
   GLOB_RECURSE EMUFLOW_RUNTIME_DATA
   CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/resources/timing/*"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/*"
   "${CMAKE_SOURCE_DIR}/resources/architectures/*"
   "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
   "${CMAKE_SOURCE_DIR}/scripts/yosys/*"
@@ -346,6 +347,10 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy
     ${EMUFLOW_PYTHON_SOURCES}
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/src/emuflow/data"
+    "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data"
   COMMAND
     "${CMAKE_COMMAND}" -E copy
     "${CMAKE_BINARY_DIR}/emuflow"
