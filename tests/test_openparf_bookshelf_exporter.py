@@ -1,4 +1,5 @@
 import json
+import hashlib
 import shutil
 import sqlite3
 import subprocess
@@ -18,6 +19,9 @@ from emuflow.xilinx_openparf_atomic import (
 )
 from emuflow.yosys import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
+from tests.test_xilinx_openparf_atomic import (
+    _fixture, _mux_tree_cells, _add_mux_bels,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,6 +170,59 @@ class NativeOpenparfBookshelfExporterTests(unittest.TestCase):
                     "SELECT source_cluster FROM atoms WHERE instance='lut'"
                 ).fetchone()[0]
             self.assertEqual(source_cluster, "macro:lut")
+
+    def test_native_macro_export_counts_primitives_and_preserves_constraints(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, _packed, architecture = _fixture(root)
+            mapped.write_text(json.dumps({"modules": {"top": {
+                "attributes": {"top": "1"},
+                "cells": _mux_tree_cells("MUXF8"),
+            }}}))
+            _add_mux_bels(architecture, {"MUXF7", "MUXF8", "MUXF9"})
+            ir_path = root / "mapped.emuir.sqlite"
+            index = root / "mapped.sqlite"
+            source_path = root / "atomic-source.json"
+            import_yosys_json(mapped).save(ir_path)
+            emit_xilinx_mapped_index(ir_path, index)
+            with open_xilinx_mapped_index(index) as indexed:
+                source = build_xilinx_openparf_atomic_source(
+                    index, source_path, top="top", mapped_value=indexed
+                )
+                with mock.patch(
+                    "emuflow.xilinx_openparf_atomic.resolve_native_executable",
+                    return_value=str(self.executable),
+                ), mock.patch(
+                    "emuflow.xilinx_openparf_atomic._collect_atoms",
+                    side_effect=AssertionError("full atom collection"),
+                ):
+                    manifest = export_xilinx_openparf_atomic(
+                        index, source_path, architecture, root / "native",
+                        mapped_value=indexed, packed_value=source,
+                    )
+            self.assertEqual(source["summary"]["physical_atoms"], 2)
+            self.assertEqual(manifest["atoms"], 8)
+            reference_source = json.loads(source_path.read_text())
+            export_xilinx_openparf_atomic(
+                mapped, source_path, architecture, root / "reference",
+                packed_value={**reference_source, "source": {
+                    "mapped_sha256": hashlib.sha256(
+                        mapped.read_bytes()
+                    ).hexdigest()
+                }},
+            )
+            for filename in ("design.nodes", "design.lib", "design.nets", "design.scl"):
+                self.assertEqual(
+                    (root / "native" / filename).read_bytes(),
+                    (root / "reference" / filename).read_bytes(), filename,
+                )
+            native_groups = json.loads(
+                (root / "native/physical-macro-groups.json").read_text()
+            )["groups"]
+            reference_groups = json.loads(
+                (root / "reference/physical-macro-groups.json").read_text()
+            )["groups"]
+            self.assertEqual(native_groups, reference_groups)
 
     def test_production_export_uses_native_atom_summary_without_atom_list(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

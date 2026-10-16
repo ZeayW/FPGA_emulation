@@ -3255,7 +3255,13 @@ def export_xilinx_openparf_atomic(
         bookshelf_report = read_json(
             output_dir / "bookshelf-export-report.json"
         )
-        expected_atom_count = packed.get("summary", {}).get("physical_atoms")
+        # The source summary counts placement clusters. An explicit physical
+        # macro owns several primitive atoms, while an implicit singleton owns
+        # one. Compare the native primitive count with that same population.
+        expected_atom_count = packed["implicit_singletons"]["count"] + sum(
+            len(cluster["assignments"])
+            for cluster in packed["explicit_macro_clusters"]
+        )
         if (
             bookshelf_report.get("schema")
             != "emuflow.openparf-bookshelf-export/v1"

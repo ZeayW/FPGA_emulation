@@ -6723,6 +6723,8 @@ export derives resource demand and primitive-model coverage with aggregate SQL
 queries, reconstructs only the bounded explicit-macro contract, and queries
 only hard-block atoms needed by exact legalization.  It does not call the
 reference Python atom collector or retain a Python record for every LUT/FF.
+Native export counts primitive atoms across explicit macro members as well as
+implicit singletons; cluster count is not used as a primitive-coverage check.
 
 Physical timing translation treats an original net that is absent from one
 particular split FPGA as an ordinary partition-local membership miss. Required
