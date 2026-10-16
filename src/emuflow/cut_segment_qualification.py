@@ -169,6 +169,7 @@ def build_cut_segment_qualification_value(
     structural = classify_through_net_timing_endpoints(
         ir, model, cut_nets, instance_cell_types
     )
+    cut_net_set = set(cut_nets)
     member_ids: Dict[str, list[str]] = {net: [] for net in cut_nets}
     records_source = (
         path_records
@@ -185,7 +186,7 @@ def build_cut_segment_qualification_value(
             raise ValidationError(
                 "cut-segment qualification original path ID is invalid"
             )
-        for net in set(path["path_nets"]) & set(cut_nets):
+        for net in cut_net_set.intersection(path["path_nets"]):
             member_ids[net].append(path_id)
     net_by_id = (
         None

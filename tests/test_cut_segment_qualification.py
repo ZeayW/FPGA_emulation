@@ -11,7 +11,7 @@ from emuflow.cut_segment_qualification import (
     build_cut_segment_qualification_value,
     validate_cut_segment_qualification,
 )
-from emuflow.io import write_json
+from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.opensta import (
     DEFAULT_TIMING_MODEL,
@@ -25,6 +25,49 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CutSegmentQualificationTest(unittest.TestCase):
+    def test_streamed_paths_do_not_rebuild_cut_index_per_member(self):
+        class CountedCuts(list):
+            def __init__(self, values):
+                super().__init__(values)
+                self.scans = 0
+
+            def __iter__(self):
+                self.scans += 1
+                return super().__iter__()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            ir_path, assignment_path, _, net = self._fixture(Path(temporary))
+            ir = EmuIR.load(ir_path)
+            assignment = read_json(assignment_path)
+
+            def build(count):
+                cuts = CountedCuts([net])
+                with mock.patch(
+                    "emuflow.cut_segment_qualification._cut_nets",
+                    return_value=cuts,
+                ):
+                    artifact = build_cut_segment_qualification_value(
+                        ir,
+                        assignment,
+                        {},
+                        path_records=(
+                            {"id": f"p{index:04d}", "path_nets": [net, net]}
+                            for index in range(count)
+                        ),
+                    )
+                return artifact, cuts.scans
+
+            small, small_scans = build(1)
+            large, large_scans = build(1000)
+
+        self.assertEqual(small_scans, large_scans)
+        self.assertEqual(
+            large["records"][0]["associated_original_path_ids"],
+            [f"p{index:04d}" for index in range(1000)],
+        )
+        self.assertEqual(small["summary"]["enumerated_member_associations"], 1)
+        self.assertEqual(large["summary"]["enumerated_member_associations"], 1000)
+
     def _fixture(self, root: Path):
         ir = import_yosys_json(
             ROOT / "examples/yosys/counter.json",

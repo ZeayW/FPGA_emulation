@@ -6780,6 +6780,10 @@ arrival/commit capacity reservation, including on directed and shared links.
 It does not invoke the native router or manufacture communication for a
 single-FPGA assignment; the independent route-capacity checker still rejects
 an unreserved capacity record.
+Pre-route cut qualification builds its cut-net membership index once and
+streams original path records against it. It no longer rebuilds the complete
+cut set for each path; duplicate net occurrences still contribute exactly one
+association per original path, with unchanged structural coverage checks.
 Atomic-source construction uses aggregate SQL primitive counts and selected
 hard-block/constant queries instead of decoding every ordinary LUT/FF record.
 The bounded `primitive_counts` inventory is consumed by SLR-window selection;
