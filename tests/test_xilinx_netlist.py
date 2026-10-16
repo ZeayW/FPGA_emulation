@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -45,6 +46,17 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                 self.assertEqual(
                     indexed["modules"]["top"]["cells"]["lut"]["type"],
                     "LUT1",
+                )
+            with sqlite3.connect(index) as database:
+                self.assertEqual(
+                    database.execute(
+                        "SELECT port,bit_index,pin_name,direction,net_bit,constant "
+                        "FROM cell_pins ORDER BY cell_seq,pin_seq"
+                    ).fetchall(),
+                    [
+                        ("I0", 0, "I0", "input", 2, None),
+                        ("O", 0, "O", "output", 3, None),
+                    ],
                 )
             self.assertTrue(index.is_file())
             self.assertFalse(absent_json.exists())

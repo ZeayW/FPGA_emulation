@@ -112,6 +112,11 @@ option(
   ON
 )
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
+option(
+  EMUFLOW_BUILD_OPENPARF_BOOKSHELF_EXPORTER
+  "Build the SQLite-native OpenPARF Bookshelf exporter"
+  ON
+)
 set(
   EMUFLOW_CMAKE_PREFIX_PATH
   ""
@@ -525,6 +530,33 @@ if(EMUFLOW_BUILD_VPR_ROUTE_CHECKER)
   target_compile_options(emuflow_vpr_route_checker PRIVATE -O3)
   set_target_properties(
     emuflow_vpr_route_checker
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_OPENPARF_BOOKSHELF_EXPORTER)
+  find_package(SQLite3 REQUIRED)
+  if(TARGET SQLite3::SQLite3)
+    set(EMUFLOW_SQLITE_TARGET SQLite3::SQLite3)
+  else()
+    set(EMUFLOW_SQLITE_TARGET SQLite::SQLite3)
+  endif()
+  add_executable(
+    emuflow_openparf_bookshelf_exporter
+    "${CMAKE_SOURCE_DIR}/src/native/openparf_bookshelf_exporter.cpp"
+  )
+  target_compile_features(
+    emuflow_openparf_bookshelf_exporter PRIVATE cxx_std_17
+  )
+  target_compile_options(
+    emuflow_openparf_bookshelf_exporter PRIVATE -O3
+  )
+  target_link_libraries(
+    emuflow_openparf_bookshelf_exporter PRIVATE ${EMUFLOW_SQLITE_TARGET}
+  )
+  set_target_properties(
+    emuflow_openparf_bookshelf_exporter
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )

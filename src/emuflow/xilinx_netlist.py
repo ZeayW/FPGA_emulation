@@ -30,7 +30,7 @@ from .xilinx_primitives import (
 XILINX_MAPPED_NETLIST_REPORT_SCHEMA = (
     "emuflow.xilinx-mapped-netlist-report/v1"
 )
-XILINX_MAPPED_INDEX_SCHEMA = "emuflow.xilinx-mapped-index/v1"
+XILINX_MAPPED_INDEX_SCHEMA = "emuflow.xilinx-mapped-index/v2"
 _NATIVE_FFS = {"FDCE", "FDPE", "FDRE", "FDSE"}
 _VTR_HARD_MACROS = {"VTR_MULTIPLY", "VTR_SP_RAM", "VTR_DP_RAM"}
 
@@ -392,6 +392,21 @@ def _emit_compact_xilinx_mapped_artifacts(
               id TEXT PRIMARY KEY,seq INTEGER NOT NULL UNIQUE,type TEXT NOT NULL,
               record_json TEXT NOT NULL
             ) WITHOUT ROWID;
+            CREATE TABLE cell_pins(
+              cell_seq INTEGER NOT NULL,
+              pin_seq INTEGER NOT NULL,
+              port TEXT NOT NULL,
+              bit_index INTEGER NOT NULL,
+              pin_name TEXT NOT NULL,
+              direction TEXT NOT NULL,
+              net_bit INTEGER,
+              constant TEXT,
+              PRIMARY KEY(cell_seq,pin_seq),
+              CHECK((net_bit IS NULL) != (constant IS NULL))
+            ) WITHOUT ROWID;
+            CREATE INDEX cell_pins_by_net
+              ON cell_pins(net_bit,cell_seq,pin_seq)
+              WHERE net_bit IS NOT NULL;
             CREATE TABLE netnames(
               id TEXT PRIMARY KEY,seq INTEGER NOT NULL UNIQUE,
               record_json TEXT NOT NULL
@@ -517,6 +532,34 @@ def _emit_compact_xilinx_mapped_artifacts(
                 index.execute(
                     "INSERT INTO cells VALUES (?,?,?,?)",
                     (str(row["id"]), int(row["seq"]), cell_type, _json(cell)),
+                )
+                pin_rows = []
+                pin_seq = 0
+                for port, values in sorted(connections.items()):
+                    direction = directions[port]
+                    for bit_index, value in enumerate(values):
+                        pin_rows.append((
+                            int(row["seq"]), pin_seq, port, bit_index,
+                            (
+                                port if len(values) == 1
+                                else f"{port}[{bit_index}]"
+                            ),
+                            direction,
+                            (
+                                value
+                                if isinstance(value, int)
+                                and not isinstance(value, bool) else None
+                            ),
+                            (
+                                None
+                                if isinstance(value, int)
+                                and not isinstance(value, bool) else str(value)
+                            ),
+                        ))
+                        pin_seq += 1
+                index.executemany(
+                    "INSERT INTO cell_pins VALUES (?,?,?,?,?,?,?,?)",
+                    pin_rows,
                 )
                 yield str(row["id"]), cell
             endpoint_rows.finish()

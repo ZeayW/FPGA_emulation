@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 import tempfile
 import threading
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
@@ -27,6 +28,7 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
 from .io import file_sha256, read_json, write_json
+from .native_tools import resolve_native_executable
 from .openparf import run_openparf, validate_openparf_runtime
 from .openparf_native_driver import (
     native_metrics_path,
@@ -45,6 +47,7 @@ from .xilinx_packing import (
     _derive_cascade_chains,
 )
 from .xilinx_physical_macros import build_xilinx_physical_macro_contract
+from .xilinx_netlist import is_xilinx_mapped_index
 
 
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
@@ -3002,24 +3005,62 @@ def export_xilinx_openparf_atomic(
     names = {
         atom["instance"]: f"a{index}" for index, atom in enumerate(atoms)
     }
-    library, nets, net_count, dropped_single_endpoint_nets = (
-        _render_library_and_nets(
-            cells, atoms, names, platform_mux_types=mux,
+    output_dir.mkdir(parents=True, exist_ok=True)
+    native_bookshelf = is_xilinx_mapped_index(mapped_path)
+    if native_bookshelf:
+        exporter = resolve_native_executable(
+            "emuflow_openparf_bookshelf_exporter"
         )
-    )
+        completed = subprocess.run(
+            [exporter, str(mapped_path.resolve()), str(output_dir.resolve())],
+            text=True, capture_output=True, check=False,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise ValidationError(
+                "native OpenPARF Bookshelf export failed"
+                + (f": {detail}" if detail else "")
+            )
+        bookshelf_report = read_json(
+            output_dir / "bookshelf-export-report.json"
+        )
+        if (
+            bookshelf_report.get("schema")
+            != "emuflow.openparf-bookshelf-export/v1"
+            or bookshelf_report.get("status") != "pass"
+            or bookshelf_report.get("provider") != "native-sqlite-stream-v1"
+            or bookshelf_report.get("atoms") != len(atoms)
+        ):
+            raise ValidationError(
+                "native OpenPARF Bookshelf export report is invalid"
+            )
+        net_count = int(bookshelf_report["nets"])
+        dropped_single_endpoint_nets = int(
+            bookshelf_report["dropped_single_endpoint_nets"]
+        )
+        library = nets = None
+    else:
+        library, nets, net_count, dropped_single_endpoint_nets = (
+            _render_library_and_nets(
+                cells, atoms, names, platform_mux_types=mux,
+            )
+        )
     coordinate_system = device_static["coordinate_system"]
     site_text = _render_sites(device_static, atoms, platform_mux_types=mux)
-    output_dir.mkdir(parents=True, exist_ok=True)
     files = {
-        "design.nodes": "".join(
-            f"{names[atom['instance']]} {atom['cell_type']}\n" for atom in atoms
-        ),
-        "design.lib": library,
-        "design.nets": nets,
         "design.scl": site_text,
         "design.pl": "",
         "design.aux": "design : design.nodes design.nets design.pl design.scl design.lib\n",
     }
+    if not native_bookshelf:
+        files.update({
+            "design.nodes": "".join(
+                f"{names[atom['instance']]} {atom['cell_type']}\n"
+                for atom in atoms
+            ),
+            "design.lib": library,
+            "design.nets": nets,
+        })
     for name, text in files.items():
         (output_dir / name).write_text(text, encoding="utf-8")
     model_map = {}
@@ -3674,6 +3715,13 @@ def export_xilinx_openparf_atomic(
         },
         "files": sorted([
             *files, "openparf.json", "name_map.json", "site-map.sqlite3",
+            *(
+                [
+                    "design.nodes", "design.lib", "design.nets",
+                    "bookshelf-export-report.json",
+                ]
+                if native_bookshelf else []
+            ),
             *(["physical-macro-groups.json"] if hardblock_groups else []),
         ]),
     }

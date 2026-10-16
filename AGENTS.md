@@ -446,10 +446,14 @@ requirements, not optional micro-optimizations.
   graph is forbidden in the production path. JSON-only compatibility remains
   limited to small fixtures and explicit legacy inputs.
 - Derived Phase 7 adapters obey the same rule. In particular, OpenPARF atomic
-  clusters must be generated as a re-iterable indexed view and serialized
-  incrementally; production must not retain a list of one Python dictionary
-  per mapped cell, reparse the serialized atomic-source JSON, or rehash an
-  unchanged mapped netlist when its sealed digest is already available.
+  clusters must be generated as a re-iterable indexed view. The production
+  OpenPARF Bookshelf handoff must be emitted by the native SQLite data plane
+  from normalized cell/pin rows; Python must not enumerate, group, sort, or
+  serialize the complete instance/net/endpoint population. Production must
+  not retain a list of one Python dictionary per mapped cell, reparse a
+  serialized atomic-source JSON, or rehash an unchanged mapped netlist when
+  its sealed digest is already available. Per-cell JSON remains limited to
+  explicit small-fixture qualification and is not a production interchange.
 - Small-design qualification may run exhaustive and deterministic event-driven
   equivalence.  Large-design production uses the constructive split
   certificate (lossless source records, exact endpoint coverage, one scheduled

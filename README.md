@@ -6704,6 +6704,16 @@ This changes physical storage and peak memory only; cluster membership,
 assignment, cut dependencies, routes, schedules, and QoR retain their logical
 schemas.
 
+The Xilinx mapped index v2 additionally normalizes every mapped primitive pin
+into `cell_pins`, keyed by integer cell sequence and integer net bit.  The
+production OpenPARF adapter invokes the in-tree
+`emuflow_openparf_bookshelf_exporter` C++ executable, which scans those rows in
+net order and writes `design.nodes`, `design.lib`, and `design.nets` directly.
+Python passes paths and validates the bounded export report; it no longer
+builds a whole-design endpoint dictionary or concatenates the Bookshelf net
+population in memory.  Small JSON fixtures retain the reference renderer for
+field-for-field qualification only.
+
 Physical timing translation treats an original net that is absent from one
 particular split FPGA as an ordinary partition-local membership miss. Required
 net batches remain fail-closed. The RapidWright/OpenPARF device adapter also

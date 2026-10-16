@@ -1065,7 +1065,7 @@ def import_yosys_json_indexed(
                     "SELECT key,value FROM mapped_source.metadata"
                 )
             )
-            if index_metadata.get("schema") != "emuflow.xilinx-mapped-index/v1":
+            if index_metadata.get("schema") != "emuflow.xilinx-mapped-index/v2":
                 raise ImportError("mapped Xilinx SQLite index schema is invalid")
             try:
                 indexed_top = json.loads(index_metadata["top_json"])
