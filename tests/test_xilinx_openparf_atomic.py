@@ -1882,6 +1882,25 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             certificate = validate_xilinx_openparf_atomic_placement(
                 placement, output / "name_map.json", mapped, architecture
             )
+            # Production owns an open mapped SQLite view, not mapped JSON.
+            # The macro coverage check must reuse that view as well.
+            from emuflow.xilinx_netlist import (
+                emit_xilinx_mapped_index, open_xilinx_mapped_index,
+            )
+            compact = root / "mapped.emuir.sqlite"
+            index = root / "mapped.sqlite"
+            import_yosys_json(mapped).save(compact)
+            emit_xilinx_mapped_index(compact, index)
+            with open_xilinx_mapped_index(index) as indexed, mock.patch(
+                "emuflow.xilinx_physical_macros.read_json",
+                side_effect=AssertionError("macro validation reopened mapped JSON"),
+            ):
+                indexed_certificate = validate_xilinx_openparf_atomic_placement(
+                    placement, output / "name_map.json", index, architecture,
+                    mapped_value=indexed,
+                )
+            self.assertEqual(indexed_certificate["clusters"], certificate["clusters"])
+            self.assertEqual(indexed_certificate["summary"], certificate["summary"])
             certificate_path = output / "placement-certificate.json"
             certificate_path.write_text(
                 json.dumps(certificate, sort_keys=True), encoding="utf-8"

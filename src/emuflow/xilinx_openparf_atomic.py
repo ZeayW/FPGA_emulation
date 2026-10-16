@@ -4707,7 +4707,7 @@ def validate_xilinx_openparf_atomic_placement(
         )
         derived_macro_contract = (
             build_xilinx_physical_macro_contract(
-                mapped_path, top=name_map.get("top")
+                mapped_path, top=name_map.get("top"), source=mapped
             )
             if has_site_macro_groups else {"site_macros": []}
         )

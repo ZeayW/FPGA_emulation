@@ -6745,6 +6745,10 @@ and their required LUT drivers through SQL. Its topology builder no longer
 sorts or materializes every ordinary mapped cell or every net driver in
 Python. A global SQL multiple-driver check preserves the original rejection
 policy, including malformed nets outside the exceptional macro cones.
+Post-placement macro coverage validation reuses the same open mapped-index
+view; it must not reopen the SQLite file through the legacy JSON reader.
+An indexed MUX-cone regression verifies identical placement and resource
+certificates while forbidding that text-reader fallback.
 Atomic-source construction uses aggregate SQL primitive counts and selected
 hard-block/constant queries instead of decoding every ordinary LUT/FF record.
 The bounded `primitive_counts` inventory is consumed by SLR-window selection;
