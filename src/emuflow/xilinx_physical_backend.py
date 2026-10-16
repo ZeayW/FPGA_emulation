@@ -761,11 +761,6 @@ def run_rapidwright_openparf_native_candidate_backend(
         architecture=architecture,
         allowed_slrs=selected_slrs,
     )
-    # ``atomic_source`` is a re-iterable view backed by the mapped SQLite
-    # index, not a graph-sized list.  Release it once the exporter has consumed
-    # the view so no source adapter state overlaps RWRoute/OpenSTA.
-    del atomic_source
-    gc.collect()
     certificate_path = qualification_root / "placement-certificate.json"
     compact_qualification = _compact_openparf_qualification(
         qualification, certificate_path
@@ -787,9 +782,14 @@ def run_rapidwright_openparf_native_candidate_backend(
         native_constraints_path=openparf_native_constraints,
         provider_manifest_path=openparf_provider_manifest,
         mapped_value=mapped_value,
+        source_packed_value=atomic_source,
         mapped_sha256=mapped_sha256,
         architecture=architecture,
     )
+    # The compact source manifest contains no graph-sized cluster array.  Its
+    # lazy mapped-index view is needed only through the bridge validation.
+    del atomic_source
+    gc.collect()
     packed = read_json(packed_path)
     placement = read_json(placement_path)
     packing_check = validate_xilinx_packing(

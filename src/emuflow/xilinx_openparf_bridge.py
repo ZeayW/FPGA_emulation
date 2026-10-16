@@ -13,7 +13,7 @@ import math
 import os
 from pathlib import Path
 import tempfile
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .architecture import ArchitectureDB
 from .errors import ValidationError
@@ -21,7 +21,9 @@ from .io import file_sha256, read_json, write_json
 from .xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_PROVIDER,
+    OPENPARF_ATOMIC_SOURCE_LEGACY_SCHEMA,
     OPENPARF_ATOMIC_SOURCE_SCHEMA,
+    _expand_atomic_source,
     load_xilinx_openparf_atomic_placement_clusters,
 )
 from .xilinx_native_device_constraints import (
@@ -183,7 +185,9 @@ def _validate_certificate(
     if source_packed is not None:
         if (
             source_packed.get("schema") not in {
-                PACKED_SITE_NETLIST_SCHEMA, OPENPARF_ATOMIC_SOURCE_SCHEMA,
+                PACKED_SITE_NETLIST_SCHEMA,
+                OPENPARF_ATOMIC_SOURCE_SCHEMA,
+                OPENPARF_ATOMIC_SOURCE_LEGACY_SCHEMA,
             }
             or source_packed.get("status") != "pass"
             or source_packed.get("top") != selected_top
@@ -193,7 +197,9 @@ def _validate_certificate(
             )
         source_clusters = source_packed.get("clusters")
         source_cascades = source_packed.get("cascade_chains")
-        if not isinstance(source_clusters, list) or not isinstance(
+        if not isinstance(source_clusters, Sequence) or isinstance(
+            source_clusters, (str, bytes)
+        ) or not isinstance(
             source_cascades, list
         ):
             raise ValidationError(
@@ -508,6 +514,7 @@ def materialize_xilinx_openparf_atomic_contract(
     native_constraints_path: Optional[Path] = None,
     provider_manifest_path: Optional[Path] = None,
     mapped_value: Optional[Mapping[str, Any]] = None,
+    source_packed_value: Optional[Mapping[str, Any]] = None,
     mapped_sha256: Optional[str] = None,
     architecture: Optional[ArchitectureDB] = None,
 ) -> Dict[str, Any]:
@@ -524,7 +531,10 @@ def materialize_xilinx_openparf_atomic_contract(
     mapped_sha = mapped_sha256 or _sha256(mapped_path)
     source_packed: Optional[Mapping[str, Any]] = None
     if source_packed_path is not None:
-        loaded_source_packed = read_json(source_packed_path)
+        loaded_source_packed = (
+            read_json(source_packed_path)
+            if source_packed_value is None else source_packed_value
+        )
         if not isinstance(loaded_source_packed, Mapping):
             raise ValidationError(
                 "OpenPARF atomic source PackedSiteNetlist is invalid"
@@ -538,7 +548,13 @@ def materialize_xilinx_openparf_atomic_contract(
             raise ValidationError(
                 "OpenPARF atomic source PackedSiteNetlist seal is invalid"
             )
-        source_packed = loaded_source_packed
+        source_packed = (
+            _expand_atomic_source(mapped, loaded_source_packed)
+            if loaded_source_packed.get("schema")
+            == OPENPARF_ATOMIC_SOURCE_SCHEMA
+            and "clusters" not in loaded_source_packed
+            else loaded_source_packed
+        )
     source = certificate.get("source")
     if (
         not isinstance(source, Mapping)

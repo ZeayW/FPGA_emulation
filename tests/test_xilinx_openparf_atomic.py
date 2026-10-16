@@ -448,15 +448,26 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 mapped, atomic_source, architecture, output, top="top",
                 packed_value=source,
             )
+            reloaded_manifest = export_xilinx_openparf_atomic(
+                mapped,
+                atomic_source,
+                architecture,
+                root / "openparf-reloaded",
+                top="top",
+            )
             serialized_source = json.loads(
                 atomic_source.read_text(encoding="utf-8")
             )
             imported_clocks = import_yosys_json(mapped).value["clocks"]
         self.assertEqual(source["schema"], OPENPARF_ATOMIC_SOURCE_SCHEMA)
         self.assertNotIsInstance(source["clusters"], list)
-        self.assertEqual(
-            serialized_source["clusters"], list(source["clusters"])
-        )
+        self.assertNotIn("clusters", serialized_source)
+        self.assertEqual(serialized_source["explicit_macro_clusters"], [])
+        self.assertEqual(serialized_source["implicit_singletons"], {
+            "provider": "mapped-sqlite-cell-order-excluding-macros-v1",
+            "count": 131,
+        })
+        self.assertEqual(len(list(source["clusters"])), 131)
         self.assertEqual(imported_clocks, [{
             "id": "clk", "name": "clk", "source_port": "clk",
             "period_ns": None,
@@ -465,6 +476,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "physical_atoms": 131, "constant_cells": 0,
         })
         self.assertEqual(manifest["atoms"], 131)
+        self.assertEqual(reloaded_manifest["atoms"], manifest["atoms"])
+        self.assertEqual(
+            reloaded_manifest["resources"], manifest["resources"]
+        )
         self.assertEqual(manifest["resources"], {
             "DSP48E2": 1, "FF": 64, "LUT": 64,
             "RAMB36E2": 1, "URAM288": 1,

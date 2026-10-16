@@ -64,8 +64,11 @@ class XilinxOpenparfAtomicCarryIntegrationTest(unittest.TestCase):
                 },
             }, compact=True)
             source = root / "atomic-source.json"
-            build_xilinx_openparf_atomic_source(mapped, source, top="top")
-            clusters = read_json(source)["clusters"]
+            source_value = build_xilinx_openparf_atomic_source(
+                mapped, source, top="top"
+            )
+            clusters = list(source_value["clusters"])
+            self.assertNotIn("clusters", read_json(source))
             self.assertEqual(len(clusters), 2)
             for cluster in clusters:
                 self.assertEqual(cluster["kind"], "hard")
@@ -80,8 +83,9 @@ class XilinxOpenparfAtomicCarryIntegrationTest(unittest.TestCase):
             root = Path(temporary)
             mapped, _packed, architecture, native, provider = _write_fixture(root)
             source = root / "atomic-source.json"
-            build_xilinx_openparf_atomic_source(mapped, source, top="top")
-            source_value = read_json(source)
+            source_value = build_xilinx_openparf_atomic_source(
+                mapped, source, top="top"
+            )
             self.assertEqual(
                 [cluster["kind"] for cluster in source_value["clusters"]].count(
                     "carry"

@@ -81,6 +81,9 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     "native_constraints_path": native_constraints,
                     "provider_manifest_path": provider_manifest,
                     "mapped_value": mapped_value,
+                    "source_packed_value": {
+                        "summary": {"physical_atoms": 2}
+                    },
                     "mapped_sha256": "0" * 64,
                     "architecture": architecture_object,
                 })

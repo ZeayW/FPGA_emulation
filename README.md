@@ -1118,8 +1118,10 @@ Phase 7 flow. After routed segment timing is bound, mapped/packed/placement
 objects are closed before OpenSTA starts; OpenSTA attaches the mapped index
 directly while constructing its compact routed EmuIR database.
 The OpenPARF atomic-source adapter likewise exposes a re-iterable view over the
-mapped index and streams its external JSON artifact. It does not construct and
-then reparse a graph-sized list of singleton cluster dictionaries, and it
+mapped index.  Its v2 artifact stores only exceptional physical macro groups
+and a bounded descriptor for ordinary singleton atoms; the singleton
+population is deterministically reconstructed from mapped SQLite cell order.
+It therefore neither serializes nor reparses one JSON cluster per cell, and it
 reuses the mapped artifact's sealed digest instead of scanning it again.
 The OpenSTA staging graph is imported directly into compact EmuIR SQLite and
 route-delay cells are inserted there; no graph-sized `EmuIR` copy, `deepcopy`,

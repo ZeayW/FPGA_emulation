@@ -454,6 +454,10 @@ requirements, not optional micro-optimizations.
   serialized atomic-source JSON, or rehash an unchanged mapped netlist when
   its sealed digest is already available. Per-cell JSON remains limited to
   explicit small-fixture qualification and is not a production interchange.
+  The production atomic-source contract stores only explicit physical macros
+  plus an implicit-singleton descriptor; ordinary atoms are a deterministic
+  view of mapped SQLite cell order and must never be materialized as a
+  graph-sized JSON array.
 - Small-design qualification may run exhaustive and deterministic event-driven
   equivalence.  Large-design production uses the constructive split
   certificate (lossless source records, exact endpoint coverage, one scheduled

@@ -56,7 +56,8 @@ OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v2"
 OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-placement-database/v2"
 )
-OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
+OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v2"
+OPENPARF_ATOMIC_SOURCE_LEGACY_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = (
     "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v5"
 )
@@ -1651,7 +1652,10 @@ def _collect_atoms(
                 "muxf7-cone", "muxf8-cone", "muxf9-cone", "carry8-lut6_2",
                 *(
                     {"ramb18-half-site-occupancy"}
-                    if packed.get("schema") == OPENPARF_ATOMIC_SOURCE_SCHEMA
+                    if packed.get("schema") in {
+                        OPENPARF_ATOMIC_SOURCE_SCHEMA,
+                        OPENPARF_ATOMIC_SOURCE_LEGACY_SCHEMA,
+                    }
                     else set()
                 ),
             }
@@ -1728,7 +1732,10 @@ def _collect_atoms(
             for assignment in assignments if isinstance(assignment, Mapping)
         }
         if kind == "hard" and hard_types == {"RAMB18E2"}:
-            if packed.get("schema") == OPENPARF_ATOMIC_SOURCE_SCHEMA:
+            if packed.get("schema") in {
+                OPENPARF_ATOMIC_SOURCE_SCHEMA,
+                OPENPARF_ATOMIC_SOURCE_LEGACY_SCHEMA,
+            }:
                 macro = site_macro_by_members.get(frozenset(
                     assignment.get("instance") for assignment in assignments
                     if isinstance(assignment, Mapping)
@@ -1917,51 +1924,53 @@ class _AtomicClusterSequence(Sequence[Mapping[str, Any]]):
         return next(itertools.islice(iter(self), index, index + 1))
 
 
-def _write_atomic_source(
-    output_path: Path, value: Mapping[str, Any]
-) -> None:
-    """Serialize the large clusters array without a graph-sized JSON tree."""
+def _expand_atomic_source(
+    mapped: Mapping[str, Any], source: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    """Reconstruct the deterministic singleton view from compact metadata.
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=output_path.parent,
-        prefix=f".{output_path.name}.", suffix=".tmp", delete=False,
+    Production atomic clusters are a pure projection of the mapped SQLite
+    cell order.  Persisting one JSON object per cell duplicated that database
+    and forced later stages to parse hundreds of MiB.  Version 2 stores only
+    the exceptional macro clusters; ordinary singleton clusters are recreated
+    lazily from the already-open mapped index.
+    """
+
+    if source.get("schema") == OPENPARF_ATOMIC_SOURCE_LEGACY_SCHEMA:
+        return source
+    if source.get("schema") != OPENPARF_ATOMIC_SOURCE_SCHEMA:
+        raise ValidationError("OpenPARF atomic source schema is invalid")
+    selected_top, module = _select_module(mapped, source.get("top"))
+    cells = module.get("cells")
+    explicit = source.get("explicit_macro_clusters")
+    implicit = source.get("implicit_singletons")
+    if (
+        selected_top != source.get("top")
+        or not isinstance(cells, Mapping)
+        or not isinstance(explicit, list)
+        or not isinstance(implicit, Mapping)
+        or implicit.get("provider")
+        != "mapped-sqlite-cell-order-excluding-macros-v1"
+        or not isinstance(implicit.get("count"), int)
+    ):
+        raise ValidationError("compact OpenPARF atomic source is invalid")
+    macro_owned = {
+        assignment.get("instance")
+        for cluster in explicit
+        if isinstance(cluster, Mapping)
+        for assignment in cluster.get("assignments", [])
+        if isinstance(assignment, Mapping)
+    }
+    if None in macro_owned:
+        raise ValidationError("compact OpenPARF macro ownership is invalid")
+    expanded = dict(source)
+    expanded["clusters"] = _AtomicClusterSequence(
+        cells,
+        explicit,
+        set(macro_owned),
+        singleton_count=int(implicit["count"]),
     )
-    temporary_path = Path(temporary.name)
-    try:
-        with temporary:
-            temporary.write("{")
-            first_member = True
-            for key in sorted(value):
-                item = value[key]
-                if not first_member:
-                    temporary.write(",")
-                first_member = False
-                temporary.write(json.dumps(key, ensure_ascii=False))
-                temporary.write(":")
-                if key != "clusters":
-                    temporary.write(json.dumps(
-                        item, ensure_ascii=False, separators=(",", ":"),
-                        sort_keys=True,
-                    ))
-                    continue
-                temporary.write("[")
-                first_cluster = True
-                for cluster in item:
-                    if not first_cluster:
-                        temporary.write(",")
-                    first_cluster = False
-                    temporary.write(json.dumps(
-                        cluster, ensure_ascii=False, separators=(",", ":"),
-                        sort_keys=True,
-                    ))
-                temporary.write("]")
-            temporary.write("}\n")
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        os.replace(temporary_path, output_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
+    return expanded
 
 
 def build_xilinx_openparf_atomic_source(
@@ -2075,7 +2084,7 @@ def build_xilinx_openparf_atomic_source(
     }
     if macro_contract.get("site_macros"):
         summary["physical_macros"] = len(macro_contract["site_macros"])
-    value = {
+    persisted = {
         "schema": OPENPARF_ATOMIC_SOURCE_SCHEMA,
         "status": "pass",
         "top": selected_top,
@@ -2084,13 +2093,17 @@ def build_xilinx_openparf_atomic_source(
             "provider": "mapped-singleton-atoms-no-site-packing-v1",
             "dedicated_or_relative_constraints": "fail-closed",
         },
-        "clusters": clusters,
+        "explicit_macro_clusters": macro_clusters,
+        "implicit_singletons": {
+            "provider": "mapped-sqlite-cell-order-excluding-macros-v1",
+            "count": physical_singletons,
+        },
         "cascade_chains": cascades,
         "unplaced_constants": constants,
         "summary": summary,
     }
-    _write_atomic_source(output_path, value)
-    return value
+    write_json(output_path, persisted, compact=True)
+    return _expand_atomic_source(mapped, persisted)
 
 
 def probe_xilinx_openparf_atomic_eligibility(
@@ -2907,13 +2920,24 @@ def export_xilinx_openparf_atomic(
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     packed = read_json(packed_path) if packed_value is None else packed_value
     if (
+        isinstance(packed, Mapping)
+        and packed.get("schema") == OPENPARF_ATOMIC_SOURCE_SCHEMA
+        and "clusters" not in packed
+    ):
+        packed = _expand_atomic_source(mapped, packed)
+    if (
         not isinstance(packed, Mapping)
         or packed.get("schema") not in {
-            PACKED_SITE_NETLIST_SCHEMA, OPENPARF_ATOMIC_SOURCE_SCHEMA,
+            PACKED_SITE_NETLIST_SCHEMA,
+            OPENPARF_ATOMIC_SOURCE_SCHEMA,
+            OPENPARF_ATOMIC_SOURCE_LEGACY_SCHEMA,
         }
     ):
         raise ValidationError("OpenPARF atomic source header is invalid")
-    if packed.get("schema") == OPENPARF_ATOMIC_SOURCE_SCHEMA:
+    if packed.get("schema") in {
+        OPENPARF_ATOMIC_SOURCE_SCHEMA,
+        OPENPARF_ATOMIC_SOURCE_LEGACY_SCHEMA,
+    }:
         source = packed.get("source")
         if (
             packed.get("status") != "pass"
