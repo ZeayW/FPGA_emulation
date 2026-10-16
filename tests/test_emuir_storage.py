@@ -9,7 +9,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.emuir_storage import is_emuir_sqlite, read_emuir_sqlite, write_emuir_sqlite, _write_emuir_sqlite_v1
+from emuflow.emuir_storage import is_emuir_sqlite, read_emuir_sqlite, write_emuir_sqlite, _write_emuir_sqlite_v1, open_emuir_sqlite_read_only
+from emuflow.emuir_compact import selected_net_driver_records
+from emuflow.errors import ValidationError
+from emuflow.local_path_timing import _resolve_local_path_fpga
 from emuflow.ir import EmuIR
 from emuflow.yosys import import_yosys_json, import_yosys_json_indexed
 
@@ -39,6 +42,78 @@ class EmuIRStorageTest(unittest.TestCase):
             self.assertTrue(is_emuir_sqlite(first))
             self.assertEqual(EmuIR.load(first).to_dict(), self.ir.to_dict())
             self.assertEqual(_sha256(first), _sha256(second))
+
+    def test_driver_projection_is_independent_of_fanout_and_payloads(self) -> None:
+        value = {
+            "schema": "emuflow.emuir/v1",
+            "design": {"name": "fanout", "top": "fanout", "source_format": "test"},
+            "instances": [{
+                "id": name, "type": "LUT1", "resources": {"lut": 1},
+                "constant_connections": [],
+            } for name in ("driver", "other")],
+            "ports": [], "clocks": [], "warnings": [],
+            "nets": [{
+                "id": "fanout", "cut_class": "combinational",
+                "drivers": [{"instance": "driver", "port": "O", "bit": 0}],
+                "sinks": [{
+                    "instance": "other", "port": "I", "bit": bit,
+                    "unused_payload": "sink-data" * 256,
+                } for bit in range(4096)],
+                "unused_payload": "net-data" * 1024,
+            }, {
+                "id": "primary-input", "cut_class": "combinational",
+                "drivers": [{"instance": None, "port": "in", "bit": 0}],
+                "sinks": [],
+            }, {
+                "id": "undriven", "cut_class": "combinational",
+                "drivers": [], "sinks": [],
+            }, {
+                "id": "multi-driver", "cut_class": "combinational",
+                "drivers": [
+                    {"instance": name, "port": "O", "bit": 0}
+                    for name in ("driver", "other")
+                ], "sinks": [],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact = Path(temporary_directory) / "fanout.sqlite"
+            write_emuir_sqlite(artifact, value)
+            connection = open_emuir_sqlite_read_only(artifact)
+            try:
+                connection.set_authorizer(
+                    lambda action, table, *unused: sqlite3.SQLITE_DENY
+                    if action == sqlite3.SQLITE_READ and table in {
+                        "payloads", "pin_names", "alias_records",
+                    } else sqlite3.SQLITE_OK
+                )
+                with patch("emuflow.emuir_compact._decode", side_effect=AssertionError(
+                    "ownership projection must not decode net/endpoint JSON"
+                )):
+                    result = selected_net_driver_records(
+                        connection, (net["id"] for net in value["nets"]),
+                    )
+                self.assertEqual(result["fanout"], {
+                    "drivers": [{"instance": "driver"}],
+                })
+                self.assertEqual(result["primary-input"], {
+                    "drivers": [{"instance": None}],
+                })
+                owners = {"driver": "F0", "other": "F1"}
+                endpoint = {"instance": "driver"}
+                self.assertEqual(_resolve_local_path_fpga(
+                    {"id": "p", "path_nets": ["fanout"]},
+                    endpoint, endpoint, result, owners,
+                ), "F0")
+                for net_id in ("undriven", "multi-driver"):
+                    with self.subTest(net_id=net_id), self.assertRaisesRegex(
+                        ValidationError, "unique selected-net driver",
+                    ):
+                        _resolve_local_path_fpga(
+                            {"id": "p", "path_nets": [net_id]},
+                            endpoint, endpoint, result, owners,
+                        )
+            finally:
+                connection.close()
 
     def test_publication_does_not_run_storage_engine_audits(self) -> None:
         connect = sqlite3.connect

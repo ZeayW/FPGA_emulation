@@ -6748,6 +6748,11 @@ The bridge now reads the normalized placement certificate as re-iterable SQL
 site groups and merges them in site order. It no longer rebuilds the entire
 certificate assignment tree or a second whole-design certificate-by-site map.
 The normalized physical-output aggregation remains to be migrated.
+RapidWright's pre-worker local-path classification queries only selected-net
+driver owners from compact EmuIR. It does not decode each selected net's full
+fanout or extension JSON merely to determine its FPGA. Unique-driver and
+cross-partition coverage checks remain unchanged; VPR retains the complete
+selected-net projection needed to reconstruct its explicit atom-pin chains.
 The CMake control-plane installation includes `emuflow/data`, including the
 UltraScale+ primitive library required by a standalone versioned install.
 Parallel physical execution reports each FPGA failure immediately while the

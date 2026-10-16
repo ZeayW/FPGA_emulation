@@ -286,6 +286,46 @@ def selected_net_instance_endpoints(
     return result
 
 
+def selected_net_driver_records(
+    c: sqlite3.Connection,
+    net_ids: Iterable[str],
+) -> dict[str, dict[str, Any]]:
+    """Project only driver owners for a bounded local-path ownership query.
+
+    RapidWright local paths use endpoint-to-endpoint physical queries. Their
+    partition classification needs the selected net's unique driver, not its
+    fanout, pin payloads, aliases or net attributes. Keep zero/multiple drivers
+    visible so the existing path validator still rejects either condition.
+    """
+
+    requested = sorted(set(net_ids))
+    result: dict[str, dict[str, Any]] = {}
+    for offset in range(0, len(requested), 500):
+        batch = requested[offset : offset + 500]
+        placeholders = ",".join("?" for _ in batch)
+        for row in c.execute(
+            f"""SELECT n.id,e.ordinal,e.instance_seq,cell.id AS instance_id
+            FROM net_records n
+            LEFT JOIN endpoint_records e ON e.net_seq=n.seq AND e.role=0
+            LEFT JOIN cell_records cell ON cell.seq=e.instance_seq
+            WHERE n.id IN ({placeholders}) ORDER BY n.id,e.ordinal""",
+            batch,
+        ):
+            record = result.setdefault(row["id"], {"drivers": []})
+            if row["ordinal"] is None:
+                continue
+            if row["instance_seq"] is not None and row["instance_id"] is None:
+                raise ValueError("compact EmuIR has an orphaned net driver")
+            record["drivers"].append({"instance": row["instance_id"]})
+    missing = sorted(set(requested) - set(result))
+    if missing:
+        raise ValueError(
+            "compact EmuIR is missing requested nets: "
+            + ", ".join(repr(item) for item in missing[:10])
+        )
+    return result
+
+
 def selected_net_records(
     c: sqlite3.Connection,
     net_ids: Iterable[str],

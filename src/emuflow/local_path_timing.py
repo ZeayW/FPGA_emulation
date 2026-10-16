@@ -12,7 +12,9 @@ from typing import Any, Dict, Mapping
 from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
-from .emuir_compact import is_compact_emuir, selected_net_records
+from .emuir_compact import (
+    is_compact_emuir, selected_net_driver_records, selected_net_records,
+)
 from .emuir_storage import is_emuir_sqlite
 from .indexed_physical_ir import IndexedPhysicalIR
 from .indexed_timing import IndexedTimingView
@@ -490,8 +492,10 @@ def prepare_vpr_local_path_query_inputs(
                     for path in candidates
                     for net_id in path.get("path_nets", [])
                 }
-                original_nets = selected_net_records(
-                    view.connection, selected_ids
+                original_nets = (
+                    selected_net_records(view.connection, selected_ids)
+                    if object_provider == "vpr"
+                    else selected_net_driver_records(view.connection, selected_ids)
                 )
                 if object_provider == "vpr":
                     prepared_original_nets.update(original_nets)

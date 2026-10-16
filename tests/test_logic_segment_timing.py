@@ -5,6 +5,8 @@ from unittest import mock
 
 from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
+from emuflow.emuir_compact import selected_net_driver_records, selected_net_records
+from emuflow.emuir_storage import open_emuir_sqlite_read_only
 from emuflow.errors import ValidationError
 from emuflow.logic_segment_timing import (
     _architectural_launch_endpoints,
@@ -110,6 +112,37 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 prepared = prepare_vpr_local_path_query_inputs(
                     ir_path, assignment, paths, routes
                 )
+            with mock.patch(
+                "emuflow.local_path_timing.selected_net_records",
+                side_effect=AssertionError("full net payload loading forbidden"),
+            ):
+                xilinx = prepare_vpr_local_path_query_inputs(
+                    ir_path, assignment, paths, routes, object_provider="xilinx"
+                )
+            self.assertEqual(xilinx.local_paths_by_fpga, {
+                fpga: tuple({
+                    key: item for key, item in path.items() if key != "path_nets"
+                } for path in local)
+                for fpga, local in prepared.local_paths_by_fpga.items()
+            })
+            self.assertEqual(xilinx.source_manifest, prepared.source_manifest)
+            self.assertEqual(xilinx.original_nets, {})
+            with open_emuir_sqlite_read_only(ir_path) as connection:
+                reference = selected_net_records(connection, ["n0", "n1"])
+                with mock.patch(
+                    "emuflow.emuir_compact._decode",
+                    side_effect=AssertionError("driver query decoded JSON payloads"),
+                ):
+                    projected = selected_net_driver_records(connection, ["n0", "n1"])
+                self.assertEqual(projected, {
+                    name: {"drivers": [
+                        {"instance": driver["instance"]}
+                        for driver in net["drivers"]
+                    ]}
+                    for name, net in reference.items()
+                })
+                with self.assertRaisesRegex(ValueError, "missing requested nets"):
+                    selected_net_driver_records(connection, ["absent-net"])
             schedule = root / "schedule.json"
             write_json(schedule, {
                 "schema": "emuflow.tdm-schedule/v1",
