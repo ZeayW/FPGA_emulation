@@ -593,6 +593,80 @@ class TritonPartTest(unittest.TestCase):
                 all(isinstance(move["estimated_cut_delta"], float) for move in moves)
             )
 
+    def test_balance_repair_also_enforces_absolute_device_capacity(self) -> None:
+        for resource in ("lut", "ff", "bram18k", "dsp48", "carry8"):
+            with self.subTest(resource=resource):
+                value = self.platform.to_dict()
+                for fpga in value["fpgas"]:
+                    fpga["utilization_limit"] = 1.0
+                    fpga["capacity"][resource] = 100
+                platform = Platform.from_dict(value)
+                clusters = {
+                    "clusters": [
+                        {
+                            "id": f"c{index}",
+                            "instances": [f"i{index}"],
+                            "resources": {resource: amount},
+                            "fixed_fpga": None,
+                        }
+                        for index, amount in enumerate((60, 60, 40))
+                    ]
+                }
+                raw = {"c0": "fpga0", "c1": "fpga0", "c2": "fpga1"}
+                repaired, report = _repair_multi_resource_balance(
+                    raw,
+                    clusters,
+                    platform,
+                    {"balance_tolerance": 2.1},
+                    {
+                        "cluster_order": ["c0", "c1", "c2"],
+                        "fpga_order": ["fpga0", "fpga1"],
+                        "vertex_dimensions": ["cells", resource],
+                        "vertex_weights": [[1, 60], [1, 60], [1, 40]],
+                        "effective_balance_percent": 210.0,
+                        "hyperedges": [],
+                    },
+                )
+                self.assertEqual(report["initial_loads"]["fpga0"][resource], 120)
+                self.assertEqual(report["moves"], 1)
+                self.assertNotEqual(repaired, raw)
+                self.assertEqual(raw["c0"], "fpga0")
+                for fpga in ("fpga0", "fpga1"):
+                    self.assertEqual(report["allowed_loads"][fpga][resource], 100)
+                    self.assertLessEqual(report["final_loads"][fpga][resource], 100)
+
+    def test_balance_repair_rejects_capacity_infeasible_atomic_assignment(self) -> None:
+        value = self.platform.to_dict()
+        for fpga in value["fpgas"]:
+            fpga["utilization_limit"] = 1.0
+            fpga["capacity"]["lut"] = 100
+        clusters = {
+            "clusters": [
+                {
+                    "id": f"c{index}",
+                    "instances": [f"i{index}"],
+                    "resources": {"lut": 60},
+                    "fixed_fpga": None,
+                }
+                for index in range(3)
+            ]
+        }
+        with self.assertRaisesRegex(ValidationError, "balance repair found no legal"):
+            _repair_multi_resource_balance(
+                {"c0": "fpga0", "c1": "fpga0", "c2": "fpga1"},
+                clusters,
+                Platform.from_dict(value),
+                {"balance_tolerance": 2.1},
+                {
+                    "cluster_order": ["c0", "c1", "c2"],
+                    "fpga_order": ["fpga0", "fpga1"],
+                    "vertex_dimensions": ["cells", "lut"],
+                    "vertex_weights": [[1, 60], [1, 60], [1, 60]],
+                    "effective_balance_percent": 210.0,
+                    "hyperedges": [],
+                },
+            )
+
     def test_balance_repair_legalizes_best_effort_solution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = export_tritonpart_inputs(

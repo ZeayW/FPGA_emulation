@@ -6784,6 +6784,10 @@ Pre-route cut qualification builds its cut-net membership index once and
 streams original path records against it. It no longer rebuilds the complete
 cut set for each path; duplicate net occurrences still contribute exactly one
 association per original path, with unchanged structural coverage checks.
+TritonPart's explicit balance repair uses the smaller of the proportional
+load bound and each FPGA's effective absolute resource capacity. Loose balance
+tolerances never authorize overfilling a device; direct moves, swaps, and
+ejection chains share that bound, and an infeasible repair still fails closed.
 Atomic-source construction uses aggregate SQL primitive counts and selected
 hard-block/constant queries instead of decoding every ordinary LUT/FF record.
 The bounded `primitive_counts` inventory is consumed by SLR-window selection;

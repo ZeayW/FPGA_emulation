@@ -735,6 +735,17 @@ def _repair_multi_resource_balance(
         ]
         for part in range(num_parts)
     ]
+    # A relative share of total demand is not a device capacity. With loose
+    # balance tolerance it can exceed the FPGA's absolute resource budget.
+    # Every direct move, swap, and ejection chain must respect both bounds.
+    fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
+    for part, fpga_id in enumerate(fpga_order):
+        capacity = fpga_by_id[fpga_id].effective_capacity
+        for dimension, name in enumerate(dimensions):
+            if name != "cells":
+                allowed[part][dimension] = min(
+                    allowed[part][dimension], capacity[name]
+                )
     loads = [[0] * num_dimensions for _ in range(num_parts)]
     for part, weights in zip(labels, vertex_weights):
         for dimension, weight in enumerate(weights):
