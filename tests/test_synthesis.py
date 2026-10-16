@@ -321,6 +321,12 @@ class SynthesisTest(unittest.TestCase):
             self.assertIn(option, script)
         self.assertIn("-run begin:check", script)
         self.assertIn("blackbox =A:whitebox", script)
+        commands = script.split("; ")
+        mapped_index = next(i for i, command in enumerate(commands)
+                            if command.startswith("synth_xilinx "))
+        self.assertEqual(commands[mapped_index + 1], "hierarchy -check")
+        self.assertEqual(commands[mapped_index + 2], "blackbox =A:whitebox")
+        self.assertNotIn("stat -tech xilinx", script)
         self.assertIn("; flatten; check;", script)
         self.assertNotIn("; flatten; opt_clean;", script)
         self.assertIn(

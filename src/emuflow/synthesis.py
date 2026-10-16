@@ -213,6 +213,16 @@ def build_yosys_script(
         " ".join(["read_verilog", "-sv", *read_options, read_sources]),
         f"hierarchy -check -top {top_identifier}",
         " ".join(synth_options),
+        # The excluded synth_xilinx check label also fixes mapped primitive
+        # port widths against the library declarations. This is semantic,
+        # unlike its diagnostic stat tree: e.g. the shared BRAM techmap emits
+        # four WEA bits for a two-bit RAMB18E2 port. Preserve Yosys's normal
+        # truncation/extension before exporting leaves to EmuIR and STA.
+        *(
+            ["hierarchy -check"]
+            if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+            else []
+        ),
         # The skipped synth_xilinx check label normally performs this
         # conversion after validating the mapped design.  Preserve it so the
         # JSON backend treats Xilinx library whiteboxes as leaf primitives.

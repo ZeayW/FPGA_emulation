@@ -351,6 +351,13 @@ policy.
 
 ## Managed-flow hot paths must stay compact
 
+- When excluding a tool's compound diagnostic stage, preserve every semantic
+  transformation it also performs. In particular, skipping the Xilinx
+  statistics stage must retain post-mapping `hierarchy -check` primitive-port
+  width resolution before EmuIR/STA export. A structural `check` is not
+  equivalent. Never repair an invalid old timing population by dropping its
+  nonexistent physical pins or presenting aliases as new measured endpoints.
+
 - The OpenSTA global timing route must execute independently of the Python
   system-timing composer. Never run both implicitly, including to construct a
   report before replacing its numbers. Keep cross-engine comparisons in

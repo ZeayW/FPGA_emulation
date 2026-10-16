@@ -6754,6 +6754,13 @@ return only type counts. The physical bridge and final hard-resource summary
 likewise use aggregate counts and constant-only queries instead of decoding
 every ordinary cell merely to count types. Exact primitive/port validation,
 macro coverage, and physical legality checks remain required.
+The Xilinx frontend omits only `synth_xilinx`'s diagnostic statistics tree;
+it explicitly retains the post-mapping `hierarchy -check` before blackboxing
+and streaming export. That pass resolves primitive port widths, including
+the common BRAM techmap's over-wide RAMB18E2 write-enable connections. A
+plain `check` pass is not a replacement. Historical inputs exported without
+this normalization may contain nonexistent physical/STA endpoints and cannot
+be promoted by truncating route pins or silently dropping timing paths.
 Atomic-source construction uses aggregate SQL primitive counts and selected
 hard-block/constant queries instead of decoding every ordinary LUT/FF record.
 The bounded `primitive_counts` inventory is consumed by SLR-window selection;
