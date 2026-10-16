@@ -6737,6 +6737,8 @@ certificate assignment tree or a second whole-design certificate-by-site map.
 The normalized physical-output aggregation remains to be migrated.
 The CMake control-plane installation includes `emuflow/data`, including the
 UltraScale+ primitive library required by a standalone versioned install.
+Parallel physical execution reports each FPGA failure immediately while the
+remaining active workers finish, then emits the deterministic combined error.
 
 Physical timing translation treats an original net that is absent from one
 particular split FPGA as an ordinary partition-local membership miss. Required

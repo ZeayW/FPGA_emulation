@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import re
 import shutil
@@ -1841,6 +1842,9 @@ def run_multi_fpga_physical_flow(
                     results_by_fpga[fpga_id] = future.result()
                 except Exception as error:  # Preserve all partition failures.
                     failures.append((fpga_id, error))
+                    logging.getLogger(__name__).error(
+                        "FPGA %s physical flow failed: %s", fpga_id, error
+                    )
         if failures:
             details = "; ".join(
                 f"{fpga_id}: {error}"
