@@ -99,6 +99,45 @@ class _IndexedRecords(MappingABC[str, Mapping[str, Any]]):
         for _name, value in self.items():
             yield value
 
+    def physical_macro_projection(
+        self, root_types: set[str],
+    ) -> Mapping[str, Mapping[str, Any]]:
+        """Resolve exceptional physical macros in SQL before decoding records.
+
+        MUXF9 requires at most three driver steps to its LUT leaves; a CARRY8
+        requires one step to its LUT6_2 adapters. All dedicated hard blocks
+        are roots. Ordinary logic never enters this projection.
+        """
+        if self.table != "cells":
+            raise ValidationError("physical macro projection requires cells")
+        duplicate = self.connection.execute(
+            "SELECT net_bit FROM cell_pins WHERE net_bit IS NOT NULL "
+            "AND direction='output' GROUP BY net_bit HAVING count(*)>1 LIMIT 1"
+        ).fetchone()
+        if duplicate is not None:
+            raise ValidationError(
+                f"mapped net bit {duplicate[0]} has multiple drivers"
+            )
+        placeholders = ",".join("?" for _ in root_types)
+        return {
+            str(name): json.loads(record)
+            for name, record in self.connection.execute(
+                "WITH RECURSIVE members(seq,depth) AS ("
+                f"SELECT seq,0 FROM cells WHERE type IN ({placeholders}) "
+                "UNION SELECT d.cell_seq,m.depth+1 FROM members m "
+                "JOIN cells c ON c.seq=m.seq "
+                "JOIN cell_pins p ON p.cell_seq=m.seq "
+                "JOIN cell_pins d ON d.net_bit=p.net_bit AND d.direction='output' "
+                "AND d.net_bit IS NOT NULL "
+                "WHERE m.depth<3 AND p.direction='input' AND p.net_bit IS NOT NULL "
+                "AND ((c.type IN ('MUXF7','MUXF8','MUXF9') AND p.port IN ('I0','I1')) "
+                "OR (c.type='CARRY8' AND p.port IN ('DI','S')))) "
+                "SELECT DISTINCT c.id,c.record_json FROM members m "
+                "JOIN cells c ON c.seq=m.seq ORDER BY c.id",
+                tuple(sorted(root_types)),
+            )
+        }
+
 
 class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
     """Bounded read interface for a production Xilinx mapped netlist."""
@@ -598,6 +637,11 @@ def _emit_compact_xilinx_mapped_artifacts(
                 emitted_net_count = _write_object_entries(stream, netnames())
                 stream.write("}}}\n")
                 stream.flush()
+        index.execute("CREATE INDEX cells_by_type ON cells(type,id)")
+        index.execute(
+            "CREATE INDEX cell_pins_by_driver ON cell_pins(net_bit,cell_seq,pin_seq) "
+            "WHERE net_bit IS NOT NULL AND direction='output'"
+        )
         index.commit()
         index.close()
         index = None

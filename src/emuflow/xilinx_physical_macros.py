@@ -459,6 +459,9 @@ def _derive_contract(
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped Xilinx cells are invalid")
+    projection = getattr(cells, "physical_macro_projection", None)
+    if callable(projection):
+        cells = projection(_REQUIRED_SITE_MACRO_TYPES | set(CASCADE_PORTS))
     drivers = _net_drivers(cells)
     endpoints = _driver_endpoints(cells)
     site_macros = [

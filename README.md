@@ -6725,6 +6725,11 @@ only hard-block atoms needed by exact legalization.  It does not call the
 reference Python atom collector or retain a Python record for every LUT/FF.
 Native export counts primitive atoms across explicit macro members as well as
 implicit singletons; cluster count is not used as a primitive-coverage check.
+Physical-macro extraction projects only MUX/CARRY roots, dedicated hard blocks,
+and their required LUT drivers through SQL. Its topology builder no longer
+sorts or materializes every ordinary mapped cell or every net driver in
+Python. A global SQL multiple-driver check preserves the original rejection
+policy, including malformed nets outside the exceptional macro cones.
 The native placement importer also stages discrete `.pl` rows in a temporary
 SQLite relation, checks atom uniqueness and complete coverage there, and joins
 it to `atom-map.sqlite3`. Placement validation streams that join without

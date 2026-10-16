@@ -1,12 +1,16 @@
 import copy
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from types import MappingProxyType
+from unittest import mock
 
 from emuflow.errors import ValidationError
 import emuflow.xilinx_physical_macros as physical_macros
+from emuflow.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
+from emuflow.yosys import import_yosys_json
 from emuflow.xilinx_physical_macros import (
     XILINX_PHYSICAL_MACRO_CONTRACT_SCHEMA,
     derive_xilinx_physical_macro_contract,
@@ -207,6 +211,61 @@ class XilinxPhysicalMacroContractTest(unittest.TestCase):
         serialized = contract.read_text(encoding="utf-8")
         self.assertNotIn("4100", serialized)
         self.assertIn('"sha256"', serialized)
+
+    def test_indexed_projection_preserves_macros_without_loading_ordinary_cells(self):
+        value = complete_fixture()
+        cells = value["modules"]["top"]["cells"]
+        for i in range(2000):
+            cells[f"ordinary_{i:04d}"] = cell(
+                "LUT1", {"I0": ["0"], "O": [1000000+i]}, {"O"}
+            )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped = root / "mapped.json"
+            mapped.write_text(json.dumps(value))
+            ir_path, index = root / "mapped.emuir.sqlite", root / "mapped.sqlite"
+            import_yosys_json(mapped).save(ir_path)
+            emit_xilinx_mapped_index(ir_path, index)
+            original_drivers = physical_macros._net_drivers
+            projected_sizes = []
+
+            def bounded_drivers(selected):
+                self.assertFalse(any(name.startswith("ordinary_") for name in selected))
+                projected_sizes.append(len(selected))
+                return original_drivers(selected)
+
+            with open_xilinx_mapped_index(index) as indexed:
+                # The EmuIR exporter assigns canonical net-bit numbers. Compare
+                # against its complete reference graph in the same namespace.
+                reference_source = {"modules": {"top": {
+                    **indexed["modules"]["top"],
+                    "cells": dict(indexed["modules"]["top"]["cells"].items()),
+                }}}
+                reference = physical_macros.build_xilinx_physical_macro_contract(
+                    index, source=reference_source
+                )
+                with mock.patch.object(
+                    physical_macros, "_net_drivers", side_effect=bounded_drivers
+                ):
+                    actual = physical_macros.build_xilinx_physical_macro_contract(
+                        index, source=indexed
+                    )
+            self.assertTrue(projected_sizes)
+            for field in ("site_macros", "cascade_chains", "ownership", "summary", "policy"):
+                self.assertEqual(actual[field], reference[field], field)
+            # Preserve the original global multiple-driver rejection even
+            # when the offending net is outside every physical macro cone.
+            with sqlite3.connect(index) as database:
+                database.execute(
+                    "UPDATE cell_pins SET net_bit=(SELECT p.net_bit FROM cell_pins p "
+                    "JOIN cells c ON c.seq=p.cell_seq WHERE c.id='ordinary_0000' "
+                    "AND p.direction='output') WHERE direction='output' AND cell_seq="
+                    "(SELECT seq FROM cells WHERE id='ordinary_0001')"
+                )
+            with open_xilinx_mapped_index(index) as indexed, self.assertRaisesRegex(
+                ValidationError, "multiple drivers"
+            ):
+                physical_macros.build_xilinx_physical_macro_contract(index, source=indexed)
 
     def test_derives_from_read_only_mapped_cell_view(self):
         value = complete_fixture()
