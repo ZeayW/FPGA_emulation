@@ -311,7 +311,12 @@ class NativeOpenparfBookshelfExporterTests(unittest.TestCase):
             output = root / "openparf"
             import_yosys_json(mapped_json).save(ir_path)
             emit_xilinx_mapped_index(ir_path, index)
-            with open_xilinx_mapped_index(index) as indexed:
+            with open_xilinx_mapped_index(index) as indexed, mock.patch.multiple(
+                "emuflow.xilinx_netlist._IndexedRecords",
+                items=mock.Mock(side_effect=AssertionError("full cell scan")),
+                values=mock.Mock(side_effect=AssertionError("full cell scan")),
+                items_by_id=mock.Mock(side_effect=AssertionError("full cell scan")),
+            ):
                 source = build_xilinx_openparf_atomic_source(
                     index, source_path, top="top", mapped_value=indexed
                 )
@@ -334,6 +339,10 @@ class NativeOpenparfBookshelfExporterTests(unittest.TestCase):
                         packed_value=source,
                     )
             self.assertEqual(manifest["atoms"], 131)
+            self.assertEqual(source["primitive_counts"], {
+                "DSP48E2": 1, "FDRE": 64, "LUT6": 64,
+                "RAMB36E2": 1, "URAM288": 1,
+            })
             self.assertEqual(manifest["resources"], {
                 "DSP48E2": 1,
                 "FF": 64,

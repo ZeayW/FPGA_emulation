@@ -1,9 +1,11 @@
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from emuflow.errors import ValidationError
 from emuflow.xilinx_physical_backend import (
     _compact_openparf_qualification,
     _physical_clock_periods,
@@ -344,6 +346,44 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 ("SLR1",),
             )
 
+    def _assert_atomic_v2_slr_window(self, packed, arch, clusters):
+        # v2 contains un-packed atomic clusters just like v1. Counting
+        # each LUT/FF as a packed site would incorrectly select all SLRs.
+        self.assertEqual(
+            _select_xilinx_slr_window(packed, arch, packed_value={
+                "schema": "emuflow.openparf-atomic-source/v2",
+                "clusters": clusters,
+            }),
+            ("SLR1",),
+        )
+
+        class UnreadAtomicClusters(Sequence):
+            def __len__(self):
+                return 128
+
+            def __getitem__(self, index):
+                raise AssertionError("SLR selection enumerated atomic cells")
+
+        inventory_source = {
+            "schema": "emuflow.openparf-atomic-source/v2",
+            "clusters": UnreadAtomicClusters(),
+            "primitive_counts": {"LUT6": 64, "FDRE": 64},
+        }
+        self.assertEqual(
+            _select_xilinx_slr_window(
+                packed, arch, packed_value=inventory_source,
+            ),
+            ("SLR1",),
+        )
+        for bad_count in (-1, True, 1.5):
+            with self.subTest(bad_count=bad_count), self.assertRaisesRegex(
+                ValidationError, "primitive inventory is invalid",
+            ):
+                _select_xilinx_slr_window(packed, arch, packed_value={
+                    **inventory_source,
+                    "primitive_counts": {"LUT6": bad_count},
+                })
+
     def test_atomic_slr_window_counts_slice_site_equivalents_not_atoms(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -397,6 +437,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 _select_xilinx_slr_window(packed, arch),
                 ("SLR1",),
             )
+            self._assert_atomic_v2_slr_window(packed, arch, clusters)
 
     def test_production_backend_uses_compact_two_slr_window(self):
         with tempfile.TemporaryDirectory() as temporary:

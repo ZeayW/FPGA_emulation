@@ -99,12 +99,25 @@ def _select_xilinx_slr_window(
     clusters = packed.get("clusters")
     if not isinstance(clusters, Sequence) or not clusters:
         raise ValidationError("packed partition has no clusters")
-    if packed.get("schema") == "emuflow.openparf-atomic-source/v1":
-        atoms = Counter(
-            assignment.get("cell_type")
-            for cluster in clusters
-            for assignment in cluster.get("assignments", [])
-        )
+    if packed.get("schema") in {
+        "emuflow.openparf-atomic-source/v1",
+        "emuflow.openparf-atomic-source/v2",
+    }:
+        primitive_counts = packed.get("primitive_counts")
+        if primitive_counts is not None:
+            if not isinstance(primitive_counts, Mapping) or any(
+                not isinstance(key, str) or not isinstance(count, int)
+                or isinstance(count, bool) or count < 0
+                for key, count in primitive_counts.items()
+            ):
+                raise ValidationError("atomic primitive inventory is invalid")
+            atoms = Counter(primitive_counts)
+        else:
+            atoms = Counter(
+                assignment.get("cell_type")
+                for cluster in clusters
+                for assignment in cluster.get("assignments", [])
+            )
         demand = Counter({
             "slice": max(
                 math.ceil(sum(

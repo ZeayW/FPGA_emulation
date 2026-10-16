@@ -2346,14 +2346,21 @@ def build_xilinx_openparf_atomic_source(
     cells = module.get("cells")
     if not isinstance(cells, Mapping) or not cells:
         raise ValidationError("mapped JSON cells are invalid or empty")
+    indexed_counts = getattr(cells, "type_counts", None)
+    inventory: Counter = Counter()
     unsupported = set()
-    for cell in cells.values():
-        if not isinstance(cell, Mapping):
-            unsupported.add(f"invalid-cell-record:{type(cell).__name__}")
-            continue
-        cell_type = cell.get("type")
-        if cell_type not in _SUPPORTED | CONSTANT_TYPES:
-            unsupported.add(cell_type)
+    if callable(indexed_counts):
+        inventory.update(indexed_counts())
+        unsupported.update(set(inventory) - (_SUPPORTED | CONSTANT_TYPES))
+    else:
+        for cell in cells.values():
+            if not isinstance(cell, Mapping):
+                unsupported.add(f"invalid-cell-record:{type(cell).__name__}")
+                continue
+            cell_type = cell.get("type")
+            inventory[cell_type] += 1
+            if cell_type not in _SUPPORTED | CONSTANT_TYPES:
+                unsupported.add(cell_type)
     unsupported = sorted(unsupported, key=str)
     if unsupported:
         raise ValidationError(
@@ -2368,9 +2375,8 @@ def build_xilinx_openparf_atomic_source(
         raise ValidationError(
             "OpenPARF atomic source rejects non-CARRY8 dedicated cascade connectivity"
         )
-    has_slice_macro = any(
-        cell.get("type") in set(_MUX_RESOURCES) | {"CARRY8", DUAL_OUTPUT_LUT_TYPE}
-        for cell in cells.values()
+    has_slice_macro = bool(
+        set(inventory) & (set(_MUX_RESOURCES) | {"CARRY8", DUAL_OUTPUT_LUT_TYPE})
     )
     macro_contract = (
         build_xilinx_physical_macro_contract(
@@ -2422,15 +2428,17 @@ def build_xilinx_openparf_atomic_source(
             "control_set": None,
             "assignments": assignments,
         })
-    physical_singletons = 0
-    for index, (name, cell) in enumerate(_ordered_cell_items(cells)):
-        cell_type = cell["type"]
-        if cell_type in CONSTANT_TYPES:
-            constants.append(name)
-            continue
-        if name in macro_owned:
-            continue
-        physical_singletons += 1
+    constant_items = getattr(cells, "items_of_types", None)
+    if callable(constant_items):
+        constants = [name for name, _cell in constant_items(CONSTANT_TYPES)]
+        physical_singletons = len(cells) - len(constants) - len(macro_owned)
+    else:
+        physical_singletons = 0
+        for name, cell in _ordered_cell_items(cells):
+            if cell["type"] in CONSTANT_TYPES:
+                constants.append(name)
+            elif name not in macro_owned:
+                physical_singletons += 1
 
     clusters = _AtomicClusterSequence(
         cells, macro_clusters, macro_owned,
@@ -2458,6 +2466,7 @@ def build_xilinx_openparf_atomic_source(
         },
         "cascade_chains": cascades,
         "unplaced_constants": constants,
+        "primitive_counts": dict(sorted(inventory.items())),
         "summary": summary,
     }
     write_json(output_path, persisted, compact=True)

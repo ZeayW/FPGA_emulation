@@ -99,6 +99,25 @@ class _IndexedRecords(MappingABC[str, Mapping[str, Any]]):
         for _name, value in self.items():
             yield value
 
+    def type_counts(self) -> Mapping[str, int]:
+        if self.table != "cells":
+            raise ValidationError("primitive inventory requires cells")
+        return dict(self.connection.execute(
+            "SELECT type,count(*) FROM cells GROUP BY type ORDER BY type"
+        ))
+
+    def items_of_types(
+        self, cell_types: set[str],
+    ) -> Iterator[Tuple[str, Mapping[str, Any]]]:
+        if not cell_types:
+            return
+        placeholders = ",".join("?" for _ in cell_types)
+        for name, record in self.connection.execute(
+            f"SELECT id,record_json FROM cells WHERE type IN ({placeholders}) ORDER BY id",
+            tuple(sorted(cell_types)),
+        ):
+            yield str(name), json.loads(record)
+
     def physical_macro_projection(
         self, root_types: set[str],
     ) -> Mapping[str, Mapping[str, Any]]:
