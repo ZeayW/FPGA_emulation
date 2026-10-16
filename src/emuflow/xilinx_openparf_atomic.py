@@ -13,6 +13,7 @@ before producing a compact EmuFlow placement certificate.
 from __future__ import annotations
 
 from collections import Counter, OrderedDict, defaultdict
+import hashlib
 import json
 import itertools
 import math
@@ -172,7 +173,34 @@ def _openparf_input_fingerprints(output_dir: Path) -> Dict[str, str]:
         path = output_dir / candidate
         if not path.is_file():
             raise ValidationError(f"OpenPARF input is missing: {relative}")
-        result[relative] = _sha256(path)
+        if relative == "openparf.json":
+            config = read_json(path)
+
+            def relocate(value: Any) -> Any:
+                if isinstance(value, Mapping):
+                    return {
+                        str(key): relocate(item) for key, item in value.items()
+                    }
+                if isinstance(value, list):
+                    return [relocate(item) for item in value]
+                if isinstance(value, str):
+                    candidate_path = Path(value)
+                    if candidate_path.is_absolute():
+                        try:
+                            relative_path = candidate_path.relative_to(
+                                output_dir.resolve()
+                            )
+                        except ValueError:
+                            return value
+                        return "$OPENPARF_OUTPUT/" + str(relative_path)
+                return value
+
+            serialized = json.dumps(
+                relocate(config), sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")
+            result[relative] = hashlib.sha256(serialized).hexdigest()
+        else:
+            result[relative] = _sha256(path)
     return result
 
 

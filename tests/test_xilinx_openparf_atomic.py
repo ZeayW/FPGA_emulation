@@ -1,4 +1,5 @@
 import json
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -2053,8 +2054,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 report = run_xilinx_openparf_atomic_qualification(
                     mapped, packed, architecture, output
                 )
+                relocated = root / "relocated-output"
+                shutil.copytree(output, relocated)
                 reused = run_xilinx_openparf_atomic_qualification(
-                    mapped, packed, architecture, output
+                    mapped, packed, architecture, relocated
                 )
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["runtime"]["installation"], "contract-fixture")
