@@ -580,7 +580,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         )
         self.assertEqual(len(coordinate_sites), 16)
         self.assertEqual(
-            names["schema"], "emuflow.openparf-atomic-name-map/v2"
+            names["schema"], "emuflow.openparf-atomic-name-map/v3"
         )
         self.assertNotIn("sites", names["coordinate_system"])
         self.assertNotIn("hardblock_groups", names)

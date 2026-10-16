@@ -51,7 +51,8 @@ from .xilinx_netlist import is_xilinx_mapped_index
 
 
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
-OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v2"
+OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v3"
+OPENPARF_ATOM_MAP_DATABASE_SCHEMA = "emuflow.openparf-atom-map/v1"
 OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v2"
 OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-placement-database/v2"
@@ -156,6 +157,103 @@ def _bram_claims(tile: str, role: str) -> List[str]:
 
 def _sha256(path: Path) -> str:
     return file_sha256(path)
+
+
+class _IndexedAtomNames(Mapping[str, str]):
+    """Read only the exceptional instance-to-OpenPARF names on demand."""
+
+    def __init__(self, path: Path) -> None:
+        self.connection = sqlite3.connect(
+            f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        metadata = dict(
+            self.connection.execute("SELECT key,value FROM metadata")
+        )
+        if metadata.get("schema") != OPENPARF_ATOM_MAP_DATABASE_SCHEMA:
+            self.connection.close()
+            raise ValidationError("OpenPARF atom-map database is invalid")
+        self.count = int(metadata.get("atoms", "-1"))
+
+    def __getitem__(self, instance: str) -> str:
+        row = self.connection.execute(
+            "SELECT openparf FROM atoms WHERE instance=?", (instance,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(instance)
+        return str(row[0])
+
+    def __iter__(self) -> Iterator[str]:
+        for row in self.connection.execute(
+            "SELECT instance FROM atoms ORDER BY atom_seq"
+        ):
+            yield str(row[0])
+
+    def __len__(self) -> int:
+        return self.count
+
+    def close(self) -> None:
+        connection = getattr(self, "connection", None)
+        if connection is not None:
+            connection.close()
+            self.connection = None  # type: ignore[assignment]
+
+    def __del__(self) -> None:
+        self.close()
+
+
+def _load_atomic_name_atoms(
+    name_map_path: Path, name_map: Mapping[str, Any]
+) -> Dict[str, Dict[str, str]]:
+    inline = name_map.get("atoms")
+    if isinstance(inline, list):
+        atoms = {
+            item["openparf"]: dict(item) for item in inline
+            if isinstance(item, Mapping)
+            and isinstance(item.get("openparf"), str)
+        }
+        if len(atoms) != len(inline) or not atoms:
+            raise ValidationError("OpenPARF atomic name map has duplicate atoms")
+        return atoms
+    descriptor = name_map.get("atom_database")
+    if (
+        not isinstance(descriptor, Mapping)
+        or descriptor.get("schema") != OPENPARF_ATOM_MAP_DATABASE_SCHEMA
+        or not isinstance(descriptor.get("file"), str)
+        or not isinstance(descriptor.get("atoms"), int)
+        or descriptor["atoms"] <= 0
+    ):
+        raise ValidationError("OpenPARF atomic name map has no atom database")
+    database_path = name_map_path.parent / descriptor["file"]
+    connection = sqlite3.connect(
+        f"file:{database_path.resolve()}?mode=ro&immutable=1", uri=True
+    )
+    try:
+        metadata = dict(connection.execute("SELECT key,value FROM metadata"))
+        if (
+            metadata.get("schema") != OPENPARF_ATOM_MAP_DATABASE_SCHEMA
+            or int(metadata.get("atoms", "-1")) != descriptor["atoms"]
+        ):
+            raise ValidationError("OpenPARF atom database metadata is invalid")
+        atoms = {
+            str(row[0]): {
+                "openparf": str(row[0]),
+                "instance": str(row[1]),
+                "cell_type": str(row[2]),
+                "source_cluster": str(row[3]),
+                "resource": str(row[4]),
+            }
+            for row in connection.execute(
+                "SELECT openparf,instance,cell_type,source_cluster,resource "
+                "FROM atoms ORDER BY atom_seq"
+            )
+        }
+    except sqlite3.Error as error:
+        raise ValidationError("cannot read OpenPARF atom database") from error
+    finally:
+        connection.close()
+    if len(atoms) != descriptor["atoms"]:
+        raise ValidationError("OpenPARF atom database coverage is invalid")
+    return atoms
 
 
 def _atomic_placement_database_path(certificate_path: Path) -> Path:
@@ -991,12 +1089,7 @@ def legalize_xilinx_openparf_ff_control_sets(
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped JSON cells are invalid")
-    atoms = {
-        item["openparf"]: item for item in name_map.get("atoms", [])
-        if isinstance(item, Mapping) and isinstance(item.get("openparf"), str)
-    }
-    if len(atoms) != len(name_map.get("atoms", [])) or not atoms:
-        raise ValidationError("OpenPARF atomic name map has duplicate atoms")
+    atoms = _load_atomic_name_atoms(name_map_path, name_map)
 
     raw: Dict[str, Tuple[int, int, int]] = {}
     with placement_path.open("r", encoding="utf-8") as stream:
@@ -3026,19 +3119,57 @@ def export_xilinx_openparf_atomic(
             raise ValidationError(
                 f"atomic demand {count} exceeds {resource} capacity {capacity[resource]}"
             )
-    names = {
-        atom["instance"]: f"a{index}" for index, atom in enumerate(atoms)
-    }
     output_dir.mkdir(parents=True, exist_ok=True)
     native_bookshelf = is_xilinx_mapped_index(mapped_path)
+    names: Mapping[str, str]
+    atom_database_descriptor: Optional[Dict[str, Any]] = None
     if native_bookshelf:
+        if packed.get("schema") != OPENPARF_ATOMIC_SOURCE_SCHEMA:
+            raise ValidationError(
+                "native OpenPARF export requires compact atomic source v2"
+            )
         exporter = resolve_native_executable(
             "emuflow_openparf_bookshelf_exporter"
         )
-        completed = subprocess.run(
-            [exporter, str(mapped_path.resolve()), str(output_dir.resolve())],
-            text=True, capture_output=True, check=False,
-        )
+        overrides_path = output_dir / ".atomic-source-overrides.tsv"
+        overrides = []
+        for cluster in packed.get("explicit_macro_clusters", []):
+            if not isinstance(cluster, Mapping) or not isinstance(
+                cluster.get("id"), str
+            ):
+                raise ValidationError("compact atomic macro cluster is invalid")
+            for assignment in cluster.get("assignments", []):
+                instance = (
+                    assignment.get("instance")
+                    if isinstance(assignment, Mapping) else None
+                )
+                if (
+                    not isinstance(instance, str)
+                    or any(character in instance for character in "\t\r\n")
+                    or any(
+                        character in cluster["id"]
+                        for character in "\t\r\n"
+                    )
+                ):
+                    raise ValidationError(
+                        "atomic source override cannot be represented"
+                    )
+                overrides.append((instance, cluster["id"]))
+        with overrides_path.open("w", encoding="utf-8") as stream:
+            for instance, cluster_id in sorted(overrides):
+                stream.write(f"{instance}\t{cluster_id}\n")
+        try:
+            completed = subprocess.run(
+                [
+                    exporter,
+                    str(mapped_path.resolve()),
+                    str(output_dir.resolve()),
+                    str(overrides_path.resolve()),
+                ],
+                text=True, capture_output=True, check=False,
+            )
+        finally:
+            overrides_path.unlink(missing_ok=True)
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout).strip()
             raise ValidationError(
@@ -3062,8 +3193,20 @@ def export_xilinx_openparf_atomic(
         dropped_single_endpoint_nets = int(
             bookshelf_report["dropped_single_endpoint_nets"]
         )
+        atom_database_path = output_dir / "atom-map.sqlite3"
+        names = _IndexedAtomNames(atom_database_path)
+        if len(names) != len(atoms):
+            raise ValidationError("native OpenPARF atom map count is invalid")
+        atom_database_descriptor = {
+            "schema": OPENPARF_ATOM_MAP_DATABASE_SCHEMA,
+            "file": atom_database_path.name,
+            "atoms": len(names),
+        }
         library = nets = None
     else:
+        names = {
+            atom["instance"]: f"a{index}" for index, atom in enumerate(atoms)
+        }
         library, nets, net_count, dropped_single_endpoint_nets = (
             _render_library_and_nets(
                 cells, atoms, names, platform_mux_types=mux,
@@ -3640,12 +3783,9 @@ def export_xilinx_openparf_atomic(
     write_json(
         output_dir / "openparf.json", config, compact=True, sort_keys=False
     )
-    name_map = {
+    name_map: Dict[str, Any] = {
         "schema": OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
         "top": selected_top,
-        "atoms": [
-            {"openparf": names[atom["instance"]], **atom} for atom in atoms
-        ],
         "coordinate_system": {
             "x_axis": coordinate_system["x_axis"],
             "y_axis": coordinate_system["y_axis"],
@@ -3653,6 +3793,12 @@ def export_xilinx_openparf_atomic(
         },
         "site_database": site_database_descriptor,
     }
+    if atom_database_descriptor is not None:
+        name_map["atom_database"] = atom_database_descriptor
+    else:
+        name_map["atoms"] = [
+            {"openparf": names[atom["instance"]], **atom} for atom in atoms
+        ]
     if has_carry8:
         name_map["carry_cascade_chains"] = [
             chain for chain in packed.get("cascade_chains", [])
@@ -3739,6 +3885,7 @@ def export_xilinx_openparf_atomic(
         },
         "files": sorted([
             *files, "openparf.json", "name_map.json", "site-map.sqlite3",
+            *(["atom-map.sqlite3"] if native_bookshelf else []),
             *(
                 [
                     "design.nodes", "design.lib", "design.nets",
@@ -3795,12 +3942,7 @@ def validate_xilinx_openparf_atomic_placement(
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped JSON cells are invalid")
-    atoms = {
-        item["openparf"]: item for item in name_map.get("atoms", [])
-        if isinstance(item, Mapping) and isinstance(item.get("openparf"), str)
-    }
-    if len(atoms) != len(name_map.get("atoms", [])) or not atoms:
-        raise ValidationError("OpenPARF atomic name map has duplicate atoms")
+    atoms = _load_atomic_name_atoms(name_map_path, name_map)
     raw_placement: Dict[str, Tuple[int, int, int]] = {}
     with placement_path.open("r", encoding="utf-8") as stream:
         for line_number, raw in enumerate(stream, start=1):

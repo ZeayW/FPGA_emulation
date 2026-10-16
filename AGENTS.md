@@ -458,6 +458,9 @@ requirements, not optional micro-optimizations.
   plus an implicit-singleton descriptor; ordinary atoms are a deterministic
   view of mapped SQLite cell order and must never be materialized as a
   graph-sized JSON array.
+  The OpenPARF atom-name relation is likewise a native SQLite sidecar.  A
+  production name-map JSON may describe that sidecar but must not repeat one
+  record per atom.
 - Small-design qualification may run exhaustive and deterministic event-driven
   equivalence.  Large-design production uses the constructive split
   certificate (lossless source records, exact endpoint coverage, one scheduled

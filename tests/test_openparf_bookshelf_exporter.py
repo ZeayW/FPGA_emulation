@@ -1,5 +1,6 @@
 import json
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -123,6 +124,42 @@ class NativeOpenparfBookshelfExporterTests(unittest.TestCase):
                 (output / "design.nodes").read_text(),
                 "a0 FDRE\na1 LUT1\n",
             )
+            with sqlite3.connect(output / "atom-map.sqlite3") as database:
+                metadata = dict(database.execute(
+                    "SELECT key,value FROM metadata"
+                ))
+                atom_rows = list(database.execute(
+                    "SELECT openparf,instance,cell_type,source_cluster,resource "
+                    "FROM atoms ORDER BY atom_seq"
+                ))
+            self.assertEqual(metadata, {
+                "schema": "emuflow.openparf-atom-map/v1", "atoms": "2",
+            })
+            self.assertEqual(atom_rows, [
+                ("a0", "ff", "FDRE", "atomic-source-000000", "FF"),
+                ("a1", "lut", "LUT1", "atomic-source-000001", "LUT"),
+            ])
+
+            overrides = root / "overrides.tsv"
+            overrides.write_text("lut\tmacro:lut\n", encoding="utf-8")
+            macro_output = root / "bookshelf-macro"
+            completed = subprocess.run(
+                [
+                    str(self.executable), str(index), str(macro_output),
+                    str(overrides),
+                ],
+                text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(
+                completed.returncode, 0, completed.stderr or completed.stdout
+            )
+            with sqlite3.connect(
+                macro_output / "atom-map.sqlite3"
+            ) as database:
+                source_cluster = database.execute(
+                    "SELECT source_cluster FROM atoms WHERE instance='lut'"
+                ).fetchone()[0]
+            self.assertEqual(source_cluster, "macro:lut")
 
 
 if __name__ == "__main__":
