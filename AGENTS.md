@@ -460,7 +460,10 @@ requirements, not optional micro-optimizations.
   graph-sized JSON array.
   The OpenPARF atom-name relation is likewise a native SQLite sidecar.  A
   production name-map JSON may describe that sidecar but must not repeat one
-  record per atom.
+  record per atom. Resource demand and primitive coverage must be computed by
+  aggregate SQL; production export must not invoke the Python reference atom
+  collector. Only bounded exceptional macro and hard-block records may cross
+  into the Python control plane.
 - Small-design qualification may run exhaustive and deterministic event-driven
   equivalence.  Large-design production uses the constructive split
   certificate (lossless source records, exact endpoint coverage, one scheduled

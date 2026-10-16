@@ -6718,7 +6718,11 @@ field-for-field qualification only.
 The same native exporter writes the deterministic OpenPARF-name mapping as an
 indexed `atom-map.sqlite3` sidecar.  The v3 name-map JSON contains only its
 bounded descriptor, device-coordinate metadata, and exceptional macro
-constraints; it no longer duplicates one JSON object per atom.
+constraints; it no longer duplicates one JSON object per atom.  Production
+export derives resource demand and primitive-model coverage with aggregate SQL
+queries, reconstructs only the bounded explicit-macro contract, and queries
+only hard-block atoms needed by exact legalization.  It does not call the
+reference Python atom collector or retain a Python record for every LUT/FF.
 
 Physical timing translation treats an original net that is absent from one
 particular split FPGA as an ordinary partition-local membership miss. Required

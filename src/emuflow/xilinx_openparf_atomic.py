@@ -191,6 +191,36 @@ class _IndexedAtomNames(Mapping[str, str]):
     def __len__(self) -> int:
         return self.count
 
+    def demand(self) -> Counter:
+        return Counter({
+            str(resource): int(count)
+            for resource, count in self.connection.execute(
+                "SELECT resource,count(*) FROM atoms GROUP BY resource"
+            )
+        })
+
+    def primitive_models(self) -> Dict[str, str]:
+        return {
+            str(cell_type): str(resource)
+            for cell_type, resource in self.connection.execute(
+                "SELECT DISTINCT cell_type,resource FROM atoms "
+                "ORDER BY cell_type"
+            )
+        }
+
+    def hard_atoms(self) -> Iterator[Dict[str, str]]:
+        placeholders = ",".join("?" for _ in _HARD_RESOURCES)
+        for row in self.connection.execute(
+            "SELECT openparf,instance,cell_type,source_cluster,resource "
+            f"FROM atoms WHERE resource IN ({placeholders}) ORDER BY atom_seq",
+            tuple(sorted(_HARD_RESOURCES.values())),
+        ):
+            yield {
+                "openparf": str(row[0]), "instance": str(row[1]),
+                "cell_type": str(row[2]), "source_cluster": str(row[3]),
+                "resource": str(row[4]),
+            }
+
     def close(self) -> None:
         connection = getattr(self, "connection", None)
         if connection is not None:
@@ -1655,6 +1685,15 @@ def _validate_native_density_contract(
     """Prove every active area type has finite density and filler headroom."""
 
     demand = Counter(atom["resource"] for atom in atoms)
+    return _validate_native_density_contract_from_demand(sites, demand)
+
+
+def _validate_native_density_contract_from_demand(
+    sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
+    demand: Mapping[str, int],
+) -> Tuple[Dict[str, int], Dict[str, Dict[str, float]]]:
+    """Prove density headroom from a native SQLite resource summary."""
+
     per_site_capacity = {
         resource: max(resources.get(resource, 0) for _site, resources in sites)
         for resource in demand
@@ -2064,6 +2103,77 @@ def _expand_atomic_source(
         singleton_count=int(implicit["count"]),
     )
     return expanded
+
+
+def _macro_contract_from_atomic_source(
+    source: Mapping[str, Any],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Recover the small exceptional macro contract from atomic-source v2.
+
+    The compact source already seals every non-singleton physical macro.  The
+    placement exporter must not rescan the complete mapped design merely to
+    rediscover those same exceptional records.
+    """
+
+    clusters = source.get("explicit_macro_clusters", [])
+    if not isinstance(clusters, list):
+        raise ValidationError("compact atomic macro clusters are invalid")
+    macros: List[Dict[str, Any]] = []
+    for cluster in clusters:
+        if not isinstance(cluster, Mapping):
+            raise ValidationError("compact atomic macro cluster is invalid")
+        assignments = cluster.get("assignments")
+        if not isinstance(assignments, list) or not assignments:
+            raise ValidationError("compact atomic macro assignments are invalid")
+        cell_types = {
+            assignment.get("cell_type")
+            for assignment in assignments if isinstance(assignment, Mapping)
+        }
+        if cluster.get("kind") == "carry":
+            kind = "carry8-lut6_2"
+        elif cluster.get("kind") == "slice":
+            mux_types = sorted(
+                cell_type for cell_type in cell_types
+                if cell_type in _MUX_RESOURCES
+            )
+            if not mux_types:
+                raise ValidationError("slice macro has no MUX primitive")
+            kind = f"{mux_types[-1].lower()}-cone"
+        elif cluster.get("kind") == "hard" and cell_types == {"RAMB18E2"}:
+            kind = "ramb18-half-site-occupancy"
+        else:
+            raise ValidationError(
+                f"unsupported compact macro kind {cluster.get('kind')!r}"
+            )
+        members = []
+        for assignment in assignments:
+            if not isinstance(assignment, Mapping):
+                raise ValidationError("compact atomic macro assignment is invalid")
+            instance = assignment.get("instance")
+            cell_type = assignment.get("cell_type")
+            if not isinstance(instance, str) or not isinstance(cell_type, str):
+                raise ValidationError("compact atomic macro identity is invalid")
+            member: Dict[str, Any] = {
+                "instance": instance,
+                "cell_type": cell_type,
+            }
+            if kind == "ramb18-half-site-occupancy":
+                candidates = assignment.get("bel_candidates")
+                if not isinstance(candidates, list):
+                    raise ValidationError("RAMB18 macro candidates are invalid")
+                member["physical_roles"] = list(candidates)
+            else:
+                role = assignment.get("bel")
+                if not isinstance(role, str):
+                    raise ValidationError("slice macro BEL role is invalid")
+                member["physical_role"] = role
+            members.append(member)
+        macros.append({
+            "id": cluster.get("id"),
+            "kind": kind,
+            "members": members,
+        })
+    return {"site_macros": macros}
 
 
 def build_xilinx_openparf_atomic_source(
@@ -2813,8 +2923,26 @@ def _render_sites(
     models_by_resource: Dict[str, set[str]] = defaultdict(set)
     for atom in atoms:
         models_by_resource[atom["resource"]].add(atom["cell_type"])
+    return _render_sites_from_models(
+        device_static,
+        models_by_resource,
+        platform_mux_types=platform_mux_types,
+    )
+
+
+def _render_sites_from_models(
+    device_static: Mapping[str, Any],
+    models_by_resource: Mapping[str, set[str]],
+    *,
+    platform_mux_types: Sequence[str] = (),
+) -> str:
+    models_by_resource = {
+        resource: set(models) for resource, models in models_by_resource.items()
+    }
     for cell_type in platform_mux_types:
-        models_by_resource[_MUX_RESOURCES[cell_type]].add(cell_type)
+        models_by_resource.setdefault(
+            _MUX_RESOURCES[cell_type], set()
+        ).add(cell_type)
     resources = "".join(
         f"  {resource} {' '.join(sorted(models))}\n"
         for resource, models in sorted(
@@ -3061,73 +3189,21 @@ def export_xilinx_openparf_atomic(
     selected_module_name, selected_module = _select_module(
         mapped, top if top is not None else packed.get("top")
     )
-    selected_cells = selected_module.get("cells", {})
-    has_site_macro = any(
-        isinstance(cell, Mapping)
-        and cell.get("type") in set(_MUX_RESOURCES) | {
-            "CARRY8", DUAL_OUTPUT_LUT_TYPE,
-        }
-        for cell in selected_cells.values()
-    )
-    macro_contract = (
-        build_xilinx_physical_macro_contract(
-            mapped_path, top=selected_module_name, source=mapped
-        )
-        if has_site_macro else {"site_macros": []}
-    )
-    selected_top, cells, atoms = _collect_atoms(
-        mapped, packed, top if top is not None else packed.get("top"),
-        allow_hardblock_cascades=typed_hardblock_mode,
-        physical_macro_contract=macro_contract,
-    )
-    hard = sorted({
-        atom["cell_type"] for atom in atoms
-        if atom["cell_type"] in _HARD_RESOURCES
-    })
-    demanded_mux = {
-        atom["cell_type"] for atom in atoms
-        if atom["cell_type"] in _MUX_RESOURCES
-    }
-    # OpenPARF identifies the UltraScale Bookshelf grammar from the complete
-    # slice-mux resource hierarchy.  Emitting only the mux levels present in a
-    # particular mapped design makes (for example) an F7/F8-only design look
-    # like a legacy architecture; the parser then rejects the following
-    # SUPERLOGICREGIONS section.  Device geometry is a platform property, so
-    # once any native slice mux is used retain F7/F8/F9 capacity regardless of
-    # whether the design happens to instantiate the top level.
-    mux = sorted(_MUX_RESOURCES if demanded_mux else ())
-    has_carry8 = any(atom["cell_type"] == "CARRY8" for atom in atoms)
-    device_static = _device_static_geometry(
-        architecture, hard, mux, require_carry8=has_carry8, native=native,
-        allowed_slrs=allowed_slrs,
-    )
-    sites = device_static["sites"]
-    placement_region = device_static["placement_region"]
-    per_site_capacity, density_contract = _validate_native_density_contract(
-        sites, atoms
-    )
-    demand = Counter(atom["resource"] for atom in atoms)
-    capacity = Counter()
-    for _site, resources in sites:
-        capacity.update(resources)
-    # The native CLB model exposes 16 LUT resource units for two-LUT BLE
-    # compatibility, but EmuFlow's conservative architecture policy permits
-    # only eight independent 6LUT BELs.  The importer enforces even z slots.
-    capacity["LUT"] = 8 * sum("LUT" in resources for _site, resources in sites)
-    for resource, count in demand.items():
-        if count > capacity[resource]:
-            raise ValidationError(
-                f"atomic demand {count} exceeds {resource} capacity {capacity[resource]}"
-            )
-    output_dir.mkdir(parents=True, exist_ok=True)
+    cells = selected_module.get("cells", {})
     native_bookshelf = is_xilinx_mapped_index(mapped_path)
     names: Mapping[str, str]
     atom_database_descriptor: Optional[Dict[str, Any]] = None
+    library = nets = None
+    atoms: List[Dict[str, str]] = []
+    hard_atoms: List[Dict[str, str]] = []
+    output_dir.mkdir(parents=True, exist_ok=True)
     if native_bookshelf:
         if packed.get("schema") != OPENPARF_ATOMIC_SOURCE_SCHEMA:
             raise ValidationError(
                 "native OpenPARF export requires compact atomic source v2"
             )
+        selected_top = selected_module_name
+        macro_contract = _macro_contract_from_atomic_source(packed)
         exporter = resolve_native_executable(
             "emuflow_openparf_bookshelf_exporter"
         )
@@ -3179,12 +3255,14 @@ def export_xilinx_openparf_atomic(
         bookshelf_report = read_json(
             output_dir / "bookshelf-export-report.json"
         )
+        expected_atom_count = packed.get("summary", {}).get("physical_atoms")
         if (
             bookshelf_report.get("schema")
             != "emuflow.openparf-bookshelf-export/v1"
             or bookshelf_report.get("status") != "pass"
             or bookshelf_report.get("provider") != "native-sqlite-stream-v1"
-            or bookshelf_report.get("atoms") != len(atoms)
+            or not isinstance(expected_atom_count, int)
+            or bookshelf_report.get("atoms") != expected_atom_count
         ):
             raise ValidationError(
                 "native OpenPARF Bookshelf export report is invalid"
@@ -3195,25 +3273,105 @@ def export_xilinx_openparf_atomic(
         )
         atom_database_path = output_dir / "atom-map.sqlite3"
         names = _IndexedAtomNames(atom_database_path)
-        if len(names) != len(atoms):
+        atom_count = len(names)
+        if atom_count != expected_atom_count:
             raise ValidationError("native OpenPARF atom map count is invalid")
+        demand = names.demand()
+        primitive_models = names.primitive_models()
+        if typed_hardblock_mode:
+            hard_atoms = list(names.hard_atoms())
         atom_database_descriptor = {
             "schema": OPENPARF_ATOM_MAP_DATABASE_SCHEMA,
             "file": atom_database_path.name,
-            "atoms": len(names),
+            "atoms": atom_count,
         }
-        library = nets = None
     else:
+        selected_cells = cells
+        has_site_macro = any(
+            isinstance(cell, Mapping)
+            and cell.get("type") in set(_MUX_RESOURCES) | {
+                "CARRY8", DUAL_OUTPUT_LUT_TYPE,
+            }
+            for cell in selected_cells.values()
+        )
+        macro_contract = (
+            build_xilinx_physical_macro_contract(
+                mapped_path, top=selected_module_name, source=mapped
+            )
+            if has_site_macro else {"site_macros": []}
+        )
+        selected_top, cells, atoms = _collect_atoms(
+            mapped, packed, top if top is not None else packed.get("top"),
+            allow_hardblock_cascades=typed_hardblock_mode,
+            physical_macro_contract=macro_contract,
+        )
+        atom_count = len(atoms)
+        demand = Counter(atom["resource"] for atom in atoms)
+        primitive_models = {
+            atom["cell_type"]: atom["resource"] for atom in atoms
+        }
+        hard_atoms = [
+            atom for atom in atoms
+            if atom["resource"] in _HARD_RESOURCES.values()
+        ]
         names = {
             atom["instance"]: f"a{index}" for index, atom in enumerate(atoms)
         }
         library, nets, net_count, dropped_single_endpoint_nets = (
             _render_library_and_nets(
-                cells, atoms, names, platform_mux_types=mux,
+                cells, atoms, names,
+                platform_mux_types=sorted(
+                    _MUX_RESOURCES
+                    if any(model in _MUX_RESOURCES for model in primitive_models)
+                    else ()
+                ),
             )
         )
+    hard = sorted(
+        primitive for primitive in primitive_models
+        if primitive in _HARD_RESOURCES
+    )
+    demanded_mux = {
+        primitive for primitive in primitive_models
+        if primitive in _MUX_RESOURCES
+    }
+    # OpenPARF identifies the UltraScale Bookshelf grammar from the complete
+    # slice-mux resource hierarchy.  Emitting only the mux levels present in a
+    # particular mapped design makes (for example) an F7/F8-only design look
+    # like a legacy architecture; the parser then rejects the following
+    # SUPERLOGICREGIONS section.  Device geometry is a platform property, so
+    # once any native slice mux is used retain F7/F8/F9 capacity regardless of
+    # whether the design happens to instantiate the top level.
+    mux = sorted(_MUX_RESOURCES if demanded_mux else ())
+    has_carry8 = "CARRY8" in primitive_models
+    device_static = _device_static_geometry(
+        architecture, hard, mux, require_carry8=has_carry8, native=native,
+        allowed_slrs=allowed_slrs,
+    )
+    sites = device_static["sites"]
+    placement_region = device_static["placement_region"]
+    per_site_capacity, density_contract = (
+        _validate_native_density_contract_from_demand(sites, demand)
+    )
+    capacity = Counter()
+    for _site, resources in sites:
+        capacity.update(resources)
+    # The native CLB model exposes 16 LUT resource units for two-LUT BLE
+    # compatibility, but EmuFlow's conservative architecture policy permits
+    # only eight independent 6LUT BELs.  The importer enforces even z slots.
+    capacity["LUT"] = 8 * sum("LUT" in resources for _site, resources in sites)
+    for resource, count in demand.items():
+        if count > capacity[resource]:
+            raise ValidationError(
+                f"atomic demand {count} exceeds {resource} capacity {capacity[resource]}"
+            )
     coordinate_system = device_static["coordinate_system"]
-    site_text = _render_sites(device_static, atoms, platform_mux_types=mux)
+    models_by_resource: Dict[str, set[str]] = defaultdict(set)
+    for primitive, resource in primitive_models.items():
+        models_by_resource[resource].add(primitive)
+    site_text = _render_sites_from_models(
+        device_static, models_by_resource, platform_mux_types=mux
+    )
     files = {
         "design.scl": site_text,
         "design.pl": "",
@@ -3232,7 +3390,7 @@ def export_xilinx_openparf_atomic(
         (output_dir / name).write_text(text, encoding="utf-8")
     model_map = {}
     for primitive in sorted(
-        {atom["cell_type"] for atom in atoms}, key=_primitive_sort_key
+        primitive_models, key=_primitive_sort_key
     ):
         resource = (
             "LUT" if primitive in _SLICE_LUT_TYPES
@@ -3678,7 +3836,7 @@ def export_xilinx_openparf_atomic(
                 "instances": [names[name] for name in instances],
                 "source_instances": list(instances), "windows": windows,
             })
-        for atom in atoms:
+        for atom in hard_atoms:
             resource = atom["resource"]
             if resource not in _HARD_RESOURCES.values() or atom["instance"] in owned_hardblocks:
                 continue
@@ -3734,7 +3892,7 @@ def export_xilinx_openparf_atomic(
                 "window_count": len(window_set["windows"]),
             })
         expected_hardblocks = {
-            atom["instance"] for atom in atoms
+            atom["instance"] for atom in hard_atoms
             if atom["resource"] in _HARD_RESOURCES.values()
         }
         covered_hardblocks = {
@@ -3814,7 +3972,7 @@ def export_xilinx_openparf_atomic(
     manifest = {
         "schema": OPENPARF_ATOMIC_MANIFEST_SCHEMA,
         "status": "pass", "mode": "native-atomic-mixed-resource-qualification",
-        "part": architecture.part, "atoms": len(atoms), "nets": net_count,
+        "part": architecture.part, "atoms": atom_count, "nets": net_count,
         "net_export": {
             "emitted": net_count,
             "dropped_single_endpoint": dropped_single_endpoint_nets,
@@ -3897,6 +4055,8 @@ def export_xilinx_openparf_atomic(
         ]),
     }
     write_json(output_dir / "manifest.json", manifest, compact=True)
+    if isinstance(names, _IndexedAtomNames):
+        names.close()
     return manifest
 
 

@@ -5,13 +5,19 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.xilinx_netlist import (
     emit_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
-from emuflow.xilinx_openparf_atomic import _render_library_and_nets
+from emuflow.xilinx_openparf_atomic import (
+    _render_library_and_nets,
+    build_xilinx_openparf_atomic_source,
+    export_xilinx_openparf_atomic,
+)
 from emuflow.yosys import import_yosys_json
+from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -160,6 +166,52 @@ class NativeOpenparfBookshelfExporterTests(unittest.TestCase):
                     "SELECT source_cluster FROM atoms WHERE instance='lut'"
                 ).fetchone()[0]
             self.assertEqual(source_cluster, "macro:lut")
+
+    def test_production_export_uses_native_atom_summary_without_atom_list(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped_json, _packed, architecture = write_openparf_runtime_fixture(
+                root, include_hard=True
+            )
+            ir_path = root / "mapped.emuir.sqlite"
+            index = root / "mapped.sqlite"
+            source_path = root / "atomic-source.json"
+            output = root / "openparf"
+            import_yosys_json(mapped_json).save(ir_path)
+            emit_xilinx_mapped_index(ir_path, index)
+            with open_xilinx_mapped_index(index) as indexed:
+                source = build_xilinx_openparf_atomic_source(
+                    index, source_path, top="top", mapped_value=indexed
+                )
+                with mock.patch(
+                    "emuflow.xilinx_openparf_atomic.resolve_native_executable",
+                    return_value=str(self.executable),
+                ), mock.patch(
+                    "emuflow.xilinx_openparf_atomic._collect_atoms",
+                    side_effect=AssertionError(
+                        "native production export must not materialize atoms"
+                    ),
+                ):
+                    manifest = export_xilinx_openparf_atomic(
+                        index,
+                        source_path,
+                        architecture,
+                        output,
+                        top="top",
+                        mapped_value=indexed,
+                        packed_value=source,
+                    )
+            self.assertEqual(manifest["atoms"], 131)
+            self.assertEqual(manifest["resources"], {
+                "DSP48E2": 1,
+                "FF": 64,
+                "LUT": 64,
+                "RAMB36E2": 1,
+                "URAM288": 1,
+            })
+            name_map = json.loads((output / "name_map.json").read_text())
+            self.assertNotIn("atoms", name_map)
+            self.assertEqual(name_map["atom_database"]["atoms"], 131)
 
 
 if __name__ == "__main__":
