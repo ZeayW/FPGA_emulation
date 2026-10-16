@@ -6716,7 +6716,9 @@ conversion is actually needed. The index-only producer hashes its canonical
 output once, reusing that digest for both output and index identity.
 Net-order secondary indexes are built after sequential pin import, with
 bounded SQLite page caches, instead of random index-page updates per pin on NFS.
-Real-design runtime qualification of this bulk producer remains pending.
+The bulk handoff is qualified row-for-row against the reference mapped index
+on a real NVDLA partition, including metadata, cells, normalized pins and nets.
+Whole-flow runtime and final global timing qualification remain pending.
 The production OpenPARF adapter invokes the in-tree
 `emuflow_openparf_bookshelf_exporter` C++ executable, which scans those rows in
 net order and writes `design.nodes`, `design.lib`, and `design.nets` directly.
