@@ -805,7 +805,16 @@ def audit_xilinx_mapped_json(
     contracts = library["cells"]
     inventory: Counter[str] = Counter()
     hard_blocks: Counter[str] = Counter()
-    for instance, raw_cell in cells.items():
+    indexed_audit = getattr(cells, "audit_type_counts", None)
+    if callable(indexed_audit):
+        inventory.update(indexed_audit())
+        for cell_type, count in inventory.items():
+            contract = contracts.get(cell_type)
+            if contract is None:
+                raise ValidationError(f"unsupported Xilinx primitive {cell_type!r}")
+            if contract["hard_block"]:
+                hard_blocks[cell_type] = count
+    for instance, raw_cell in (() if callable(indexed_audit) else cells.items()):
         if not isinstance(raw_cell, Mapping):
             raise ValidationError(f"mapped cell {instance!r} is invalid")
         cell_type = raw_cell.get("type")

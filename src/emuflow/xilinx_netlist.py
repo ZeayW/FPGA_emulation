@@ -106,6 +106,36 @@ class _IndexedRecords(MappingABC[str, Mapping[str, Any]]):
             "SELECT type,count(*) FROM cells GROUP BY type ORDER BY type"
         ))
 
+    def audit_type_counts(self) -> Mapping[str, int]:
+        """Audit primitive record shape in SQLite, returning only the inventory."""
+        if self.table != "cells":
+            raise ValidationError("primitive audit requires cells")
+        invalid = self.connection.execute("""
+            SELECT id, problem FROM (
+                SELECT id, CASE
+                    WHEN NOT json_valid(record_json) THEN 'record'
+                    WHEN json_type(record_json) != 'object' THEN 'record'
+                    WHEN COALESCE(json_type(record_json,'$.type'),'') != 'text'
+                        OR json_extract(record_json,'$.type') = '' THEN 'type'
+                    WHEN json_extract(record_json,'$.type') != type THEN 'type index'
+                    WHEN COALESCE(json_type(record_json,'$.port_directions'),'') != 'object'
+                        OR COALESCE(json_type(record_json,'$.connections'),'') != 'object'
+                        THEN 'port metadata'
+                END AS problem FROM cells
+            ) WHERE problem IS NOT NULL LIMIT 1
+        """).fetchone()
+        if invalid is not None:
+            raise ValidationError(f"mapped cell {invalid[0]!r} has invalid {invalid[1]}")
+        invalid = self.connection.execute("""
+            SELECT c.id FROM cells c,
+                json_each(c.record_json,'$.port_directions') AS p
+            WHERE p.type != 'text' OR p.value NOT IN ('input','output','inout')
+            LIMIT 1
+        """).fetchone()
+        if invalid is not None:
+            raise ValidationError(f"mapped cell {invalid[0]!r} has invalid port directions")
+        return self.type_counts()
+
     def items_of_types(
         self, cell_types: set[str],
     ) -> Iterator[Tuple[str, Mapping[str, Any]]]:

@@ -4,6 +4,7 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.architecture import ArchitectureDB
@@ -94,6 +95,35 @@ def _native_certificate(
 
 
 class XilinxOpenparfBridgeTest(unittest.TestCase):
+    def test_indexed_bridge_inventory_does_not_decode_ordinary_cells(self):
+        from emuflow.xilinx_netlist import (
+            emit_xilinx_mapped_index, open_xilinx_mapped_index,
+        )
+        from emuflow.yosys import import_yosys_json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, architecture, certificate = _native_certificate(
+                root, include_hard=True,
+            )
+            compact, index = root / "mapped.emuir.sqlite", root / "mapped.sqlite"
+            import_yosys_json(mapped).save(compact)
+            emit_xilinx_mapped_index(compact, index)
+            with open_xilinx_mapped_index(index) as indexed, mock.patch.object(
+                indexed.cells, "items", side_effect=AssertionError("full cell scan"),
+            ), mock.patch.object(
+                indexed.cells, "values", side_effect=AssertionError("full cell scan"),
+            ):
+                top, cells, clusters, constants, cascades = _validate_certificate(
+                    indexed, _inline_certificate(certificate),
+                    ArchitectureDB.load(architecture), "top",
+                )
+            self.assertEqual(top, "top")
+            self.assertEqual(len(cells), 131)
+            self.assertEqual(sum(len(item["assignments"]) for item in clusters), 131)
+            self.assertEqual(constants, [])
+            self.assertEqual(cascades, [])
+
     def test_bram_tile_group_certificate_is_independently_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -401,9 +401,11 @@ def _run_rapidwright_routed_backend_tail(
         if "local_path" in segment_imports else None
     )
 
+    mapped_cells = mapped_value["modules"][mapped_report["top"]]["cells"]
+    indexed_counts = getattr(mapped_cells, "type_counts", None)
     inventory = Counter(
-        cell["type"]
-        for cell in mapped_value["modules"][mapped_report["top"]]["cells"].values()
+        indexed_counts() if callable(indexed_counts)
+        else (cell["type"] for cell in mapped_cells.values())
     )
     # All mapped-graph consumers have finished. Release their storage before
     # OpenSTA stages a routed timing graph of its own.

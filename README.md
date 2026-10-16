@@ -6749,6 +6749,11 @@ Post-placement macro coverage validation reuses the same open mapped-index
 view; it must not reopen the SQLite file through the legacy JSON reader.
 An indexed MUX-cone regression verifies identical placement and resource
 certificates while forbidding that text-reader fallback.
+Primitive record-shape and port-direction audits execute inside SQLite and
+return only type counts. The physical bridge and final hard-resource summary
+likewise use aggregate counts and constant-only queries instead of decoding
+every ordinary cell merely to count types. Exact primitive/port validation,
+macro coverage, and physical legality checks remain required.
 Atomic-source construction uses aggregate SQL primitive counts and selected
 hard-block/constant queries instead of decoding every ordinary LUT/FF record.
 The bounded `primitive_counts` inventory is consumed by SLR-window selection;

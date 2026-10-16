@@ -14,10 +14,54 @@ from emuflow.xilinx_netlist import (
     open_xilinx_mapped_index,
 )
 from emuflow.yosys import import_yosys_json
+from emuflow.xilinx_primitives import audit_xilinx_mapped_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
 
 class XilinxMappedNetlistTests(unittest.TestCase):
+    def test_indexed_primitive_audit_uses_sql_without_decoding_cells(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, _packed, _architecture = write_openparf_runtime_fixture(
+                root, include_hard=True,
+            )
+            compact, index = root / "mapped.emuir.sqlite", root / "mapped.sqlite"
+            import_yosys_json(mapped).save(compact)
+            emit_xilinx_mapped_index(compact, index)
+            with open_xilinx_mapped_index(index) as indexed:
+                reference = {"modules": {indexed.top: {
+                    "cells": dict(indexed.cells.items()),
+                }}}
+                expected = audit_xilinx_mapped_json(index, source=reference)
+                with mock.patch.object(
+                    indexed.cells, "items", side_effect=AssertionError("full cell scan"),
+                ), mock.patch.object(
+                    indexed.cells, "values", side_effect=AssertionError("full cell scan"),
+                ):
+                    actual = audit_xilinx_mapped_json(index, source=indexed)
+                self.assertEqual(actual, expected)
+                original = reference["modules"][indexed.top]["cells"]["lut_00"]
+            corruptions = [
+                ("LUT6", "not-json"), ("LUT6", "[]"),
+                ("LUT6", json.dumps({**original, "type": None})),
+                ("LUT6", json.dumps({**original, "connections": []})),
+                ("LUT6", json.dumps({**original, "port_directions": []})),
+                ("LUT6", json.dumps({**original, "port_directions": {"O": None}})),
+                ("LUT6", json.dumps({**original, "port_directions": {"O": "bad"}})),
+                ("FDRE", json.dumps(original)),
+                ("UNKNOWN", json.dumps({**original, "type": "UNKNOWN"})),
+            ]
+            for cell_type, record in corruptions:
+                with self.subTest(cell_type=cell_type, record=record):
+                    with sqlite3.connect(index) as database:
+                        database.execute(
+                            "UPDATE cells SET type=?,record_json=? WHERE id='lut_00'",
+                            (cell_type, record),
+                        )
+                    with open_xilinx_mapped_index(index) as indexed:
+                        with self.assertRaises(ValidationError):
+                            audit_xilinx_mapped_json(index, source=indexed)
+
     def test_native_sql_index_matches_reference_without_python_cell_lowering(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

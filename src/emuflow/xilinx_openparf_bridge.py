@@ -165,18 +165,25 @@ def _validate_certificate(
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped JSON cells are invalid")
-    unsupported = sorted({
-        cell.get("type") for cell in cells.values()
-        if isinstance(cell, Mapping)
-        and cell.get("type") not in _SUPPORTED_PHYSICAL_TYPES | CONSTANT_TYPES
-    })
+    indexed_counts = getattr(cells, "type_counts", None)
+    types = (
+        indexed_counts() if callable(indexed_counts) else {
+            cell.get("type") for cell in cells.values()
+            if isinstance(cell, Mapping)
+        }
+    )
+    unsupported = sorted(set(types) - (_SUPPORTED_PHYSICAL_TYPES | CONSTANT_TYPES))
     if unsupported:
         raise ValidationError(
             "OpenPARF physical bridge does not support primitives: "
             + ", ".join(str(item) for item in unsupported)
         )
+    indexed_types = getattr(cells, "items_of_types", None)
+    constant_rows = (
+        indexed_types(CONSTANT_TYPES) if callable(indexed_types) else cells.items()
+    )
     constants = sorted(
-        name for name, cell in cells.items()
+        name for name, cell in constant_rows
         if isinstance(cell, Mapping) and cell.get("type") in CONSTANT_TYPES
     )
     expected = set(cells) - set(constants)
