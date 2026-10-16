@@ -16,6 +16,7 @@ from emuflow.xilinx_openparf_atomic import (
     _render_library_and_nets,
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
+    validate_xilinx_openparf_atomic_placement,
 )
 from emuflow.yosys import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
@@ -223,6 +224,66 @@ class NativeOpenparfBookshelfExporterTests(unittest.TestCase):
                 (root / "reference/physical-macro-groups.json").read_text()
             )["groups"]
             self.assertEqual(native_groups, reference_groups)
+
+    def test_native_placement_join_matches_reference_and_rejects_bad_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, _packed, architecture = _fixture(root)
+            ir_path, index = root / "mapped.emuir.sqlite", root / "mapped.sqlite"
+            import_yosys_json(mapped).save(ir_path)
+            emit_xilinx_mapped_index(ir_path, index)
+            source_path = root / "atomic-source.json"
+            with open_xilinx_mapped_index(index) as indexed, mock.patch(
+                "emuflow.xilinx_openparf_atomic.resolve_native_executable",
+                return_value=str(self.executable),
+            ):
+                source = build_xilinx_openparf_atomic_source(
+                    index, source_path, mapped_value=indexed
+                )
+                export_xilinx_openparf_atomic(
+                    index, source_path, architecture, root / "native",
+                    mapped_value=indexed, packed_value=source,
+                )
+                placement = root / "placed.pl"
+                placement.write_text("# placement\na1 0.0 0 1 FIXED\na0 0 0 0\n")
+                with mock.patch(
+                    "emuflow.xilinx_openparf_atomic._load_atomic_name_atoms",
+                    side_effect=AssertionError("full atom dictionary"),
+                ):
+                    certificate = validate_xilinx_openparf_atomic_placement(
+                        placement, root / "native/name_map.json", index,
+                        architecture, mapped_value=indexed,
+                    )
+            reference_source_path = root / "reference-source.json"
+            build_xilinx_openparf_atomic_source(mapped, reference_source_path)
+            export_xilinx_openparf_atomic(
+                mapped, reference_source_path, architecture, root / "reference"
+            )
+            reference = validate_xilinx_openparf_atomic_placement(
+                placement, root / "reference/name_map.json", mapped, architecture
+            )
+            self.assertEqual(certificate["clusters"], reference["clusters"])
+            self.assertEqual(certificate["summary"], reference["summary"])
+            self.assertEqual(list(root.glob(".placement-input-*")), [])
+            invalid_rows = [
+                "a0 0 0 0\n",  # omitted atom
+                "a0 0 0 0\na0 0 0 1\n",  # duplicate atom
+                "a0 0 0 0\nunknown 0 0 1\n",
+                "a0 0 0 0\na1 0.5 0 1\n",
+                "a0 0 0 0\na1 nan 0 1\n",
+                "a0 0 0 0\na1 0 0 1 extra extra\n",
+            ]
+            for rows in invalid_rows:
+                placement.write_text(rows)
+                destination = root / "invalid.sqlite"
+                completed = subprocess.run([
+                    str(self.executable), "--index-placement",
+                    str(root / "native/atom-map.sqlite3"),
+                    str(placement), str(destination),
+                ], capture_output=True, text=True)
+                self.assertNotEqual(completed.returncode, 0, rows)
+                self.assertFalse(destination.exists())
+                self.assertFalse((root / ".invalid.sqlite.tmp").exists())
 
     def test_production_export_uses_native_atom_summary_without_atom_list(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

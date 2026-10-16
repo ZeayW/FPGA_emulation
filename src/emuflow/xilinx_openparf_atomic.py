@@ -286,6 +286,79 @@ def _load_atomic_name_atoms(
     return atoms
 
 
+class _NativePlacementInput:
+    """Stream the native placement/atom join with bounded reader memory."""
+
+    def __init__(self, placement: Path, name_map_path: Path,
+                 name_map: Mapping[str, Any]) -> None:
+        self.connection = None
+        self.path = None
+        descriptor = name_map.get("atom_database")
+        if (
+            not isinstance(descriptor, Mapping)
+            or descriptor.get("schema") != OPENPARF_ATOM_MAP_DATABASE_SCHEMA
+            or not isinstance(descriptor.get("file"), str)
+            or not isinstance(descriptor.get("atoms"), int)
+        ):
+            raise ValidationError("OpenPARF atomic name map has no atom database")
+        atom_path = name_map_path.parent / descriptor["file"]
+        with tempfile.NamedTemporaryFile(
+            dir=placement.parent, prefix=".placement-input-", suffix=".sqlite3"
+        ) as temporary:
+            self.path = Path(temporary.name)
+        completed = subprocess.run([
+            resolve_native_executable("emuflow_openparf_bookshelf_exporter"),
+            "--index-placement", str(atom_path), str(placement), str(self.path),
+        ], text=True, capture_output=True, check=False)
+        if completed.returncode:
+            raise ValidationError(
+                "native atomic placement import failed: "
+                + (completed.stderr or completed.stdout).strip()
+            )
+        self.connection = sqlite3.connect(
+            f"file:{self.path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        self.connection.execute(
+            "ATTACH DATABASE ? AS atom_map",
+            (f"file:{atom_path.resolve()}?mode=ro&immutable=1",),
+        )
+        metadata = dict(self.connection.execute(
+            "SELECT key,value FROM atom_map.metadata"
+        ))
+        if int(metadata.get("atoms", "-1")) != descriptor["atoms"]:
+            raise ValidationError("OpenPARF atom database coverage is invalid")
+
+    def coordinates(self) -> List[Tuple[int, int]]:
+        return list(self.connection.execute(
+            "SELECT DISTINCT x,y FROM positions ORDER BY x,y"
+        ))
+
+    def rows(self) -> Iterator[Tuple[str, Tuple[int, int, int], Dict[str, str]]]:
+        for name, instance, cell_type, source_cluster, resource, x, y, z in (
+            self.connection.execute(
+                "SELECT a.openparf,a.instance,a.cell_type,a.source_cluster,"
+                "a.resource,p.x,p.y,p.z FROM positions p "
+                "JOIN atom_map.atoms a ON a.atom_seq=p.atom_seq ORDER BY p.ordinal"
+            )
+        ):
+            yield name, (x, y, z), {
+                "openparf": name, "instance": instance,
+                "cell_type": cell_type, "source_cluster": source_cluster,
+                "resource": resource,
+            }
+
+    def close(self) -> None:
+        if self.connection is not None:
+            self.connection.close()
+            self.connection = None
+        if self.path is not None:
+            self.path.unlink(missing_ok=True)
+            self.path = None
+
+    def __del__(self) -> None:
+        self.close()
+
+
 def _atomic_placement_database_path(certificate_path: Path) -> Path:
     return certificate_path.with_suffix(".sqlite3")
 
@@ -4108,34 +4181,45 @@ def validate_xilinx_openparf_atomic_placement(
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped JSON cells are invalid")
-    atoms = _load_atomic_name_atoms(name_map_path, name_map)
-    raw_placement: Dict[str, Tuple[int, int, int]] = {}
-    with placement_path.open("r", encoding="utf-8") as stream:
-        for line_number, raw in enumerate(stream, start=1):
-            fields = raw.strip().split()
-            if not fields or fields[0].startswith("#"):
-                continue
-            if len(fields) not in {4, 5} or fields[0] not in atoms:
-                raise ImportError(
-                    f"{placement_path}:{line_number}: invalid atomic placement row"
-                )
-            if fields[0] in raw_placement:
-                raise ValidationError("OpenPARF atomic placement duplicates an atom")
-            try:
-                values = [float(value) for value in fields[1:4]]
-            except ValueError as error:
-                raise ImportError("OpenPARF atomic placement is non-numeric") from error
-            if any(
-                not math.isfinite(value) or not value.is_integer()
-                for value in values
-            ):
-                raise ValidationError("OpenPARF atomic placement is not discrete")
-            raw_placement[fields[0]] = tuple(int(value) for value in values)
-    if set(raw_placement) != set(atoms):
-        raise ValidationError("OpenPARF atomic placement does not cover every atom")
-    requested_coordinates = sorted({
-        (x, y) for x, y, _z in raw_placement.values()
-    })
+    native_input = None
+    if "atom_database" in name_map:
+        native_input = _NativePlacementInput(
+            placement_path, name_map_path, name_map
+        )
+        requested_coordinates = native_input.coordinates()
+        placement_rows = native_input.rows()
+    else:
+        atoms = _load_atomic_name_atoms(name_map_path, name_map)
+        raw_placement: Dict[str, Tuple[int, int, int]] = {}
+        with placement_path.open("r", encoding="utf-8") as stream:
+            for line_number, raw in enumerate(stream, start=1):
+                fields = raw.strip().split()
+                if not fields or fields[0].startswith("#"):
+                    continue
+                if len(fields) not in {4, 5} or fields[0] not in atoms:
+                    raise ImportError(
+                        f"{placement_path}:{line_number}: invalid atomic placement row"
+                    )
+                if fields[0] in raw_placement:
+                    raise ValidationError("OpenPARF atomic placement duplicates an atom")
+                try:
+                    values = [float(value) for value in fields[1:4]]
+                except ValueError as error:
+                    raise ImportError("OpenPARF atomic placement is non-numeric") from error
+                if any(
+                    not math.isfinite(value) or not value.is_integer()
+                    for value in values
+                ):
+                    raise ValidationError("OpenPARF atomic placement is not discrete")
+                raw_placement[fields[0]] = tuple(int(value) for value in values)
+        if set(raw_placement) != set(atoms):
+            raise ValidationError("OpenPARF atomic placement does not cover every atom")
+        requested_coordinates = sorted({
+            (x, y) for x, y, _z in raw_placement.values()
+        })
+        placement_rows = (
+            (name, xyz, atoms[name]) for name, xyz in raw_placement.items()
+        )
     site_map = {
         (item["dense_x"], item["dense_y"]): item
         for item in load_xilinx_openparf_atomic_sites(
@@ -4193,11 +4277,10 @@ def validate_xilinx_openparf_atomic_placement(
                 bram_view_by_slot[key] = candidate
     placed: Dict[str, Dict[str, Any]] = {}
     occupied = set()
-    for openparf_name, (x, y, z) in raw_placement.items():
+    for openparf_name, (x, y, z), atom in placement_rows:
             site_entry = site_map.get((x, y))
             if site_entry is None:
                 raise ValidationError("OpenPARF atomic placement uses an unknown site")
-            atom = atoms[openparf_name]
             cell_type = atom["cell_type"]
             resource = atom.get("resource")
             candidate = None
@@ -4316,6 +4399,8 @@ def validate_xilinx_openparf_atomic_placement(
                 ),
             }
 
+    if native_input is not None:
+        native_input.close()
     checked_native_edges = 0
     if hardblock_groups:
         family_for_resource = {

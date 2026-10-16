@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cmath>
+#include <limits>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -66,6 +69,7 @@ class Statement {
     if (value == nullptr) throw std::runtime_error("unexpected SQLite NULL");
     return reinterpret_cast<const char*>(value);
   }
+  sqlite3_stmt* get() const { return statement_; }
 
  private:
   sqlite3* db_ = nullptr;
@@ -458,10 +462,102 @@ void write_report(const fs::path& output_dir, const Counts& counts) {
   replace_file(temporary, final);
 }
 
+// Stage discrete placement once, with SQLite enforcing atom uniqueness. The
+// consumer joins this relation to the existing atom map instead of holding two
+// Python dictionaries for the complete primitive population.
+void index_placement(const fs::path& atoms_path, const fs::path& placement,
+                     const fs::path& output) {
+  Database atoms(atoms_path);
+  Statement schema(atoms.get(),
+                   "SELECT value FROM metadata WHERE key='schema'");
+  if (!schema.step() || schema.text(0) != "emuflow.openparf-atom-map/v1") {
+    throw std::runtime_error("invalid OpenPARF atom-map schema");
+  }
+  Statement total(atoms.get(), "SELECT count(*) FROM atoms");
+  total.step();
+  const auto expected = total.integer(0);
+  std::ifstream input(placement);
+  if (!input) throw std::runtime_error("cannot open atomic placement");
+  const auto temporary = temporary_for(output);
+  sqlite3* db = nullptr;
+  std::error_code ignored;
+  fs::remove(temporary, ignored);
+  if (sqlite3_open(temporary.c_str(), &db) != SQLITE_OK) {
+    if (db) sqlite3_close(db);
+    throw std::runtime_error("cannot create placement index");
+  }
+  try {
+    execute(db, "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;"
+                "PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;"
+                "CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);"
+                "INSERT INTO metadata VALUES('schema',"
+                "'emuflow.openparf-discrete-placement/v1');"
+                "CREATE TABLE positions(ordinal INTEGER PRIMARY KEY,"
+                "atom_seq INTEGER NOT NULL UNIQUE,x INTEGER NOT NULL,"
+                "y INTEGER NOT NULL,z INTEGER NOT NULL); BEGIN");
+    {
+      Statement lookup(atoms.get(),
+                       "SELECT atom_seq FROM atoms WHERE openparf=?");
+      Statement insert(db, "INSERT INTO positions VALUES(?,?,?,?,?)");
+      std::string line;
+      std::int64_t count = 0;
+      while (std::getline(input, line)) {
+        std::istringstream fields(line);
+        std::vector<std::string> tokens;
+        std::string token;
+        while (fields >> token) tokens.push_back(token);
+        if (tokens.empty() || tokens[0][0] == '#') continue;
+        if (tokens.size() != 4 && tokens.size() != 5) {
+          throw std::runtime_error("invalid atomic placement row");
+        }
+        std::int64_t xyz[3];
+        for (int i = 0; i < 3; ++i) {
+          std::size_t consumed = 0;
+          const double value = std::stod(tokens[i + 1], &consumed);
+          // Keep integer coordinates exactly representable by Python double
+          // parsing and SQLite, including before the integer conversion.
+          if (consumed != tokens[i + 1].size() || !std::isfinite(value) ||
+              std::floor(value) != value || std::abs(value) > 9007199254740991.0) {
+            throw std::runtime_error("atomic placement is not discrete");
+          }
+          xyz[i] = static_cast<std::int64_t>(value);
+        }
+        sqlite3_reset(lookup.get());
+        sqlite3_bind_text(lookup.get(), 1, tokens[0].c_str(), -1, SQLITE_TRANSIENT);
+        if (!lookup.step()) throw std::runtime_error("unknown placement atom");
+        const auto seq = lookup.integer(0);
+        sqlite3_reset(insert.get());
+        sqlite3_bind_int64(insert.get(), 1, count++);
+        sqlite3_bind_int64(insert.get(), 2, seq);
+        for (int i = 0; i < 3; ++i) sqlite3_bind_int64(insert.get(), i + 3, xyz[i]);
+        if (sqlite3_step(insert.get()) != SQLITE_DONE) {
+          throw std::runtime_error("atomic placement duplicates an atom");
+        }
+      }
+      if (input.bad()) throw std::runtime_error("cannot read atomic placement");
+      if (count != expected || count <= 0) {
+        throw std::runtime_error("atomic placement does not cover every atom");
+      }
+    }
+    execute(db, "COMMIT");
+    sqlite3_close(db);
+    db = nullptr;
+    replace_file(temporary, output);
+  } catch (...) {
+    if (db) sqlite3_close(db);
+    fs::remove(temporary, ignored);
+    throw;
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   try {
+    if (argc == 5 && std::string(argv[1]) == "--index-placement") {
+      index_placement(argv[2], argv[3], argv[4]);
+      return 0;
+    }
     if (argc != 3 && argc != 4) {
       throw std::runtime_error(
           "usage: emuflow_openparf_bookshelf_exporter MAPPED.sqlite OUT_DIR "

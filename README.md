@@ -6725,6 +6725,12 @@ only hard-block atoms needed by exact legalization.  It does not call the
 reference Python atom collector or retain a Python record for every LUT/FF.
 Native export counts primitive atoms across explicit macro members as well as
 implicit singletons; cluster count is not used as a primitive-coverage check.
+The native placement importer also stages discrete `.pl` rows in a temporary
+SQLite relation, checks atom uniqueness and complete coverage there, and joins
+it to `atom-map.sqlite3`. Placement validation streams that join without
+materializing a second full atom dictionary and raw-coordinate dictionary.
+The remaining physical-legality aggregation and bridge still use Python
+objects; their complete data-plane migration remains pending.
 
 Physical timing translation treats an original net that is absent from one
 particular split FPGA as an ordinary partition-local membership miss. Required
