@@ -121,6 +121,18 @@ class XilinxRWRouteTest(unittest.TestCase):
             )
         self.assertIn("blockRamLogicalPin(cell, row[3])", source)
 
+    def test_rapidwright_block_ram_bus_and_physical_wea_contract(self):
+        source = (
+            Path(__file__).parents[1]
+            / "scripts/rapidwright/EmuFlowRWRoute.java"
+        ).read_text(encoding="utf-8")
+        self.assertIn('suffix = "[" + (index % 2) + "]";', source)
+        self.assertIn('result.add("WEA" + index);', source)
+        self.assertIn('result.add("WEA" + (index + 2));', source)
+        self.assertIn("logicalNet.createPortInst(\n                port, index,", source)
+        self.assertIn("blockRamLogicalPinOwners", source)
+        self.assertIn("aliased logical pin belongs to different nets", source)
+
     def test_rapidwright_dsp_cascade_uses_physical_b_bus_site_pins(self):
         source = (
             Path(__file__).parents[1]

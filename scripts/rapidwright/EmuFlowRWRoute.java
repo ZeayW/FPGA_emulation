@@ -19,6 +19,8 @@ import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.edif.EDIFCell;
+import com.xilinx.rapidwright.edif.EDIFNet;
+import com.xilinx.rapidwright.edif.EDIFPort;
 import com.xilinx.rapidwright.rwroute.CUFR;
 import com.xilinx.rapidwright.rwroute.Connection;
 import com.xilinx.rapidwright.rwroute.RWRouteConfig;
@@ -512,6 +514,23 @@ public final class EmuFlowRWRoute {
         String physicalPin = logicalPin.replace("[", "").replace("]", "");
         List<String> result = new ArrayList<>();
         if (type.equals("RAMB18E2")) {
+            int open = logicalPin.indexOf('[');
+            int close = logicalPin.indexOf(']');
+            String port = open < 0 ? logicalPin : logicalPin.substring(0, open);
+            Integer index = open < 0 || close < open
+                ? null : Integer.valueOf(logicalPin.substring(open + 1, close));
+            if (index != null && port.equals("WEA")) {
+                if (index < 0 || index > 1) {
+                    throw new IllegalStateException("RAMB18E2 WEA index is out of range");
+                }
+                // The device BEL exposes four write-enable pins although the
+                // RAMB18E2 Unisim interface has WEA[1:0].  Yosys emits the
+                // physical-width quartet in duplicate pairs.  Drive both BEL
+                // pins represented by each logical write-enable bit.
+                result.add("WEA" + index);
+                result.add("WEA" + (index + 2));
+                return result;
+            }
             if (cell.getBEL().getPin(physicalPin) != null) result.add(physicalPin);
             return result;
         }
@@ -582,7 +601,81 @@ public final class EmuFlowRWRoute {
             case "DIPBDIP": port = "DINPBDINP"; break;
             default: break;
         }
+        if (materialized.logicalType.equals("RAMB18E2") && port.equals("WEA")) {
+            int close = logicalPin.indexOf(']');
+            if (open < 0 || close != logicalPin.length() - 1) {
+                throw new IllegalStateException("RAMB18E2 WEA must be indexed");
+            }
+            int index = Integer.parseInt(logicalPin.substring(open + 1, close));
+            if (index < 0 || index > 3) {
+                throw new IllegalStateException("RAMB18E2 physical WEA index is out of range");
+            }
+            // The mapped physical contract has WEA[3:0], with bits 2/3
+            // duplicating bits 0/1.  RapidWright's logical primitive exposes
+            // only WEA[1:0].  A later ownership check fails closed if a mapped
+            // design ever assigns an alias pair to different nets.
+            suffix = "[" + (index % 2) + "]";
+        }
         return port + suffix;
+    }
+
+    private static void connectBlockRamLogicalPin(
+        Net net, MaterializedCell materialized, String logicalPin,
+        Map<String, EDIFNet> logicalPinOwners
+    ) {
+        int open = logicalPin.indexOf('[');
+        int close = logicalPin.indexOf(']');
+        if ((open < 0) != (close < 0) || (open >= 0 && close != logicalPin.length() - 1)) {
+            throw new IllegalStateException("malformed logical pin " + logicalPin);
+        }
+        String portName = open < 0 ? logicalPin : logicalPin.substring(0, open);
+        Integer index = open < 0
+            ? null : Integer.valueOf(logicalPin.substring(open + 1, close));
+        EDIFPort port = materialized.regularCell.getEDIFCellInst().getPort(portName);
+        if (port == null) {
+            throw new IllegalStateException(
+                materialized.logicalType + " has no logical port " + portName
+            );
+        }
+        if (index == null && port.isBus()) {
+            throw new IllegalStateException("bus logical pin must be indexed: " + logicalPin);
+        }
+        if (index != null) {
+            if (!port.isBus()) {
+                throw new IllegalStateException("scalar logical pin is indexed: " + logicalPin);
+            }
+            int low = Math.min(port.getLeft(), port.getRight());
+            int high = Math.max(port.getLeft(), port.getRight());
+            if (index < low || index > high) {
+                throw new IllegalStateException(
+                    "logical pin index is outside " + port.getName() + ": " + logicalPin
+                );
+            }
+        }
+        EDIFNet logicalNet = net.getLogicalNet();
+        if (logicalNet == null) {
+            throw new IllegalStateException("physical net has no logical EDIF net");
+        }
+        String ownerKey = materialized.regularCell.getName() + "\0" + logicalPin;
+        EDIFNet previous = logicalPinOwners.putIfAbsent(ownerKey, logicalNet);
+        if (previous != null) {
+            if (previous != logicalNet) {
+                throw new IllegalStateException(
+                    "aliased logical pin belongs to different nets: "
+                    + materialized.regularCell.getName() + "/" + logicalPin
+                );
+            }
+            return;
+        }
+        if (index == null) {
+            logicalNet.createPortInst(
+                port, materialized.regularCell.getEDIFCellInst()
+            );
+        } else {
+            logicalNet.createPortInst(
+                port, index, materialized.regularCell.getEDIFCellInst()
+            );
+        }
     }
 
     private static void ensureLogicalPinMapping(
@@ -844,6 +937,7 @@ public final class EmuFlowRWRoute {
 
         Map<String, Net> nets = new HashMap<>();
         Map<String, String> iobNetNames = new HashMap<>();
+        Map<String, EDIFNet> blockRamLogicalPinOwners = new HashMap<>();
         List<String> netNames = new ArrayList<>(netKinds.keySet());
         netNames.sort(String::compareTo);
         for (String netName : netNames) {
@@ -868,10 +962,9 @@ public final class EmuFlowRWRoute {
                     } else if (cell.isBlockRam()) {
                         String routedLogicalPin = blockRamLogicalPin(cell, row[3]);
                         ensureLogicalPinMapping(cell, routedLogicalPin);
-                        SitePinInst primary = net.connect(
-                            cell.regularCell, routedLogicalPin
+                        connectBlockRamLogicalPin(
+                            net, cell, routedLogicalPin, blockRamLogicalPinOwners
                         );
-                        if (primary != null) connected.add(primary);
                         Set<String> sitePins = new LinkedHashSet<>(
                             cell.regularCell.getAllCorrespondingSitePinNames(
                                 routedLogicalPin
