@@ -6714,6 +6714,8 @@ ordinary circuit payloads do not pass through Python decode/re-encode loops.
 The explicit generic-cell lowering path remains available when primitive
 conversion is actually needed. The index-only producer hashes its canonical
 output once, reusing that digest for both output and index identity.
+Net-order secondary indexes are built after sequential pin import, with
+bounded SQLite page caches, instead of random index-page updates per pin on NFS.
 Real-design runtime qualification of this bulk producer remains pending.
 The production OpenPARF adapter invokes the in-tree
 `emuflow_openparf_bookshelf_exporter` C++ executable, which scans those rows in

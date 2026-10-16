@@ -357,6 +357,7 @@ def _populate_native_xilinx_index(
         "ATTACH DATABASE ? AS emuir_source",
         (f"file:{ir_path.resolve()}?mode=ro&immutable=1",),
     )
+    index.execute("PRAGMA emuir_source.cache_size=-65536")
     orphan = index.execute(
         "SELECT e.instance_seq FROM emuir_source.endpoint_records e "
         "LEFT JOIN emuir_source.cell_records c ON c.seq=e.instance_seq "
@@ -556,6 +557,7 @@ def _emit_compact_xilinx_mapped_artifacts(
             PRAGMA journal_mode=OFF;
             PRAGMA synchronous=OFF;
             PRAGMA temp_store=FILE;
+            PRAGMA cache_size=-65536;
             CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)
               WITHOUT ROWID;
             CREATE TABLE cells(
@@ -574,9 +576,6 @@ def _emit_compact_xilinx_mapped_artifacts(
               PRIMARY KEY(cell_seq,pin_seq),
               CHECK((net_bit IS NULL) != (constant IS NULL))
             ) WITHOUT ROWID;
-            CREATE INDEX cell_pins_by_net
-              ON cell_pins(net_bit,cell_seq,pin_seq)
-              WHERE net_bit IS NOT NULL;
             CREATE TABLE netnames(
               id TEXT PRIMARY KEY,seq INTEGER NOT NULL UNIQUE,
               record_json TEXT NOT NULL
@@ -778,6 +777,13 @@ def _emit_compact_xilinx_mapped_artifacts(
                 emitted_net_count = _write_object_entries(stream, netnames())
                 stream.write("}}}\n")
                 stream.flush()
+        # Build net-order B-trees after the sequential pin import. Maintaining
+        # this index for every pin causes random NFS page updates in the bulk
+        # producer just as it did in the old Python per-cell loop.
+        index.execute(
+            "CREATE INDEX cell_pins_by_net ON cell_pins(net_bit,cell_seq,pin_seq) "
+            "WHERE net_bit IS NOT NULL"
+        )
         index.execute("CREATE INDEX cells_by_type ON cells(type,id)")
         index.execute(
             "CREATE INDEX cell_pins_by_driver ON cell_pins(net_bit,cell_seq,pin_seq) "
