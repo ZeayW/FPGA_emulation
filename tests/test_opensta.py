@@ -13,6 +13,7 @@ from emuflow.opensta import (
     FPGA_TIMING_MODEL_SCHEMA,
     FPGA_TIMING_MODEL_SCHEMA_V2,
     OPENSTA_PROVIDER,
+    _endpoint_query_population,
     build_vtr_opensta_timing_model,
     check_opensta_engine_version,
     classify_through_net_timing_endpoints,
@@ -43,6 +44,24 @@ VTR_FIXTURE = (
 
 
 class OpenStaProviderTest(unittest.TestCase):
+    def test_endpoint_population_uses_engine_budget_not_aggregate_path_count(self):
+        line = ("EMUFLOW_OPENSTA_POPULATION endpoints=12 report_limit=12 "
+                "queried_paths=20 emitted_paths=19")
+        for cap in (None, 12, 25):
+            value = _endpoint_query_population(line, cap)
+            self.assertTrue(value["complete_endpoint_query"])
+        bounded = line.replace("report_limit=12", "report_limit=8")
+        self.assertFalse(_endpoint_query_population(bounded, 8)["complete_endpoint_query"])
+        for invalid in ("", line + "\n" + line, bounded,
+                        line.replace("emitted_paths=19", "emitted_paths=21")):
+            with self.assertRaisesRegex(Exception, "population certificate"):
+                _endpoint_query_population(invalid, None)
+
+    def test_invalid_endpoint_caps_rejected_before_loading_circuit(self):
+        for cap in (0, -1, True, 1.5, "8"):
+            with self.assertRaisesRegex(ValidationError, "positive integer"):
+                run_opensta_path_database(Path("absent"), Path("unused"), max_paths=cap)
+
     def setUp(self) -> None:
         self.ir = import_yosys_json(
             ROOT / "examples" / "yosys" / "counter.json",
@@ -605,6 +624,8 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
         "path0".encode().hex(), "clk".encode().hex(), {net!r}.encode().hex()
     )
 )
+assert os.environ["EMUFLOW_STA_MAX_PATHS"] == "0"
+print("EMUFLOW_OPENSTA_POPULATION endpoints=1 report_limit=1 queried_paths=1 emitted_paths=1")
 """,
                 encoding="utf-8",
             )
@@ -633,6 +654,8 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
             manifest["source"]["timing_io"], report["timing_io"]
         )
         self.assertEqual(checked["paths"], 1)
+        self.assertTrue(report["path_population"]["complete_endpoint_query"])
+        self.assertEqual(manifest["source"]["path_population"], report["path_population"])
 
     def test_timing_io_rejects_absent_or_wrong_direction_ports(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

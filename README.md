@@ -1191,6 +1191,17 @@ mandatory timing authorities. Streaming the mapped hierarchy into indexed
 storage adds import/expansion work after native synthesis; report that cost
 separately rather than attributing the entire Phase 1 duration to ABC.
 
+OpenSTA path extraction now defaults to an uncapped endpoint query: one worst
+setup path per endpoint per clock group, collected in one engine query. Explicit
+`--sta-max-paths` / `--max-paths` values remain diagnostic caps. The engine
+publishes endpoint count and query budget in the TimingPathDB source metadata;
+the small timing report forwards this certificate without another circuit scan.
+Calibrated holdout promotion requires complete endpoint-query coverage; coverage
+of a capped input database alone is not whole-design timing coverage. Aggregate
+path count across multiple clock groups is not a valid truncation detector.
+This endpoint-worst population is not an enumeration of every combinational
+path, nor proof that routed delay bounds are exact measured hardware delays.
+
 Earlier sealed AES and PicoRV32 Phase 1--7 results used the VTR physical
 surrogate. Their historical WNS/TNS values remain diagnostic records, but they
 do not satisfy the new RapidWright-bound platform contract. All five holdout

@@ -739,6 +739,8 @@ for index, row in enumerate(rows):
 Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
     "\\n".join(records) + "\\n"
 )
+count = len(rows)
+print(f"EMUFLOW_OPENSTA_POPULATION endpoints={count} report_limit={count} queried_paths={count} emitted_paths={count}")
 if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
     requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
     coverage = ["emuir_net_hex\\tdriver_count\\tqueried_paths\\temitted_paths"]
@@ -1295,6 +1297,8 @@ for index, row in enumerate(rows):
 Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
     "\\n".join(records) + "\\n"
 )
+count = len(rows)
+print(f"EMUFLOW_OPENSTA_POPULATION endpoints={count} report_limit={count} queried_paths={count} emitted_paths={count}")
 if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
     requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
     coverage = ["emuir_net_hex\\tdriver_count\\tqueried_paths\\temitted_paths"]

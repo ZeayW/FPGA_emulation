@@ -690,6 +690,12 @@ class PProHoldoutValidationTest(unittest.TestCase):
                     "backend": "opensta",
                     "sta": {
                         "provider": "opensta-fpga-path-database-v1",
+                        "path_population": {
+                            "mode": "worst-path-per-endpoint-per-clock-group",
+                            "complete_endpoint_query": True,
+                            "endpoints": 1,
+                            "report_limit_per_group": 1,
+                        },
                         "timing_io": {
                             "sha256": timing_io_sha256(identity["timing_io"]),
                             "input_ports": 1,
@@ -800,6 +806,31 @@ class PProHoldoutValidationTest(unittest.TestCase):
             flow_report["timing"]["sta"]["timing_io"][
                 "sha256"
             ] = expected_timing_sha
+
+            population = flow_report["timing"]["sta"].pop("path_population")
+            for incomplete in (None, {**population, "complete_endpoint_query": False},
+                               {**population, "report_limit_per_group": 0}):
+                if incomplete is not None:
+                    flow_report["timing"]["sta"]["path_population"] = incomplete
+                (flow / "multi-fpga-flow-report.json").write_text(
+                    json.dumps(flow_report), encoding="utf-8"
+                )
+                with patch(
+                    "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                    return_value={"status": "pass", "configuration_id": "lx2-m2"},
+                ), patch(
+                    "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                    return_value={"status": "pass"},
+                ):
+                    with self.assertRaisesRegex(ValidationError, "endpoint-query coverage"):
+                        assemble_holdout_result(
+                            result_id="blind-aes-a", workload_id="blind-aes",
+                            algorithm_id="default",
+                            ppro_observation_path=observation_path, flow_root=flow,
+                            benchmark_run_path=benchmark, source_root=source_root,
+                            platform_bundle_root=bundle, profile="nominal",
+                        )
+            flow_report["timing"]["sta"]["path_population"] = population
 
             tampered_transport_cost = dict(transport_cost)
             tampered_transport_cost["profile"] = "conservative"

@@ -636,6 +636,19 @@ def assemble_holdout_result(
             "flow OpenSTA timing I/O environment disagrees with benchmark contract"
         )
 
+    population = timing_sta.get("path_population")
+    if (
+        not isinstance(population, Mapping)
+        or population.get("complete_endpoint_query") is not True
+        or population.get("mode") != "worst-path-per-endpoint-per-clock-group"
+        or type(population.get("endpoints")) is not int
+        or population["endpoints"] <= 0
+        or population.get("report_limit_per_group") != population["endpoints"]
+    ):
+        raise ValidationError(
+            "holdout requires complete OpenSTA endpoint-query coverage, not a capped population"
+        )
+
     phase3 = read_json(root / "partition/phase3_report.json")
     schedule = read_json(root / artifacts["schedule"]["path"])
     physical = read_json(root / artifacts["physical_flow_report"]["path"])

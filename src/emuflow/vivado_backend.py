@@ -420,15 +420,15 @@ def run_vivado_timing_path_database(
     clocks: Mapping[str, float],
     part: str,
     executable: Optional[str] = None,
-    max_paths: int = 200000,
+    max_paths: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Use Vivado timing as a drop-in producer of the common STA PathDB."""
     if not part.startswith("xc"):
         raise ValidationError(
             f"Vivado timing requires a concrete Xilinx part, got {part!r}"
         )
-    if max_paths <= 0:
-        raise ValidationError("Vivado timing max paths must be positive")
+    if max_paths is not None and (type(max_paths) is not int or max_paths <= 0):
+        raise ValidationError("Vivado timing max paths must be a positive integer or None")
     ir_path = ir_path.resolve()
     output_path = output_path.resolve()
     output_dir = output_path.parent
@@ -474,7 +474,7 @@ def run_vivado_timing_path_database(
             str(output_dir / "timing.dcp"),
             str(net_map),
             str(timing_tsv),
-            str(max_paths),
+            str(max_paths if max_paths is not None else 0),
         ],
         output_dir,
         "vivado-timing-path-export.log",

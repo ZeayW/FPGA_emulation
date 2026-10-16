@@ -475,7 +475,7 @@ def run_timing_checkpoint(
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
     opensta: Optional[str] = None,
-    max_paths: int = 200000,
+    max_paths: Optional[int] = None,
     criticality_scale: float = 9.0,
     criticality_exponent: float = 2.0,
     managed_dag_node: bool = False,
@@ -604,7 +604,7 @@ def run_cut_timing_checkpoint(
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
     opensta: Optional[str] = None,
-    max_paths: int = 200000,
+    max_paths: Optional[int] = None,
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")

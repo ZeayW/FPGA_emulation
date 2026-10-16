@@ -9,8 +9,8 @@ set input_dcp [file normalize [lindex $argv 0]]
 set map_path [file normalize [lindex $argv 1]]
 set output_path [file normalize [lindex $argv 2]]
 set max_paths [lindex $argv 3]
-if {![string is integer -strict $max_paths] || $max_paths <= 0} {
-  error "MAX_PATHS must be a positive integer"
+if {![string is integer -strict $max_paths] || $max_paths < 0} {
+  error "MAX_PATHS must be nonnegative (0 means all endpoints)"
 }
 
 proc emuflow_hex_decode {value} {
@@ -55,6 +55,9 @@ if {$mapped == 0} {
 }
 
 set all_clocks [get_clocks -quiet]
+if {$max_paths == 0} {
+  set max_paths [expr {[llength [all_registers -data_pins]] + [llength [all_outputs]]}]
+}
 set timing_paths [get_timing_paths -quiet -setup -nworst 1 \
   -max_paths $max_paths -from $all_clocks -to $all_clocks]
 set output [open $output_path w]

@@ -26,6 +26,11 @@ for index, row in enumerate(rows):
         f"{path_id}\t{clock}\t10\t9.5\t0.5\t{emuir_hex}"
     )
 output.write_text("\n".join(records) + "\n")
+cap = int(os.environ["EMUFLOW_STA_MAX_PATHS"])
+count = len(rows)
+limit = min(cap, count) if cap else count
+print(f"EMUFLOW_OPENSTA_POPULATION endpoints={count} report_limit={limit} "
+      f"queried_paths={count} emitted_paths={count}")
 if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
     requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
     coverage = ["emuir_net_hex\tdriver_count\tqueried_paths\temitted_paths"]

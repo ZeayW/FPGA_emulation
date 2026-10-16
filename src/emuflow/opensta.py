@@ -42,6 +42,28 @@ OPENSTA_THROUGH_COVERAGE_SCHEMA = "emuflow.opensta-through-net-coverage/v1"
 MINIMUM_OPENSTA_VERSION = (3, 1, 0)
 
 
+def _endpoint_query_population(stdout: str, max_paths: Optional[int]) -> Dict[str, Any]:
+    """Read the engine's constant-size query budget, not a second graph scan."""
+    records = re.findall(
+        r"^EMUFLOW_OPENSTA_POPULATION endpoints=(\d+) report_limit=(\d+) "
+        r"queried_paths=(\d+) emitted_paths=(\d+)$", stdout, re.MULTILINE
+    )
+    if len(records) != 1:
+        raise EmuFlowError("OpenSTA endpoint population certificate is missing or ambiguous")
+    endpoints, limit, queried, emitted = map(int, records[0])
+    expected = endpoints if max_paths is None else min(max_paths, endpoints)
+    if endpoints <= 0 or limit != expected or not 0 < emitted <= queried:
+        raise EmuFlowError("OpenSTA endpoint population certificate is inconsistent")
+    return {
+        "mode": "worst-path-per-endpoint-per-clock-group",
+        "endpoints": endpoints,
+        "report_limit_per_group": limit,
+        "queried_paths": queried,
+        "emitted_paths": emitted,
+        "complete_endpoint_query": limit == endpoints,
+    }
+
+
 def _write_timing_io_map(
     ir: EmuIR,
     clocks: Mapping[str, float],
@@ -1612,7 +1634,7 @@ def _run_opensta_path_database(
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
     executable: Optional[str] = None,
-    max_paths: int = 200000,
+    max_paths: Optional[int] = None,
     log_path: Optional[Path] = None,
     through_nets: Optional[Sequence[str]] = None,
     through_coverage_path: Optional[Path] = None,
@@ -1621,8 +1643,8 @@ def _run_opensta_path_database(
     _stream_output: bool = False,
     _ir=None,
 ) -> Dict[str, Any]:
-    if max_paths <= 0:
-        raise ValidationError("OpenSTA max_paths must be positive")
+    if max_paths is not None and (type(max_paths) is not int or max_paths <= 0):
+        raise ValidationError("OpenSTA max_paths must be a positive integer or None")
     if _stream_output and _return_database:
         raise ValidationError(
             "streamed OpenSTA output cannot return an inline database"
@@ -1726,7 +1748,7 @@ def _run_opensta_path_database(
                 "EMUFLOW_STA_CLOCKS": str(clock_path),
                 "EMUFLOW_STA_TIMING_IO": str(timing_io_path),
                 "EMUFLOW_STA_OUTPUT": str(raw_path),
-                "EMUFLOW_STA_MAX_PATHS": str(max_paths),
+                "EMUFLOW_STA_MAX_PATHS": str(max_paths if max_paths is not None else 0),
                 "EMUFLOW_STA_THROUGH_NETS": (
                     str(through_path) if through_net_ids else ""
                 ),
@@ -1759,6 +1781,10 @@ def _run_opensta_path_database(
             raise EmuFlowError(
                 "OpenSTA reported success but did not create its path TSV"
             )
+        population = (
+            _endpoint_query_population(completed.stdout, max_paths)
+            if not through_net_ids else None
+        )
         source_value = {
             "timing_model": model["name"],
             "timing_model_qualification": model["source"]["qualification"],
@@ -1769,6 +1795,8 @@ def _run_opensta_path_database(
             ),
             "timing_io": timing_io_summary,
         }
+        if population is not None:
+            source_value["path_population"] = population
         if _stream_output:
             imported = import_sta_path_database_tsv_streaming(
                 raw_path,
@@ -1886,7 +1914,10 @@ def _run_opensta_path_database(
         "through_nets": through_net_ids,
         "covered_through_nets": covered_through_nets,
         "through_net_coverage": through_coverage,
-        "path_limit_reached": imported["paths"] >= max_paths,
+        "path_limit_reached": (
+            not population["complete_endpoint_query"] if population is not None
+            else None
+        ),
         "unique_path_nets": imported["unique_path_nets"],
         "used_cell_type_summary": _sealed_string_set_summary(
             coverage["used_cell_types"]
@@ -1895,6 +1926,8 @@ def _run_opensta_path_database(
         "output": str(output_path),
         "log": str(log_path) if log_path is not None else None,
     }
+    if population is not None:
+        result["path_population"] = population
     if "path_qor" in imported:
         result["path_qor"] = imported["path_qor"]
     if _return_database:
@@ -1908,7 +1941,7 @@ def run_opensta_path_database(
     timing_io: Optional[Mapping[str, Any]] = None,
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
-    executable: Optional[str] = None, max_paths: int = 200000,
+    executable: Optional[str] = None, max_paths: Optional[int] = None,
     log_path: Optional[Path] = None, through_nets: Optional[Sequence[str]] = None,
     through_coverage_path: Optional[Path] = None, validate_output: bool = True,
     _return_database: bool = False, _stream_output: bool = False,

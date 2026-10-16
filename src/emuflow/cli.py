@@ -639,7 +639,7 @@ def _build_parser() -> argparse.ArgumentParser:
     timing_run.add_argument("--timing-model", type=Path, default=DEFAULT_TIMING_MODEL)
     timing_run.add_argument("--architecture-timing-db", type=Path)
     timing_run.add_argument("--opensta")
-    timing_run.add_argument("--max-paths", type=int, default=200000)
+    timing_run.add_argument("--max-paths", type=int, help="explicit diagnostic path cap; default: all endpoints")
     timing_run.add_argument("--criticality-scale", type=float, default=9.0)
     timing_run.add_argument("--criticality-exponent", type=float, default=2.0)
     timing_run.add_argument("--managed-dag-node", action="store_true")
@@ -854,7 +854,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cut_timing_run.add_argument("--timing-model", type=Path, default=DEFAULT_TIMING_MODEL)
     cut_timing_run.add_argument("--architecture-timing-db", type=Path)
     cut_timing_run.add_argument("--opensta")
-    cut_timing_run.add_argument("--max-paths", type=int, default=200000)
+    cut_timing_run.add_argument("--max-paths", type=int)
     cut_timing_run.add_argument("--managed-dag-node", action="store_true")
     cut_timing_run.add_argument("--out", type=Path, required=True)
     cut_timing_validate = experiment_stage_subparsers.add_parser(
@@ -2098,7 +2098,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--timing-vivado")
     multi_fpga_compile.add_argument(
-        "--sta-max-paths", type=int, default=200000
+        "--sta-max-paths", type=int,
+        help="explicit diagnostic path cap; default: all endpoints"
     )
     multi_fpga_compile.add_argument(
         "--timing-criticality-scale", type=float, default=9.0
@@ -2940,7 +2941,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="CLOCK=PERIOD_NS",
     )
     arch_run_xilinx_opensta.add_argument("--opensta")
-    arch_run_xilinx_opensta.add_argument("--max-paths", type=int, default=200000)
+    arch_run_xilinx_opensta.add_argument("--max-paths", type=int, help="explicit diagnostic path cap; default: all endpoints")
     arch_run_xilinx_opensta.add_argument("--log", type=Path)
     arch_validate_xilinx_opensta = arch_subparsers.add_parser(
         "validate-xilinx-opensta",
@@ -3351,7 +3352,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="opensta",
         help="explicit comparison override; defaults to the in-tree build",
     )
-    sta_opensta.add_argument("--max-paths", type=int, default=200000)
+    sta_opensta.add_argument("--max-paths", type=int, help="explicit diagnostic path cap; default: all endpoints")
     sta_opensta.add_argument("--log", type=Path)
 
     route_parser = subparsers.add_parser(

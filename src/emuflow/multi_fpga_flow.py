@@ -1286,7 +1286,7 @@ def run_multi_fpga_flow(
     architecture_timing_db: Optional[Path] = None,
     opensta: Optional[str] = None,
     timing_vivado: Optional[str] = None,
-    sta_max_paths: int = 200000,
+    sta_max_paths: Optional[int] = None,
     timing_criticality_scale: float = 9.0,
     timing_criticality_exponent: float = 2.0,
     route_constraints: Optional[Path] = None,
