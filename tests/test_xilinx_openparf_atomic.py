@@ -1852,9 +1852,20 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 f"{openparf['mux']} {first['dense_x']} {first['dense_y']} 0",
                 f"{openparf['ff']} {second['dense_x']} {second['dense_y']} 0",
             ]) + "\n", encoding="utf-8")
-            certificate = validate_xilinx_openparf_atomic_placement(
-                placement, output / "name_map.json", mapped, architecture
-            )
+            mapped_value = json.loads(mapped.read_text(encoding="utf-8"))
+            with mock.patch(
+                "emuflow.xilinx_openparf_atomic.build_xilinx_physical_macro_contract",
+                wraps=atomic_adapter.build_xilinx_physical_macro_contract,
+            ) as build_macro_contract:
+                certificate = validate_xilinx_openparf_atomic_placement(
+                    placement,
+                    output / "name_map.json",
+                    mapped,
+                    architecture,
+                    mapped_value=mapped_value,
+                )
+            validation_call = build_macro_contract.call_args_list[-1]
+            self.assertIs(validation_call.kwargs["source"], mapped_value)
             certificate_path = output / "placement-certificate.json"
             certificate_path.write_text(
                 json.dumps(certificate, sort_keys=True), encoding="utf-8"
@@ -2038,8 +2049,11 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             ), mock.patch(
                 "emuflow.xilinx_openparf_atomic.run_openparf",
                 side_effect=fake_run,
-            ):
+            ) as run_openparf:
                 report = run_xilinx_openparf_atomic_qualification(
+                    mapped, packed, architecture, output
+                )
+                reused = run_xilinx_openparf_atomic_qualification(
                     mapped, packed, architecture, output
                 )
         self.assertEqual(report["status"], "pass")
@@ -2054,6 +2068,9 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "feasible-hpwl-patience",
         )
         self.assertNotIn("fallback", report)
+        self.assertFalse(report["openparf_result"]["reused"])
+        self.assertTrue(reused["openparf_result"]["reused"])
+        self.assertEqual(run_openparf.call_count, 1)
 
     def test_parser_rejects_missing_or_extra_atoms(self):
         with tempfile.TemporaryDirectory() as temporary:
