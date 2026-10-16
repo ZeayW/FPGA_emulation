@@ -325,7 +325,13 @@ class _NativePlacementInput:
         metadata = dict(self.connection.execute(
             "SELECT key,value FROM atom_map.metadata"
         ))
-        if int(metadata.get("atoms", "-1")) != descriptor["atoms"]:
+        staged_count = self.connection.execute(
+            "SELECT count(*) FROM positions"
+        ).fetchone()[0]
+        if (
+            int(metadata.get("atoms", "-1")) != descriptor["atoms"]
+            or staged_count != descriptor["atoms"]
+        ):
             raise ValidationError("OpenPARF atom database coverage is invalid")
 
     def coordinates(self) -> List[Tuple[int, int]]:

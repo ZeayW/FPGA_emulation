@@ -17,7 +17,9 @@ from emuflow.xilinx_openparf_atomic import (
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
     validate_xilinx_openparf_atomic_placement,
+    _NativePlacementInput,
 )
+from emuflow.errors import ValidationError
 from emuflow.yosys import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 from tests.test_xilinx_openparf_atomic import (
@@ -284,6 +286,18 @@ class NativeOpenparfBookshelfExporterTests(unittest.TestCase):
                 self.assertNotEqual(completed.returncode, 0, rows)
                 self.assertFalse(destination.exists())
                 self.assertFalse((root / ".invalid.sqlite.tmp").exists())
+            placement.write_text("a0 0 0 0\na1 0 0 1\n")
+            name_map = json.loads((root / "native/name_map.json").read_text())
+            name_map["atom_database"]["atoms"] = 1
+            with sqlite3.connect(root / "native/atom-map.sqlite3") as database:
+                database.execute("UPDATE metadata SET value='1' WHERE key='atoms'")
+            with mock.patch(
+                "emuflow.xilinx_openparf_atomic.resolve_native_executable",
+                return_value=str(self.executable),
+            ), self.assertRaisesRegex(ValidationError, "coverage"):
+                _NativePlacementInput(
+                    placement, root / "native/name_map.json", name_map
+                )
 
     def test_production_export_uses_native_atom_summary_without_atom_list(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
