@@ -1202,6 +1202,16 @@ path count across multiple clock groups is not a valid truncation detector.
 This endpoint-worst population is not an enumeration of every combinational
 path, nor proof that routed delay bounds are exact measured hardware delays.
 
+Indexed timing endpoint resolution looks up declared top-level ports by name
+and parses only the requested canonical `[bit]` or `__bit` suffix. It must not
+enumerate all top-level bus bits for every instance-pin query, nor pre-expand
+a per-bit Python object dictionary. Metadata storage is proportional to the
+number of declared ports, independent of their aggregate bit width. Exact bit
+bounds, scalar versus vector spelling, escaped-provider alias ambiguity, and
+the existing first-declared-port precedence are retained. This removes a
+repeated Python lookup cost during streaming STA import; it does not claim
+that the entire timing importer or all Phase 7 adapters are native data planes.
+
 The optional TritonPart balance-repair fallback evaluates simultaneous ejection
 costs from its existing per-edge partition counts. It no longer rescans every
 pin of a high-fanout hyperedge for each tentative sequence. Exhaustive

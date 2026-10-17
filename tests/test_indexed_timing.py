@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tracemalloc
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -9,7 +10,7 @@ import pytest
 from emuflow.emuir_compact import repack_emuir
 from emuflow.emuir_storage import _write_emuir_sqlite_v1
 from emuflow.errors import ValidationError
-from emuflow.indexed_timing import IndexedTimingView
+from emuflow.indexed_timing import IndexedTimingView, _Objects
 from emuflow.ir import EmuIR
 from emuflow.opensta import run_opensta_path_database
 from emuflow.resources import ResourceVector
@@ -25,6 +26,54 @@ from emuflow.verilog import mapped_verilog, write_mapped_verilog
 from emuflow.yosys import import_yosys_json
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("ports", [
+    [("bus", 4), ("scalar", 1), ("unit/data", 3)],
+    [("bus", 4), ("bus__1", 1), ("bus[2]", 1)],
+    [("bus__1", 1), ("bus[2]", 1), ("bus", 4)],
+    [("bus__0", 3), ("bus", 4), ("port\\name", 3)],
+])
+def test_indexed_port_names_preserve_exact_spelling_and_declaration_order(ports):
+    records = [{"id": name, "width": width} for name, width in ports]
+    objects = _Objects(SimpleNamespace(value={"ports": records}))
+    expected = {}
+    for port in records:
+        for bit in range(port["width"]):
+            names = ([port["id"]] if port["width"] == 1 else
+                     [f"{port['id']}[{bit}]", f"{port['id']}__{bit}"])
+            for name in names:
+                expected.setdefault(name, {"object": name, "instance": None,
+                                           "port": port["id"], "bit": bit})
+    for name, endpoint in expected.items():
+        assert objects._top_level(name) == endpoint
+    for name in ["absent", "bus__01", "bus[01]", "bus[-1]", "bus[+1]",
+                 "bus__4", "bus__١", "scalar[0]", "scalar__0"]:
+        assert objects._top_level(name) is None
+
+
+def test_indexed_cell_endpoint_lookup_never_enumerates_top_level_bits(tmp_path):
+    ir = import_yosys_json(ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"])
+    endpoint = next(item for item in sta_object_index(ir).values()
+                    if item["instance"] is not None)
+    # A wide declared port must not create a bit-index object population or
+    # add a scan to every cell endpoint resolution. It needs no net payload.
+    ir.value["ports"].append({"id": "wide", "name": "wide", "direction": "input",
+                              "width": 1000000000})
+    path = tmp_path / "wide.emuir.sqlite"
+    ir.save(path)
+    with patch("emuflow.indexed_timing.range", create=True,
+               side_effect=AssertionError("top-level bit enumeration forbidden")):
+        view = IndexedTimingView(path)
+        try:
+            assert view.object_index[endpoint["object"]] == endpoint
+            for spelling in ["wide[999999999]", "wide__999999999"]:
+                assert view.object_index[spelling] == {
+                    "object": spelling, "instance": None, "port": "wide", "bit": 999999999}
+            assert view.object_index.get("wide__1000000000") is None
+            assert len(view.object_index.ports) == len(ir.value["ports"])
+        finally:
+            view.close()
 
 
 def test_compact_stream_preserves_exact_timing_netlist_and_endpoint_identity(tmp_path):

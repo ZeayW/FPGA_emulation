@@ -66,13 +66,49 @@ class _Objects:
     def __init__(self, view):
         self.view = view
         self.cache = OrderedDict()
+        # Keep only declared port metadata, not one object per port bit. Most
+        # queries are cell pins; scanning every top-level bus bit before the
+        # indexed cell lookup made importing each timing path unnecessarily
+        # proportional to the whole design's I/O width.
+        self.ports = {
+            port["id"]: (order, port["width"])
+            for order, port in enumerate(view.value["ports"])
+        }
+
+    def _top_level(self, name):
+        candidates = []
+        scalar = self.ports.get(name)
+        if scalar is not None and scalar[1] == 1:
+            candidates.append((scalar[0], name, 0))
+        for separator, closing in (("[", "]"), ("__", "")):
+            if closing and not name.endswith(closing):
+                continue
+            text = name[:-1] if closing else name
+            owner, found, digits = text.rpartition(separator)
+            port = self.ports.get(owner) if found else None
+            if port is None or port[1] <= 1:
+                continue
+            # The provider spelling is the canonical decimal bit, not a
+            # signed, padded, Unicode-digit, or otherwise guessed alias.
+            if (not digits or not digits.isascii() or not digits.isdecimal()
+                    or (len(digits) > 1 and digits[0] == "0")):
+                continue
+            if len(digits) > len(str(port[1] - 1)):
+                continue
+            bit = int(digits)
+            if bit < port[1]:
+                candidates.append((port[0], owner, bit))
+        if not candidates:
+            return None
+        # Retain the previous first-declared-port rule if a literal scalar
+        # port name overlaps another port's generated bus-bit spelling.
+        _, port, bit = min(candidates)
+        return {"object": name, "instance": None, "port": port, "bit": bit}
 
     def _canonical(self, name):
-        for port in self.view.value["ports"]:
-            for bit in range(port["width"]):
-                names = [port["id"]] if port["width"] == 1 else [f"{port['id']}[{bit}]", f"{port['id']}__{bit}"]
-                if name in names:
-                    return {"object": name, "instance": None, "port": port["id"], "bit": bit}
+        top_level = self._top_level(name)
+        if top_level is not None:
+            return top_level
         if "/" not in name:
             return None
         owner, scalar = name.rsplit("/", 1)
