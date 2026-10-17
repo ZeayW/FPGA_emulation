@@ -6622,14 +6622,16 @@ PIP instead of allocating a set for every PIP, and does not run the upstream
 pass again. This closes the case where the external router prints an overlap
 error but otherwise returns normally into expensive timing extraction.
 Policy-only
-Java qualification passed 20,066 policy checks, including history cleanup,
-gapped congestion and concurrent duplicate callbacks. Two actual XCVU19P
+Java qualification passed 20,070 policy checks, including history cleanup,
+gapped congestion, concurrent duplicate callbacks and cross-net PIP ownership.
+Two actual XCVU19P
 connectivity checks also passed the independent route certificate validator:
 fabric `DUAL_CY4` initialization retained `AX`, and dedicated `SINGLE_CY8`
 cascade initialization retained `CIN`. These are small physical-connectivity
-checks, not full-flow acceptance. Native requalification of the added PIP
-ownership guard and renewed large-design physical routing of v2 are pending;
-no large-design closure or QoR improvement is claimed yet.
+checks, not full-flow acceptance. The added PIP ownership guard passed the same
+native compilation and physical-connectivity checks. Renewed large-design
+physical routing of v2 is pending; no large-design closure or QoR improvement
+is claimed yet.
 Routed timing binds ordinary signal/clock nets to their mapped integer bits.
 Certified `GLOBAL_LOGIC1`/`static_vcc` and `GLOBAL_LOGIC0`/`static_gnd` nets are
 device-tied constants, not timed data endpoints. They remain in the route
