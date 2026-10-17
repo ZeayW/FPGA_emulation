@@ -624,10 +624,11 @@ the provider-neutral planning aliases (`bram=bram36k`,
 eight-LUT slice structure because the open Xilinx mapper reports native CARRY8
 cells as a separate resource dimension. This keeps Phase 1 capacity checks and Phase 7 physical resource
 accounting on one public inventory instead of treating a mapped BRAM design as
-having an unknown resource class. Blind holdout comparison reads the Phase 3
-planning keys (`bram` and `dsp`) and compares them with PPro's BRAM36 and DSP48
-metrics as explicit diagnostics; it does not silently replace missing planning
-keys with zero-valued native-inventory aliases. Those hard-resource differences
+having an unknown resource class. Blind holdout comparison normalizes Phase 3's
+native `bram18k`/`dsp48` demand and historical `bram`/`dsp` planning keys to
+PPro's BRAM36-equivalent and DSP48 metrics as explicit diagnostics. Agreeing
+aliases count once; missing historical keys never turn native demand into
+zero. Those hard-resource differences
 are not a platform-promotion gate because PPro and the open Xilinx Yosys
 frontend still use different synthesis and inference policies. Forced BRAM/DSP/URAM
 microbenchmarks independently certify hard-resource units and capacity. The

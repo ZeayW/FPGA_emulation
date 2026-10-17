@@ -71,9 +71,9 @@ def _public_capacities(prior: Mapping[str, Any]) -> Dict[str, int]:
         "lut": lut,
         "ff": int(math.floor(resources["clb_ff"])),
         "bram18k": bram18k,
-        # Phase 3 reports provider-neutral BRAM36/DSP planning demand. Keep
-        # those aliases beside the native Xilinx resource names so Phase 1 and
-        # the RapidWright physical backend use one capacity inventory.
+        # Retain historical BRAM36/DSP planning aliases beside the current
+        # mapper's native Xilinx resource names. They describe one inventory,
+        # not additional capacity pools.
         "bram": bram18k // 2,
         "uram288": int(math.floor(resources["uram_kib"] / 288.0)),
         "dsp48": dsp48,
