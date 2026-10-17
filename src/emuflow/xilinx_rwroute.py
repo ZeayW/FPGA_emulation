@@ -11,7 +11,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Set, Tuple
 
@@ -778,12 +778,13 @@ def validate_xilinx_route_db(
         if not isinstance(top, str):
             raise ValidationError("PackedSiteNetlist top is invalid")
         mapped_cells = _select_module(mapped, top)["cells"]
-        expected_lut6_2 = sum(
-            cell.get("type") == "LUT6_2" for cell in mapped_cells.values()
+        count_types = getattr(mapped_cells, "type_counts", None)
+        primitive_counts = (
+            count_types() if callable(count_types)
+            else Counter(cell.get("type") for cell in mapped_cells.values())
         )
-        expected_dsp48e2 = sum(
-            cell.get("type") == "DSP48E2" for cell in mapped_cells.values()
-        )
+        expected_lut6_2 = primitive_counts.get("LUT6_2", 0)
+        expected_dsp48e2 = primitive_counts.get("DSP48E2", 0)
         expected_route_cells = len(mapped_cells) + expected_lut6_2
         if route_cells != expected_route_cells:
             raise ValidationError("XilinxRouteDB route-cell accounting disagrees")

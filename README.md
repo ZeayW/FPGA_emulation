@@ -6670,6 +6670,10 @@ distinct PIPs can still short different nets through one shared node. It
 claims nodes while already scanning each net's pins and PIPs, with bounded
 per-net state and SQLite-backed global ownership for large certificates; it
 does not rescan the circuit or trust a router's diagnostic-only overlap count.
+Materialized-cell accounting uses the mapped SQLite index's aggregate type
+counts; counting LUT6_2 and DSP48E2 primitives must not decode every cell's
+parameters, RAM contents and connectivity again. Explicit in-memory fixtures
+retain the same count checks without changing the route-certificate schema.
 The adapter
 has an explicit `EmuFlowRWRouteFailureBoundaryCheck` qualification: a two-cell
 device fixture deliberately exhausts a one-step budget and must throw before

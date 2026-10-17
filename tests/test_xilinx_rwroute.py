@@ -6,6 +6,7 @@ import unittest
 import io
 import runpy
 import sys
+import sqlite3
 from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
@@ -13,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
+from emuflow.xilinx_netlist import _IndexedRecords
 from emuflow.xilinx_rwroute import (
     _PipOwnership,
     _rwroute_heap_argument,
@@ -33,6 +35,69 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_route_materialization_counts_use_sql_not_cell_payloads(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped_path = root / "mapped.sqlite"
+            connection = sqlite3.connect(mapped_path)
+            try:
+                # Projection fixture: use the real indexed record consumer,
+                # without manufacturing a full-circuit Python object graph.
+                connection.execute(
+                    "CREATE TABLE cells(seq INTEGER PRIMARY KEY,id TEXT,type TEXT,record_json TEXT)"
+                )
+                connection.executemany(
+                    "INSERT INTO cells VALUES (?,?,?,?)",
+                    [
+                        (i, f"c{i}", kind, json.dumps({"type": kind}))
+                        for i, kind in enumerate(("LUT6", "LUT6_2", "DSP48E2"))
+                    ],
+                )
+                connection.commit()
+                cells = _IndexedRecords(connection, "cells")
+                mapped = {"modules": {"top": {"cells": cells}}}
+                packed = {"top": "top"}
+                packed_path = root / "packed.json"
+                packed_path.write_text(json.dumps(packed))
+                value = self._route()
+                value["cells"] = 4
+                value["materialization"].update(
+                    route_cells=4, physical_cells=11, transformed_dsp48e2_cells=1,
+                )
+                value["source"]["mapped_sha256"] = hashlib.sha256(mapped_path.read_bytes()).hexdigest()
+                value["source"]["packed_sha256"] = hashlib.sha256(packed_path.read_bytes()).hexdigest()
+                path = root / "route.json"
+                path.write_text(json.dumps(value))
+                statements = []
+                connection.set_trace_callback(statements.append)
+                with patch.object(cells, "values", side_effect=AssertionError("full-cell decoding forbidden")):
+                    report = validate_xilinx_route_db(
+                        path, mapped_path=mapped_path, packed_path=packed_path,
+                        mapped_value=mapped, packed_value=packed,
+                    )
+                    for route_cells, dsps, message in (
+                        (3, 1, "route-cell accounting disagrees"),
+                        (4, 0, "DSP48E2 transform count disagrees"),
+                    ):
+                        with self.subTest(route_cells=route_cells, dsps=dsps):
+                            value["cells"] = route_cells
+                            value["materialization"].update(
+                                route_cells=route_cells,
+                                physical_cells=route_cells + 7 * dsps,
+                                transformed_dsp48e2_cells=dsps,
+                            )
+                            path.write_text(json.dumps(value))
+                            with self.assertRaisesRegex(ValidationError, message):
+                                validate_xilinx_route_db(
+                                    path, mapped_path=mapped_path, packed_path=packed_path,
+                                    mapped_value=mapped, packed_value=packed,
+                                )
+                self.assertEqual(report["status"], "pass")
+                self.assertTrue(any("SELECT type,count(*)" in sql for sql in statements))
+                self.assertFalse(any("record_json" in sql for sql in statements))
+            finally:
+                connection.close()
+
     def test_configured_heap_reaches_the_actual_subprocess_command(self):
         import subprocess
 
