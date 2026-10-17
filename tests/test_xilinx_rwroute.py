@@ -513,6 +513,54 @@ class XilinxRWRouteTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 validate_xilinx_route_db(path)
 
+    def test_distinct_pips_cannot_short_different_nets_through_one_node(self):
+        # A shared branch wire, driver wire, or sink wire is illegal even
+        # when every programmable switch has a different physical identity.
+        for shared_node in (None, "A", "X", "B"):
+            for streamed in (False, True):
+                with self.subTest(shared_node=shared_node, streamed=streamed):
+                    value = self._route()
+                    other = copy.deepcopy(value["nets"][0])
+                    other["net"] = "n2"
+
+                    def node(name):
+                        return name if name == shared_node else name + "2"
+
+                    for pin in other["pins"]:
+                        pin["node"] = node(pin["node"])
+                        pin["site"] += "2"
+                    for pip in other["pips"]:
+                        pip["tile"] += "2"
+                        pip["start_node"] = node(pip["start_node"])
+                        pip["end_node"] = node(pip["end_node"])
+                    value["nets"].append(other)
+                    value["summary"].update(
+                        candidate_nets=2, certificate_nets=2,
+                        nets_with_pips=2, pips=6,
+                    )
+                    value["timing"]["routed_endpoints"] = 4
+                    with tempfile.TemporaryDirectory() as temporary:
+                        root = Path(temporary)
+                        if streamed:
+                            path, _, _ = self._stream_route(root, value)
+                        else:
+                            path = root / "route.json"
+                            path.write_text(json.dumps(value))
+                        if shared_node is None:
+                            self.assertEqual(validate_xilinx_route_db(path)["status"], "pass")
+                        else:
+                            with self.assertRaisesRegex(ValidationError, "routing conflict.*node"):
+                                validate_xilinx_route_db(path)
+
+    def test_sqlite_route_node_ownership_rejects_cross_net_short(self):
+        owner = _PipOwnership(250001, resource="route node")
+        try:
+            owner.claim_many([("", "node-a", ""), ("", "node-b", "")], "n1")
+            with self.assertRaisesRegex(ValidationError, "routing conflict.*node"):
+                owner.claim_many([("", "node-b", "")], "n2")
+        finally:
+            owner.close()
+
     def test_checker_rejects_missing_or_tampered_timing(self):
         value = self._route()
         with tempfile.TemporaryDirectory() as temporary:

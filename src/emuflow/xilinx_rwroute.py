@@ -265,9 +265,10 @@ def iter_xilinx_route_nets(
 
 
 class _PipOwnership:
-    """Bounded-memory global PIP ownership checker."""
+    """Bounded-memory ownership of one physical-resource namespace."""
 
-    def __init__(self, expected_pips: int) -> None:
+    def __init__(self, expected_pips: int, *, resource: str = "PIP") -> None:
+        self._resource = resource
         self.count = 0
         self._memory: Optional[Dict[Tuple[str, str, str], str]] = (
             {} if expected_pips <= 250_000 else None
@@ -299,7 +300,7 @@ class _PipOwnership:
             for key in (record[:3] for record in records):
                 previous = self._memory.get(key)
                 if previous is not None and previous != net_name:
-                    raise ValidationError(f"routing conflict on PIP {key}")
+                    raise ValidationError(f"routing conflict on {self._resource} {key}")
                 self._memory[key] = net_name
             self.count = len(self._memory)
             return
@@ -312,7 +313,7 @@ class _PipOwnership:
         except sqlite3.IntegrityError as error:
             self._database.rollback()
             raise ValidationError(
-                f"routing conflict while claiming PIPs for {net_name!r}"
+                f"routing conflict while claiming {self._resource}s for {net_name!r}"
             ) from error
         self.count += self._database.total_changes - before
 
@@ -806,6 +807,11 @@ def validate_xilinx_route_db(
     ):
         raise ValidationError("XilinxRouteDB summary PIP count is invalid")
     used_pips = _PipOwnership(expected_pips)
+    # Distinct switches can connect different nets to the same physical wire
+    # node. PIP uniqueness alone cannot certify absence of an electrical short.
+    # Claim nodes during the existing per-net pass; large ownership tables
+    # spill to the same bounded SQLite mechanism, not a second circuit graph.
+    used_nodes = _PipOwnership(2 * expected_pips, resource="route node")
     seen_nets: Set[str] = set()
     checked_nets = 0
     checked_sinks = 0
@@ -944,6 +950,8 @@ def validate_xilinx_route_db(
             )
         graph: Dict[str, Set[str]] = defaultdict(set)
         local_pips: Set[Tuple[str, str, str]] = set()
+        local_nodes = set(source_nodes)
+        local_nodes.update(pin["node"] for pin in sinks)
         for pip_index, pip in enumerate(pips):
             if not isinstance(pip, dict):
                 raise ValidationError(f"{context}.pips[{pip_index}]: invalid PIP")
@@ -964,7 +972,10 @@ def validate_xilinx_route_db(
                 raise ValidationError(f"{context}: duplicate PIP {key}")
             local_pips.add(key)
             graph[start].add(end)
+            local_nodes.add(start)
+            local_nodes.add(end)
         used_pips.claim_many(local_pips, net_name)
+        used_nodes.claim_many((("", node, "") for node in local_nodes), net_name)
         if pips:
             nets_with_pips += 1
         reachable = set(source_nodes)
@@ -1095,6 +1106,7 @@ def validate_xilinx_route_db(
         "clock_nets": clock_nets,
     }
     used_pips.close()
+    used_nodes.close()
     if all(path is not None for path in expected_paths.values()):
         # These digests were checked against the supplied source paths above.
         # Returning the seal lets the immediately following timing binder

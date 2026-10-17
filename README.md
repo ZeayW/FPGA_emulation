@@ -6661,6 +6661,12 @@ routes must not proceed to device timing or a large route certificate.
 This constant-size failure summary uses the router's
 existing connection state; it does not replace the independent complete
 reachability, PIP-conflict, static-net and physical timing checks. The adapter
+validator also checks unique ownership of physical wire nodes across nets:
+distinct PIPs can still short different nets through one shared node. It
+claims nodes while already scanning each net's pins and PIPs, with bounded
+per-net state and SQLite-backed global ownership for large certificates; it
+does not rescan the circuit or trust a router's diagnostic-only overlap count.
+The adapter
 has an explicit `EmuFlowRWRouteFailureBoundaryCheck` qualification: a two-cell
 device fixture deliberately exhausts a one-step budget and must throw before
 direct-routing postprocessing or statistics. This is a failure-path check,
