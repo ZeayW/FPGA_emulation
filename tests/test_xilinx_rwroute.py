@@ -469,6 +469,13 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertGreaterEqual(source.count("Files.newBufferedReader(inputPath"), 2)
         self.assertNotIn("Map<String, List<String[]>> pinRows", source)
 
+    def test_rapidwright_heap_override_is_bounded_java_size(self):
+        source = (
+            Path(__file__).parents[1] / "src/emuflow/xilinx_rwroute.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('EMUFLOW_RAPIDWRIGHT_MAX_HEAP", "32g"', source)
+        self.assertIn('f"-Xmx{maximum_heap}"', source)
+
     def test_checker_requires_explicit_boundary_clock_qualification(self):
         value = self._route()
         value["excluded_nets"] = [{

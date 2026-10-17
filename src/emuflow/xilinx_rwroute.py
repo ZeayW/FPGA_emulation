@@ -854,8 +854,13 @@ def run_rwroute(
         )
         if completed.returncode != 0:
             raise ValidationError("RWRoute adapter compilation failed:\n" + completed.stdout[-8000:])
+    maximum_heap = os.environ.get("EMUFLOW_RAPIDWRIGHT_MAX_HEAP", "32g")
+    if re.fullmatch(r"[1-9][0-9]*[gGmM]", maximum_heap) is None:
+        raise ValidationError(
+            "EMUFLOW_RAPIDWRIGHT_MAX_HEAP must be a positive Java g/m size"
+        )
     command = [
-        str(java), "-Xmx32g", f"-Duser.home={runtime_home}",
+        str(java), f"-Xmx{maximum_heap}", f"-Duser.home={runtime_home}",
         "-cp", f"{classes_dir}:{rapidwright_jar}",
         "EmuFlowRWRoute", str(input_path), str(output_path),
         RAPIDWRIGHT_TIMING_DATA_REVISION,
