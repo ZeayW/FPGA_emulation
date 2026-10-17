@@ -45,6 +45,8 @@ from .xilinx_packing import (
     LUT_TYPES,
     PACKED_SITE_NETLIST_SCHEMA,
     _derive_cascade_chains,
+    SLICE_MUX_SELECT_PINS,
+    _validate_slice_mux_ff_inputs,
 )
 from .xilinx_physical_macros import build_xilinx_physical_macro_contract
 from .xilinx_netlist import is_xilinx_mapped_index
@@ -1328,7 +1330,7 @@ def legalize_xilinx_openparf_ff_control_sets(
     *,
     mapped_value: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Repair only native FF slots that violate UltraScale+ control sets.
+    """Repair native FF control sets and shared MUX-select/data inputs.
 
     OpenPARF's generic direct legalizer models FF capacity but not the shared
     CK/SR and lane-local CE wires of an UltraScale+ half-slice.  Preserve every
@@ -1385,6 +1387,36 @@ def legalize_xilinx_openparf_ff_control_sets(
         if atom.get("resource") == "CARRY8"
     }
 
+    mux_inputs: Dict[Tuple[int, int], Dict[str, Any]] = defaultdict(dict)
+    for name, atom in atoms.items():
+        if atom.get("resource") not in _MUX_RESOURCES:
+            continue
+        x, y, z = raw[name]
+        roles = _MUX_BELS[atom["cell_type"]]
+        if not 0 <= z < len(roles):
+            raise ValidationError("OpenPARF MUX placement uses an invalid BEL slot")
+        instance = atom["instance"]
+        projected = getattr(cells, "packing_records", None)
+        cell = (projected([instance])[instance] if callable(projected)
+                else cells[instance])
+        bit = _pin_bit(cell, "S")
+        if bit is not None:
+            mux_inputs[(x, y)][SLICE_MUX_SELECT_PINS[roles[z]]] = bit
+
+    def mux_compatible(name: str, coordinate: Tuple[int, int], z: int) -> bool:
+        if z % 2:  # FF2 data has its own A_I..H_I input.
+            return True
+        pin = "ABCDEFGH"[z // 2] + "X"
+        select = mux_inputs.get(coordinate, {}).get(pin)
+        if select is None:
+            return True
+        instance = atoms[name]["instance"]
+        projected = getattr(cells, "packing_records", None)
+        cell = (projected([instance])[instance] if callable(projected)
+                else cells[instance])
+        data = _pin_bit(cell, "D")
+        return data is None or data == select
+
     ff_by_half: Dict[Tuple[int, int, int], List[str]] = defaultdict(list)
     for name, atom in atoms.items():
         if atom.get("resource") != "FF":
@@ -1430,7 +1462,8 @@ def legalize_xilinx_openparf_ff_control_sets(
                 atom["cell_type"], cells[atom["instance"]]
             )
             z = raw[name][2]
-            if (clock, sr) == signature and lane_enable.get(z % 2) == enable:
+            if ((clock, sr) == signature and lane_enable.get(z % 2) == enable
+                    and mux_compatible(name, half_key[:2], z)):
                 state["occupied"].add(z)
             else:
                 moved.append(name)
@@ -1440,7 +1473,7 @@ def legalize_xilinx_openparf_ff_control_sets(
 
     def candidate_at(
         coordinate: Tuple[int, int], half: int, signature: Tuple[Any, Any],
-        enable: Any, preferred_lane: int,
+        enable: Any, preferred_lane: int, name: str,
     ) -> Optional[int]:
         if coordinate in exclusive_sites:
             return None
@@ -1456,7 +1489,8 @@ def legalize_xilinx_openparf_ff_control_sets(
             if lane_control not in {None, enable}:
                 continue
             slots = [half * 8 + lane + 2 * offset for offset in range(4)]
-            free = next((slot for slot in slots if slot not in state["occupied"]), None)
+            free = next((slot for slot in slots if slot not in state["occupied"]
+                         and mux_compatible(name, coordinate, slot)), None)
             if free is None:
                 continue
             state["signature"] = signature
@@ -1497,7 +1531,7 @@ def legalize_xilinx_openparf_ff_control_sets(
                     for half in (original_half, 1 - original_half):
                         z = candidate_at(
                             coordinate, half, (clock, sr), enable,
-                            origin_z % 2,
+                            origin_z % 2, name,
                         )
                         if z is not None:
                             assigned = (coordinate[0], coordinate[1], z)
@@ -1530,7 +1564,7 @@ def legalize_xilinx_openparf_ff_control_sets(
     report = {
         "schema": OPENPARF_FF_CONTROL_LEGALIZATION_SCHEMA,
         "status": "pass",
-        "provider": "nearest-compatible-ultrascaleplus-half-slice-v1",
+        "provider": "nearest-compatible-ultrascaleplus-half-slice-input-v2",
         "placement_before_sha256": before_sha256,
         "placement_after_sha256": _sha256(placement_path),
         "ff_atoms": sum(atom.get("resource") == "FF" for atom in atoms.values()),
@@ -4905,6 +4939,12 @@ def validate_xilinx_openparf_atomic_placement(
             )
         half_cksr: Dict[int, Tuple[Any, Any]] = {}
         quarter_ce: Dict[Tuple[int, int], Any] = {}
+        if (any(item["cell_type"] in _MUX_RESOURCES for item in items)
+                and any(item["resource"] == "FF" for item in items)):
+            projected = getattr(cells, "packing_records", None)
+            input_cells = (projected([item["instance"] for item in items])
+                           if callable(projected) else cells)
+            _validate_slice_mux_ff_inputs(input_cells, items)
         for item in items:
             if item["resource"] != "FF":
                 continue

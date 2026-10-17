@@ -1560,6 +1560,44 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 placement, output / "name_map.json", mapped, architecture
             )
 
+    def test_mux_select_conflict_moves_only_primary_ff(self):
+        for data, expected_moved in ((20, 0), (21, 1)):
+            with self.subTest(data=data), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                placement, name_map = root / "native.pl", root / "names.json"
+                placement.write_text("f0 0 0 0\nf1 0 0 1\nm0 0 0 0\n")
+                name_map.write_text(json.dumps({
+                    "schema": atomic_adapter.OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
+                    "top": "top",
+                }))
+                cells = {
+                    "ff": _cell("FDPE", {"C": [10], "CE": ["1"], "PRE": ["0"],
+                                           "D": [data], "Q": [30]}),
+                    "ff2": _cell("FDPE", {"C": [10], "CE": ["1"], "PRE": ["0"],
+                                            "D": [22], "Q": [31]}),
+                    "mux": _cell("MUXF7", {"S": [20]}),
+                }
+                atoms = {
+                    "f0": {"instance": "ff", "cell_type": "FDPE", "resource": "FF"},
+                    "f1": {"instance": "ff2", "cell_type": "FDPE", "resource": "FF"},
+                    "m0": {"instance": "mux", "cell_type": "MUXF7", "resource": "MUXF7"},
+                }
+                site = {"dense_x": 0, "dense_y": 0, "resources": {"FF": 16},
+                        "physical_sites": {"FF": ["SLICE_X0Y0"]}}
+                with mock.patch.object(atomic_adapter, "_load_atomic_name_atoms", return_value=atoms), \
+                     mock.patch.object(atomic_adapter, "load_xilinx_openparf_atomic_sites", return_value=[site]):
+                    report = legalize_xilinx_openparf_ff_control_sets(
+                        placement, name_map, root / "unused-mapped.json", root / "report.json",
+                        mapped_value={"modules": {"top": {"cells": cells}}},
+                    )
+                self.assertEqual(report["moved_ff_atoms"], expected_moved)
+                rows = {p[0]: p[1:] for line in placement.read_text().splitlines()
+                        if (p := line.split())}
+                self.assertEqual(rows["m0"], ["0", "0", "0"])
+                self.assertEqual(rows["f1"], ["0", "0", "1"])
+                if expected_moved:
+                    self.assertEqual(rows["f0"], ["0", "0", "2"])
+
     def test_relative_hard_and_coordinate_ambiguity_fail_before_export(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

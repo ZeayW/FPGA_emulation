@@ -6343,14 +6343,22 @@ and records the moved count and Manhattan distance in
 `ff-control-set-legalization.json`. The independent importer then rechecks all
 site/BEL occupancy and exact control-set legality before RWRoute. In
 particular, FDCE/FDPE use their real `CLR`/`PRE` ports; absent-port aliases are
-never treated as common controls. Sparse DLA partitions are admitted to the
+never treated as common controls.
 An actual NVDLA native-placement continuation exposed a separate slice-input
-legality gap: a placed MUXF7 select and an unrelated FF data input claimed the
-same AX site pin. This is not a CARRY or storage failure. Its final physical
-and global timing gates remain incomplete. The offline
-`scripts/rapidwright/EmuFlowSliceInputCheck.java` probe inspects the pinned
-device/library's MUX-select and FF-data site-pin mappings before extending
-the legality model; it is not routing or full-flow qualification evidence.
+legality gap: a placed MUXF7 select and an unrelated primary FF data input
+claimed the same AX site pin. This is not a CARRY or storage failure. The
+pinned-device/library probe
+`scripts/rapidwright/EmuFlowSliceInputCheck.java` confirmed all seven MUX
+select mappings and sixteen FF data mappings: primary FF inputs share
+AX..HX with the corresponding MUX select; FF2 uses separate A_I..H_I inputs.
+The FF-only legality pass now also moves these incompatible primary FFs,
+preserves same-net sharing and unaffected FF2/non-FF placement, and checks
+the rule independently at native import and packing/bridge validation. The
+indexed checker projects only scalar MUX S and FF D connectivity alongside
+its existing per-site facts; no full-cell JSON is required for this check.
+The probe passed on the pinned device in 4.65 seconds; this is mapping
+qualification only, not a complete physical or global timing pass. Real
+NVDLA repaired-placement/routing and final global timing remain pending.
 Sparse DLA partitions are admitted to the
 smallest contiguous SLR
 window that preserves 1.5x resource headroom, instead of being spread over all

@@ -95,8 +95,8 @@ class _IndexedRecords(MappingABC[str, Mapping[str, Any]]):
                 "FROM cells c JOIN cell_pins p ON p.cell_seq=c.seq "
                 f"WHERE c.id IN ({placeholders}) AND ("
                 "(c.type IN ('FDCE','FDPE','FDRE','FDSE') "
-                "AND p.port IN ('C','CE','CLR','R','PRE','S')) OR "
-                "(c.type IN ('MUXF7','MUXF8','MUXF9') AND p.port IN ('I0','I1')) OR "
+                "AND p.port IN ('C','CE','CLR','R','PRE','S','D')) OR "
+                "(c.type IN ('MUXF7','MUXF8','MUXF9') AND p.port IN ('I0','I1','S')) OR "
                 "(c.type='CARRY8' AND p.port IN ('DI','S'))) "
                 "ORDER BY c.seq,p.pin_seq", batch,
             ):

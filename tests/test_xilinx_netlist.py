@@ -21,6 +21,26 @@ from tests.test_xilinx_packing import add_carry, cell
 
 
 class XilinxMappedNetlistTests(unittest.TestCase):
+    def test_shared_slice_input_projection_keeps_exact_mux_and_ff_nets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped = root / "source.json"
+            mapped.write_text(json.dumps({"modules": {"top": {"cells": {
+                "mux": cell("MUXF7", {"I0": [1], "I1": [2], "S": [30], "O": [3]}),
+                "ff": cell("FDPE", {"C": [4], "CE": ["1"], "PRE": ["0"],
+                                    "D": [31], "Q": [5]}),
+            }, "attributes": {"top": "1"}}}}))
+            source, index = root / "source.sqlite", root / "mapped.sqlite"
+            import_yosys_json(mapped).save(source)
+            emit_xilinx_mapped_index(source, index)
+            with open_xilinx_mapped_index(index) as indexed, mock.patch.object(
+                type(indexed.cells), "__getitem__",
+                side_effect=AssertionError("whole cell deserialization"),
+            ):
+                view = indexed.cells.packing_records(["mux", "ff"])
+                self.assertEqual(view["mux"]["connections"]["S"], [30])
+                self.assertEqual(view["ff"]["connections"]["D"], [31])
+
     def test_indexed_packing_checker_projects_only_site_facts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

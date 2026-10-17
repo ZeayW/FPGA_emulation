@@ -125,6 +125,58 @@ def _ff_control_set(cell: Mapping[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+SLICE_MUX_SELECT_PINS = {
+    "F7MUX_AB": "AX", "F7MUX_CD": "CX",
+    "F7MUX_EF": "EX", "F7MUX_GH": "GX",
+    "F8MUX_BOT": "BX", "F8MUX_TOP": "FX", "F9MUX": "DX",
+}
+
+
+def _slice_mux_input_nets(
+    cells: Mapping[str, Any], assignments: Sequence[Mapping[str, Any]]
+) -> Dict[str, Tuple[Any, ...]]:
+    """The pinned UltraScale+ device shares MUX S with the primary FF D.
+
+    Secondary FF2 data uses A_I..H_I, not AX..HX. Keep the physical
+    mappings explicit; treating both FF lanes as sharing X is incorrect.
+    """
+    result: Dict[str, Tuple[Any, ...]] = {}
+    for item in assignments:
+        name, bel = item.get("instance"), item.get("bel")
+        if name not in cells or cells[name].get("type") not in MUX_TYPES:
+            continue
+        pin = SLICE_MUX_SELECT_PINS.get(bel)
+        if pin is None:
+            continue  # BEL/type legality is checked by the caller.
+        bits = _bits(cells[name], "S")
+        if bits:
+            if len(bits) != 1:
+                raise ValidationError("slice MUX select is not scalar")
+            previous = result.setdefault(pin, bits)
+            if previous != bits:
+                raise ValidationError("slice MUX select site pin is multiply driven")
+    return result
+
+
+def _validate_slice_mux_ff_inputs(
+    cells: Mapping[str, Any], assignments: Sequence[Mapping[str, Any]]
+) -> None:
+    shared = _slice_mux_input_nets(cells, assignments)
+    if not shared:
+        return
+    for item in assignments:
+        name, bel = item.get("instance"), item.get("bel")
+        if (name not in cells or cells[name].get("type") not in FF_TYPES
+                or bel not in SLICE_FF_BELS or bel.endswith("FF2")):
+            continue
+        select = shared.get(bel[0] + "X")
+        data = _bits(cells[name], "D")
+        if select is not None and data and data != select:
+            raise ValidationError(
+                f"slice MUX select/FF data conflict on {bel[0]}X: {name!r}"
+            )
+
+
 def _slice_ff_control_sets(
     cells: Mapping[str, Any], assignments: Sequence[Mapping[str, Any]]
 ) -> List[str]:
@@ -137,6 +189,7 @@ def _slice_ff_control_sets(
     independent PackedSiteNetlist checker cannot drift apart.
     """
 
+    _validate_slice_mux_ff_inputs(cells, assignments)
     half_cksr: Dict[int, Tuple[Any, ...]] = {}
     lane_ce: Dict[Tuple[int, int], Tuple[Any, ...]] = {}
     control_sets = set()

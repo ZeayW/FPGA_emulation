@@ -9,6 +9,8 @@ from emuflow.xilinx_packing import (
     exhaustive_minimum_slice_count,
     pack_xilinx_sites,
     validate_xilinx_packing,
+    SLICE_MUX_SELECT_PINS,
+    _validate_slice_mux_ff_inputs,
 )
 
 
@@ -43,6 +45,22 @@ def add_carry(cells, name, *, ci, co, net_base):
 
 
 class XilinxPackingTest(unittest.TestCase):
+    def test_mux_select_shares_primary_but_not_secondary_ff_input(self):
+        for mux_bel, pin in SLICE_MUX_SELECT_PINS.items():
+            mux_type = ("MUXF7" if mux_bel.startswith("F7") else
+                        "MUXF8" if mux_bel.startswith("F8") else "MUXF9")
+            cells = {"mux": cell(mux_type, {"S": [20]}),
+                     "ff": cell("FDPE", {"D": [21]})}
+            assignments = [{"instance": "mux", "bel": mux_bel},
+                           {"instance": "ff", "bel": pin[0] + "FF"}]
+            with self.assertRaisesRegex(ValidationError, "MUX select/FF data conflict"):
+                _validate_slice_mux_ff_inputs(cells, assignments)
+            assignments[1]["bel"] += "2"
+            _validate_slice_mux_ff_inputs(cells, assignments)
+            assignments[1]["bel"] = pin[0] + "FF"
+            cells["ff"]["connections"]["D"] = [20]
+            _validate_slice_mux_ff_inputs(cells, assignments)
+
     def _mapped(self):
         cells = {
             f"lut{i}": cell("LUT6", {"I0": [100 + i], "O": [200 + i]})
