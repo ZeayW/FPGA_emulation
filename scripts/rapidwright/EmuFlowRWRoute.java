@@ -416,21 +416,25 @@ public final class EmuFlowRWRoute {
             System.out.println("INFO: No PIP overlaps");
         }
 
-        public static Design routeDesignWithUserDefinedArguments(Design design, String[] args) {
-            RWRouteConfig config = new RWRouteConfig(args);
-            AdaptiveBoundingBoxCUFR router = new AdaptiveBoundingBoxCUFR(design, config);
-            Design routed = routeDesign(router);
+        @Override
+        public void routeIndirectConnectionsIteratively() {
+            super.routeIndirectConnectionsIteratively();
             long unrouted = 0, congested = 0;
-            for (Connection connection : router.sortedIndirectConnections) {
+            for (Connection connection : sortedIndirectConnections) {
                 if (!connection.isRouted()) unrouted++;
                 else if (connection.isCongested()) congested++;
             }
-            // This is a bounded view of the router's existing connection state,
-            // not a second PIP audit. The independent full certificate checker
-            // remains the authority, but an already-invalid route must never
-            // build a device timing model or emit a graph-sized certificate.
+            // Upstream routeDesign() also performs postprocessing and expensive
+            // node/wirelength statistics before returning. Reject exhaustion at
+            // the iterative-routing boundary, not after that outer call. Read
+            // existing connection state only; do not repeat a full PIP audit.
             requireNoPendingIndirectConnections(unrouted, congested);
-            return routed;
+        }
+
+        public static Design routeDesignWithUserDefinedArguments(Design design, String[] args) {
+            RWRouteConfig config = new RWRouteConfig(args);
+            AdaptiveBoundingBoxCUFR router = new AdaptiveBoundingBoxCUFR(design, config);
+            return routeDesign(router);
         }
     }
 

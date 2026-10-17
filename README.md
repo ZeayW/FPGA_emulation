@@ -6653,8 +6653,12 @@ preserving CUFR's original parallel decomposition, rather than rebuilding the
 tree around enlarged connections or using the upstream blanket adaptive mode
 that enlarges every congested connection.
 The adapter rejects a router result that still has unrouted or congested
-indirect connections before constructing the device timing model or writing a
-large route certificate. This constant-size failure summary uses the router's
+indirect connections immediately when iterative routing returns, before
+upstream postprocessing and node/wirelength statistics, not merely after the
+outer `routeDesign()` call. The latter is too late: an exhausted GEMM attempt
+still entered expensive statistics with two conflicting route nodes. Failed
+routes must not proceed to device timing or a large route certificate.
+This constant-size failure summary uses the router's
 existing connection state; it does not replace the independent complete
 reachability, PIP-conflict, static-net and physical timing checks. The adapter
 also replaces upstream's diagnostic-only PIP-usage pass with an immediate

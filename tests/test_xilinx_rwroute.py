@@ -167,6 +167,13 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertIn("congestionHistory.shouldExpand(connection, routeIteration)", source)
         self.assertIn("congestionHistory.pruneBefore(routeIteration - 1)", source)
         self.assertIn("requireNoPendingIndirectConnections(unrouted, congested)", source)
+        iteration_hook = source.split(
+            "public void routeIndirectConnectionsIteratively() {", 1
+        )[1].split("public static Design routeDesignWithUserDefinedArguments", 1)[0]
+        self.assertIn("super.routeIndirectConnectionsIteratively();", iteration_hook)
+        self.assertIn("for (Connection connection : sortedIndirectConnections)", iteration_hook)
+        self.assertIn("requireNoPendingIndirectConnections(unrouted, congested);", iteration_hook)
+        self.assertNotIn("Design routed = routeDesign(router);", source)
         self.assertIn("protected void checkPIPsUsage()", source)
         self.assertIn("claimPhysicalPip(owners, pip, net)", source)
         self.assertNotIn("super.checkPIPsUsage()", source)
