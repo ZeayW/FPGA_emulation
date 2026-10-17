@@ -313,12 +313,10 @@ public final class EmuFlowRWRoute {
                 Set<Node> visited = new HashSet<>();
                 queue.add(new NodeDepth(intNode, 0));
                 visited.add(intNode);
-                List<Node> candidates = new ArrayList<>();
-                int candidateDepth = Integer.MAX_VALUE;
+                Map<Node, Integer> candidates = new HashMap<>();
                 while (!queue.isEmpty()) {
                     NodeDepth current = queue.removeFirst();
-                    if (current.depth >= candidateDepth
-                        || current.depth >= MAX_LCB_SEARCH_DEPTH) {
+                    if (current.depth >= MAX_LCB_SEARCH_DEPTH) {
                         continue;
                     }
                     for (Node uphill : current.node.getAllUphillNodes()) {
@@ -328,9 +326,8 @@ public final class EmuFlowRWRoute {
                         }
                         int depth = current.depth + 1;
                         if (uphill.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF) {
-                            candidateDepth = depth;
-                            candidates.add(uphill);
-                        } else if (depth < candidateDepth) {
+                            candidates.merge(uphill, depth, Math::min);
+                        } else {
                             queue.addLast(new NodeDepth(uphill, depth));
                         }
                     }
@@ -341,15 +338,17 @@ public final class EmuFlowRWRoute {
                         + " uphill hops of " + pin
                     );
                 }
-                candidates.sort(
+                List<Node> orderedCandidates = new ArrayList<>(candidates.keySet());
+                orderedCandidates.sort(
                     Comparator
                         .comparingInt((Node node) ->
                             usedLCBs.contains(node)
                             || status.apply(node) == NodeStatus.INUSE ? 0 : 1
                         )
+                        .thenComparingInt(candidates::get)
                         .thenComparing(Node::toString)
                 );
-                Node selected = candidates.get(0);
+                Node selected = orderedCandidates.get(0);
                 RouteNode routeNode = new RouteNode(
                     selected.getTile(), selected.getWireIndex()
                 );
