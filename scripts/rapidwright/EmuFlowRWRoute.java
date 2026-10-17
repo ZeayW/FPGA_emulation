@@ -939,7 +939,8 @@ public final class EmuFlowRWRoute {
                     row[4] + "/" + row[5], "INIT", "4'h8"
                 );
                 cell = design.createAndPlaceCell(
-                    safeName, Unisim.BUFG, site.getName() + "/BUFCE"
+                    safeName, Unisim.BUFGCE, site.getName() + "/BUFCE",
+                    "CE_TYPE", "ASYNC"
                 );
                 prefilterNet = "__emuflow_clock_prefilter_" + safeName;
             } else {
@@ -1222,8 +1223,10 @@ public final class EmuFlowRWRoute {
             Net internal = design.getNet(cell.clockPrefilterNet);
             ensureSimpleLogicalPinMapping(cell.clockPrefilterCell, "O");
             ensureSimpleLogicalPinMapping(cell.regularCell, "I");
+            ensureSimpleLogicalPinMapping(cell.regularCell, "CE");
             internal.connect(cell.clockPrefilterCell, "O");
             internal.connect(cell.regularCell, "I");
+            design.getVccNet().connect(cell.regularCell, "CE");
         }
         try (BufferedReader reader = Files.newBufferedReader(inputPath, StandardCharsets.UTF_8)) {
             for (String line = reader.readLine(); line != null; line = reader.readLine()) {
@@ -1403,7 +1406,7 @@ public final class EmuFlowRWRoute {
                                 : "dedicated-bufgce-clock"
                     );
                 } else if (kind.equals("clock_internal")) {
-                    qualification = "lut2-prefilter-to-bufg-v1";
+                    qualification = "lut2-prefilter-to-bufgce-v1";
                     internalClockNets++;
                 }
                 record.put("qualification", qualification);
@@ -1574,7 +1577,7 @@ public final class EmuFlowRWRoute {
                 .put("safe_cell", safeName)
                 .put("logical_cell", cell.logicalName)
                 .put("logical_type", cell.logicalType)
-                .put("physical_type", cell.hasClockPrefilter() ? "BUFG" : "BUFGCE")
+                .put("physical_type", "BUFGCE")
                 .put("physical_site", cell.regularCell.getSiteName())
                 .put("physical_bel", cell.regularCell.getBELName())
                 .put(
@@ -1583,11 +1586,14 @@ public final class EmuFlowRWRoute {
                         ? cell.clockPrefilterCell.getSiteName()
                         : cell.regularCell.getSiteName()
                 )
-                .put("ce_type", cell.hasClockPrefilter() ? "ALWAYS_ENABLED" : "ASYNC")
+                .put(
+                    "ce_type",
+                    cell.hasClockPrefilter() ? "ASYNC_TIED_HIGH" : "ASYNC"
+                )
                 .put(
                     "implementation",
                     cell.hasClockPrefilter()
-                        ? "lut2-prefilter-bufg"
+                        ? "lut2-prefilter-bufgce-tied-high"
                         : "direct-bufgce"
                 )
                 .put("qualification", "lut2-init-1000-fdre-latched-enable-v1"));

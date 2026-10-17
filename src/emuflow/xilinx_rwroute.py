@@ -1019,7 +1019,7 @@ def validate_xilinx_route_db(
             if isinstance(gate, dict) else None
         )
         direct = implementation == "direct-bufgce"
-        prefiltered = implementation == "lut2-prefilter-bufg"
+        prefiltered = implementation == "lut2-prefilter-bufgce-tied-high"
         if (
             not isinstance(gate, dict)
             or gate_keys not in {frozenset(base_keys), frozenset(extended_keys)}
@@ -1035,8 +1035,8 @@ def validate_xilinx_route_db(
                 prefiltered
                 and (
                     gate_keys != extended_keys
-                    or gate.get("physical_type") != "BUFG"
-                    or gate.get("ce_type") != "ALWAYS_ENABLED"
+                    or gate.get("physical_type") != "BUFGCE"
+                    or gate.get("ce_type") != "ASYNC_TIED_HIGH"
                 )
             )
             or not (direct or prefiltered)
@@ -1263,7 +1263,7 @@ def validate_xilinx_route_db(
             clock_nets += 1
         elif kind == "clock_internal":
             if (
-                qualification != "lut2-prefilter-to-bufg-v1"
+                qualification != "lut2-prefilter-to-bufgce-v1"
                 or re.fullmatch(r"__emuflow_clock_prefilter_c[0-9]+", net_name)
                 is None
             ):

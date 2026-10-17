@@ -416,10 +416,10 @@ class XilinxRWRouteTest(unittest.TestCase):
             value["materialization"]["physical_cells"] += 1
             value["materialization"]["fabric_prefilter_clock_gate_cells"] = 1
             value["clock_gates"][0].update({
-                "physical_type": "BUFG",
+                "physical_type": "BUFGCE",
                 "input_site": "S1",
-                "ce_type": "ALWAYS_ENABLED",
-                "implementation": "lut2-prefilter-bufg",
+                "ce_type": "ASYNC_TIED_HIGH",
+                "implementation": "lut2-prefilter-bufgce-tied-high",
             })
             path.write_text(json.dumps(value), encoding="utf-8")
             self.assertEqual(

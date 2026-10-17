@@ -138,7 +138,7 @@ def _build_payload(
                 raise ValidationError("Xilinx static route identity is invalid")
             continue
         if net.get("kind") == "clock_internal":
-            if net.get("qualification") != "lut2-prefilter-to-bufg-v1":
+            if net.get("qualification") != "lut2-prefilter-to-bufgce-v1":
                 raise ValidationError("Xilinx internal clock route is invalid")
             continue
         match = re.fullmatch(r"n([0-9]+)", str(net.get("net", "")))
