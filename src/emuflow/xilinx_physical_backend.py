@@ -788,12 +788,14 @@ def run_rapidwright_openparf_native_candidate_backend(
     del qualification
     packed_path = output_dir / "packed-sites.json"
     placement_path = output_dir / "placement.json"
+    bridge_artifacts: Dict[str, Any] = {}
     bridge = materialize_xilinx_openparf_atomic_contract(
         mapped_path,
         architecture_path,
         certificate_path,
         packed_path,
         placement_path,
+        in_process_artifacts=bridge_artifacts,
         top=mapped_report["top"],
         source_packed_path=atomic_source_path,
         constraints_path=region_path,
@@ -808,28 +810,10 @@ def run_rapidwright_openparf_native_candidate_backend(
     # lazy mapped-index view is needed only through the bridge validation.
     del atomic_source
     gc.collect()
-    packed = read_json(packed_path)
-    placement = read_json(placement_path)
-    packing_check = validate_xilinx_packing(
-        mapped_path,
-        packed_path,
-        architecture_path=architecture_path,
-        mapped_value=mapped_value,
-        mapped_sha256=mapped_sha256,
-        packed_value=packed,
-        architecture=architecture.value,
-    )
-    placement_check = validate_xilinx_placement(
-        packed_path,
-        architecture_path,
-        placement_path,
-        constraints_path=region_path,
-        native_constraints_path=openparf_native_constraints,
-        provider_manifest_path=openparf_provider_manifest,
-        architecture=architecture,
-        packed_value=packed,
-        placement_value=placement,
-    )
+    packed = bridge_artifacts.pop("packed")
+    placement = bridge_artifacts.pop("placement")
+    packing_check = bridge_artifacts.pop("packing_validation")
+    placement_check = bridge_artifacts.pop("placement_validation")
     return _run_rapidwright_routed_backend_tail(
         fpga=fpga,
         part=part,

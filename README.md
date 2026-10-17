@@ -2471,6 +2471,12 @@ the indexed and reference results, reject source/type and duplicate-driver
 corruption, and check bounded reads on 8,192 repeated LUT/FF cells. This is a
 packing-check handoff improvement, not a claim that all Phase 7 timing-path
 interfaces have been nativeized or that a large-design full-flow gate passed.
+The native placement bridge passes its published packed/placement objects and
+their independent validation results directly to RWRoute preparation. The
+backend no longer reopens both large JSON files and repeats both complete
+checks immediately after the bridge has checked them. Explicit standalone
+validation remains available; these in-process objects are never embedded in
+the compact bridge report.
 
 The routed physical tail follows the same rule. RWRoute now validates and
 seals its in-memory route object once while publishing it; routed-timing

@@ -338,11 +338,19 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             mapped_before = mapped.read_bytes()
             packed = root / "native-packed.json"
             placement = root / "native-placement.json"
+            artifacts = {}
             report = materialize_xilinx_openparf_atomic_contract(
-                mapped, architecture, certificate, packed, placement
+                mapped, architecture, certificate, packed, placement,
+                in_process_artifacts=artifacts,
             )
 
             self.assertEqual(mapped.read_bytes(), mapped_before)
+            self.assertEqual(artifacts["packed"], json.loads(packed.read_text()))
+            self.assertEqual(artifacts["placement"], json.loads(placement.read_text()))
+            self.assertEqual(artifacts["packing_validation"]["status"], "pass")
+            self.assertEqual(artifacts["placement_validation"]["status"], "pass")
+            self.assertNotIn("packed", report)
+            self.assertNotIn("placement", report)
             self.assertEqual(report["placed_cells"], 131)
             self.assertEqual(report["clusters"], 19)
             self.assertEqual(report["runtime_validation"], "native-openparf")

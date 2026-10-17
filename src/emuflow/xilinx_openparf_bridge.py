@@ -515,6 +515,7 @@ def materialize_xilinx_openparf_atomic_contract(
     packed_output_path: Path,
     placement_output_path: Path,
     *,
+    in_process_artifacts: Optional[Dict[str, Any]] = None,
     top: Optional[str] = None,
     source_packed_path: Optional[Path] = None,
     constraints_path: Optional[Path] = None,
@@ -764,7 +765,7 @@ def materialize_xilinx_openparf_atomic_contract(
                 "provider_manifest_sha256": _sha256(provider_manifest_path),
             })
         write_json(placement_temp, placement, compact=True)
-        validate_xilinx_packing(
+        packing_validation = validate_xilinx_packing(
             mapped_path, packed_temp, top=selected_top,
             architecture_path=architecture_path,
             mapped_value=mapped,
@@ -772,7 +773,7 @@ def materialize_xilinx_openparf_atomic_contract(
             packed_value=packed,
             architecture=architecture.value,
         )
-        validate_xilinx_placement(
+        placement_validation = validate_xilinx_placement(
             packed_temp, architecture_path, placement_temp,
             constraints_path=constraints_path,
             native_constraints_path=native_constraints_path,
@@ -786,6 +787,15 @@ def materialize_xilinx_openparf_atomic_contract(
     finally:
         packed_temp.unlink(missing_ok=True)
         placement_temp.unlink(missing_ok=True)
+
+    if in_process_artifacts is not None:
+        # The producer's independently validated objects survive publication
+        # by identity. Never serialize them into the compact bridge report.
+        in_process_artifacts.update({
+            "packed": packed, "placement": placement,
+            "packing_validation": packing_validation,
+            "placement_validation": placement_validation,
+        })
 
     return {
         "schema": OPENPARF_ATOMIC_BRIDGE_REPORT_SCHEMA,

@@ -76,6 +76,8 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     certificate,
                     physical / "openparf-native/placement-certificate.json",
                 )
+                artifacts = kwargs.pop("in_process_artifacts")
+                self.assertEqual(artifacts, {})
                 self.assertEqual(kwargs, {
                     "top": "top",
                     "source_packed_path": physical / "openparf-atomic-source.json",
@@ -97,6 +99,12 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     __import__("json").dumps({"summary": {"clusters": 1}}),
                     encoding="utf-8",
                 )
+                artifacts.update({
+                    "packed": {"summary": {"clusters": 2}},
+                    "placement": {"summary": {"clusters": 1}},
+                    "packing_validation": {"status": "pass"},
+                    "placement_validation": {"status": "pass"},
+                })
                 return {"status": "pass"}
 
             def stop_at_export(mapped, packed, placement, output, **kwargs):
@@ -154,10 +162,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.read_json",
-                    side_effect=[
-                        {"summary": {"clusters": 2}},
-                        {"summary": {"clusters": 1}},
-                    ],
+                    side_effect=AssertionError("published physical objects reparsed"),
                 ) as read,
                 mock.patch(
                     "emuflow.xilinx_physical_backend.build_xilinx_openparf_atomic_source",
@@ -177,11 +182,11 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 ) as bridge,
                 mock.patch(
                     "emuflow.xilinx_physical_backend.validate_xilinx_packing",
-                    return_value={"status": "pass"},
+                    side_effect=AssertionError("packing checked a second time"),
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.validate_xilinx_placement",
-                    return_value={"status": "pass"},
+                    side_effect=AssertionError("placement checked a second time"),
                 ) as validate_placement,
                 mock.patch(
                     "emuflow.xilinx_physical_backend.export_rwroute_input",
@@ -230,18 +235,8 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             qualify.assert_called_once()
             bridge.assert_called_once()
             export.assert_called_once()
-            validate_placement.assert_called_once_with(
-                packed_path,
-                root / "architecture.json",
-                placement_path,
-                constraints_path=physical / "placement-region.json",
-                native_constraints_path=native_constraints,
-                provider_manifest_path=provider_manifest,
-                architecture=architecture_object,
-                packed_value={"summary": {"clusters": 2}},
-                placement_value={"summary": {"clusters": 1}},
-            )
-            self.assertEqual(read.call_count, 2)
+            validate_placement.assert_not_called()
+            read.assert_not_called()
             self.assertIs(
                 build_source.call_args.kwargs["mapped_value"], mapped_value
             )
