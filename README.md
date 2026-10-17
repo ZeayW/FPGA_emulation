@@ -2762,6 +2762,17 @@ full-flow timings. Full routed holdout qualification remains pending.
 Per-iterator SQLite connections may also close in a coordinator
 thread after worker failure without masking the original error.
 
+The native bridge's remaining mapped-cell reads use normalized SQL projections
+as well: reconstructing implicit singleton identities reads only canonical
+`(cell ID, primitive type)` rows, and checking one certified site reads only
+its primitive types, required control/connectivity pins, and FF polarity
+parameters. Neither operation decodes every complete cell JSON record or its
+LUT/RAM payload. Cell coverage, original source-group identity, compatible BELs,
+FF control sets, dedicated cascades, and the independent packing/placement
+validators remain required. A complete indexed-bridge regression forbids both
+full-cell lookup and full-cell streaming, including implicit-source expansion.
+Real large-bridge timing qualification of this projection change is pending.
+
 The independently checked atomic placement certificate now stores its large
 assignment table in a byte-sealed SQLite sidecar and keeps only identity,
 source seals, constant-size summary, convergence metrics, and the sidecar

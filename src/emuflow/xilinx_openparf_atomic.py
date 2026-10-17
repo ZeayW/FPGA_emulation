@@ -2267,6 +2267,15 @@ class _AtomicClusterSequence(Sequence[Mapping[str, Any]]):
 
     def __iter__(self) -> Iterator[Mapping[str, Any]]:
         yield from self._macro_clusters
+        type_items = getattr(self._cells, "type_items_by_id", None)
+        if callable(type_items):
+            for index, (name, cell_type) in enumerate(type_items()):
+                if cell_type in CONSTANT_TYPES or name in self._macro_owned:
+                    continue
+                # Singleton identity depends only on canonical cell order and
+                # primitive type, never INIT, connections or RAM contents.
+                yield _atomic_singleton_cluster(index, name, {"type": cell_type})
+            return
         for index, (name, cell) in enumerate(_ordered_cell_items(self._cells)):
             cell_type = cell.get("type") if isinstance(cell, Mapping) else None
             if cell_type in CONSTANT_TYPES or name in self._macro_owned:

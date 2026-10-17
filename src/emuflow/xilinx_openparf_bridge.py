@@ -277,6 +277,16 @@ def _validate_certificate(
         assignments = entry.get("assignments")
         if not isinstance(assignments, list) or not assignments:
             raise ValidationError(f"{context}: assignments are invalid")
+        if any(
+            not isinstance(item, Mapping) or not isinstance(item.get("instance"), str)
+            for item in assignments
+        ):
+            raise ValidationError(f"{context}: assignment identity is invalid")
+        projected = getattr(cells, "packing_records", None)
+        cluster_cells = (
+            projected([item["instance"] for item in assignments])
+            if callable(projected) else cells
+        )
         used_bels = set()
         slice_assignments = []
         hard_assignments = []
@@ -285,7 +295,7 @@ def _validate_certificate(
             if not isinstance(assignment, Mapping) or set(assignment) != _CERTIFICATE_ASSIGNMENT_KEYS:
                 raise ValidationError(f"{assignment_context}: certificate fields are invalid")
             name = assignment.get("instance")
-            cell = cells.get(name)
+            cell = cluster_cells.get(name)
             cell_type = assignment.get("cell_type")
             if not isinstance(cell, Mapping) or cell.get("type") != cell_type:
                 raise ValidationError(f"{assignment_context}: mapped cell identity is invalid")
@@ -433,7 +443,7 @@ def _validate_certificate(
             ]
             if len(ff_names) > 16:
                 raise ValidationError(f"{context}: exceeds physical FF capacity")
-            control_sets = _slice_ff_control_sets(cells, slice_assignments)
+            control_sets = _slice_ff_control_sets(cluster_cells, slice_assignments)
             carry_counts = Counter(
                 item["cell_type"] for item in slice_assignments
                 if item["cell_type"] in {"CARRY8", DUAL_OUTPUT_LUT_TYPE}

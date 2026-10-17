@@ -177,6 +177,15 @@ class _IndexedRecords(MappingABC[str, Mapping[str, Any]]):
                 )
             yield str(row[0]), value
 
+    def type_items_by_id(self) -> Iterator[Tuple[str, str]]:
+        """Project canonical singleton identity without decoding cell payloads."""
+        if self.table != "cells":
+            raise ValidationError("primitive type projection requires cells")
+        for name, cell_type in self.connection.execute(
+            "SELECT id,type FROM cells ORDER BY id"
+        ):
+            yield str(name), str(cell_type)
+
     def values(self) -> Iterator[Mapping[str, Any]]:  # type: ignore[override]
         for _name, value in self.items():
             yield value

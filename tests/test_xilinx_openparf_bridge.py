@@ -42,7 +42,8 @@ def _inline_certificate(path: Path):
 
 
 def _native_certificate(
-    root: Path, *, include_hard: bool, split_ff_control_sets: bool = False
+    root: Path, *, include_hard: bool, split_ff_control_sets: bool = False,
+    indexed: bool = False, compact_source: bool = False,
 ):
     mapped, source_packed, architecture = write_openparf_runtime_fixture(
         root, include_hard=include_hard
@@ -53,9 +54,29 @@ def _native_certificate(
             "connections"
         ]["C"] = [1_000_001]
         mapped.write_text(json.dumps(mapped_value), encoding="utf-8")
+    if indexed:
+        from emuflow.yosys import import_yosys_json
+        from emuflow.xilinx_netlist import emit_xilinx_mapped_index
+        compact = root / "mapped.emuir.sqlite"
+        import_yosys_json(mapped).save(compact)
+        index = root / "mapped.sqlite"
+        emit_xilinx_mapped_index(compact, index)
+        mapped = index
+    from emuflow.xilinx_netlist import open_xilinx_mapped_index
+    mapped_view = open_xilinx_mapped_index(mapped) if indexed else None
+    if compact_source:
+        from emuflow.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
+        source_packed = root / "atomic-source.json"
+        build_xilinx_openparf_atomic_source(
+            mapped, source_packed, mapped_value=mapped_view,
+        )
     export_dir = root / "openparf"
+    # Generate this tiny fixture's placement through the JSON reference
+    # exporter; testing its indexed bridge must not require a native build.
+    # Both views came from the same JSON, and all seals use the indexed path.
+    export_view = json.loads((root / "mapped.json").read_text()) if indexed else None
     export_xilinx_openparf_atomic(
-        mapped, source_packed, architecture, export_dir
+        mapped, source_packed, architecture, export_dir, mapped_value=export_view,
     )
     name_map = json.loads((export_dir / "name_map.json").read_text())
     sites = load_xilinx_openparf_atomic_sites(export_dir / "name_map.json")
@@ -69,7 +90,8 @@ def _native_certificate(
     }
     indexes = {"LUT": 0, "FF": 0}
     rows = []
-    for atom in name_map["atoms"]:
+    from emuflow.xilinx_openparf_atomic import _load_atomic_name_atoms
+    for atom in _load_atomic_name_atoms(export_dir / "name_map.json", name_map).values():
         resource = atom["resource"]
         if resource in indexes:
             index = indexes[resource]
@@ -89,7 +111,7 @@ def _native_certificate(
     certificate_path = root / "atomic-certificate.json"
     certificate = validate_xilinx_openparf_atomic_placement(
         native_placement, export_dir / "name_map.json", mapped,
-        architecture, certificate_path,
+        architecture, certificate_path, mapped_value=mapped_view,
     )
     certificate["runtime_validation"] = "native-openparf"
     persisted = json.loads(certificate_path.read_text(encoding="utf-8"))
@@ -97,10 +119,43 @@ def _native_certificate(
     certificate_path.write_text(
         json.dumps(persisted, sort_keys=True), encoding="utf-8"
     )
+    if mapped_view is not None:
+        mapped_view.close()
     return mapped, architecture, certificate_path
 
 
 class XilinxOpenparfBridgeTest(unittest.TestCase):
+    def test_complete_indexed_bridge_never_decodes_full_ordinary_cells(self):
+        from emuflow.xilinx_netlist import open_xilinx_mapped_index
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, architecture, certificate = _native_certificate(
+                root, include_hard=True, indexed=True, compact_source=True,
+            )
+            with open_xilinx_mapped_index(mapped) as indexed:
+                with mock.patch.object(
+                    type(indexed.cells), "__getitem__",
+                    side_effect=AssertionError("complete cell payload lookup"),
+                ), mock.patch.object(
+                    indexed.cells, "items_by_id",
+                    side_effect=AssertionError("complete cell payload stream"),
+                ), mock.patch.object(
+                    indexed.cells, "items",
+                    side_effect=AssertionError("complete cell payload scan"),
+                ), mock.patch.object(
+                    indexed.cells, "values",
+                    side_effect=AssertionError("complete cell payload scan"),
+                ):
+                    report = materialize_xilinx_openparf_atomic_contract(
+                        mapped, architecture, certificate,
+                        root / "bridge-packed.json", root / "bridge-placement.json",
+                        source_packed_path=root / "atomic-source.json",
+                        mapped_value=indexed,
+                    )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["placed_cells"], 131)
+
     def test_native_headroom_is_diagnostic_but_physical_capacity_is_hard(self):
         architecture = SimpleNamespace(value={"sites": [
             {"type": "DSP48E2", "physical_region": {"slr": "SLR0", "clock_region": "X0Y0"}}
