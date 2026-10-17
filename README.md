@@ -1202,6 +1202,13 @@ path count across multiple clock groups is not a valid truncation detector.
 This endpoint-worst population is not an enumeration of every combinational
 path, nor proof that routed delay bounds are exact measured hardware delays.
 
+The optional TritonPart balance-repair fallback evaluates simultaneous ejection
+costs from its existing per-edge partition counts. It no longer rescans every
+pin of a high-fanout hyperedge for each tentative sequence. Exhaustive
+small-graph tests retain the previous simultaneous cut objective and summation
+order; large-design runtime and native repair scalability remain unqualified
+until measured on the affected frozen inputs.
+
 Earlier sealed AES and PicoRV32 Phase 1--7 results used the VTR physical
 surrogate. Their historical WNS/TNS values remain diagnostic records, but they
 do not satisfy the new RapidWright-bound platform contract. All five holdout

@@ -632,6 +632,38 @@ def _repair_min_used_fpgas(
     return assignment, moves
 
 
+def _sequence_cut_delta(
+    labels: Sequence[int],
+    incident_edges: Sequence[Sequence[int]],
+    edge_part_counts: Sequence[Mapping[int, int]],
+    edge_weights: Sequence[float],
+    overrides: Mapping[int, int],
+) -> float:
+    """Evaluate simultaneous moves using existing part counts, not all pins."""
+    affected_edges: set[int] = set()
+    changes: Dict[int, Dict[int, int]] = {}
+    for vertex, target in overrides.items():
+        source = labels[vertex]
+        for edge in incident_edges[vertex]:
+            affected_edges.add(edge)
+            counts = changes.setdefault(edge, {})
+            counts[source] = counts.get(source, 0) - 1
+            counts[target] = counts.get(target, 0) + 1
+    delta = 0.0
+    # Preserve the previous affected-edge summation order, including floating
+    # point tie behavior. An unchanged high-fanout hyperedge is never
+    # expanded merely because one candidate touches it.
+    for edge in affected_edges:
+        before = edge_part_counts[edge]
+        after_parts = len(before)
+        for part, change in changes[edge].items():
+            old = before.get(part, 0)
+            new = old + change
+            after_parts += int(old == 0 and new > 0) - int(old > 0 and new == 0)
+        delta += (int(after_parts > 1) - int(len(before) > 1)) * edge_weights[edge]
+    return delta
+
+
 def _repair_multi_resource_balance(
     cluster_assignment: Mapping[str, str],
     clusters_artifact: Mapping[str, Any],
@@ -1258,22 +1290,10 @@ def _repair_multi_resource_balance(
                 def exact_sequence_delta(
                     overrides: Mapping[int, int],
                 ) -> float:
-                    affected_edges = {
-                        edge_index
-                        for vertex in overrides
-                        for edge_index in incident_edges[vertex]
-                    }
-                    delta = 0.0
-                    for edge_index in affected_edges:
-                        before_cut = len(edge_part_counts[edge_index]) > 1
-                        after_parts = {
-                            overrides.get(vertex, labels[vertex])
-                            for vertex in edge_vertices[edge_index]
-                        }
-                        delta += (
-                            int(len(after_parts) > 1) - int(before_cut)
-                        ) * repair_edge_weights[edge_index]
-                    return delta
+                    return _sequence_cut_delta(
+                        labels, incident_edges, edge_part_counts,
+                        repair_edge_weights, overrides,
+                    )
 
                 def violation_key(
                     state_loads: Sequence[Sequence[int]],

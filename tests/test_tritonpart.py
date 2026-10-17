@@ -1,5 +1,6 @@
 import copy
 import json
+import itertools
 import subprocess
 import tempfile
 import unittest
@@ -20,6 +21,7 @@ from emuflow.tritonpart import (
     _effective_balance_percent,
     _repair_min_used_fpgas,
     _repair_multi_resource_balance,
+    _sequence_cut_delta,
     _tritonpart_ubfactor_percent_points,
     export_tritonpart_inputs,
     parse_tritonpart_solution,
@@ -36,6 +38,34 @@ FOUR_FPGA_PLATFORM_PATH = (
 
 
 class TritonPartTest(unittest.TestCase):
+    def test_simultaneous_repair_cut_delta_matches_complete_pin_oracle(self):
+        edges = [[0, 1, 2, 3], [0, 2], [1, 3], [2, 3]]
+        weights = [1e12, 2.5, 7.0, 0.125]
+        incident = [[i for i,e in enumerate(edges) if v in e] for v in range(4)]
+        for labels in itertools.product(range(3), repeat=4):
+            counts = [{p: sum(labels[v] == p for v in edge)
+                       for p in set(labels[v] for v in edge)} for edge in edges]
+            for targets in itertools.product((-1, 0, 1, 2), repeat=4):
+                overrides = {v:p for v,p in enumerate(targets) if p >= 0}
+                affected = {e for v in overrides for e in incident[v]}
+                expected = 0.0
+                for e in affected:
+                    before = len(set(labels[v] for v in edges[e])) > 1
+                    after = len(set(overrides.get(v, labels[v]) for v in edges[e])) > 1
+                    expected += (int(after)-int(before))*weights[e]
+                self.assertEqual(_sequence_cut_delta(labels, incident, counts, weights, overrides), expected)
+
+    def test_repair_sequence_cost_does_not_expand_high_fanout_pins(self):
+        class CountedParts(dict):
+            reads = 0
+            def get(self, *args):
+                self.reads += 1
+                return super().get(*args)
+        for fanout in (10, 10000000):
+            counts = CountedParts({0: 1, 1: fanout})
+            self.assertEqual(_sequence_cut_delta([0], [[0]], [counts], [3.0], {0:1}), -3.0)
+            self.assertEqual(counts.reads, 2)
+
     def setUp(self) -> None:
         self.ir = import_yosys_json(
             ROOT / "examples" / "yosys" / "counter.json",
