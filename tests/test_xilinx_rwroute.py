@@ -262,6 +262,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for router in (
                 "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-recovery",
                 "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-adaptive-recovery-v2",
+                "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-adaptive-recovery-v3",
             ):
                 value = self._route()
                 value["materialization"]["router"] = router
@@ -271,6 +272,20 @@ class XilinxRWRouteTest(unittest.TestCase):
             path.write_text(json.dumps(value))
             with self.assertRaises(ValidationError):
                 validate_xilinx_route_db(path)
+
+    def test_initial_cross_slr_boxes_use_the_actual_sll_and_strict_edges(self):
+        source = (Path(__file__).parents[1] /
+                  "scripts/rapidwright/EmuFlowRWRoute.java").read_text()
+        self.assertIn("sllLength, 2", source)
+        self.assertIn("if (!connection.isCrossSLR()) return false;", source)
+        hook = source.split("protected NetWrapper createNetWrapperAndConnections(Net net)", 1)[1].split(
+            "protected void routeIndirectConnections(", 1
+        )[0]
+        self.assertIn("super.createNetWrapperAndConnections(net)", hook)
+        self.assertIn("!connection.isDirect()", hook)
+        self.assertIn("routingGraph.SUPER_LONG_LINE_LENGTH_IN_TILES", hook)
+        self.assertIn("ensureStrictSlrBoundingBox(", hook)
+        self.assertIn("parallel-adaptive-recovery-v3", source)
 
     def test_rapidwright_block_ram_aliases_match_yosys_ports(self):
         source = (

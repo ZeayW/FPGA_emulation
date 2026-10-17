@@ -6627,10 +6627,18 @@ for large, difficult negotiated-congestion problems; placement uses the
 complete certified device and preserves routing headroom outside the exact
 site-capacity footprint.
 The sealed route certificate records the exact
-`CUFR-HUS-non-timing-driven-uturn-enabled-parallel-adaptive-recovery-v2`
+`CUFR-HUS-non-timing-driven-uturn-enabled-parallel-adaptive-recovery-v3`
 strategy; there is no silent fallback to the serial router. Explicit historical
-`parallel-unroutable-recovery` certificates remain readable under their own
-sealed strategy, but current producers use v2. U-turn routing
+`parallel-unroutable-recovery` and `parallel-adaptive-recovery-v2` certificates
+remain readable under their own sealed strategies, but current producers use
+v3. Before building the initial CUFR tree, v3 ensures that every cross-SLR
+bounding box can contain a complete SLL under the router's strict edge tests:
+an SLL of length L requires a vertical span of at least L+2. Only an undersized
+cross-SLR box is extended, towards its sink; same-SLR and already sufficient
+boxes remain unchanged. The length comes from the actual routing graph, not a
+case-specific constant. This corrects an empty search corridor, not a physical
+capacity or legality constraint. Large-design runtime and closure qualification
+of this correction remain pending. U-turn routing
 resources are enabled because
 the complete XCVU19P site grid includes legal placements near device edges;
 RapidWright explicitly requires those resources for boundary routability.
@@ -6700,7 +6708,7 @@ fabric `DUAL_CY4` initialization retained `AX`, and dedicated `SINGLE_CY8`
 cascade initialization retained `CIN`. These are small physical-connectivity
 checks, not full-flow acceptance. The added PIP ownership guard passed the same
 native compilation and physical-connectivity checks. Renewed large-design
-physical routing of v2 is pending; no large-design closure or QoR improvement
+physical routing is pending; no large-design closure or QoR improvement
 is claimed yet.
 Routed timing binds ordinary signal/clock nets to their mapped integer bits.
 Certified `GLOBAL_LOGIC1`/`static_vcc` and `GLOBAL_LOGIC0`/`static_gnd` nets are

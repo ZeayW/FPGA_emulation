@@ -158,6 +158,7 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "scripts/rapidwright/export_physical_regions.py",
     "scripts/rapidwright/EmuFlowRouteResourceCertificate.java",
     "scripts/rapidwright/EmuFlowRWRoute.java",
+    "scripts/rapidwright/EmuFlowRWRouteSlrBoundingBoxCheck.java",
     "scripts/rapidwright/export_route_resource_certificate.py",
     "tests/test_xilinx_primitives.py",
     "tests/test_xilinx_placer_capability.py",

@@ -31,6 +31,7 @@ RAPIDWRIGHT_TIMING_DATA_REVISION = (
 RAPIDWRIGHT_ROUTER_STRATEGIES = {
     "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-recovery",
     "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-adaptive-recovery-v2",
+    "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-adaptive-recovery-v3",
 }
 RAPIDWRIGHT_TIMING_DATA_SHA256 = {
     "intersite_delay_terms.txt": (

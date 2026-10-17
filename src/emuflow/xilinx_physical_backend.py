@@ -406,7 +406,7 @@ def _finish_rapidwright_routed_backend(
     """Time an independently validated route without exporting or routing again.
 
     The caller owns route validation and passes its certificate and already
-    loaded bounded route header. This is also the normal backend's timing
+    loaded route metadata. This is also the normal backend's timing
     tail, not a reduced validation path or a second timing implementation.
     """
     route_check = {

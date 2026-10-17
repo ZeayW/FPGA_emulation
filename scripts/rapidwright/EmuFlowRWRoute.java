@@ -20,6 +20,7 @@ import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.edif.EDIFCell;
 import com.xilinx.rapidwright.rwroute.CUFR;
 import com.xilinx.rapidwright.rwroute.Connection;
+import com.xilinx.rapidwright.rwroute.NetWrapper;
 import com.xilinx.rapidwright.rwroute.RWRouteConfig;
 import com.xilinx.rapidwright.timing.TimingModel;
 import com.xilinx.rapidwright.util.ParallelismTools;
@@ -48,7 +49,7 @@ import org.json.JSONObject;
 public final class EmuFlowRWRoute {
     private static final String SCHEMA = "emuflow.xilinx-route-db/v2";
     private static final String ROUTER_STRATEGY =
-        "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-adaptive-recovery-v2";
+        "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-adaptive-recovery-v3";
     private static final double MAX_RECOVERY_ITERATION_SECONDS = 600.0;
     private static final int CONGESTION_RECOVERY_PATIENCE = 8;
     private static final String[] DSP48E2_COMPONENTS = new String[] {
@@ -119,6 +120,28 @@ public final class EmuFlowRWRoute {
                 + " unrouted and " + congested + " congested indirect connections"
             );
         }
+    }
+
+    static boolean ensureStrictSlrBoundingBox(Connection connection, int sllLength) {
+        if (!connection.isCrossSLR()) return false;
+        if (sllLength < 1) throw new IllegalArgumentException("invalid SLL length");
+        // RouteNode uses strict inequalities for BOTH bounding-box edges.
+        // A length-L wire needs L+1 integer coordinates, hence an open
+        // interval whose endpoints differ by at least L+2, not L+1.
+        int low = connection.getYMinBB();
+        int high = connection.getYMaxBB();
+        int missing = Math.addExact(sllLength, 2) - (high - low);
+        if (missing <= 0) return false;
+        if (connection.isCrossSLRnorth()) {
+            int expanded = Math.addExact(high, missing);
+            if (expanded > Short.MAX_VALUE) throw new IllegalArgumentException("SLR box overflow");
+            connection.setYMaxBB((short) expanded);
+        } else {
+            int expanded = Math.subtractExact(low, missing);
+            if (expanded < Short.MIN_VALUE) throw new IllegalArgumentException("SLR box overflow");
+            connection.setYMinBB((short) expanded);
+        }
+        return true;
     }
 
     static void requireRecoveryWorkWithinBudget(
@@ -327,6 +350,7 @@ public final class EmuFlowRWRoute {
             ConcurrentHashMap.newKeySet();
         private final PersistentCongestion<Connection> congestionHistory =
             new PersistentCongestion<>(CONGESTION_RECOVERY_PATIENCE);
+        private int correctedSlrBoxes;
 
         AdaptiveBoundingBoxCUFR(Design design, RWRouteConfig config) {
             super(design, config);
@@ -339,7 +363,23 @@ public final class EmuFlowRWRoute {
         }
 
         @Override
+        protected NetWrapper createNetWrapperAndConnections(Net net) {
+            NetWrapper wrapper = super.createNetWrapperAndConnections(net);
+            if (config.isUseBoundingBox()) {
+                for (Connection connection : wrapper.getConnections()) {
+                    if (!connection.isDirect() && ensureStrictSlrBoundingBox(
+                        connection, routingGraph.SUPER_LONG_LINE_LENGTH_IN_TILES
+                    )) correctedSlrBoxes++;
+                }
+            }
+            return wrapper;
+        }
+
+        @Override
         protected void routeIndirectConnections(Collection<Connection> connections) {
+            if (routeIteration == 1) {
+                System.out.println("INFO: EmuFlow strict SLR boxes corrected: " + correctedSlrBoxes);
+            }
             // A connection only needs the exceptional full-device recovery
             // tree while it remains unrouted, congested, or selected for a
             // timing-driven reroute. Keeping every connection that was ever
