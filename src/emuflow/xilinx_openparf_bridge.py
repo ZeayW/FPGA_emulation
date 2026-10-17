@@ -42,6 +42,7 @@ from .xilinx_packing import (
 )
 from .xilinx_placement import (
     XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER,
+    XILINX_NATIVE_PHYSICAL_SITE_UTILIZATION_LIMIT,
     XILINX_PLACEMENT_SCHEMA,
     XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT,
     validate_xilinx_placement,
@@ -122,17 +123,25 @@ def _local_utilization_summary(
         for key, count in capacity.items()
     }
     for key, used in occupied_sites.items():
-        if used > limits[key]:
+        if used > capacity[key]:
             raise ValidationError(
-                "OpenPARF placement exceeds the Route A clock-region site limit"
+                f"OpenPARF placement exceeds physical clock-region capacity: "
+                f"{key!r}, used={used}, capacity={capacity[key]}"
             )
     return {
         "clock_region_site_groups": len(capacity),
+        "clock_region_groups_above_preferred_headroom": sum(
+            occupied_sites[key] > limits[key] for key in capacity
+        ),
         "maximum_clock_region_site_utilization": max(
             (occupied_sites[key] / count for key, count in capacity.items()),
             default=None,
         ),
         "maximum_clock_region_site_reservation": max(
+            (occupied_sites[key] / count for key, count in capacity.items()),
+            default=None,
+        ),
+        "maximum_preferred_clock_region_site_reservation": max(
             (occupied_sites[key] / limits[key] for key in capacity),
             default=None,
         ),
@@ -729,7 +738,8 @@ def materialize_xilinx_openparf_atomic_contract(
             "part": architecture.part,
             "provider": XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER,
             "policy": {
-                "clock_region_site_utilization_limit": XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT,
+                "clock_region_site_utilization_limit": XILINX_NATIVE_PHYSICAL_SITE_UTILIZATION_LIMIT,
+                "preferred_clock_region_site_utilization": XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT,
                 "capacity_rounding": "ceil-with-one-site-minimum",
                 "packing": "native-openparf-atomic-site-groups-v1",
                 "placement_certificate": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,

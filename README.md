@@ -2711,13 +2711,13 @@ each half-slice, while enable is checked independently on the FF and FF2 lanes.
 Multiple exact control sets are represented explicitly in the packed-site
 certificate.  A renewed two-FPGA run then exposed a separate local-density
 defect: global `target_density=0.75` allowed hot clock regions to consume
-99--100% of their SLICEL, SLICEM, DSP, and BRAM sites.  The exporter now
-derates the legal site inventory itself to at most 75% for every
-`(SLR, clock-region, site-type)` group before global placement or any exact
-legalizer runs.  Retained sites form contiguous vertical runs, and source-
-sealed CARRY_NEXT chains are clipped only at reserved-site gaps, so neither
-ordinary logic nor typed hard blocks can consume routing headroom that the
-independent gate will later reject.  The first DLA-medium route using that
+99--100% of their SLICEL, SLICEM, DSP, and BRAM sites. The exporter prefers a
+site inventory reserved to 75% for every `(SLR, clock-region, site-type)` group.
+Retained sites form contiguous vertical runs, and source-sealed CARRY_NEXT
+chains are clipped at reserved-site gaps. When that preferred inventory cannot
+accommodate declared demand, the native adapter uses the full permitted region
+instead; this is not a second device-capacity limit. The native bridge's
+physical-capacity policy below must agree with that choice. The first DLA-medium route using that
 inventory still concentrated roughly 80% of occupied sites in six clock
 regions and produced 765k/841k overlapping routing nodes after RWRoute's first
 negotiated-congestion iteration.  That run is diagnostic evidence, not an
@@ -6434,7 +6434,14 @@ adapter reuses the full permitted device region (preserving explicit SLR
 restrictions). A densely used resource receives a finite target between its
 actual occupancy and 100%; it is not rejected solely for exceeding the preferred
 density. Physical capacity, BEL legality, routing connectivity, and DRC checks
-remain mandatory. Large native DSP-rich holdout revalidation is pending.
+remain mandatory. Native atomic bridge v2 therefore checks regional occupancy
+against the actual site count, not the historical planner's 75% reservation.
+It records regions exceeding preferred headroom as diagnostics, while retaining
+exact site/BEL/control-set/cascade checks and requiring complete RWRoute/DRC
+validation. This does not change BoardDB utilization limits or explicit SLR
+restrictions. Explicit historical bridge-v1 artifacts retain their declared
+75% policy when independently read; current producers always emit v2.
+Large native DSP-rich holdout revalidation is pending.
 When an experiment explicitly requires a design to remain inside one SLR,
 that restriction is produced by the explicit single-SLR planner rather than a
 handwritten or alphabetically selected constraint. The planner first proves

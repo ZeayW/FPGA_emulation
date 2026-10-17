@@ -3,7 +3,9 @@ import hashlib
 import copy
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from emuflow.errors import ValidationError
@@ -17,11 +19,15 @@ from emuflow.xilinx_openparf_atomic import (
     validate_xilinx_openparf_atomic_placement,
 )
 from emuflow.xilinx_openparf_bridge import (
+    _local_utilization_summary,
     _validate_certificate,
     materialize_xilinx_openparf_atomic_contract,
 )
 from emuflow.xilinx_packing import validate_xilinx_packing
-from emuflow.xilinx_placement import validate_xilinx_placement
+from emuflow.xilinx_placement import (
+    XILINX_OPENPARF_ATOMIC_BRIDGE_LEGACY_PROVIDER,
+    validate_xilinx_placement,
+)
 from emuflow.xilinx_rwroute import export_rwroute_input
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
@@ -95,6 +101,45 @@ def _native_certificate(
 
 
 class XilinxOpenparfBridgeTest(unittest.TestCase):
+    def test_native_headroom_is_diagnostic_but_physical_capacity_is_hard(self):
+        architecture = SimpleNamespace(value={"sites": [
+            {"type": "DSP48E2", "physical_region": {"slr": "SLR0", "clock_region": "X0Y0"}}
+            for _ in range(4)
+        ]})
+        key = ("SLR0", "X0Y0", "DSP48E2")
+        result = _local_utilization_summary(architecture, Counter({key: 4}))
+        self.assertEqual(result["maximum_clock_region_site_utilization"], 1.0)
+        self.assertEqual(result["maximum_clock_region_site_reservation"], 1.0)
+        self.assertEqual(result["maximum_preferred_clock_region_site_reservation"], 4/3)
+        self.assertEqual(result["clock_region_groups_above_preferred_headroom"], 1)
+        with self.assertRaisesRegex(ValidationError, "physical clock-region capacity"):
+            _local_utilization_summary(architecture, Counter({key: 5}))
+
+    def test_explicit_legacy_artifact_keeps_its_declared_headroom_policy(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            mapped, architecture, certificate = _native_certificate(root, include_hard=False)
+            packed, placement = root / "packed.json", root / "placement.json"
+            materialize_xilinx_openparf_atomic_contract(
+                mapped, architecture, certificate, packed, placement
+            )
+            value = json.loads(placement.read_text())
+            self.assertEqual(value["policy"]["clock_region_site_utilization_limit"], 1.0)
+            self.assertEqual(value["policy"]["preferred_clock_region_site_utilization"], 0.75)
+            value["provider"] = XILINX_OPENPARF_ATOMIC_BRIDGE_LEGACY_PROVIDER
+            value["policy"].pop("preferred_clock_region_site_utilization")
+            value["policy"]["clock_region_site_utilization_limit"] = 0.75
+            value["summary"]["maximum_clock_region_site_reservation"] = (
+                value["summary"].pop("maximum_preferred_clock_region_site_reservation")
+            )
+            value["summary"].pop("clock_region_groups_above_preferred_headroom")
+            placement.write_text(json.dumps(value))
+            self.assertEqual(validate_xilinx_placement(packed, architecture, placement)["status"], "pass")
+            value["policy"]["clock_region_site_utilization_limit"] = 1.0
+            placement.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValidationError, "routability policy"):
+                validate_xilinx_placement(packed, architecture, placement)
+
     def test_indexed_bridge_inventory_does_not_decode_ordinary_cells(self):
         from emuflow.xilinx_netlist import (
             emit_xilinx_mapped_index, open_xilinx_mapped_index,
@@ -386,7 +431,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             )
             self.assertEqual(
                 placement_value["provider"],
-                "openparf-native-mcf-direct-lg-ism-atomic-bridge-v1",
+                "openparf-native-mcf-direct-lg-ism-atomic-bridge-v2",
             )
             rwroute = root / "rwroute.tsv"
             rwroute_report = export_rwroute_input(

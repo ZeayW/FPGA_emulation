@@ -26,6 +26,10 @@ XILINX_EXACT_SITE_LEGALIZER_PROVIDER = (
     "emuflow-xilinx-exact-site-legalizer-v3-physical-grid"
 )
 XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER = (
+    "openparf-native-mcf-direct-lg-ism-atomic-bridge-v2"
+)
+# Artifact interpretation only. Current producers never select this policy.
+XILINX_OPENPARF_ATOMIC_BRIDGE_LEGACY_PROVIDER = (
     "openparf-native-mcf-direct-lg-ism-atomic-bridge-v1"
 )
 XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER = (
@@ -35,6 +39,7 @@ XILINX_AMF_NATIVE_BRIDGE_PROVIDER = (
     "amf-placer-public-basic-2.0-native-bridge-v1"
 )
 XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 0.75
+XILINX_NATIVE_PHYSICAL_SITE_UTILIZATION_LIMIT = 1.0
 _SITE_XY_RE = re.compile(r"^(?P<kind>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 
 
@@ -1270,19 +1275,33 @@ def validate_xilinx_placement(
     if provider not in {
         XILINX_EXACT_SITE_LEGALIZER_PROVIDER,
         XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER,
+        XILINX_OPENPARF_ATOMIC_BRIDGE_LEGACY_PROVIDER,
         XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER,
         XILINX_AMF_NATIVE_BRIDGE_PROVIDER,
     }:
         raise ValidationError("Xilinx placement provider is invalid")
+    native_atomic = provider in {
+        XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER,
+        XILINX_OPENPARF_ATOMIC_BRIDGE_LEGACY_PROVIDER,
+    }
+    site_utilization_limit = (
+        XILINX_NATIVE_PHYSICAL_SITE_UTILIZATION_LIMIT
+        if provider == XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER
+        else XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT
+    )
     expected_policy = {
-        "clock_region_site_utilization_limit": XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT,
+        "clock_region_site_utilization_limit": site_utilization_limit,
         "capacity_rounding": "ceil-with-one-site-minimum",
     }
-    if provider == XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER:
+    if native_atomic:
         expected_policy.update({
             "packing": "native-openparf-atomic-site-groups-v1",
             "placement_certificate": "emuflow.openparf-atomic-placement/v2",
         })
+        if provider == XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER:
+            expected_policy["preferred_clock_region_site_utilization"] = (
+                XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT
+            )
     elif provider == XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER:
         expected_policy.update({
             "packing": "preserved-carry8-full-slice-macros-v1",
@@ -1307,7 +1326,7 @@ def validate_xilinx_placement(
         key in source
         for key in ("native_constraints_sha256", "provider_manifest_sha256")
     )
-    if provider == XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER and has_native_seal:
+    if native_atomic and has_native_seal:
         if native_constraints_path is None or provider_manifest_path is None:
             raise ValidationError(
                 "OpenPARF native placement validation requires native "
@@ -1344,7 +1363,7 @@ def validate_xilinx_placement(
         for site in architecture.value["sites"]
     }
     local_capacity, local_limits = _local_site_limits(
-        architecture_sites, XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT
+        architecture_sites, site_utilization_limit
     )
     local_usage: Counter = Counter()
     site_base = {}
@@ -1478,7 +1497,7 @@ def validate_xilinx_placement(
     owner = {instance: cluster_id for instance, cluster_id in cell_owners.items()}
     chains = _cascade_cluster_chains(packed, owner)
     native_edges_by_kind: Dict[str, Set[Tuple[str, str]]] = {}
-    if provider == XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER and chains:
+    if native_atomic and chains:
         if native_constraints_path is None or provider_manifest_path is None:
             raise ValidationError(
                 "OpenPARF cascade placement validation requires native "
@@ -1552,7 +1571,7 @@ def validate_xilinx_placement(
                 "dedicated cascade placement crosses an SLR boundary: "
                 + " -> ".join(chain)
             )
-        if provider != XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER:
+        if not native_atomic:
             first_kind, first_x, first_y = coordinates[0]
             expected = [
                 (first_kind, first_x, first_y + offset)
@@ -1580,6 +1599,20 @@ def validate_xilinx_placement(
             default=None,
         ),
     }
+    if provider == XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER:
+        preferred_limits = {
+            key: max(1, int(math.ceil(count * XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT)))
+            for key, count in local_capacity.items()
+        }
+        expected_local_summary.update({
+            "clock_region_groups_above_preferred_headroom": sum(
+                local_usage[key] > preferred_limits[key] for key in local_capacity
+            ),
+            "maximum_preferred_clock_region_site_reservation": max(
+                (local_usage[key] / preferred_limits[key] for key in local_capacity),
+                default=None,
+            ),
+        })
     summary = placement.get("summary")
     if not isinstance(summary, dict) or any(
         summary.get(key) != expected
