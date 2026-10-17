@@ -1220,6 +1220,12 @@ and schedules are not copied forward. Downstream phases must consume the
 newly published contract and corrected timing. This does not native-ize the
 ordinary Python balance-repair fallback or prove large-design completion.
 
+`scripts/rapidwright/InspectCarryInitialization.java` is an offline, selected-
+slice probe for carry initialization. It prints RapidWright's logical/physical
+pin mapping, selected fabric-driver connection, and intrasite mux alternatives.
+It creates only an in-memory probe design; it does not run RWRoute, write a
+checkpoint, relax connectivity checks, or qualify a hardware timing result.
+
 Earlier sealed AES and PicoRV32 Phase 1--7 results used the VTR physical
 surrogate. Their historical WNS/TNS values remain diagnostic records, but they
 do not satisfy the new RapidWright-bound platform contract. All five holdout
