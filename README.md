@@ -2771,7 +2771,16 @@ LUT/RAM payload. Cell coverage, original source-group identity, compatible BELs,
 FF control sets, dedicated cascades, and the independent packing/placement
 validators remain required. A complete indexed-bridge regression forbids both
 full-cell lookup and full-cell streaming, including implicit-source expansion.
-Real large-bridge timing qualification of this projection change is pending.
+An explicit real DLA-large bridge check covered 1,271,841 cells and 129,996
+physical groups while complete cell lookups and streams were forbidden. Both
+packed and placement artifacts were byte-identical to the preceding bridge
+implementation. Observed bridge time was 500.611 seconds versus 598.894 seconds
+in the preceding physical continuation; the diagnostic peaked at 7,230,440 KiB
+RSS. These are single-run bridge observations under concurrent physical work,
+not a controlled whole-flow speedup or a before/after RSS comparison. The
+physical metadata artifacts themselves still occupied 227,511,770 and
+278,071,570 bytes: this check does not claim that every Phase 7 handoff is
+already compact or Python-free. Final routed holdout qualification is pending.
 
 The independently checked atomic placement certificate now stores its large
 assignment table in a byte-sealed SQLite sidecar and keeps only identity,
