@@ -2750,9 +2750,16 @@ checks only anchored candidate chains; hard-block matching uses the complete
 ordered `(site, slot)` key. Both retain duplicate-witness rejection and exact
 direction/order checks. This removes a repeated scan observed on the frozen
 DLA-large contract: 8,841 site-cascade groups implied 4,482,248,256 candidate
-comparisons in the former checker. That count is a diagnostic of redundant
-work, not a measured full-flow speedup; real-input timing qualification remains
-pending. Per-iterator SQLite connections may also close in a coordinator
+comparisons in the former checker. An explicit offline check of the completed
+real DLA-large placement found the same unique physical-chain witness for all
+8,841 groups in 1.840 seconds, including index construction. A stratified
+32-group sample matched the former exhaustive search exactly: 4.626 seconds
+for the reference versus 1.693 seconds for the indexed sample including its
+own cold index build. Loading macro metadata and projecting the actual saved
+site witnesses took another 9.813 seconds; diagnostic peak RSS was 417.6 MiB.
+These are chain-lookup measurements, not complete placement-validator or
+full-flow timings. Full routed holdout qualification remains pending.
+Per-iterator SQLite connections may also close in a coordinator
 thread after worker failure without masking the original error.
 
 The independently checked atomic placement certificate now stores its large
