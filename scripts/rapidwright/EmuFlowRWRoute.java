@@ -1119,9 +1119,6 @@ public final class EmuFlowRWRoute {
         if (!cellRows.keySet().containsAll(clockGateRows.keySet())) {
             throw new IllegalArgumentException("CLOCK_GATE references an unknown cell");
         }
-        if (!clockGateInputNets.keySet().containsAll(clockGateRows.keySet())) {
-            throw new IllegalArgumentException("CLOCK_GATE lacks a routed I0 input");
-        }
         Set<String> clockGatesNeedingPrefilter = new LinkedHashSet<>();
         for (Map.Entry<String, String> entry : clockGateInputNets.entrySet()) {
             if (clockGateDriversByNet.containsKey(entry.getValue())) {
