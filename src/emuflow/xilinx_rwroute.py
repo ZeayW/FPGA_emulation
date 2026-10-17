@@ -373,6 +373,19 @@ def _logical_pin(port: str, index: int, width: int) -> str:
     return port if width == 1 else f"{port}[{index}]"
 
 
+_CLOCK_SINK_PINS = frozenset({
+    "C",
+    "CLK",
+    "CLKARDCLK",
+    "CLKBWRCLK",
+})
+
+
+def _is_clock_sink_pin(pin: str) -> bool:
+    """Return whether a physical primitive pin consumes a clock net."""
+    return pin in _CLOCK_SINK_PINS
+
+
 def _primitive_parameter(parameters: Mapping[str, Any], name: str) -> Optional[str]:
     """Return a compact RapidWright property value for a routed hard primitive.
 
@@ -457,7 +470,7 @@ def _qualified_lut_clock_gates(
             if role == "sink"
         ]
         if not output_sinks or any(
-            pin not in {"C", "CLK"}
+            not _is_clock_sink_pin(pin)
             and not (instance in candidates and pin == "I0")
             for instance, pin in output_sinks
         ):
@@ -696,7 +709,7 @@ def export_rwroute_input(
     clock_gates = _qualified_lut_clock_gates(cells, endpoints)
     for bit, values in endpoints.items():
         sinks = [value for value in values if value[2] == "sink"]
-        if not any(pin in {"C", "CLK"} for _name, pin, _role in sinks):
+        if not any(_is_clock_sink_pin(pin) for _name, pin, _role in sinks):
             continue
         drivers = [value for value in values if value[2] == "driver"]
         if drivers and not (
@@ -723,7 +736,7 @@ def export_rwroute_input(
         sinks = [value for value in values if value[2] == "sink"]
         net_name = f"n{bit}"
         boundary_clock = any(
-            pin in {"C", "CLK"} for _cell, pin, _role in sinks
+            _is_clock_sink_pin(pin) for _cell, pin, _role in sinks
         )
         if len(drivers) != 1 or not sinks:
             if not drivers and sinks and boundary_clock:

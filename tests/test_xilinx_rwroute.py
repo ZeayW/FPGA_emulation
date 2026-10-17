@@ -428,11 +428,24 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "type": "FDRE", "port_directions": {"C": "input"},
                 "connections": {"C": [3]},
             },
+            "ram": {
+                "type": "RAMB18E2",
+                "port_directions": {
+                    "CLKARDCLK": "input", "CLKBWRCLK": "input",
+                },
+                "connections": {
+                    "CLKARDCLK": [3], "CLKBWRCLK": [3],
+                },
+            },
         }}}}
         assignments = [
             {"instance": "enable", "cell_type": "FDRE", "bel": "AFF"},
             {"instance": "gate", "cell_type": "LUT2", "bel": "B6LUT"},
             {"instance": "sink", "cell_type": "FDRE", "bel": "CFF"},
+            {
+                "instance": "ram", "cell_type": "RAMB18E2",
+                "bel": "RAMB18E2_L",
+            },
         ]
         packed = {
             "schema": "emuflow.packed-site-netlist/v1", "top": "top",
@@ -444,6 +457,10 @@ class XilinxRWRouteTest(unittest.TestCase):
                 {"instance": "enable", "bel": "AFF", "site": "SLICE_X0Y0"},
                 {"instance": "gate", "bel": "B6LUT", "site": "SLICE_X0Y0"},
                 {"instance": "sink", "bel": "CFF", "site": "SLICE_X0Y1"},
+                {
+                    "instance": "ram", "bel": "RAMB18E2_L",
+                    "site": "RAMB18_X0Y0",
+                },
             ]}],
         }
         with tempfile.TemporaryDirectory() as temporary:
