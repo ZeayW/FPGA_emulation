@@ -7,6 +7,7 @@ from unittest import mock
 from emuflow.xilinx_physical_backend import (
     _compact_openparf_qualification,
     _physical_clock_periods,
+    _run_rapidwright_routed_backend_tail,
     _select_xilinx_slr_window,
     run_rapidwright_openparf_native_candidate_backend,
     run_rapidwright_partition_backend,
@@ -14,6 +15,62 @@ from emuflow.xilinx_physical_backend import (
 
 
 class XilinxPhysicalBackendTest(unittest.TestCase):
+    def test_resume_revalidates_before_timing_without_launching_router(self):
+        from emuflow.errors import ValidationError
+
+        for valid in (True, False):
+            with self.subTest(valid=valid), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                route_path = root / "route.json"
+                route_path.write_text('{"schema":"sealed-route"}', encoding="utf-8")
+                arguments = {
+                    "fpga": "fpga0", "part": "xcvu19p-test",
+                    "mapped_report": {}, "mapped_value": {},
+                    "packed_value": {}, "placement_value": {},
+                    "runtime": {}, "original_cells": 1, "transport_cells": 0,
+                    "output_dir": root, "opensta": None,
+                    "logic_identity_path": None, "local_identity_path": None,
+                    "provider": "test", "packing_stage": {},
+                    "placement_stage": {}, "placement_artifacts": {},
+                    "resume": True,
+                }
+                for name in (
+                    "merged_ir_path", "mapped_path", "packed_path",
+                    "placement_path", "boundary_identity_path", "rapidwright_jar",
+                    "java", "classes_dir", "java_source", "device_data_root",
+                    "timing_data_dir",
+                ):
+                    arguments[name] = root / name
+                with (
+                    mock.patch("emuflow.xilinx_physical_backend._sha256", return_value="0" * 64),
+                    mock.patch("emuflow.xilinx_physical_backend.export_rwroute_input") as export,
+                    mock.patch(
+                        "emuflow.xilinx_physical_backend.validate_xilinx_route_db",
+                        return_value={"status": "pass"},
+                        side_effect=None if valid else ValidationError("input mismatch"),
+                    ) as validate,
+                    mock.patch("emuflow.xilinx_physical_backend.run_rwroute") as route,
+                    mock.patch(
+                        "emuflow.xilinx_physical_backend.build_xilinx_routed_timing",
+                        side_effect=RuntimeError("timing-boundary-reached"),
+                    ) as timing,
+                ):
+                    if valid:
+                        with self.assertRaisesRegex(RuntimeError, "timing-boundary-reached"):
+                            _run_rapidwright_routed_backend_tail(**arguments)
+                    else:
+                        with self.assertRaisesRegex(ValidationError, "input mismatch"):
+                            _run_rapidwright_routed_backend_tail(**arguments)
+                    export.assert_called_once()
+                    route.assert_not_called()
+                    validate.assert_called_once()
+                    self.assertEqual(validate.call_args.kwargs["rwroute_input_path"], root / "rwroute.tsv")
+                    self.assertEqual(validate.call_args.kwargs["mapped_path"], arguments["mapped_path"])
+                    if valid:
+                        self.assertEqual(timing.call_args.kwargs["route_value"], {"schema": "sealed-route"})
+                    else:
+                        timing.assert_not_called()
+
     def test_native_qualification_report_references_large_certificate(self):
         with tempfile.TemporaryDirectory() as temporary:
             certificate_path = Path(temporary) / "placement-certificate.json"
