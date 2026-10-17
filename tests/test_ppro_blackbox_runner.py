@@ -174,6 +174,83 @@ class PProBlackboxRunnerTest(unittest.TestCase):
                 profile="ppro-2026-ordinary-reports-v1",
             )
 
+    def test_ordinary_ssta_coverage_survives_runner_observation_and_cleanup(self):
+        # This is a local report fixture, not a vendor execution or calibration
+        # observation. Exercise the production adapter dispatch, publication
+        # and cleanup rather than only calling the parser in isolation.
+        for include_last_arrival in (True, False):
+            with self.subTest(complete=include_last_arrival), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                spec = run_spec("ordinary-report-fixture")
+                spec["identity"]["role"] = "holdout"
+                spec["experiment"].update(
+                    kind="application_holdout",
+                    control_mode="free_optimization",
+                    documented_actions=[],
+                )
+                spec["adapter"]["profile"] = "ppro-2026-ordinary-reports-v1"
+                spec["adapter"]["expected_reports"] = [
+                    "partition_summary", "resource_summary"
+                ]
+                partition = root / "pa0.rpt"
+                route = root / "sr0.rpt"
+                timing = root / "gr0_ssta_post_part.rpt"
+                partition.write_text(
+                    "| Resource Type | LUT | FF | BRAM | DSP | URAM |\n"
+                    "| F11 | 60 | 90 | 8 | 12 | 1 |\n"
+                    "| F33 | 40 | 70 | 4 | 8 | 0 |\n"
+                    "| Total Resource | 100 | 160 | 12 | 20 | 1 |\n"
+                    "| Resource Type | LUT | FF | BRAM | DSP | URAM |\n"
+                    "| F11 | 3% | 4% | 5% | 6% | 7% |\n"
+                    "| F33 | 4% | 5% | 6% | 7% | 0% |\n",
+                    encoding="utf-8",
+                )
+                route.write_text(
+                    "2.1 fpga tdm connect net num\n| 11 | 33 | 2 |\n"
+                    "2.3 tdm cable info report\n| 11 | 33 | J26 | J26 |\n"
+                    "2.4 tdm_info report\n"
+                    "| F11 | F33 | 703 | 703 | OUTPUT | 1 | 1600 | 5 | 8 |\n",
+                    encoding="utf-8",
+                )
+                timing.write_text(
+                    "Path1     clk to clk                    1    -1.250   src dst\n"
+                    "Path2     clk to clk                    1    -1.250   src dst\n"
+                    "Path1\n 8.250 data arrival time\n -8.250 data arrival time\n"
+                    "Path2\n"
+                    + (" 6.960 data arrival time\n" if include_last_arrival else ""),
+                    encoding="utf-8",
+                )
+                result = execute_blackbox_case(
+                    spec,
+                    RuntimeBinding(
+                        case_dir=root,
+                        command=(sys.executable, "-c", "pass"),
+                        report_paths={
+                            "partition_summary": partition,
+                            "resource_summary": partition,
+                            "route_summary": route,
+                            "system_timing": timing,
+                        },
+                        output_path=root / "observation.json",
+                        fpga_aliases={"F11": "F0", "F33": "F1"},
+                    ),
+                )
+                self.assertEqual(result["execution"]["outcome"], "pass")
+                self.assertFalse(result["derived"]["fit_eligible"])
+                observed = result["metrics"]["timing"]
+                self.assertEqual(observed["sr0_reported_cross_fpga_path_count"], 2)
+                self.assertEqual(
+                    observed["sr0_measured_cross_fpga_path_count"],
+                    2 if include_last_arrival else 1,
+                )
+                self.assertEqual(observed["sr0_worst_cross_fpga_delay_ns"], 8.25)
+                saved = json.loads((root / "observation.json").read_text())
+                self.assertEqual(saved, result)
+                self.assertNotIn("F11", repr(saved))
+                self.assertNotIn("F33", repr(saved))
+                for path in (partition, route, timing):
+                    self.assertFalse(path.exists())
+
     def test_mock_pass_emits_compact_observation_and_removes_raw_reports(self):
         with tempfile.TemporaryDirectory() as raw:
             case = Path(raw) / "case"
