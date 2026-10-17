@@ -30,16 +30,20 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                 "ff": cell("FDPE", {"C": [4], "CE": ["1"], "PRE": ["0"],
                                     "D": [31], "Q": [5]}),
             }, "attributes": {"top": "1"}}}}))
-            source, index = root / "source.sqlite", root / "mapped.sqlite"
+            source, index = root / "source.emuir.sqlite", root / "mapped.sqlite"
             import_yosys_json(mapped).save(source)
             emit_xilinx_mapped_index(source, index)
-            with open_xilinx_mapped_index(index) as indexed, mock.patch.object(
-                type(indexed.cells), "__getitem__",
-                side_effect=AssertionError("whole cell deserialization"),
-            ):
-                view = indexed.cells.packing_records(["mux", "ff"])
-                self.assertEqual(view["mux"]["connections"]["S"], [30])
-                self.assertEqual(view["ff"]["connections"]["D"], [31])
+            with open_xilinx_mapped_index(index) as indexed:
+                expected = {name: indexed.cells[name]["connections"]
+                            for name in ("mux", "ff")}
+                with mock.patch.object(
+                    type(indexed.cells), "__getitem__",
+                    side_effect=AssertionError("whole cell deserialization"),
+                ):
+                    view = indexed.cells.packing_records(["mux", "ff"])
+                self.assertEqual(view["mux"]["connections"]["S"], expected["mux"]["S"])
+                self.assertEqual(view["ff"]["connections"]["D"], expected["ff"]["D"])
+                self.assertNotEqual(expected["mux"]["S"], expected["ff"]["D"])
 
     def test_indexed_packing_checker_projects_only_site_facts(self):
         with tempfile.TemporaryDirectory() as temporary:
