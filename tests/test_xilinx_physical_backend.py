@@ -8,7 +8,9 @@ from unittest import mock
 from emuflow.errors import ValidationError
 from emuflow.xilinx_physical_backend import (
     _compact_openparf_qualification,
+    _finish_rapidwright_routed_backend,
     _physical_clock_periods,
+    _run_rapidwright_routed_backend_tail,
     _select_xilinx_slr_window,
     run_rapidwright_openparf_native_candidate_backend,
     run_rapidwright_partition_backend,
@@ -16,6 +18,76 @@ from emuflow.xilinx_physical_backend import (
 
 
 class XilinxPhysicalBackendTest(unittest.TestCase):
+    def test_normal_route_hands_the_same_objects_to_one_timing_tail(self):
+        root = Path("fixture")
+        values = {"mapped_value": {}, "packed_value": {}, "placement_value": {}}
+        kwargs = {
+            "fpga": "F0", "part": "xcvu19p-test",
+            **{name: root / name for name in (
+                "merged_ir_path", "mapped_path", "packed_path", "placement_path",
+                "boundary_identity_path", "rapidwright_jar", "java", "classes_dir",
+                "java_source", "device_data_root", "timing_data_dir",
+            )},
+            "mapped_report": {"top": "top"}, **values,
+            "runtime": {}, "original_cells": 3, "transport_cells": 1,
+            "output_dir": root, "opensta": "sta",
+            "logic_identity_path": None, "local_identity_path": None,
+            "provider": "fixture", "packing_stage": {},
+            "placement_stage": {}, "placement_artifacts": {},
+            "mapped_sha256": "a" * 64,
+        }
+        route_header = {"fixture": "bounded-header"}
+        route_check = {"status": "pass", "route_sha256": "c" * 64}
+        input_report = {"expanded_lut6_2_cells": 0, "transformed_dsp48e2_cells": 0}
+
+        def route(*args, **kw):
+            kw["route_value_sink"].update(route_header)
+            return route_check
+
+        module = "emuflow.xilinx_physical_backend."
+        with mock.patch(module + "_sha256", return_value="b" * 64), \
+             mock.patch(module + "export_rwroute_input", return_value=input_report) as export, \
+             mock.patch(module + "run_rwroute", side_effect=route) as router, \
+             mock.patch(module + "_finish_rapidwright_routed_backend", return_value={"done": True}) as finish:
+            self.assertEqual(_run_rapidwright_routed_backend_tail(**kwargs), {"done": True})
+        export.assert_called_once()
+        router.assert_called_once()
+        finish.assert_called_once()
+        handed = finish.call_args.kwargs
+        for name, value in values.items():
+            self.assertIs(handed[name], value)
+        self.assertIs(handed["route_input_report"], input_report)
+        self.assertIs(handed["route_report"], route_check)
+        self.assertEqual(handed["route_value"], route_header)
+        self.assertEqual(handed["source_sha256"]["mapped_sha256"], "a" * 64)
+        self.assertNotIn("java", handed)
+
+    def test_completed_route_timing_never_invokes_export_or_router(self):
+        root = Path("fixture")
+        module = "emuflow.xilinx_physical_backend."
+        route_check = {"status": "pass", "route_sha256": "a" * 64}
+        route_header = {"fixture": "bounded-header"}
+        source = {"mapped_sha256": "b" * 64}
+        with mock.patch(module + "export_rwroute_input", side_effect=AssertionError("re-export forbidden")), \
+             mock.patch(module + "run_rwroute", side_effect=AssertionError("reroute forbidden")), \
+             mock.patch(module + "build_xilinx_routed_timing", side_effect=RuntimeError("timing-stage-reached")) as timing:
+            with self.assertRaisesRegex(RuntimeError, "timing-stage-reached"):
+                _finish_rapidwright_routed_backend(
+                    fpga="F0", part="xcvu19p-test", merged_ir_path=root / "ir",
+                    mapped_path=root / "mapped", mapped_report={},
+                    packed_path=root / "packed", placement_path=root / "placement",
+                    mapped_value={}, packed_value={}, placement_value={},
+                    runtime={}, original_cells=3, transport_cells=1, output_dir=root,
+                    boundary_identity_path=root / "boundary", opensta="sta",
+                    logic_identity_path=None, local_identity_path=None, provider="fixture",
+                    packing_stage={}, placement_stage={}, placement_artifacts={},
+                    source_sha256=source, route_path=root / "route.json",
+                    route_input_report={}, route_report=route_check, route_value=route_header,
+                )
+        self.assertIs(timing.call_args.kwargs["route_value"], route_header)
+        self.assertIs(timing.call_args.kwargs["source_sha256"], source)
+        self.assertEqual(timing.call_args.kwargs["route_validation"], route_check)
+
     def test_native_qualification_report_references_large_certificate(self):
         with tempfile.TemporaryDirectory() as temporary:
             certificate_path = Path(temporary) / "placement-certificate.json"

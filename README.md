@@ -6674,6 +6674,12 @@ Materialized-cell accounting uses the mapped SQLite index's aggregate type
 counts; counting LUT6_2 and DSP48E2 primitives must not decode every cell's
 parameters, RAM contents and connectivity again. Explicit in-memory fixtures
 retain the same count checks without changing the route-certificate schema.
+Routing and the downstream physical-timing tail have separate internal
+boundaries. An explicit debugging continuation can feed a completed,
+independently validated route into the same segment-timing and standalone
+OpenSTA implementation used by a fresh flow, without exporting the routing
+input or invoking the router again. This does not create a persistent replay
+cache or qualify a route-only result as complete Phase 7.
 The adapter
 has an explicit `EmuFlowRWRouteFailureBoundaryCheck` qualification: a two-cell
 device fixture deliberately exhausts a one-step budget and must throw before

@@ -342,6 +342,73 @@ def _run_rapidwright_routed_backend_tail(
         route_value_sink=route_value,
         java_heap_gib=java_heap_gib,
     )
+    return _finish_rapidwright_routed_backend(
+        fpga=fpga,
+        part=part,
+        merged_ir_path=merged_ir_path,
+        mapped_path=mapped_path,
+        mapped_report=mapped_report,
+        packed_path=packed_path,
+        placement_path=placement_path,
+        mapped_value=mapped_value,
+        packed_value=packed_value,
+        placement_value=placement_value,
+        runtime=runtime,
+        original_cells=original_cells,
+        transport_cells=transport_cells,
+        output_dir=output_dir,
+        boundary_identity_path=boundary_identity_path,
+        opensta=opensta,
+        logic_identity_path=logic_identity_path,
+        local_identity_path=local_identity_path,
+        provider=provider,
+        packing_stage=packing_stage,
+        placement_stage=placement_stage,
+        placement_artifacts=placement_artifacts,
+        source_sha256=source_sha256,
+        route_path=route_path,
+        route_input_report=route_input_report,
+        route_report=route_report,
+        route_value=route_value,
+    )
+
+
+def _finish_rapidwright_routed_backend(
+    *,
+    fpga: str,
+    part: str,
+    merged_ir_path: Path,
+    mapped_path: Path,
+    mapped_report: Mapping[str, Any],
+    packed_path: Path,
+    placement_path: Path,
+    mapped_value: Mapping[str, Any],
+    packed_value: Mapping[str, Any],
+    placement_value: Mapping[str, Any],
+    runtime: Mapping[str, Any],
+    original_cells: int,
+    transport_cells: int,
+    output_dir: Path,
+    boundary_identity_path: Path,
+    opensta: Optional[str],
+    logic_identity_path: Optional[Path],
+    local_identity_path: Optional[Path],
+    provider: str,
+    packing_stage: Mapping[str, Any],
+    placement_stage: Mapping[str, Any],
+    placement_artifacts: Mapping[str, Path],
+    source_sha256: Mapping[str, str],
+    route_path: Path,
+    route_input_report: Mapping[str, Any],
+    route_report: Mapping[str, Any],
+    route_value: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Time an independently validated route without exporting or routing again.
+
+    The caller owns route validation and passes its certificate and already
+    loaded bounded route header. This is also the normal backend's timing
+    tail, not a reduced validation path or a second timing implementation.
+    """
     route_check = {
         key: value for key, value in route_report.items()
         if key not in {"output", "log"}
