@@ -9,7 +9,7 @@ import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .boundary_timing import (
     build_boundary_timing_database,
@@ -989,7 +989,7 @@ def run_multi_fpga_physical_flow(
     runtime_controller = split_root / manifest["runtime_controller_rtl"]
     def _run_partition(
         item: Mapping[str, Any],
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         fpga_id = item["fpga"]
         source_root = split_root / fpga_id
         fpga_root = output_dir / fpga_id
@@ -1257,7 +1257,7 @@ def run_multi_fpga_physical_flow(
                 "stages": stages,
                 "physical_result": physical_result,
             }
-            return record, physical_summary_item(physical_result)
+            return record
 
         transport_rtl = split_root / item["transport_rtl"]
         module_match = _TRANSPORT_MODULE.search(
@@ -1824,7 +1824,7 @@ def run_multi_fpga_physical_flow(
             "stages": stages,
             "physical_result": physical_result,
         }
-        return record, physical_summary_item(physical_result)
+        return record
 
     items_by_fpga = {item["fpga"]: item for item in manifest["fpgas"]}
     ordered_items = [items_by_fpga[fpga_id] for fpga_id in expected_fpgas]
@@ -1832,9 +1832,7 @@ def run_multi_fpga_physical_flow(
     if effective_workers == 1:
         partition_results = [_run_partition(item) for item in ordered_items]
     else:
-        results_by_fpga: Dict[
-            str, Tuple[Dict[str, Any], Dict[str, Any]]
-        ] = {}
+        results_by_fpga: Dict[str, Dict[str, Any]] = {}
         failures = []
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             future_to_fpga = {
@@ -1861,8 +1859,71 @@ def run_multi_fpga_physical_flow(
         partition_results = [
             results_by_fpga[fpga_id] for fpga_id in expected_fpgas
         ]
-    records = [record for record, _summary in partition_results]
-    physical_fpgas = [summary for _record, summary in partition_results]
+    return _assemble_multi_fpga_physical_results(
+        records=partition_results,
+        manifest=manifest,
+        manifest_path=manifest_path,
+        platform=platform,
+        runtime=runtime,
+        split_root=split_root,
+        output_dir=output_dir,
+        backend_descriptor=backend_descriptor,
+        architecture_source=architecture_source,
+        include_logic_timing=all(path is not None for path in logic_context),
+        execution={
+            "seed": seed,
+            "requested_workers": workers,
+            "effective_workers": effective_workers,
+            "ordering": "boarddb-fpga-order",
+            "pack_place_resume": resume,
+            "route_resume": resume,
+            **(
+                {"rapidwright_placer": effective_rapidwright_placer,
+                 "rapidwright_java_heap_gib": rapidwright_java_heap_gib}
+                if backend == "rapidwright"
+                else {}
+            ),
+        },
+    )
+
+
+def _assemble_multi_fpga_physical_results(
+    *,
+    records: Sequence[Mapping[str, Any]],
+    manifest: Mapping[str, Any],
+    manifest_path: Path,
+    platform: Platform,
+    runtime: Mapping[str, Any],
+    split_root: Path,
+    output_dir: Path,
+    backend_descriptor: Mapping[str, Any],
+    architecture_source: Mapping[str, Any],
+    execution: Mapping[str, Any],
+    include_logic_timing: bool,
+) -> Dict[str, Any]:
+    """Assemble completed physical records without running any tool again.
+
+    Fresh and explicitly continued executions share this implementation and
+    its original physical, boundary, timing and report validators. This is
+    physical aggregation only, never the whole-original-design Phase 7C gate.
+    """
+    backend = backend_descriptor["id"]
+    expected_fpgas = [fpga.id for fpga in platform.fpgas]
+    by_fpga = {}
+    for record in records:
+        fpga = record.get("fpga")
+        if not isinstance(fpga, str) or fpga in by_fpga:
+            raise ValidationError("physical result FPGA identity is invalid or duplicated")
+        if record.get("status") != "pass":
+            raise ValidationError(f"physical flow for {fpga} did not pass")
+        by_fpga[fpga] = record
+    if set(by_fpga) != set(expected_fpgas):
+        raise ValidationError("physical result FPGA coverage is incomplete")
+    records = [by_fpga[fpga] for fpga in expected_fpgas]
+    physical_fpgas = [
+        physical_summary_item(record["physical_result"]) for record in records
+    ]
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     physical_summary = {
         "schema": PHYSICAL_SUMMARY_SCHEMA,
@@ -1911,7 +1972,7 @@ def run_multi_fpga_physical_flow(
             database,
             physical_summary["boundary_identities"][fpga_id],
         )
-    if all(path is not None for path in logic_context):
+    if include_logic_timing:
         physical_summary["logic_segment_timing"] = {
             item["fpga"]: read_json(
                 Path(
@@ -1944,7 +2005,6 @@ def run_multi_fpga_physical_flow(
     physical_summary["validation"] = validate_physical_summary(
         physical_summary, runtime, platform
     )
-    write_json(output_dir / "physical-summary.json", physical_summary)
     report = {
         "schema": MULTI_FPGA_PHYSICAL_SCHEMA,
         "status": "pass",
@@ -1957,20 +2017,7 @@ def run_multi_fpga_physical_flow(
             "sha256": _sha256(manifest_path),
         },
         "architecture": architecture_source,
-        "execution": {
-            "seed": seed,
-            "requested_workers": workers,
-            "effective_workers": effective_workers,
-            "ordering": "boarddb-fpga-order",
-            "pack_place_resume": resume,
-            "route_resume": resume,
-            **(
-                {"rapidwright_placer": effective_rapidwright_placer,
-                 "rapidwright_java_heap_gib": rapidwright_java_heap_gib}
-                if backend == "rapidwright"
-                else {}
-            ),
-        },
+        "execution": dict(execution),
         "expected_fpgas": expected_fpgas,
         "fpgas": records,
     }
@@ -1978,5 +2025,6 @@ def run_multi_fpga_physical_flow(
     report["summary"] = validate_multi_fpga_physical_report(
         report, physical_summary
     )
+    write_json(output_dir / "physical-summary.json", physical_summary)
     write_json(output_dir / "multi-fpga-physical-flow-report.json", report)
     return report

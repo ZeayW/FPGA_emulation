@@ -6696,6 +6696,11 @@ independently validated route into the same segment-timing and standalone
 OpenSTA implementation used by a fresh flow, without exporting the routing
 input or invoking the router again. This does not create a persistent replay
 cache or qualify a route-only result as complete Phase 7.
+Completed per-FPGA physical records also feed the same checked report assembler
+as a fresh flow. It restores BoardDB order and rejects missing, duplicate or
+failed FPGA records before reading timing artifacts. Aggregation cannot invoke
+synthesis, placement or routing; the separate whole-original-design Phase 7C
+OpenSTA and path-coverage gates remain mandatory.
 The adapter
 has an explicit `EmuFlowRWRouteFailureBoundaryCheck` qualification: a two-cell
 device fixture deliberately exhausts a one-step budget and must throw before
