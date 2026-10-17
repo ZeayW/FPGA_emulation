@@ -69,6 +69,10 @@ def ppro_observation(identifier: str, delay: float):
             "timing": {
                 "sr0_worst_cross_fpga_delay_ns": delay,
                 "sr0_all_cross_fpga_paths_constrained": 1.0,
+                "sr0_reported_cross_fpga_path_count": 2.0,
+                "sr0_measured_cross_fpga_path_count": 2.0,
+                "sr0_constrained_cross_fpga_path_count": 2.0,
+                "sr0_unconstrained_cross_fpga_path_count": 0.0,
             },
         },
         "provenance": {"class": "black_box_observation"},
@@ -368,6 +372,26 @@ class PProHoldoutValidationTest(unittest.TestCase):
         ] = 0.0
         with self.assertRaisesRegex(ValidationError, "constrained route"):
             validate_holdout_result(value)
+
+    def test_partial_ssta_details_cannot_pass_holdout_gate(self):
+        for changes in [
+            {"sr0_measured_cross_fpga_path_count": 1.0},
+            {"sr0_measured_cross_fpga_path_count": None},
+            {"sr0_reported_cross_fpga_path_count": 0.0},
+            {"sr0_reported_cross_fpga_path_count": 1.5},
+            {"sr0_constrained_cross_fpga_path_count": 1.0},
+            {"sr0_unconstrained_cross_fpga_path_count": 1.0},
+        ]:
+            with self.subTest(changes=changes):
+                value = result("gemm-truncated", "gemm", "large", "a", 6.96)
+                timing = value["ppro"]["metrics"]["timing"]
+                for name, replacement in changes.items():
+                    if replacement is None:
+                        del timing[name]
+                    else:
+                        timing[name] = replacement
+                with self.assertRaisesRegex(ValidationError, "complete cross-FPGA"):
+                    validate_holdout_result(value)
 
     def test_multi_fpga_medium_holdout_cannot_skip_interconnect_reports(self):
         value = result("aes-multi", "aes", "medium", "a", 0.0)

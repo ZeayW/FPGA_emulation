@@ -332,14 +332,17 @@ def _parse_timing_report(text: str | Iterable[str]) -> Dict[str, float]:
     if not cross_paths:
         return {}
     worst_arrival: float | None = None
+    measured_paths = 0
     for path, value in arrivals.items():
         if path not in cross_paths:
             continue
         if not math.isfinite(value) or value < 0:
             raise ValidationError("PPro SSTA report contains an invalid data arrival time")
+        measured_paths += 1
         worst_arrival = value if worst_arrival is None else max(worst_arrival, value)
     result = {
         "sr0_reported_cross_fpga_path_count": float(len(cross_paths)),
+        "sr0_measured_cross_fpga_path_count": float(measured_paths),
         "sr0_constrained_cross_fpga_path_count": float(sum(cross_paths.values())),
         "sr0_unconstrained_cross_fpga_path_count": float(
             len(cross_paths) - sum(cross_paths.values())

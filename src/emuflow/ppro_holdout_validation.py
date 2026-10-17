@@ -258,6 +258,19 @@ def validate_holdout_result(value: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValidationError(
             "PPro holdout lacks constrained route or system-timing evidence"
         )
+    if interconnect_required:
+        reported_paths = ppro_timing.get("sr0_reported_cross_fpga_path_count", 0.0)
+        measured_paths = ppro_timing.get("sr0_measured_cross_fpga_path_count", -1.0)
+        if (
+            reported_paths <= 0
+            or not reported_paths.is_integer()
+            or measured_paths != reported_paths
+            or ppro_timing.get("sr0_constrained_cross_fpga_path_count") != reported_paths
+            or ppro_timing.get("sr0_unconstrained_cross_fpga_path_count") != 0.0
+        ):
+            raise ValidationError(
+                "PPro holdout lacks complete cross-FPGA arrival/constraint coverage"
+            )
     emuflow = value["emuflow"]
     if not isinstance(emuflow, Mapping):
         raise ValidationError("holdout EmuFlow summary is invalid")

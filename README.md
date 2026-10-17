@@ -1302,6 +1302,12 @@ reported cross-FPGA data-arrival delay as a compact black-box observation, but
 promotion requires every reported cross-FPGA path to be constrained. A large
 report containing only `None to clk(unconstrained)` paths therefore cannot be
 mistaken for timing-closure evidence.
+Promotion also requires a detailed first-arrival value for every reported
+cross-FPGA path, recorded as `sr0_measured_cross_fpga_path_count` and compared
+with the reported/constrained path counts. A truncated SSTA report may retain
+partial diagnostic observations, but cannot qualify a platform merely because
+its surviving path delay is finite. Historical observations without that
+coverage count are not complete timing evidence.
 PPro repeats each detailed data-arrival value with the opposite sign in the
 subsequent required-time/slack subtraction summary.  The adapter binds the
 first detailed arrival to each path and ignores that later arithmetic operand;

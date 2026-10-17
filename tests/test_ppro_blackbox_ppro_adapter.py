@@ -204,8 +204,20 @@ class PProBlackboxPProAdapterTest(unittest.TestCase):
         )
         self.assertEqual(metrics["sr0_worst_cross_fpga_delay_ns"], 8.25)
         self.assertEqual(metrics["sr0_reported_cross_fpga_path_count"], 1)
+        self.assertEqual(metrics["sr0_measured_cross_fpga_path_count"], 1)
         self.assertEqual(metrics["sr0_constrained_cross_fpga_path_count"], 1)
         self.assertEqual(metrics["sr0_unconstrained_cross_fpga_path_count"], 0)
+
+    def test_truncated_ssta_details_retain_explicit_incomplete_coverage(self):
+        metrics = self._timing_metrics(
+            "Path1     clk to clk                    1    -1.250   src dst\n"
+            "Path2     clk to clk                    1    -1.250   src dst\n"
+            "Path1\n 8.250 data arrival time\nPath2\nStartpoint: src\n"
+        )
+        self.assertEqual(metrics["sr0_all_cross_fpga_paths_constrained"], 1)
+        self.assertEqual(metrics["sr0_reported_cross_fpga_path_count"], 2)
+        self.assertEqual(metrics["sr0_measured_cross_fpga_path_count"], 1)
+        self.assertEqual(metrics["sr0_worst_cross_fpga_delay_ns"], 8.25)
 
     def test_genuinely_negative_first_arrival_still_fails(self):
         with self.assertRaisesRegex(ValidationError, "invalid data arrival"):
