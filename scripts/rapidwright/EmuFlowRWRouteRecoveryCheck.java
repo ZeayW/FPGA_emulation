@@ -96,6 +96,15 @@ public final class EmuFlowRWRouteRecoveryCheck {
         }
         require(conflict);
         require(owners.get("pip-a").equals("net-a"));
+        EmuFlowRWRoute.requireRecoveryWorkWithinBudget(600.0, 1, 3);
+        EmuFlowRWRoute.requireRecoveryWorkWithinBudget(1800.0, 0, 3);
+        boolean recoveryTimeout = false;
+        try {
+            EmuFlowRWRoute.requireRecoveryWorkWithinBudget(600.001, 547, 2);
+        } catch (IllegalStateException expected) {
+            recoveryTimeout = expected.getMessage().contains("selective recovery work");
+        }
+        require(recoveryTimeout);
         System.out.println("{\"status\":\"pass\",\"checks\":" + checks
             + ",\"scope\":\"policy-only-not-physical-routing\"}");
     }

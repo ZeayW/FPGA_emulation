@@ -121,6 +121,19 @@ public final class EmuFlowRWRoute {
         }
     }
 
+    static void requireRecoveryWorkWithinBudget(
+        double seconds, int activeConnections, int iteration
+    ) {
+        if (activeConnections > 0 && seconds > MAX_RECOVERY_ITERATION_SECONDS) {
+            throw new IllegalStateException(
+                "RWRoute recovery iteration " + iteration + " took "
+                + seconds + " seconds of selective recovery work with "
+                + activeConnections + " active connections; refusing an unbounded recovery tail. "
+                + "Re-run placement with high-fanout routability weighting."
+            );
+        }
+    }
+
     static <K, V> void claimPhysicalPip(Map<K, V> owners, K pip, V net) {
         V previous = owners.putIfAbsent(pip, net);
         if (previous != null && !previous.equals(net)) {
@@ -327,7 +340,6 @@ public final class EmuFlowRWRoute {
 
         @Override
         protected void routeIndirectConnections(Collection<Connection> connections) {
-            long iterationStartNanos = System.nanoTime();
             // A connection only needs the exceptional full-device recovery
             // tree while it remains unrouted, congested, or selected for a
             // timing-driven reroute. Keeping every connection that was ever
@@ -340,6 +352,7 @@ public final class EmuFlowRWRoute {
             // this history; pruning does not traverse connection route nodes.
             congestionHistory.pruneBefore(routeIteration - 1);
             if (!recoveryConnections.isEmpty()) {
+                long recoveryStartNanos = System.nanoTime();
                 List<Connection> snapshot = new ArrayList<>(recoveryConnections);
                 System.out.println(
                     "INFO: EmuFlow active recovery connections: " + snapshot.size()
@@ -348,20 +361,17 @@ public final class EmuFlowRWRoute {
                     snapshot, design.getDevice().getColumns(), design.getDevice().getRows()
                 );
                 routeRecoveryTree(tree.root);
-            }
-            super.routeIndirectConnections(connections);
-            double elapsedSeconds = (
-                System.nanoTime() - iterationStartNanos
-            ) / 1_000_000_000.0;
-            if (!recoveryConnections.isEmpty()
-                && elapsedSeconds > MAX_RECOVERY_ITERATION_SECONDS) {
-                throw new IllegalStateException(
-                    "RWRoute recovery iteration " + routeIteration + " took "
-                    + elapsedSeconds + " seconds with " + recoveryConnections.size()
-                    + " active connections; refusing an unbounded recovery tail. "
-                    + "Re-run placement with high-fanout routability weighting."
+                double recoverySeconds = (
+                    System.nanoTime() - recoveryStartNanos
+                ) / 1_000_000_000.0;
+                // The budget belongs to exceptional recovery work only.
+                // Ordinary CUFR routing can legitimately take longer on a
+                // large design and must not trigger this recovery watchdog.
+                requireRecoveryWorkWithinBudget(
+                    recoverySeconds, snapshot.size(), routeIteration
                 );
             }
+            super.routeIndirectConnections(connections);
         }
 
         private void routeRecoveryTree(RecoveryPartitionTree.Node node) {

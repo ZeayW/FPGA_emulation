@@ -160,6 +160,17 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertIn("MAX_RECOVERY_ITERATION_SECONDS = 600.0", source)
         self.assertIn("refusing an unbounded recovery tail", source)
 
+    def test_recovery_budget_excludes_ordinary_cufr_routing(self):
+        source = (Path(__file__).parents[1] /
+                  "scripts/rapidwright/EmuFlowRWRoute.java").read_text()
+        hook = source.split(
+            "protected void routeIndirectConnections(Collection<Connection> connections)", 1
+        )[1].split("private void routeRecoveryTree", 1)[0]
+        self.assertNotIn("iterationStartNanos", hook)
+        self.assertLess(hook.index("long recoveryStartNanos"), hook.index("routeRecoveryTree(tree.root)"))
+        self.assertLess(hook.index("routeRecoveryTree(tree.root)"), hook.index("requireRecoveryWorkWithinBudget("))
+        self.assertLess(hook.index("requireRecoveryWorkWithinBudget("), hook.index("super.routeIndirectConnections(connections)"))
+
     def test_adaptive_recovery_and_early_failure_are_before_timing(self):
         source = (Path(__file__).parents[1] /
                   "scripts/rapidwright/EmuFlowRWRoute.java").read_text()

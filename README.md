@@ -6642,9 +6642,13 @@ resets its congestion age. Only upstream congestion callbacks update this
 bounded active history; pruning does not rescan route-node populations. Such exceptional
 connections are routed through a separate recursive partitioning ternary tree
 before CUFR's unchanged main tree on each later iteration and skipped inside
-the main tree. A recovery iteration is bounded to ten minutes: if placement
-creates a pathological search region, the route fails with a compact
-diagnostic instead of spending hours repeatedly expanding it. The watchdog is
+the main tree. Selective recovery-tree construction and routing are bounded
+to ten minutes per iteration: if placement creates a pathological recovery
+region, the route fails with a compact diagnostic instead of repeatedly
+expanding it. This budget is checked before ordinary CUFR routing and must
+not charge ordinary routing time to recovery. The earlier combined timer
+could falsely reject a large design whose ordinary iteration alone exceeds
+ten minutes. The watchdog is
 time-based rather than iteration-based, so ordinary negotiated-congestion
 closure remains subject to the upstream iteration limit. This
 avoids both a large serial recovery tail and RapidWright's
