@@ -755,8 +755,18 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_pin_area"], 1)
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
+        self.assertEqual(config["emuflow_high_fanout_weight_threshold"], 64)
+        self.assertEqual(config["emuflow_high_fanout_weight_exponent"], 0.5)
+        self.assertEqual(config["emuflow_high_fanout_weight_maximum"], 4.0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-stable-feasible-v3",
+            "provider": "openparf-rudy-pin-stable-feasible-v4",
+            "high_fanout_net_weighting": {
+                "policy": "bounded-driven-fabric-fanout-v2",
+                "threshold": 64,
+                "exponent": 0.5,
+                "maximum_weight": 4.0,
+                "large_net_mask": "reenable-internally-driven-only",
+            },
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": 0.10,
             "adjustment_overflow_threshold": 0.15,

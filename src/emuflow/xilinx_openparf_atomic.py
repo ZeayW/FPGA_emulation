@@ -50,6 +50,11 @@ from .xilinx_packing import (
 )
 from .xilinx_physical_macros import build_xilinx_physical_macro_contract
 from .xilinx_netlist import is_xilinx_mapped_index
+from .xilinx_openparf import (
+    XILINX_OPENPARF_HIGH_FANOUT_THRESHOLD,
+    XILINX_OPENPARF_HIGH_FANOUT_EXPONENT,
+    XILINX_OPENPARF_HIGH_FANOUT_MAXIMUM,
+)
 
 
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
@@ -3826,6 +3831,9 @@ def export_xilinx_openparf_atomic(
             _MAX_PIN_AREA_ADJUSTMENT_RATE
         ),
         "gp_adjust_resource_area": 0,
+        "emuflow_high_fanout_weight_threshold": XILINX_OPENPARF_HIGH_FANOUT_THRESHOLD,
+        "emuflow_high_fanout_weight_exponent": XILINX_OPENPARF_HIGH_FANOUT_EXPONENT,
+        "emuflow_high_fanout_weight_maximum": XILINX_OPENPARF_HIGH_FANOUT_MAXIMUM,
         # CLOCKREGIONS remains part of the source-sealed Bookshelf database,
         # but native enforcement stays off until clock-source primitives and
         # the multi-resource device model are represented without collapsing
@@ -4307,7 +4315,14 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-stable-feasible-v3",
+            "provider": "openparf-rudy-pin-stable-feasible-v4",
+            "high_fanout_net_weighting": {
+                "policy": "bounded-driven-fabric-fanout-v2",
+                "threshold": XILINX_OPENPARF_HIGH_FANOUT_THRESHOLD,
+                "exponent": XILINX_OPENPARF_HIGH_FANOUT_EXPONENT,
+                "maximum_weight": XILINX_OPENPARF_HIGH_FANOUT_MAXIMUM,
+                "large_net_mask": "reenable-internally-driven-only",
+            },
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW

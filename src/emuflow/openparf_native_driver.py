@@ -20,6 +20,8 @@ import os
 from pathlib import Path
 from typing import Any, MutableMapping
 
+from .openparf_continuous_driver import apply_high_fanout_net_weights
+
 
 OPENPARF_NATIVE_CONVERGENCE_SCHEMA = (
     "emuflow.openparf-native-convergence/v1"
@@ -237,6 +239,9 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
             ),
         },
     }
+    weighting = getattr(engine, "_emuflow_high_fanout_weighting", None)
+    if weighting is not None:
+        value["high_fanout_net_weighting"] = weighting
     output = native_metrics_path(placement_path)
     output.write_text(
         json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
@@ -307,6 +312,7 @@ def main() -> int:
     from openparf.flow import place, route
     from openparf.params import Params
     from openparf.placement import placer
+    from openparf import openparf as native
 
     params = Params()
     params.load(arguments.config)
@@ -322,6 +328,7 @@ def main() -> int:
     os.environ["OMP_NUM_THREADS"] = str(params.num_threads)
 
     original_call = placer.Placer.__call__
+    original_init = placer.Placer.__init__
     original_write = placer.Placer.write
     completed_engine: dict[str, Any] = {}
 
@@ -331,6 +338,15 @@ def main() -> int:
         finally:
             completed_engine["value"] = engine
 
+    def init_with_fabric_net_weights(
+        engine: Any, loaded_params: Any, placedb: Any
+    ) -> None:
+        original_init(engine, loaded_params, placedb)
+        apply_high_fanout_net_weights(
+            engine, output_direction=int(native.SignalDirection.kOutput)
+        )
+
+    placer.Placer.__init__ = init_with_fabric_net_weights
     placer.Placer.stop_condition = stable_native_stop_condition
     placer.Placer.__call__ = call_and_capture
     placement_path = Path(params.result_dir) / f"{params.design_name()}.pl"

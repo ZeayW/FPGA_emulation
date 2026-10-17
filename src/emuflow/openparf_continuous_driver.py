@@ -22,26 +22,44 @@ from typing import Any
 OPENPARF_CONTINUOUS_METRICS_SCHEMA = (
     "emuflow.openparf-continuous-metrics/v3"
 )
+DEFAULT_HIGH_FANOUT_THRESHOLD = 64
+DEFAULT_HIGH_FANOUT_EXPONENT = 0.5
+DEFAULT_HIGH_FANOUT_MAXIMUM = 4.0
 
 
-def apply_high_fanout_net_weights(engine: Any) -> dict[str, Any]:
+def apply_high_fanout_net_weights(
+    engine: Any, *, output_direction: int
+) -> dict[str, Any]:
     """Account for the routing demand hidden by one-HPWL-per-net models.
 
     OpenPARF's Bookshelf reader gives every net unit weight.  That is a poor
     proxy for an FPGA control net with hundreds of spatially distributed
     sinks: its HPWL gradient sees only the bounding-box extrema while the
     detailed router must build the complete distribution tree.  Apply a
-    bounded square-root fanout weight before any placement operator runs.
+    bounded square-root fanout weight before optimization starts.
 
     The policy is deliberately compact and architecture independent.  It
     changes neither the netlist nor legality, and it avoids an unbounded
     degree-proportional force that would collapse reset sinks into one hot
     spot.  The downstream exact legalizer and router remain authoritative.
+    Large nets are masked out of upstream WAWL/WASLL by default. Raising a
+    masked net's weight cannot affect that objective. Re-enable internally
+    driven nets in the existing mask, but keep ideal driverless boundary
+    clocks masked. Classify drivers using native pin tensors, not Python
+    netlist records or instance names.
     """
 
-    threshold = int(engine.params.emuflow_high_fanout_weight_threshold)
-    exponent = float(engine.params.emuflow_high_fanout_weight_exponent)
-    maximum = float(engine.params.emuflow_high_fanout_weight_maximum)
+    import torch
+
+    threshold = int(getattr(
+        engine.params, "emuflow_high_fanout_weight_threshold", DEFAULT_HIGH_FANOUT_THRESHOLD
+    ))
+    exponent = float(getattr(
+        engine.params, "emuflow_high_fanout_weight_exponent", DEFAULT_HIGH_FANOUT_EXPONENT
+    ))
+    maximum = float(getattr(
+        engine.params, "emuflow_high_fanout_weight_maximum", DEFAULT_HIGH_FANOUT_MAXIMUM
+    ))
     if threshold < 2:
         raise RuntimeError("high-fanout weight threshold must be at least 2")
     if not math.isfinite(exponent) or exponent <= 0.0:
@@ -53,10 +71,24 @@ def apply_high_fanout_net_weights(engine: Any) -> dict[str, Any]:
     degrees = starts[1:] - starts[:-1]
     if int(degrees.shape[0]) != int(engine.data_cls.net_weights.shape[0]):
         raise RuntimeError("OpenPARF net degree and weight tensors disagree")
+    pin_map = engine.data_cls.net_pin_map
+    drivers = engine.data_cls.pin_signal_directs == output_direction
+    driver_counts = torch.bincount(
+        pin_map.b2as[drivers].to(dtype=torch.int64),
+        minlength=int(degrees.numel()),
+    )
+    driven = driver_counts > 0
+    eligible = driven & (engine.data_cls.net_mask != 0)
     factors = (degrees.to(dtype=engine.data_cls.net_weights.dtype) / threshold).pow(
         exponent
     )
     factors.clamp_(min=1.0, max=maximum)
+    factors.masked_fill_(~eligible, 1.0)
+    mask = engine.data_cls.net_mask_ignore_large
+    reenabled = eligible & (mask == 0)
+    # Placement operators already hold this tensor: replacing it would leave
+    # their old mask alive. Update it in place before the first optimizer step.
+    mask[reenabled] = engine.data_cls.net_mask[reenabled]
     engine.data_cls.net_weights.mul_(factors)
     # The per-instance wirelength preconditioner was derived from the original
     # unit weights during DataCollections construction.  Recompute it once so
@@ -64,13 +96,15 @@ def apply_high_fanout_net_weights(engine: Any) -> dict[str, Any]:
     engine.data_cls.compute_wl_precond(
         engine.params, engine.placedb, engine.dtype, engine.device
     )
-    weighted = degrees > threshold
+    weighted = eligible & (degrees > threshold)
     report = {
-        "policy": "bounded-sqrt-fanout-v1",
+        "policy": "bounded-driven-fabric-fanout-v2",
         "threshold": threshold,
         "exponent": exponent,
         "maximum_weight": maximum,
         "weighted_nets": int(weighted.sum().item()),
+        "reenabled_driven_nets": int(reenabled.sum().item()),
+        "masked_driverless_nets": int(((~driven) & (mask == 0)).sum().item()),
         "maximum_degree": int(degrees.max().item()) if degrees.numel() else 0,
         "observed_maximum_weight": (
             float(factors.max().item()) if factors.numel() else 1.0
@@ -313,7 +347,11 @@ def main() -> int:
         engine: Any, loaded_params: Any, placedb: Any
     ) -> None:
         original_init(engine, loaded_params, placedb)
-        apply_high_fanout_net_weights(engine)
+        from openparf import openparf as native
+
+        apply_high_fanout_net_weights(
+            engine, output_direction=int(native.SignalDirection.kOutput)
+        )
 
     placer.Placer.__init__ = _init_with_high_fanout_weights
     output = Path(params.result_dir) / f"{params.design_name()}.pl"

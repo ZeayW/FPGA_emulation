@@ -90,15 +90,23 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertEqual(config["emuflow_high_fanout_weight_maximum"], 4.0)
         self.assertEqual(
             report["high_fanout_net_weighting"]["policy"],
-            "bounded-sqrt-fanout-v1",
+            "bounded-driven-fabric-fanout-v2",
         )
 
     def test_high_fanout_weighting_is_bounded_and_updates_preconditioner(self):
         class Data:
             def __init__(self):
                 self.net_pin_map = SimpleNamespace(
-                    b_starts=torch.tensor([0, 2, 66, 1090], dtype=torch.int64)
+                    b_starts=torch.tensor([0, 2, 66, 1090], dtype=torch.int64),
+                    b2as=torch.repeat_interleave(
+                        torch.arange(3, dtype=torch.int32),
+                        torch.tensor([2, 64, 1024]),
+                    ),
                 )
+                self.pin_signal_directs = torch.zeros(1090, dtype=torch.uint8)
+                self.pin_signal_directs[[0, 2, 66]] = 1
+                self.net_mask = torch.ones(3, dtype=torch.uint8)
+                self.net_mask_ignore_large = torch.tensor([1, 1, 0], dtype=torch.uint8)
                 self.net_weights = torch.ones(3, dtype=torch.float64)
                 self.preconditioner_updates = 0
 
@@ -117,7 +125,8 @@ class XilinxOpenparfTest(unittest.TestCase):
             dtype=torch.float64,
             device=torch.device("cpu"),
         )
-        report = apply_high_fanout_net_weights(engine)
+        operator_mask = data.net_mask_ignore_large
+        report = apply_high_fanout_net_weights(engine, output_direction=1)
         self.assertTrue(torch.allclose(
             data.net_weights,
             torch.tensor([1.0, 1.0, 4.0], dtype=torch.float64),
@@ -126,6 +135,37 @@ class XilinxOpenparfTest(unittest.TestCase):
         self.assertEqual(report["weighted_nets"], 1)
         self.assertEqual(report["maximum_degree"], 1024)
         self.assertEqual(report["observed_maximum_weight"], 4.0)
+        self.assertEqual(report["reenabled_driven_nets"], 1)
+        self.assertEqual(report["masked_driverless_nets"], 0)
+        self.assertIs(operator_mask, data.net_mask_ignore_large)
+        self.assertEqual(operator_mask.tolist(), [1, 1, 1])
+
+    def test_large_driven_clock_is_optimized_but_ideal_boundary_clock_is_not(self):
+        data = SimpleNamespace(
+            net_pin_map=SimpleNamespace(
+                b_starts=torch.tensor([0, 1024, 2048, 3072], dtype=torch.int64),
+                b2as=torch.repeat_interleave(
+                    torch.arange(3, dtype=torch.int32), 1024
+                ),
+            ),
+            pin_signal_directs=torch.zeros(3072, dtype=torch.uint8),
+            net_weights=torch.ones(3, dtype=torch.float64),
+            net_mask=torch.tensor([1, 1, 0], dtype=torch.uint8),
+            net_mask_ignore_large=torch.zeros(3, dtype=torch.uint8),
+            compute_wl_precond=lambda *_args: None,
+        )
+        data.pin_signal_directs[[0, 2048]] = 1
+        engine = SimpleNamespace(
+            params=SimpleNamespace(),  # Omitted settings use the current policy.
+            data_cls=data, placedb=object(), dtype=torch.float64,
+            device=torch.device("cpu"),
+        )
+        report = apply_high_fanout_net_weights(engine, output_direction=1)
+        self.assertEqual(data.net_weights.tolist(), [4.0, 1.0, 1.0])
+        self.assertEqual(data.net_mask_ignore_large.tolist(), [1, 0, 0])
+        self.assertEqual(report["weighted_nets"], 1)
+        self.assertEqual(report["reenabled_driven_nets"], 1)
+        self.assertEqual(report["masked_driverless_nets"], 1)
 
     def test_cluster_export_can_limit_guidance_to_one_physical_slr(self):
         with tempfile.TemporaryDirectory() as temporary:

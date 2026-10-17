@@ -1,10 +1,14 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from unittest import mock
 
 import torch
+
+import emuflow.openparf_native_driver as native_driver
 
 from emuflow.openparf_native_driver import (
     OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
@@ -46,6 +50,98 @@ def _engine(*, patience=2, minimum=3):
 
 
 class OpenparfNativeDriverTest(unittest.TestCase):
+    def test_native_entrypoint_applies_fabric_weights_before_optimization(self):
+        created = []
+
+        class Data:
+            def __init__(self):
+                self.net_pin_map = SimpleNamespace(
+                    b_starts=torch.tensor([0, 1024, 2048], dtype=torch.int32),
+                    b2as=torch.repeat_interleave(torch.arange(2, dtype=torch.int32), 1024),
+                )
+                self.pin_signal_directs = torch.zeros(2048, dtype=torch.uint8)
+                self.pin_signal_directs[0] = 1
+                self.net_weights = torch.ones(2, dtype=torch.float64)
+                self.net_mask = torch.ones(2, dtype=torch.uint8)
+                self.net_mask_ignore_large = torch.zeros(2, dtype=torch.uint8)
+                self.pos = [torch.zeros((1, 2), dtype=torch.float64)]
+                self.preconditioner_updates = 0
+
+            def compute_wl_precond(self, *_args):
+                self.preconditioner_updates += 1
+
+        class Engine:
+            def __init__(self, params, placedb):
+                self.params, self.placedb = params, placedb
+                self.data_cls = Data()
+                self.dtype, self.device = torch.float64, torch.device("cpu")
+                self.operator_mask = self.data_cls.net_mask_ignore_large
+                self.op_cls = SimpleNamespace(hpwl_op=lambda _pos: [1.0, 2.0])
+                created.append(self)
+
+            def __call__(self):
+                # Assert at the real entrypoint's optimizer boundary, not
+                # merely by invoking the weighting helper directly.
+                if self.data_cls.net_weights.tolist() != [4.0, 1.0]:
+                    raise AssertionError("native optimization began with unit weights")
+                if self.operator_mask.tolist() != [1, 0]:
+                    raise AssertionError("fabric and ideal clocks were not distinguished")
+                self._emuflow_stable_convergence = {"stop_reason": "empty-active-subspace"}
+                self.cur_metric_record = _metric(1, [1.0, 2.0])
+
+            def write(self, filename):
+                Path(filename).write_text("fixture\n", encoding="utf-8")
+
+        class Params:
+            def load(self, filename):
+                self.__dict__.update(json.loads(Path(filename).read_text()))
+
+            def design_name(self):
+                return "fixture"
+
+        package = ModuleType("openparf")
+        package.__path__ = []
+        package.openparf = SimpleNamespace(SignalDirection=SimpleNamespace(kOutput=1))
+        flow = ModuleType("openparf.flow")
+        flow.route = mock.Mock(side_effect=AssertionError("routing not requested"))
+
+        def place(params, filename):
+            engine = Engine(params, object())
+            engine()
+            engine.write(filename)
+
+        flow.place = place
+        params_module = ModuleType("openparf.params")
+        params_module.Params = Params
+        placement = ModuleType("openparf.placement")
+        placement.placer = SimpleNamespace(Placer=Engine)
+        modules = {"openparf": package, "openparf.flow": flow,
+                   "openparf.params": params_module, "openparf.placement": placement}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "emuflow_stable_global_placement": True, "num_threads": 1,
+                "route_flag": 0, "result_dir": str(root),
+                "wirelength_weights": [1.0, 1.0],
+                "emuflow_min_feasible_iterations": 96,
+                "emuflow_convergence_patience": 64,
+                "emuflow_relative_hpwl_improvement": 1e-4,
+                "emuflow_high_fanout_weight_threshold": 64,
+                "emuflow_high_fanout_weight_exponent": 0.5,
+                "emuflow_high_fanout_weight_maximum": 4.0,
+            }))
+            argv = ["native-driver", "--config", str(config), "--log", str(root / "log")]
+            with mock.patch.dict(sys.modules, modules), mock.patch.object(sys, "argv", argv):
+                self.assertEqual(native_driver.main(), 0)
+            metrics = json.loads((root / "fixture.native-metrics.json").read_text())
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0].data_cls.preconditioner_updates, 1)
+        self.assertIs(created[0].operator_mask, created[0].data_cls.net_mask_ignore_large)
+        self.assertEqual(metrics["high_fanout_net_weighting"]["reenabled_driven_nets"], 1)
+        self.assertEqual(metrics["high_fanout_net_weighting"]["masked_driverless_nets"], 1)
+        flow.route.assert_not_called()
+
     def test_waits_for_patience_and_restores_best_feasible_position(self):
         engine = _engine()
         engine.data_cls.pos[0].data.fill_(11.0)

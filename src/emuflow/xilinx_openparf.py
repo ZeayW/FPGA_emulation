@@ -17,6 +17,11 @@ from .errors import ImportError, ValidationError
 from .io import read_json, write_json
 from .openparf import run_openparf
 from .openparf_continuous_driver import OPENPARF_CONTINUOUS_METRICS_SCHEMA
+from .openparf_continuous_driver import (
+    DEFAULT_HIGH_FANOUT_THRESHOLD as XILINX_OPENPARF_HIGH_FANOUT_THRESHOLD,
+    DEFAULT_HIGH_FANOUT_EXPONENT as XILINX_OPENPARF_HIGH_FANOUT_EXPONENT,
+    DEFAULT_HIGH_FANOUT_MAXIMUM as XILINX_OPENPARF_HIGH_FANOUT_MAXIMUM,
+)
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from .xilinx_placement import XILINX_GUIDANCE_SCHEMA
 
@@ -27,9 +32,6 @@ XILINX_OPENPARF_COORDINATE_SYSTEM_SCHEMA = (
     "emuflow.xilinx-openparf-physical-tile-grid/v2"
 )
 XILINX_OPENPARF_TARGET_DENSITY = 0.80
-XILINX_OPENPARF_HIGH_FANOUT_THRESHOLD = 64
-XILINX_OPENPARF_HIGH_FANOUT_EXPONENT = 0.5
-XILINX_OPENPARF_HIGH_FANOUT_MAXIMUM = 4.0
 
 
 def _cluster_resource(cluster: Mapping[str, Any]) -> str:
@@ -518,7 +520,7 @@ def export_xilinx_cluster_bookshelf(
             None
             if native_packed_cluster_legalization
             else {
-                "policy": "bounded-sqrt-fanout-v1",
+                "policy": "bounded-driven-fabric-fanout-v2",
                 "threshold": XILINX_OPENPARF_HIGH_FANOUT_THRESHOLD,
                 "exponent": XILINX_OPENPARF_HIGH_FANOUT_EXPONENT,
                 "maximum_weight": XILINX_OPENPARF_HIGH_FANOUT_MAXIMUM,
