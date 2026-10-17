@@ -195,6 +195,11 @@ Stage 1 of that increment is implemented as a strict publication boundary:
 - Aggregated system-route load has one canonical record per directed FPGA pair
   plus `signal_count`; the adapter does not expand hundreds of equivalent nets
   into a large JSON route array.
+- Ordinary reports are parsed line by line, without the former 16 MiB file
+  limit or whole-file text/split-line copies. A single line is limited to
+  1 Mi characters. SSTA parsing retains only path IDs, constraint flags and
+  first-arrival scalars; its state scales with reported path count, not report
+  body size. The same constrained-path qualification rules still apply.
 - License, tool, infrastructure, and missing-report failures are terminal
   diagnostics, never hardware observations. Only controlled, evaluated fitting
   experiments may set `fit_eligible=true`; the validator recomputes that value.

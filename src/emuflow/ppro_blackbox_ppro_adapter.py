@@ -11,8 +11,10 @@ from __future__ import annotations
 import math
 import re
 from collections import defaultdict, deque
+from io import StringIO
+from itertools import zip_longest
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Iterable, Iterator, Mapping
 
 from .errors import ValidationError
 
@@ -28,6 +30,7 @@ _LOGICAL_FPGA = re.compile(r"^F[0-9]+$")
 _NORMALIZED_DELAY = re.compile(
     r"normalized\s+delay\s+([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE
 )
+_NORMALIZED_PREFIX = re.compile(r"(normalized\s*(?:delay\s*)?)$", re.IGNORECASE)
 _SSTA_PATH_ROW = re.compile(
     r"^(Path[0-9]+)\s+(.+?)\s{2,}([0-9]+)\s+"
     r"(-?[0-9]+(?:\.[0-9]+)?)\s{2,}"
@@ -51,15 +54,27 @@ _RESOURCE_MAP = {
 }
 
 
-def _read_text(path: Path, *, maximum_bytes: int = 16 * 1024 * 1024) -> str:
+def _read_lines(path: Path, *, maximum_line_chars: int = 1024 * 1024) -> Iterator[str]:
+    """Read ordinary reports with a bounded text buffer, not a file-size cap."""
     if not path.is_file():
         raise ValidationError(f"missing ordinary report: {path.name}")
-    if path.stat().st_size > maximum_bytes:
-        raise ValidationError(f"ordinary report {path.name}: exceeds parser bound")
     try:
-        return path.read_text(encoding="utf-8")
+        with path.open(encoding="utf-8") as stream:
+            while True:
+                line = stream.readline(maximum_line_chars + 1)
+                if not line:
+                    break
+                if len(line) > maximum_line_chars:
+                    raise ValidationError(
+                        f"ordinary report {path.name}: line exceeds parser bound"
+                    )
+                yield line
     except (OSError, UnicodeError) as error:
         raise ValidationError(f"ordinary report {path.name}: cannot be read") from error
+
+
+def _lines(text: str | Iterable[str]) -> Iterable[str]:
+    return StringIO(text) if isinstance(text, str) else text
 
 
 def _pipe_cells(line: str) -> list[str] | None:
@@ -102,13 +117,13 @@ def _logical_fpga(raw: str, aliases: Mapping[str, str], context: str) -> str:
 
 
 def _parse_partition_report(
-    text: str, aliases: Mapping[str, str]
+    text: str | Iterable[str], aliases: Mapping[str, str]
 ) -> tuple[Dict[str, float], list[Dict[str, Any]], list[Dict[str, str]]]:
     header: list[str] | None = None
     device_demand: Dict[str, Dict[str, float]] = {}
     device_utilization: Dict[str, Dict[str, float]] = {}
     total_demand: Dict[str, float] | None = None
-    for line in text.splitlines():
+    for line in _lines(text):
         cells = _pipe_cells(line)
         if not cells:
             continue
@@ -187,14 +202,14 @@ def _shortest_hops(
 
 
 def _parse_route_report(
-    text: str, aliases: Mapping[str, str]
+    text: str | Iterable[str], aliases: Mapping[str, str]
 ) -> tuple[list[Dict[str, Any]], Dict[str, float]]:
     section = ""
     tdm_counts: Dict[tuple[str, str], int] = defaultdict(int)
     untdm_counts: Dict[tuple[str, str], int] = defaultdict(int)
     direct_edges: set[tuple[str, str]] = set()
     ratio_bounds: Dict[tuple[str, str], int] = defaultdict(int)
-    for line in text.splitlines():
+    for line in _lines(text):
         lowered = line.strip().lower()
         if lowered.startswith("2.1 fpga tdm connect net num"):
             section = "tdm"
@@ -271,24 +286,34 @@ def _parse_route_report(
     }
 
 
-def _parse_post_partition_ssta(text: str) -> Dict[str, float]:
+def _parse_timing_report(text: str | Iterable[str]) -> Dict[str, float]:
+    # Retain only path IDs/constraint flags and first-arrival scalars. Report
+    # body text, logic paths, raw instance names and tables are not retained.
     cross_paths: Dict[str, bool] = {}
-    for line in text.splitlines():
-        match = _SSTA_PATH_ROW.match(line)
-        if match is None or int(match.group(3)) <= 0:
-            continue
-        cross_paths[match.group(1)] = "unconstrained" not in match.group(2).lower()
-    if not cross_paths:
-        return {}
-
     arrivals: Dict[str, float] = {}
     current_path: str | None = None
-    for line in text.splitlines():
-        start = _SSTA_DETAIL_START.fullmatch(line)
+    normalized_max: float | None = None
+    normalized_prefix = ""
+    for line in _lines(text):
+        # The historical regexp accepts whitespace across line boundaries.
+        # Keep only an unfinished phrase, collapsing arbitrary whitespace;
+        # never concatenate the complete report to recover that behavior.
+        normalized_text = normalized_prefix + line
+        for match in _NORMALIZED_DELAY.finditer(normalized_text):
+            value = float(match.group(1))
+            if not math.isfinite(value) or value < 0:
+                raise ValidationError("PPro timing report contains an invalid normalized delay")
+            normalized_max = value if normalized_max is None else max(normalized_max, value)
+        suffix = _NORMALIZED_PREFIX.search(normalized_text)
+        normalized_prefix = re.sub(r"\s+", " ", suffix.group(1)) if suffix else ""
+        match = _SSTA_PATH_ROW.match(line)
+        if match is not None and int(match.group(3)) > 0:
+            cross_paths[match.group(1)] = "unconstrained" not in match.group(2).lower()
+        start = _SSTA_DETAIL_START.fullmatch(line.rstrip("\r\n"))
         if start is not None:
             current_path = start.group(1)
             continue
-        if current_path not in cross_paths:
+        if current_path is None:
             continue
         arrival = _SSTA_DATA_ARRIVAL.match(line)
         if arrival is not None and current_path not in arrivals:
@@ -300,9 +325,19 @@ def _parse_post_partition_ssta(text: str) -> Dict[str, float]:
             # below so a genuinely invalid first arrival still fails closed.
             arrivals[current_path] = float(arrival.group(1))
 
-    values = list(arrivals.values())
-    if any(not math.isfinite(value) or value < 0 for value in values):
-        raise ValidationError("PPro SSTA report contains an invalid data arrival time")
+    # Preserve normalized-delay precedence and the old two-pass parser's
+    # support for detailed arrivals preceding their cross-path summaries.
+    if normalized_max is not None:
+        return {"sr0_worst_cross_fpga_delay_ns": normalized_max}
+    if not cross_paths:
+        return {}
+    worst_arrival: float | None = None
+    for path, value in arrivals.items():
+        if path not in cross_paths:
+            continue
+        if not math.isfinite(value) or value < 0:
+            raise ValidationError("PPro SSTA report contains an invalid data arrival time")
+        worst_arrival = value if worst_arrival is None else max(worst_arrival, value)
     result = {
         "sr0_reported_cross_fpga_path_count": float(len(cross_paths)),
         "sr0_constrained_cross_fpga_path_count": float(sum(cross_paths.values())),
@@ -311,28 +346,9 @@ def _parse_post_partition_ssta(text: str) -> Dict[str, float]:
         ),
         "sr0_all_cross_fpga_paths_constrained": float(all(cross_paths.values())),
     }
-    if values:
-        result["sr0_worst_cross_fpga_delay_ns"] = max(values)
+    if worst_arrival is not None:
+        result["sr0_worst_cross_fpga_delay_ns"] = worst_arrival
     return result
-
-
-def _parse_timing_report(text: str) -> Dict[str, float]:
-    values = [float(match) for match in _NORMALIZED_DELAY.findall(text)]
-    if any(not math.isfinite(value) or value < 0 for value in values):
-        raise ValidationError("PPro timing report contains an invalid normalized delay")
-    if values:
-        return {"sr0_worst_cross_fpga_delay_ns": max(values)}
-
-    ssta = _parse_post_partition_ssta(text)
-    if not ssta:
-        # A normal PPro application run can emit an empty SSTA report while
-        # still producing valid partition and system-route reports.  Preserve
-        # those independent black-box observations instead of rejecting the
-        # entire run.  Latency-fit and promotion gates separately require the
-        # normalized-delay metric, so an empty report cannot become timing
-        # calibration or promotion evidence.
-        return {}
-    return ssta
 
 
 def parse_ppro_2026_ordinary_reports(
@@ -344,27 +360,33 @@ def parse_ppro_2026_ordinary_reports(
     if set(report_paths) != _REPORTS:
         raise ValidationError("PPro report adapter received an incomplete allowlist")
     aliases = _aliases(fpga_aliases)
-    partition_text = _read_text(report_paths["partition_summary"])
     if report_paths["resource_summary"].resolve() != report_paths[
         "partition_summary"
     ].resolve():
-        resource_text = _read_text(report_paths["resource_summary"])
-        if resource_text != partition_text:
+        sentinel = object()
+        if any(
+            left != right
+            for left, right in zip_longest(
+                _read_lines(report_paths["resource_summary"]),
+                _read_lines(report_paths["partition_summary"]),
+                fillvalue=sentinel,
+            )
+        ):
             raise ValidationError(
                 "PPro 2026 adapter requires the same pa0 report for resource and partition summaries"
             )
     resource_demand, utilization, assignments = _parse_partition_report(
-        partition_text, aliases
+        _read_lines(report_paths["partition_summary"]), aliases
     )
     routes = []
     communication: Dict[str, float] = {}
     if report_paths["route_summary"].is_file():
-        route_text = _read_text(report_paths["route_summary"])
-        routes, communication = _parse_route_report(route_text, aliases)
+        routes, communication = _parse_route_report(
+            _read_lines(report_paths["route_summary"]), aliases
+        )
     timing: Dict[str, float] = {}
     if report_paths["system_timing"].is_file():
-        timing_text = _read_text(report_paths["system_timing"])
-        timing = _parse_timing_report(timing_text)
+        timing = _parse_timing_report(_read_lines(report_paths["system_timing"]))
     return {
         "design": dict(design_metrics),
         "resource_demand": resource_demand,

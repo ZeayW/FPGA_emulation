@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import tempfile
+import tracemalloc
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.ppro_blackbox_ppro_adapter import parse_ppro_2026_ordinary_reports
@@ -112,6 +114,112 @@ class PProBlackboxPProAdapterTest(unittest.TestCase):
             "route_summary": route,
             "system_timing": timing,
         }
+
+    def _timing_metrics(self, text):
+        with tempfile.TemporaryDirectory() as raw:
+            reports = self._reports(Path(raw))
+            reports["system_timing"].write_text(text, encoding="utf-8")
+            return parse_ppro_2026_ordinary_reports(
+                reports, {"instances": 1234}, {"F11": "F0", "F33": "F1"}
+            )["timing"]
+
+    def test_large_ordinary_reports_stream_without_whole_file_reads(self):
+        with tempfile.TemporaryDirectory() as raw:
+            reports = self._reports(Path(raw))
+            expected = parse_ppro_2026_ordinary_reports(
+                reports, {"instances": 1234}, {"F11": "F0", "F33": "F1"}
+            )
+            # More than the former 16 MiB cap in each ordinary report; padding
+            # is not retained, and repeated path bodies are not synthesized.
+            block = ("ordinary diagnostic padding " + "x" * 995 + "\n") * 1024
+            for path in set(reports.values()):
+                with path.open("a", encoding="utf-8") as stream:
+                    for _ in range(17):
+                        stream.write(block)
+                self.assertGreater(path.stat().st_size, 16 * 1024 * 1024)
+            tracemalloc.start()
+            try:
+                with mock.patch.object(
+                    Path, "read_text", side_effect=AssertionError("whole report read")
+                ):
+                    actual = parse_ppro_2026_ordinary_reports(
+                        reports, {"instances": 1234}, {"F11": "F0", "F33": "F1"}
+                    )
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+        self.assertEqual(actual, expected)
+        self.assertLess(peak, 2 * 1024 * 1024)
+
+    def test_streaming_reports_reject_overlong_lines_and_invalid_utf8(self):
+        for payload, message in [
+            (b"x" * (1024 * 1024 + 1), "line exceeds parser bound"),
+            (b"normal line\n\xff\n", "cannot be read"),
+        ]:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as raw:
+                reports = self._reports(Path(raw))
+                reports["system_timing"].write_bytes(payload)
+                with self.assertRaisesRegex(ValidationError, message):
+                    parse_ppro_2026_ordinary_reports(
+                        reports, {}, {"F11": "F0", "F33": "F1"}
+                    )
+
+    def test_separate_resource_report_requires_identical_normalized_text(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            reports = self._reports(root)
+            other = root / "same-pa0.rpt"
+            reports["resource_summary"] = other
+            other.write_bytes(PARTITION_REPORT.replace("\n", "\r\n").encode("utf-8"))
+            metrics = parse_ppro_2026_ordinary_reports(
+                reports, {}, {"F11": "F0", "F33": "F1"}
+            )
+            self.assertEqual(metrics["resource_demand"]["lut"], 1000.0)
+            for text in [PARTITION_REPORT[:-20], PARTITION_REPORT + "extra\n"]:
+                other.write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(ValidationError, "same pa0 report"):
+                    parse_ppro_2026_ordinary_reports(
+                        reports, {}, {"F11": "F0", "F33": "F1"}
+                    )
+
+    def test_normalized_delay_phrase_can_span_lines(self):
+        for phrase in [
+            "normalized\ndelay\n60.10",
+            "NoRmAlIzEd\n\n\tDeLaY\n\n60.10",
+            "normalized delay 42.00\nnormalized\n delay 60.10",
+        ]:
+            with self.subTest(phrase=phrase):
+                self.assertEqual(
+                    self._timing_metrics(phrase),
+                    {"sr0_worst_cross_fpga_delay_ns": 60.1},
+                )
+        self.assertEqual(self._timing_metrics("normalizeddelay\n60.10"), {})
+
+    def test_ssta_detail_before_summary_preserves_first_arrival_and_last_flag(self):
+        metrics = self._timing_metrics(
+            "Path1\n  8.250 data arrival time\n -8.250 data arrival time\n"
+            "Path9\n -90.000 data arrival time\n"
+            "Path1     clk to clk(unconstrained)     1    -1.250   src dst\n"
+            "Path1     clk to clk                    1    -1.250   src dst\n"
+        )
+        self.assertEqual(metrics["sr0_worst_cross_fpga_delay_ns"], 8.25)
+        self.assertEqual(metrics["sr0_reported_cross_fpga_path_count"], 1)
+        self.assertEqual(metrics["sr0_constrained_cross_fpga_path_count"], 1)
+        self.assertEqual(metrics["sr0_unconstrained_cross_fpga_path_count"], 0)
+
+    def test_genuinely_negative_first_arrival_still_fails(self):
+        with self.assertRaisesRegex(ValidationError, "invalid data arrival"):
+            self._timing_metrics(
+                "Path1     clk to clk                    1    -1.250   src dst\n"
+                "Path1\n -8.250 data arrival time\n 8.250 data arrival time\n"
+            )
+
+    def test_normalized_delay_keeps_precedence_over_ssta(self):
+        metrics = self._timing_metrics(
+            "Path1     clk to clk                    1    -1.250   src dst\n"
+            "Path1\n -8.250 data arrival time\n normalized delay 4.2\n"
+        )
+        self.assertEqual(metrics, {"sr0_worst_cross_fpga_delay_ns": 4.2})
 
     def test_parses_compact_vendor_neutral_metrics(self):
         with tempfile.TemporaryDirectory() as raw:
