@@ -6358,7 +6358,12 @@ indexed checker projects only scalar MUX S and FF D connectivity alongside
 its existing per-site facts; no full-cell JSON is required for this check.
 The probe passed on the pinned device in 4.65 seconds; this is mapping
 qualification only, not a complete physical or global timing pass. Real
-NVDLA repaired-placement/routing and final global timing remain pending.
+NVDLA F3 repair has passed the independent native placement validator on
+346,198 atoms: exactly one primary FF moved from AFF to DFF within its
+original slice, with every other placement row unchanged. No synthesis,
+partitioning, or native global/detailed placement was rerun. Physical bridge,
+routing, and final global timing remain pending. The implementation also
+passed 1,637 local tests (six optional/runtime tests skipped).
 Sparse DLA partitions are admitted to the
 smallest contiguous SLR
 window that preserves 1.5x resource headroom, instead of being spread over all
