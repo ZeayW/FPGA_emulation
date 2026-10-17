@@ -16,8 +16,10 @@ from emuflow.errors import ValidationError
 from emuflow.xilinx_rwroute import (
     _PipOwnership,
     _rwroute_heap_argument,
+    RAPIDWRIGHT_TIMING_DATA_SHA256,
     _validate_rapidwright_device_data,
     export_rwroute_input,
+    run_rwroute,
     validate_xilinx_route_db,
 )
 from emuflow.xilinx_timing import (
@@ -31,6 +33,38 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_configured_heap_reaches_the_actual_subprocess_command(self):
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            timing = root / "timing"
+            timing.mkdir()
+            for name in RAPIDWRIGHT_TIMING_DATA_SHA256:
+                (timing / name).write_text("fixture")
+            source = root / "adapter.java"
+            source.write_text("// subprocess protocol fixture, not executable Java\n")
+            md5 = {"data/parts.db": "0" * 32,
+                   "data/devices/virtexuplus/xcvu19p_db.dat": "0" * 32}
+            with patch("emuflow.xilinx_rwroute._validate_rapidwright_device_data", return_value=md5), \
+                 patch("emuflow.xilinx_rwroute._sha256", side_effect=lambda p:
+                       RAPIDWRIGHT_TIMING_DATA_SHA256.get(p.name, SHA)), \
+                 patch("emuflow.xilinx_rwroute.subprocess.run", return_value=
+                       subprocess.CompletedProcess([], 0, stdout="")) as execute, \
+                 patch("emuflow.xilinx_rwroute.read_json", return_value={"timing": {}}), \
+                 patch("emuflow.xilinx_rwroute.validate_xilinx_route_db", return_value={"status": "pass"}):
+                run_rwroute(
+                    root / "input.tsv", root / "route.json",
+                    rapidwright_jar=root / "provider.jar", java=root / "jdk/bin/java",
+                    classes_dir=root / "classes", java_source=source,
+                    device_data_root=root / "device", timing_data_dir=timing,
+                    log_path=root / "route.log", java_heap_gib=96,
+                )
+            java_command = execute.call_args_list[-1].args[0]
+            self.assertIn("-Xmx96g", java_command)
+            self.assertNotIn("-Xmx32g", java_command)
+            self.assertIn("heap budget: 96 GiB", (root / "route.log").read_text())
+
     def test_heap_budget_is_explicit_and_validated(self):
         for budget in (1, 32, 96):
             self.assertEqual(_rwroute_heap_argument(budget), f"-Xmx{budget}g")
