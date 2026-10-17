@@ -23,6 +23,16 @@ class _BoundedMapping(Mapping):
         self.kind = kind
         self.cache: OrderedDict[str, Any] = OrderedDict()
 
+    def type_of(self, key: str) -> str:
+        if self.kind != "instance":
+            raise KeyError(key)
+        row = self.view.connection.execute(
+            "SELECT type FROM cell_records WHERE id=?", (key,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        return str(row[0])
+
     def _lookup(self, key: str) -> Any:
         c = self.view.connection
         if self.kind == "instance_index":

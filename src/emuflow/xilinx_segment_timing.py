@@ -375,6 +375,22 @@ def build_xilinx_local_path_timing(
         if _timing_graph is not None
         else _graph(mapped_path, timing_path)
     )
+    from .local_path_storage import LocalPathRows, write_local_paths
+
+    if isinstance(identity["paths"], LocalPathRows):
+        def measured_records():
+            for path in identity["paths"]:
+                delay, _actual_start = graph.longest([path["start_pin"]], path["end_pin"])
+                yield {**path, "delay_ns": delay}
+
+        return write_local_paths(output_path, {
+            "schema": LOCAL_PATH_TIMING_SCHEMA, "status": "pass",
+            "design": identity["design"], "fpga": identity["fpga"],
+            "provider": "rapidwright-lightweight-local-path-graph-v1",
+            "qualification": "source-bound-routed-endpoint-longest-path-upper-bound-with-launch-clock-to-q-and-capture-setup",
+            "source": identity["source"], "identity_schema": identity["schema"],
+            "coverage": identity["coverage"],
+        }, measured_records())
     records = []
     for path in identity["paths"]:
         delay, _actual_start = graph.longest(

@@ -429,12 +429,22 @@ def _xilinx_object(
             raise ValidationError(f"Xilinx top endpoint {port}[{bit}] is absent")
         suffix = port if ports[port]["width"] == 1 else f"{port}[{bit}]"
         return "port", f"top:{suffix}"
-    if instance_id not in instances or (port, bit) not in pins[instance_id]:
+    type_of = getattr(instances, "type_of", None)
+    if callable(type_of):
+        try:
+            cell_type = type_of(instance_id)
+        except KeyError as error:
+            raise ValidationError(f"Xilinx logical instance {instance_id!r} is absent") from error
+        instance = instances[instance_id] if cell_type in {"$lut", "$_LUT_"} else {"type": cell_type}
+    else:
+        if instance_id not in instances:
+            raise ValidationError(f"Xilinx logical instance {instance_id!r} is absent")
+        instance = instances[instance_id]
+        cell_type = instance["type"]
+    if (port, bit) not in pins[instance_id]:
         raise ValidationError(
             f"Xilinx logical endpoint {instance_id}.{port}[{bit}] is absent"
         )
-    instance = instances[instance_id]
-    cell_type = instance["type"]
     if cell_type in {"$lut", "$_LUT_"}:
         _width, input_port, output_port, _truth = _lut_definition(instance)
         if port == input_port:

@@ -42,6 +42,16 @@ def read_json(path: Path) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{path}: expected a JSON object at the document root")
     schema = value.get("schema")
+    if schema == "emuflow.local-path-storage/v1":
+        from .local_path_storage import open_local_paths
+
+        return open_local_paths(path, value)
+    if schema == "emuflow.phase7b-physical-summary/v1":
+        from .local_path_storage import STORAGE_SCHEMA, open_local_paths
+
+        for fpga, database in value.get("local_path_timing", {}).items():
+            if database.get("schema") == STORAGE_SCHEMA:
+                value["local_path_timing"][fpga] = open_local_paths(path, database)
     if schema == "emuflow.managed-json-storage/v1":
         from .managed_json_storage import expand_managed_json
 
@@ -80,6 +90,13 @@ def write_json(
     durable: bool | None = None,
     sort_keys: bool = True,
 ) -> None:
+    if value.get("schema") in {
+        "emuflow.local-path-identity/v1", "emuflow.local-path-identity/v2",
+        "emuflow.local-path-timing/v1", "emuflow.phase7b-physical-summary/v1",
+    }:
+        from .local_path_storage import local_paths_for_json
+
+        value = local_paths_for_json(value, path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(
         f".{path.name}.{uuid.uuid4().hex}.tmp"

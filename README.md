@@ -2487,6 +2487,30 @@ This qualification reused published artifacts without rerunning synthesis,
 placement, routing, or timing. No old checker rerun was performed, so these
 measurements do not establish a comparative speedup or final timing QoR.
 
+RapidWright local-path timing now uses `emuflow.local-path-storage/v1`:
+a bounded JSON header references normalized SQLite path/pin rows. The logical
+local-path identity/timing schemas, endpoint bindings, required times, routed
+delay model, and original-path population are unchanged. Preparation spools
+per-FPGA endpoint facts and sorted coverage IDs into one ephemeral SQL store
+instead of retaining a dictionary per original path. Binding and routed
+measurement insert rows incrementally; FPGA workers and global STA consume
+re-iterable views. The physical summary rebases a small reference rather than
+embedding or reparsing the complete local timing population. Native endpoint
+type queries also omit unrelated synthesis parameters/attributes, and the
+unused RapidWright local-query TSV is no longer emitted. Ordinary VPR selected-
+chain queries and explicit legacy JSON fixtures remain separate interfaces.
+Validators check typed row/chain constraints and aggregate counts/delays in
+SQL, retaining independent source/coverage and OpenSTA event binding checks.
+Explicit storage auditing can additionally verify the payload SHA-256;
+ordinary consumers do not repeatedly hash immutable payloads. These files are
+active-run scratch, not a persistent checkpoint cache. Python still performs
+bounded endpoint projection and timing-graph queries; this is not a claim that
+every timing algorithm is native C++ or that all Phase 7 bottlenecks are gone.
+Round-trip, relocation, truncation, mixed-run, malformed-row, bounded-memory,
+and reference-versus-indexed routed-delay/global-event tests are included.
+Real-design storage/runtime measurement and the complete Phase 7/7C gate for
+this interface revision remain pending.
+
 The routed physical tail follows the same rule. RWRoute now validates and
 seals its in-memory route object once while publishing it; routed-timing
 binding consumes that exact validation certificate instead of reopening,

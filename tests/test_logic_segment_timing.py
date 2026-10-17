@@ -149,6 +149,27 @@ class LogicSegmentTimingTest(unittest.TestCase):
             })
             self.assertEqual(xilinx.source_manifest, prepared.source_manifest)
             self.assertEqual(xilinx.original_nets, {})
+            merged = root / "merged.emuir.sqlite"
+            EmuIR({**value, "design": {**value["design"], "name": "dut__fpga0"}}).save(merged)
+            from emuflow.indexed_physical_ir import _BoundedMapping
+            original_lookup = _BoundedMapping._lookup
+
+            def minimal_lookup(mapping, key):
+                if mapping.kind == "instance":
+                    raise AssertionError("native endpoint binding decoded complete cell payload")
+                return original_lookup(mapping, key)
+
+            with mock.patch.object(_BoundedMapping, "_lookup", minimal_lookup):
+                bound = write_xilinx_local_path_query(
+                    ir_path, assignment, paths, routes, merged, "fpga0",
+                    root / "unused.tsv", root / "local-identity.json", prepared_inputs=xilinx,
+                )
+            self.assertEqual(bound["local_paths"], 1)
+            self.assertFalse((root / "unused.tsv").exists())
+            bound_identity = read_json(root / "local-identity.json")
+            self.assertEqual(bound_identity["paths"][0]["start_pin"], "cell:launch/Q")
+            self.assertEqual(bound_identity["paths"][0]["end_pin"], "cell:capture/D")
+            self.assertEqual(validate_local_path_identity(bound_identity)["status"], "pass")
             with open_emuir_sqlite_read_only(ir_path) as connection:
                 reference = selected_net_records(connection, ["n0", "n1"])
                 with mock.patch(

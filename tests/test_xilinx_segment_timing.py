@@ -261,6 +261,16 @@ def test_local_path_timing_is_source_bound_and_uses_routed_graph():
             identity_path, mapped_path, timing_path, output
         )
         database = json.loads(output.read_text())
+        from emuflow.local_path_storage import write_local_paths
+        from emuflow.io import read_json
+        indexed_identity = root / "indexed-identity.json"
+        write_local_paths(indexed_identity, {k: v for k, v in identity.items() if k != "paths"}, iter(identity["paths"]))
+        indexed_output = root / "indexed-timing.json"
+        indexed_result = build_xilinx_local_path_timing(indexed_identity, mapped_path, timing_path, indexed_output)
+        indexed_database = read_json(indexed_output)
+        assert indexed_database == database
+        assert {k: v for k, v in indexed_result.items() if k != "output"} == {k: v for k, v in result.items() if k != "output"}
+        assert "paths" not in json.loads(indexed_output.read_text())
     assert result["local_paths"] == 1
     assert result["measurement_counts"] == {
         "explicit-routed-path-chain": 0,

@@ -845,6 +845,7 @@ def run_multi_fpga_physical_flow(
                 assignment_path,
                 path_database_path,
                 routes_path,
+                scratch_dir=output_dir,
                 original_ir=prepared_logic_inputs.original_ir,
                 assignment=prepared_logic_inputs.assignment,
                 database=(
