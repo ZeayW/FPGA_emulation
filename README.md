@@ -6638,7 +6638,15 @@ cross-SLR box is extended, towards its sink; same-SLR and already sufficient
 boxes remain unchanged. The length comes from the actual routing graph, not a
 case-specific constant. This corrects an empty search corridor, not a physical
 capacity or legality constraint. Large-design runtime and closure qualification
-of this correction remain pending. U-turn routing
+of this correction remain pending. On the pinned XCVU19P provider, 29 native
+geometry checks passed, including the actual strict-edge predicate and the
+production initializer. Two-cell northbound and southbound cross-SLR routes
+passed independent connectivity, PIP, node-ownership and static-net checks.
+In the southbound fixture, v2 explored 112,156 nodes and failed its first
+iteration before succeeding on retry; v3 explored 883 nodes and closed in the
+first iteration. The northbound fixture was already first-iteration routable
+under both versions. These are primitive fixtures, not large-design runtime
+or QoR results; JVM startup dominated their total wall times. U-turn routing
 resources are enabled because
 the complete XCVU19P site grid includes legal placements near device edges;
 RapidWright explicitly requires those resources for boundary routability.
