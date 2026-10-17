@@ -1000,7 +1000,7 @@ def validate_xilinx_route_db(
         or router
         != (
             "CUFR-HUS-non-timing-driven-uturn-enabled-"
-            "parallel-unroutable-recovery"
+            "parallel-unroutable-recovery-extended-lcb-clock"
         )
     ):
         raise ValidationError("XilinxRouteDB transformed-cell accounting is invalid")

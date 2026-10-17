@@ -196,7 +196,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "transformed_dsp48e2_cells": 0,
                 "router": (
                     "CUFR-HUS-non-timing-driven-uturn-enabled-"
-                    "parallel-unroutable-recovery"
+                    "parallel-unroutable-recovery-extended-lcb-clock"
                 ),
             },
             "excluded_nets": [],

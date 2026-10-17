@@ -16,6 +16,7 @@ import com.xilinx.rapidwright.design.Unisim;
 import com.xilinx.rapidwright.device.BEL;
 import com.xilinx.rapidwright.device.BELPin;
 import com.xilinx.rapidwright.device.ClockRegion;
+import com.xilinx.rapidwright.device.IntentCode;
 import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
@@ -25,10 +26,15 @@ import com.xilinx.rapidwright.edif.EDIFNet;
 import com.xilinx.rapidwright.edif.EDIFPort;
 import com.xilinx.rapidwright.rwroute.CUFR;
 import com.xilinx.rapidwright.rwroute.Connection;
+import com.xilinx.rapidwright.rwroute.NodeStatus;
+import com.xilinx.rapidwright.rwroute.RouterHelper;
 import com.xilinx.rapidwright.rwroute.RWRouteConfig;
-import com.xilinx.rapidwright.router.Router;
+import com.xilinx.rapidwright.router.RouteNode;
+import com.xilinx.rapidwright.router.UltraScaleClockRouting;
 import com.xilinx.rapidwright.timing.TimingModel;
 import com.xilinx.rapidwright.util.ParallelismTools;
+import com.xilinx.rapidwright.placer.blockplacer.Point;
+import com.xilinx.rapidwright.placer.blockplacer.SmallestEnclosingCircle;
 import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -39,23 +45,27 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.DigestOutputStream;
 import java.security.MessageDigest;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 public final class EmuFlowRWRoute {
     private static final String SCHEMA = "emuflow.xilinx-route-db/v2";
     private static final String ROUTER_STRATEGY =
-        "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-recovery";
+        "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-"
+        + "recovery-extended-lcb-clock";
     private static final double MAX_RECOVERY_ITERATION_SECONDS = 600.0;
     private static final String[] DSP48E2_COMPONENTS = new String[] {
         "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
@@ -274,70 +284,181 @@ public final class EmuFlowRWRoute {
             }
         }
 
-        /**
-         * RapidWright's UltraScale+ global-clock router expects every sink to
-         * map to a leaf clock buffer.  A cascaded BUFGCE is different: its
-         * CLK_IN site pin is the input of another global buffer and therefore
-         * has no LCB mapping.  Route the ordinary sinks with the dedicated
-         * clock router, then add only those cascade spurs with the re-entrant
-         * fabric router while retaining the already-routed clock tree.
-         */
+        private static final int MAX_LCB_SEARCH_DEPTH = 16;
+
+        private static final class NodeDepth {
+            final Node node;
+            final int depth;
+
+            NodeDepth(Node node, int depth) {
+                this.node = node;
+                this.depth = depth;
+            }
+        }
+
+        private Map<RouteNode, List<SitePinInst>> extendedLCBPinMappings(Net clk) {
+            Map<RouteNode, List<SitePinInst>> mappings = new HashMap<>();
+            Set<Node> usedLCBs = new HashSet<>();
+            Function<Node, NodeStatus> status =
+                node -> getGlobalRoutingNodeStatus(clk, node);
+            for (SitePinInst pin : clk.getPins()) {
+                if (pin.isOutPin()) continue;
+                Node intNode = RouterHelper.projectInputPinToINTNode(pin);
+                if (intNode == null) {
+                    throw new IllegalStateException(
+                        "unable to project global-clock sink to INT: " + pin
+                    );
+                }
+                ArrayDeque<NodeDepth> queue = new ArrayDeque<>();
+                Set<Node> visited = new HashSet<>();
+                queue.add(new NodeDepth(intNode, 0));
+                visited.add(intNode);
+                List<Node> candidates = new ArrayList<>();
+                int candidateDepth = Integer.MAX_VALUE;
+                while (!queue.isEmpty()) {
+                    NodeDepth current = queue.removeFirst();
+                    if (current.depth >= candidateDepth
+                        || current.depth >= MAX_LCB_SEARCH_DEPTH) {
+                        continue;
+                    }
+                    for (Node uphill : current.node.getAllUphillNodes()) {
+                        if (!visited.add(uphill)
+                            || status.apply(uphill) == NodeStatus.UNAVAILABLE) {
+                            continue;
+                        }
+                        int depth = current.depth + 1;
+                        if (uphill.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF) {
+                            candidateDepth = depth;
+                            candidates.add(uphill);
+                        } else if (depth < candidateDepth) {
+                            queue.addLast(new NodeDepth(uphill, depth));
+                        }
+                    }
+                }
+                if (candidates.isEmpty()) {
+                    throw new IllegalStateException(
+                        "no leaf clock buffer within " + MAX_LCB_SEARCH_DEPTH
+                        + " uphill hops of " + pin
+                    );
+                }
+                candidates.sort(
+                    Comparator
+                        .comparingInt((Node node) ->
+                            usedLCBs.contains(node)
+                            || status.apply(node) == NodeStatus.INUSE ? 0 : 1
+                        )
+                        .thenComparing(Node::toString)
+                );
+                Node selected = candidates.get(0);
+                RouteNode routeNode = new RouteNode(
+                    selected.getTile(), selected.getWireIndex()
+                );
+                mappings.computeIfAbsent(
+                    routeNode, ignored -> new ArrayList<>()
+                ).add(pin);
+                usedLCBs.add(selected);
+            }
+            return mappings;
+        }
+
+        private ClockRegion clockCentroid(Net clk) {
+            HashSet<Point> points = new HashSet<>();
+            Set<ClockRegion> regions = new HashSet<>();
+            for (SitePinInst pin : clk.getPins()) {
+                if (pin.isOutPin()) continue;
+                ClockRegion region = pin.getTile().getClockRegion();
+                if (region == null) {
+                    throw new IllegalStateException(
+                        "clock sink has no clock region: " + pin
+                    );
+                }
+                regions.add(region);
+                points.add(new Point(region.getColumn(), region.getRow()));
+            }
+            Point center = SmallestEnclosingCircle.getCenterPoint(points);
+            ClockRegion centroid = design.getDevice().getClockRegion(
+                center.y, center.x
+            );
+            int height = Math.abs(
+                centroid.getLowerLeft().getRow()
+                - centroid.getUpperLeft().getRow()
+            );
+            if (height <= 40) {
+                if (centroid.getRow() == 0) {
+                    centroid = centroid.getNeighborClockRegion(1, 0);
+                } else if (
+                    centroid.getRow()
+                    == design.getDevice().getNumOfClockRegionRows() - 1
+                ) {
+                    centroid = centroid.getNeighborClockRegion(-1, 0);
+                }
+            }
+            return centroid;
+        }
+
         @Override
         protected void routeGlobalClkNet(
             Net clk, Map<Integer, Set<ClockRegion>> usedRoutingTracks
         ) {
-            List<SitePinInst> originalPins = new ArrayList<>(clk.getPins());
-            ArrayList<SitePinInst> cascadeSinks = new ArrayList<>();
-            ArrayList<SitePinInst> dedicatedPins = new ArrayList<>();
-            for (SitePinInst pin : originalPins) {
-                if (isBUFGCEClockInputSink(pin)) cascadeSinks.add(pin);
-                else dedicatedPins.add(pin);
+            for (SitePinInst pin : clk.getPins()) {
+                routingGraph.unpreserve(pin.getConnectedNode());
             }
-            if (cascadeSinks.isEmpty()) {
-                super.routeGlobalClkNet(clk, usedRoutingTracks);
-                return;
-            }
-
-            for (SitePinInst pin : cascadeSinks) {
-                Node node = pin.getConnectedNode();
-                if (node != null) routingGraph.unpreserve(node);
-                pin.setRouted(false);
-            }
-            if (!clk.setPins(dedicatedPins)) {
-                throw new IllegalStateException(
-                    "failed to isolate BUFGCE cascade sinks on clock " + clk.getName()
-                );
-            }
-            try {
-                if (dedicatedPins.size() > 1) {
-                    super.routeGlobalClkNet(clk, usedRoutingTracks);
-                }
-            } finally {
-                if (!clk.setPins(originalPins)) {
-                    throw new IllegalStateException(
-                        "failed to restore BUFGCE cascade sinks on clock "
-                        + clk.getName()
-                    );
-                }
-            }
-
-            Router cascadeRouter = new Router(design);
-            cascadeRouter.routePinsReEntrant(cascadeSinks, false);
-            List<String> failed = new ArrayList<>();
-            for (SitePinInst pin : cascadeSinks) {
-                if (!pin.isRouted()) failed.add(pin.toString());
-            }
-            if (!failed.isEmpty()) {
-                throw new IllegalStateException(
-                    "failed to route BUFGCE cascade sinks on clock "
-                    + clk.getName() + ": " + failed
-                );
-            }
-            preserveNet(clk, false);
+            Function<Node, NodeStatus> status =
+                node -> getGlobalRoutingNodeStatus(clk, node);
             System.out.println(
-                "INFO: Routed " + cascadeSinks.size()
-                + " BUFGCE cascade sink(s) on clock " + clk.getName()
+                "INFO: Routing " + clk.getPins().size() + " pins of clock "
+                + clk + " (extended-LCB non timing-driven)"
             );
+            Set<ClockRegion> regions = new HashSet<>();
+            for (SitePinInst pin : clk.getPins()) {
+                if (!pin.isOutPin()) regions.add(pin.getTile().getClockRegion());
+            }
+            ClockRegion centroid = clockCentroid(clk);
+            List<ClockRegion> above = new ArrayList<>();
+            List<ClockRegion> below = new ArrayList<>();
+            for (ClockRegion region : regions) {
+                if (region.getInstanceY() > centroid.getInstanceY()) {
+                    above.add(region);
+                } else {
+                    below.add(region);
+                }
+            }
+            RouteNode firstHRoute =
+                UltraScaleClockRouting.routeBUFGToNearestRoutingTrack(clk);
+            RouteNode centroidHRoute = UltraScaleClockRouting.routeToCentroid(
+                clk, firstHRoute, centroid, true, true
+            );
+            List<RouteNode> distributionLines = new ArrayList<>();
+            ClockRegion aboveCentroid = above.isEmpty()
+                ? null : centroid.getNeighborClockRegion(1, 0);
+            if (aboveCentroid != null) {
+                RouteNode vertical = UltraScaleClockRouting.routeToCentroid(
+                    clk, centroidHRoute, aboveCentroid, true, false
+                );
+                List<RouteNode> lines =
+                    UltraScaleClockRouting.routeToHorizontalDistributionLines(
+                        clk, vertical, above, false, status
+                    );
+                if (lines != null) distributionLines.addAll(lines);
+            }
+            RouteNode vertical = UltraScaleClockRouting.routeToCentroid(
+                clk, centroidHRoute,
+                centroid.getNeighborClockRegion(0, 0), true, false
+            );
+            List<RouteNode> lines =
+                UltraScaleClockRouting.routeToHorizontalDistributionLines(
+                    clk, vertical, below, true, status
+                );
+            if (lines != null) distributionLines.addAll(lines);
+            Map<RouteNode, List<SitePinInst>> mappings =
+                extendedLCBPinMappings(clk);
+            UltraScaleClockRouting.routeDistributionToLCBs(
+                clk, distributionLines, mappings.keySet()
+            );
+            UltraScaleClockRouting.routeLCBsToSinks(clk, mappings, status);
+            clk.setPIPs(new HashSet<>(clk.getPIPs()));
+            preserveNet(clk, false);
+            if (clk.hasPIPs()) clk.getSource().setRouted(true);
         }
 
         @Override
