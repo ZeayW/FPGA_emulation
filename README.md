@@ -1209,6 +1209,17 @@ small-graph tests retain the previous simultaneous cut objective and summation
 order; large-design runtime and native repair scalability remain unqualified
 until measured on the affected frozen inputs.
 
+`scripts/rebind_phase3_assignment.py` is an explicit debugging continuation,
+not a provider or persistent cache: after a repaired circuit, it preserves
+every instance's previous FPGA owner and rebuilds current atomic clusters,
+cuts, and Static Exact dependencies. It rejects missing/changed instance IDs,
+split atomic clusters, capacity/balance violations, and illegal route hops.
+The frozen experiment's explicit constraints remain unchanged; no optimizer
+or balance-repair search is invoked. Old cuts, segment IDs, timing, routes,
+and schedules are not copied forward. Downstream phases must consume the
+newly published contract and corrected timing. This does not native-ize the
+ordinary Python balance-repair fallback or prove large-design completion.
+
 Earlier sealed AES and PicoRV32 Phase 1--7 results used the VTR physical
 surrogate. Their historical WNS/TNS values remain diagnostic records, but they
 do not satisfy the new RapidWright-bound platform contract. All five holdout
