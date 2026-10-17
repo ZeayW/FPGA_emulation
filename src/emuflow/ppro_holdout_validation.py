@@ -38,15 +38,15 @@ _BENCHMARK_CLASS_TIERS = {
 _PROFILES = {"aggressive", "nominal", "conservative"}
 _PHYSICAL_MEMORY_POLICY = "physically-implementable-shared-memory-model-v1"
 _RESOURCE_NAMES = {
-    "lut": "lut",
-    "ff": "ff",
-    # Phase 3 owns resources in the provider-neutral planning namespace.  The
-    # calibrated platform defines ``bram`` as one BRAM36 and ``dsp`` as one
-    # DSP48; the native inventory aliases are physical reference capacities,
-    # not keys emitted by the partition report.
-    "bram": "bram36k",
-    "dsp": "dsp48",
-    "uram288": "uram288",
+    "lut": (("lut", 1.0),),
+    "ff": (("ff", 1.0),),
+    # The current Xilinx mapper emits bram18k/dsp48. Historical planning
+    # reports use bram (one BRAM36) and dsp. These are alternate namespaces
+    # for the same demand, not additional pools to sum or silently discard.
+    # Prefer the native inventory when choosing the capacity denominator.
+    "bram36k": (("bram18k", 0.5), ("bram36k", 1.0), ("bram", 1.0)),
+    "dsp48": (("dsp48", 1.0), ("dsp", 1.0)),
+    "uram288": (("uram288", 1.0),),
 }
 _SOFT_MAPPING_RESOURCES = frozenset({"lut", "ff"})
 _HARD_MAPPING_RESOURCES = frozenset({"bram36k", "dsp48", "uram288"})
@@ -403,17 +403,32 @@ def _resource_utilization(
     if set(resources_by_fpga) != set(by_id):
         raise ValidationError("flow partition resource coverage disagrees with BoardDB")
     result: Dict[str, float] = {}
-    for resource, observation_name in _RESOURCE_NAMES.items():
+    for observation_name, aliases in _RESOURCE_NAMES.items():
         ratios = []
         for fpga_id, usage in resources_by_fpga.items():
             if not isinstance(usage, Mapping):
                 raise ValidationError("flow partition FPGA resources are invalid")
-            capacity = by_id[fpga_id].capacity.get(resource, 0)
+            capacity = next(
+                (by_id[fpga_id].capacity.get(name, 0) * scale
+                 for name, scale in aliases
+                 if by_id[fpga_id].capacity.get(name, 0) > 0),
+                0.0,
+            )
             if capacity <= 0:
                 continue
-            amount = _nonnegative(
-                usage.get(resource, 0), f"flow {fpga_id} {resource} usage"
-            )
+            amounts = [
+                _nonnegative(usage.get(name, 0), f"flow {fpga_id} {name} usage") * scale
+                for name, scale in aliases
+            ]
+            # ResourceVector's unused planning keys may be explicit zeroes.
+            # Agreeing positive aliases describe one fact and count once.
+            positive = [amount for amount in amounts if amount > 0]
+            amount = positive[0] if positive else 0.0
+            if any(not math.isclose(value, amount, rel_tol=1.0e-12, abs_tol=1.0e-12)
+                   for value in positive):
+                raise ValidationError(
+                    f"flow {fpga_id} has conflicting {observation_name} usage aliases"
+                )
             if amount > capacity:
                 raise ValidationError("flow partition usage exceeds physical capacity")
             ratios.append(amount / capacity)

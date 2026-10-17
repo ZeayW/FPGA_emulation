@@ -127,6 +127,45 @@ def result(identifier: str, workload: str, tier: str, algorithm: str, delay: flo
 
 
 class PProHoldoutValidationTest(unittest.TestCase):
+    @staticmethod
+    def native_resource_platform():
+        return Platform.from_dict({
+            "schema": "emuflow.boarddb/v1",
+            "platform": {"name": "native", "kind": "virtual", "description": "test"},
+            "fpgas": [{"id": "F0", "part": "academic", "utilization_limit": 0.75,
+                       "capacity": {"lut": 1000, "ff": 2000, "bram18k": 1000,
+                                    "dsp48": 100, "uram288": 20}}],
+            "links": [],
+        })
+
+    def test_native_resource_utilization_is_not_reported_as_zero(self):
+        platform = self.native_resource_platform()
+        expected = {"lut": 0.1, "ff": 0.1, "bram36k": 0.1,
+                    "dsp48": 0.25, "uram288": 0.2}
+        for usage in [
+            {"lut": 100, "ff": 200, "bram18k": 100, "dsp48": 25, "uram288": 4},
+            {"lut": 100, "ff": 200, "bram": 50, "dsp": 25, "uram288": 4},
+            {"lut": 100, "ff": 200, "bram18k": 100, "bram": 0,
+             "dsp48": 25, "dsp": 0, "uram288": 4},
+            {"lut": 100, "ff": 200, "bram18k": 100, "bram36k": 50,
+             "bram": 50, "dsp48": 25, "dsp": 25, "uram288": 4},
+        ]:
+            with self.subTest(usage=usage):
+                self.assertEqual(_resource_utilization({"F0": usage}, platform), expected)
+
+    def test_native_resource_aliases_do_not_hide_overfill_or_conflicts(self):
+        platform = self.native_resource_platform()
+        for usage in [{"bram18k": 1001}, {"dsp48": 101}]:
+            with self.subTest(usage=usage), self.assertRaisesRegex(
+                ValidationError, "exceeds physical capacity"
+            ):
+                _resource_utilization({"F0": usage}, platform)
+        for usage in [{"bram18k": 100, "bram": 100}, {"dsp48": 25, "dsp": 50}]:
+            with self.subTest(usage=usage), self.assertRaisesRegex(
+                ValidationError, "conflicting.*usage aliases"
+            ):
+                _resource_utilization({"F0": usage}, platform)
+
     def test_resource_utilization_uses_phase3_planning_aliases(self):
         platform = Platform.from_dict(
             {

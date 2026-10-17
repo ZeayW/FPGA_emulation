@@ -1212,6 +1212,16 @@ the existing first-declared-port precedence are retained. This removes a
 repeated Python lookup cost during streaming STA import; it does not claim
 that the entire timing importer or all Phase 7 adapters are native data planes.
 
+Calibrated holdout resource comparison consumes the compact per-FPGA Phase 3
+resource summary, including the Xilinx mapper's native `bram18k` and `dsp48`
+keys. BRAM18 demand is converted to BRAM36-equivalent units; historical
+planning keys `bram` and `dsp` remain readable. Alternate keys describe one
+physical demand and are never added together: unused zero-valued aliases are
+ignored, agreeing positive aliases count once, and conflicting positive
+aliases fail. Native hard-block demand must not be reported as zero merely
+because a historical planning key is absent. This correction changes the
+resource comparison, not partitioning, physical results, or timing QoR.
+
 The optional TritonPart balance-repair fallback evaluates simultaneous ejection
 costs from its existing per-edge partition counts. It no longer rescans every
 pin of a high-fanout hyperedge for each tentative sequence. Exhaustive
