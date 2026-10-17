@@ -54,16 +54,7 @@ def _native_certificate(
             "connections"
         ]["C"] = [1_000_001]
         mapped.write_text(json.dumps(mapped_value), encoding="utf-8")
-    if indexed:
-        from emuflow.yosys import import_yosys_json
-        from emuflow.xilinx_netlist import emit_xilinx_mapped_index
-        compact = root / "mapped.emuir.sqlite"
-        import_yosys_json(mapped).save(compact)
-        index = root / "mapped.sqlite"
-        emit_xilinx_mapped_index(compact, index)
-        mapped = index
-    from emuflow.xilinx_netlist import open_xilinx_mapped_index
-    mapped_view = open_xilinx_mapped_index(mapped) if indexed else None
+    mapped_view = None
     if compact_source:
         from emuflow.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
         source_packed = root / "atomic-source.json"
@@ -73,12 +64,24 @@ def _native_certificate(
     export_dir = root / "openparf"
     # Generate this tiny fixture's placement through the JSON reference
     # exporter; testing its indexed bridge must not require a native build.
-    # Both views came from the same JSON, and all seals use the indexed path.
-    export_view = json.loads((root / "mapped.json").read_text()) if indexed else None
+    # Convert the mapped owner and rebind its fixture seals before validation.
     export_xilinx_openparf_atomic(
-        mapped, source_packed, architecture, export_dir, mapped_value=export_view,
+        mapped, source_packed, architecture, export_dir,
     )
     name_map = json.loads((export_dir / "name_map.json").read_text())
+    if indexed:
+        from emuflow.io import file_sha256
+        from emuflow.yosys import import_yosys_json
+        from emuflow.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
+        compact = root / "mapped.emuir.sqlite"
+        import_yosys_json(mapped).save(compact)
+        index = root / "mapped.sqlite"
+        emit_xilinx_mapped_index(compact, index)
+        mapped = index
+        mapped_view = open_xilinx_mapped_index(mapped)
+        source_value = json.loads(source_packed.read_text())
+        source_value["source"]["mapped_sha256"] = file_sha256(mapped)
+        source_packed.write_text(json.dumps(source_value))
     sites = load_xilinx_openparf_atomic_sites(export_dir / "name_map.json")
     slices = [item for item in sites if "LUT" in item["resources"]]
     hard_sites = {
