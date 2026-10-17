@@ -917,6 +917,7 @@ def run_rwroute(
         raise ValidationError("RWRoute output lacks its timing qualification")
     report = validate_xilinx_route_db(
         output_path,
+        rwroute_input_path=input_path,
         mapped_path=mapped_path,
         packed_path=packed_path,
         placement_path=placement_path,
@@ -935,6 +936,7 @@ def run_rwroute(
 def validate_xilinx_route_db(
     path: Path,
     *,
+    rwroute_input_path: Optional[Path] = None,
     mapped_path: Optional[Path] = None,
     packed_path: Optional[Path] = None,
     placement_path: Optional[Path] = None,
@@ -1180,6 +1182,14 @@ def validate_xilinx_route_db(
     input_digest = source.get("rwroute_input_sha256")
     if not isinstance(input_digest, str) or re.fullmatch(r"[0-9a-f]{64}", input_digest) is None:
         raise ValidationError("XilinxRouteDB source.rwroute_input_sha256 is invalid")
+    if (
+        rwroute_input_path is not None
+        and _sha256(rwroute_input_path) != input_digest
+    ):
+        raise ValidationError(
+            "XilinxRouteDB source.rwroute_input_sha256 does not match "
+            "the routed input"
+        )
     excluded_nets = value.get("excluded_nets")
     summary = value.get("summary")
     if (

@@ -300,6 +300,29 @@ class XilinxRWRouteTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 validate_xilinx_route_db(path)
 
+    def test_checker_seals_exact_rwroute_input_for_resume(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            route = self._route()
+            input_path = root / "rwroute.tsv"
+            input_path.write_text("NET\tn1\tsignal\n", encoding="utf-8")
+            route["source"]["rwroute_input_sha256"] = hashlib.sha256(
+                input_path.read_bytes()
+            ).hexdigest()
+            route_path = root / "route.json"
+            route_path.write_text(json.dumps(route), encoding="utf-8")
+            self.assertEqual(
+                validate_xilinx_route_db(
+                    route_path, rwroute_input_path=input_path
+                )["status"],
+                "pass",
+            )
+            input_path.write_text("NET\tn2\tsignal\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "routed input"):
+                validate_xilinx_route_db(
+                    route_path, rwroute_input_path=input_path
+                )
+
     def test_streaming_checker_reads_sealed_payloads_without_monolithic_nets(self):
         with tempfile.TemporaryDirectory() as temporary:
             path, net_payload, pip_payload = self._stream_route(Path(temporary))

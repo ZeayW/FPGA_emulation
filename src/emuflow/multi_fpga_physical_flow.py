@@ -1775,6 +1775,11 @@ def run_multi_fpga_physical_flow(
                 if effective_rapidwright_placer == "openparf-native"
                 else run_rapidwright_partition_backend
             )
+            rapidwright_resume = (
+                {"resume": resume}
+                if effective_rapidwright_placer == "openparf-native"
+                else {}
+            )
             rapidwright_report = rapidwright_runner(
                 fpga=fpga_id,
                 part=fpga_part,
@@ -1802,6 +1807,7 @@ def run_multi_fpga_physical_flow(
                 logic_identity_path=logic_identity_path,
                 local_identity_path=local_identity_path,
                 virtual_io_contract=virtual_io_contract,
+                **rapidwright_resume,
             )
             if logic_query_report is not None:
                 rapidwright_report["logic_segment_timing"][
