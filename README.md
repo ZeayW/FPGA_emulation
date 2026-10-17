@@ -1226,8 +1226,9 @@ pin mapping, selected fabric-driver connection, and intrasite mux alternatives.
 It creates only an in-memory probe design; it does not run RWRoute, write a
 checkpoint, relax connectivity checks, or qualify a hardware timing result.
 The probe also creates a separate in-memory `CI`-to-`AX` mapping trial,
-following AMD UG574's dynamic CYINIT description; this trial is not yet a
-production router fix or a completed physical validation.
+following AMD UG574's dynamic CYINIT description. The probe itself is not
+physical-routing evidence; the production correction is qualified separately
+below.
 
 The RWRoute adapter now distinguishes a fabric-driven carry head from an
 adjacent `CARRY8.CO[7] -> CI` cascade: fabric initialization binds `CI` to
@@ -1240,6 +1241,12 @@ binding correction is pending; a pin-selection probe alone is not sufficient.
 source-to-sink/PIP checker on an explicitly placed two-cell fabric or cascade
 fixture. Its result is labelled physical-connectivity-only, not complete
 packing, circuit equivalence, end-to-end timing, or platform promotion.
+Real RWRoute plus the independent connectivity/PIP checker has passed all
+three adapter cases: fabric-driven `SINGLE_CY8`, fabric-driven `DUAL_CY4`, and
+an adjacent dedicated `CO[7] -> CI` cascade. The fabric cases terminate at `AX`;
+the dedicated cascade terminates at `CIN`. These small routing results do not
+qualify large-design congestion, complete primitive behavior, or final global
+WNS/TNS; Koios and NVDLA physical acceptance remains pending.
 
 Earlier sealed AES and PicoRV32 Phase 1--7 results used the VTR physical
 surrogate. Their historical WNS/TNS values remain diagnostic records, but they
