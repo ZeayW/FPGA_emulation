@@ -2503,13 +2503,24 @@ Validators check typed row/chain constraints and aggregate counts/delays in
 SQL, retaining independent source/coverage and OpenSTA event binding checks.
 Explicit storage auditing can additionally verify the payload SHA-256;
 ordinary consumers do not repeatedly hash immutable payloads. These files are
+also guarded against in-process replacement or mutation before a validation
+certificate or row iterator is reused. The files are
 active-run scratch, not a persistent checkpoint cache. Python still performs
 bounded endpoint projection and timing-graph queries; this is not a claim that
 every timing algorithm is native C++ or that all Phase 7 bottlenecks are gone.
 Round-trip, relocation, truncation, mixed-run, malformed-row, bounded-memory,
 and reference-versus-indexed routed-delay/global-event tests are included.
-Real-design storage/runtime measurement and the complete Phase 7/7C gate for
-this interface revision remain pending.
+On all 756,257 published DLA-large local identities, the old and new row and
+source-metadata certificates matched exactly. The legacy JSON occupied
+478,494,821 bytes; the SQL payload plus its 978-byte header occupied
+341,758,930 bytes. Independent consumer peak RSS was 1,423.39 MiB versus
+22.93 MiB. Read/validation took 9.61/4.86 seconds for JSON versus 0.38/3.09
+seconds for the index. Including the qualification-only per-row certificate
+scan, total consumption took 29.71 versus 25.10 seconds, not a whole-flow
+order-of-magnitude speedup. The one-time 21.38-second legacy conversion was
+only a diagnostic using saved artifacts: production directly emits the index.
+No synthesis, placement, routing, or STA was rerun for this storage comparison.
+The complete Phase 7/7C gate for this interface revision remains pending.
 
 The routed physical tail follows the same rule. RWRoute now validates and
 seals its in-memory route object once while publishing it; routed-timing

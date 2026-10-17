@@ -99,6 +99,19 @@ def test_failed_publication_preserves_existing_owner_and_cleans_new_scratch(tmp_
     assert read_json(path)["paths"][0] == record()
 
 
+def test_in_process_certificate_never_hides_payload_replacement(tmp_path):
+    path = tmp_path / "local.json"
+    write_local_paths(path, metadata(True), [record(timing=True)])
+    value = read_json(path)
+    validate_local_path_timing(value)
+    with sqlite3.connect(value["paths"].path) as database:
+        database.execute("UPDATE paths SET delay=2")
+    with pytest.raises(ValidationError, match="changed"):
+        validate_local_path_timing(value)
+    with pytest.raises(ValidationError, match="changed"):
+        list(value["paths"])
+
+
 @pytest.mark.parametrize("damage", ["truncate", "mixed", "metadata", "count", "row-delay", "pins"])
 def test_corrupt_and_mixed_inputs_fail(tmp_path, damage):
     path = tmp_path / "local.json"

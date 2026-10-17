@@ -43,6 +43,15 @@ class LocalPathRows(Sequence):
         self.timing = self.metadata["schema"] == TIMING
         self.v2 = self.metadata.get("identity_schema", self.metadata["schema"]) == IDENTITY_V2
         self._validation = None
+        self._identity = self._file_identity()
+
+    def _file_identity(self):
+        stat = self.path.stat()
+        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+    def _unchanged(self):
+        if self._file_identity() != self._identity:
+            raise ValidationError("published local path payload changed during consumption")
 
     def __len__(self) -> int:
         return self.count
@@ -62,14 +71,17 @@ class LocalPathRows(Sequence):
         return item
 
     def __iter__(self) -> Iterator[dict]:
+        self._unchanged()
         connection = _connect(self.path)
         try:
             for row in connection.execute("SELECT * FROM paths ORDER BY id"):
                 yield self._record(row, connection)
         finally:
             connection.close()
+        self._unchanged()
 
     def __getitem__(self, index):
+        self._unchanged()
         if isinstance(index, slice):
             return [self[i] for i in range(*index.indices(len(self)))]
         if index < 0:
@@ -92,6 +104,7 @@ class LocalPathRows(Sequence):
         return value
 
     def validation(self) -> dict:
+        self._unchanged()
         if self._validation is not None:
             return dict(self._validation)
         connection = _connect(self.path)
