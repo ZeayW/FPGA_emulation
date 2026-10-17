@@ -452,11 +452,14 @@ public final class EmuFlowRWRoute {
         final Map<String, String> parameters;
         final Map<String, String> pinRemap;
         final boolean dedicatedClockGate;
+        final Cell clockPrefilterCell;
+        final String clockPrefilterNet;
 
         MaterializedCell(
             String logicalName, String logicalType, Cell regularCell,
             SiteInst siteInst, int physicalCells, Map<String, String> parameters,
-            Map<String, String> pinRemap, boolean dedicatedClockGate
+            Map<String, String> pinRemap, boolean dedicatedClockGate,
+            Cell clockPrefilterCell, String clockPrefilterNet
         ) {
             this.logicalName = logicalName;
             this.logicalType = logicalType;
@@ -466,6 +469,8 @@ public final class EmuFlowRWRoute {
             this.parameters = parameters;
             this.pinRemap = pinRemap;
             this.dedicatedClockGate = dedicatedClockGate;
+            this.clockPrefilterCell = clockPrefilterCell;
+            this.clockPrefilterNet = clockPrefilterNet;
         }
 
         boolean isTransformedDSP48E2() {
@@ -478,6 +483,17 @@ public final class EmuFlowRWRoute {
 
         String routedLogicalPin(String logicalPin) {
             return pinRemap.getOrDefault(logicalPin, logicalPin);
+        }
+
+        Cell routedCell(String logicalPin) {
+            if (clockPrefilterCell != null && !logicalPin.equals("O")) {
+                return clockPrefilterCell;
+            }
+            return regularCell;
+        }
+
+        boolean hasClockPrefilter() {
+            return clockPrefilterCell != null;
         }
     }
 
@@ -837,6 +853,25 @@ public final class EmuFlowRWRoute {
         }
     }
 
+    private static void ensureSimpleLogicalPinMapping(Cell cell, String logicalPin) {
+        if (cell.getPinMappingsL2P().containsKey(logicalPin)) return;
+        String physicalPin = logicalPin.replace("[", "").replace("]", "");
+        if (cell.getBEL().getPin(physicalPin) == null) {
+            throw new IllegalStateException(
+                "logical pin has no BEL pin: " + cell.getName() + "/" + logicalPin
+            );
+        }
+        String existing = cell.getLogicalPinMapping(physicalPin);
+        if (existing != null && !existing.equals("GND") && !existing.equals("VCC")) {
+            throw new IllegalStateException(
+                "physical pin mapping conflict on " + cell.getName() + "/"
+                + physicalPin + ": " + existing + " vs " + logicalPin
+            );
+        }
+        if (existing != null) cell.removePinMapping(physicalPin);
+        cell.addPinMapping(physicalPin, logicalPin);
+    }
+
     private static String dsp48e2SitePin(String logicalPin) {
         String physicalPin = logicalPin.replace("[", "").replace("]", "");
         if (physicalPin.startsWith("D") && logicalPin.startsWith("D[")) {
@@ -878,7 +913,8 @@ public final class EmuFlowRWRoute {
 
     private static MaterializedCell materializeCell(
         Design design, String safeName, String[] row, Map<String, String> parameters,
-        String[] clockGateRow, List<Site> availableClockBufferSites
+        String[] clockGateRow, boolean clockGateNeedsPrefilter,
+        List<Site> availableClockBufferSites
     ) {
         String logicalType = row[3];
         if (clockGateRow != null) {
@@ -893,20 +929,38 @@ public final class EmuFlowRWRoute {
             Site site = allocateClockBufferSite(
                 design, row[4], availableClockBufferSites
             );
-            Cell cell = design.createAndPlaceCell(
-                safeName, Unisim.BUFGCE, site.getName() + "/BUFCE",
-                "CE_TYPE", "ASYNC"
-            );
-            if (cell == null) {
-                throw new IllegalStateException("failed to place BUFGCE " + safeName);
-            }
+            Cell prefilter = null;
+            Cell cell;
             Map<String, String> pinRemap = new HashMap<>();
-            pinRemap.put("I0", "I");
-            pinRemap.put("I1", "CE");
-            pinRemap.put("O", "O");
+            String prefilterNet = null;
+            if (clockGateNeedsPrefilter) {
+                prefilter = design.createAndPlaceCell(
+                    safeName + "$clock_prefilter", Unisim.LUT2,
+                    row[4] + "/" + row[5], "INIT", "4'h8"
+                );
+                cell = design.createAndPlaceCell(
+                    safeName, Unisim.BUFG, site.getName() + "/BUFCE"
+                );
+                prefilterNet = "__emuflow_clock_prefilter_" + safeName;
+            } else {
+                cell = design.createAndPlaceCell(
+                    safeName, Unisim.BUFGCE, site.getName() + "/BUFCE",
+                    "CE_TYPE", "ASYNC"
+                );
+                pinRemap.put("I0", "I");
+                pinRemap.put("I1", "CE");
+                pinRemap.put("O", "O");
+            }
+            if (cell == null) {
+                throw new IllegalStateException("failed to place clock buffer " + safeName);
+            }
+            if (clockGateNeedsPrefilter && prefilter == null) {
+                throw new IllegalStateException("failed to place clock prefilter " + safeName);
+            }
             return new MaterializedCell(
-                row[2], logicalType, cell, cell.getSiteInst(), 1, parameters,
-                pinRemap, true
+                row[2], logicalType, cell, cell.getSiteInst(),
+                clockGateNeedsPrefilter ? 2 : 1, parameters,
+                pinRemap, true, prefilter, prefilterNet
             );
         }
         if (!logicalType.equals("DSP48E2")) {
@@ -924,7 +978,7 @@ public final class EmuFlowRWRoute {
             if (cell == null) throw new IllegalStateException("failed to place " + safeName);
             return new MaterializedCell(
                 row[2], logicalType, cell, cell.getSiteInst(), 1, parameters,
-                Collections.emptyMap(), false
+                Collections.emptyMap(), false, null, null
             );
         }
 
@@ -971,7 +1025,7 @@ public final class EmuFlowRWRoute {
         if (siteInst == null) throw new IllegalStateException("empty DSP48E2 transform");
         return new MaterializedCell(
             row[2], logicalType, null, siteInst, DSP48E2_COMPONENTS.length,
-            parameters, Collections.emptyMap(), false
+            parameters, Collections.emptyMap(), false, null, null
         );
     }
 
@@ -989,6 +1043,8 @@ public final class EmuFlowRWRoute {
         Map<String, String[]> cellRows = new HashMap<>();
         Map<String, String[]> iobRows = new HashMap<>();
         Map<String, String[]> clockGateRows = new HashMap<>();
+        Map<String, String> clockGateInputNets = new HashMap<>();
+        Map<String, String> clockGateDriversByNet = new HashMap<>();
         Map<String, Map<String, String>> cellParameters = new HashMap<>();
         Map<String, String> netKinds = new HashMap<>();
         JSONArray excluded = new JSONArray();
@@ -1029,6 +1085,20 @@ public final class EmuFlowRWRoute {
                 case "PIN":
                     if (fields.length != 5)
                         throw new IllegalArgumentException("invalid PIN record");
+                    if (clockGateRows.containsKey(fields[2])) {
+                        if (fields[3].equals("I0") && fields[4].equals("sink")) {
+                            if (clockGateInputNets.put(fields[2], fields[1]) != null)
+                                throw new IllegalArgumentException(
+                                    "clock gate has multiple I0 route records"
+                                );
+                        } else if (fields[3].equals("O")
+                            && fields[4].equals("driver")) {
+                            if (clockGateDriversByNet.put(fields[1], fields[2]) != null)
+                                throw new IllegalArgumentException(
+                                    "clock net has multiple qualified gate drivers"
+                                );
+                        }
+                    }
                     break;
                 case "EXCLUDED":
                     if (fields.length != 3 && fields.length != 4)
@@ -1049,6 +1119,15 @@ public final class EmuFlowRWRoute {
         if (!cellRows.keySet().containsAll(clockGateRows.keySet())) {
             throw new IllegalArgumentException("CLOCK_GATE references an unknown cell");
         }
+        if (!clockGateInputNets.keySet().containsAll(clockGateRows.keySet())) {
+            throw new IllegalArgumentException("CLOCK_GATE lacks a routed I0 input");
+        }
+        Set<String> clockGatesNeedingPrefilter = new LinkedHashSet<>();
+        for (Map.Entry<String, String> entry : clockGateInputNets.entrySet()) {
+            if (clockGateDriversByNet.containsKey(entry.getValue())) {
+                clockGatesNeedingPrefilter.add(entry.getKey());
+            }
+        }
 
         Design design = new Design("emuflow_rwroute", part);
         design.setDesignOutOfContext(true);
@@ -1058,6 +1137,7 @@ public final class EmuFlowRWRoute {
         int physicalCells = 0;
         int transformedDsp48e2Cells = 0;
         int dedicatedClockGateCells = 0;
+        int fabricPrefilterClockGateCells = 0;
         List<Site> availableClockBufferSites = new ArrayList<>(List.of(
             design.getDevice().getAllSitesOfType(SiteTypeEnum.BUFGCE)
         ));
@@ -1068,7 +1148,9 @@ public final class EmuFlowRWRoute {
                 cell = materializeCell(
                     design, safeName, row,
                     cellParameters.getOrDefault(safeName, Collections.emptyMap()),
-                    clockGateRows.get(safeName), availableClockBufferSites
+                    clockGateRows.get(safeName),
+                    clockGatesNeedingPrefilter.contains(safeName),
+                    availableClockBufferSites
                 );
             } catch (RuntimeException error) {
                 throw new IllegalStateException(
@@ -1082,6 +1164,7 @@ public final class EmuFlowRWRoute {
                 transformedDsp48e2Cells++;
             }
             if (cell.dedicatedClockGate) dedicatedClockGateCells++;
+            if (cell.hasClockPrefilter()) fabricPrefilterClockGateCells++;
         }
         cellRows.clear();
         cellParameters.clear();
@@ -1117,7 +1200,8 @@ public final class EmuFlowRWRoute {
                 safeName,
                 new MaterializedCell(
                     row[2], logicalType, cell, cell.getSiteInst(), 1,
-                    Collections.emptyMap(), Collections.emptyMap(), false
+                    Collections.emptyMap(), Collections.emptyMap(), false,
+                    null, null
                 )
             );
             physicalCells++;
@@ -1125,9 +1209,25 @@ public final class EmuFlowRWRoute {
 
         Map<String, String> iobNetNames = new HashMap<>();
         Map<String, EDIFNet> blockRamLogicalPinOwners = new HashMap<>();
+        for (MaterializedCell cell : cells.values()) {
+            if (cell.hasClockPrefilter()
+                && netKinds.put(cell.clockPrefilterNet, "clock_internal") != null) {
+                throw new IllegalStateException(
+                    "clock prefilter net identity collides: " + cell.clockPrefilterNet
+                );
+            }
+        }
         List<String> netNames = new ArrayList<>(netKinds.keySet());
         netNames.sort(String::compareTo);
         for (String netName : netNames) design.createNet(netName);
+        for (MaterializedCell cell : cells.values()) {
+            if (!cell.hasClockPrefilter()) continue;
+            Net internal = design.getNet(cell.clockPrefilterNet);
+            ensureSimpleLogicalPinMapping(cell.clockPrefilterCell, "O");
+            ensureSimpleLogicalPinMapping(cell.regularCell, "I");
+            internal.connect(cell.clockPrefilterCell, "O");
+            internal.connect(cell.regularCell, "I");
+        }
         try (BufferedReader reader = Files.newBufferedReader(inputPath, StandardCharsets.UTF_8)) {
             for (String line = reader.readLine(); line != null; line = reader.readLine()) {
                 if (!line.startsWith("PIN\t")) continue;
@@ -1187,13 +1287,18 @@ public final class EmuFlowRWRoute {
                         }
                     } else {
                         String routedLogicalPin = cell.routedLogicalPin(row[3]);
-                        ensureLogicalPinMapping(cell, routedLogicalPin);
+                        Cell routedCell = cell.routedCell(row[3]);
+                        if (routedCell == cell.regularCell) {
+                            ensureLogicalPinMapping(cell, routedLogicalPin);
+                        } else {
+                            ensureSimpleLogicalPinMapping(routedCell, routedLogicalPin);
+                        }
                         // General logic can expose alternative dedicated and
                         // fabric exits (for example CARRY8 CO[7] via COUT or
                         // HMUX).  RapidWright selects the legal physical exit;
                         // only BRAM's true lower/upper sink expansion is
                         // explicitly materialized above.
-                        connected.add(net.connect(cell.regularCell, routedLogicalPin));
+                        connected.add(net.connect(routedCell, routedLogicalPin));
                     }
                     for (SitePinInst pin : connected) {
                         if (pin == null) continue;
@@ -1253,6 +1358,7 @@ public final class EmuFlowRWRoute {
         float maximumRouteDelayPs = 0.0f;
         int staticNets = 0;
         int staticSinks = 0;
+        int internalClockNets = 0;
         int boundaryClockNets = 0;
         Map<String, Float> iobRouteDelays = new HashMap<>();
         for (Object item : excluded) {
@@ -1276,7 +1382,8 @@ public final class EmuFlowRWRoute {
                 JSONObject record = new JSONObject();
                 record.put("net", netName);
                 String kind = netKinds.get(netName);
-                if (!kind.equals("signal") && !kind.equals("clock")) {
+                if (!kind.equals("signal") && !kind.equals("clock")
+                    && !kind.equals("clock_internal")) {
                     throw new IllegalStateException("unsupported routed net kind: " + kind);
                 }
                 record.put("kind", kind);
@@ -1289,18 +1396,20 @@ public final class EmuFlowRWRoute {
                         "clock net is not sourced by a dedicated BUFGCE: " + netName
                     );
                 }
-                record.put(
-                    "qualification",
-                    kind.equals("clock")
-                        ? (
+                String qualification = "ordinary-fabric-signal";
+                if (kind.equals("clock")) {
+                    qualification = (
                             net.getPins().stream().anyMatch(
                                 EmuFlowRWRoute::isBUFGCEClockInputSink
                             )
                                 ? "dedicated-bufgce-clock-with-fabric-cascade-spur"
                                 : "dedicated-bufgce-clock"
-                        )
-                        : "ordinary-fabric-signal"
-                );
+                    );
+                } else if (kind.equals("clock_internal")) {
+                    qualification = "lut2-prefilter-to-bufg-v1";
+                    internalClockNets++;
+                }
+                record.put("qualification", qualification);
                 JSONArray pins = new JSONArray();
                 JSONArray alternateSources = new JSONArray();
                 SitePinInst source = net.getSource();
@@ -1468,10 +1577,22 @@ public final class EmuFlowRWRoute {
                 .put("safe_cell", safeName)
                 .put("logical_cell", cell.logicalName)
                 .put("logical_type", cell.logicalType)
-                .put("physical_type", "BUFGCE")
+                .put("physical_type", cell.hasClockPrefilter() ? "BUFG" : "BUFGCE")
                 .put("physical_site", cell.regularCell.getSiteName())
                 .put("physical_bel", cell.regularCell.getBELName())
-                .put("ce_type", "ASYNC")
+                .put(
+                    "input_site",
+                    cell.hasClockPrefilter()
+                        ? cell.clockPrefilterCell.getSiteName()
+                        : cell.regularCell.getSiteName()
+                )
+                .put("ce_type", cell.hasClockPrefilter() ? "ALWAYS_ENABLED" : "ASYNC")
+                .put(
+                    "implementation",
+                    cell.hasClockPrefilter()
+                        ? "lut2-prefilter-bufg"
+                        : "direct-bufgce"
+                )
                 .put("qualification", "lut2-init-1000-fdre-latched-enable-v1"));
         }
         output.put("clock_gates", clockGates);
@@ -1480,6 +1601,7 @@ public final class EmuFlowRWRoute {
             .put("physical_cells", physicalCells)
             .put("transformed_dsp48e2_cells", transformedDsp48e2Cells)
             .put("dedicated_clock_gate_cells", dedicatedClockGateCells)
+            .put("fabric_prefilter_clock_gate_cells", fabricPrefilterClockGateCells)
             .put(
                 "router",
                 ROUTER_STRATEGY
@@ -1529,6 +1651,7 @@ public final class EmuFlowRWRoute {
             .put("certificate_nets", certificateNets)
             .put("static_nets", staticNets)
             .put("static_sinks", staticSinks)
+            .put("internal_clock_nets", internalClockNets)
             .put("nets_with_pips", routed)
             .put("pips", pips)
             .put("excluded_nets", excluded.length())

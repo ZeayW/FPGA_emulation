@@ -413,6 +413,21 @@ class XilinxRWRouteTest(unittest.TestCase):
             )
             path.write_text(json.dumps(value), encoding="utf-8")
             self.assertEqual(validate_xilinx_route_db(path)["clock_nets"], 1)
+            value["materialization"]["physical_cells"] += 1
+            value["materialization"]["fabric_prefilter_clock_gate_cells"] = 1
+            value["clock_gates"][0].update({
+                "physical_type": "BUFG",
+                "input_site": "S1",
+                "ce_type": "ALWAYS_ENABLED",
+                "implementation": "lut2-prefilter-bufg",
+            })
+            path.write_text(json.dumps(value), encoding="utf-8")
+            self.assertEqual(
+                validate_xilinx_route_db(path)[
+                    "fabric_prefilter_clock_gate_cells"
+                ],
+                1,
+            )
             value["nets"][0]["qualification"] = "fabric-routed-clock"
             path.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "clock qualification"):

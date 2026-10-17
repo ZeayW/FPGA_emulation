@@ -976,6 +976,9 @@ def validate_xilinx_route_db(
     physical_cells = materialization.get("physical_cells")
     transformed_dsp48e2 = materialization.get("transformed_dsp48e2_cells")
     dedicated_clock_gates = materialization.get("dedicated_clock_gate_cells", 0)
+    fabric_prefilter_clock_gates = materialization.get(
+        "fabric_prefilter_clock_gate_cells", 0
+    )
     router = materialization.get("router")
     if (
         isinstance(physical_cells, bool)
@@ -988,7 +991,12 @@ def validate_xilinx_route_db(
         or not isinstance(dedicated_clock_gates, int)
         or dedicated_clock_gates < 0
         or dedicated_clock_gates != len(clock_gates)
-        or physical_cells != route_cells + 7 * transformed_dsp48e2
+        or isinstance(fabric_prefilter_clock_gates, bool)
+        or not isinstance(fabric_prefilter_clock_gates, int)
+        or fabric_prefilter_clock_gates < 0
+        or fabric_prefilter_clock_gates > dedicated_clock_gates
+        or physical_cells
+        != route_cells + 7 * transformed_dsp48e2 + fabric_prefilter_clock_gates
         or router
         != (
             "CUFR-HUS-non-timing-driven-uturn-enabled-"
@@ -998,22 +1006,53 @@ def validate_xilinx_route_db(
         raise ValidationError("XilinxRouteDB transformed-cell accounting is invalid")
     seen_clock_gate_cells: Set[str] = set()
     seen_clock_gate_sites: Set[str] = set()
+    observed_prefilter_clock_gates = 0
     for index, gate in enumerate(clock_gates):
+        gate_keys = frozenset(gate) if isinstance(gate, dict) else frozenset()
+        base_keys = {
+            "safe_cell", "logical_cell", "logical_type", "physical_type",
+            "physical_site", "physical_bel", "ce_type", "qualification",
+        }
+        extended_keys = base_keys | {"input_site", "implementation"}
+        implementation = (
+            gate.get("implementation", "direct-bufgce")
+            if isinstance(gate, dict) else None
+        )
+        direct = implementation == "direct-bufgce"
+        prefiltered = implementation == "lut2-prefilter-bufg"
         if (
             not isinstance(gate, dict)
-            or set(gate) != {
-                "safe_cell", "logical_cell", "logical_type", "physical_type",
-                "physical_site", "physical_bel", "ce_type", "qualification",
-            }
+            or gate_keys not in {frozenset(base_keys), frozenset(extended_keys)}
             or gate.get("logical_type") != "LUT2"
-            or gate.get("physical_type") != "BUFGCE"
+            or (
+                direct
+                and (
+                    gate.get("physical_type") != "BUFGCE"
+                    or gate.get("ce_type") != "ASYNC"
+                )
+            )
+            or (
+                prefiltered
+                and (
+                    gate_keys != extended_keys
+                    or gate.get("physical_type") != "BUFG"
+                    or gate.get("ce_type") != "ALWAYS_ENABLED"
+                )
+            )
+            or not (direct or prefiltered)
             or gate.get("physical_bel") != "BUFCE"
-            or gate.get("ce_type") != "ASYNC"
             or gate.get("qualification")
             != "lut2-init-1000-fdre-latched-enable-v1"
             or not isinstance(gate.get("safe_cell"), str)
             or not isinstance(gate.get("logical_cell"), str)
             or not isinstance(gate.get("physical_site"), str)
+            or (
+                "input_site" in gate
+                and (
+                    not isinstance(gate.get("input_site"), str)
+                    or not gate["input_site"]
+                )
+            )
             or gate["logical_cell"] in seen_clock_gate_cells
             or gate["physical_site"] in seen_clock_gate_sites
         ):
@@ -1022,6 +1061,10 @@ def validate_xilinx_route_db(
             )
         seen_clock_gate_cells.add(gate["logical_cell"])
         seen_clock_gate_sites.add(gate["physical_site"])
+        if prefiltered:
+            observed_prefilter_clock_gates += 1
+    if observed_prefilter_clock_gates != fabric_prefilter_clock_gates:
+        raise ValidationError("XilinxRouteDB clock-prefilter accounting disagrees")
     source = value.get("source")
     if not isinstance(source, dict):
         raise ValidationError("XilinxRouteDB source seal is missing")
@@ -1149,6 +1192,7 @@ def validate_xilinx_route_db(
     static_nets = 0
     static_sinks = 0
     clock_nets = 0
+    internal_clock_nets = 0
     nets_with_pips = 0
     timed_endpoints = 0
     maximum_route_delay_ps = 0.0
@@ -1217,6 +1261,16 @@ def validate_xilinx_route_db(
             }:
                 raise ValidationError(f"{context}: clock qualification is invalid")
             clock_nets += 1
+        elif kind == "clock_internal":
+            if (
+                qualification != "lut2-prefilter-to-bufg-v1"
+                or re.fullmatch(r"__emuflow_clock_prefilter_c[0-9]+", net_name)
+                is None
+            ):
+                raise ValidationError(
+                    f"{context}: internal clock qualification is invalid"
+                )
+            internal_clock_nets += 1
         elif static:
             if qualification != "device-tied-static":
                 raise ValidationError(f"{context}: static qualification is invalid")
@@ -1365,6 +1419,8 @@ def validate_xilinx_route_db(
         "excluded_nets": len(excluded_nets),
         "boundary_clock_nets": boundary_clock_nets,
     }
+    if internal_clock_nets or "internal_clock_nets" in summary:
+        expected_summary["internal_clock_nets"] = internal_clock_nets
     if summary != expected_summary:
         raise ValidationError("XilinxRouteDB summary disagrees with route certificate")
     timing = value.get("timing")
@@ -1436,9 +1492,11 @@ def validate_xilinx_route_db(
         "virtual_io_cells": len(virtual_io),
         "transformed_dsp48e2_cells": transformed_dsp48e2,
         "dedicated_clock_gate_cells": dedicated_clock_gates,
+        "fabric_prefilter_clock_gate_cells": fabric_prefilter_clock_gates,
         "static_nets": static_nets,
         "static_sinks": static_sinks,
         "clock_nets": clock_nets,
+        "internal_clock_nets": internal_clock_nets,
     }
     used_pips.close()
     if all(path is not None for path in expected_paths.values()):

@@ -71,6 +71,7 @@ def _build_payload(
     top, module = _mapped_module(mapped, set(sites))
     cells = module["cells"]
     clock_gates = route.get("clock_gates", [])
+    clock_gate_input_sites: Dict[str, str] = {}
     for gate in clock_gates:
         logical_cell = gate.get("logical_cell") if isinstance(gate, Mapping) else None
         physical_site = gate.get("physical_site") if isinstance(gate, Mapping) else None
@@ -82,6 +83,15 @@ def _build_payload(
         ):
             raise ValidationError("Xilinx clock-gate timing binding is invalid")
         sites[logical_cell] = physical_site
+        input_site = gate.get("input_site", physical_site)
+        if not isinstance(input_site, str) or not input_site:
+            raise ValidationError("Xilinx clock-gate input-site binding is invalid")
+        clock_gate_input_sites[logical_cell] = input_site
+
+    def endpoint_site(instance: str, pin: str) -> str:
+        if instance in clock_gate_input_sites and pin in {"I0", "I1"}:
+            return clock_gate_input_sites[instance]
+        return sites[instance]
     endpoints: Dict[int, list[tuple[str, str, str]]] = defaultdict(list)
     for instance in sorted(cells):
         cell = cells[instance]
@@ -127,6 +137,10 @@ def _build_payload(
             ):
                 raise ValidationError("Xilinx static route identity is invalid")
             continue
+        if net.get("kind") == "clock_internal":
+            if net.get("qualification") != "lut2-prefilter-to-bufg-v1":
+                raise ValidationError("Xilinx internal clock route is invalid")
+            continue
         match = re.fullmatch(r"n([0-9]+)", str(net.get("net", "")))
         if match is None:
             raise ValidationError("Xilinx route net does not encode a mapped bit")
@@ -146,14 +160,14 @@ def _build_payload(
                     f"routed bit {bit} lacks one mapped driver and sinks"
                 )
             driver, driver_pin, _ = drivers[0]
-            driver_site = sites[driver]
+            driver_site = endpoint_site(driver, driver_pin)
             if len(route_sources) != 1 or route_sources[0]["site"] != driver_site:
                 raise ValidationError(f"routed bit {bit} driver site disagrees")
         elif virtual_io["direction"] == "tx":
             if len(drivers) != 1 or sinks:
                 raise ValidationError(f"TX virtual I/O bit {bit} endpoint set is invalid")
             driver, driver_pin, _ = drivers[0]
-            driver_site = sites[driver]
+            driver_site = endpoint_site(driver, driver_pin)
             if (
                 len(route_sources) != 1
                 or route_sources[0]["site"] != driver_site
@@ -182,11 +196,13 @@ def _build_payload(
             if not pin["is_output"]:
                 delay_by_site[pin["site"]].append(float(pin["route_delay_ps"]))
                 physical_sinks += 1
-        logical_sites = {sites[instance] for instance, _pin, _role in sinks}
+        logical_sites = {
+            endpoint_site(instance, pin) for instance, pin, _role in sinks
+        }
         if not set(delay_by_site).issubset(logical_sites):
             raise ValidationError(f"routed bit {bit} has an unbound physical sink site")
         for instance, sink_pin, _ in sorted(sinks):
-            sink_site = sites[instance]
+            sink_site = endpoint_site(instance, sink_pin)
             delays = delay_by_site.get(sink_site)
             if delays:
                 delay_ps = max(delays)
@@ -240,6 +256,8 @@ def _build_payload(
                 "logical_cell": gate["logical_cell"],
                 "physical_site": gate["physical_site"],
                 "physical_type": gate["physical_type"],
+                "input_site": gate.get("input_site", gate["physical_site"]),
+                "implementation": gate.get("implementation", "direct-bufgce"),
                 "qualification": gate["qualification"],
             }
             for gate in clock_gates
