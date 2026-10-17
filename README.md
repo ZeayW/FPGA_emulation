@@ -6592,16 +6592,21 @@ restore nets excluded by OpenPARF's large-degree WAWL/WASLL mask. The shared
 hook classifies internal drivers from existing native pin-direction/net-index
 tensors, re-enables internally driven large nets in the existing operator mask,
 and applies the same bounded square-root multiplier (threshold 64, exponent
-0.5, maximum 4). Driverless ideal boundary clocks remain masked, and explicitly
+0.5, maximum 4). Driverless large ideal boundary clocks remain masked, and explicitly
 disabled nets are not re-enabled or upweighted. No clock, gate, connection,
 register, or timing identity is removed or rewritten. The wirelength
 preconditioner is updated once; native convergence metrics retain only compact
 weight/mask counters, not a duplicated net population. The native export names
 this configuration `openparf-rudy-pin-stable-feasible-v4`.
 This corrects a placement-to-routing objective mismatch, not a proof of timing
-closure or faster physical implementation. Native-operator qualification and
-complete routed large-design/global-OpenSTA validation of the new policy are
-pending. Weighted HPWL is diagnostic and must not be compared directly with an
+closure or faster physical implementation. Qualification with the pinned native
+CPU WAWL operator passes: an internally driven 1,024-pin net changes from a
+masked zero objective/gradient to a finite nonzero objective/gradient, while
+an equally large driverless net retains zero gradient. The actual native
+wirelength preconditioner and in-place operator-mask binding are also checked,
+without changing pin/net identity. Complete routed large-design/global-OpenSTA
+validation of the new policy remains pending. Weighted HPWL is diagnostic and
+must not be compared directly with an
 older unit-weight objective or substituted for final WNS/TNS.
 The continuous convergence certificate gates the inflated slice density;
 sparse hard-macro
