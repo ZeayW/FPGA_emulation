@@ -395,15 +395,79 @@ class XilinxRWRouteTest(unittest.TestCase):
     def test_checker_requires_explicit_clock_qualification(self):
         value = self._route()
         value["nets"][0]["kind"] = "clock"
-        value["nets"][0]["qualification"] = "fabric-routed-clock"
+        value["nets"][0]["qualification"] = "dedicated-bufgce-clock"
+        value["materialization"]["dedicated_clock_gate_cells"] = 1
+        value["clock_gates"] = [{
+            "safe_cell": "c0", "logical_cell": "gate",
+            "logical_type": "LUT2", "physical_type": "BUFGCE",
+            "physical_site": "S0", "physical_bel": "BUFCE",
+            "ce_type": "ASYNC",
+            "qualification": "lut2-init-1000-fdre-latched-enable-v1",
+        }]
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "route.json"
             path.write_text(json.dumps(value), encoding="utf-8")
             self.assertEqual(validate_xilinx_route_db(path)["clock_nets"], 1)
-            value["nets"][0]["qualification"] = "global-clock"
+            value["nets"][0]["qualification"] = "fabric-routed-clock"
             path.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "clock qualification"):
                 validate_xilinx_route_db(path)
+
+    def test_exporter_qualifies_latched_lut2_clock_gate(self):
+        mapped = {"modules": {"top": {"cells": {
+            "enable": {
+                "type": "FDRE", "port_directions": {"Q": "output"},
+                "connections": {"Q": [2]},
+            },
+            "gate": {
+                "type": "LUT2", "parameters": {"INIT": "1000"},
+                "port_directions": {"I0": "input", "I1": "input", "O": "output"},
+                "connections": {"I0": [1], "I1": [2], "O": [3]},
+            },
+            "sink": {
+                "type": "FDRE", "port_directions": {"C": "input"},
+                "connections": {"C": [3]},
+            },
+        }}}}
+        assignments = [
+            {"instance": "enable", "cell_type": "FDRE", "bel": "AFF"},
+            {"instance": "gate", "cell_type": "LUT2", "bel": "B6LUT"},
+            {"instance": "sink", "cell_type": "FDRE", "bel": "CFF"},
+        ]
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+            "clusters": [{"assignments": assignments}],
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
+                {"instance": "enable", "bel": "AFF", "site": "SLICE_X0Y0"},
+                {"instance": "gate", "bel": "B6LUT", "site": "SLICE_X0Y0"},
+                {"instance": "sink", "bel": "CFF", "site": "SLICE_X0Y1"},
+            ]}],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / name for name in (
+                "mapped.json", "packed.json", "placement.json"
+            )]
+            for path, value in zip(paths, (mapped, packed, placement)):
+                path.write_text(json.dumps(value), encoding="utf-8")
+            report = export_rwroute_input(*paths, root / "route.tsv")
+            text = (root / "route.tsv").read_text(encoding="utf-8")
+        self.assertEqual(report["qualified_clock_gates"], 1)
+        self.assertIn("\nCLOCK_GATE\t", text)
+        self.assertIn("\nNET\tn3\tclock\n", text)
+        self.assertIn("\nNET\tn2\tsignal\n", text)
+
+    def test_rapidwright_input_is_parsed_in_two_streaming_passes(self):
+        source = (
+            Path(__file__).parents[1]
+            / "scripts/rapidwright/EmuFlowRWRoute.java"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("Files.readAllLines", source)
+        self.assertGreaterEqual(source.count("Files.newBufferedReader(inputPath"), 2)
+        self.assertNotIn("Map<String, List<String[]>> pinRows", source)
 
     def test_checker_requires_explicit_boundary_clock_qualification(self):
         value = self._route()

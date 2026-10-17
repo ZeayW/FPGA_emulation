@@ -70,6 +70,11 @@ class _TimingGraph:
         self.reverse: Dict[str, list[Tuple[str, float]]] = defaultdict(list)
         self.source_offsets: Dict[str, float] = {}
         self.virtual_io: Dict[Tuple[str, int, str], float] = {}
+        clock_gate_cells = {
+            item.get("logical_cell")
+            for item in timing.get("clock_gates", [])
+            if isinstance(item, Mapping)
+        }
         for item in timing.get("virtual_io", []):
             key = (
                 item.get("logical_port"), item.get("logical_bit"),
@@ -135,6 +140,11 @@ class _TimingGraph:
             elif cell_type in _CONSTANTS:
                 for output in outputs:
                     self.source_offsets[output] = 0.0
+            elif instance in clock_gate_cells:
+                # The logical LUT2 has been physically replaced by a BUFGCE.
+                # Its clock-tree route is certified separately and must not be
+                # reintroduced as a combinational data-path LUT delay.
+                continue
             else:
                 if cell_type == "CARRY8":
                     delay = carry_delay

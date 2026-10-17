@@ -18,6 +18,7 @@ import com.xilinx.rapidwright.device.BELPin;
 import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
+import com.xilinx.rapidwright.device.SiteTypeEnum;
 import com.xilinx.rapidwright.edif.EDIFCell;
 import com.xilinx.rapidwright.edif.EDIFNet;
 import com.xilinx.rapidwright.edif.EDIFPort;
@@ -27,6 +28,7 @@ import com.xilinx.rapidwright.rwroute.RWRouteConfig;
 import com.xilinx.rapidwright.timing.TimingModel;
 import com.xilinx.rapidwright.util.ParallelismTools;
 import java.io.BufferedInputStream;
+import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.InputStream;
 import java.io.OutputStreamWriter;
@@ -374,21 +376,28 @@ public final class EmuFlowRWRoute {
     }
 
     private static final class MaterializedCell {
+        final String logicalName;
         final String logicalType;
         final Cell regularCell;
         final SiteInst siteInst;
         final int physicalCells;
         final Map<String, String> parameters;
+        final Map<String, String> pinRemap;
+        final boolean dedicatedClockGate;
 
         MaterializedCell(
-            String logicalType, Cell regularCell, SiteInst siteInst, int physicalCells,
-            Map<String, String> parameters
+            String logicalName, String logicalType, Cell regularCell,
+            SiteInst siteInst, int physicalCells, Map<String, String> parameters,
+            Map<String, String> pinRemap, boolean dedicatedClockGate
         ) {
+            this.logicalName = logicalName;
             this.logicalType = logicalType;
             this.regularCell = regularCell;
             this.siteInst = siteInst;
             this.physicalCells = physicalCells;
             this.parameters = parameters;
+            this.pinRemap = pinRemap;
+            this.dedicatedClockGate = dedicatedClockGate;
         }
 
         boolean isTransformedDSP48E2() {
@@ -397,6 +406,10 @@ public final class EmuFlowRWRoute {
 
         boolean isBlockRam() {
             return logicalType.equals("RAMB18E2") || logicalType.equals("RAMB36E2");
+        }
+
+        String routedLogicalPin(String logicalPin) {
+            return pinRemap.getOrDefault(logicalPin, logicalPin);
         }
     }
 
@@ -763,10 +776,58 @@ public final class EmuFlowRWRoute {
         return physicalPin;
     }
 
+    private static Site allocateClockBufferSite(
+        Design design, String originalSiteName, List<Site> available
+    ) {
+        Site original = design.getDevice().getSite(originalSiteName);
+        if (original == null || available.isEmpty()) {
+            throw new IllegalStateException("no BUFGCE site is available for " + originalSiteName);
+        }
+        Site selected = Collections.min(
+            available,
+            Comparator
+                .comparingInt((Site site) ->
+                    Math.abs(site.getTile().getColumn() - original.getTile().getColumn())
+                    + Math.abs(site.getTile().getRow() - original.getTile().getRow()))
+                .thenComparing(Site::getName)
+        );
+        available.remove(selected);
+        return selected;
+    }
+
     private static MaterializedCell materializeCell(
-        Design design, String safeName, String[] row, Map<String, String> parameters
+        Design design, String safeName, String[] row, Map<String, String> parameters,
+        String[] clockGateRow, List<Site> availableClockBufferSites
     ) {
         String logicalType = row[3];
+        if (clockGateRow != null) {
+            if (!logicalType.equals("LUT2")
+                || clockGateRow.length != 6
+                || !clockGateRow[2].equals("I0")
+                || !clockGateRow[3].equals("I1")
+                || !clockGateRow[4].equals("O")
+                || !clockGateRow[5].equals("lut2-init-1000-fdre-latched-enable-v1")) {
+                throw new IllegalStateException("invalid qualified clock-gate contract");
+            }
+            Site site = allocateClockBufferSite(
+                design, row[4], availableClockBufferSites
+            );
+            Cell cell = design.createAndPlaceCell(
+                safeName, Unisim.BUFGCE, site.getName() + "/BUFCE",
+                "CE_TYPE", "ASYNC"
+            );
+            if (cell == null) {
+                throw new IllegalStateException("failed to place BUFGCE " + safeName);
+            }
+            Map<String, String> pinRemap = new HashMap<>();
+            pinRemap.put("I0", "I");
+            pinRemap.put("I1", "CE");
+            pinRemap.put("O", "O");
+            return new MaterializedCell(
+                row[2], logicalType, cell, cell.getSiteInst(), 1, parameters,
+                pinRemap, true
+            );
+        }
         if (!logicalType.equals("DSP48E2")) {
             List<String> propertyPairs = new ArrayList<>();
             List<String> propertyNames = new ArrayList<>(parameters.keySet());
@@ -781,7 +842,8 @@ public final class EmuFlowRWRoute {
             );
             if (cell == null) throw new IllegalStateException("failed to place " + safeName);
             return new MaterializedCell(
-                logicalType, cell, cell.getSiteInst(), 1, parameters
+                row[2], logicalType, cell, cell.getSiteInst(), 1, parameters,
+                Collections.emptyMap(), false
             );
         }
 
@@ -827,7 +889,8 @@ public final class EmuFlowRWRoute {
         }
         if (siteInst == null) throw new IllegalStateException("empty DSP48E2 transform");
         return new MaterializedCell(
-            logicalType, null, siteInst, DSP48E2_COMPONENTS.length, parameters
+            row[2], logicalType, null, siteInst, DSP48E2_COMPONENTS.length,
+            parameters, Collections.emptyMap(), false
         );
     }
 
@@ -839,16 +902,17 @@ public final class EmuFlowRWRoute {
                 + "<parts-db-md5> <device-db-md5>"
             );
         }
-        List<String> lines = Files.readAllLines(Path.of(args[0]));
+        Path inputPath = Path.of(args[0]);
         String part = null;
         Map<String, String> metadata = new HashMap<>();
         Map<String, String[]> cellRows = new HashMap<>();
         Map<String, String[]> iobRows = new HashMap<>();
+        Map<String, String[]> clockGateRows = new HashMap<>();
         Map<String, Map<String, String>> cellParameters = new HashMap<>();
         Map<String, String> netKinds = new HashMap<>();
-        Map<String, List<String[]>> pinRows = new HashMap<>();
         JSONArray excluded = new JSONArray();
-        for (String line : lines) {
+        try (BufferedReader reader = Files.newBufferedReader(inputPath, StandardCharsets.UTF_8)) {
+        for (String line = reader.readLine(); line != null; line = reader.readLine()) {
             if (line.isEmpty() || line.startsWith("#")) continue;
             String[] fields = line.split("\\t", -1);
             switch (fields[0]) {
@@ -860,12 +924,18 @@ public final class EmuFlowRWRoute {
                 case "CELL":
                     if (fields.length != 6 || cellRows.put(fields[1], fields) != null)
                         throw new IllegalArgumentException("invalid CELL record");
-                    cellParameters.put(fields[1], new HashMap<>());
                     break;
                 case "PARAM":
-                    if (fields.length != 4 || !cellParameters.containsKey(fields[1])
-                        || cellParameters.get(fields[1]).put(fields[2], fields[3]) != null)
+                    if (fields.length != 4 || !cellRows.containsKey(fields[1])
+                        || cellParameters.computeIfAbsent(
+                            fields[1], ignored -> new HashMap<>()
+                        ).put(fields[2], fields[3]) != null)
                         throw new IllegalArgumentException("invalid PARAM record");
+                    break;
+                case "CLOCK_GATE":
+                    if (fields.length != 6
+                        || clockGateRows.put(fields[1], fields) != null)
+                        throw new IllegalArgumentException("invalid CLOCK_GATE record");
                     break;
                 case "IOB":
                     if (fields.length != 13 || iobRows.put(fields[1], fields) != null)
@@ -874,12 +944,10 @@ public final class EmuFlowRWRoute {
                 case "NET":
                     if (fields.length != 3 || netKinds.put(fields[1], fields[2]) != null)
                         throw new IllegalArgumentException("invalid NET record");
-                    pinRows.put(fields[1], new ArrayList<>());
                     break;
                 case "PIN":
-                    if (fields.length != 5 || !pinRows.containsKey(fields[1]))
+                    if (fields.length != 5)
                         throw new IllegalArgumentException("invalid PIN record");
-                    pinRows.get(fields[1]).add(fields);
                     break;
                 case "EXCLUDED":
                     if (fields.length != 3 && fields.length != 4)
@@ -895,7 +963,11 @@ public final class EmuFlowRWRoute {
                     throw new IllegalArgumentException("unknown route-input record " + fields[0]);
             }
         }
+        }
         if (part == null) throw new IllegalArgumentException("missing part identity");
+        if (!cellRows.keySet().containsAll(clockGateRows.keySet())) {
+            throw new IllegalArgumentException("CLOCK_GATE references an unknown cell");
+        }
 
         Design design = new Design("emuflow_rwroute", part);
         design.setDesignOutOfContext(true);
@@ -904,12 +976,18 @@ public final class EmuFlowRWRoute {
         cellNames.sort(String::compareTo);
         int physicalCells = 0;
         int transformedDsp48e2Cells = 0;
+        int dedicatedClockGateCells = 0;
+        List<Site> availableClockBufferSites = new ArrayList<>(List.of(
+            design.getDevice().getAllSitesOfType(SiteTypeEnum.BUFGCE)
+        ));
         for (String safeName : cellNames) {
             String[] row = cellRows.get(safeName);
             MaterializedCell cell;
             try {
                 cell = materializeCell(
-                    design, safeName, row, cellParameters.get(safeName)
+                    design, safeName, row,
+                    cellParameters.getOrDefault(safeName, Collections.emptyMap()),
+                    clockGateRows.get(safeName), availableClockBufferSites
                 );
             } catch (RuntimeException error) {
                 throw new IllegalStateException(
@@ -922,7 +1000,10 @@ public final class EmuFlowRWRoute {
             if (cell.isTransformedDSP48E2()) {
                 transformedDsp48e2Cells++;
             }
+            if (cell.dedicatedClockGate) dedicatedClockGateCells++;
         }
+        cellRows.clear();
+        cellParameters.clear();
         List<String> iobNames = new ArrayList<>(iobRows.keySet());
         iobNames.sort(String::compareTo);
         for (String safeName : iobNames) {
@@ -954,23 +1035,27 @@ public final class EmuFlowRWRoute {
             cells.put(
                 safeName,
                 new MaterializedCell(
-                    logicalType, cell, cell.getSiteInst(), 1,
-                    Collections.emptyMap()
+                    row[2], logicalType, cell, cell.getSiteInst(), 1,
+                    Collections.emptyMap(), Collections.emptyMap(), false
                 )
             );
             physicalCells++;
         }
 
-        Map<String, Net> nets = new HashMap<>();
         Map<String, String> iobNetNames = new HashMap<>();
         Map<String, EDIFNet> blockRamLogicalPinOwners = new HashMap<>();
         List<String> netNames = new ArrayList<>(netKinds.keySet());
         netNames.sort(String::compareTo);
-        for (String netName : netNames) {
-            Net net = design.createNet(netName);
-            List<String[]> pins = pinRows.get(netName);
-            pins.sort(Comparator.comparing(row -> row[4].equals("driver") ? "0" : "1"));
-            for (String[] row : pins) {
+        for (String netName : netNames) design.createNet(netName);
+        try (BufferedReader reader = Files.newBufferedReader(inputPath, StandardCharsets.UTF_8)) {
+            for (String line = reader.readLine(); line != null; line = reader.readLine()) {
+                if (!line.startsWith("PIN\t")) continue;
+                String[] row = line.split("\\t", -1);
+                if (row.length != 5 || !netKinds.containsKey(row[1])) {
+                    throw new IllegalArgumentException("invalid PIN record");
+                }
+                String netName = row[1];
+                Net net = design.getNet(netName);
                 MaterializedCell cell = cells.get(row[2]);
                 if (cell == null) throw new IllegalArgumentException("unknown cell " + row[2]);
                 if (iobRows.containsKey(row[2])) iobNetNames.put(row[2], netName);
@@ -1020,13 +1105,14 @@ public final class EmuFlowRWRoute {
                             }
                         }
                     } else {
-                        ensureLogicalPinMapping(cell, row[3]);
+                        String routedLogicalPin = cell.routedLogicalPin(row[3]);
+                        ensureLogicalPinMapping(cell, routedLogicalPin);
                         // General logic can expose alternative dedicated and
                         // fabric exits (for example CARRY8 CO[7] via COUT or
                         // HMUX).  RapidWright selects the legal physical exit;
                         // only BRAM's true lower/upper sink expansion is
                         // explicitly materialized above.
-                        connected.add(net.connect(cell.regularCell, row[3]));
+                        connected.add(net.connect(cell.regularCell, routedLogicalPin));
                     }
                     for (SitePinInst pin : connected) {
                         if (pin == null) continue;
@@ -1044,7 +1130,6 @@ public final class EmuFlowRWRoute {
                     );
                 }
             }
-            nets.put(netName, net);
         }
 
         // This certificate begins and ends at physical site pins; purely
@@ -1106,7 +1191,7 @@ public final class EmuFlowRWRoute {
             ))
         ) {
             for (String netName : netNames) {
-                Net net = nets.get(netName);
+                Net net = design.getNet(netName);
                 JSONObject record = new JSONObject();
                 record.put("net", netName);
                 String kind = netKinds.get(netName);
@@ -1114,9 +1199,20 @@ public final class EmuFlowRWRoute {
                     throw new IllegalStateException("unsupported routed net kind: " + kind);
                 }
                 record.put("kind", kind);
+                SitePinInst routedSource = net.getSource();
+                if (kind.equals("clock") && (
+                    routedSource == null
+                    || routedSource.getSiteInst().getSiteTypeEnum() != SiteTypeEnum.BUFGCE
+                )) {
+                    throw new IllegalStateException(
+                        "clock net is not sourced by a dedicated BUFGCE: " + netName
+                    );
+                }
                 record.put(
                     "qualification",
-                    kind.equals("clock") ? "fabric-routed-clock" : "ordinary-fabric-signal"
+                    kind.equals("clock")
+                        ? "dedicated-bufgce-clock"
+                        : "ordinary-fabric-signal"
                 );
                 JSONArray pins = new JSONArray();
                 JSONArray alternateSources = new JSONArray();
@@ -1271,10 +1367,32 @@ public final class EmuFlowRWRoute {
                 ));
         }
         output.put("virtual_io", virtualIO);
+        JSONArray clockGates = new JSONArray();
+        List<String> clockGateNames = new ArrayList<>(clockGateRows.keySet());
+        clockGateNames.sort(String::compareTo);
+        for (String safeName : clockGateNames) {
+            MaterializedCell cell = cells.get(safeName);
+            if (cell == null || !cell.dedicatedClockGate) {
+                throw new IllegalStateException(
+                    "qualified clock gate was not materialized: " + safeName
+                );
+            }
+            clockGates.put(new JSONObject()
+                .put("safe_cell", safeName)
+                .put("logical_cell", cell.logicalName)
+                .put("logical_type", cell.logicalType)
+                .put("physical_type", "BUFGCE")
+                .put("physical_site", cell.regularCell.getSiteName())
+                .put("physical_bel", cell.regularCell.getBELName())
+                .put("ce_type", "ASYNC")
+                .put("qualification", "lut2-init-1000-fdre-latched-enable-v1"));
+        }
+        output.put("clock_gates", clockGates);
         output.put("materialization", new JSONObject()
             .put("route_cells", cells.size())
             .put("physical_cells", physicalCells)
             .put("transformed_dsp48e2_cells", transformedDsp48e2Cells)
+            .put("dedicated_clock_gate_cells", dedicatedClockGateCells)
             .put(
                 "router",
                 ROUTER_STRATEGY

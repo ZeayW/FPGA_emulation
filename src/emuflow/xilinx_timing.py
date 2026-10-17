@@ -70,6 +70,18 @@ def _build_payload(
     sites = _placement_sites(placement)
     top, module = _mapped_module(mapped, set(sites))
     cells = module["cells"]
+    clock_gates = route.get("clock_gates", [])
+    for gate in clock_gates:
+        logical_cell = gate.get("logical_cell") if isinstance(gate, Mapping) else None
+        physical_site = gate.get("physical_site") if isinstance(gate, Mapping) else None
+        if (
+            not isinstance(logical_cell, str)
+            or logical_cell not in cells
+            or not isinstance(physical_site, str)
+            or not physical_site
+        ):
+            raise ValidationError("Xilinx clock-gate timing binding is invalid")
+        sites[logical_cell] = physical_site
     endpoints: Dict[int, list[tuple[str, str, str]]] = defaultdict(list)
     for instance in sorted(cells):
         cell = cells[instance]
@@ -223,6 +235,15 @@ def _build_payload(
                 route["timing"]["logic_coefficients_ps"]
             ),
         },
+        "clock_gates": [
+            {
+                "logical_cell": gate["logical_cell"],
+                "physical_site": gate["physical_site"],
+                "physical_type": gate["physical_type"],
+                "qualification": gate["qualification"],
+            }
+            for gate in clock_gates
+        ],
         "summary": {
             "logical_endpoints": logical_endpoints,
             "physical_route_sinks": physical_sinks,

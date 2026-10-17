@@ -44,6 +44,41 @@ RAPIDWRIGHT_DEVICE_DATA_MD5 = {
 }
 
 
+class _TsvSpool:
+    """Append a large route contract without retaining its text in memory."""
+
+    def __init__(self, output_path: Path):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(
+            prefix=f".{output_path.name}.", suffix=".tmp",
+            dir=output_path.parent,
+        )
+        self.output_path = output_path
+        self.temporary_path = Path(name)
+        self.stream = os.fdopen(descriptor, "w", encoding="utf-8")
+        self.committed = False
+
+    def append(self, row: str) -> None:
+        self.stream.write(row)
+        self.stream.write("\n")
+
+    def commit(self) -> None:
+        self.stream.flush()
+        os.fsync(self.stream.fileno())
+        self.stream.close()
+        os.replace(self.temporary_path, self.output_path)
+        self.committed = True
+
+    def __del__(self) -> None:
+        if not self.committed:
+            try:
+                if not self.stream.closed:
+                    self.stream.close()
+                self.temporary_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 def _sha256(path: Path) -> str:
     return file_sha256(path)
 
@@ -362,6 +397,97 @@ def _primitive_parameter(parameters: Mapping[str, Any], name: str) -> Optional[s
     return value
 
 
+def _qualified_lut_clock_gates(
+    cells: Mapping[str, Any],
+    endpoints: Mapping[int, List[Tuple[str, str, str]]],
+) -> Set[str]:
+    """Recognize the canonical, already-latched NVDLA clock-gate pattern."""
+    candidates: Set[str] = set()
+    pins: Dict[str, Tuple[int, int, int]] = {}
+    for name, cell in cells.items():
+        if cell.get("type") != "LUT2":
+            continue
+        parameters = cell.get("parameters", {})
+        connections = cell.get("connections", {})
+        if (
+            not isinstance(parameters, Mapping)
+            or not isinstance(connections, Mapping)
+            or _primitive_parameter(parameters, "INIT") != "8"
+        ):
+            continue
+        values = []
+        for port in ("I0", "I1", "O"):
+            bits = connections.get(port)
+            if not isinstance(bits, list) or len(bits) != 1 or not isinstance(bits[0], int):
+                break
+            values.append(bits[0])
+        if len(values) != 3:
+            continue
+        enable_drivers = [
+            (instance, pin)
+            for instance, pin, role in endpoints.get(values[1], [])
+            if role == "driver"
+        ]
+        if (
+            len(enable_drivers) != 1
+            or cells.get(enable_drivers[0][0], {}).get("type") != "FDRE"
+            or enable_drivers[0][1] != "Q"
+        ):
+            continue
+        candidates.add(name)
+        pins[name] = (values[0], values[1], values[2])
+
+    qualified: Set[str] = set()
+    for name in sorted(candidates):
+        root_bit, _enable_bit, output_bit = pins[name]
+        root_drivers = [
+            (instance, pin)
+            for instance, pin, role in endpoints.get(root_bit, [])
+            if role == "driver"
+        ]
+        if root_drivers and not (
+            len(root_drivers) == 1
+            and root_drivers[0][0] in candidates
+            and root_drivers[0][1] == "O"
+        ):
+            continue
+        output_sinks = [
+            (instance, pin)
+            for instance, pin, role in endpoints.get(output_bit, [])
+            if role == "sink"
+        ]
+        if not output_sinks or any(
+            pin not in {"C", "CLK"}
+            and not (instance in candidates and pin == "I0")
+            for instance, pin in output_sinks
+        ):
+            continue
+        qualified.add(name)
+
+    # Preserve only closed gate chains. A malformed link invalidates its
+    # neighbors transitively instead of being partially rewritten.
+    while True:
+        invalid = set()
+        for name in qualified:
+            root_bit, _enable_bit, output_bit = pins[name]
+            root_drivers = [
+                instance
+                for instance, pin, role in endpoints.get(root_bit, [])
+                if role == "driver" and pin == "O"
+            ]
+            downstream = [
+                instance
+                for instance, pin, role in endpoints.get(output_bit, [])
+                if role == "sink" and pin == "I0"
+            ]
+            if any(instance not in qualified for instance in [*root_drivers, *downstream]):
+                invalid.add(name)
+        if not invalid:
+            break
+        qualified.difference_update(invalid)
+    return qualified
+
+
 def export_rwroute_input(
     mapped_path: Path,
     packed_path: Path,
@@ -495,12 +621,14 @@ def export_rwroute_input(
         name: f"c{index}"
         for index, name in enumerate(sorted([*route_cells, *io_rows]))
     }
-    lines = [
+    lines = _TsvSpool(output_path)
+    for row in (
         f"META\tpart\t{placement['part']}",
         f"META\tmapped_sha256\t{digests['mapped_sha256']}",
         f"META\tpacked_sha256\t{digests['packed_sha256']}",
         f"META\tplacement_sha256\t{digests['placement_sha256']}",
-    ]
+    ):
+        lines.append(row)
     if virtual_io_contract is not None:
         lines.append(
             "META\tvirtual_io_contract_sha256\t"
@@ -565,6 +693,27 @@ def export_rwroute_input(
     for bit, endpoint in io_by_bit.items():
         endpoints[bit].append(endpoint)
 
+    clock_gates = _qualified_lut_clock_gates(cells, endpoints)
+    for bit, values in endpoints.items():
+        sinks = [value for value in values if value[2] == "sink"]
+        if not any(pin in {"C", "CLK"} for _name, pin, _role in sinks):
+            continue
+        drivers = [value for value in values if value[2] == "driver"]
+        if drivers and not (
+            len(drivers) == 1
+            and drivers[0][0] in clock_gates
+            and drivers[0][1] == "O"
+        ):
+            raise ValidationError(
+                f"routed clock bit {bit} is not driven by a qualified "
+                "LUT2 INIT=1000 gate with an FDRE-latched enable"
+            )
+    for name in sorted(clock_gates):
+        lines.append(
+            f"CLOCK_GATE\t{safe[name]}\tI0\tI1\tO\t"
+            "lut2-init-1000-fdre-latched-enable-v1"
+        )
+
     included = 0
     excluded = 0
     carry_exit_owners: Dict[Tuple[str, int], Tuple[str, str]] = {}
@@ -598,7 +747,11 @@ def export_rwroute_input(
             )
             for name, _pin, _role in [drivers[0], *sinks]
         }
-        if len(sites) == 1:
+        touches_clock_gate = any(
+            name in clock_gates
+            for name, _pin, _role in [drivers[0], *sinks]
+        )
+        if len(sites) == 1 and not touches_clock_gate:
             lines.append(f"EXCLUDED\t{net_name}\tintra_site")
             excluded += 1
             continue
@@ -632,13 +785,13 @@ def export_rwroute_input(
                 f"PIN\t{net_name}\t{safe[route_name]}\t{route_pin}\t{role}"
             )
         included += 1
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    lines.commit()
     return {
         "status": "pass", "cells": len(safe), "logical_cells": len(physical),
         "virtual_io_cells": len(io_rows),
         "expanded_lut6_2_cells": expanded_lut6_2,
         "transformed_dsp48e2_cells": transformed_dsp48e2,
+        "qualified_clock_gates": len(clock_gates),
         "physical_cells": len(safe) + 7 * transformed_dsp48e2,
         "routable_nets": included,
         "excluded_nets": excluded, "output": str(output_path),
@@ -791,6 +944,7 @@ def validate_xilinx_route_db(
     route_cells = value.get("cells")
     materialization = value.get("materialization")
     virtual_io = value.get("virtual_io", [])
+    clock_gates = value.get("clock_gates", [])
     if (
         isinstance(route_cells, bool)
         or not isinstance(route_cells, int)
@@ -798,10 +952,12 @@ def validate_xilinx_route_db(
         or not isinstance(materialization, dict)
         or materialization.get("route_cells") != route_cells
         or not isinstance(virtual_io, list)
+        or not isinstance(clock_gates, list)
     ):
         raise ValidationError("XilinxRouteDB materialized route-cell count is invalid")
     physical_cells = materialization.get("physical_cells")
     transformed_dsp48e2 = materialization.get("transformed_dsp48e2_cells")
+    dedicated_clock_gates = materialization.get("dedicated_clock_gate_cells", 0)
     router = materialization.get("router")
     if (
         isinstance(physical_cells, bool)
@@ -810,6 +966,10 @@ def validate_xilinx_route_db(
         or not isinstance(transformed_dsp48e2, int)
         or transformed_dsp48e2 < 0
         or transformed_dsp48e2 > route_cells
+        or isinstance(dedicated_clock_gates, bool)
+        or not isinstance(dedicated_clock_gates, int)
+        or dedicated_clock_gates < 0
+        or dedicated_clock_gates != len(clock_gates)
         or physical_cells != route_cells + 7 * transformed_dsp48e2
         or router
         != (
@@ -818,6 +978,32 @@ def validate_xilinx_route_db(
         )
     ):
         raise ValidationError("XilinxRouteDB transformed-cell accounting is invalid")
+    seen_clock_gate_cells: Set[str] = set()
+    seen_clock_gate_sites: Set[str] = set()
+    for index, gate in enumerate(clock_gates):
+        if (
+            not isinstance(gate, dict)
+            or set(gate) != {
+                "safe_cell", "logical_cell", "logical_type", "physical_type",
+                "physical_site", "physical_bel", "ce_type", "qualification",
+            }
+            or gate.get("logical_type") != "LUT2"
+            or gate.get("physical_type") != "BUFGCE"
+            or gate.get("physical_bel") != "BUFCE"
+            or gate.get("ce_type") != "ASYNC"
+            or gate.get("qualification")
+            != "lut2-init-1000-fdre-latched-enable-v1"
+            or not isinstance(gate.get("safe_cell"), str)
+            or not isinstance(gate.get("logical_cell"), str)
+            or not isinstance(gate.get("physical_site"), str)
+            or gate["logical_cell"] in seen_clock_gate_cells
+            or gate["physical_site"] in seen_clock_gate_sites
+        ):
+            raise ValidationError(
+                f"XilinxRouteDB clock_gates[{index}] is invalid"
+            )
+        seen_clock_gate_cells.add(gate["logical_cell"])
+        seen_clock_gate_sites.add(gate["physical_site"])
     source = value.get("source")
     if not isinstance(source, dict):
         raise ValidationError("XilinxRouteDB source seal is missing")
@@ -866,6 +1052,16 @@ def validate_xilinx_route_db(
             raise ValidationError("XilinxRouteDB route-cell accounting disagrees")
         if transformed_dsp48e2 != expected_dsp48e2:
             raise ValidationError("XilinxRouteDB DSP48E2 transform count disagrees")
+        for gate in clock_gates:
+            logical = mapped_cells.get(gate["logical_cell"])
+            if (
+                not isinstance(logical, Mapping)
+                or logical.get("type") != "LUT2"
+                or _primitive_parameter(logical.get("parameters", {}), "INIT") != "8"
+            ):
+                raise ValidationError(
+                    "XilinxRouteDB clock-gate logical identity disagrees"
+                )
     if virtual_io_contract is None:
         if virtual_io:
             raise ValidationError("XilinxRouteDB has undeclared virtual I/O cells")
@@ -997,7 +1193,7 @@ def validate_xilinx_route_db(
             if qualification != "ordinary-fabric-signal":
                 raise ValidationError(f"{context}: signal qualification is invalid")
         elif kind == "clock":
-            if qualification != "fabric-routed-clock":
+            if qualification != "dedicated-bufgce-clock":
                 raise ValidationError(f"{context}: clock qualification is invalid")
             clock_nets += 1
         elif static:
@@ -1023,6 +1219,10 @@ def validate_xilinx_route_db(
         else:
             if len(sources) != 1 or not sinks or "roots" in net:
                 raise ValidationError(f"{context}: routed net lacks one source and sinks")
+            if kind == "clock" and sources[0]["site"] not in seen_clock_gate_sites:
+                raise ValidationError(
+                    f"{context}: clock source is not a declared BUFGCE site"
+                )
             source_nodes = {
                 sources[0]["node"],
                 *(pin["node"] for pin in alternate_sources),
@@ -1214,6 +1414,7 @@ def validate_xilinx_route_db(
         "physical_cells": physical_cells,
         "virtual_io_cells": len(virtual_io),
         "transformed_dsp48e2_cells": transformed_dsp48e2,
+        "dedicated_clock_gate_cells": dedicated_clock_gates,
         "static_nets": static_nets,
         "static_sinks": static_sinks,
         "clock_nets": clock_nets,
