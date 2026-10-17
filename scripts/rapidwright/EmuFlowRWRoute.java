@@ -309,26 +309,45 @@ public final class EmuFlowRWRoute {
                         "unable to project global-clock sink to INT: " + pin
                     );
                 }
-                ArrayDeque<NodeDepth> queue = new ArrayDeque<>();
-                Set<Node> visited = new HashSet<>();
-                queue.add(new NodeDepth(intNode, 0));
-                visited.add(intNode);
                 Map<Node, Integer> candidates = new HashMap<>();
-                while (!queue.isEmpty()) {
-                    NodeDepth current = queue.removeFirst();
-                    if (current.depth >= MAX_LCB_SEARCH_DEPTH) {
-                        continue;
+                for (Node firstHop : intNode.getAllUphillNodes()) {
+                    if (status.apply(firstHop) == NodeStatus.UNAVAILABLE) continue;
+                    for (Node secondHop : firstHop.getAllUphillNodes()) {
+                        if (secondHop.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF
+                            && status.apply(secondHop) != NodeStatus.UNAVAILABLE) {
+                            candidates.put(secondHop, 2);
+                        }
                     }
-                    for (Node uphill : current.node.getAllUphillNodes()) {
-                        if (!visited.add(uphill)
-                            || status.apply(uphill) == NodeStatus.UNAVAILABLE) {
+                }
+                if (candidates.isEmpty()) {
+                    ArrayDeque<NodeDepth> queue = new ArrayDeque<>();
+                    Set<Node> visited = new HashSet<>();
+                    queue.add(new NodeDepth(intNode, 0));
+                    visited.add(intNode);
+                    int reusableDepth = Integer.MAX_VALUE;
+                    while (!queue.isEmpty()) {
+                        NodeDepth current = queue.removeFirst();
+                        if (current.depth >= MAX_LCB_SEARCH_DEPTH
+                            || current.depth >= reusableDepth) {
                             continue;
                         }
-                        int depth = current.depth + 1;
-                        if (uphill.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF) {
-                            candidates.merge(uphill, depth, Math::min);
-                        } else {
-                            queue.addLast(new NodeDepth(uphill, depth));
+                        for (Node uphill : current.node.getAllUphillNodes()) {
+                            NodeStatus uphillStatus = status.apply(uphill);
+                            if (!visited.add(uphill)
+                                || uphillStatus == NodeStatus.UNAVAILABLE) {
+                                continue;
+                            }
+                            int depth = current.depth + 1;
+                            if (uphill.getIntentCode()
+                                == IntentCode.NODE_GLOBAL_LEAF) {
+                                candidates.merge(uphill, depth, Math::min);
+                                if (usedLCBs.contains(uphill)
+                                    || uphillStatus == NodeStatus.INUSE) {
+                                    reusableDepth = Math.min(reusableDepth, depth);
+                                }
+                            } else if (depth < reusableDepth) {
+                                queue.addLast(new NodeDepth(uphill, depth));
+                            }
                         }
                     }
                 }
