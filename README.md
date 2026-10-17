@@ -6599,6 +6599,16 @@ views from being conflated at the pack/place-to-route boundary and makes a
 RAMB36 whole-site assignment conflict with either half without relying on
 coordinate parity or site-name rewriting.
 RWRoute is likewise a physical routing provider, not the acceptance oracle.
+The `run_rwroute` Python API accepts an explicit positive `java_heap_gib`
+budget (default 32), recorded at the start of its log. This is a resource
+setting, not a change to the netlist, placement or routing algorithm, and
+does not silently fall back or increase memory on failure. A DLA-large
+32-GiB attempt exhausted its heap: an eight-second read-only `/proc` sample
+recorded 63.09 CPU seconds in GC threads versus 0.10 in other threads, with
+no completed first routing iteration. CPU activity in that state is not
+routing progress. Recovery must preserve the completed placement, confirm
+the affected JVM is terminal, and explicitly reserve sufficient host memory
+before rerouting; increasing heap is not itself evidence of routing closure.
 Large designs use RapidWright CUFR, the parallel full-design specialization of
 RWRoute: it retains RWRoute's negotiated-congestion legality model while
 partitioning general-signal routing across CPU workers.  Route A selects its

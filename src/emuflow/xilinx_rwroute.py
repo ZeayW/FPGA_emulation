@@ -576,6 +576,12 @@ def export_rwroute_input(
     }
 
 
+def _rwroute_heap_argument(java_heap_gib: int) -> str:
+    if isinstance(java_heap_gib, bool) or not isinstance(java_heap_gib, int) or java_heap_gib < 1:
+        raise ValidationError("RWRoute java_heap_gib must be a positive integer")
+    return f"-Xmx{java_heap_gib}g"
+
+
 def run_rwroute(
     input_path: Path,
     output_path: Path,
@@ -594,7 +600,9 @@ def run_rwroute(
     packed_value: Optional[Mapping[str, Any]] = None,
     source_sha256: Optional[Mapping[str, str]] = None,
     route_value_sink: Optional[Dict[str, Any]] = None,
+    java_heap_gib: int = 32,
 ) -> Dict[str, Any]:
+    heap_argument = _rwroute_heap_argument(java_heap_gib)
     classes_dir.mkdir(parents=True, exist_ok=True)
     runtime_home = classes_dir.parent / "rapidwright-runtime-home"
     runtime_home.mkdir(parents=True, exist_ok=True)
@@ -632,7 +640,7 @@ def run_rwroute(
         if completed.returncode != 0:
             raise ValidationError("RWRoute adapter compilation failed:\n" + completed.stdout[-8000:])
     command = [
-        str(java), "-Xmx32g", f"-Duser.home={runtime_home}",
+        str(java), heap_argument, f"-Duser.home={runtime_home}",
         "-cp", f"{classes_dir}:{rapidwright_jar}",
         "EmuFlowRWRoute", str(input_path), str(output_path),
         RAPIDWRIGHT_TIMING_DATA_REVISION,
@@ -654,6 +662,8 @@ def run_rwroute(
         route_log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with route_log_path.open("w", encoding="utf-8") as route_log:
+            route_log.write(f"EmuFlow RWRoute JVM heap budget: {java_heap_gib} GiB\n")
+            route_log.flush()
             completed = subprocess.run(
                 command, stdout=route_log, stderr=subprocess.STDOUT,
                 text=True, check=False,

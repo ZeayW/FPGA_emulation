@@ -15,6 +15,7 @@ from unittest.mock import patch
 from emuflow.errors import ValidationError
 from emuflow.xilinx_rwroute import (
     _PipOwnership,
+    _rwroute_heap_argument,
     _validate_rapidwright_device_data,
     export_rwroute_input,
     validate_xilinx_route_db,
@@ -30,6 +31,15 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_heap_budget_is_explicit_and_validated(self):
+        for budget in (1, 32, 96):
+            self.assertEqual(_rwroute_heap_argument(budget), f"-Xmx{budget}g")
+        for budget in (True, False, 0, -1, "96", 96.5, None):
+            with self.subTest(budget=budget), self.assertRaisesRegex(
+                ValidationError, "positive integer"
+            ):
+                _rwroute_heap_argument(budget)
+
     def test_carry_qualification_finishes_with_real_route_iterator(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "qualification"
