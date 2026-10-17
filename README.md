@@ -6661,6 +6661,11 @@ routes must not proceed to device timing or a large route certificate.
 This constant-size failure summary uses the router's
 existing connection state; it does not replace the independent complete
 reachability, PIP-conflict, static-net and physical timing checks. The adapter
+has an explicit `EmuFlowRWRouteFailureBoundaryCheck` qualification: a two-cell
+device fixture deliberately exhausts a one-step budget and must throw before
+direct-routing postprocessing or statistics. This is a failure-path check,
+not physical-closure evidence.
+The adapter
 also replaces upstream's diagnostic-only PIP-usage pass with an immediate
 failure on the first cross-net PIP ownership conflict. It keeps one owner per
 PIP instead of allocating a set for every PIP, and does not run the upstream
