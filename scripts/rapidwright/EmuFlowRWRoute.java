@@ -273,6 +273,8 @@ public final class EmuFlowRWRoute {
         @Override
         protected void routeIndirectConnections(Collection<Connection> connections) {
             long iterationStartNanos = System.nanoTime();
+            int recoveryAtStart = 0;
+            long unroutedAtStart = 0;
             // A connection only needs the exceptional full-device recovery
             // tree while it remains unrouted, congested, or selected for a
             // timing-driven reroute. Keeping every connection that was ever
@@ -283,6 +285,10 @@ public final class EmuFlowRWRoute {
             );
             if (!recoveryConnections.isEmpty()) {
                 List<Connection> snapshot = new ArrayList<>(recoveryConnections);
+                recoveryAtStart = snapshot.size();
+                unroutedAtStart = snapshot.stream()
+                    .filter(connection -> !connection.isRouted())
+                    .count();
                 System.out.println(
                     "INFO: EmuFlow active recovery connections: " + snapshot.size()
                 );
@@ -290,17 +296,37 @@ public final class EmuFlowRWRoute {
                     snapshot, design.getDevice().getColumns(), design.getDevice().getRows()
                 );
                 routeRecoveryTree(tree.root);
+                // Recovery can legitimately take longer than the guard on a
+                // full device. Drop connections that became stable before
+                // judging progress; otherwise the set still contains the
+                // successful work until the next iteration and the timeout
+                // rejects a completed recovery tail.
+                recoveryConnections.removeIf(
+                    connection -> !super.shouldRoute(connection)
+                );
             }
             super.routeIndirectConnections(connections);
+            recoveryConnections.removeIf(
+                connection -> !super.shouldRoute(connection)
+            );
             double elapsedSeconds = (
                 System.nanoTime() - iterationStartNanos
             ) / 1_000_000_000.0;
-            if (!recoveryConnections.isEmpty()
+            int recoveryRemaining = recoveryConnections.size();
+            long unroutedRemaining = recoveryConnections.stream()
+                .filter(connection -> !connection.isRouted())
+                .count();
+            if (recoveryAtStart > 0
+                && recoveryRemaining >= recoveryAtStart
+                && unroutedRemaining >= unroutedAtStart
                 && elapsedSeconds > MAX_RECOVERY_ITERATION_SECONDS) {
                 throw new IllegalStateException(
                     "RWRoute recovery iteration " + routeIteration + " took "
-                    + elapsedSeconds + " seconds with " + recoveryConnections.size()
-                    + " active connections; refusing an unbounded recovery tail. "
+                    + elapsedSeconds + " seconds without reducing its active "
+                    + "or unrouted connection set (active " + recoveryAtStart
+                    + " -> " + recoveryRemaining + ", unrouted "
+                    + unroutedAtStart + " -> " + unroutedRemaining
+                    + "); refusing an unbounded recovery tail. "
                     + "Re-run placement with high-fanout routability weighting."
                 );
             }

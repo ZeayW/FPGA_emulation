@@ -99,6 +99,10 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertIn("!super.shouldRoute(connection)", source)
         self.assertIn("EmuFlow active recovery connections", source)
         self.assertIn("MAX_RECOVERY_ITERATION_SECONDS = 600.0", source)
+        self.assertIn("connection -> !connection.isRouted()", source)
+        self.assertIn("recoveryRemaining >= recoveryAtStart", source)
+        self.assertIn("unroutedRemaining >= unroutedAtStart", source)
+        self.assertIn("without reducing its active", source)
         self.assertIn("refusing an unbounded recovery tail", source)
 
     def test_rapidwright_block_ram_aliases_match_yosys_ports(self):
