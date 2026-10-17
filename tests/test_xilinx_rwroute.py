@@ -26,6 +26,45 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_carry_initialization_binding_separates_fabric_and_cascade(self):
+        source = (Path(__file__).parents[1] /
+                  "scripts/rapidwright/EmuFlowRWRoute.java").read_text()
+        self.assertIn('pin[3].equals("CO[7]")', source)
+        self.assertIn('if (dedicated) return net.connect(cell, "CI");', source)
+        self.assertIn('cell.addPinMapping("AX", "CI");', source)
+        self.assertIn('carry AX site pin belongs to another net', source)
+        self.assertIn('dedicatedCarryInput(pins, cells)', source)
+
+    def test_exporter_preserves_carry_type(self):
+        for mode in ("SINGLE_CY8", "DUAL_CY4", None, "invalid"):
+            mapped = {"modules": {"top": {"cells": {
+                "source": {"type": "FDRE", "port_directions": {"Q": "output"},
+                           "connections": {"Q": [10]}},
+                "carry": {"type": "CARRY8", "port_directions": {"CI": "input"},
+                          "connections": {"CI": [10]},
+                          "parameters": {} if mode is None else {"CARRY_TYPE": mode}},
+            }}}}
+            assignments = [{"instance": "source", "cell_type": "FDRE", "bel": "AFF"},
+                           {"instance": "carry", "cell_type": "CARRY8", "bel": "CARRY8"}]
+            packed = {"schema": "emuflow.packed-site-netlist/v1", "top": "top",
+                      "clusters": [{"assignments": assignments}]}
+            placement = {"schema": "emuflow.xilinx-placement/v1", "part": "fixture",
+                         "clusters": [{"site": "SLICE_X0Y0", "assignments": [
+                             {**assignments[0], "site": "SLICE_X0Y1"},
+                             {**assignments[1], "site": "SLICE_X0Y0"}]}]}
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                paths = [root / p for p in ("mapped.json", "packed.json", "placement.json")]
+                for path, value in zip(paths, (mapped, packed, placement)):
+                    path.write_text(json.dumps(value))
+                if mode == "invalid":
+                    with self.assertRaisesRegex(ValidationError, "unsupported CARRY_TYPE"):
+                        export_rwroute_input(*paths, root / "route.tsv")
+                else:
+                    export_rwroute_input(*paths, root / "route.tsv")
+                    self.assertIn("\tCARRY_TYPE\t" + (mode or "SINGLE_CY8"),
+                                  (root / "route.tsv").read_text())
+
     def test_failed_worker_ownership_database_can_close_in_collector_thread(self):
         owner = _PipOwnership(250001)
         owner.claim_many([("T", "W1", "W2")], "n")

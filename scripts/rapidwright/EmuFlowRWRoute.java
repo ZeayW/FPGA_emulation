@@ -643,6 +643,52 @@ public final class EmuFlowRWRoute {
         return physicalPin;
     }
 
+    private static boolean dedicatedCarryInput(
+        List<String[]> pins, Map<String, MaterializedCell> cells
+    ) {
+        for (String[] pin : pins) {
+            if (!pin[4].equals("driver")) continue;
+            MaterializedCell source = cells.get(pin[2]);
+            // The packer records CO[7] -> CI as a dedicated adjacent cascade.
+            // Never turn a placement/cascade error into a fabric fallback.
+            return source != null && source.logicalType.equals("CARRY8")
+                && pin[3].equals("CO[7]");
+        }
+        throw new IllegalStateException("carry input net has no source");
+    }
+
+    private static SitePinInst connectCarryInitialization(
+        Net net, MaterializedCell materialized, boolean dedicated
+    ) {
+        Cell cell = materialized.regularCell;
+        if (dedicated) return net.connect(cell, "CI");
+        // UG574: a dynamic first carry enters through AX, whereas CIN is
+        // exclusively the vertical COUT cascade. RapidWright's default CI
+        // mapping is CIN even for an ordinary fabric source.
+        if (cell.getBEL().getPin("AX") == null || cell.getBEL().getPin("DI0") == null) {
+            throw new IllegalStateException("carry BEL lacks dynamic CYINIT input");
+        }
+        String previous = cell.getLogicalPinMapping("AX");
+        if (previous != null && !previous.equals("DI[0]") && !previous.equals("CI")) {
+            throw new IllegalStateException("carry AX mapping is already in use: " + previous);
+        }
+        SitePinInst existing = cell.getSiteInst().getSitePinInst("AX");
+        if (existing != null && existing.getNet() != net) {
+            throw new IllegalStateException("carry AX site pin belongs to another net");
+        }
+        // Production carry packing binds DI[0] to its dedicated A-LUT O5
+        // adapter in the same exclusive slice. Drop only its alternative AX
+        // mapping, not that internal DI0 connection or any logical net.
+        cell.removePinMapping("CIN");
+        cell.removePinMapping("AX");
+        cell.addPinMapping("AX", "CI");
+        SitePinInst result = net.connect(cell, "CI");
+        if (result == null || !result.getName().equals("AX")) {
+            throw new IllegalStateException("dynamic carry initialization did not bind AX");
+        }
+        return result;
+    }
+
     private static MaterializedCell materializeCell(
         Design design, String safeName, String[] row, Map<String, String> parameters
     ) {
@@ -855,6 +901,10 @@ public final class EmuFlowRWRoute {
                                 );
                             }
                         }
+                    } else if (cell.logicalType.equals("CARRY8") && row[3].equals("CI")) {
+                        connected.add(connectCarryInitialization(
+                            net, cell, dedicatedCarryInput(pins, cells)
+                        ));
                     } else {
                         ensureLogicalPinMapping(cell, row[3]);
                         // General logic can expose alternative dedicated and

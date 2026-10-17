@@ -1229,6 +1229,18 @@ The probe also creates a separate in-memory `CI`-to-`AX` mapping trial,
 following AMD UG574's dynamic CYINIT description; this trial is not yet a
 production router fix or a completed physical validation.
 
+The RWRoute adapter now distinguishes a fabric-driven carry head from an
+adjacent `CARRY8.CO[7] -> CI` cascade: fabric initialization binds `CI` to
+`AX`, while a dedicated cascade retains `CIN`. `CARRY_TYPE` is forwarded to
+RapidWright, including `DUAL_CY4`; internal LUT-to-DI connections are retained,
+and occupied/conflicting AX bindings still fail. Connectivity and PIP ownership
+validation are unchanged. Full large-design routing qualification of this
+binding correction is pending; a pin-selection probe alone is not sufficient.
+`scripts/qualify_carry_binding.py` runs the actual router and unchanged
+source-to-sink/PIP checker on an explicitly placed two-cell fabric or cascade
+fixture. Its result is labelled physical-connectivity-only, not complete
+packing, circuit equivalence, end-to-end timing, or platform promotion.
+
 Earlier sealed AES and PicoRV32 Phase 1--7 results used the VTR physical
 surrogate. Their historical WNS/TNS values remain diagnostic records, but they
 do not satisfy the new RapidWright-bound platform contract. All five holdout

@@ -461,18 +461,23 @@ def export_rwroute_input(
         lines.append(
             f"CELL\t{safe[route_name]}\t{display_name}\t{cell_type}\t{site}\t{bel}"
         )
-        if cell_type in {"RAMB18E2", "RAMB36E2"}:
+        if cell_type in {"RAMB18E2", "RAMB36E2", "CARRY8"}:
             parameters = cells[route_name].get("parameters", {})
             if not isinstance(parameters, dict):
                 raise ValidationError(
                     f"hard primitive {display_name!r} parameters are invalid"
                 )
-            for parameter in (
+            parameter_names = ("CARRY_TYPE",) if cell_type == "CARRY8" else (
                 "READ_WIDTH_A", "READ_WIDTH_B", "WRITE_WIDTH_A",
                 "WRITE_WIDTH_B", "DOA_REG", "DOB_REG", "WRITE_MODE_A",
                 "WRITE_MODE_B", "RAM_MODE",
-            ):
+            )
+            for parameter in parameter_names:
                 value = _primitive_parameter(parameters, parameter)
+                if parameter == "CARRY_TYPE":
+                    value = value if value is not None else "SINGLE_CY8"
+                    if value not in {"SINGLE_CY8", "DUAL_CY4"}:
+                        raise ValidationError(f"unsupported CARRY_TYPE {value!r}")
                 if value is not None:
                     lines.append(
                         f"PARAM\t{safe[route_name]}\t{parameter}\t{value}"
