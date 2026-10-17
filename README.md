@@ -6344,6 +6344,14 @@ and records the moved count and Manhattan distance in
 site/BEL occupancy and exact control-set legality before RWRoute. In
 particular, FDCE/FDPE use their real `CLR`/`PRE` ports; absent-port aliases are
 never treated as common controls. Sparse DLA partitions are admitted to the
+An actual NVDLA native-placement continuation exposed a separate slice-input
+legality gap: a placed MUXF7 select and an unrelated FF data input claimed the
+same AX site pin. This is not a CARRY or storage failure. Its final physical
+and global timing gates remain incomplete. The offline
+`scripts/rapidwright/EmuFlowSliceInputCheck.java` probe inspects the pinned
+device/library's MUX-select and FF-data site-pin mappings before extending
+the legality model; it is not routing or full-flow qualification evidence.
+Sparse DLA partitions are admitted to the
 smallest contiguous SLR
 window that preserves 1.5x resource headroom, instead of being spread over all
 four XCVU19P SLRs.  This keeps high-fanout bounding boxes and the routing search
