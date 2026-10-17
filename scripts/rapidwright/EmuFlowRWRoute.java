@@ -15,6 +15,7 @@ import com.xilinx.rapidwright.design.SitePinInst;
 import com.xilinx.rapidwright.design.Unisim;
 import com.xilinx.rapidwright.device.BEL;
 import com.xilinx.rapidwright.device.BELPin;
+import com.xilinx.rapidwright.device.ClockRegion;
 import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
@@ -25,6 +26,7 @@ import com.xilinx.rapidwright.edif.EDIFPort;
 import com.xilinx.rapidwright.rwroute.CUFR;
 import com.xilinx.rapidwright.rwroute.Connection;
 import com.xilinx.rapidwright.rwroute.RWRouteConfig;
+import com.xilinx.rapidwright.router.Router;
 import com.xilinx.rapidwright.timing.TimingModel;
 import com.xilinx.rapidwright.util.ParallelismTools;
 import java.io.BufferedInputStream;
@@ -272,6 +274,72 @@ public final class EmuFlowRWRoute {
             }
         }
 
+        /**
+         * RapidWright's UltraScale+ global-clock router expects every sink to
+         * map to a leaf clock buffer.  A cascaded BUFGCE is different: its
+         * CLK_IN site pin is the input of another global buffer and therefore
+         * has no LCB mapping.  Route the ordinary sinks with the dedicated
+         * clock router, then add only those cascade spurs with the re-entrant
+         * fabric router while retaining the already-routed clock tree.
+         */
+        @Override
+        protected void routeGlobalClkNet(
+            Net clk, Map<Integer, Set<ClockRegion>> usedRoutingTracks
+        ) {
+            List<SitePinInst> originalPins = new ArrayList<>(clk.getPins());
+            ArrayList<SitePinInst> cascadeSinks = new ArrayList<>();
+            ArrayList<SitePinInst> dedicatedPins = new ArrayList<>();
+            for (SitePinInst pin : originalPins) {
+                if (isBUFGCEClockInputSink(pin)) cascadeSinks.add(pin);
+                else dedicatedPins.add(pin);
+            }
+            if (cascadeSinks.isEmpty()) {
+                super.routeGlobalClkNet(clk, usedRoutingTracks);
+                return;
+            }
+
+            for (SitePinInst pin : cascadeSinks) {
+                Node node = pin.getConnectedNode();
+                if (node != null) routingGraph.unpreserve(node);
+                pin.setRouted(false);
+            }
+            if (!clk.setPins(dedicatedPins)) {
+                throw new IllegalStateException(
+                    "failed to isolate BUFGCE cascade sinks on clock " + clk.getName()
+                );
+            }
+            try {
+                if (dedicatedPins.size() > 1) {
+                    super.routeGlobalClkNet(clk, usedRoutingTracks);
+                }
+            } finally {
+                if (!clk.setPins(originalPins)) {
+                    throw new IllegalStateException(
+                        "failed to restore BUFGCE cascade sinks on clock "
+                        + clk.getName()
+                    );
+                }
+            }
+
+            Router cascadeRouter = new Router(design);
+            cascadeRouter.routePinsReEntrant(cascadeSinks, false);
+            List<String> failed = new ArrayList<>();
+            for (SitePinInst pin : cascadeSinks) {
+                if (!pin.isRouted()) failed.add(pin.toString());
+            }
+            if (!failed.isEmpty()) {
+                throw new IllegalStateException(
+                    "failed to route BUFGCE cascade sinks on clock "
+                    + clk.getName() + ": " + failed
+                );
+            }
+            preserveNet(clk, false);
+            System.out.println(
+                "INFO: Routed " + cascadeSinks.size()
+                + " BUFGCE cascade sink(s) on clock " + clk.getName()
+            );
+        }
+
         @Override
         protected void routeIndirectConnections(Collection<Connection> connections) {
             long iterationStartNanos = System.nanoTime();
@@ -433,6 +501,19 @@ public final class EmuFlowRWRoute {
 
     private static String nodeName(Node node) {
         return node == null ? null : node.toString();
+    }
+
+    private static boolean isBUFGCEClockInputSink(SitePinInst pin) {
+        String siteName = pin.getSiteInstName();
+        String physicalPinName = pin.getName();
+        String sitePinName = pin.getSitePinName();
+        return !pin.isOutPin()
+            && siteName != null
+            && siteName.startsWith("BUFGCE_")
+            && (
+                "CLK_IN".equals(physicalPinName)
+                || "CLK_IN".equals(sitePinName)
+            );
     }
 
     private static JSONObject pinRecord(SitePinInst pin) {
@@ -1211,7 +1292,13 @@ public final class EmuFlowRWRoute {
                 record.put(
                     "qualification",
                     kind.equals("clock")
-                        ? "dedicated-bufgce-clock"
+                        ? (
+                            net.getPins().stream().anyMatch(
+                                EmuFlowRWRoute::isBUFGCEClockInputSink
+                            )
+                                ? "dedicated-bufgce-clock-with-fabric-cascade-spur"
+                                : "dedicated-bufgce-clock"
+                        )
                         : "ordinary-fabric-signal"
                 );
                 JSONArray pins = new JSONArray();

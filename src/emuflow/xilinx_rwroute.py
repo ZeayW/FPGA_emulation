@@ -1211,7 +1211,10 @@ def validate_xilinx_route_db(
             if qualification != "ordinary-fabric-signal":
                 raise ValidationError(f"{context}: signal qualification is invalid")
         elif kind == "clock":
-            if qualification != "dedicated-bufgce-clock":
+            if qualification not in {
+                "dedicated-bufgce-clock",
+                "dedicated-bufgce-clock-with-fabric-cascade-spur",
+            }:
                 raise ValidationError(f"{context}: clock qualification is invalid")
             clock_nets += 1
         elif static:

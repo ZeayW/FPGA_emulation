@@ -408,6 +408,11 @@ class XilinxRWRouteTest(unittest.TestCase):
             path = Path(temporary) / "route.json"
             path.write_text(json.dumps(value), encoding="utf-8")
             self.assertEqual(validate_xilinx_route_db(path)["clock_nets"], 1)
+            value["nets"][0]["qualification"] = (
+                "dedicated-bufgce-clock-with-fabric-cascade-spur"
+            )
+            path.write_text(json.dumps(value), encoding="utf-8")
+            self.assertEqual(validate_xilinx_route_db(path)["clock_nets"], 1)
             value["nets"][0]["qualification"] = "fabric-routed-clock"
             path.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "clock qualification"):
