@@ -116,6 +116,32 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertIn("MAX_RECOVERY_ITERATION_SECONDS = 600.0", source)
         self.assertIn("refusing an unbounded recovery tail", source)
 
+    def test_adaptive_recovery_and_early_failure_are_before_timing(self):
+        source = (Path(__file__).parents[1] /
+                  "scripts/rapidwright/EmuFlowRWRoute.java").read_text()
+        self.assertIn("CONGESTION_RECOVERY_PATIENCE = 8", source)
+        self.assertIn("congestionHistory.shouldExpand(connection, routeIteration)", source)
+        self.assertIn("congestionHistory.pruneBefore(routeIteration - 1)", source)
+        self.assertIn("requireNoPendingIndirectConnections(unrouted, congested)", source)
+        self.assertLess(source.index("AdaptiveBoundingBoxCUFR.routeDesignWithUserDefinedArguments("),
+                        source.index("TimingModel timingModel ="))
+
+    def test_current_and_explicit_historical_router_certificates(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "route.json"
+            for router in (
+                "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-recovery",
+                "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-adaptive-recovery-v2",
+            ):
+                value = self._route()
+                value["materialization"]["router"] = router
+                path.write_text(json.dumps(value))
+                self.assertEqual(validate_xilinx_route_db(path)["status"], "pass")
+            value["materialization"]["router"] = "unsealed-guess"
+            path.write_text(json.dumps(value))
+            with self.assertRaises(ValidationError):
+                validate_xilinx_route_db(path)
+
     def test_rapidwright_block_ram_aliases_match_yosys_ports(self):
         source = (
             Path(__file__).parents[1]

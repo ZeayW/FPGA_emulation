@@ -28,6 +28,10 @@ XILINX_ROUTE_PIP_PAYLOAD_FORMAT = "jsonl-array/v1"
 RAPIDWRIGHT_TIMING_DATA_REVISION = (
     "127f55cd704c277372697e699f1559e1cdc91f34"
 )
+RAPIDWRIGHT_ROUTER_STRATEGIES = {
+    "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-recovery",
+    "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-adaptive-recovery-v2",
+}
 RAPIDWRIGHT_TIMING_DATA_SHA256 = {
     "intersite_delay_terms.txt": (
         "3b122837c4a1b5f3c212fc6353bee3a0854a204f2f69e2bc1cac4a2a1f9d7333"
@@ -733,11 +737,8 @@ def validate_xilinx_route_db(
         or transformed_dsp48e2 < 0
         or transformed_dsp48e2 > route_cells
         or physical_cells != route_cells + 7 * transformed_dsp48e2
-        or router
-        != (
-            "CUFR-HUS-non-timing-driven-uturn-enabled-"
-            "parallel-unroutable-recovery"
-        )
+        or not isinstance(router, str)
+        or router not in RAPIDWRIGHT_ROUTER_STRATEGIES
     ):
         raise ValidationError("XilinxRouteDB transformed-cell accounting is invalid")
     source = value.get("source")

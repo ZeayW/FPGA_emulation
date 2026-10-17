@@ -6586,25 +6586,38 @@ for large, difficult negotiated-congestion problems; placement uses the
 complete certified device and preserves routing headroom outside the exact
 site-capacity footprint.
 The sealed route certificate records the exact
-`CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-recovery`
-strategy; there is no silent fallback to the serial router. U-turn routing
+`CUFR-HUS-non-timing-driven-uturn-enabled-parallel-adaptive-recovery-v2`
+strategy; there is no silent fallback to the serial router. Explicit historical
+`parallel-unroutable-recovery` certificates remain readable under their own
+sealed strategy, but current producers use v2. U-turn routing
 resources are enabled because
 the complete XCVU19P site grid includes legal placements near device edges;
 RapidWright explicitly requires those resources for boundary routability.
-Ordinary negotiated congestion retains a fixed bounding box. Only a connection
-for which the current search found no route is enlarged. Such exceptional
+Transient negotiated congestion retains a fixed bounding box. A connection
+whose search found no route is enlarged immediately; a connection reported
+congested in eight consecutive iterations also becomes eligible for expansion.
+The same connection can expand at most once per patience window, and a gap
+resets its congestion age. Only upstream congestion callbacks update this
+bounded active history; pruning does not rescan route-node populations. Such exceptional
 connections are routed through a separate recursive partitioning ternary tree
 before CUFR's unchanged main tree on each later iteration and skipped inside
 the main tree. A recovery iteration is bounded to ten minutes: if placement
 creates a pathological search region, the route fails with a compact
 diagnostic instead of spending hours repeatedly expanding it. The watchdog is
 time-based rather than iteration-based, so ordinary negotiated-congestion
-closure may still use as many fast iterations as it needs. This
+closure remains subject to the upstream iteration limit. This
 avoids both a large serial recovery tail and RapidWright's
 fixed-box behavior of abandoning a truly unroutable connection while
 preserving CUFR's original parallel decomposition, rather than rebuilding the
 tree around enlarged connections or using the upstream blanket adaptive mode
 that enlarges every congested connection.
+The adapter rejects a router result that still has unrouted or congested
+indirect connections before constructing the device timing model or writing a
+large route certificate. This constant-size failure summary uses the router's
+existing connection state; it does not replace the independent complete
+reachability, PIP-conflict, static-net and physical timing checks. Policy-only
+Java qualification and renewed real physical routing of v2 are pending; no
+large-design closure or QoR improvement is claimed from this change alone.
 Routed timing binds ordinary signal/clock nets to their mapped integer bits.
 Certified `GLOBAL_LOGIC1`/`static_vcc` and `GLOBAL_LOGIC0`/`static_gnd` nets are
 device-tied constants, not timed data endpoints. They remain in the route

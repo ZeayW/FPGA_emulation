@@ -48,8 +48,9 @@ import org.json.JSONObject;
 public final class EmuFlowRWRoute {
     private static final String SCHEMA = "emuflow.xilinx-route-db/v2";
     private static final String ROUTER_STRATEGY =
-        "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-recovery";
+        "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-adaptive-recovery-v2";
     private static final double MAX_RECOVERY_ITERATION_SECONDS = 600.0;
+    private static final int CONGESTION_RECOVERY_PATIENCE = 8;
     private static final String[] DSP48E2_COMPONENTS = new String[] {
         "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
         "DSP_ALU", "DSP_M_DATA", "DSP_OUTPUT", "DSP_PREADD"
@@ -62,8 +63,8 @@ public final class EmuFlowRWRoute {
      * bounding box is not complete either: upstream RWRoute abandons a truly
      * unroutable connection when enlargement is disabled.
      *
-     * Route A therefore widens only connections for which the current search
-     * found no route. Those exceptional connections are routed through their
+     * Route A therefore widens unroutable connections and persistently
+     * congested connections after a bounded patience window. They use their
      * own recursive partitioning ternary tree before the unchanged main tree
      * while they remain active and are skipped by the main tree itself. Stable
      * connections are pruned before the next tree is built. This preserves
@@ -71,14 +72,60 @@ public final class EmuFlowRWRoute {
      * exceptional set: rebuilding the complete tree around even a few
      * enlarged connections can move ordinary reroutes towards its sequential
      * middle branches.
-     * Congested-but-routed connections remain under negotiated congestion and
-     * do not trigger bounding-box growth.
+     * Ordinary transient congestion stays under negotiated congestion. A
+     * persistent conflict must not be permanently trapped in its initial box.
      */
-    private static final class UnroutableOnlyBoundingBoxCUFR extends CUFR {
+    static final class PersistentCongestion<T> {
+        private static final class Age {
+            int first;
+            volatile int last;
+
+            Age(int iteration) { first = last = iteration; }
+
+            synchronized boolean observe(int iteration, int patience) {
+                if (iteration != last && iteration != last + 1) first = iteration;
+                last = iteration;
+                if (iteration - first + 1 < patience) return false;
+                first = iteration + 1;
+                return true;
+            }
+        }
+
+        private final int patience;
+        private final ConcurrentHashMap<T, Age> history =
+            new ConcurrentHashMap<>();
+
+        PersistentCongestion(int patience) {
+            if (patience < 1) throw new IllegalArgumentException("patience must be positive");
+            this.patience = patience;
+        }
+
+        boolean shouldExpand(T connection, int iteration) {
+            return history.computeIfAbsent(connection, key -> new Age(iteration))
+                .observe(iteration, patience);
+        }
+
+        void pruneBefore(int iteration) {
+            history.entrySet().removeIf(entry -> entry.getValue().last < iteration);
+        }
+
+        int size() { return history.size(); }
+    }
+
+    static void requireNoPendingIndirectConnections(long unrouted, long congested) {
+        if (unrouted != 0 || congested != 0) {
+            throw new IllegalStateException(
+                "RWRoute incomplete before routed timing: " + unrouted
+                + " unrouted and " + congested + " congested indirect connections"
+            );
+        }
+    }
+
+    private static final class AdaptiveBoundingBoxCUFR extends CUFR {
         /**
          * Compact Route-A-owned equivalent of CUFR's RPTT, scoped only to
-         * connections whose original bounding boxes were genuinely
-         * unroutable. The structure follows the balance-driven cutline and
+         * connections eligible for selective recovery. The structure follows
+         * the balance-driven cutline and
          * middle-before-left/right ordering of RapidWright's Apache-licensed
          * CUFRpartitionTree. Keeping it local is necessary because the
          * upstream node payload is package-private and CUFR's main tree is
@@ -256,12 +303,14 @@ public final class EmuFlowRWRoute {
 
         private final Set<Connection> recoveryConnections =
             ConcurrentHashMap.newKeySet();
+        private final PersistentCongestion<Connection> congestionHistory =
+            new PersistentCongestion<>(CONGESTION_RECOVERY_PATIENCE);
 
-        UnroutableOnlyBoundingBoxCUFR(Design design, RWRouteConfig config) {
+        AdaptiveBoundingBoxCUFR(Design design, RWRouteConfig config) {
             super(design, config);
             if (config.isEnlargeBoundingBox()) {
                 throw new IllegalArgumentException(
-                    "unroutable-only CUFR requires the upstream blanket "
+                    "selective-recovery CUFR requires the upstream blanket "
                     + "bounding-box expansion policy to remain disabled"
                 );
             }
@@ -278,6 +327,9 @@ public final class EmuFlowRWRoute {
             recoveryConnections.removeIf(
                 connection -> !super.shouldRoute(connection)
             );
+            // Only callbacks from upstream's existing congestion scan update
+            // this history; pruning does not traverse connection route nodes.
+            congestionHistory.pruneBefore(routeIteration - 1);
             if (!recoveryConnections.isEmpty()) {
                 List<Connection> snapshot = new ArrayList<>(recoveryConnections);
                 System.out.println(
@@ -335,12 +387,30 @@ public final class EmuFlowRWRoute {
 
         @Override
         protected boolean handleCongestedConnection(Connection connection) {
+            if (congestionHistory.shouldExpand(connection, routeIteration)) {
+                connection.enlargeBoundingBox(
+                    config.getExtensionXIncrement(), config.getExtensionYIncrement()
+                );
+                recoveryConnections.add(connection);
+            }
             return false;
         }
 
         public static Design routeDesignWithUserDefinedArguments(Design design, String[] args) {
             RWRouteConfig config = new RWRouteConfig(args);
-            return routeDesign(new UnroutableOnlyBoundingBoxCUFR(design, config));
+            AdaptiveBoundingBoxCUFR router = new AdaptiveBoundingBoxCUFR(design, config);
+            Design routed = routeDesign(router);
+            long unrouted = 0, congested = 0;
+            for (Connection connection : router.sortedIndirectConnections) {
+                if (!connection.isRouted()) unrouted++;
+                else if (connection.isCongested()) congested++;
+            }
+            // This is a bounded view of the router's existing connection state,
+            // not a second PIP audit. The independent full certificate checker
+            // remains the authority, but an already-invalid route must never
+            // build a device timing model or emit a graph-sized certificate.
+            requireNoPendingIndirectConnections(unrouted, congested);
+            return routed;
         }
     }
 
@@ -937,12 +1007,12 @@ public final class EmuFlowRWRoute {
         // intra-site nets remain outside the inter-site route certificate.
         // CUFR is RapidWright's parallel full-design specialization of
         // RWRoute.  HUS is its upstream strategy for large, difficult
-        // negotiated-congestion problems. Only genuinely unroutable
-        // connections expand their bounding box; ordinary congested routes do
-        // not trigger blanket expansion or an unconditional tree rebuild.
+        // negotiated-congestion problems. Only unroutable and persistently
+        // congested connections expand; transient congestion does not trigger
+        // blanket expansion or an unconditional main-tree rebuild.
         // U-turn resources remain required for legal placements at the
         // complete XCVU19P device boundary.
-        UnroutableOnlyBoundingBoxCUFR.routeDesignWithUserDefinedArguments(
+        AdaptiveBoundingBoxCUFR.routeDesignWithUserDefinedArguments(
             design,
             new String[] {
                 "--hus", "--nonTimingDriven", "--useUTurnNodes"
