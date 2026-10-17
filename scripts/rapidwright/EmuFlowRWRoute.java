@@ -67,6 +67,8 @@ public final class EmuFlowRWRoute {
         "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-"
         + "recovery-extended-lcb-clock";
     private static final double MAX_RECOVERY_ITERATION_SECONDS = 600.0;
+    private static final Set<String> EXTENDED_LCB_CLOCK_NETS =
+        ConcurrentHashMap.newKeySet();
     private static final String[] DSP48E2_COMPONENTS = new String[] {
         "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
         "DSP_ALU", "DSP_M_DATA", "DSP_OUTPUT", "DSP_PREADD"
@@ -296,8 +298,15 @@ public final class EmuFlowRWRoute {
             }
         }
 
-        private Map<RouteNode, List<SitePinInst>> extendedLCBPinMappings(Net clk) {
-            Map<RouteNode, List<SitePinInst>> mappings = new HashMap<>();
+        private static final class ClockSinkRoutes {
+            final Map<RouteNode, List<SitePinInst>> ordinaryMappings =
+                new HashMap<>();
+            final Map<SitePinInst, List<Node>> extendedPaths = new HashMap<>();
+            final Set<RouteNode> leafTargets = new HashSet<>();
+        }
+
+        private ClockSinkRoutes clockSinkRoutes(Net clk) {
+            ClockSinkRoutes routes = new ClockSinkRoutes();
             Set<Node> usedLCBs = new HashSet<>();
             Function<Node, NodeStatus> status =
                 node -> getGlobalRoutingNodeStatus(clk, node);
@@ -319,11 +328,20 @@ public final class EmuFlowRWRoute {
                         }
                     }
                 }
-                if (candidates.isEmpty()) {
+                boolean extended = candidates.isEmpty();
+                Map<Node, Node> towardSink = new HashMap<>();
+                Node pathSink = null;
+                if (extended) {
+                    pathSink = pin.getConnectedNode();
+                    if (pathSink == null) {
+                        throw new IllegalStateException(
+                            "global-clock sink has no connected node: " + pin
+                        );
+                    }
                     ArrayDeque<NodeDepth> queue = new ArrayDeque<>();
                     Set<Node> visited = new HashSet<>();
-                    queue.add(new NodeDepth(intNode, 0));
-                    visited.add(intNode);
+                    queue.add(new NodeDepth(pathSink, 0));
+                    visited.add(pathSink);
                     int reusableDepth = Integer.MAX_VALUE;
                     while (!queue.isEmpty()) {
                         NodeDepth current = queue.removeFirst();
@@ -338,6 +356,7 @@ public final class EmuFlowRWRoute {
                                 continue;
                             }
                             int depth = current.depth + 1;
+                            towardSink.put(uphill, current.node);
                             if (uphill.getIntentCode()
                                 == IntentCode.NODE_GLOBAL_LEAF) {
                                 candidates.merge(uphill, depth, Math::min);
@@ -371,12 +390,31 @@ public final class EmuFlowRWRoute {
                 RouteNode routeNode = new RouteNode(
                     selected.getTile(), selected.getWireIndex()
                 );
-                mappings.computeIfAbsent(
-                    routeNode, ignored -> new ArrayList<>()
-                ).add(pin);
+                routes.leafTargets.add(routeNode);
+                if (extended) {
+                    List<Node> path = new ArrayList<>();
+                    Node cursor = selected;
+                    while (cursor != null) {
+                        path.add(cursor);
+                        if (cursor.equals(pathSink)) break;
+                        cursor = towardSink.get(cursor);
+                    }
+                    if (path.isEmpty()
+                        || !path.get(path.size() - 1).equals(pathSink)) {
+                        throw new IllegalStateException(
+                            "extended LCB path reconstruction failed for " + pin
+                        );
+                    }
+                    routes.extendedPaths.put(pin, path);
+                    EXTENDED_LCB_CLOCK_NETS.add(clk.getName());
+                } else {
+                    routes.ordinaryMappings.computeIfAbsent(
+                        routeNode, ignored -> new ArrayList<>()
+                    ).add(pin);
+                }
                 usedLCBs.add(selected);
             }
-            return mappings;
+            return routes;
         }
 
         private ClockRegion clockCentroid(Net clk) {
@@ -468,12 +506,27 @@ public final class EmuFlowRWRoute {
                     clk, vertical, below, true, status
                 );
             if (lines != null) distributionLines.addAll(lines);
-            Map<RouteNode, List<SitePinInst>> mappings =
-                extendedLCBPinMappings(clk);
+            ClockSinkRoutes routes = clockSinkRoutes(clk);
             UltraScaleClockRouting.routeDistributionToLCBs(
-                clk, distributionLines, mappings.keySet()
+                clk, distributionLines, routes.leafTargets
             );
-            UltraScaleClockRouting.routeLCBsToSinks(clk, mappings, status);
+            UltraScaleClockRouting.routeLCBsToSinks(
+                clk, routes.ordinaryMappings, status
+            );
+            for (Map.Entry<SitePinInst, List<Node>> entry
+                : routes.extendedPaths.entrySet()) {
+                List<PIP> pathPIPs = RouterHelper.getPIPsFromNodes(
+                    entry.getValue()
+                );
+                if (pathPIPs.isEmpty()) {
+                    throw new IllegalStateException(
+                        "extended LCB path has no programmable PIPs for "
+                        + entry.getKey()
+                    );
+                }
+                clk.getPIPs().addAll(pathPIPs);
+                entry.getKey().setRouted(true);
+            }
             clk.setPIPs(new HashSet<>(clk.getPIPs()));
             preserveNet(clk, false);
             if (clk.hasPIPs()) clk.getSource().setRouted(true);
@@ -1532,6 +1585,7 @@ public final class EmuFlowRWRoute {
         int staticNets = 0;
         int staticSinks = 0;
         int internalClockNets = 0;
+        int extendedLCBClockNets = 0;
         int boundaryClockNets = 0;
         Map<String, Float> iobRouteDelays = new HashMap<>();
         for (Object item : excluded) {
@@ -1571,7 +1625,11 @@ public final class EmuFlowRWRoute {
                 }
                 String qualification = "ordinary-fabric-signal";
                 if (kind.equals("clock")) {
-                    qualification = (
+                    if (EXTENDED_LCB_CLOCK_NETS.contains(netName)) {
+                        qualification =
+                            "dedicated-bufgce-clock-extended-lcb-last-mile";
+                        extendedLCBClockNets++;
+                    } else qualification = (
                             net.getPins().stream().anyMatch(
                                 EmuFlowRWRoute::isBUFGCEClockInputSink
                             )
@@ -1829,6 +1887,7 @@ public final class EmuFlowRWRoute {
             .put("static_nets", staticNets)
             .put("static_sinks", staticSinks)
             .put("internal_clock_nets", internalClockNets)
+            .put("extended_lcb_clock_nets", extendedLCBClockNets)
             .put("nets_with_pips", routed)
             .put("pips", pips)
             .put("excluded_nets", excluded.length())

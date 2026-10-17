@@ -1202,6 +1202,7 @@ def validate_xilinx_route_db(
     static_sinks = 0
     clock_nets = 0
     internal_clock_nets = 0
+    extended_lcb_clock_nets = 0
     nets_with_pips = 0
     timed_endpoints = 0
     maximum_route_delay_ps = 0.0
@@ -1267,9 +1268,12 @@ def validate_xilinx_route_db(
             if qualification not in {
                 "dedicated-bufgce-clock",
                 "dedicated-bufgce-clock-with-fabric-cascade-spur",
+                "dedicated-bufgce-clock-extended-lcb-last-mile",
             }:
                 raise ValidationError(f"{context}: clock qualification is invalid")
             clock_nets += 1
+            if qualification == "dedicated-bufgce-clock-extended-lcb-last-mile":
+                extended_lcb_clock_nets += 1
         elif kind == "clock_internal":
             if (
                 qualification != "lut2-prefilter-to-bufgce-v1"
@@ -1439,6 +1443,8 @@ def validate_xilinx_route_db(
     }
     if internal_clock_nets or "internal_clock_nets" in summary:
         expected_summary["internal_clock_nets"] = internal_clock_nets
+    if extended_lcb_clock_nets or "extended_lcb_clock_nets" in summary:
+        expected_summary["extended_lcb_clock_nets"] = extended_lcb_clock_nets
     if summary != expected_summary:
         raise ValidationError("XilinxRouteDB summary disagrees with route certificate")
     timing = value.get("timing")
@@ -1515,6 +1521,7 @@ def validate_xilinx_route_db(
         "static_sinks": static_sinks,
         "clock_nets": clock_nets,
         "internal_clock_nets": internal_clock_nets,
+        "extended_lcb_clock_nets": extended_lcb_clock_nets,
     }
     used_pips.close()
     if all(path is not None for path in expected_paths.values()):
