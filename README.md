@@ -1225,6 +1225,9 @@ slice probe for carry initialization. It prints RapidWright's logical/physical
 pin mapping, selected fabric-driver connection, and intrasite mux alternatives.
 It creates only an in-memory probe design; it does not run RWRoute, write a
 checkpoint, relax connectivity checks, or qualify a hardware timing result.
+The probe also creates a separate in-memory `CI`-to-`AX` mapping trial,
+following AMD UG574's dynamic CYINIT description; this trial is not yet a
+production router fix or a completed physical validation.
 
 Earlier sealed AES and PicoRV32 Phase 1--7 results used the VTR physical
 surrogate. Their historical WNS/TNS values remain diagnostic records, but they

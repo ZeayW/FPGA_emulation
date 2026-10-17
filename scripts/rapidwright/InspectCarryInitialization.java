@@ -63,5 +63,28 @@ public final class InspectCarryInitialization {
                 }
             }
         }
+        // A second isolated design tests the documented dynamic CYINIT input.
+        // Do not mutate the baseline or pretend that a site-pin-only probe is
+        // a routed implementation or a timing qualification.
+        Design alternate = new Design("fabric_cyinit_probe", args[0]);
+        alternate.setDesignOutOfContext(true);
+        Cell fabricCarry = alternate.createAndPlaceCell(
+            "carry", Unisim.CARRY8, args[1] + "/CARRY8", "CARRY_TYPE", carryType
+        );
+        Cell fabricSource = alternate.createAndPlaceCell(
+            "source", Unisim.FDRE, args[2] + "/AFF"
+        );
+        fabricCarry.removePinMapping("CIN");
+        fabricCarry.removePinMapping("AX");
+        fabricCarry.addPinMapping("AX", "CI");
+        Net fabricNet = alternate.createNet("fabric_cyinit");
+        fabricNet.connect(fabricSource, "Q");
+        SitePinInst fabricPin = fabricNet.connect(fabricCarry, "CI");
+        System.out.println("FABRIC_MAPPING\t" + fabricCarry.getPinMappingsL2P());
+        System.out.println("FABRIC_SELECTED\t" + (fabricPin == null ? "intra-site"
+            : fabricPin.getSiteInstName() + "/" + fabricPin.getName()));
+        if (fabricPin == null || !fabricPin.getName().equals("AX")) {
+            throw new IllegalStateException("dynamic carry initialization did not bind AX");
+        }
     }
 }
