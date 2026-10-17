@@ -6616,8 +6616,13 @@ indirect connections before constructing the device timing model or writing a
 large route certificate. This constant-size failure summary uses the router's
 existing connection state; it does not replace the independent complete
 reachability, PIP-conflict, static-net and physical timing checks. Policy-only
-Java qualification and renewed real physical routing of v2 are pending; no
-large-design closure or QoR improvement is claimed from this change alone.
+Java qualification passed 20,066 policy checks, including history cleanup,
+gapped congestion and concurrent duplicate callbacks. Two actual XCVU19P
+connectivity checks also passed the independent route certificate validator:
+fabric `DUAL_CY4` initialization retained `AX`, and dedicated `SINGLE_CY8`
+cascade initialization retained `CIN`. These are small physical-connectivity
+checks, not full-flow acceptance. Renewed large-design physical routing of v2
+is pending; no large-design closure or QoR improvement is claimed yet.
 Routed timing binds ordinary signal/clock nets to their mapped integer bits.
 Certified `GLOBAL_LOGIC1`/`static_vcc` and `GLOBAL_LOGIC0`/`static_gnd` nets are
 device-tied constants, not timed data endpoints. They remain in the route
