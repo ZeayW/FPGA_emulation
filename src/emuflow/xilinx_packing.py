@@ -223,7 +223,10 @@ def _slice_cluster(
     }
 
 
-def _net_drivers(cells: Mapping[str, Any]) -> Dict[Any, str]:
+def _net_drivers(cells: Mapping[str, Any]) -> Mapping[Any, str]:
+    indexed = getattr(cells, "packing_drivers", None)
+    if callable(indexed):
+        return indexed()
     drivers: Dict[Any, str] = {}
     for name, cell in sorted(cells.items()):
         directions = cell.get("port_directions")
@@ -346,7 +349,11 @@ def _cascade_cells_by_type(
         cell_type: {} for cell_type in CASCADE_PORTS
     }
     typed_items = getattr(cells, "items_of_types", None)
-    iterator = typed_items(set(CASCADE_PORTS)) if callable(typed_items) else cells.items()
+    cascade_items = getattr(cells, "packing_cascade_items", None)
+    iterator = (
+        cascade_items(CASCADE_PORTS) if callable(cascade_items) else
+        typed_items(set(CASCADE_PORTS)) if callable(typed_items) else cells.items()
+    )
     for name, cell in iterator:
         if not isinstance(cell, Mapping):
             continue
@@ -704,12 +711,20 @@ def validate_xilinx_packing(
         if not isinstance(cluster, dict) or not isinstance(cluster.get("assignments"), list):
             raise ValidationError("PackedSiteNetlist cluster is invalid")
         assignments = cluster["assignments"]
+        if any(
+            not isinstance(item, Mapping) or not isinstance(item.get("instance"), str)
+            for item in assignments
+        ):
+            raise ValidationError("PackedSiteNetlist assignment is invalid")
+        projected = getattr(cells, "packing_records", None)
+        names = [assignment.get("instance") for assignment in assignments]
+        cluster_cells = projected(names) if callable(projected) else cells
         instances = []
         used_bels = set()
         for assignment in assignments:
             name = assignment.get("instance")
             cell_type = assignment.get("cell_type")
-            if name not in cells or cells[name].get("type") != cell_type:
+            if name not in cluster_cells or cluster_cells[name].get("type") != cell_type:
                 raise ValidationError("PackedSiteNetlist assignment does not match source")
             if name in owners:
                 raise ValidationError(f"cell {name!r} is assigned more than once")
@@ -732,18 +747,18 @@ def validate_xilinx_packing(
 
         kind = cluster.get("kind")
         if kind == "slice":
-            lut_count = sum(cells[name].get("type") in LUT_TYPES for name in instances)
-            ff_names = [name for name in instances if cells[name].get("type") in FF_TYPES]
+            lut_count = sum(cluster_cells[name].get("type") in LUT_TYPES for name in instances)
+            ff_names = [name for name in instances if cluster_cells[name].get("type") in FF_TYPES]
             if lut_count > len(SLICE_LUT_BELS) or len(ff_names) > len(SLICE_FF_BELS):
                 raise ValidationError("slice cluster exceeds physical capacity")
-            control_sets = _slice_ff_control_sets(cells, assignments)
+            control_sets = _slice_ff_control_sets(cluster_cells, assignments)
             _validate_declared_slice_control_sets(cluster, control_sets)
             assignment_bels = {
                 assignment["instance"]: assignment.get("bel")
                 for assignment in assignments
             }
             for name in instances:
-                cell_type = cells[name].get("type")
+                cell_type = cluster_cells[name].get("type")
                 if cell_type == "MUXF7":
                     expected = {
                         "F7MUX_AB": {"A6LUT", "B6LUT"},
@@ -753,7 +768,7 @@ def validate_xilinx_packing(
                     }.get(assignment_bels[name])
                     input_bels = {
                         assignment_bels.get(
-                            _mux_input_driver(cells, drivers, name, port)
+                            _mux_input_driver(cluster_cells, drivers, name, port)
                         )
                         for port in ("I0", "I1")
                     }
@@ -766,7 +781,7 @@ def validate_xilinx_packing(
                     }.get(assignment_bels[name])
                     input_bels = {
                         assignment_bels.get(
-                            _mux_input_driver(cells, drivers, name, port)
+                            _mux_input_driver(cluster_cells, drivers, name, port)
                         )
                         for port in ("I0", "I1")
                     }
@@ -775,7 +790,7 @@ def validate_xilinx_packing(
                 elif cell_type == "MUXF9":
                     input_bels = {
                         assignment_bels.get(
-                            _mux_input_driver(cells, drivers, name, port)
+                            _mux_input_driver(cluster_cells, drivers, name, port)
                         )
                         for port in ("I0", "I1")
                     }
@@ -783,11 +798,11 @@ def validate_xilinx_packing(
                         raise ValidationError("MUXF9 packing topology is invalid")
         elif kind == "carry":
             carry_names = [
-                name for name in instances if cells[name].get("type") == "CARRY8"
+                name for name in instances if cluster_cells[name].get("type") == "CARRY8"
             ]
             adapters = [
                 name for name in instances
-                if cells[name].get("type") == DUAL_OUTPUT_LUT_TYPE
+                if cluster_cells[name].get("type") == DUAL_OUTPUT_LUT_TYPE
             ]
             if len(carry_names) != 1 or len(adapters) != 8 or len(instances) != 9:
                 raise ValidationError("carry cluster is invalid")
@@ -797,8 +812,8 @@ def validate_xilinx_packing(
                 for assignment in assignments
             }
             for bit_index, letter in enumerate("ABCDEFGH"):
-                di_driver = drivers.get(_bits(cells[carry_name], "DI")[bit_index])
-                s_driver = drivers.get(_bits(cells[carry_name], "S")[bit_index])
+                di_driver = drivers.get(_bits(cluster_cells[carry_name], "DI")[bit_index])
+                s_driver = drivers.get(_bits(cluster_cells[carry_name], "S")[bit_index])
                 if (
                     di_driver is None
                     or di_driver != s_driver
@@ -807,7 +822,7 @@ def validate_xilinx_packing(
                 ):
                     raise ValidationError("CARRY8 LUT6_2 packing topology is invalid")
         elif kind == "hard":
-            cell_types = [cells[name].get("type") for name in instances]
+            cell_types = [cluster_cells[name].get("type") for name in instances]
             if set(cell_types) == {"RAMB18E2"}:
                 bels = {assignment.get("bel") for assignment in assignments}
                 if not 1 <= len(instances) <= 2 or len(bels) != len(instances):
@@ -822,7 +837,9 @@ def validate_xilinx_packing(
             raise ValidationError(f"unknown packing cluster kind {kind!r}")
 
     constants = packed.get("unplaced_constants")
-    if not isinstance(constants, list) or any(cells.get(name, {}).get("type") not in CONSTANT_TYPES for name in constants):
+    projected = getattr(cells, "packing_records", None)
+    constant_cells = projected(constants) if callable(projected) and isinstance(constants, list) else cells
+    if not isinstance(constants, list) or any(constant_cells.get(name, {}).get("type") not in CONSTANT_TYPES for name in constants):
         raise ValidationError("PackedSiteNetlist constants are invalid")
     if set(owners).intersection(constants) or set(owners).union(constants) != set(cells):
         raise ValidationError("PackedSiteNetlist cell ownership is incomplete")

@@ -9,7 +9,7 @@ import uuid
 from collections import Counter, defaultdict
 from collections.abc import Iterator, Mapping as MappingABC
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .emuir_compact import compact_metadata, is_compact_emuir
 from .emuir_storage import _RowsForOwner, _decode, open_emuir_sqlite_read_only
@@ -70,6 +70,88 @@ class _IndexedRecords(MappingABC[str, Mapping[str, Any]]):
 
     def __len__(self) -> int:
         return self.count
+
+    def packing_records(self, names: Sequence[str]) -> Mapping[str, Mapping[str, Any]]:
+        """Project one site's validation facts, never complete cell payloads.
+
+        The normalized cell/pin rows own connectivity. Only FF polarity
+        parameters affect packing; LUT INIT, RAM contents and other synthesis
+        metadata must not pass through the Python packing checker.
+        """
+        if self.table != "cells":
+            raise ValidationError("packing projection requires cells")
+        result: Dict[str, Dict[str, Any]] = {}
+        for offset in range(0, len(names), 256):
+            batch = tuple(names[offset:offset + 256])
+            if not batch:
+                continue
+            placeholders = ",".join("?" for _ in batch)
+            for name, cell_type in self.connection.execute(
+                f"SELECT id,type FROM cells WHERE id IN ({placeholders})", batch,
+            ):
+                result[name] = {"type": cell_type, "connections": {}, "parameters": {}}
+            for name, port, bit in self.connection.execute(
+                "SELECT c.id,p.port,COALESCE(p.net_bit,p.constant) "
+                "FROM cells c JOIN cell_pins p ON p.cell_seq=c.seq "
+                f"WHERE c.id IN ({placeholders}) AND ("
+                "(c.type IN ('FDCE','FDPE','FDRE','FDSE') "
+                "AND p.port IN ('C','CE','CLR','R','PRE','S')) OR "
+                "(c.type IN ('MUXF7','MUXF8','MUXF9') AND p.port IN ('I0','I1')) OR "
+                "(c.type='CARRY8' AND p.port IN ('DI','S'))) "
+                "ORDER BY c.seq,p.pin_seq", batch,
+            ):
+                result[name]["connections"].setdefault(port, []).append(bit)
+            for name, parameters in self.connection.execute(
+                "SELECT c.id,json_extract(c.record_json,'$.parameters') FROM cells c "
+                f"WHERE c.id IN ({placeholders}) "
+                "AND c.type IN ('FDCE','FDPE','FDRE','FDSE')", batch,
+            ):
+                # Decode the small FF parameter object, not the cell. Keep JSON
+                # booleans/large integers exact (json_each coerces these).
+                value = json.loads(parameters) if parameters is not None else {}
+                if isinstance(value, dict):
+                    result[name]["parameters"] = {
+                        key: item for key, item in value.items() if key.startswith("IS_")
+                    }
+        return result
+
+    def packing_cascade_items(
+        self, cascade_ports: Mapping[str, Sequence[Tuple[str, str, str, Optional[int]]]],
+    ) -> Iterator[Tuple[str, Mapping[str, Any]]]:
+        """Stream dedicated-cascade pins without decoding hard-block INITs."""
+        ports = sorted({
+            port for specs in cascade_ports.values()
+            for _, output, input_, _ in specs for port in (output, input_)
+        })
+        port_placeholders = ",".join("?" for _ in ports)
+        type_placeholders = ",".join("?" for _ in cascade_ports)
+        rows = self.connection.execute(
+            "SELECT c.id,c.type,p.port,COALESCE(p.net_bit,p.constant) FROM cells c "
+            "LEFT JOIN cell_pins p ON p.cell_seq=c.seq "
+            f"AND p.port IN ({port_placeholders}) WHERE c.type IN ({type_placeholders}) "
+            "ORDER BY c.id,p.pin_seq", (*ports, *cascade_ports),
+        )
+        previous = None
+        record: Dict[str, Any] = {}
+        for name, cell_type, port, bit in rows:
+            if name != previous:
+                if previous is not None:
+                    yield previous, record
+                previous = name
+                record = {"type": cell_type, "connections": {}}
+            if port is not None:
+                record["connections"].setdefault(port, []).append(bit)
+        if previous is not None:
+            yield previous, record
+
+    def packing_drivers(self) -> Mapping[int, str]:
+        duplicate = self.connection.execute(
+            "SELECT net_bit FROM cell_pins WHERE net_bit IS NOT NULL "
+            "AND direction='output' GROUP BY net_bit HAVING count(*)>1 LIMIT 1"
+        ).fetchone()
+        if duplicate is not None:
+            raise ValidationError(f"mapped net bit {duplicate[0]} has multiple drivers")
+        return _IndexedDrivers(self.connection)
 
     def items(self) -> Iterator[Tuple[str, Mapping[str, Any]]]:  # type: ignore[override]
         for row in self.connection.execute(
@@ -186,6 +268,38 @@ class _IndexedRecords(MappingABC[str, Mapping[str, Any]]):
                 tuple(sorted(root_types)),
             )
         }
+
+
+class _IndexedDrivers(MappingABC[int, str]):
+    """Macro-only point queries into the normalized output-pin index."""
+
+    def __init__(self, connection: sqlite3.Connection):
+        self.connection = connection
+
+    def __getitem__(self, bit: int) -> str:
+        if not isinstance(bit, int):
+            # SQLite numeric affinity must not turn a constant token "0" into
+            # integer net 0; the reference driver map only owns integer nets.
+            raise KeyError(bit)
+        row = self.connection.execute(
+            "SELECT c.id FROM cell_pins p JOIN cells c ON c.seq=p.cell_seq "
+            "WHERE p.net_bit=? AND p.direction='output'", (bit,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(bit)
+        return str(row[0])
+
+    def __iter__(self) -> Iterator[int]:
+        for row in self.connection.execute(
+            "SELECT net_bit FROM cell_pins WHERE net_bit IS NOT NULL "
+            "AND direction='output' ORDER BY net_bit"
+        ):
+            yield int(row[0])
+
+    def __len__(self) -> int:
+        return int(self.connection.execute(
+            "SELECT count(*) FROM cell_pins WHERE net_bit IS NOT NULL AND direction='output'"
+        ).fetchone()[0])
 
 
 class IndexedXilinxMappedNetlist(MappingABC[str, Any]):

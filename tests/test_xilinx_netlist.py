@@ -15,10 +15,110 @@ from emuflow.xilinx_netlist import (
 )
 from emuflow.yosys import import_yosys_json
 from emuflow.xilinx_primitives import audit_xilinx_mapped_json
+from emuflow.xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
+from tests.test_xilinx_packing import add_carry, cell
 
 
 class XilinxMappedNetlistTests(unittest.TestCase):
+    def test_indexed_packing_checker_projects_only_site_facts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, _arch = write_openparf_runtime_fixture(root, include_hard=True)
+            value = json.loads(mapped.read_text())
+            cells = value["modules"]["top"]["cells"]
+            add_carry(cells, "carry0", ci=700000, co=700001, net_base=710000)
+            add_carry(cells, "carry1", ci=700008, co=720001, net_base=730000)
+            cells["mux_lut0"] = cell("LUT6", {"I0": [740000], "O": [740001]})
+            cells["mux_lut1"] = cell("LUT6", {"I0": [740002], "O": [740003]})
+            cells["mux"] = cell("MUXF7", {"I0": [740001], "I1": [740003], "S": [740004], "O": [740005]})
+            # A repeated real slice shape, with payloads that the checker must
+            # never deserialize as cell records. FF JSON types stay exact.
+            for item in cells.values():
+                item["attributes"] = {"diagnostic": "unused" * 1000}
+                if item["type"] == "FDRE":
+                    item["parameters"] = {"IS_C_INVERTED": False, "IS_R_INVERTED": "0"}
+            cells["bram"]["parameters"] = {"INIT_00": "0" * 32768}
+            mapped.write_text(json.dumps(value))
+            source, index = root / "source.emuir.sqlite", root / "mapped.sqlite"
+            import_yosys_json(mapped).save(source)
+            emit_xilinx_mapped_index(source, index)
+            with open_xilinx_mapped_index(index) as indexed:
+                # Use the exact canonical source for both representations.
+                reference = {"modules": {indexed.top: {"cells": dict(indexed.cells.items())}}}
+                packing = pack_xilinx_sites(index, packed, mapped_value=reference)
+                expected = validate_xilinx_packing(index, packed, mapped_value=reference)
+                projection = indexed.cells.packing_records(["ff_00", "bram", "lut_00"])
+                self.assertIs(projection["ff_00"]["parameters"]["IS_C_INVERTED"], False)
+                self.assertEqual(projection["bram"]["parameters"], {})
+                self.assertEqual(projection["lut_00"]["connections"], {})
+                with mock.patch.object(
+                    type(indexed.cells), "__getitem__",
+                    side_effect=AssertionError("complete cell record decoded"),
+                ), mock.patch.object(
+                    indexed.cells, "items", side_effect=AssertionError("whole netlist scan"),
+                ), mock.patch.object(
+                    indexed.cells, "items_of_types", side_effect=AssertionError("hard INIT decoded"),
+                ):
+                    actual = validate_xilinx_packing(index, packed, mapped_value=indexed)
+                    self.assertEqual(actual, expected)
+                    drivers = indexed.cells.packing_drivers()
+                    self.assertIsNone(drivers.get("0"))
+                    cluster = next(c for c in packing["clusters"] if c["kind"] == "slice")
+                    cluster["assignments"][0]["cell_type"] = "FDRE"
+                    with self.assertRaisesRegex(ValidationError, "does not match source"):
+                        validate_xilinx_packing(index, packed, mapped_value=indexed, packed_value=packing)
+
+    def test_repeated_packing_projection_is_bounded_by_one_site(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, _arch = write_openparf_runtime_fixture(root)
+            value = json.loads(mapped.read_text())
+            cells = value["modules"]["top"]["cells"]
+            for i in range(64, 4096):
+                cells[f"lut_{i:04d}"] = cell("LUT6", {"I0": [20000 + i - 1], "O": [10000 + i]})
+                cells[f"ff_{i:04d}"] = cell("FDRE", {
+                    "C": [1000000], "CE": ["1"], "R": ["0"],
+                    "D": [10000 + i], "Q": [20000 + i],
+                })
+            mapped.write_text(json.dumps(value))
+            source, index = root / "source.emuir.sqlite", root / "mapped.sqlite"
+            import_yosys_json(mapped).save(source)
+            emit_xilinx_mapped_index(source, index)
+            with open_xilinx_mapped_index(index) as indexed:
+                reference = {"modules": {indexed.top: {"cells": dict(indexed.cells.items())}}}
+                pack_xilinx_sites(index, packed, mapped_value=reference)
+                with mock.patch.object(
+                    type(indexed.cells), "__getitem__",
+                    side_effect=AssertionError("complete cell record decoded"),
+                ), mock.patch.object(
+                    indexed.cells, "items", side_effect=AssertionError("whole-cell scan"),
+                ), mock.patch.object(
+                    indexed.cells, "packing_records", wraps=indexed.cells.packing_records,
+                ) as projection:
+                    check = validate_xilinx_packing(index, packed, mapped_value=indexed)
+                self.assertEqual(check["cells"], 8192)
+                self.assertLessEqual(max(len(call.args[0]) for call in projection.call_args_list), 24)
+                self.assertEqual(sum(len(call.args[0]) for call in projection.call_args_list), 8192)
+
+    def test_indexed_packing_driver_check_preserves_duplicate_rejection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, _packed, _arch = write_openparf_runtime_fixture(root)
+            source, index = root / "source.emuir.sqlite", root / "mapped.sqlite"
+            import_yosys_json(mapped).save(source)
+            emit_xilinx_mapped_index(source, index)
+            with sqlite3.connect(index) as database:
+                net = database.execute(
+                    "SELECT net_bit FROM cell_pins WHERE direction='output' LIMIT 1"
+                ).fetchone()[0]
+                database.execute(
+                    "UPDATE cell_pins SET net_bit=? WHERE direction='output'", (net,),
+                )
+            with open_xilinx_mapped_index(index) as indexed:
+                with self.assertRaisesRegex(ValidationError, "multiple drivers"):
+                    indexed.cells.packing_drivers()
+
     def test_indexed_primitive_audit_uses_sql_without_decoding_cells(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -2460,6 +2460,18 @@ SQLite contract instead of rescanning every site and rewriting the same rows.
 Partition-specific resource/model declarations remain separate, so sharing
 does not conflate the two logical designs.
 
+The indexed packing checker also consumes the normalized cell/pin tables
+directly. It projects only one site's cell types, FF controls, and MUX/CARRY
+input pins at a time; dedicated-cascade queries omit RAM INIT and other
+unrelated payloads. Driver ownership and duplicate-driver detection remain in
+SQL rather than constructing a complete Python driver dictionary. This removes
+the former repeated full-cell JSON decoding inside BEL/control checks without
+changing packing, placement, or the legality rules. Regression gates compare
+the indexed and reference results, reject source/type and duplicate-driver
+corruption, and check bounded reads on 8,192 repeated LUT/FF cells. This is a
+packing-check handoff improvement, not a claim that all Phase 7 timing-path
+interfaces have been nativeized or that a large-design full-flow gate passed.
+
 The routed physical tail follows the same rule. RWRoute now validates and
 seals its in-memory route object once while publishing it; routed-timing
 binding consumes that exact validation certificate instead of reopening,
