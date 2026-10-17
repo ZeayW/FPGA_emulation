@@ -2477,6 +2477,15 @@ backend no longer reopens both large JSON files and repeats both complete
 checks immediately after the bridge has checked them. Explicit standalone
 validation remains available; these in-process objects are never embedded in
 the compact bridge report.
+On the existing Koios GEMM physical artifacts, the indexed checker accepted
+587,743 cells in 55,226 clusters, including the ArchitectureDB BEL checks,
+while full cell-record decoding was explicitly forbidden. Loading the packed
+contract and device model took 11.90 seconds; the checker took 60.18 seconds.
+Whole-process peak RSS was 1.43 GiB, including those loaded inputs. The mapped
+SQLite input was 1,103,073,280 bytes and the packed input 117,415,801 bytes.
+This qualification reused published artifacts without rerunning synthesis,
+placement, routing, or timing. No old checker rerun was performed, so these
+measurements do not establish a comparative speedup or final timing QoR.
 
 The routed physical tail follows the same rule. RWRoute now validates and
 seals its in-memory route object once while publishing it; routed-timing
