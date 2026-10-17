@@ -30,9 +30,10 @@ Do not use an active producer's temporary database as a completed boundary.
 
 The indexed Phase 3–7 data path supports the current HP-bank/cable model and
 emits Phase 6 virtual wiring, binding, per-FPGA data-pin constraints and LVDS
-adapters without reconstructing split circuits in Python. The generated LVDS
-adapter remains separate from the OOC physical backend; its report identifies
-this model boundary. `stage-metrics/*.json` records wall time and process-tree
+adapters without reconstructing split circuits in Python. Phase 7 consumes the
+sealed binding, adapter and XDC contract to materialize fixed LVDS IOB
+boundaries, as described under [fixed virtual board wiring](#fixed-virtual-board-wiring).
+`stage-metrics/*.json` records wall time and process-tree
 RSS sampled every 0.5 seconds for each executed downstream stage. Large NVDLA
 validation remains pending until the physical and global OpenSTA gates pass.
 
@@ -214,6 +215,16 @@ OpenPARF's heterogeneous placement framework and RapidWright/RWRoute's device
 and routing work are cited below. RapidWright device support does not itself
 supply a multi-FPGA board topology, cable specification, or board-link latency;
 those belong to the separate platform model.
+
+For an explicitly requested debugging continuation, `multi-fpga physical
+--resume` with the native OpenPARF placer can reuse an existing route inside
+the active experiment. It regenerates the route input and independently checks
+the RouteDB, payloads, source identities and exact route-input SHA-256 before
+reuse. A mismatch fails closed. Mapping and placement still run before this
+check; this is not a persistent checkpoint cache. RapidWright logs heap usage
+after input indexing, cell materialization and pin connection, and before and
+after routing. `EMUFLOW_RAPIDWRIGHT_MAX_HEAP` accepts a positive Java `g`/`m`
+size (default `32g`); choose it from measured demand and available HPC memory.
 
 Finally, EmuFlow binds physical logic/interface delays, board-link delays, and
 the selected TDM events to an abstract global timing model. **OpenSTA is the
