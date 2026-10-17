@@ -3,6 +3,10 @@ import hashlib
 import json
 import tempfile
 import unittest
+import io
+import runpy
+import sys
+from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 from pathlib import Path
@@ -26,6 +30,33 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_carry_qualification_finishes_with_real_route_iterator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "qualification"
+
+            def router(_input, route_path, **kwargs):
+                route_path.write_text(json.dumps({
+                    "schema": "emuflow.xilinx-route-db/v1",
+                    "nets": [{"net": "n10", "pins": [
+                        {"site": "SLICE_X0Y0", "pin": "AX", "is_output": False}
+                    ]}],
+                }))
+                return {"status": "pass", "test_stub": True}
+
+            script = Path(__file__).parents[1] / "scripts/qualify_carry_binding.py"
+            argv = [str(script), "--out", str(root), "--part", "fixture",
+                    "--carry-site", "SLICE_X0Y0", "--source-site", "SLICE_X0Y1",
+                    "--mode", "fabric", "--rapidwright-jar", "fixture.jar",
+                    "--java", "fixture-java", "--device-data", "fixture-device",
+                    "--timing-data", "fixture-timing"]
+            with patch("emuflow.xilinx_rwroute.run_rwroute", side_effect=router), \
+                 patch.object(sys, "argv", argv), redirect_stdout(io.StringIO()):
+                runpy.run_path(str(script), run_name="__main__")
+            result = json.loads((root / "qualification.json").read_text())
+            self.assertEqual(result["sink_pin"], "AX")
+            self.assertFalse(result["whole_flow"])
+            self.assertTrue(result["validation"]["test_stub"])
+
     def test_carry_initialization_binding_separates_fabric_and_cascade(self):
         source = (Path(__file__).parents[1] /
                   "scripts/rapidwright/EmuFlowRWRoute.java").read_text()

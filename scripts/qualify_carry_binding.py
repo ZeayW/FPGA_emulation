@@ -55,7 +55,8 @@ report = run_rwroute(
     placement_path=paths[2],
 )
 header = read_json(route_path)
-net = next(n for n in iter_xilinx_route_nets(route_path, header) if n["net"] == "n10")
+net = next(n for n in iter_xilinx_route_nets(route_path, header, include_pips=False)
+           if n["net"] == "n10")
 expected = "AX" if args.mode == "fabric" else "CIN"
 if not any(p["site"] == args.carry_site and p["pin"] == expected
            and not p["is_output"] for p in net["pins"]):
