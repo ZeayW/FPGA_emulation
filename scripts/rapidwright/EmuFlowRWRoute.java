@@ -69,6 +69,18 @@ public final class EmuFlowRWRoute {
     private static final double MAX_RECOVERY_ITERATION_SECONDS = 600.0;
     private static final Set<String> EXTENDED_LCB_CLOCK_NETS =
         ConcurrentHashMap.newKeySet();
+
+    private static void reportHeap(String stage) {
+        Runtime runtime = Runtime.getRuntime();
+        long used = runtime.totalMemory() - runtime.freeMemory();
+        System.out.printf(
+            "INFO: EmuFlow heap stage=%s used_mib=%d committed_mib=%d max_mib=%d%n",
+            stage,
+            used / (1024L * 1024L),
+            runtime.totalMemory() / (1024L * 1024L),
+            runtime.maxMemory() / (1024L * 1024L)
+        );
+    }
     private static final String[] DSP48E2_COMPONENTS = new String[] {
         "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
         "DSP_ALU", "DSP_M_DATA", "DSP_OUTPUT", "DSP_PREADD"
@@ -1309,6 +1321,11 @@ public final class EmuFlowRWRoute {
         }
         }
         if (part == null) throw new IllegalArgumentException("missing part identity");
+        System.out.printf(
+            "INFO: EmuFlow input cells=%d nets=%d excluded=%d iobs=%d%n",
+            cellRows.size(), netKinds.size(), excluded.length(), iobRows.size()
+        );
+        reportHeap("input-indexed");
         if (!cellRows.keySet().containsAll(clockGateRows.keySet())) {
             throw new IllegalArgumentException("CLOCK_GATE references an unknown cell");
         }
@@ -1367,6 +1384,7 @@ public final class EmuFlowRWRoute {
         }
         cellRows.clear();
         cellParameters.clear();
+        reportHeap("cells-materialized");
         List<String> iobNames = new ArrayList<>(iobRows.keySet());
         iobNames.sort(String::compareTo);
         for (String safeName : iobNames) {
@@ -1530,6 +1548,7 @@ public final class EmuFlowRWRoute {
                 }
             }
         }
+        reportHeap("pins-connected");
 
         List<String> sourceOnlyInternalizedClockNets = new ArrayList<>();
         for (String netName : internalizedClockEdges) {
@@ -1553,12 +1572,14 @@ public final class EmuFlowRWRoute {
         // not trigger blanket expansion or an unconditional tree rebuild.
         // U-turn resources remain required for legal placements at the
         // complete XCVU19P device boundary.
+        reportHeap("before-rwroute");
         UnroutableOnlyBoundingBoxCUFR.routeDesignWithUserDefinedArguments(
             design,
             new String[] {
                 "--hus", "--nonTimingDriven", "--useUTurnNodes"
             }
         );
+        reportHeap("after-rwroute");
 
         // RapidWright's lightweight timing model evaluates the concrete
         // routed PIP tree in picoseconds.  Keep this deliberately separate
