@@ -2744,6 +2744,17 @@ to 4.1540576M HPWL.  This removes the prior immediate-predecessor termination
 defect, but renewed RWRoute and OpenSTA qualification are still pending, so no
 final Phase 7 QoR is claimed.
 
+The native atomic placement validator indexes shared device windows once per
+invocation. Directed carry-chain matching looks up the selected first site and
+checks only anchored candidate chains; hard-block matching uses the complete
+ordered `(site, slot)` key. Both retain duplicate-witness rejection and exact
+direction/order checks. This removes a repeated scan observed on the frozen
+DLA-large contract: 8,841 site-cascade groups implied 4,482,248,256 candidate
+comparisons in the former checker. That count is a diagnostic of redundant
+work, not a measured full-flow speedup; real-input timing qualification remains
+pending. Per-iterator SQLite connections may also close in a coordinator
+thread after worker failure without masking the original error.
+
 The independently checked atomic placement certificate now stores its large
 assignment table in a byte-sealed SQLite sidecar and keeps only identity,
 source seals, constant-size summary, convergence metrics, and the sidecar

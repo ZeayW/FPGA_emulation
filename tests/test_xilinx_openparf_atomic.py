@@ -1,4 +1,5 @@
 import json
+import itertools
 import sqlite3
 import tempfile
 import unittest
@@ -40,6 +41,93 @@ from tests.openparf_runtime_fixture import (
     write_openparf_ramb18_fixture,
     write_openparf_runtime_fixture,
 )
+
+
+class PhysicalWindowLookupTest(unittest.TestCase):
+    def test_directed_chain_matches_equal_exhaustive_windows(self):
+        chains = [list(p) for length in (2, 3)
+                  for p in itertools.permutations("ABC", length)]
+        graphs = [[], *[[chain, chain] for chain in chains],
+                  *[list(pair) for pair in itertools.combinations(chains, 2)]]
+        for graph in graphs:
+            lookup = atomic_adapter._PhysicalWindowLookup()
+            for length in (2, 3, 4):
+                for path in itertools.product("ABC", repeat=length):
+                    selected = list(path)
+                    expected = sum(
+                        chain[start:start + length] == selected
+                        for chain in graph
+                        for start in range(len(chain) - length + 1)
+                    )
+                    self.assertEqual(lookup.chain_matches(graph, selected), expected)
+
+    def test_shared_geometry_is_not_rescanned_for_every_macro(self):
+        class Counted(list):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super().__iter__()
+
+        chains = Counted([Counted([f"S{i}" for i in range(1024)])])
+        windows = Counted([[{"site": f"S{i}", "z": 0}] for i in range(1024)])
+        lookup = atomic_adapter._PhysicalWindowLookup()
+        for i in range(512):
+            self.assertEqual(lookup.chain_matches(chains, [f"S{i}", f"S{i+1}"]), 1)
+            self.assertIs(lookup.unique_window(windows, [{"site": f"S{i}", "z": 0}]), windows[i])
+        self.assertEqual(chains.iterations, 1)
+        self.assertEqual(chains[0].iterations, 1)
+        self.assertEqual(windows.iterations, 1)
+
+    def test_window_lookup_preserves_ambiguity_order_and_invalid_nonmatches(self):
+        windows = [
+            [{"site": "A", "z": 0}],
+            [{"site": "B", "z": 1.0}],
+            [{"site": "C", "z": True}],
+            [{"site": "D", "z": float("inf")}],
+            [{"site": "A", "z": 0}, {"site": "B", "z": 1}],
+            [{"site": "B", "z": 1.0}, {"site": "A", "z": 0}],
+            ["invalid"],
+        ]
+        lookup = atomic_adapter._PhysicalWindowLookup()
+        for selected in [[{"site": "A", "z": 0}], [{"site": "B", "z": 1}],
+                         [{"site": "C", "z": 1}], [{"site": "missing", "z": 0}],
+                         [{"site": "A", "z": 0}, {"site": "B", "z": 1}],
+                         [{"site": "B", "z": 1}, {"site": "A", "z": 0}]]:
+            expected = [
+                w for w in windows if len(w) == len(selected)
+                and all(isinstance(e, dict) for e in w)
+                and all(e.get("site") == s["site"]
+                        and isinstance(e.get("z"), (int, float))
+                        and not isinstance(e.get("z"), bool)
+                        and float(e["z"]) == float(s["z"])
+                        for e, s in zip(w, selected))
+            ]
+            self.assertIs(lookup.unique_window(windows, selected),
+                          expected[0] if len(expected) == 1 else None)
+        duplicates = [windows[0], [{"site": "A", "z": 0.0}]]
+        self.assertIsNone(lookup.unique_window(duplicates, [{"site": "A", "z": 0}]))
+
+    def test_abandoned_sql_iterator_can_close_in_coordinator_thread(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "certificate.sqlite3"
+            clusters = [{
+                "cluster": "c0", "site": "S0", "site_type": "SLICEL", "x": 0, "y": 0,
+                "assignments": [{"instance": "ff0", "cell_type": "FDRE", "bel": "AFF",
+                                 "physical_site": "S0", "placement_mode": "SLICEL",
+                                 "source_cluster": "ff0"}],
+            }]
+            descriptor = atomic_adapter._write_atomic_placement_database(path, clusters)
+            rows = atomic_adapter._PlacementClusterSequence(path, descriptor)
+
+            def begin():
+                iterator = iter(rows)
+                self.assertEqual(next(iterator)["cluster"], "c0")
+                return iterator
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                iterator = pool.submit(begin).result()
+            iterator.close()
 
 
 def _cell(cell_type, connections):

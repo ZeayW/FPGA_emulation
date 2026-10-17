@@ -642,7 +642,10 @@ class _PlacementClusterSequence(Sequence[Dict[str, Any]]):
 
     def _iterate(self, order: str) -> Iterator[Dict[str, Any]]:
         uri = f"file:{self.path.resolve()}?mode=ro&immutable=1"
-        connection = sqlite3.connect(uri, uri=True)
+        # Every iterator owns its connection. Worker exceptions may release an
+        # abandoned iterator in the coordinator thread; closing it there must
+        # not cause a second, misleading thread-affinity exception.
+        connection = sqlite3.connect(uri, uri=True, check_same_thread=False)
         try:
             cluster = None
             previous = None
@@ -950,6 +953,73 @@ def load_xilinx_openparf_atomic_sites(
         coordinates=coordinates,
         resources=resources,
     )
+
+
+class _PhysicalWindowLookup:
+    """Invocation-local lookup over canonical shared device windows.
+
+    Index geometry once, not once per circuit macro. Keep multiplicity so
+    duplicate windows still fail the unique-witness check. Directed chains
+    use a first-site index, never expanded windows for every chain length.
+    """
+
+    def __init__(self) -> None:
+        self._windows = {}
+        self._chains = {}
+
+    @staticmethod
+    def _window_key(window):
+        result = []
+        for entry in window:
+            if not isinstance(entry, Mapping) or not isinstance(entry.get("site"), str):
+                return None
+            z = entry.get("z")
+            if not isinstance(z, (int, float)) or isinstance(z, bool):
+                return None
+            value = float(z)
+            if not math.isfinite(value):
+                return None
+            result.append((entry["site"], value))
+        return tuple(result)
+
+    def unique_window(self, windows, selected):
+        key = (id(windows), len(selected))
+        cached = self._windows.get(key)
+        if cached is None:
+            index = {}
+            for window in windows:
+                if not isinstance(window, list) or len(window) != len(selected):
+                    continue
+                signature = self._window_key(window)
+                if signature is None:
+                    continue
+                count, first = index.get(signature, (0, window))
+                index[signature] = (count + 1, first)
+            # Retain canonical references, not window copies; object IDs cannot
+            # be recycled within this lookup's lifetime.
+            cached = (windows, index)
+            self._windows[key] = cached
+        count, window = cached[1].get(self._window_key(selected), (0, None))
+        return window if count == 1 else None
+
+    def chain_matches(self, chains, selected_sites):
+        cached = self._chains.get(id(chains))
+        if cached is None:
+            anchors = defaultdict(list)
+            for chain in chains:
+                for position, site in enumerate(chain):
+                    anchors[site].append((chain, position))
+            cached = (chains, anchors)
+            self._chains[id(chains)] = cached
+        if not selected_sites:
+            return 0
+        length = len(selected_sites)
+        return sum(
+            position + length <= len(chain)
+            and all(chain[position + offset] == site
+                    for offset, site in enumerate(selected_sites))
+            for chain, position in cached[1].get(selected_sites[0], ())
+        )
 
 
 def _load_physical_macro_groups(
@@ -4530,6 +4600,7 @@ def validate_xilinx_openparf_atomic_placement(
         native_input.close()
     checked_native_edges = 0
     if hardblock_groups:
+        window_lookup = _PhysicalWindowLookup()
         family_for_resource = {
             "DSP48E2": "DSP_CASCADE", "RAMB36E2": "BRAM_CASCADE",
             "URAM288": "URAM_CASCADE",
@@ -4613,10 +4684,8 @@ def validate_xilinx_openparf_atomic_placement(
                             "OpenPARF site cascade unit violates its slice template"
                         )
                     unit_sites.append(unit[0]["site"])
-                matching_chains = sum(
-                    chain[start:start + chain_length] == unit_sites
-                    for chain in chain_set["chains"]
-                    for start in range(len(chain) - chain_length + 1)
+                matching_chains = window_lookup.chain_matches(
+                    chain_set["chains"], unit_sites
                 )
                 if matching_chains != 1:
                     raise ValidationError(
@@ -4668,26 +4737,14 @@ def validate_xilinx_openparf_atomic_placement(
                     for member, item in zip(members, selected)
                 ]
             else:
-                matching_windows = []
-                for window in group.get("windows", []):
-                    if not isinstance(window, list) or len(window) != len(selected):
-                        continue
-                    if not all(isinstance(entry, Mapping) for entry in window):
-                        continue
-                    if all(
-                        entry.get("site") == item["site"]
-                        and isinstance(entry.get("z"), (int, float))
-                        and not isinstance(entry.get("z"), bool)
-                        and float(entry["z"]) == float(item["z"])
-                        for entry, item in zip(window, selected)
-                    ):
-                        matching_windows.append(window)
-                if len(matching_windows) != 1:
+                selected_window = window_lookup.unique_window(
+                    group.get("windows", []), selected
+                )
+                if selected_window is None:
                     raise ValidationError(
                         "OpenPARF typed hardblock placement does not match exactly "
                         "one certified window"
                     )
-                selected_window = matching_windows[0]
             claims = []
             for entry in selected_window:
                 raw_claims = entry.get("claims")
