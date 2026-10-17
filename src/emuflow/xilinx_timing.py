@@ -72,6 +72,7 @@ def _build_payload(
     cells = module["cells"]
     clock_gates = route.get("clock_gates", [])
     clock_gate_input_sites: Dict[str, str] = {}
+    cascaded_clock_gate_inputs: set[str] = set()
     for gate in clock_gates:
         logical_cell = gate.get("logical_cell") if isinstance(gate, Mapping) else None
         physical_site = gate.get("physical_site") if isinstance(gate, Mapping) else None
@@ -87,6 +88,8 @@ def _build_payload(
         if not isinstance(input_site, str) or not input_site:
             raise ValidationError("Xilinx clock-gate input-site binding is invalid")
         clock_gate_input_sites[logical_cell] = input_site
+        if gate.get("cascaded_input") is True:
+            cascaded_clock_gate_inputs.add(logical_cell)
 
     def endpoint_site(instance: str, pin: str) -> str:
         if instance in clock_gate_input_sites and pin in {"I0", "I1"}:
@@ -150,7 +153,13 @@ def _build_payload(
         seen_bits.add(bit)
         logical = endpoints.get(bit, [])
         drivers = [value for value in logical if value[2] == "driver"]
-        sinks = [value for value in logical if value[2] == "sink"]
+        sinks = [
+            value for value in logical
+            if value[2] == "sink"
+            and not (
+                value[0] in cascaded_clock_gate_inputs and value[1] == "I0"
+            )
+        ]
         route_net = net
         route_sources = [pin for pin in route_net["pins"] if pin["is_output"]]
         virtual_io = virtual_io_by_net.get(net.get("net"))
@@ -258,6 +267,7 @@ def _build_payload(
                 "physical_type": gate["physical_type"],
                 "input_site": gate.get("input_site", gate["physical_site"]),
                 "implementation": gate.get("implementation", "direct-bufgce"),
+                "cascaded_input": gate.get("cascaded_input", False),
                 "qualification": gate["qualification"],
             }
             for gate in clock_gates

@@ -1013,7 +1013,9 @@ def validate_xilinx_route_db(
             "safe_cell", "logical_cell", "logical_type", "physical_type",
             "physical_site", "physical_bel", "ce_type", "qualification",
         }
-        extended_keys = base_keys | {"input_site", "implementation"}
+        extended_keys = base_keys | {
+            "input_site", "implementation", "cascaded_input"
+        }
         implementation = (
             gate.get("implementation", "direct-bufgce")
             if isinstance(gate, dict) else None
@@ -1040,6 +1042,13 @@ def validate_xilinx_route_db(
                 )
             )
             or not (direct or prefiltered)
+            or (
+                "cascaded_input" in gate
+                and not isinstance(gate.get("cascaded_input"), bool)
+            )
+            or (
+                gate.get("cascaded_input") is True and not prefiltered
+            )
             or gate.get("physical_bel") != "BUFCE"
             or gate.get("qualification")
             != "lut2-init-1000-fdre-latched-enable-v1"
@@ -1399,6 +1408,15 @@ def validate_xilinx_route_db(
                     f"{context}: boundary clock qualification is invalid"
                 )
             boundary_clock_nets += 1
+        elif reason == "clock_gate_cascade_internalized":
+            if (
+                set(excluded) != {"net", "reason", "qualification"}
+                or excluded.get("qualification")
+                != "lut2-prefilter-fabric-edge-v1"
+            ):
+                raise ValidationError(
+                    f"{context}: internalized clock-edge qualification is invalid"
+                )
         elif set(excluded) != {"net", "reason"} or reason not in allowed_exclusions:
             raise ValidationError(f"{context}: invalid exclusion record")
         if (

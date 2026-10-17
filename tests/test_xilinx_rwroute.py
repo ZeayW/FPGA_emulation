@@ -420,6 +420,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "input_site": "S1",
                 "ce_type": "ASYNC_TIED_HIGH",
                 "implementation": "lut2-prefilter-bufgce-tied-high",
+                "cascaded_input": True,
             })
             path.write_text(json.dumps(value), encoding="utf-8")
             self.assertEqual(

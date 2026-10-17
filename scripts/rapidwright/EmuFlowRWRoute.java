@@ -1121,9 +1121,18 @@ public final class EmuFlowRWRoute {
             throw new IllegalArgumentException("CLOCK_GATE references an unknown cell");
         }
         Set<String> clockGatesNeedingPrefilter = new LinkedHashSet<>();
+        Set<String> internalizedClockEdges = new LinkedHashSet<>();
+        Map<String, String> clockGateParents = new HashMap<>();
         for (Map.Entry<String, String> entry : clockGateInputNets.entrySet()) {
-            if (clockGateDriversByNet.containsKey(entry.getValue())) {
+            String parent = clockGateDriversByNet.get(entry.getValue());
+            if (parent != null) {
+                if (parent.equals(entry.getKey())) {
+                    throw new IllegalArgumentException("clock gate feeds its own I0 input");
+                }
                 clockGatesNeedingPrefilter.add(entry.getKey());
+                clockGatesNeedingPrefilter.add(parent);
+                clockGateParents.put(entry.getKey(), parent);
+                internalizedClockEdges.add(entry.getValue());
             }
         }
 
@@ -1239,6 +1248,18 @@ public final class EmuFlowRWRoute {
                 Net net = design.getNet(netName);
                 MaterializedCell cell = cells.get(row[2]);
                 if (cell == null) throw new IllegalArgumentException("unknown cell " + row[2]);
+                String parentClockGate = (
+                    row[3].equals("I0") ? clockGateParents.get(row[2]) : null
+                );
+                if (parentClockGate != null) {
+                    MaterializedCell parent = cells.get(parentClockGate);
+                    if (parent == null || !parent.hasClockPrefilter()) {
+                        throw new IllegalStateException(
+                            "cascaded clock parent lacks a physical prefilter"
+                        );
+                    }
+                    net = design.getNet(parent.clockPrefilterNet);
+                }
                 if (iobRows.containsKey(row[2])) iobNetNames.put(row[2], netName);
                 try {
                     List<SitePinInst> connected = new ArrayList<>();
@@ -1317,6 +1338,19 @@ public final class EmuFlowRWRoute {
                 }
             }
         }
+
+        List<String> sourceOnlyInternalizedClockNets = new ArrayList<>();
+        for (String netName : internalizedClockEdges) {
+            Net net = design.getNet(netName);
+            if (net != null && net.getSource() != null && net.getSinkPins().isEmpty()) {
+                sourceOnlyInternalizedClockNets.add(netName);
+                excluded.put(new JSONObject()
+                    .put("net", netName)
+                    .put("reason", "clock_gate_cascade_internalized")
+                    .put("qualification", "lut2-prefilter-fabric-edge-v1"));
+            }
+        }
+        netNames.removeAll(sourceOnlyInternalizedClockNets);
 
         // This certificate begins and ends at physical site pins; purely
         // intra-site nets remain outside the inter-site route certificate.
@@ -1596,6 +1630,7 @@ public final class EmuFlowRWRoute {
                         ? "lut2-prefilter-bufgce-tied-high"
                         : "direct-bufgce"
                 )
+                .put("cascaded_input", clockGateParents.containsKey(safeName))
                 .put("qualification", "lut2-init-1000-fdre-latched-enable-v1"));
         }
         output.put("clock_gates", clockGates);
