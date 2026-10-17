@@ -288,6 +288,47 @@ def _add_mux_bels(architecture, primitives):
 
 
 class XilinxOpenparfAtomicTest(unittest.TestCase):
+    def test_atom_name_index_closes_after_worker_exception_in_collector(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "atoms.sqlite"
+            with sqlite3.connect(path) as connection:
+                connection.execute("CREATE TABLE metadata(key TEXT, value TEXT)")
+                connection.executemany("INSERT INTO metadata VALUES (?,?)", [
+                    ("schema", atomic_adapter.OPENPARF_ATOM_MAP_DATABASE_SCHEMA),
+                    ("atoms", "1"),
+                ])
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                names = pool.submit(atomic_adapter._IndexedAtomNames, path).result()
+            names.close()
+            names.close()
+
+    def test_density_target_is_not_an_extra_device_capacity_limit(self):
+        sites = [({"name": "DSP"}, {"DSP48E2": 2880})]
+        _, report = atomic_adapter._validate_native_density_contract_from_demand(
+            sites, {"DSP48E2": 2752}
+        )
+        record = report["DSP48E2"]
+        self.assertLess(record["movable_area"], record["target_area"])
+        self.assertLess(record["target_area"], record["placeable_area"])
+        for count in (2880, 2881):
+            with self.assertRaisesRegex(ValidationError, "finite headroom"):
+                atomic_adapter._validate_native_density_contract_from_demand(
+                    sites, {"DSP48E2": count}
+                )
+
+    def test_tight_site_reservation_falls_back_to_real_device_sites(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_runtime_fixture(root)
+            def tight_reservation(sites):
+                return list(sites[:4]), {"status": "pass", "reserved_sites": len(sites)-4}
+            with mock.patch.object(atomic_adapter, "_derate_clock_region_sites", tight_reservation):
+                manifest = export_xilinx_openparf_atomic(
+                    mapped, packed, architecture, root / "output"
+                )
+            self.assertEqual(manifest["placement_region"]["available_logic_sites"], 16)
+            self.assertEqual(manifest["density_contract"]["LUT"]["placeable_area"], 16.0)
+
     def test_clock_region_site_headroom_is_reserved_before_placement(self):
         sites = []
         for x in range(2):

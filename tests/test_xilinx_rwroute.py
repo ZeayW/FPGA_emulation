@@ -3,12 +3,14 @@ import hashlib
 import json
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
 from emuflow.xilinx_rwroute import (
+    _PipOwnership,
     _validate_rapidwright_device_data,
     export_rwroute_input,
     validate_xilinx_route_db,
@@ -24,6 +26,15 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_failed_worker_ownership_database_can_close_in_collector_thread(self):
+        owner = _PipOwnership(250001)
+        owner.claim_many([("T", "W1", "W2")], "n")
+        path = owner._database_path
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(owner.close).result()
+        self.assertFalse(path.exists())
+        owner.close()
+
     def test_recovery_tree_drops_stable_connections_between_iterations(self):
         source = (
             Path(__file__).parents[1]

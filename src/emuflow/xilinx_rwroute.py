@@ -276,7 +276,7 @@ class _PipOwnership:
             )
             os.close(descriptor)
             self._database_path = Path(name)
-            self._database = sqlite3.connect(name)
+            self._database = sqlite3.connect(name, check_same_thread=False)
             self._database.execute("PRAGMA journal_mode=OFF")
             self._database.execute("PRAGMA synchronous=OFF")
             self._database.execute("PRAGMA temp_store=FILE")

@@ -6276,6 +6276,14 @@ reconstructs these local capacities from ArchitectureDB and rejects a
 certificate that exceeds the reservation; this prevents a low-total-
 utilization design from silently saturating a few clock regions before
 RWRoute.
+For the native atomic OpenPARF route, site reservations and the preferred 75%
+analytical density are optimization heuristics, not additional device-capacity
+limits. If reserved sites cannot accommodate the design with that margin, the
+adapter reuses the full permitted device region (preserving explicit SLR
+restrictions). A densely used resource receives a finite target between its
+actual occupancy and 100%; it is not rejected solely for exceeding the preferred
+density. Physical capacity, BEL legality, routing connectivity, and DRC checks
+remain mandatory. Large native DSP-rich holdout revalidation is pending.
 When an experiment explicitly requires a design to remain inside one SLR,
 that restriction is produced by the explicit single-SLR planner rather than a
 handwritten or alphabetically selected constraint. The planner first proves

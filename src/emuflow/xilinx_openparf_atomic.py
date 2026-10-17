@@ -164,7 +164,8 @@ class _IndexedAtomNames(Mapping[str, str]):
 
     def __init__(self, path: Path) -> None:
         self.connection = sqlite3.connect(
-            f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+            f"file:{path.resolve()}?mode=ro&immutable=1", uri=True,
+            check_same_thread=False,
         )
         metadata = dict(
             self.connection.execute("SELECT key,value FROM metadata")
@@ -1865,7 +1866,15 @@ def _validate_native_density_contract_from_demand(
         )
         movable_area = demand[resource] / unit_capacity
         placeable_area = available_units / unit_capacity
-        target_area = _TARGET_DENSITY * placeable_area
+        # Density is a placement objective, not a second device-capacity cap.
+        # Retain a finite optimization margin above the actual occupancy when
+        # a valid high-demand resource exceeds the preferred density.
+        occupancy = movable_area / placeable_area if placeable_area else math.inf
+        target_density = (
+            _TARGET_DENSITY if occupancy < _TARGET_DENSITY
+            else (1.0 + occupancy) / 2.0
+        )
+        target_area = target_density * placeable_area
         filler_units = available_units - demand[resource]
         if not (
             math.isfinite(movable_area)
@@ -1876,7 +1885,7 @@ def _validate_native_density_contract_from_demand(
             raise ValidationError(
                 "OpenPARF atomic placement density domain has no finite headroom "
                 f"for {resource}: demand={demand[resource]}, "
-                f"capacity={available_units}, target_density={_TARGET_DENSITY}"
+                f"capacity={available_units}, target_density={target_density}"
             )
         result[resource] = {
             "movable_area": movable_area,
@@ -3129,6 +3138,7 @@ def _device_static_geometry(
     require_carry8: bool,
     native: Optional[Mapping[str, Any]] = None,
     allowed_slrs: Optional[Sequence[str]] = None,
+    reserve_site_headroom: bool = True,
 ) -> Dict[str, Any]:
     """Build immutable device geometry once across parallel FPGA workers."""
 
@@ -3141,6 +3151,7 @@ def _device_static_geometry(
         bool(require_carry8),
         y_axis_order,
         selected_slrs,
+        reserve_site_headroom,
     )
     # The derivation is Python/GIL bound and produces a multi-GiB object for a
     # complete XCVU19P. Holding the lock during the first build prevents a
@@ -3176,7 +3187,14 @@ def _device_static_geometry(
                 and item[0]["physical_region"].get("slr") in selected_slrs
             ]
         placement_region = _validate_native_placement_region(sites)
-        sites, site_headroom_contract = _derate_clock_region_sites(sites)
+        if reserve_site_headroom:
+            sites, site_headroom_contract = _derate_clock_region_sites(sites)
+        else:
+            site_headroom_contract = {
+                "status": "not-reserved", "limit": 1.0,
+                "original_sites": len(sites), "available_sites": len(sites),
+                "reserved_sites": 0,
+            }
         placement_region = {
             **placement_region,
             "available_logic_sites": sum(
@@ -3520,6 +3538,20 @@ def export_xilinx_openparf_atomic(
     )
     sites = device_static["sites"]
     placement_region = device_static["placement_region"]
+    available = Counter()
+    for _site, resources in sites:
+        available.update(resources)
+    if any(count >= _TARGET_DENSITY * available[resource]
+           for resource, count in demand.items()):
+        # Local reservations are heuristic spare capacity. Do not multiply a
+        # 75% site reservation by a second 75% density limit and reject a DUT
+        # which fits the declared device. SLR restrictions remain unchanged.
+        device_static = _device_static_geometry(
+            architecture, hard, mux, require_carry8=has_carry8, native=native,
+            allowed_slrs=allowed_slrs, reserve_site_headroom=False,
+        )
+        sites = device_static["sites"]
+        placement_region = device_static["placement_region"]
     per_site_capacity, density_contract = (
         _validate_native_density_contract_from_demand(sites, demand)
     )
@@ -3611,7 +3643,11 @@ def export_xilinx_openparf_atomic(
         "benchmark_name": "xilinx_atomic_mixed_resource",
         "benchmark_format": "bookshelf", "architecture_name": "ultrascale",
         "aux_input": str((output_dir / "design.aux").resolve()),
-        "gpu": 0, "dtype": "float64", "target_density": _TARGET_DENSITY,
+        "gpu": 0, "dtype": "float64",
+        "target_density": max(
+            item["target_area"] / item["placeable_area"]
+            for item in density_contract.values()
+        ),
         # Match the upstream ISPD reference recipes. OpenPARF's generic
         # default stops global placement at overflow 0.20, but its native
         # routability adjustment is only eligible at overflow <= 0.15. If
