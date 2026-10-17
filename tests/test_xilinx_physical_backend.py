@@ -125,6 +125,10 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                         "placement_sha256": "0" * 64,
                     },
                 )
+                return {"status": "pass"}
+
+            def stop_at_route(*_args, **kwargs):
+                self.assertEqual(kwargs["java_heap_gib"], 96)
                 raise RuntimeError("native-bridge-reached-rwroute")
 
             def qualify(*_args, **_kwargs):
@@ -193,6 +197,10 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     side_effect=stop_at_export,
                 ) as export,
                 mock.patch(
+                    "emuflow.xilinx_physical_backend.run_rwroute",
+                    side_effect=stop_at_route,
+                ) as route,
+                mock.patch(
                     "emuflow.xilinx_physical_backend._sha256",
                     return_value="0" * 64,
                 ),
@@ -224,6 +232,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                         boundary_identity_path=root / "boundary.json",
                         rapidwright_jar=root / "rapidwright.jar",
                         java=root / "java",
+                        java_heap_gib=96,
                         classes_dir=root / "classes",
                         java_source=root / "route.java",
                         device_data_root=root / "device-data",
@@ -235,6 +244,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             qualify.assert_called_once()
             bridge.assert_called_once()
             export.assert_called_once()
+            route.assert_called_once()
             validate_placement.assert_not_called()
             read.assert_not_called()
             self.assertIs(

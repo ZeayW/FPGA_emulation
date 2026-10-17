@@ -75,6 +75,7 @@ from .vtr_eblif import emit_vtr_eblif
 from .vivado_backend import run_vivado_partition_backend
 from .vivado_netlist import emit_vivado_mapped_verilog
 from .yosys import import_yosys_json
+from .xilinx_rwroute import _rwroute_heap_argument
 from .xilinx_physical_backend import (
     run_rapidwright_openparf_native_candidate_backend,
     run_rapidwright_partition_backend,
@@ -708,6 +709,7 @@ def run_multi_fpga_physical_flow(
     vivado_route_directive: str = "Default",
     rapidwright_jar: Optional[Path] = None,
     rapidwright_java: Optional[Path] = None,
+    rapidwright_java_heap_gib: int = 32,
     rapidwright_classes: Optional[Path] = None,
     rapidwright_java_source: Optional[Path] = None,
     rapidwright_device_data: Optional[Path] = None,
@@ -724,6 +726,7 @@ def run_multi_fpga_physical_flow(
     workers: int = 1,
     resume: bool = False,
 ) -> Dict[str, Any]:
+    _rwroute_heap_argument(rapidwright_java_heap_gib)
     if workers < 1:
         raise ValidationError("physical workers must be at least one")
     if (
@@ -1713,6 +1716,7 @@ def run_multi_fpga_physical_flow(
                 boundary_identity_path=boundary_identity_path,
                 rapidwright_jar=rapidwright_jar,
                 java=rapidwright_java,
+                java_heap_gib=rapidwright_java_heap_gib,
                 # Each worker receives an isolated class/runtime-data root.
                 # RapidWright may extract device data beneath user.home, so a
                 # shared directory would introduce cross-partition races.
@@ -1961,7 +1965,8 @@ def run_multi_fpga_physical_flow(
             "pack_place_resume": resume,
             "route_resume": resume,
             **(
-                {"rapidwright_placer": effective_rapidwright_placer}
+                {"rapidwright_placer": effective_rapidwright_placer,
+                 "rapidwright_java_heap_gib": rapidwright_java_heap_gib}
                 if backend == "rapidwright"
                 else {}
             ),

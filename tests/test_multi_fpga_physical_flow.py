@@ -74,6 +74,29 @@ def _merged_ir(fpga):
 
 
 class MultiFpgaPhysicalFlowTest(unittest.TestCase):
+    def test_physical_cli_forwards_default_and_explicit_heap_budget(self):
+        from emuflow.cli import _build_parser, _dispatch
+
+        base = ["multi-fpga", "physical", "--split", "split",
+                "--platform", "platform", "--schedule", "schedule", "--out", "output"]
+        for flags, expected in (([], 32), (["--rapidwright-java-heap-gib", "96"], 96)):
+            args = _build_parser().parse_args([*base, *flags])
+            with patch("emuflow.cli.run_multi_fpga_physical_flow",
+                       return_value={"summary": {}}) as run, \
+                 patch("emuflow.cli._print_json"):
+                self.assertEqual(_dispatch(args), 0)
+                self.assertEqual(run.call_args.kwargs["rapidwright_java_heap_gib"], expected)
+
+    def test_bad_heap_budget_fails_before_loading_circuit(self):
+        with patch("emuflow.multi_fpga_physical_flow.read_json",
+                   side_effect=AssertionError("circuit read before budget validation")):
+            with self.assertRaisesRegex(ValidationError, "positive integer"):
+                run_multi_fpga_physical_flow(
+                    Path("unused-split"), Path("unused-platform"),
+                    Path("unused-schedule"), Path("unused-output"),
+                    rapidwright_java_heap_gib=0,
+                )
+
     def test_only_exactly_empty_partitions_skip_physical_work(self):
         netlist = {"instances": [], "nets": [], "ports": []}
         transport = {

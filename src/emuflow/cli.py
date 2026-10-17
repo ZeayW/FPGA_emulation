@@ -2282,6 +2282,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--physical-rapidwright-jar", type=Path)
     multi_fpga_compile.add_argument("--physical-rapidwright-java", type=Path)
+    multi_fpga_compile.add_argument(
+        "--physical-rapidwright-java-heap-gib", type=int, default=32,
+        help="explicit JVM heap GiB per concurrent RapidWright worker",
+    )
     multi_fpga_compile.add_argument("--physical-rapidwright-classes", type=Path)
     multi_fpga_compile.add_argument(
         "--physical-rapidwright-java-source", type=Path
@@ -2411,6 +2415,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_physical.add_argument("--rapidwright-jar", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-java", type=Path)
+    multi_fpga_physical.add_argument(
+        "--rapidwright-java-heap-gib", type=int, default=32,
+        help="explicit JVM heap GiB per concurrent RapidWright worker",
+    )
     multi_fpga_physical.add_argument("--rapidwright-classes", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-java-source", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-device-data", type=Path)
@@ -5712,6 +5720,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 vivado_route_directive=args.vivado_route_directive,
                 rapidwright_jar=args.rapidwright_jar,
                 rapidwright_java=args.rapidwright_java,
+                rapidwright_java_heap_gib=args.rapidwright_java_heap_gib,
                 rapidwright_classes=args.rapidwright_classes,
                 rapidwright_java_source=args.rapidwright_java_source,
                 rapidwright_device_data=args.rapidwright_device_data,
@@ -5925,6 +5934,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             physical_rapidwright_jar=args.physical_rapidwright_jar,
             physical_rapidwright_java=args.physical_rapidwright_java,
+            physical_rapidwright_java_heap_gib=args.physical_rapidwright_java_heap_gib,
             physical_rapidwright_classes=args.physical_rapidwright_classes,
             physical_rapidwright_java_source=(
                 args.physical_rapidwright_java_source

@@ -32,6 +32,7 @@ from .xilinx_opensta import run_xilinx_routed_opensta
 from .xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
 from .xilinx_placement import place_xilinx_clusters, validate_xilinx_placement
 from .xilinx_rwroute import (
+    _rwroute_heap_argument,
     export_rwroute_input,
     run_rwroute,
 )
@@ -300,6 +301,7 @@ def _run_rapidwright_routed_backend_tail(
     placement_stage: Mapping[str, Any],
     placement_artifacts: Mapping[str, Path],
     mapped_sha256: Optional[str] = None,
+    java_heap_gib: int = 32,
 ) -> Dict[str, Any]:
     """Route and time one already materialized packed placement."""
 
@@ -338,6 +340,7 @@ def _run_rapidwright_routed_backend_tail(
         packed_value=packed_value,
         source_sha256=source_sha256,
         route_value_sink=route_value,
+        java_heap_gib=java_heap_gib,
     )
     route_check = {
         key: value for key, value in route_report.items()
@@ -568,9 +571,11 @@ def run_rapidwright_partition_backend(
     opensta: Optional[str] = None,
     logic_identity_path: Optional[Path] = None,
     local_identity_path: Optional[Path] = None,
+    java_heap_gib: int = 32,
 ) -> Dict[str, Any]:
     """Pack, place, route, time, and independently check one partition."""
 
+    _rwroute_heap_argument(java_heap_gib)
     architecture = ArchitectureDB.load(architecture_path)
     if architecture.part != part:
         raise ValidationError(
@@ -675,6 +680,7 @@ def run_rapidwright_partition_backend(
         logic_identity_path=logic_identity_path,
         local_identity_path=local_identity_path,
         provider="rapidwright-rwroute-research-backend-v1",
+        java_heap_gib=java_heap_gib,
         packing_stage={
             "result": packed["summary"], "validation": packing_check,
         },
@@ -716,8 +722,10 @@ def run_rapidwright_openparf_native_candidate_backend(
     opensta: Optional[str] = None,
     logic_identity_path: Optional[Path] = None,
     local_identity_path: Optional[Path] = None,
+    java_heap_gib: int = 32,
 ) -> Dict[str, Any]:
     """Run the fail-closed native OpenPARF placement candidate backend."""
+    _rwroute_heap_argument(java_heap_gib)
 
     architecture = ArchitectureDB.load(architecture_path)
     if architecture.part != part:
@@ -840,6 +848,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         logic_identity_path=logic_identity_path,
         local_identity_path=local_identity_path,
         provider="rapidwright-rwroute-openparf-native-candidate-v1",
+        java_heap_gib=java_heap_gib,
         packing_stage={
             "source": atomic_summary,
             "result": packed["summary"],

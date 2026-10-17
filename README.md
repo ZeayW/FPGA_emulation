@@ -6602,7 +6602,17 @@ RWRoute is likewise a physical routing provider, not the acceptance oracle.
 The `run_rwroute` Python API accepts an explicit positive `java_heap_gib`
 budget (default 32), recorded at the start of its log. This is a resource
 setting, not a change to the netlist, placement or routing algorithm, and
-does not silently fall back or increase memory on failure. A DLA-large
+does not silently fall back or increase memory on failure.
+The same setting is available without a custom runner: standalone
+`multi-fpga physical --rapidwright-java-heap-gib 96`, or full compilation
+`multi-fpga compile --physical-rapidwright-java-heap-gib 96`. The corresponding
+Python flow parameters are `rapidwright_java_heap_gib` and
+`physical_rapidwright_java_heap_gib`; every entry point defaults to 32 and
+rejects a non-positive/non-integer budget before expensive work. The physical
+execution summary records the selected budget. This budget is **per JVM**:
+reserve memory for all concurrently active FPGA workers plus their non-JVM
+state, not just one worker.
+A DLA-large
 32-GiB attempt exhausted its heap: an eight-second read-only `/proc` sample
 recorded 63.09 CPU seconds in GC threads versus 0.10 in other threads, with
 no completed first routing iteration. CPU activity in that state is not

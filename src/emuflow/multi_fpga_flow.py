@@ -84,6 +84,7 @@ from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_architecture import ARCHITECTURE_TIMING_DB_SCHEMA
 from .vtr_netlist import normalize_vtr_hard_block_json
 from .xilinx_preplacement_timing import XILINX_PREPLACEMENT_TIMING_SCHEMA
+from .xilinx_rwroute import _rwroute_heap_argument
 from .xilinx_primitives import (
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     audit_xilinx_mapped_json,
@@ -1339,6 +1340,7 @@ def run_multi_fpga_flow(
     physical_vivado_route_directive: str = "Default",
     physical_rapidwright_jar: Optional[Path] = None,
     physical_rapidwright_java: Optional[Path] = None,
+    physical_rapidwright_java_heap_gib: int = 32,
     physical_rapidwright_classes: Optional[Path] = None,
     physical_rapidwright_java_source: Optional[Path] = None,
     physical_rapidwright_device_data: Optional[Path] = None,
@@ -1361,6 +1363,7 @@ def run_multi_fpga_flow(
 ) -> Dict[str, Any]:
     """Compile RTL/EmuIR through the checked board-independent split."""
 
+    _rwroute_heap_argument(physical_rapidwright_java_heap_gib)
     if global_timing_engine not in {"opensta", "python"}:
         raise EmuFlowError("unsupported global timing engine")
     if global_timing_engine == "python" and global_sta_executable is not None:
@@ -2500,6 +2503,7 @@ def run_multi_fpga_flow(
             vivado_route_directive=physical_vivado_route_directive,
             rapidwright_jar=physical_rapidwright_jar,
             rapidwright_java=physical_rapidwright_java,
+            rapidwright_java_heap_gib=physical_rapidwright_java_heap_gib,
             rapidwright_classes=physical_rapidwright_classes,
             rapidwright_java_source=physical_rapidwright_java_source,
             rapidwright_device_data=physical_rapidwright_device_data,

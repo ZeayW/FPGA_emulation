@@ -425,6 +425,14 @@ class MultiFpgaFlowTest(unittest.TestCase):
         self.assertTrue(defaults.timing_driven)
         self.assertIsNone(defaults.ratio_quantum)
         self.assertIsNone(defaults.physical_rapidwright_placer)
+        self.assertEqual(defaults.physical_rapidwright_java_heap_gib, 32)
+        heap_args = _build_parser().parse_args([
+            *base, "--physical-rapidwright-java-heap-gib", "96",
+        ])
+        with patch("emuflow.cli.run_multi_fpga_flow", return_value={"status": "pass"}) as run, \
+             patch("emuflow.cli._print_json"):
+            self.assertEqual(_dispatch(heap_args), 0)
+            self.assertEqual(run.call_args.kwargs["physical_rapidwright_java_heap_gib"], 96)
         self.assertEqual(
             _build_parser()
             .parse_args(
