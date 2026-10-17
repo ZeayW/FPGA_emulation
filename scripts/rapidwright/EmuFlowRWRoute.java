@@ -121,6 +121,15 @@ public final class EmuFlowRWRoute {
         }
     }
 
+    static <K, V> void claimPhysicalPip(Map<K, V> owners, K pip, V net) {
+        V previous = owners.putIfAbsent(pip, net);
+        if (previous != null && !previous.equals(net)) {
+            throw new IllegalStateException(
+                "RWRoute PIP ownership conflict before routed timing: " + pip
+            );
+        }
+    }
+
     private static final class AdaptiveBoundingBoxCUFR extends CUFR {
         /**
          * Compact Route-A-owned equivalent of CUFR's RPTT, scoped only to
@@ -394,6 +403,17 @@ public final class EmuFlowRWRoute {
                 recoveryConnections.add(connection);
             }
             return false;
+        }
+
+        @Override
+        protected void checkPIPsUsage() {
+            // Replace upstream's diagnostic-only pass, not add another audit.
+            // One owner per PIP avoids a HashSet allocation for every resource.
+            Map<PIP, Net> owners = new HashMap<>();
+            for (Net net : design.getNets()) {
+                for (PIP pip : net.getPIPs()) claimPhysicalPip(owners, pip, net);
+            }
+            System.out.println("INFO: No PIP overlaps");
         }
 
         public static Design routeDesignWithUserDefinedArguments(Design design, String[] args) {

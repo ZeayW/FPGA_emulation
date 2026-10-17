@@ -6615,14 +6615,21 @@ The adapter rejects a router result that still has unrouted or congested
 indirect connections before constructing the device timing model or writing a
 large route certificate. This constant-size failure summary uses the router's
 existing connection state; it does not replace the independent complete
-reachability, PIP-conflict, static-net and physical timing checks. Policy-only
+reachability, PIP-conflict, static-net and physical timing checks. The adapter
+also replaces upstream's diagnostic-only PIP-usage pass with an immediate
+failure on the first cross-net PIP ownership conflict. It keeps one owner per
+PIP instead of allocating a set for every PIP, and does not run the upstream
+pass again. This closes the case where the external router prints an overlap
+error but otherwise returns normally into expensive timing extraction.
+Policy-only
 Java qualification passed 20,066 policy checks, including history cleanup,
 gapped congestion and concurrent duplicate callbacks. Two actual XCVU19P
 connectivity checks also passed the independent route certificate validator:
 fabric `DUAL_CY4` initialization retained `AX`, and dedicated `SINGLE_CY8`
 cascade initialization retained `CIN`. These are small physical-connectivity
-checks, not full-flow acceptance. Renewed large-design physical routing of v2
-is pending; no large-design closure or QoR improvement is claimed yet.
+checks, not full-flow acceptance. Native requalification of the added PIP
+ownership guard and renewed large-design physical routing of v2 are pending;
+no large-design closure or QoR improvement is claimed yet.
 Routed timing binds ordinary signal/clock nets to their mapped integer bits.
 Certified `GLOBAL_LOGIC1`/`static_vcc` and `GLOBAL_LOGIC0`/`static_gnd` nets are
 device-tied constants, not timed data endpoints. They remain in the route

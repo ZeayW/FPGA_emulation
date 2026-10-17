@@ -1,6 +1,8 @@
 /* Standalone policy qualification; no FPGA workload or QoR claim. */
 import java.util.concurrent.ForkJoinPool;
 import java.util.stream.IntStream;
+import java.util.HashMap;
+import java.util.Map;
 
 public final class EmuFlowRWRouteRecoveryCheck {
     private static int checks;
@@ -80,6 +82,20 @@ public final class EmuFlowRWRouteRecoveryCheck {
             }
             require(failed);
         }
+        Map<String, String> owners = new HashMap<>();
+        EmuFlowRWRoute.claimPhysicalPip(owners, "pip-a", "net-a");
+        EmuFlowRWRoute.claimPhysicalPip(owners, "pip-a", new String("net-a"));
+        require(owners.size() == 1);
+        EmuFlowRWRoute.claimPhysicalPip(owners, "pip-b", "net-b");
+        require(owners.size() == 2);
+        boolean conflict = false;
+        try {
+            EmuFlowRWRoute.claimPhysicalPip(owners, "pip-a", "net-b");
+        } catch (IllegalStateException expected) {
+            conflict = expected.getMessage().contains("before routed timing");
+        }
+        require(conflict);
+        require(owners.get("pip-a").equals("net-a"));
         System.out.println("{\"status\":\"pass\",\"checks\":" + checks
             + ",\"scope\":\"policy-only-not-physical-routing\"}");
     }

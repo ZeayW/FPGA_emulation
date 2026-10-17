@@ -123,6 +123,9 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertIn("congestionHistory.shouldExpand(connection, routeIteration)", source)
         self.assertIn("congestionHistory.pruneBefore(routeIteration - 1)", source)
         self.assertIn("requireNoPendingIndirectConnections(unrouted, congested)", source)
+        self.assertIn("protected void checkPIPsUsage()", source)
+        self.assertIn("claimPhysicalPip(owners, pip, net)", source)
+        self.assertNotIn("super.checkPIPsUsage()", source)
         self.assertLess(source.index("AdaptiveBoundingBoxCUFR.routeDesignWithUserDefinedArguments("),
                         source.index("TimingModel timingModel ="))
 
