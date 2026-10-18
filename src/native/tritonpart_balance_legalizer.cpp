@@ -40,6 +40,12 @@ struct Problem {
   std::vector<std::vector<int>> incident;
 };
 
+struct ChainTemplateMove {
+  std::vector<Weight> weights;
+  int source = -1;
+  int target = -1;
+};
+
 void require(bool condition, const std::string& message) {
   if (!condition) throw std::runtime_error(message);
 }
@@ -168,6 +174,7 @@ struct Legalizer {
               std::vector<Weight>(problem.dimensions, 0)),
         preferred_chain_weights(problem.parts),
         preferred_chain_targets(problem.parts, -1),
+        preferred_chain_templates(problem.parts),
         edge_part_counts(problem.edges.size() * problem.parts, 0) {
     for (int vertex = 0; vertex < static_cast<int>(labels.size()); ++vertex) {
       for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
@@ -191,12 +198,14 @@ struct Legalizer {
   std::vector<std::vector<Weight>> initial_loads;
   std::vector<std::vector<Weight>> preferred_chain_weights;
   std::vector<int> preferred_chain_targets;
+  std::vector<std::vector<ChainTemplateMove>> preferred_chain_templates;
   std::vector<int> edge_part_counts;
   double ordinary_weight_sum = 0.0;
   double combinational_penalty = 0.0;
   long long direct_moves = 0;
   long long paired_sequences = 0;
   long long ejection_chain_sequences = 0;
+  long long replayed_chain_sequences = 0;
   long long max_ejection_chain_moves = 0;
   long long moves = 0;
   std::chrono::steady_clock::time_point started =
@@ -531,6 +540,83 @@ struct Legalizer {
     return result;
   }
 
+  void remember_chain(int source, const std::vector<Move>& sequence) {
+    std::vector<ChainTemplateMove> result;
+    result.reserve(sequence.size());
+    for (const Move& move : sequence) {
+      result.push_back(ChainTemplateMove{
+          problem.vertex_weights[move.vertex], move.source, move.target});
+    }
+    preferred_chain_templates[source] = std::move(result);
+  }
+
+  bool replay_chain_template(int source,
+                             const std::vector<Weight>& excess) {
+    const auto& chain_template = preferred_chain_templates[source];
+    if (chain_template.empty() || chain_template.front().source != source) {
+      return false;
+    }
+    using Groups = std::map<std::vector<Weight>, std::vector<int>>;
+    std::vector<Groups> groups(problem.parts);
+    for (int vertex = 0; vertex < static_cast<int>(labels.size()); ++vertex) {
+      if (problem.fixed[vertex] < 0) {
+        groups[labels[vertex]][problem.vertex_weights[vertex]].push_back(vertex);
+      }
+    }
+    std::vector<int> selected;
+    std::vector<Move> sequence;
+    auto candidate_loads = loads;
+    for (const ChainTemplateMove& step : chain_template) {
+      const auto found = groups[step.source].find(step.weights);
+      if (found == groups[step.source].end()) return false;
+      int vertex = -1;
+      for (int candidate : found->second) {
+        if (std::find(selected.begin(), selected.end(), candidate)
+            == selected.end()) {
+          vertex = candidate;
+          break;
+        }
+      }
+      if (vertex < 0) return false;
+      selected.push_back(vertex);
+      sequence.push_back(Move{vertex, step.source, step.target});
+      for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
+        candidate_loads[step.source][dimension] -= step.weights[dimension];
+        candidate_loads[step.target][dimension] += step.weights[dimension];
+      }
+    }
+    const auto& root_weights = chain_template.front().weights;
+    bool contributes = false;
+    for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
+      contributes = contributes
+                    || (excess[dimension] > 0
+                        && root_weights[dimension] > 0);
+    }
+    if (!contributes) return false;
+    std::vector<std::vector<Weight>> limits = problem.allowed;
+    for (int part = 0; part < problem.parts; ++part) {
+      for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
+        limits[part][dimension] = std::max(
+            limits[part][dimension], loads[part][dimension]);
+      }
+    }
+    for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
+      limits[source][dimension] = std::max(
+          problem.allowed[source][dimension],
+          loads[source][dimension] - root_weights[dimension]);
+    }
+    if (violation_key(candidate_loads, limits).count != 0) return false;
+    for (const Move& move : sequence) {
+      apply(move.vertex, move.source, move.target);
+    }
+    ++ejection_chain_sequences;
+    ++replayed_chain_sequences;
+    max_ejection_chain_moves = std::max<long long>(
+        max_ejection_chain_moves,
+        static_cast<long long>(sequence.size()));
+    return true;
+  }
+
   bool ejection_chain(int source,
                       const std::vector<Weight>& excess,
                       bool preferred_only = false) {
@@ -667,6 +753,7 @@ struct Legalizer {
       if (initial.violation.count == 0) {
         preferred_chain_weights[source] = root_weights;
         preferred_chain_targets[source] = root.target;
+        remember_chain(source, initial.sequence);
         apply(root.vertex, source, root.target);
         ++ejection_chain_sequences;
         max_ejection_chain_moves = std::max<long long>(
@@ -783,6 +870,7 @@ struct Legalizer {
             if (candidate.violation.count == 0) {
               preferred_chain_weights[source] = root_weights;
               preferred_chain_targets[source] = root.target;
+              remember_chain(source, candidate.sequence);
               for (const Move& move : candidate.sequence) {
                 apply(move.vertex, move.source, move.target);
               }
@@ -831,6 +919,8 @@ struct Legalizer {
            << "METRIC paired_sequences " << paired_sequences << '\n'
            << "METRIC ejection_chain_sequences "
            << ejection_chain_sequences << '\n'
+           << "METRIC replayed_chain_sequences "
+           << replayed_chain_sequences << '\n'
            << "METRIC max_ejection_chain_moves "
            << max_ejection_chain_moves << '\n'
            << "METRIC elapsed_milliseconds "
@@ -864,6 +954,14 @@ struct Legalizer {
         if (direct(source, excess)) {
           changed = true;
           break;
+        }
+      }
+      if (!changed) {
+        for (int source : sources) {
+          if (replay_chain_template(source, overload(source))) {
+            changed = true;
+            break;
+          }
         }
       }
       if (!changed) {
