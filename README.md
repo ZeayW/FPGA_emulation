@@ -235,6 +235,17 @@ Extended leaf lookup stops after the nearest legal BFS layer; within that
 layer it prefers reuse and then a deterministic node-name ordering. It does
 not expand deeper into fabric solely to find a reusable leaf.
 
+The internal `_finish_rapidwright_routed_backend` entry point lets an explicit
+debugging continuation time an independently validated completed route without
+re-exporting its input or rerunning placement/routing. It uses the same timing
+tail as a fresh run and preserves the fixed differential-I/O contract.
+`_assemble_multi_fpga_physical_results` similarly checks and aggregates a
+complete set of physical partition records without rerunning tools. It rejects
+missing, duplicate, or failed partitions, retains the manifest's differential
+I/O evidence, and publishes summaries only after both physical validators pass.
+Neither helper alone qualifies whole-design Phase 7C or creates a persistent
+intermediate cache; the NVDLA whole-design OpenSTA result remains pending.
+
 Finally, EmuFlow binds physical logic/interface delays, board-link delays, and
 the selected TDM events to an abstract global timing model. **OpenSTA is the
 default global STA engine**. The internal timing composer is a separate engine

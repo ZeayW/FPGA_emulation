@@ -11,6 +11,7 @@ from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.multi_fpga_physical_flow import (
     MULTI_FPGA_PHYSICAL_SCHEMA,
+    _assemble_multi_fpga_physical_results,
     _implementation_stage,
     _partition_has_physical_work,
     _partition_declares_dut_clock,
@@ -21,6 +22,7 @@ from emuflow.multi_fpga_physical_flow import (
     validate_multi_fpga_physical_report,
 )
 from emuflow.physical_backend import physical_backend_descriptor
+from emuflow.platform import Platform
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -724,6 +726,41 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                         runtime_sdc.read_text(encoding="utf-8"),
                     )
 
+                # The same checked assembler must consume separately completed
+                # records without re-entering any synthesis/place/route tool.
+                assembly_inputs = dict(
+                    records=list(reversed(report["fpgas"])),
+                    manifest=manifest, manifest_path=(split / "manifest.json").resolve(),
+                    platform=Platform.load(PLATFORM), runtime=runtime,
+                    split_root=split, backend_descriptor=report["backend"],
+                    architecture_source=report["architecture"],
+                    execution=report["execution"], include_logic_timing=False,
+                )
+                with patch(
+                    "emuflow.multi_fpga_physical_flow.run_generic_yosys",
+                    side_effect=AssertionError("synthesis rerun forbidden"),
+                ), patch(
+                    "emuflow.multi_fpga_physical_flow.run_vpr_route_packed",
+                    side_effect=AssertionError("routing rerun forbidden"),
+                ):
+                    assembled = _assemble_multi_fpga_physical_results(
+                        **assembly_inputs, output_dir=root / "assembled",
+                    )
+                self.assertEqual(assembled, report)
+                self.assertEqual(
+                    read_json(root / "assembled/physical-summary.json"),
+                    physical_summary,
+                )
+                with patch(
+                    "emuflow.multi_fpga_physical_flow.validate_multi_fpga_physical_report",
+                    side_effect=ValidationError("terminal report rejected"),
+                ), self.assertRaisesRegex(ValidationError, "terminal report rejected"):
+                    _assemble_multi_fpga_physical_results(
+                        **assembly_inputs, output_dir=root / "rejected",
+                    )
+                self.assertFalse((root / "rejected/physical-summary.json").exists())
+                self.assertFalse((root / "rejected/multi-fpga-physical-flow-report.json").exists())
+
         self.assertEqual(report["summary"]["fpgas"], 2)
         self.assertEqual(report["summary"]["original_cells"], 2)
         self.assertEqual(report["summary"]["transport_cells"], 2)
@@ -745,6 +782,54 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             )["status"],
             "pass",
         )
+
+    def test_completed_result_assembly_rejects_partial_failed_and_duplicate_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            common = dict(
+                manifest={}, manifest_path=root / "manifest.json",
+                platform=Platform.load(PLATFORM), runtime={}, split_root=root,
+                output_dir=root / "out", backend_descriptor=physical_backend_descriptor("open"),
+                architecture_source={}, execution={}, include_logic_timing=True,
+            )
+            for records in (
+                [{"fpga": "fpga0", "status": "pass"}],
+                [{"fpga": "fpga0", "status": "pass"}] * 2,
+                [{"fpga": "fpga0", "status": "failed"}],
+            ):
+                with self.subTest(records=records), self.assertRaises(ValidationError), patch(
+                    "emuflow.multi_fpga_physical_flow.read_json",
+                    side_effect=AssertionError("partial result must fail before artifact reads"),
+                ):
+                    _assemble_multi_fpga_physical_results(records=records, **common)
+                self.assertFalse((root / "out/physical-summary.json").exists())
+
+    def test_completed_fixed_io_cannot_omit_implementation_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            common = dict(
+                manifest={"virtual_board_binding": {"binding": "binding.json"}},
+                manifest_path=root / "manifest.json",
+                platform=Platform.load(PLATFORM), runtime={}, split_root=root,
+                output_dir=root / "out", architecture_source={}, execution={},
+                include_logic_timing=True,
+            )
+            records = [
+                {"fpga": fpga, "status": "pass", "stages": {}}
+                for fpga in ("fpga0", "fpga1")
+            ]
+            for backend in ("open", "rapidwright"):
+                with self.subTest(backend=backend), self.assertRaisesRegex(
+                    ValidationError, "fixed differential I/O"
+                ), patch(
+                    "emuflow.multi_fpga_physical_flow.read_json",
+                    side_effect=AssertionError("missing I/O must fail before artifact reads"),
+                ):
+                    _assemble_multi_fpga_physical_results(
+                        **common, records=records,
+                        backend_descriptor=physical_backend_descriptor(backend),
+                    )
+            self.assertFalse((root / "out/physical-summary.json").exists())
 
     def test_rejects_non_positive_worker_count(self):
         with tempfile.TemporaryDirectory() as temporary:
