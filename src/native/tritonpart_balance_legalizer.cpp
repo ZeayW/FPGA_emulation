@@ -166,6 +166,8 @@ struct Legalizer {
         labels(problem.assignment),
         loads(problem.parts,
               std::vector<Weight>(problem.dimensions, 0)),
+        preferred_chain_weights(problem.parts),
+        preferred_chain_targets(problem.parts, -1),
         edge_part_counts(problem.edges.size() * problem.parts, 0) {
     for (int vertex = 0; vertex < static_cast<int>(labels.size()); ++vertex) {
       for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
@@ -187,6 +189,8 @@ struct Legalizer {
   std::vector<int> labels;
   std::vector<std::vector<Weight>> loads;
   std::vector<std::vector<Weight>> initial_loads;
+  std::vector<std::vector<Weight>> preferred_chain_weights;
+  std::vector<int> preferred_chain_targets;
   std::vector<int> edge_part_counts;
   double ordinary_weight_sum = 0.0;
   double combinational_penalty = 0.0;
@@ -537,6 +541,7 @@ struct Legalizer {
     }
 
     struct Root {
+      int preference = 2;
       double negative_relief = 0.0;
       double source_score = 0.0;
       double normalized_delta = 0.0;
@@ -544,7 +549,8 @@ struct Legalizer {
       int vertex = -1;
       int target = -1;
       auto key() const {
-        return std::tie(negative_relief, source_score, normalized_delta,
+        return std::tie(preference, negative_relief,
+                        source_score, normalized_delta,
                         delta, vertex, target);
       }
       bool operator<(const Root& other) const { return key() < other.key(); }
@@ -581,7 +587,12 @@ struct Legalizer {
             selected_delta = delta;
           }
         }
-        roots.push_back(Root{-relief, source_score,
+        int preference = 2;
+        if (!preferred_chain_weights[source].empty()
+            && weights == preferred_chain_weights[source]) {
+          preference = target == preferred_chain_targets[source] ? 0 : 1;
+        }
+        roots.push_back(Root{preference, -relief, source_score,
                              selected_delta / relief, selected_delta,
                              selected, target});
       }
@@ -645,6 +656,8 @@ struct Legalizer {
           root.delta,
           violation_key(root_loads, limits)};
       if (initial.violation.count == 0) {
+        preferred_chain_weights[source] = root_weights;
+        preferred_chain_targets[source] = root.target;
         apply(root.vertex, source, root.target);
         ++ejection_chain_sequences;
         max_ejection_chain_moves = std::max<long long>(
@@ -759,6 +772,8 @@ struct Legalizer {
                                           + transition.delta;
             candidate.violation = transition.violation;
             if (candidate.violation.count == 0) {
+              preferred_chain_weights[source] = root_weights;
+              preferred_chain_targets[source] = root.target;
               for (const Move& move : candidate.sequence) {
                 apply(move.vertex, move.source, move.target);
               }
