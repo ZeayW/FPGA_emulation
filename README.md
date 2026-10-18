@@ -387,6 +387,11 @@ The prior NVDLA partition used a requested/effective tolerance of 2.1 and
 Those Phase 3–7 outputs do not qualify the strict configuration. NVDLA
 validation of 25%/0.1 is pending; original Phase 1–2 inputs remain reusable
 under the explicitly authorized continuation without resynthesis.
+The physical budget adapter passed a saved NVDLA fpga1 regression: a zero-LUT
+budget was rejected before routing, while the 25% budget routed successfully
+and independently matched 2,365 LUTs, 849 FFs, 21 DSPs and 37 CARRY8s.
+BRAM and URAM were absent in that fixture. This backend check does not qualify
+the new four-way strict partition; its complete NVDLA validation is in progress.
 
 The four-FPGA topology connects each of `fpga0` and `fpga1` to both `fpga2` and
 `fpga3`. There is no direct `fpga0`–`fpga1` or `fpga2`–`fpga3` link:
