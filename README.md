@@ -278,6 +278,13 @@ UTPlaceFX's incompatible single-RAM-class adapter. This foundation does not
 enable clock planning in the default Xilinx export; native build qualification,
 macro legalization under clock fences, and full NVDLA routing remain pending.
 
+RWRoute may merge a physical I/O net into the canonical EDIF net of its
+top-level port. The route certificate follows the I/O site pin's current net
+ownership while retaining the original mapped net ID; an optional
+`physical_net` field records the canonical name. A missing physical net fails
+explicitly instead of dropping the logical net from coverage. Device-backed
+and NVDLA partition qualification of this adapter remain pending.
+
 Finally, EmuFlow binds physical logic/interface delays, board-link delays, and
 the selected TDM events to an abstract global timing model. **OpenSTA is the
 default global STA engine**. The internal timing composer is a separate engine

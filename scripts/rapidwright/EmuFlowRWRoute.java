@@ -1094,6 +1094,23 @@ public final class EmuFlowRWRoute {
         cell.addPinMapping(physicalPin, logicalPin);
     }
 
+    static Net resolveRoutedNet(
+        Design design, String logicalName, Map<String, SitePinInst> ioAnchors
+    ) {
+        // RWRoute normalizes physical net names to their parent EDIF names.
+        // An I/O net may therefore be merged into the net created for its
+        // top-level port. SitePinInst ownership follows that merge; the input
+        // logical identity remains the certificate key.
+        SitePinInst anchor = ioAnchors.get(logicalName);
+        Net net = anchor == null ? design.getNet(logicalName) : anchor.getNet();
+        if (net == null || design.getNet(net.getName()) != net) {
+            throw new IllegalStateException(
+                "routed logical net has no live physical net: " + logicalName
+            );
+        }
+        return net;
+    }
+
     private static String dsp48e2SitePin(String logicalPin) {
         String physicalPin = logicalPin.replace("[", "").replace("]", "");
         if (physicalPin.startsWith("D") && logicalPin.startsWith("D[")) {
@@ -1443,6 +1460,7 @@ public final class EmuFlowRWRoute {
         }
 
         Map<String, String> iobNetNames = new HashMap<>();
+        Map<String, SitePinInst> iobNetAnchors = new HashMap<>();
         Map<String, EDIFNet> blockRamLogicalPinOwners = new HashMap<>();
         for (MaterializedCell cell : cells.values()) {
             if (cell.hasClockPrefilter()
@@ -1551,6 +1569,14 @@ public final class EmuFlowRWRoute {
                     }
                     for (SitePinInst pin : connected) {
                         if (pin == null) continue;
+                        if (iobRows.containsKey(row[2])) {
+                            SitePinInst previous = iobNetAnchors.putIfAbsent(netName, pin);
+                            if (previous != null && previous != pin) {
+                                throw new IllegalStateException(
+                                    "multiple I/O anchors for logical net " + netName
+                                );
+                            }
+                        }
                         boolean expectedOutput = row[4].equals("driver");
                         if (pin.isOutPin() != expectedOutput) {
                             throw new IllegalStateException(
@@ -1644,9 +1670,12 @@ public final class EmuFlowRWRoute {
             ))
         ) {
             for (String netName : netNames) {
-                Net net = design.getNet(netName);
+                Net net = resolveRoutedNet(design, netName, iobNetAnchors);
                 JSONObject record = new JSONObject();
                 record.put("net", netName);
+                if (!netName.equals(net.getName())) {
+                    record.put("physical_net", net.getName());
+                }
                 String kind = netKinds.get(netName);
                 if (!kind.equals("signal") && !kind.equals("clock")
                     && !kind.equals("clock_internal")) {
