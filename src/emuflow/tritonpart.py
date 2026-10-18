@@ -303,6 +303,7 @@ def export_tritonpart_inputs(
     hypergraph_path = output_dir / "partition.hgr"
     baseline_hypergraph_path = output_dir / "partition.unweighted.hgr"
     fixed_path = output_dir / "partition.fix"
+    edge_classes_path = output_dir / "partition.edge-classes"
     tcl_path = output_dir / "run_tritonpart.tcl"
     solution_path = output_dir / f"partition.hgr.part.{len(fpga_ids)}"
 
@@ -336,6 +337,13 @@ def export_tritonpart_inputs(
                 else "-1\n"
             )
             for cluster in clusters
+        ),
+        encoding="utf-8",
+    )
+    edge_classes_path.write_text(
+        "".join(
+            "1\n" if edge["cut_class"] == "combinational" else "0\n"
+            for edge in hyperedges
         ),
         encoding="utf-8",
     )
@@ -385,6 +393,7 @@ def export_tritonpart_inputs(
         "effective_balance_percent": effective_balance,
         "tritonpart_ubfactor_percent_points": tritonpart_ubfactor,
         "balance_auto_relaxed": False,
+        "balance_allowed_loads": limits,
         "search_effort": {
             "num_initial_solutions": num_initial_solutions,
             "num_best_initial_solutions": num_best_initial_solutions,
@@ -397,6 +406,7 @@ def export_tritonpart_inputs(
                 else None
             ),
             "fixed": fixed_path.name,
+            "edge_classes": edge_classes_path.name,
             "tcl": tcl_path.name,
             "solution": solution_path.name,
         },
@@ -561,20 +571,19 @@ def _repair_min_used_fpgas(
     return assignment, moves
 
 
-def _repair_multi_resource_balance(
+def _repair_multi_resource_balance_reference(
     cluster_assignment: Mapping[str, str],
     clusters_artifact: Mapping[str, Any],
     platform: Platform,
     constraints: Mapping[str, Any],
     tritonpart_input: Mapping[str, Any],
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    """Legalize a TritonPart solution against EmuFlow's upper load bounds.
+    """Reference-oracle legalizer for bounded test fixtures only.
 
-    TritonPart can return a best-effort solution when none of its randomized
-    initial candidates satisfies every multidimensional constraint. This
-    deterministic pass starts from that low-cut solution and moves only
-    clusters needed to remove upper-bound violations. Candidate moves are
-    ranked by hypergraph cut delta per unit of overload relief.
+    Production Phase 3 uses the compiled native balance legalizer and then
+    independently recomputes legality in Python. This historical algorithm is
+    retained only so small tests can check the native implementation's repair
+    semantics; it is never called by the production flow.
     """
 
     assignment = dict(cluster_assignment)
@@ -1609,6 +1618,231 @@ def _repair_multi_resource_balance(
     }
 
 
+def _parse_native_balance_report(
+    path: Path, tritonpart_input: Mapping[str, Any]
+) -> Dict[str, Any]:
+    if not path.is_file():
+        raise ValidationError("native TritonPart balance report is missing")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != "EMUFLOW_TRITONPART_BALANCE_REPORT_V1":
+        raise ValidationError("invalid native TritonPart balance report header")
+    status = None
+    saw_end = False
+    saw_error = False
+    metrics: Dict[str, int] = {}
+    loads: Dict[str, Dict[str, Dict[str, int]]] = {
+        kind: {} for kind in ("initial", "final", "allowed")
+    }
+    fpga_order = tritonpart_input["fpga_order"]
+    dimensions = tritonpart_input["vertex_dimensions"]
+
+    def report_integer(token: str) -> int:
+        try:
+            return int(token)
+        except ValueError as error:
+            raise ValidationError(
+                "native TritonPart balance report contains a non-integer"
+            ) from error
+
+    for line_index, line in enumerate(lines[1:], start=1):
+        fields = line.split()
+        if fields == ["END"]:
+            if line_index != len(lines) - 1:
+                raise ValidationError(
+                    "native TritonPart balance report has trailing records"
+                )
+            saw_end = True
+            break
+        if len(fields) == 2 and fields[0] == "STATUS":
+            if status is not None:
+                raise ValidationError(
+                    "native TritonPart balance report repeats status"
+                )
+            status = fields[1].lower()
+        elif len(fields) == 3 and fields[0] == "METRIC":
+            if fields[1] in metrics:
+                raise ValidationError(
+                    "native TritonPart balance report repeats metric"
+                )
+            value = report_integer(fields[2])
+            if value < 0:
+                raise ValidationError(
+                    "native TritonPart balance metric is negative"
+                )
+            metrics[fields[1]] = value
+        elif fields and fields[0] in {"INITIAL", "FINAL", "ALLOWED"}:
+            if len(fields) != len(dimensions) + 2:
+                raise ValidationError("invalid native balance load record")
+            part = report_integer(fields[1])
+            if part < 0 or part >= len(fpga_order):
+                raise ValidationError("native balance part index is invalid")
+            kind = fields[0].lower()
+            fpga_id = fpga_order[part]
+            if fpga_id in loads[kind]:
+                raise ValidationError(
+                    "native TritonPart balance report repeats load record"
+                )
+            record = {
+                dimension: report_integer(value)
+                for dimension, value in zip(dimensions, fields[2:])
+            }
+            if any(value < 0 for value in record.values()):
+                raise ValidationError(
+                    "native TritonPart balance load is negative"
+                )
+            loads[kind][fpga_id] = record
+        elif fields and fields[0] == "ERROR":
+            saw_error = True
+        else:
+            raise ValidationError("invalid native TritonPart balance record")
+    if not saw_end or status != "pass" or saw_error or set(metrics) != {
+        "moves", "direct_moves", "paired_sequences", "elapsed_milliseconds"
+    }:
+        raise ValidationError("native TritonPart balance report is incomplete")
+    expected_parts = set(fpga_order)
+    if any(set(records) != expected_parts for records in loads.values()):
+        raise ValidationError("native TritonPart balance loads are incomplete")
+    expected_allowed = tritonpart_input["balance_allowed_loads"]
+    if loads["allowed"] != expected_allowed:
+        raise ValidationError("native TritonPart balance limits changed")
+    for fpga in fpga_order:
+        for dimension in dimensions:
+            if loads["final"][fpga][dimension] > expected_allowed[fpga][dimension]:
+                raise ValidationError("native TritonPart balance result exceeds limit")
+    return {
+        **metrics,
+        "provider": "emuflow-native-tritonpart-balance-legalizer-v1",
+        "initial_loads": loads["initial"],
+        "final_loads": loads["final"],
+        "allowed_loads": loads["allowed"],
+    }
+
+
+def _native_balance_assignment_loads(
+    assignment: Mapping[str, str],
+    tritonpart_input: Mapping[str, Any],
+) -> Dict[str, Dict[str, int]]:
+    fpga_order = tritonpart_input["fpga_order"]
+    dimensions = tritonpart_input["vertex_dimensions"]
+    cluster_order = tritonpart_input["cluster_order"]
+    vertex_weights = tritonpart_input["vertex_weights"]
+    if (
+        len(cluster_order) != len(vertex_weights)
+        or set(assignment) != set(cluster_order)
+    ):
+        raise ValidationError(
+            "native TritonPart balance assignment coverage changed"
+        )
+    loads = {
+        fpga_id: {dimension: 0 for dimension in dimensions}
+        for fpga_id in fpga_order
+    }
+    for cluster_id, row in zip(
+        cluster_order,
+        vertex_weights,
+    ):
+        fpga_id = assignment[cluster_id]
+        if fpga_id not in loads or len(row) != len(dimensions):
+            raise ValidationError(
+                "native TritonPart balance assignment dimensions changed"
+            )
+        for dimension, value in zip(dimensions, row):
+            loads[fpga_id][dimension] += int(value)
+    return loads
+
+
+def _run_native_balance_legalizer(
+    candidate: Mapping[str, str],
+    tritonpart_input: Mapping[str, Any],
+    output_dir: Path,
+    input_solution: Path,
+    output_solution: Path,
+    *,
+    executable: Optional[str],
+    timeout_seconds: int,
+) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    limits_path = output_dir / "balance-limits.txt"
+    report_path = output_dir / "balance-repair-report.txt"
+    log_path = output_dir / "balance-repair.log"
+    fpga_order = tritonpart_input["fpga_order"]
+    dimensions = tritonpart_input["vertex_dimensions"]
+    allowed = tritonpart_input["balance_allowed_loads"]
+    limits_path.write_text(
+        "\n".join([
+            "EMUFLOW_TRITONPART_BALANCE_LIMITS_V1",
+            f"PARAM {len(fpga_order)} {len(dimensions)}",
+            *(
+                "CAP " + str(index) + " "
+                + " ".join(str(allowed[fpga][field]) for field in dimensions)
+                for index, fpga in enumerate(fpga_order)
+            ),
+            "END",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    resolved = resolve_native_executable(
+        "emuflow_tritonpart_balance_legalizer", executable
+    )
+    files = tritonpart_input["files"]
+    output_solution.unlink(missing_ok=True)
+    report_path.unlink(missing_ok=True)
+    command = [
+        resolved,
+        str((output_dir / files["hypergraph"]).resolve()),
+        str((output_dir / files["fixed"]).resolve()),
+        str((output_dir / files["edge_classes"]).resolve()),
+        str(limits_path.resolve()),
+        str(input_solution.resolve()),
+        str(output_solution.resolve()),
+        str(report_path.resolve()),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=output_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ValidationError(
+            f"native TritonPart balance repair exceeded {timeout_seconds} seconds"
+        ) from error
+    log_path.write_text(completed.stdout, encoding="utf-8")
+    if completed.returncode != 0:
+        detail = completed.stdout[-2000:]
+        raise ValidationError(
+            "native TritonPart balance legalizer failed with exit code "
+            f"{completed.returncode}: {detail}"
+        )
+    result = parse_tritonpart_solution(output_solution, tritonpart_input)
+    if set(result) != set(candidate):
+        raise ValidationError("native TritonPart balance assignment coverage changed")
+    summary = _parse_native_balance_report(report_path, tritonpart_input)
+    if summary["initial_loads"] != _native_balance_assignment_loads(
+        candidate, tritonpart_input
+    ):
+        raise ValidationError(
+            "native TritonPart balance initial loads do not match assignment"
+        )
+    if summary["final_loads"] != _native_balance_assignment_loads(
+        result, tritonpart_input
+    ):
+        raise ValidationError(
+            "native TritonPart balance final loads do not match assignment"
+        )
+    summary.update({
+        "executable": resolved,
+        "solution": output_solution.name,
+        "report": report_path.name,
+        "log": log_path.name,
+    })
+    return result, summary
+
+
 def run_tritonpart(
     ir: EmuIR,
     platform: Platform,
@@ -1625,6 +1859,7 @@ def run_tritonpart(
     num_best_initial_solutions: int = 10,
     repair_min_used_fpgas: bool = False,
     repair_balance: bool = False,
+    balance_legalizer: Optional[str] = None,
     persist_input_manifest: bool = True,
     run_unweighted_baseline: bool = False,
     defer_semantic_contract: bool = False,
@@ -1794,13 +2029,28 @@ def run_tritonpart(
         balance_repair = None
         repaired_solution_path = None
         if repair_balance:
+            repaired_tag = (
+                f"seed-{attempt_seed}"
+                if spec["mode"] == "timing_weighted"
+                else f"unweighted-baseline.seed-{attempt_seed}"
+            )
+            repaired_solution_path = output_dir / (
+                (
+                    f"partition.hgr.{repaired_tag}.repaired.part."
+                    f"{num_parts}"
+                )
+                if len(attempt_specs) > 1
+                else f"partition.hgr.repaired.part.{num_parts}"
+            )
             try:
-                candidate, balance_repair = _repair_multi_resource_balance(
+                candidate, balance_repair = _run_native_balance_legalizer(
                     candidate,
-                    clusters_artifact,
-                    platform,
-                    constraints,
                     tritonpart_input,
+                    output_dir,
+                    provider_solution_path,
+                    repaired_solution_path,
+                    executable=balance_legalizer,
+                    timeout_seconds=timeout_seconds,
                 )
             except ValidationError as error:
                 attempts.append(
@@ -1826,36 +2076,6 @@ def run_tritonpart(
                     }
                 )
                 continue
-            repaired_tag = (
-                f"seed-{attempt_seed}"
-                if spec["mode"] == "timing_weighted"
-                else f"unweighted-baseline.seed-{attempt_seed}"
-            )
-            repaired_solution_path = output_dir / (
-                (
-                    f"partition.hgr.{repaired_tag}.repaired.part."
-                    f"{num_parts}"
-                )
-                if len(attempt_specs) > 1
-                else (
-                    "partition.hgr.repaired.part."
-                    f"{num_parts}"
-                )
-            )
-            fpga_index = {
-                fpga_id: index
-                for index, fpga_id in enumerate(
-                    tritonpart_input["fpga_order"]
-                )
-            }
-            repaired_solution_path.write_text(
-                "".join(
-                    f"{fpga_index[candidate[cluster_id]]}\n"
-                    for cluster_id in tritonpart_input["cluster_order"]
-                ),
-                encoding="utf-8",
-            )
-            balance_repair["solution"] = repaired_solution_path.name
         repair_moves: List[Dict[str, Any]] = []
         if (
             repair_min_used_fpgas

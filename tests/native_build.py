@@ -166,6 +166,30 @@ def patron_refiner() -> Path:
 
 
 @lru_cache(maxsize=1)
+def tritonpart_balance_legalizer() -> Path:
+    compiler = (
+        shutil.which("c++")
+        or shutil.which("g++")
+        or shutil.which("clang++")
+    )
+    if compiler is None:
+        raise RuntimeError("a C++17 compiler is required for balance tests")
+    executable = Path(_BUILD_ROOT.name) / "emuflow_tritonpart_balance_legalizer"
+    subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            "-O2",
+            str(ROOT / "src/native/tritonpart_balance_legalizer.cpp"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    return executable
+
+
+@lru_cache(maxsize=1)
 def hop_partition_refiner() -> Path:
     compiler = (
         shutil.which("c++")

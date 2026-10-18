@@ -353,6 +353,7 @@ def run_phase3(
     tritonpart_num_best_initial_solutions: int = 10,
     tritonpart_repair_min_used_fpgas: bool = False,
     tritonpart_repair_balance: bool = False,
+    tritonpart_balance_legalizer: Optional[str] = None,
     tritonpart_run_unweighted_baseline: bool = False,
     repart: Optional[str] = None,
     repart_solution: Optional[Path] = None,
@@ -560,6 +561,7 @@ def run_phase3(
             ),
             repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
             repair_balance=tritonpart_repair_balance,
+            balance_legalizer=tritonpart_balance_legalizer,
             run_unweighted_baseline=tritonpart_run_unweighted_baseline,
             persist_input_manifest=retain_diagnostics,
         )
@@ -630,6 +632,7 @@ def run_phase3(
                 ),
                 repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
                 repair_balance=tritonpart_repair_balance,
+                balance_legalizer=tritonpart_balance_legalizer,
                 run_unweighted_baseline=(
                     tritonpart_run_unweighted_baseline
                 ),

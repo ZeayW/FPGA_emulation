@@ -24,7 +24,12 @@ for binary in "$native_base"/bin/*; do
   test -e "$binary" || continue
   ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")"
 done
-for tool in tlr_router patron_refiner tdm_slot_optimizer; do
+for tool in \
+  tlr_router \
+  patron_refiner \
+  tdm_slot_optimizer \
+  tritonpart_balance_legalizer
+do
   target="$runtime_dir/bin/emuflow_$tool"
   rm -f "$target"
   c++ -std=c++17 -O3 -pthread "$source_dir/src/native/$tool.cpp" -o "$target"

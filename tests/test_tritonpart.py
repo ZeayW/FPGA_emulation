@@ -18,13 +18,15 @@ from emuflow.platform import Platform
 from emuflow.tritonpart import (
     TRITONPART_INPUT_SCHEMA,
     _repair_min_used_fpgas,
-    _repair_multi_resource_balance,
+    _repair_multi_resource_balance_reference,
+    _run_native_balance_legalizer,
     _tritonpart_ubfactor_percent_points,
     export_tritonpart_inputs,
     parse_tritonpart_solution,
     run_tritonpart,
 )
 from emuflow.yosys import import_yosys_json
+from tests.native_build import tritonpart_balance_legalizer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +37,206 @@ FOUR_FPGA_PLATFORM_PATH = (
 
 
 class TritonPartTest(unittest.TestCase):
+    @staticmethod
+    def _write_native_balance_case(
+        root: Path,
+        weights,
+        initial,
+        allowed,
+        fixed=None,
+    ):
+        dimensions = ["cells", "lut"]
+        (root / "partition.hgr").write_text(
+            "\n".join([
+                f"1 {len(weights)} 11",
+                f"1 1 {len(weights)}",
+                *(" ".join(str(value) for value in row) for row in weights),
+                "",
+            ]),
+            encoding="utf-8",
+        )
+        (root / "partition.fix").write_text(
+            "\n".join(str(value) for value in (fixed or [-1] * len(weights)))
+            + "\n",
+            encoding="utf-8",
+        )
+        (root / "partition.edge-classes").write_text("0\n", encoding="utf-8")
+        solution = root / "partition.hgr.part.2"
+        solution.write_text(
+            "\n".join(str(value) for value in initial) + "\n",
+            encoding="utf-8",
+        )
+        artifact = {
+            "cluster_order": [f"c{index}" for index in range(len(weights))],
+            "fpga_order": ["fpga0", "fpga1"],
+            "vertex_dimensions": dimensions,
+            "vertex_weights": weights,
+            "balance_allowed_loads": {
+                f"fpga{part}": dict(zip(dimensions, row))
+                for part, row in enumerate(allowed)
+            },
+            "files": {
+                "hypergraph": "partition.hgr",
+                "fixed": "partition.fix",
+                "edge_classes": "partition.edge-classes",
+            },
+        }
+        candidate = {
+            cluster: f"fpga{part}"
+            for cluster, part in zip(artifact["cluster_order"], initial)
+        }
+        return artifact, candidate, solution
+
+    def test_native_balance_legalizer_executes_direct_move(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact, candidate, solution = self._write_native_balance_case(
+                root,
+                [[1, 2], [1, 1], [1, 1]],
+                [0, 0, 1],
+                [[2, 2], [2, 2]],
+            )
+            repaired, report = _run_native_balance_legalizer(
+                candidate,
+                artifact,
+                root,
+                solution,
+                root / "repaired.part.2",
+                executable=str(tritonpart_balance_legalizer()),
+                timeout_seconds=30,
+            )
+        self.assertEqual(report["direct_moves"], 1)
+        self.assertEqual(report["paired_sequences"], 0)
+        self.assertEqual(report["moves"], 1)
+        self.assertEqual(repaired["c1"], "fpga1")
+
+    def test_native_balance_legalizer_preserves_legal_solution(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact, candidate, solution = self._write_native_balance_case(
+                root,
+                [[1, 2], [1, 1], [1, 1]],
+                [0, 1, 1],
+                [[2, 2], [2, 2]],
+            )
+            repaired, report = _run_native_balance_legalizer(
+                candidate,
+                artifact,
+                root,
+                solution,
+                root / "repaired.part.2",
+                executable=str(tritonpart_balance_legalizer()),
+                timeout_seconds=30,
+            )
+        self.assertEqual(report["moves"], 0)
+        self.assertEqual(repaired, candidate)
+
+    def test_native_balance_legalizer_fails_without_relaxing_fixed_case(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact, candidate, solution = self._write_native_balance_case(
+                root,
+                [[1, 2], [1, 1], [1, 1]],
+                [0, 0, 1],
+                [[2, 2], [2, 2]],
+                fixed=[0, 0, -1],
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "native TritonPart balance legalizer failed"
+            ):
+                _run_native_balance_legalizer(
+                    candidate,
+                    artifact,
+                    root,
+                    solution,
+                    root / "repaired.part.2",
+                    executable=str(tritonpart_balance_legalizer()),
+                    timeout_seconds=30,
+                )
+            report = (root / "balance-repair-report.txt").read_text()
+        self.assertIn("STATUS FAILED", report)
+        self.assertIn("ALLOWED 0 2 2", report)
+        self.assertIn("ALLOWED 1 2 2", report)
+
+    def test_native_balance_legalizer_rejects_false_reported_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact, candidate, solution = self._write_native_balance_case(
+                root,
+                [[1, 2], [1, 1], [1, 1]],
+                [0, 1, 1],
+                [[2, 2], [2, 2]],
+            )
+            real_run = subprocess.run
+
+            def tampering_run(command, **kwargs):
+                completed = real_run(command, **kwargs)
+                report_path = Path(command[-1])
+                report_path.write_text(
+                    report_path.read_text().replace(
+                        "FINAL 0 1 2", "FINAL 0 0 0"
+                    )
+                )
+                return completed
+
+            with mock.patch(
+                "emuflow.tritonpart.subprocess.run",
+                side_effect=tampering_run,
+            ), self.assertRaisesRegex(
+                ValidationError, "final loads do not match assignment"
+            ):
+                _run_native_balance_legalizer(
+                    candidate,
+                    artifact,
+                    root,
+                    solution,
+                    root / "repaired.part.2",
+                    executable=str(tritonpart_balance_legalizer()),
+                    timeout_seconds=30,
+                )
+
+    def test_native_balance_legalizer_executes_paired_exchange(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "partition.hgr").write_text(
+                "1 4 11\n1 1 3\n1 2\n1 4\n1 1\n1 3\n",
+                encoding="utf-8",
+            )
+            (root / "partition.fix").write_text("-1\n" * 4, encoding="utf-8")
+            (root / "partition.edge-classes").write_text("0\n", encoding="utf-8")
+            solution = root / "partition.hgr.part.2"
+            solution.write_text("0\n0\n1\n1\n", encoding="utf-8")
+            artifact = {
+                "cluster_order": ["c0", "c1", "c2", "c3"],
+                "fpga_order": ["fpga0", "fpga1"],
+                "vertex_dimensions": ["cells", "lut"],
+                "vertex_weights": [[1, 2], [1, 4], [1, 1], [1, 3]],
+                "balance_allowed_loads": {
+                    "fpga0": {"cells": 2, "lut": 5},
+                    "fpga1": {"cells": 2, "lut": 5},
+                },
+                "files": {
+                    "hypergraph": "partition.hgr",
+                    "fixed": "partition.fix",
+                    "edge_classes": "partition.edge-classes",
+                },
+            }
+            repaired, report = _run_native_balance_legalizer(
+                {"c0": "fpga0", "c1": "fpga0", "c2": "fpga1", "c3": "fpga1"},
+                artifact,
+                root,
+                solution,
+                root / "repaired.part.2",
+                executable=str(tritonpart_balance_legalizer()),
+                timeout_seconds=30,
+            )
+        self.assertEqual(report["provider"], "emuflow-native-tritonpart-balance-legalizer-v1")
+        self.assertEqual(report["paired_sequences"], 1)
+        self.assertEqual(report["moves"], 2)
+        self.assertEqual(repaired, {
+            "c0": "fpga1", "c1": "fpga0", "c2": "fpga0", "c3": "fpga1"
+        })
+
     def setUp(self) -> None:
         self.ir = import_yosys_json(
             ROOT / "examples" / "yosys" / "counter.json",
@@ -215,7 +417,7 @@ class TritonPartTest(unittest.TestCase):
             "c2": "fpga1",
             "c3": "fpga1",
         }
-        repaired, report = _repair_multi_resource_balance(
+        repaired, report = _repair_multi_resource_balance_reference(
             assignment,
             clusters,
             self.platform,
@@ -275,7 +477,7 @@ class TritonPartTest(unittest.TestCase):
             )
             for index, cluster_id in enumerate(cluster_order)
         }
-        repaired, report = _repair_multi_resource_balance(
+        repaired, report = _repair_multi_resource_balance_reference(
             assignment,
             clusters,
             platform,
@@ -319,7 +521,7 @@ class TritonPartTest(unittest.TestCase):
             cluster_id: "fpga0" if index < 4 else "fpga1"
             for index, cluster_id in enumerate(cluster_order)
         }
-        repaired, report = _repair_multi_resource_balance(
+        repaired, report = _repair_multi_resource_balance_reference(
             assignment,
             clusters,
             self.platform,
@@ -396,7 +598,7 @@ class TritonPartTest(unittest.TestCase):
                 for index, cluster_id in enumerate(cluster_order)
             ]
         }
-        repaired, report = _repair_multi_resource_balance(
+        repaired, report = _repair_multi_resource_balance_reference(
             {"x": "fpga0", "y": "fpga1", "z": "fpga2"},
             clusters,
             platform,
@@ -587,7 +789,7 @@ class TritonPartTest(unittest.TestCase):
                 cluster["id"]: "fpga0"
                 for cluster in self.clusters["clusters"]
             }
-            repaired, summary = _repair_multi_resource_balance(
+            repaired, summary = _repair_multi_resource_balance_reference(
                 raw,
                 self.clusters,
                 self.platform,
@@ -635,7 +837,7 @@ class TritonPartTest(unittest.TestCase):
                 cluster["id"]: "fpga0"
                 for cluster in self.clusters["clusters"]
             }
-            repaired, summary = _repair_multi_resource_balance(
+            repaired, summary = _repair_multi_resource_balance_reference(
                 raw,
                 self.clusters,
                 self.platform,
@@ -894,11 +1096,12 @@ class TritonPartTest(unittest.TestCase):
 
             repair_calls = 0
 
-            def fake_repair(candidate, *_args):
+            def fake_repair(candidate, *_args, **_kwargs):
                 nonlocal repair_calls
                 repair_calls += 1
                 if repair_calls == 1:
                     raise ValidationError("no legal repair move")
+                Path(_args[3]).write_bytes(Path(_args[2]).read_bytes())
                 return candidate, {"moves": 0}
 
             with (
@@ -907,7 +1110,7 @@ class TritonPartTest(unittest.TestCase):
                     side_effect=fake_openroad,
                 ),
                 mock.patch(
-                    "emuflow.tritonpart._repair_multi_resource_balance",
+                    "emuflow.tritonpart._run_native_balance_legalizer",
                     side_effect=fake_repair,
                 ),
             ):
@@ -943,7 +1146,11 @@ class TritonPartTest(unittest.TestCase):
                 json.dumps(self.ir.to_dict()), encoding="utf-8"
             )
 
+            real_run = subprocess.run
+
             def fake_openroad(command, **kwargs):
+                if command[0] != "/fake/openroad":
+                    return real_run(command, **kwargs)
                 run_directory = Path(kwargs["cwd"])
                 tritonpart_input = json.loads(
                     (run_directory / "tritonpart_input.json").read_text()
@@ -970,6 +1177,9 @@ class TritonPartTest(unittest.TestCase):
                     provider="tritonpart",
                     cut_mode="sequential-only",
                     openroad="/fake/openroad",
+                    tritonpart_balance_legalizer=(
+                        str(tritonpart_balance_legalizer())
+                    ),
                     tritonpart_repair_balance=True,
                     retain_diagnostics=True,
                 )

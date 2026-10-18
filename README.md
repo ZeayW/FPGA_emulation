@@ -369,6 +369,16 @@ capacity-proportional design share (27.5% of design load per identical FPGA
 in a four-way run). Capacity and balance are separate upper bounds.
 Indivisible/fixed clusters, repair passes, and validators never automatically
 relax the requested tolerance; infeasible integer bounds fail explicitly.
+OpenROAD/TritonPart can return a best-effort partition when its randomized
+initializer does not produce enough multidimensionally balanced candidates.
+When balance repair is enabled, Phase 3 therefore invokes the compiled
+`emuflow_tritonpart_balance_legalizer` directly on the native hMetis graph and
+solution. It uses exact integer bounds, moves no fixed vertex, and either emits
+a legal assignment or fails the seed explicitly; it cannot widen a capacity or
+balance bound. Its compact `balance-repair-report.txt` records RUNNING/PASS/FAILED
+state, initial/final/allowed loads, and direct or paired move counts. Python does
+not perform the production graph search: it parses the result and independently
+recomputes the final per-FPGA resource loads before Phase 3 can publish it.
 Design and communication logic consume the device resources. FPGA-internal path delays come from the physical backend
 and STA.
 RapidWright checks the whole-device budget after transport mapping, before

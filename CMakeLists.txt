@@ -66,6 +66,11 @@ option(
   ON
 )
 option(
+  EMUFLOW_BUILD_TRITONPART_BALANCE_LEGALIZER
+  "Build the native strict multi-resource TritonPart legalizer"
+  ON
+)
+option(
   EMUFLOW_BUILD_MFSPART_COARSENER
   "Build the in-tree MFSPart-style multilevel affinity coarsener"
   ON
@@ -653,6 +658,22 @@ if(EMUFLOW_BUILD_PATRON_REFINER)
   target_compile_options(emuflow_patron_refiner PRIVATE -O3)
   set_target_properties(
     emuflow_patron_refiner
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_TRITONPART_BALANCE_LEGALIZER)
+  add_executable(
+    emuflow_tritonpart_balance_legalizer
+    "${CMAKE_SOURCE_DIR}/src/native/tritonpart_balance_legalizer.cpp"
+  )
+  target_compile_features(
+    emuflow_tritonpart_balance_legalizer PRIVATE cxx_std_17
+  )
+  target_compile_options(emuflow_tritonpart_balance_legalizer PRIVATE -O3)
+  set_target_properties(
+    emuflow_tritonpart_balance_legalizer
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -1324,6 +1345,13 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_mfspart_legalizer_cli
       COMMAND "$<TARGET_FILE:emuflow_mfspart_legalizer>" --help
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_TRITONPART_BALANCE_LEGALIZER)
+    add_test(
+      NAME emuflow_tritonpart_balance_legalizer_cli
+      COMMAND "$<TARGET_FILE:emuflow_tritonpart_balance_legalizer>" --help
     )
   endif()
 
