@@ -17,7 +17,6 @@ from emuflow.phase3 import run_phase3
 from emuflow.platform import Platform
 from emuflow.tritonpart import (
     TRITONPART_INPUT_SCHEMA,
-    _effective_balance_percent,
     _repair_min_used_fpgas,
     _repair_multi_resource_balance,
     _tritonpart_ubfactor_percent_points,
@@ -191,27 +190,9 @@ class TritonPartTest(unittest.TestCase):
             )
             self.assertNotIn("semantic_contract", assignment)
 
-    def test_atomic_balance_relaxation_is_relative_to_target_block(self) -> None:
-        requested, effective = _effective_balance_percent(
-            [[37], [21], [21], [21]],
-            [
-                {"fixed_fpga": None},
-                {"fixed_fpga": None},
-                {"fixed_fpga": None},
-                {"fixed_fpga": None},
-            ],
-            ["fpga0", "fpga1", "fpga2", "fpga3"],
-            [0.25, 0.25, 0.25, 0.25],
-            0.10,
-        )
-        self.assertEqual(requested, 10.0)
-        self.assertAlmostEqual(effective, 48.01)
+    def test_balance_tolerance_translates_to_target_percentage_points(self) -> None:
         self.assertAlmostEqual(
-            _tritonpart_ubfactor_percent_points(
-                [0.25, 0.25, 0.25, 0.25],
-                effective,
-            ),
-            12.0025,
+            _tritonpart_ubfactor_percent_points([0.25] * 4, 10.0), 2.5
         )
 
     def test_balance_repair_uses_two_move_exchange_when_parts_are_full(self) -> None:

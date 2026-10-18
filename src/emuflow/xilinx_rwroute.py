@@ -512,6 +512,7 @@ def export_rwroute_input(
     placement_value: Optional[Mapping[str, Any]] = None,
     source_sha256: Optional[Mapping[str, str]] = None,
     virtual_io_contract: Optional[Mapping[str, Any]] = None,
+    resource_limits: Optional[Mapping[str, int]] = None,
 ) -> Dict[str, Any]:
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     packed = read_json(packed_path) if packed_value is None else packed_value
@@ -635,6 +636,10 @@ def export_rwroute_input(
         for index, name in enumerate(sorted([*route_cells, *io_rows]))
     }
     lines = _TsvSpool(output_path)
+    for field, count in sorted((resource_limits or {}).items()):
+        if field not in {"lut", "ff", "bram18k", "dsp48", "carry8", "uram288"} or isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValidationError("RWRoute resource budget is invalid")
+        lines.append(f"META\tresource_limit_{field}\t{count}")
     for row in (
         f"META\tpart\t{placement['part']}",
         f"META\tmapped_sha256\t{digests['mapped_sha256']}",

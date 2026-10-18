@@ -11,7 +11,7 @@
     {
       "id": "fpga0",
       "part": "xcvu19p-fsva3824-2-e",
-      "utilization_limit": 0.75,
+      "utilization_limit": 0.25,
       "capacity": {
         "lut": 4085760,
         "ff": 8171520,
@@ -26,7 +26,7 @@
     {
       "id": "fpga1",
       "part": "xcvu19p-fsva3824-2-e",
-      "utilization_limit": 0.75,
+      "utilization_limit": 0.25,
       "capacity": {
         "lut": 4085760,
         "ff": 8171520,
@@ -41,7 +41,7 @@
     {
       "id": "fpga2",
       "part": "xcvu19p-fsva3824-2-e",
-      "utilization_limit": 0.75,
+      "utilization_limit": 0.25,
       "capacity": {
         "lut": 4085760,
         "ff": 8171520,
@@ -56,7 +56,7 @@
     {
       "id": "fpga3",
       "part": "xcvu19p-fsva3824-2-e",
-      "utilization_limit": 0.75,
+      "utilization_limit": 0.25,
       "capacity": {
         "lut": 4085760,
         "ff": 8171520,

@@ -355,10 +355,30 @@ capacity, topology, and delay definitions.
 
 Device capacity comes from the matching RapidWright device/provider inventory
 for `xcvu19p-fsva3824-2-e`, with LUT, FF, BRAM18K, DSP48, carry, and URAM units
-kept distinct. The presets apply an explicit `utilization_limit` of 0.75;
-this headroom is a configuration choice. Design and communication logic consume
-the device resources. FPGA-internal path delays come from the physical backend
+kept distinct. The default four-FPGA preset applies a strict
+`utilization_limit` of **0.25 per FPGA**, measured against each device's raw
+capacity independently for LUT, FF, BRAM18K, DSP48, CARRY8, and URAM288.
+The two-FPGA comparison preset retains its explicit 0.75 limit.
+The default partition `balance_tolerance` is **0.1**, relative to the
+capacity-proportional design share (27.5% of design load per identical FPGA
+in a four-way run). Capacity and balance are separate upper bounds.
+Indivisible/fixed clusters, repair passes, and validators never automatically
+relax the requested tolerance; infeasible integer bounds fail explicitly.
+Design and communication logic consume the device resources. FPGA-internal path delays come from the physical backend
 and STA.
+RapidWright checks the whole-device budget after transport mapping, before
+routing the materialized circuit, and against its final occupied resources.
+DSP component expansion counts one DSP site, paired LUT halves count one CLB
+LUT, and BRAM36 consumes two BRAM18K units. Clock-prefilter logic is included.
+Completed partition assembly rejects missing or mismatched resource-budget
+evidence. SLR window selection and OpenPARF density do not redefine the
+whole-device utilization denominator or relax its limit.
+
+The prior NVDLA partition used a requested/effective tolerance of 2.1 and
+75% device budgets; its fpga0/fpga2 LUT loads exceed the new 25% contract.
+Those Phase 3–7 outputs do not qualify the strict configuration. NVDLA
+validation of 25%/0.1 is pending; original Phase 1–2 inputs remain reusable
+under the explicitly authorized continuation without resynthesis.
 
 The four-FPGA topology connects each of `fpga0` and `fpga1` to both `fpga2` and
 `fpga3`. There is no direct `fpga0`–`fpga1` or `fpga2`–`fpga3` link:

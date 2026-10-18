@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 from .errors import ValidationError
 from .io import read_json
 from .ir import EmuIR
+from .partition_limits import strict_balance_limits
 from .platform import FpgaNode, Platform
 from .resources import RESOURCE_FIELDS, ResourceVector
 from .combinational_cut import (
@@ -1647,96 +1648,15 @@ def validate_cluster_assignment_balance(
         dimension: sum(item[dimension] for item in weights.values())
         for dimension in dimensions
     }
-    base_balance: Dict[str, Dict[str, float]] = {}
-    for dimension in dimensions:
-        if dimension == "cells":
-            shares = {
-                fpga_id: 1.0 / len(fpga_ids) for fpga_id in fpga_ids
-            }
-        else:
-            capacity_total = sum(
-                fpga.effective_capacity[dimension]
-                for fpga in partition_fpgas
-            )
-            shares = {
-                fpga.id: (
-                    fpga.effective_capacity[dimension] / capacity_total
-                )
-                for fpga in platform.fpgas
-            }
-        base_balance[dimension] = shares
-
-    required_ratio = {dimension: 0.0 for dimension in dimensions}
-    for cluster in clusters:
-        for dimension in dimensions:
-            total = totals[dimension]
-            if not total:
-                continue
-            fixed_fpga = cluster.get("fixed_fpga")
-            target_share = (
-                base_balance[dimension][fixed_fpga]
-                if fixed_fpga is not None
-                else max(base_balance[dimension].values())
-            )
-            required_ratio[dimension] = max(
-                required_ratio[dimension],
-                weights[cluster["id"]][dimension]
-                / total
-                / target_share
-                - 1.0,
-            )
-    fixed_loads = {
-        fpga_id: {dimension: 0 for dimension in dimensions}
-        for fpga_id in fpga_ids
-    }
-    for cluster in clusters:
-        fixed_fpga = cluster.get("fixed_fpga")
-        if fixed_fpga is None:
-            continue
-        for dimension in dimensions:
-            fixed_loads[fixed_fpga][dimension] += weights[
-                cluster["id"]
-            ][dimension]
-    for fpga_id in fpga_ids:
-        for dimension in dimensions:
-            total = totals[dimension]
-            if total:
-                required_ratio[dimension] = max(
-                    required_ratio[dimension],
-                    fixed_loads[fpga_id][dimension]
-                    / total
-                    / base_balance[dimension][fpga_id]
-                    - 1.0,
-                )
-
     tolerance_overrides = requested_tolerance_by_dimension or {}
     requested_percent_by_dimension = {
-        dimension: float(
-            tolerance_overrides.get(dimension, requested_tolerance)
-        )
-        * 100.0
+        dimension: float(tolerance_overrides.get(dimension, requested_tolerance)) * 100.0
         for dimension in dimensions
     }
-    if tolerance_overrides:
-        effective_percent_by_dimension = {
-            dimension: max(
-                requested_percent_by_dimension[dimension],
-                max(0.0, required_ratio[dimension] * 100.0) + 0.01,
-            )
-            for dimension in dimensions
-        }
-    else:
-        # Preserve the v1 contract: without an explicit per-dimension policy,
-        # an indivisible cluster in any resource relaxes the shared tolerance
-        # for every dimension.
-        shared_effective_percent = max(
-            requested_tolerance * 100.0,
-            max(0.0, max(required_ratio.values(), default=0.0) * 100.0)
-            + 0.01,
-        )
-        effective_percent_by_dimension = {
-            dimension: shared_effective_percent for dimension in dimensions
-        }
+    # Constraints are a contract, including when clusters are indivisible.
+    # Infeasible assignments fail instead of changing the caller's tolerance.
+    effective_percent_by_dimension = dict(requested_percent_by_dimension)
+    limits = strict_balance_limits(partition_fpgas, totals, requested_tolerance, tolerance_overrides)
     loads = {
         fpga_id: {dimension: 0 for dimension in dimensions}
         for fpga_id in fpga_ids
@@ -1757,14 +1677,14 @@ def validate_cluster_assignment_balance(
             if not total:
                 continue
             actual_share = loads[fpga_id][dimension] / total
-            target_share = base_balance[dimension][fpga_id]
-            allowed_share = target_share * (
-                1.0 + effective_percent_by_dimension[dimension] / 100.0
+            allowed = limits[fpga_id][dimension]
+            allowed_share = allowed / total
+            allowed_loads[fpga_id][dimension] = allowed
+            ratio = loads[fpga_id][dimension] / allowed if allowed else (
+                math.inf if loads[fpga_id][dimension] else 0.0
             )
-            allowed_loads[fpga_id][dimension] = total * allowed_share
-            ratio = actual_share / allowed_share
             maximum_ratio = max(maximum_ratio, ratio)
-            if ratio > 1.0 + 1e-9:
+            if loads[fpga_id][dimension] > allowed:
                 violations.append(
                     {
                         "fpga": fpga_id,
@@ -1792,11 +1712,7 @@ def validate_cluster_assignment_balance(
         "effective_balance_percent_by_dimension": (
             effective_percent_by_dimension
         ),
-        "balance_auto_relaxed": any(
-            effective_percent_by_dimension[dimension]
-            > requested_percent_by_dimension[dimension] + 1e-9
-            for dimension in dimensions
-        ),
+        "balance_auto_relaxed": False,
         "balance_dimensions": dimensions,
         "balance_loads": loads,
         "balance_allowed_loads": allowed_loads,

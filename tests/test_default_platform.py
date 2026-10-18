@@ -62,7 +62,7 @@ class DefaultPlatformTest(unittest.TestCase):
             self.assertEqual(read_json(path), read_json(ROOT / "platforms/virtual" / path.name))
             for fpga in Platform.load(path).fpgas:
                 self.assertEqual(fpga.part, provider["device"]["part"])
-                self.assertEqual(fpga.utilization_limit, 0.75)
+                self.assertEqual(fpga.utilization_limit, 0.25 if count == 4 else 0.75)
                 for board_unit, provider_unit in mapping.items():
                     self.assertEqual(fpga.capacity[board_unit], resources[provider_unit])
 

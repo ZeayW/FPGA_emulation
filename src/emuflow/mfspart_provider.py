@@ -32,6 +32,7 @@ from .partition import (
     validate_cluster_assignment_balance,
 )
 from .partition_hops import _shortest_hop_distances
+from .partition_limits import strict_balance_limits, validate_indivisible_limits
 from .platform import Platform
 from .resources import RESOURCE_FIELDS
 
@@ -264,86 +265,17 @@ def _balanced_capacities(
         dimension: sum(node["weights"][dimension] for node in nodes)
         for dimension in dimensions
     }
-    shares: Dict[str, Dict[str, float]] = {}
-    for dimension in dimensions:
-        if dimension == "cells":
-            shares[dimension] = {part: 1.0 / len(parts) for part in parts}
-        else:
-            capacity_total = sum(
-                fpga.effective_capacity[dimension] for fpga in platform.fpgas
-            )
-            shares[dimension] = {
-                fpga.id: fpga.effective_capacity[dimension] / capacity_total
-                for fpga in platform.fpgas
-            }
-    required_ratio = {dimension: 0.0 for dimension in dimensions}
-    fixed_loads = {
-        part: {dimension: 0 for dimension in dimensions} for part in parts
-    }
-    for node in nodes:
-        fixed_part = node["fixed_part"]
-        for dimension in dimensions:
-            target_share = (
-                shares[dimension][parts[fixed_part]]
-                if fixed_part >= 0
-                else max(shares[dimension].values())
-            )
-            required_ratio[dimension] = max(
-                required_ratio[dimension],
-                node["weights"][dimension]
-                / totals[dimension]
-                / target_share
-                - 1.0,
-            )
-            if fixed_part >= 0:
-                fixed_loads[parts[fixed_part]][dimension] += node["weights"][
-                    dimension
-                ]
-    for part in parts:
-        for dimension in dimensions:
-            required_ratio[dimension] = max(
-                required_ratio[dimension],
-                fixed_loads[part][dimension]
-                / totals[dimension]
-                / shares[dimension][part]
-                - 1.0,
-            )
     overrides = constraints.get("balance_tolerance_by_dimension", {})
-    requested = {
-        dimension: float(
-            overrides.get(dimension, constraints["balance_tolerance"])
-        )
+    effective = {
+        dimension: float(overrides.get(dimension, constraints["balance_tolerance"]))
         for dimension in dimensions
     }
-    if overrides:
-        effective = {
-            dimension: max(
-                requested[dimension], max(0.0, required_ratio[dimension]) + 0.0001
-            )
-            for dimension in dimensions
-        }
-    else:
-        shared = max(
-            constraints["balance_tolerance"],
-            max(0.0, max(required_ratio.values(), default=0.0)) + 0.0001,
-        )
-        effective = {dimension: shared for dimension in dimensions}
-    capacities: Dict[str, Dict[str, int]] = {}
-    fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
-    for part in parts:
-        capacities[part] = {}
-        for dimension in dimensions:
-            allowed = math.floor(
-                totals[dimension]
-                * shares[dimension][part]
-                * (1.0 + effective[dimension])
-                + 1e-9
-            )
-            if dimension != "cells":
-                allowed = min(
-                    allowed, fpga_by_id[part].effective_capacity[dimension]
-                )
-            capacities[part][dimension] = max(1, allowed)
+    capacities = strict_balance_limits(platform.fpgas, totals, constraints["balance_tolerance"], overrides)
+    validate_indivisible_limits(
+        ((str(node.get("id", node.get("cluster", index))), node["weights"],
+          parts[node["fixed_part"]] if node["fixed_part"] >= 0 else None)
+         for index, node in enumerate(nodes)), capacities,
+    )
     return capacities, effective
 
 

@@ -16,6 +16,7 @@ from .emuir_compact import source_metadata
 from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from .io import file_sha256, read_json, write_json
 from .physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA
+from .resource_budget import validate_device_resource_usage, validate_materialized_resource_counts
 from .sta import iter_sta_path_database_paths
 from .xilinx_netlist import (
     emit_xilinx_mapped_index,
@@ -309,6 +310,7 @@ def _run_rapidwright_routed_backend_tail(
         placement_value=placement_value,
         source_sha256=source_sha256,
         virtual_io_contract=virtual_io_contract,
+        resource_limits=runtime.get("resource_budget", {}).get("effective_capacity"),
     )
     route_path = output_dir / "route.json"
     route_value: Dict[str, Any] = {}
@@ -428,6 +430,24 @@ def _finish_rapidwright_routed_backend(
         key: value for key, value in route_report.items()
         if key not in {"output", "log", "reused"}
     }
+    resource_usage = None
+    if "resource_budget" in runtime:
+        counts = route_value.get("physical_resources")
+        if not isinstance(counts, Mapping):
+            raise ValidationError("routed physical resource inventory is missing")
+        validate_materialized_resource_counts(
+            mapped_report["audit"]["resource_totals"], counts,
+            route_value.get("materialization", {}),
+        )
+        resource_usage = {
+            "mapped": validate_device_resource_usage(
+                mapped_report["audit"]["resource_totals"], runtime["resource_budget"],
+                stage="post-transport-mapping",
+            ),
+            "physical": validate_device_resource_usage(
+                counts, runtime["resource_budget"], stage="post-physical-materialization",
+            ),
+        }
     routed_timing_path = output_dir / "routed-timing.json"
     routed_timing_value: Dict[str, Any] = {}
     routed_timing = build_xilinx_routed_timing(
@@ -534,6 +554,7 @@ def _finish_rapidwright_routed_backend(
     expansion_cells = (
         int(route_input_report["expanded_lut6_2_cells"])
         + 7 * int(route_input_report["transformed_dsp48e2_cells"])
+        + int(route_value.get("materialization", {}).get("fabric_prefilter_clock_gate_cells", 0))
     )
     virtual_io_cells = int(route_input_report.get("virtual_io_cells", 0))
     artifacts = {
@@ -557,6 +578,7 @@ def _finish_rapidwright_routed_backend(
         "schema": PHYSICAL_PARTITION_RESULT_SCHEMA,
         "status": "pass",
         "identity": {"backend": "rapidwright", "fpga": fpga, "part": part},
+        **({"resource_usage": resource_usage} if resource_usage is not None else {}),
         "cell_accounting": {
             "original_cells": original_cells,
             "transport_cells": transport_cells,
@@ -708,6 +730,11 @@ def run_rapidwright_partition_backend(
         output_dir / "mapped-netlist-report.json",
         index_path=mapped_index_path,
     )
+    if "resource_budget" in runtime:
+        validate_device_resource_usage(
+            mapped_report["audit"]["resource_totals"], runtime["resource_budget"],
+            stage="post-transport-mapping",
+        )
     mapped_value = (
         open_xilinx_mapped_index(mapped_index_path)
         if mapped_report.get("index") == str(mapped_index_path)
@@ -860,6 +887,11 @@ def run_rapidwright_openparf_native_candidate_backend(
     # SQLite is the sole production mapped-netlist representation.  Every
     # physical consumer shares this bounded read view; no graph-sized JSON is
     # serialized, parsed, or retained in the Phase 7 hot path.
+    if "resource_budget" in runtime:
+        validate_device_resource_usage(
+            mapped_report["audit"]["resource_totals"], runtime["resource_budget"],
+            stage="post-transport-mapping",
+        )
     mapped_value = open_xilinx_mapped_index(mapped_path)
     mapped_sha256 = mapped_report.get("output_sha256") or _sha256(mapped_path)
     atomic_source_path = output_dir / "openparf-atomic-source.json"

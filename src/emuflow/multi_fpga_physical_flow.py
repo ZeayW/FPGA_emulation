@@ -54,6 +54,7 @@ from .physical_backend import (
     validate_physical_partition_result,
 )
 from .platform import Platform
+from .resource_budget import validate_device_resource_usage
 from .rapidwright_provider import validate_rapidwright_provider_manifest
 from .runtime import (
     PHYSICAL_SUMMARY_SCHEMA,
@@ -1798,7 +1799,9 @@ def run_multi_fpga_physical_flow(
                 part=fpga_part,
                 merged_ir_path=merged_ir,
                 architecture_path=architecture_path,
-                runtime=runtime,
+                runtime={**runtime, "resource_budget": next(
+                    fpga.to_dict() for fpga in platform.fpgas if fpga.id == fpga_id
+                )},
                 original_cells=original_cells,
                 transport_cells=transport_cells,
                 output_dir=fpga_root / "rapidwright",
@@ -2064,6 +2067,20 @@ def _assemble_multi_fpga_physical_results(
                 raise ValidationError(
                     f"completed fixed differential I/O evidence for {record['fpga']} is missing"
                 )
+    if backend == "rapidwright":
+        fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
+        for record in records:
+            if record.get("active") is False:
+                continue
+            usage = record["physical_result"].get("resource_usage", {}).get("physical")
+            if not isinstance(usage, Mapping) or not isinstance(usage.get("counts"), Mapping):
+                raise ValidationError(f"physical resource budget evidence for {record['fpga']} is missing")
+            expected = validate_device_resource_usage(
+                usage["counts"], fpga_by_id[record["fpga"]].to_dict(),
+                stage="post-physical-materialization",
+            )
+            if dict(usage) != expected:
+                raise ValidationError(f"physical resource budget evidence for {record['fpga']} disagrees with platform")
     physical_fpgas = [
         physical_summary_item(record["physical_result"]) for record in records
     ]

@@ -70,6 +70,45 @@ public final class EmuFlowRWRoute {
     private static final Set<String> EXTENDED_LCB_CLOCK_NETS =
         ConcurrentHashMap.newKeySet();
 
+    /** Count occupied hardware resources, not transformed Java cell objects. */
+    private static JSONObject physicalResourceUsage(Design design) {
+        int luts = 0, ffs = 0, carries = 0, dsps = 0, brams = 0, urams = 0;
+        for (SiteInst siteInst : design.getSiteInsts()) {
+            Collection<Cell> siteCells = siteInst.getCells();
+            if (siteCells.isEmpty()) continue;
+            String kind = siteInst.getSiteTypeEnum().name();
+            if (kind.startsWith("SLICE")) {
+                int lutMask = 0;
+                boolean carry = false;
+                for (Cell cell : siteCells) {
+                    String bel = cell.getBEL().getName();
+                    // 5LUT/6LUT halves share one CLB_LUT capacity unit.
+                    if (bel.matches("[A-H][56]LUT")) lutMask |= 1 << (bel.charAt(0) - 'A');
+                    else if (bel.matches("[A-H]FF2?")) ffs++;
+                    else if (bel.equals("CARRY8")) carry = true;
+                }
+                luts += Integer.bitCount(lutMask);
+                if (carry) carries++;
+            } else if (kind.startsWith("DSP")) dsps++;
+            else if (kind.startsWith("RAMB")) brams += kind.contains("36") ? 2 : 1;
+            else if (kind.startsWith("URAM")) urams++;
+        }
+        return new JSONObject().put("lut", luts).put("ff", ffs)
+            .put("carry8", carries).put("dsp48", dsps)
+            .put("bram18k", brams).put("uram288", urams);
+    }
+
+    private static void checkResourceBudget(JSONObject usage, Map<String, String> metadata) {
+        for (String field : usage.keySet()) {
+            String limit = metadata.get("resource_limit_" + field);
+            if (limit != null && usage.getInt(field) > Integer.parseInt(limit)) {
+                throw new IllegalStateException("strict physical resource budget exceeded: "
+                    + field + " used=" + usage.getInt(field) + " allowed=" + limit
+                    + "; automatic relaxation is forbidden");
+            }
+        }
+    }
+
     private static void reportHeap(String stage) {
         Runtime runtime = Runtime.getRuntime();
         long used = runtime.totalMemory() - runtime.freeMemory();
@@ -1459,6 +1498,8 @@ public final class EmuFlowRWRoute {
             physicalCells++;
         }
 
+        checkResourceBudget(physicalResourceUsage(design), metadata);
+
         Map<String, String> iobNetNames = new HashMap<>();
         Map<String, SitePinInst> iobNetAnchors = new HashMap<>();
         Map<String, EDIFNet> blockRamLogicalPinOwners = new HashMap<>();
@@ -1830,6 +1871,9 @@ public final class EmuFlowRWRoute {
                 metadata.get("virtual_io_contract_sha256")
             )
             .put("rwroute_input_sha256", sha256(Path.of(args[0]))));
+        JSONObject physicalResources = physicalResourceUsage(design);
+        checkResourceBudget(physicalResources, metadata);
+        output.put("physical_resources", physicalResources);
         output.put("cells", cells.size());
         JSONArray virtualIO = new JSONArray();
         for (String safeName : iobNames) {

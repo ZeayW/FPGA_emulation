@@ -20,6 +20,7 @@ from .partition import (
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
 )
+from .partition_limits import strict_balance_limits, validate_indivisible_limits
 from .platform import Platform
 from .resources import RESOURCE_FIELDS
 from .sta import (
@@ -122,58 +123,6 @@ def _vertex_weights(
     ]
 
 
-def _effective_balance_percent(
-    vertex_weights: Sequence[Sequence[int]],
-    clusters: Sequence[Mapping[str, Any]],
-    fpga_ids: Sequence[str],
-    base_balance: Sequence[float],
-    requested_tolerance: float,
-) -> Tuple[float, float]:
-    totals = [
-        sum(weights[index] for weights in vertex_weights)
-        for index in range(len(vertex_weights[0]))
-    ]
-    required_ratio = 0.0
-    largest_target = max(base_balance)
-    for weights in vertex_weights:
-        for index, total in enumerate(totals):
-            if total:
-                required_ratio = max(
-                    required_ratio,
-                    weights[index] / total / largest_target - 1.0,
-                )
-
-    fixed_totals = [
-        [0] * len(totals) for _ in fpga_ids
-    ]
-    fpga_index = {fpga_id: index for index, fpga_id in enumerate(fpga_ids)}
-    for cluster, weights in zip(clusters, vertex_weights):
-        fixed_fpga = cluster["fixed_fpga"]
-        if fixed_fpga is None:
-            continue
-        target = fixed_totals[fpga_index[fixed_fpga]]
-        for index, weight in enumerate(weights):
-            target[index] += weight
-    for part_index, weights in enumerate(fixed_totals):
-        for dimension, total in enumerate(totals):
-            if total:
-                required_ratio = max(
-                    required_ratio,
-                    weights[dimension]
-                    / total
-                    / base_balance[part_index]
-                    - 1.0,
-                )
-
-    requested_percent = requested_tolerance * 100.0
-    required_percent = max(0.0, required_ratio * 100.0)
-    # TritonPart compares floating-point accumulated weights. A small,
-    # deterministic guard prevents an exactly tight atomic cluster from being
-    # rejected due to rounding.
-    effective_percent = max(requested_percent, required_percent + 0.01)
-    return requested_percent, effective_percent
-
-
 def _tritonpart_ubfactor_percent_points(
     base_balance: Sequence[float],
     effective_balance_percent: float,
@@ -185,9 +134,9 @@ def _tritonpart_ubfactor_percent_points(
     so the equivalent UBfactor is 2.5 percentage points, not 10.
 
     A single TritonPart UBfactor is shared by all partitions. Using the largest
-    target share guarantees that an auto-relaxed atomic cluster can be placed;
-    EmuFlow's independent validator still enforces the stricter relative
-    tolerance per FPGA after TritonPart returns.
+    target share supplies the solver's scalar envelope; EmuFlow's strict
+    integer bounds and independent validator enforce every resource and FPGA
+    without relaxing the requested tolerance.
     """
 
     return max(base_balance) * effective_balance_percent
@@ -286,40 +235,20 @@ def export_tritonpart_inputs(
     weights = [_vertex_weights(cluster, resource_fields) for cluster in clusters]
     base_balance = _capacity_base_balance(partition_fpgas, resource_fields)
     fpga_ids = [fpga.id for fpga in partition_fpgas]
-    requested_balance, effective_balance = _effective_balance_percent(
-        weights,
-        clusters,
-        fpga_ids,
-        base_balance,
-        constraints["balance_tolerance"],
+    tolerances = constraints.get("balance_tolerance_by_dimension", {})
+    requested_balance = constraints["balance_tolerance"] * 100.0
+    effective_balance = max(
+        tolerances.get(field, constraints["balance_tolerance"]) * 100.0
+        for field in dimensions
     )
-    tritonpart_ubfactor = _tritonpart_ubfactor_percent_points(
-        base_balance,
-        effective_balance,
+    tritonpart_ubfactor = _tritonpart_ubfactor_percent_points(base_balance, effective_balance)
+    totals = {field: sum(row[index] for row in weights)
+              for index, field in enumerate(dimensions)}
+    limits = strict_balance_limits(partition_fpgas, totals, constraints["balance_tolerance"], tolerances)
+    validate_indivisible_limits(
+        ((cluster["id"], dict(zip(dimensions, row)), cluster.get("fixed_fpga"))
+         for cluster, row in zip(clusters, weights)), limits,
     )
-
-    for dimension_index, field in enumerate(resource_fields, start=1):
-        total = sum(item[dimension_index] for item in weights)
-        capacity = sum(
-            fpga.effective_capacity[field] for fpga in partition_fpgas
-        )
-        if total > capacity:
-            raise ValidationError(
-                f"total {field} demand {total} exceeds effective platform "
-                f"capacity {capacity}"
-            )
-    for cluster, item_weights in zip(clusters, weights):
-        if not any(
-            all(
-                item_weights[index]
-                <= fpga.effective_capacity[field]
-                for index, field in enumerate(resource_fields, start=1)
-            )
-            for fpga in partition_fpgas
-        ):
-            raise ValidationError(
-                f"atomic cluster {cluster['id']!r} cannot fit any FPGA"
-            )
 
     vertex_number = {
         cluster["id"]: index for index, cluster in enumerate(clusters, start=1)
@@ -455,7 +384,7 @@ def export_tritonpart_inputs(
         "requested_balance_percent": requested_balance,
         "effective_balance_percent": effective_balance,
         "tritonpart_ubfactor_percent_points": tritonpart_ubfactor,
-        "balance_auto_relaxed": effective_balance > requested_balance + 1e-9,
+        "balance_auto_relaxed": False,
         "search_effort": {
             "num_initial_solutions": num_initial_solutions,
             "num_best_initial_solutions": num_best_initial_solutions,
@@ -686,43 +615,10 @@ def _repair_multi_resource_balance(
     tolerance_overrides = constraints.get(
         "balance_tolerance_by_dimension", {}
     )
-    if tolerance_overrides:
-        cluster_records = {
-            cluster["id"]: cluster
-            for cluster in clusters_artifact["clusters"]
-        }
-        effective_ratio_by_dimension = []
-        for dimension_index, dimension in enumerate(dimensions):
-            requested = float(
-                tolerance_overrides.get(
-                    dimension, constraints["balance_tolerance"]
-                )
-            )
-            required = 0.0
-            largest_target = max(base_balance[dimension_index])
-            total = totals[dimension_index]
-            if total:
-                for cluster_id, weights in zip(
-                    cluster_order, vertex_weights
-                ):
-                    fixed_fpga = cluster_records[cluster_id]["fixed_fpga"]
-                    target_share = (
-                        base_balance[dimension_index][fpga_index[fixed_fpga]]
-                        if fixed_fpga is not None
-                        else largest_target
-                    )
-                    required = max(
-                        required,
-                        weights[dimension_index] / total / target_share - 1.0,
-                    )
-            effective_ratio_by_dimension.append(
-                max(requested, max(0.0, required) + 0.0001)
-            )
-    else:
-        effective_ratio = (
-            float(tritonpart_input["effective_balance_percent"]) / 100.0
-        )
-        effective_ratio_by_dimension = [effective_ratio] * num_dimensions
+    effective_ratio_by_dimension = [
+        float(tolerance_overrides.get(dimension, constraints["balance_tolerance"]))
+        for dimension in dimensions
+    ]
     allowed = [
         [
             math.floor(
@@ -735,6 +631,13 @@ def _repair_multi_resource_balance(
         ]
         for part in range(num_parts)
     ]
+    fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
+    for part, fpga_id in enumerate(fpga_order):
+        for dimension, field in enumerate(dimensions):
+            if field != "cells":
+                allowed[part][dimension] = min(
+                    allowed[part][dimension], fpga_by_id[fpga_id].effective_capacity[field]
+                )
     loads = [[0] * num_dimensions for _ in range(num_parts)]
     for part, weights in zip(labels, vertex_weights):
         for dimension, weight in enumerate(weights):

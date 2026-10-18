@@ -826,6 +826,34 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     _assemble_multi_fpga_physical_results(records=records, **common)
                 self.assertFalse((root / "out/physical-summary.json").exists())
 
+    def test_completed_resource_budget_cannot_be_omitted_or_reused_from_looser_platform(self):
+        from emuflow.resource_budget import validate_device_resource_usage
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            old_platform = Platform.load(PLATFORM)
+            strict_platform = old_platform.with_utilization_limit(0.25)
+            records = [
+                {"fpga": fpga.id, "status": "pass", "physical_result": {}}
+                for fpga in strict_platform.fpgas
+            ]
+            common = dict(
+                manifest={}, manifest_path=root / "manifest.json",
+                platform=strict_platform, runtime={}, split_root=root,
+                output_dir=root / "out", backend_descriptor=physical_backend_descriptor("rapidwright"),
+                architecture_source={}, execution={}, include_logic_timing=False,
+            )
+            with self.assertRaisesRegex(ValidationError, "resource budget evidence.*missing"):
+                _assemble_multi_fpga_physical_results(records=records, **common)
+            for fpga, record in zip(old_platform.fpgas, records):
+                usage = validate_device_resource_usage(
+                    {field: 0 for field in fpga.capacity}, fpga.to_dict(),
+                    stage="post-physical-materialization",
+                )
+                record["physical_result"]["resource_usage"] = {"physical": usage}
+            with self.assertRaisesRegex(ValidationError, "resource budget evidence.*disagrees"):
+                _assemble_multi_fpga_physical_results(records=records, **common)
+            self.assertFalse((root / "out/physical-summary.json").exists())
+
     def test_completed_fixed_io_cannot_omit_implementation_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

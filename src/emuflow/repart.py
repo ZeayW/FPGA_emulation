@@ -15,6 +15,7 @@ from .partition import (
     build_partition_assignment,
     transported_cut_classes_for_clusters,
 )
+from .partition_limits import strict_balance_limits, validate_indivisible_limits
 from .platform import Platform
 from .resources import RESOURCE_FIELDS
 from .replication import apply_replication, replicable_clusters
@@ -179,70 +180,15 @@ def _balanced_repart_capacities(
         for dimension in range(len(dimensions))
     ]
     fpga_ids = [fpga.id for fpga in platform.fpgas]
-    shares: List[List[float]] = []
-    for dimension in dimensions:
-        if dimension == "cells":
-            shares.append([1.0 / len(fpga_ids)] * len(fpga_ids))
-            continue
-        capacities = [
-            float(fpga.effective_capacity[dimension])
-            for fpga in platform.fpgas
-        ]
-        total_capacity = sum(capacities)
-        shares.append(
-            [capacity / total_capacity for capacity in capacities]
-        )
+    effective_tolerance = requested_tolerance
 
-    required_tolerance = requested_tolerance
-    fpga_index = {fpga_id: index for index, fpga_id in enumerate(fpga_ids)}
-    fixed_loads = [
-        [0] * len(dimensions) for _ in fpga_ids
-    ]
-    for cluster, item_weights in zip(clusters, weights):
-        fixed_fpga = cluster["fixed_fpga"]
-        for dimension, total in enumerate(totals):
-            if total == 0:
-                continue
-            target_share = (
-                shares[dimension][fpga_index[fixed_fpga]]
-                if fixed_fpga is not None
-                else max(shares[dimension])
-            )
-            required_tolerance = max(
-                required_tolerance,
-                item_weights[dimension] / total / target_share - 1.0,
-            )
-        if fixed_fpga is not None:
-            target = fixed_loads[fpga_index[fixed_fpga]]
-            for dimension, value in enumerate(item_weights):
-                target[dimension] += value
-    for part, item_weights in enumerate(fixed_loads):
-        for dimension, total in enumerate(totals):
-            if total == 0:
-                continue
-            required_tolerance = max(
-                required_tolerance,
-                item_weights[dimension]
-                / total
-                / shares[dimension][part]
-                - 1.0,
-            )
-    effective_tolerance = max(0.0, required_tolerance) + 1e-6
-
-    allowed: List[List[int]] = []
-    for part, fpga in enumerate(platform.fpgas):
-        part_allowed = []
-        for dimension_index, dimension in enumerate(dimensions):
-            value = math.floor(
-                totals[dimension_index]
-                * shares[dimension_index][part]
-                * (1.0 + effective_tolerance)
-                + 1e-7
-            )
-            if dimension != "cells":
-                value = min(value, fpga.effective_capacity[dimension])
-            part_allowed.append(value)
-        allowed.append(part_allowed)
+    totals_by_field = dict(zip(dimensions, totals))
+    limits = strict_balance_limits(platform.fpgas, totals_by_field, requested_tolerance)
+    validate_indivisible_limits(
+        ((cluster["id"], dict(zip(dimensions, row)), cluster.get("fixed_fpga"))
+         for cluster, row in zip(clusters, weights)), limits,
+    )
+    allowed = [[limits[fpga.id][field] for field in dimensions] for fpga in platform.fpgas]
     return dimensions, allowed, effective_tolerance
 
 

@@ -431,6 +431,7 @@ def physical_summary_item(result: Mapping[str, Any]) -> Dict[str, Any]:
             if "clock_domain_presence" in timing
             else {}
         ),
+        **({"resource_usage": dict(result["resource_usage"])} if "resource_usage" in result else {}),
         **(
             {"hard_resources": dict(result["hard_resources"])}
             if "hard_resources" in result
