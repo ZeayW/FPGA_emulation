@@ -366,11 +366,11 @@ public final class EmuFlowRWRoute {
                     Set<Node> visited = new HashSet<>();
                     queue.add(new NodeDepth(pathSink, 0));
                     visited.add(pathSink);
-                    int reusableDepth = Integer.MAX_VALUE;
+                    int nearestLeafDepth = Integer.MAX_VALUE;
                     while (!queue.isEmpty()) {
                         NodeDepth current = queue.removeFirst();
                         if (current.depth >= MAX_LCB_SEARCH_DEPTH
-                            || current.depth >= reusableDepth) {
+                            || current.depth >= nearestLeafDepth) {
                             continue;
                         }
                         for (Node uphill : current.node.getAllUphillNodes()) {
@@ -384,11 +384,11 @@ public final class EmuFlowRWRoute {
                             if (uphill.getIntentCode()
                                 == IntentCode.NODE_GLOBAL_LEAF) {
                                 candidates.merge(uphill, depth, Math::min);
-                                if (usedLCBs.contains(uphill)
-                                    || uphillStatus == NodeStatus.INUSE) {
-                                    reusableDepth = Math.min(reusableDepth, depth);
-                                }
-                            } else if (depth < reusableDepth) {
+                                // Finish this BFS layer, rather than expanding
+                                // the fabric to depth 16 looking for a reusable
+                                // leaf after a legal nearer leaf was found.
+                                nearestLeafDepth = Math.min(nearestLeafDepth, depth);
+                            } else if (depth < nearestLeafDepth) {
                                 queue.addLast(new NodeDepth(uphill, depth));
                             }
                         }
@@ -403,11 +403,11 @@ public final class EmuFlowRWRoute {
                 List<Node> orderedCandidates = new ArrayList<>(candidates.keySet());
                 orderedCandidates.sort(
                     Comparator
-                        .comparingInt((Node node) ->
+                        .comparingInt((Node node) -> candidates.get(node))
+                        .thenComparingInt((Node node) ->
                             usedLCBs.contains(node)
                             || status.apply(node) == NodeStatus.INUSE ? 0 : 1
                         )
-                        .thenComparingInt(candidates::get)
                         .thenComparing(Node::toString)
                 );
                 Node selected = orderedCandidates.get(0);

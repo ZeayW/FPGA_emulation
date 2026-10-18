@@ -231,6 +231,9 @@ conversion against a supplied node sequence in the pinned device database;
 passing that probe alone does not qualify complete NVDLA routing.
 Clock distribution includes both sink regions and the regions of selected
 leaf buffers, including leaves reached across a region boundary.
+Extended leaf lookup stops after the nearest legal BFS layer; within that
+layer it prefers reuse and then a deterministic node-name ordering. It does
+not expand deeper into fabric solely to find a reusable leaf.
 
 Finally, EmuFlow binds physical logic/interface delays, board-link delays, and
 the selected TDM events to an abstract global timing model. **OpenSTA is the
