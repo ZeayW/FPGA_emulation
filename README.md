@@ -229,6 +229,8 @@ Extended clock-leaf paths use explicit source-to-sink PIP conversion and reject
 missing hops. `scripts/rapidwright/EmuFlowClockPathProbe.java` qualifies this
 conversion against a supplied node sequence in the pinned device database;
 passing that probe alone does not qualify complete NVDLA routing.
+Clock distribution includes both sink regions and the regions of selected
+leaf buffers, including leaves reached across a region boundary.
 
 Finally, EmuFlow binds physical logic/interface delays, board-link delays, and
 the selected TDM events to an abstract global timing model. **OpenSTA is the

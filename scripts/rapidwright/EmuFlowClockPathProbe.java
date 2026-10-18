@@ -20,6 +20,8 @@ public final class EmuFlowClockPathProbe {
             nodes.add(new Node(tile, tile.getWireIndex(parts[1])));
         }
         List<PIP> pips = EmuFlowRWRoute.extendedClockPathPIPs(nodes);
+        System.out.println("leaf region=" + nodes.get(0).getTile().getClockRegion()
+            + "; sink region=" + nodes.get(nodes.size() - 1).getTile().getClockRegion());
         for (int i = 0; i < pips.size(); i++) {
             PIP pip = pips.get(i);
             Node start = pip.isReversed() ? pip.getEndNode() : pip.getStartNode();

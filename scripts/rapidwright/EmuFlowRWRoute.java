@@ -441,18 +441,9 @@ public final class EmuFlowRWRoute {
             return routes;
         }
 
-        private ClockRegion clockCentroid(Net clk) {
+        private ClockRegion clockCentroid(Set<ClockRegion> regions) {
             HashSet<Point> points = new HashSet<>();
-            Set<ClockRegion> regions = new HashSet<>();
-            for (SitePinInst pin : clk.getPins()) {
-                if (pin.isOutPin()) continue;
-                ClockRegion region = pin.getTile().getClockRegion();
-                if (region == null) {
-                    throw new IllegalStateException(
-                        "clock sink has no clock region: " + pin
-                    );
-                }
-                regions.add(region);
+            for (ClockRegion region : regions) {
                 points.add(new Point(region.getColumn(), region.getRow()));
             }
             Point center = SmallestEnclosingCircle.getCenterPoint(points);
@@ -493,7 +484,23 @@ public final class EmuFlowRWRoute {
             for (SitePinInst pin : clk.getPins()) {
                 if (!pin.isOutPin()) regions.add(pin.getTile().getClockRegion());
             }
-            ClockRegion centroid = clockCentroid(clk);
+            // An extended leaf-to-sink path may cross a clock-region boundary.
+            // Build distribution for the selected leaves as well as the sinks.
+            ClockSinkRoutes routes = clockSinkRoutes(clk);
+            int sinkRegionCount = regions.size();
+            for (RouteNode leaf : routes.leafTargets) {
+                ClockRegion region = leaf.getTile().getClockRegion();
+                if (region == null) {
+                    throw new IllegalStateException("clock leaf has no region: " + leaf);
+                }
+                regions.add(region);
+            }
+            if (regions.size() > sinkRegionCount) {
+                System.out.println("INFO: Extended clock leaves add "
+                    + (regions.size() - sinkRegionCount) + " distribution regions for "
+                    + clk.getName());
+            }
+            ClockRegion centroid = clockCentroid(regions);
             List<ClockRegion> above = new ArrayList<>();
             List<ClockRegion> below = new ArrayList<>();
             for (ClockRegion region : regions) {
@@ -530,7 +537,6 @@ public final class EmuFlowRWRoute {
                     clk, vertical, below, true, status
                 );
             if (lines != null) distributionLines.addAll(lines);
-            ClockSinkRoutes routes = clockSinkRoutes(clk);
             UltraScaleClockRouting.routeDistributionToLCBs(
                 clk, distributionLines, routes.leafTargets
             );
