@@ -6608,6 +6608,31 @@ without changing pin/net identity. Complete routed large-design/global-OpenSTA
 validation of the new policy remains pending. Weighted HPWL is diagnostic and
 must not be compared directly with an
 older unit-weight objective or substituted for final WNS/TNS.
+
+For an explicitly requested debugging continuation from a completed native
+mapped boundary, use a versioned Git checkout rather than transmitting a long
+Python worker through an interactive terminal:
+
+```sh
+python -m emuflow.xilinx_native_continuation --spec <current-run>/continuation.json
+```
+
+The small spec requires `fpga`, `completed_partition`, `split_manifest`,
+`schedule`, `platform`, `architecture`, `native_constraints`,
+`provider_manifest`, `openparf_install`, `openparf_python`, `rapidwright_jar`,
+`java`, `device_data_root`, `timing_data_dir`, `opensta`, and a **new**
+`output_dir`; optional `java_heap_gib` has the normal default of 32.
+`completed_partition` is the completed per-FPGA directory containing the
+placement EmuIR/lowering report and `rapidwright/` mapped/atomic-source/region
+artifacts. The caller must first verify the prior producer has stopped.
+This command does not synthesize, remap, repartition, or repeat Phase 4--6.
+It invokes the ordinary native placement, typed geometry/bridge, RWRoute,
+physical timing, and partition-result validators with both the explicit native
+constraints and public provider manifest. Existing output directories are
+never restarted or overwritten. The output is a normal `partition-record.json`
+plus a compact result/runtime summary; it is not a cache/checkpoint publisher
+or whole-original-design Phase 7C qualification. Normal full-flow execution and
+the mandatory final global OpenSTA gate remain unchanged.
 The continuous convergence certificate gates the inflated slice density;
 sparse hard-macro
 pseudo-density is not treated as physical legality because the downstream
