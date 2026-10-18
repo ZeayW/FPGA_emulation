@@ -288,9 +288,9 @@ struct Legalizer {
     double negative_relief = 0.0;
     int vertex = -1;
     bool operator<(const Direct& other) const {
-      return std::tie(normalized, delta, negative_relief, vertex)
-             < std::tie(other.normalized, other.delta,
-                        other.negative_relief, other.vertex);
+      return std::tie(negative_relief, normalized, delta, vertex)
+             < std::tie(other.negative_relief, other.normalized,
+                        other.delta, other.vertex);
     }
   };
 
@@ -317,7 +317,7 @@ struct Legalizer {
               static_cast<double>(loads[target][dimension] + weights[dimension])
                   / std::max<Weight>(1, problem.allowed[target][dimension]));
         }
-        const auto key = std::make_tuple(delta, projected_peak, target);
+        const auto key = std::make_tuple(projected_peak, delta, target);
         if (!found || key < best) {
           found = true;
           best = key;
@@ -325,7 +325,7 @@ struct Legalizer {
       }
       if (found) {
         candidates.push_back(Direct{
-            std::get<0>(best) / relief, std::get<0>(best), -relief,
+            std::get<1>(best) / relief, std::get<1>(best), -relief,
             vertex});
       }
     }
@@ -356,7 +356,7 @@ struct Legalizer {
               static_cast<double>(loads[target][dimension] + weights[dimension])
                   / std::max<Weight>(1, problem.allowed[target][dimension]));
         }
-        const auto key = std::make_tuple(delta, projected_peak, target);
+        const auto key = std::make_tuple(projected_peak, delta, target);
         if (!found || key < best) {
           found = true;
           best = key;

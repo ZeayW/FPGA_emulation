@@ -131,6 +131,54 @@ class TritonPartTest(unittest.TestCase):
         self.assertEqual(report["moves"], 0)
         self.assertEqual(repaired, candidate)
 
+    def test_native_balance_legalizer_prioritizes_scarce_resource_relief(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "partition.hgr").write_text(
+                "2 4 11\n100 3 4\n1 1 2\n1 1\n1 1\n1 0\n1 0\n",
+                encoding="utf-8",
+            )
+            (root / "partition.fix").write_text("-1\n" * 4, encoding="utf-8")
+            (root / "partition.edge-classes").write_text("0\n0\n", encoding="utf-8")
+            solution = root / "partition.hgr.part.2"
+            solution.write_text("0\n0\n0\n1\n", encoding="utf-8")
+            artifact = {
+                "cluster_order": ["c0", "c1", "c2", "c3"],
+                "fpga_order": ["fpga0", "fpga1"],
+                "vertex_dimensions": ["cells", "dsp48"],
+                "vertex_weights": [[1, 1], [1, 1], [1, 0], [1, 0]],
+                "balance_allowed_loads": {
+                    "fpga0": {"cells": 2, "dsp48": 1},
+                    "fpga1": {"cells": 2, "dsp48": 1},
+                },
+                "files": {
+                    "hypergraph": "partition.hgr",
+                    "fixed": "partition.fix",
+                    "edge_classes": "partition.edge-classes",
+                },
+            }
+            repaired, report = _run_native_balance_legalizer(
+                {
+                    "c0": "fpga0",
+                    "c1": "fpga0",
+                    "c2": "fpga0",
+                    "c3": "fpga1",
+                },
+                artifact,
+                root,
+                solution,
+                root / "repaired.part.2",
+                executable=str(tritonpart_balance_legalizer()),
+                timeout_seconds=30,
+            )
+        self.assertEqual(report["direct_moves"], 1)
+        self.assertEqual(report["paired_sequences"], 0)
+        self.assertEqual(repaired["c2"], "fpga0")
+        self.assertEqual(
+            sum(repaired[cluster] == "fpga1" for cluster in ("c0", "c1")),
+            1,
+        )
+
     def test_native_balance_legalizer_fails_without_relaxing_fixed_case(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
