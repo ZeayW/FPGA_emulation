@@ -12,6 +12,7 @@ from .boundary_timing import (
     validate_boundary_timing_database,
 )
 from .errors import ValidationError
+from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from .io import read_json, write_json
 from .logic_segment_timing import (
     LOGIC_SEGMENT_TIMING_SCHEMA,
@@ -38,6 +39,32 @@ _SEQUENTIAL = {
 _CONSTANTS = {"GND", "VCC"}
 
 
+def _declared_undriven_nets(path: Path) -> set[str]:
+    """Read only explicit source declarations; never infer missing drivers."""
+    if is_emuir_sqlite(path):
+        connection = open_emuir_sqlite_read_only(path)
+        try:
+            names = set()
+            for name, driven in connection.execute(
+                "SELECT n.id, EXISTS(SELECT 1 FROM endpoint_records e "
+                "WHERE e.net_seq=n.seq AND e.role=0) FROM net_records n "
+                "WHERE n.cut_class='undriven'"
+            ):
+                if driven:
+                    raise ValidationError(f"declared undriven source net {name!r} has a driver")
+                names.add(str(name))
+            return names
+        finally:
+            connection.close()
+    names = set()
+    for net in read_json(path).get("nets", []):
+        if net.get("cut_class") == "undriven":
+            if net.get("drivers") != []:
+                raise ValidationError("declared undriven source net has a driver")
+            names.add(net["id"])
+    return names
+
+
 def _pin(instance: str, port: str, index: int, width: int) -> str:
     suffix = port if width == 1 else f"{port}[{index}]"
     return f"cell:{instance}/{suffix}"
@@ -54,6 +81,7 @@ class _TimingGraph:
         mapped: Mapping[str, Any],
         timing: Mapping[str, Any],
         endpoints: Iterable[Mapping[str, Any]],
+        declared_undriven_nets: Iterable[str] = (),
     ):
         modules = mapped.get("modules", {})
         top = timing.get("top")
@@ -70,6 +98,16 @@ class _TimingGraph:
         self.reverse: Dict[str, list[Tuple[str, float]]] = defaultdict(list)
         self.source_offsets: Dict[str, float] = {}
         self.virtual_io: Dict[Tuple[str, int, str], float] = {}
+        declared_bits: Dict[int, str] = {}
+        self.undriven_bits: Dict[int, str] = {}
+        for name in declared_undriven_nets:
+            net = module.get("netnames", {}).get(name)
+            if not isinstance(net, Mapping) or not net.get("bits"):
+                raise ValidationError(f"declared undriven net {name!r} is absent from the mapping")
+            for bit in net["bits"]:
+                if isinstance(bit, bool) or not isinstance(bit, int):
+                    raise ValidationError("declared undriven net maps to a constant")
+                declared_bits[bit] = name
         clock_gate_cells = {
             item.get("logical_cell")
             for item in timing.get("clock_gates", [])
@@ -169,6 +207,12 @@ class _TimingGraph:
             drivers = [node for node, role in endpoints if role == "driver"]
             sinks = [node for node, role in endpoints if role == "sink"]
             if len(drivers) != 1:
+                if not drivers and bit in declared_bits:
+                    # Preserve a source-declared floating input as disconnected.
+                    # It is not a timing source, constant, or zero-delay edge.
+                    # Any requested path that needs it still fails reachability.
+                    self.undriven_bits[bit] = declared_bits[bit]
+                    continue
                 if sinks:
                     raise ValidationError(
                         f"RapidWright timing bit {bit} lacks one driver"
@@ -252,6 +296,7 @@ def _graph(
     mapped_value: Optional[Mapping[str, Any]] = None,
     timing_value: Optional[Mapping[str, Any]] = None,
     timing_validation: Optional[Mapping[str, Any]] = None,
+    source_ir_path: Optional[Path] = None,
 ) -> _TimingGraph:
     timing = read_json(timing_path) if timing_value is None else timing_value
     if timing_validation is None:
@@ -264,6 +309,7 @@ def _graph(
         read_json(mapped_path) if mapped_value is None else mapped_value,
         timing,
         iter_xilinx_routed_timing_endpoints(timing_path, timing),
+        _declared_undriven_nets(source_ir_path) if source_ir_path is not None else (),
     )
 
 
@@ -458,6 +504,7 @@ def build_xilinx_segment_timing_bundle(
     mapped_value: Optional[Mapping[str, Any]] = None,
     timing_value: Optional[Mapping[str, Any]] = None,
     timing_validation: Optional[Mapping[str, Any]] = None,
+    source_ir_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Build all requested physical timing views from one routed graph.
 
@@ -483,6 +530,8 @@ def build_xilinx_segment_timing_bundle(
         graph_options["timing_value"] = timing_value
     if timing_validation is not None:
         graph_options["timing_validation"] = timing_validation
+    if source_ir_path is not None:
+        graph_options["source_ir_path"] = source_ir_path
     graph = _graph(mapped_path, timing_path, **graph_options)
     result: Dict[str, Any] = {
         "boundary": build_xilinx_boundary_timing(
@@ -493,6 +542,16 @@ def build_xilinx_segment_timing_bundle(
             _timing_graph=graph,
         )
     }
+    if source_ir_path is not None:
+        result["source_constraints"] = {
+            "provider": "source-declared-undriven-inputs-v1",
+            "source_ir": str(source_ir_path),
+            "undriven_bits": [
+                {"bit": bit, "net": name}
+                for bit, name in sorted(graph.undriven_bits.items())
+            ],
+            "timing_policy": "disconnected; no fabricated driver or timing source",
+        }
     if logic_identity_path is not None and logic_output_path is not None:
         result["logic_segment"] = build_xilinx_logic_segment_timing(
             logic_identity_path,

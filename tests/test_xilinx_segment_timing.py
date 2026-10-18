@@ -2,6 +2,9 @@ import hashlib
 import json
 import tempfile
 from pathlib import Path
+import pytest
+
+from emuflow.errors import ValidationError
 
 import emuflow.xilinx_segment_timing as xilinx_segment_timing
 from emuflow.xilinx_segment_timing import (
@@ -17,6 +20,54 @@ from emuflow.xilinx_timing import (
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_source_declared_undriven_inputs_remain_disconnected_and_queried_paths_fail():
+    mapped = {"modules": {"top": {
+        "ports": {"i": {"direction": "input", "bits": [2]},
+                  "o": {"direction": "output", "bits": [4]}},
+        "netnames": {"floating": {"bits": [3]}},
+        "cells": {"lut": {"type": "LUT2",
+            "port_directions": {"I0": "input", "I1": "input", "O": "output"},
+            "connections": {"I0": [2], "I1": [3], "O": [4]}}},
+    }}}
+    timing = {"top": "top", "qualification": {"logic_coefficients_ps": {
+        "lut_a1": 70.0, "ff_clock_to_q": 25.0, "carry_co": 10.0,
+    }}}
+    with pytest.raises(ValidationError, match="lacks one driver"):
+        xilinx_segment_timing._TimingGraph(mapped, timing, [])
+    graph = xilinx_segment_timing._TimingGraph(mapped, timing, [], {"floating"})
+    assert graph.undriven_bits == {3: "floating"}
+    assert len(graph.architectural_sources()) == 1
+    assert graph.longest(graph.architectural_sources(), "top:o")[0] == pytest.approx(0.07)
+    with pytest.raises(ValidationError, match="no path"):
+        graph.longest(graph.architectural_sources(), "cell:lut/I1")
+    # A declaration cannot mask multiple drivers introduced by a broken map.
+    mapped["modules"]["top"]["ports"].update({
+        "bad_a": {"direction": "input", "bits": [3]},
+        "bad_b": {"direction": "input", "bits": [3]},
+    })
+    with pytest.raises(ValidationError, match="lacks one driver"):
+        xilinx_segment_timing._TimingGraph(mapped, timing, [], {"floating"})
+
+
+def test_undriven_declaration_reader_streams_completed_sqlite_source(tmp_path):
+    from emuflow.yosys import import_yosys_json
+    from emuflow.ir import EmuIR
+    value = import_yosys_json(
+        Path(__file__).resolve().parents[1] / "examples/yosys/counter.json",
+        top="counter", clocks=["clk"],
+    ).to_dict()
+    net = value["nets"][0]
+    net["drivers"] = []
+    net["cut_class"] = "undriven"
+    path = tmp_path / "source.emuir.sqlite"
+    EmuIR(value).save(path)
+    assert net["id"] in xilinx_segment_timing._declared_undriven_nets(path)
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"nets": [{"id": "n", "cut_class": "undriven", "drivers": [{}]}]}))
+    with pytest.raises(ValidationError, match="has a driver"):
+        xilinx_segment_timing._declared_undriven_nets(bad)
 
 
 def test_boundary_timing_covers_rx_and_tx_with_routed_delays():

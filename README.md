@@ -287,6 +287,12 @@ passed the current independent route validator on NVDLA fpga1 with 716 fixed
 I/O pairs, 2,605 certified nets and 101,783 PIPs. Complete clock planning and
 whole-original-design OpenSTA qualification remain pending.
 
+Segment timing preserves nets explicitly declared `undriven` in the completed
+source EmuIR as disconnected inputs. It records those declarations, creates no
+replacement driver or timing source, and still rejects any requested path that
+cannot be reached. Undeclared missing drivers and multiple drivers remain
+errors; original TimingPathDB members are not dropped to make timing pass.
+
 Finally, EmuFlow binds physical logic/interface delays, board-link delays, and
 the selected TDM events to an abstract global timing model. **OpenSTA is the
 default global STA engine**. The internal timing composer is a separate engine

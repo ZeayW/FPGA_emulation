@@ -475,6 +475,7 @@ def _finish_rapidwright_routed_backend(
         mapped_value=mapped_value,
         timing_value=routed_timing_value,
         timing_validation=timing_check,
+        source_ir_path=merged_ir_path,
     )
     boundary_import = segment_imports["boundary"]
     logic_stage = (
@@ -625,6 +626,7 @@ def _finish_rapidwright_routed_backend(
             "paths": str(path_database_path),
         },
         "boundary_timing": {"status": "pass", "import": boundary_import},
+        "source_constraints": segment_imports["source_constraints"],
         **(
             {
                 "virtual_io_implementation": {
