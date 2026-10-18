@@ -27,6 +27,11 @@ read-only, and uses the current default BoardDB unless `--platform` is explicit.
 It never inherits the saved frontend's old interconnect configuration. Supply
 the original `--clock-period` values and source-sealed architecture timing data.
 Do not use an active producer's temporary database as a completed boundary.
+A native flow's published Phase 2 SQLite manifests may be supplied directly
+without a standalone experiment report. The binder checks SQLite versions,
+actual clock domains/periods, and path/weight publication row counts, then
+records that bounded validation in the new run. Missing or broken payloads
+fail; it does not rerun STA or reconstruct missing timing data.
 
 The indexed Phase 3–7 data path supports the current HP-bank/cable model and
 emits Phase 6 virtual wiring, binding, per-FPGA data-pin constraints and LVDS

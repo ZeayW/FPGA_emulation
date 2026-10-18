@@ -1,12 +1,55 @@
 """Read-only, bounded binding of completed indexed frontend/timing boundaries."""
 
 from pathlib import Path
+import sqlite3
 from typing import Mapping
 
 from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import Platform
 from .split_netlist_storage import read_compact_emuir_control_metadata
+
+
+def _published_timing_report(timing, database, weights, clock_periods):
+    """Validate atomically published native flow payloads without rerunning STA."""
+    if weights.get("schema") != "emuflow.partition-net-weights/v2" or weights.get("design") != database.get("design"):
+        raise ValidationError("prepared indexed timing/weight identity mismatch")
+    payloads = []
+    for value, key, fmt in ((database, "paths", "sqlite-sta-path/v1"),
+                            (weights, "weights", "sqlite-net-weights/v1")):
+        descriptor = value.get("payloads", {}).get(key, {})
+        name = descriptor.get("path")
+        if (not isinstance(name, str) or Path(name).name != name
+            or descriptor.get("format") != fmt
+            or not isinstance(descriptor.get("records"), int)
+            or descriptor["records"] <= 0 or not (timing / name).is_file()):
+            raise ValidationError("prepared published timing payload is invalid or missing")
+        payloads.append((timing / name, descriptor["records"]))
+    try:
+        with sqlite3.connect(f"file:{payloads[0][0]}?mode=ro", uri=True) as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
+                raise ValidationError("prepared timing SQLite version mismatch")
+            rows = list(connection.execute(
+                "SELECT clock_domain,clock_period_ns,COUNT(*) FROM paths "
+                "GROUP BY clock_domain,clock_period_ns"))
+        observed = {name: float(period) for name, period, _count in rows}
+        if len(rows) != len(observed) or observed != dict(clock_periods):
+            raise ValidationError("prepared Phase 2 clock constraints mismatch")
+        if sum(row[2] for row in rows) != payloads[0][1] or database.get("summary", {}).get("paths") != payloads[0][1]:
+            raise ValidationError("prepared timing path publication count mismatch")
+        with sqlite3.connect(f"file:{payloads[1][0]}?mode=ro", uri=True) as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
+                raise ValidationError("prepared weight SQLite version mismatch")
+            count = connection.execute("SELECT COUNT(*) FROM net_weights").fetchone()[0]
+        if count != payloads[1][1] or weights.get("summary", {}).get("weighted_nets") != count:
+            raise ValidationError("prepared net-weight publication count mismatch")
+    except sqlite3.DatabaseError as error:
+        raise ValidationError("prepared timing SQLite publication is invalid") from error
+    return {"status": "pass", "clocks": dict(clock_periods),
+            "sta": {"engine": database.get("source", {}).get("engine"),
+                    "paths": payloads[0][1]},
+            "weights": {"weighted_nets": count},
+            "publication_validation": "sqlite-version-clocks-row-counts-v1"}
 
 
 def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path,
@@ -32,13 +75,15 @@ def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path
     platform = Platform.load(platform_path)
     if {f.part for f in old_platform.fpgas} != {f.part for f in platform.fpgas}:
         raise ValidationError("prepared Phase 1 device part differs from the selected platform")
-    timing_report = read_json(timing / "experiment-timing-report.json")
-    if timing_report.get("status") != "pass" or timing_report.get("clocks") != dict(clock_periods):
-        raise ValidationError("prepared Phase 2 publication or clock constraints mismatch")
     database = read_json(timing / "path-database.json")
     if database.get("schema") != "emuflow.sta-path-database/v3" or database.get("design") != report["design"]:
         raise ValidationError("prepared Phase 2 must be the indexed database for this design")
     weights = read_json(timing / "partition-net-weights.json")
+    timing_report_path = timing / "experiment-timing-report.json"
+    timing_report = (read_json(timing_report_path) if timing_report_path.is_file()
+                     else _published_timing_report(timing, database, weights, clock_periods))
+    if timing_report.get("status") != "pass" or timing_report.get("clocks") != dict(clock_periods):
+        raise ValidationError("prepared Phase 2 publication or clock constraints mismatch")
     phase1_out.mkdir(parents=True, exist_ok=True)
     timing_out.mkdir(parents=True, exist_ok=True)
     (phase1_out / "design.emuir.sqlite").symlink_to(source_ir)
@@ -55,6 +100,7 @@ def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path
             (timing_out / relative).symlink_to(source)
         write_json(timing_out / name, value, compact=True)
     write_json(phase1_out / "platform.normalized.json", platform.to_dict())
+    write_json(timing_out / "experiment-timing-report.json", timing_report, compact=True)
     bound_report = {**report, "platform": platform.name,
                     "continuation": {"mode": "read-only-indexed-boundary", "source": str(source_ir)}}
     write_json(phase1_out / "phase1_report.json", bound_report, compact=True)

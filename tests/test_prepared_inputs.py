@@ -71,3 +71,30 @@ def test_full_flow_continuation_reaches_phase3_without_synthesis_or_sta(tmp_path
                                prepared_timing=boundaries[1], clock_periods={"clk": 10.0},
                                architecture_timing_db=timing_model)
     assert read_json(tmp_path / "continued/stage-metrics/phase3.json")["status"] == "failed"
+
+
+def test_native_published_phase2_checks_clocks_and_counts_without_standalone_report(tmp_path, boundaries):
+    import sqlite3
+    front, timing = boundaries
+    (timing / "experiment-timing-report.json").unlink()
+    for name, schema, table, sql in (
+        ("path-database.json", "emuflow.sta-path-database/v3", "paths",
+         "CREATE TABLE paths(clock_domain TEXT,clock_period_ns REAL); INSERT INTO paths VALUES('clk',10.0)"),
+        ("partition-net-weights.json", "emuflow.partition-net-weights/v2", "net_weights",
+         "CREATE TABLE net_weights(net_id TEXT); INSERT INTO net_weights VALUES('n0')"),
+    ):
+        manifest = read_json(timing / name)
+        payload = timing / next(iter(manifest["payloads"].values()))["path"]
+        payload.unlink()
+        with sqlite3.connect(payload) as connection:
+            connection.executescript("PRAGMA user_version=1; " + sql)
+        manifest["design"] = "counter"
+        manifest["summary"] = {"paths" if table == "paths" else "weighted_nets": 1}
+        write_json(timing / name, manifest)
+    with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("graph replay")):
+        bind_prepared_inputs(front, timing, tmp_path / "valid/front", tmp_path / "valid/timing",
+                             DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
+    assert read_json(tmp_path / "valid/timing/experiment-timing-report.json")["publication_validation"] == "sqlite-version-clocks-row-counts-v1"
+    with pytest.raises(ValidationError, match="clock constraints mismatch"):
+        bind_prepared_inputs(front, timing, tmp_path / "invalid/front", tmp_path / "invalid/timing",
+                             DEFAULT_PLATFORM_PATH, {"clk": 20.0}, PROFILE)
