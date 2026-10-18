@@ -837,11 +837,25 @@ struct Legalizer {
       bool changed = false;
       for (int source : sources) {
         const auto excess = overload(source);
-        if (direct(source, excess)
-            || paired(source, excess)
-            || ejection_chain(source, excess)) {
+        if (direct(source, excess)) {
           changed = true;
           break;
+        }
+      }
+      if (!changed) {
+        for (int source : sources) {
+          if (paired(source, overload(source))) {
+            changed = true;
+            break;
+          }
+        }
+      }
+      if (!changed) {
+        for (int source : sources) {
+          if (ejection_chain(source, overload(source))) {
+            changed = true;
+            break;
+          }
         }
       }
       if (!changed) {

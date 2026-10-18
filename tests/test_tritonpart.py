@@ -179,6 +179,59 @@ class TritonPartTest(unittest.TestCase):
             1,
         )
 
+    def test_native_balance_legalizer_tries_all_direct_sources_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "partition.hgr").write_text(
+                "1 6 11\n1 1 6\n"
+                "1 0 1\n1 0 1\n"
+                "1 1 0\n1 1 0\n1 1 0\n"
+                "1 0 1\n",
+                encoding="utf-8",
+            )
+            (root / "partition.fix").write_text("-1\n" * 6, encoding="utf-8")
+            (root / "partition.edge-classes").write_text("0\n", encoding="utf-8")
+            solution = root / "partition.hgr.part.3"
+            solution.write_text("0\n0\n1\n1\n1\n2\n", encoding="utf-8")
+            artifact = {
+                "cluster_order": [f"c{index}" for index in range(6)],
+                "fpga_order": ["fpga0", "fpga1", "fpga2"],
+                "vertex_dimensions": ["cells", "lut", "dsp48"],
+                "vertex_weights": [
+                    [1, 0, 1], [1, 0, 1],
+                    [1, 1, 0], [1, 1, 0], [1, 1, 0],
+                    [1, 0, 1],
+                ],
+                "balance_allowed_loads": {
+                    fpga: {"cells": 4, "lut": 2, "dsp48": 1}
+                    for fpga in ("fpga0", "fpga1", "fpga2")
+                },
+                "files": {
+                    "hypergraph": "partition.hgr",
+                    "fixed": "partition.fix",
+                    "edge_classes": "partition.edge-classes",
+                },
+            }
+            initial = {
+                cluster: fpga
+                for cluster, fpga in zip(
+                    artifact["cluster_order"],
+                    ["fpga0", "fpga0", "fpga1", "fpga1", "fpga1", "fpga2"],
+                )
+            }
+            _, report = _run_native_balance_legalizer(
+                initial,
+                artifact,
+                root,
+                solution,
+                root / "repaired.part.3",
+                executable=str(tritonpart_balance_legalizer()),
+                timeout_seconds=30,
+            )
+        self.assertEqual(report["direct_moves"], 2)
+        self.assertEqual(report["paired_sequences"], 0)
+        self.assertEqual(report["ejection_chain_sequences"], 0)
+
     def test_native_balance_legalizer_fails_without_relaxing_fixed_case(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
