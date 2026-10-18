@@ -2,6 +2,9 @@
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
+import com.xilinx.rapidwright.device.ClockRegion;
 import com.xilinx.rapidwright.device.Device;
 import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
@@ -9,6 +12,18 @@ import com.xilinx.rapidwright.device.Tile;
 
 public final class EmuFlowClockPathProbe {
     public static void main(String[] args) {
+        if (args.length >= 4 && args[0].equals("--regions")) {
+            Device device = Device.getDevice(args[1]);
+            String[] leafName = args[2].split("/", 2);
+            ClockRegion leafRegion = device.getTile(leafName[0]).getClockRegion();
+            Set<ClockRegion> sinks = new HashSet<>();
+            for (int i = 3; i < args.length; i++) {
+                sinks.add(device.getSite(args[i]).getTile().getClockRegion());
+            }
+            System.out.println("leaf region=" + leafRegion + "; sink regions=" + sinks
+                + "; missing leaf distribution=" + !sinks.contains(leafRegion));
+            return;
+        }
         if (args.length < 3) {
             throw new IllegalArgumentException("usage: <device> <source node> ... <sink node>");
         }
