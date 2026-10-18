@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <filesystem>
+#include <cstdio>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -487,7 +487,8 @@ struct Legalizer {
     }
     output << "END\n";
     output.close();
-    std::filesystem::rename(temporary, report_path);
+    require(std::rename(temporary.c_str(), report_path.c_str()) == 0,
+            "cannot publish legalizer report");
   }
 
   void run(const std::string& output_solution,
@@ -512,7 +513,8 @@ struct Legalizer {
     require(solution.good(), "cannot write legalized solution");
     for (int part : labels) solution << part << '\n';
     solution.close();
-    std::filesystem::rename(temporary_solution, output_solution);
+    require(std::rename(temporary_solution.c_str(), output_solution.c_str()) == 0,
+            "cannot publish legalized solution");
     write_report(report_path, "PASS");
   }
 };
