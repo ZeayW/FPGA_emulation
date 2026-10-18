@@ -8,7 +8,17 @@ import subprocess
 from bisect import bisect_left
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    AbstractSet,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
@@ -1849,6 +1859,39 @@ def _run_native_balance_legalizer(
     return result, summary
 
 
+def _stream_assignment_cut_summary(
+    hyperedges: Iterable[Mapping[str, Any]],
+    assignment: Mapping[str, str],
+    timed_nets: AbstractSet[str],
+) -> Dict[str, float | int]:
+    """Accumulate assignment cut metrics without retaining decoded edges."""
+
+    cut_hyperedges = 0
+    cut_weight = 0.0
+    timed_cut_hyperedges = 0
+    timed_cut_weight = 0.0
+    for edge in hyperedges:
+        clusters = iter(edge["clusters"])
+        try:
+            first_fpga = assignment[next(clusters)]
+        except StopIteration:
+            continue
+        if not any(assignment[cluster_id] != first_fpga for cluster_id in clusters):
+            continue
+        weight = float(edge["weight"])
+        cut_hyperedges += 1
+        cut_weight += weight
+        if edge["net"] in timed_nets:
+            timed_cut_hyperedges += 1
+            timed_cut_weight += weight
+    return {
+        "cut_hyperedges": cut_hyperedges,
+        "cut_weight": cut_weight,
+        "timed_cut_hyperedges": timed_cut_hyperedges,
+        "timed_cut_weight": timed_cut_weight,
+    }
+
+
 def run_tritonpart(
     ir: EmuIR,
     platform: Platform,
@@ -1913,9 +1956,11 @@ def run_tritonpart(
     selected_solution_path: Optional[Path] = None
     selected_repair_moves: List[Dict[str, Any]] = []
     selected_balance_repair: Optional[Dict[str, Any]] = None
+    selected_timing_cut_summary: Optional[Dict[str, float | int]] = None
     selected_objective: Optional[Tuple[Any, ...]] = None
     selected_attempt_mode: Optional[str] = None
     attempts = []
+    timed_nets = set(net_weights or {})
     attempt_specs = [
         {
             "mode": "timing_weighted",
@@ -2138,21 +2183,11 @@ def run_tritonpart(
             continue
 
         attempt["accepted"] = True
-        cut_edges = [
-            edge
-            for edge in tritonpart_input["hyperedges"]
-            if len(
-                {
-                    candidate[cluster_id]
-                    for cluster_id in edge["clusters"]
-                }
-            )
-            > 1
-        ]
-        attempt["cut_hyperedges"] = len(cut_edges)
-        attempt["cut_weight"] = sum(
-            edge["weight"] for edge in cut_edges
+        cut_summary = _stream_assignment_cut_summary(
+            tritonpart_input["hyperedges"], candidate, timed_nets
         )
+        attempt["cut_hyperedges"] = cut_summary["cut_hyperedges"]
+        attempt["cut_weight"] = cut_summary["cut_weight"]
         attempts.append(attempt)
         objective = (
             float(attempt["cut_weight"]),
@@ -2176,6 +2211,10 @@ def run_tritonpart(
             )
             selected_repair_moves = repair_moves
             selected_balance_repair = balance_repair
+            selected_timing_cut_summary = {
+                "timed_cut_hyperedges": cut_summary["timed_cut_hyperedges"],
+                "timed_cut_weight": cut_summary["timed_cut_weight"],
+            }
 
     if cluster_assignment is None:
         raise ValidationError(
@@ -2190,25 +2229,11 @@ def run_tritonpart(
     ):
         shutil.copyfile(selected_solution_path, solution_path)
     tritonpart_input["seed"] = selected_seed
-    timed_nets = set(net_weights or {})
-    timed_cut_edges = [
-        edge
-        for edge in tritonpart_input["hyperedges"]
-        if edge["net"] in timed_nets
-        and len(
-            {
-                cluster_assignment[cluster_id]
-                for cluster_id in edge["clusters"]
-            }
-        )
-        > 1
-    ]
+    if selected_timing_cut_summary is None:
+        raise ValidationError("TritonPart selected cut summary is missing")
     timing_weight_result = {
         **tritonpart_input["timing_weight_coverage"],
-        "timed_cut_hyperedges": len(timed_cut_edges),
-        "timed_cut_weight": sum(
-            edge["weight"] for edge in timed_cut_edges
-        ),
+        **selected_timing_cut_summary,
     }
     provider_metadata = {
         "mode": mode,

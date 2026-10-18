@@ -20,6 +20,7 @@ from emuflow.tritonpart import (
     _repair_min_used_fpgas,
     _repair_multi_resource_balance_reference,
     _run_native_balance_legalizer,
+    _stream_assignment_cut_summary,
     _tritonpart_ubfactor_percent_points,
     export_tritonpart_inputs,
     parse_tritonpart_solution,
@@ -109,6 +110,33 @@ class TritonPartTest(unittest.TestCase):
         self.assertEqual(report["paired_sequences"], 0)
         self.assertEqual(report["moves"], 1)
         self.assertEqual(repaired["c1"], "fpga1")
+
+    def test_cut_summary_streams_once_and_combines_timing_metrics(self) -> None:
+        class OnePassEdges:
+            def __init__(self):
+                self.iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                if self.iterations != 1:
+                    raise AssertionError("hyperedges were scanned more than once")
+                yield {"net": "n0", "clusters": ["a", "b"], "weight": 2.5}
+                yield {"net": "n1", "clusters": ["b", "c"], "weight": 3.0}
+                yield {"net": "n2", "clusters": ["a", "c"], "weight": 4.0}
+
+        edges = OnePassEdges()
+        summary = _stream_assignment_cut_summary(
+            edges,
+            {"a": "fpga0", "b": "fpga1", "c": "fpga1"},
+            {"n0", "n2"},
+        )
+        self.assertEqual(edges.iterations, 1)
+        self.assertEqual(summary, {
+            "cut_hyperedges": 2,
+            "cut_weight": 6.5,
+            "timed_cut_hyperedges": 2,
+            "timed_cut_weight": 6.5,
+        })
 
     def test_native_balance_legalizer_preserves_legal_solution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
