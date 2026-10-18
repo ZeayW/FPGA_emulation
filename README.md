@@ -278,14 +278,21 @@ UTPlaceFX's incompatible single-RAM-class adapter. This foundation does not
 enable clock planning in the default Xilinx export; native build qualification,
 macro legalization under clock fences, and full NVDLA routing remain pending.
 
+The native clock-region geometry tiles the complete dense placement grid,
+including empty clock/SLR seam rows. Region indices follow dense coordinate
+order; source region names remain recorded when remapped. This assigns
+ownership to empty coordinates without adding sites or resource capacity and
+keeps every physical site in its source region.
+
 RWRoute may merge a physical I/O net into the canonical EDIF net of its
 top-level port. The route certificate follows the I/O site pin's current net
 ownership while retaining the original mapped net ID; an optional
 `physical_net` field records the canonical name. A missing physical net fails
 explicitly instead of dropping the logical net from coverage. The adapter has
 passed the current independent route validator on NVDLA fpga1 with 716 fixed
-I/O pairs, 2,605 certified nets and 101,783 PIPs. Complete clock planning and
-whole-original-design OpenSTA qualification remain pending.
+I/O pairs, 2,605 certified nets and 101,783 PIPs. That partition also passed
+the physical OpenSTA timing tail. Complete clock planning and whole-original-
+design OpenSTA qualification remain pending.
 
 Segment timing preserves nets explicitly declared `undriven` in the completed
 source EmuIR as disconnected inputs. It records those declarations, creates no

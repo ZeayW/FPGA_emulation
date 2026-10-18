@@ -2413,6 +2413,53 @@ def _render_library_and_nets(
     )
 
 
+def _complete_clock_region_boxes(
+    regions: Mapping[str, Dict[str, Any]],
+    width: int,
+    height: int,
+    *,
+    y_axis_order: str,
+) -> None:
+    """Tile the dense grid, assigning only empty seam coordinates to regions.
+
+    Real sites retain their declared region. No site or resource capacity is
+    created in a seam. Native region indices follow increasing dense geometry
+    even when physical tile-row order has been reversed for carry chains.
+    """
+    axes = []
+    for axis, extent in enumerate((width, height)):
+        observed = {}
+        for entry in regions.values():
+            key = entry["index"][axis]
+            values = [xy[axis] for xy in entry["sites"]]
+            low, high = min(values), max(values)
+            old = observed.get(key, (low, high))
+            observed[key] = min(old[0], low), max(old[1], high)
+        ordered = sorted(observed, key=lambda key: observed[key])
+        starts = [0]
+        for previous, current in zip(ordered, ordered[1:]):
+            if observed[previous][1] >= observed[current][0]:
+                raise ValidationError("ArchitectureDB clock regions are not rectangular bands")
+            starts.append(
+                observed[previous][1] + 1
+                if axis == 1 and y_axis_order == "descending"
+                else observed[current][0]
+            )
+        bounds = {}
+        for index, key in enumerate(ordered):
+            low = starts[index]
+            high = starts[index + 1] - 1 if index + 1 < len(starts) else extent - 1
+            if low > observed[key][0] or high < observed[key][1]:
+                raise ValidationError("clock region ownership would move a real site")
+            bounds[key] = index, low, high
+        axes.append(bounds)
+    for entry in regions.values():
+        x, xl, xh = axes[0][entry["index"][0]]
+        y, yl, yh = axes[1][entry["index"][1]]
+        entry["index"] = (x, y)
+        entry["bbox"] = (xl, yl, xh, yh)
+
+
 def _render_site_geometry(
     sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
     *,
@@ -2638,25 +2685,21 @@ def _render_site_geometry(
             raise ValidationError(
                 "ArchitectureDB clock-region grid is incomplete"
             )
+        _complete_clock_region_boxes(
+            by_name, len(x_axis), len(y_axis), y_axis_order=y_axis_order,
+        )
+        for item in site_map:
+            name = item["physical_region"]["clock_region"]
+            xl, yl, xh, yh = by_name[name]["bbox"]
+            if not (xl <= item["dense_x"] <= xh and yl <= item["dense_y"] <= yh):
+                raise ValidationError(f"ArchitectureDB clock region {name!r} is not rectangular")
         contract_regions = []
         lines.extend(["", f"CLOCKREGIONS {width} {height}"])
         for name, entry in sorted(
             by_name.items(), key=lambda item: item[1]["index"]
         ):
             exported_name = f"X{entry['index'][0]}Y{entry['index'][1]}"
-            xs = [coordinate[0] for coordinate in entry["sites"]]
-            ys = [coordinate[1] for coordinate in entry["sites"]]
-            xl, xh = min(xs), max(xs)
-            yl, yh = min(ys), max(ys)
-            for item in site_map:
-                if (
-                    xl <= item["dense_x"] <= xh
-                    and yl <= item["dense_y"] <= yh
-                    and item["physical_region"]["clock_region"] != name
-                ):
-                    raise ValidationError(
-                        f"ArchitectureDB clock region {name!r} is not rectangular"
-                    )
+            xl, yl, xh, yh = entry["bbox"]
             ymid = yl + (yh - yl + 1) // 2
             lines.append(
                 f"  CLOCKREGION {exported_name} : "
@@ -2673,6 +2716,7 @@ def _render_site_geometry(
         lines.append("END CLOCKREGIONS")
         clock_region_contract = {
             "width": width, "height": height,
+            "geometry": "complete-dense-grid-empty-seams-no-fabricated-sites-v1",
             "maximum_clocks_per_region": _MAX_CLOCKS_PER_REGION,
             # The checked-in UTPlaceFX clock planner recognizes a single
             # SLICE/DSP/RAM site class and discovers clocks only from explicit

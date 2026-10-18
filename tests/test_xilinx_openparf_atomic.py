@@ -369,6 +369,35 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 sorted(tuple(region["bbox"]) for region in regions),
                 [(0, 0, 0, 3), (0, 4, 0, 7)],
             )
+            clock_regions = coordinates["clock_regions"]["regions"]
+            self.assertEqual(
+                sorted(tuple(region["bbox"]) for region in clock_regions),
+                [(0, 0, 0, 3), (0, 4, 0, 7)],
+            )
+            for y in range(8):
+                self.assertEqual(sum(region["bbox"][1] <= y <= region["bbox"][3]
+                                     for region in clock_regions), 1)
+
+    def test_clock_grid_covers_real_nvdla_seam_shape_without_moving_sites(self):
+        observed = [(2, 62), (64, 124), (126, 186), (188, 248), (250, 310),
+                    (313, 373), (375, 435), (437, 497), (499, 559), (561, 621)]
+        regions = {
+            f"X0Y{i}": {"index": (0, i), "sites": [(0, low), (448, high)]}
+            for i, (low, high) in enumerate(observed)
+        }
+        atomic_adapter._complete_clock_region_boxes(
+            regions, 449, 622, y_axis_order="descending",
+        )
+        for y in range(622):
+            self.assertEqual(sum(r["bbox"][1] <= y <= r["bbox"][3]
+                                 for r in regions.values()), 1)
+        for i, (low, high) in enumerate(observed):
+            xl, yl, xh, yh = regions[f"X0Y{i}"]["bbox"]
+            self.assertEqual((xl, xh), (0, 448))
+            self.assertLessEqual(yl, low)
+            self.assertGreaterEqual(yh, high)
+        self.assertEqual(regions["X0Y0"]["bbox"], (0, 0, 448, 62))
+        self.assertEqual(regions["X0Y5"]["bbox"], (0, 311, 448, 373))
 
     def test_placement_geometry_does_not_materialize_every_site_bel_list(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -697,6 +726,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(manifest["clock_region_contract"], {
             "width": 2,
             "height": 1,
+            "geometry": "complete-dense-grid-empty-seams-no-fabricated-sites-v1",
             "maximum_clocks_per_region": 24,
             "native_enforcement": "disabled",
             "native_enforcement_reason": (
