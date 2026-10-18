@@ -256,6 +256,18 @@ This worker report does not publish a whole-design physical summary. Aggregate
 all BoardDB partitions through the common checked assembler before Phase 7C.
 Without `--fpga`, the command still implements and aggregates every FPGA.
 
+Clock-region capacity is a separate placement requirement: UltraScale regions
+support at most 24 distinct clocks ([AMD UG949](https://docs.amd.com/r/2024.1-English/ug949-vivado-design-methodology/UltraScale-Device-Clocking)).
+The current native export records region geometry but disables native clock
+planning because its clock-source and multi-resource adapters are incomplete.
+For an explicit offline audit, run `python -m emuflow.xilinx_clock_capacity
+--rwroute-input <rwroute.tsv> --architecture <architecture.json> --out
+<clock-capacity.json>`. It streams the placed design, checks internal clock-pin
+consumers, and rejects missing region identities. Passing this necessary bound
+does not qualify complete clock routing or clock timing. Clock-aware native
+placement remains pending; extending a router search cannot certify an
+over-capacity placement.
+
 Finally, EmuFlow binds physical logic/interface delays, board-link delays, and
 the selected TDM events to an abstract global timing model. **OpenSTA is the
 default global STA engine**. The internal timing composer is a separate engine
