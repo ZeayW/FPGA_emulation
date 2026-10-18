@@ -282,8 +282,10 @@ RWRoute may merge a physical I/O net into the canonical EDIF net of its
 top-level port. The route certificate follows the I/O site pin's current net
 ownership while retaining the original mapped net ID; an optional
 `physical_net` field records the canonical name. A missing physical net fails
-explicitly instead of dropping the logical net from coverage. Device-backed
-and NVDLA partition qualification of this adapter remain pending.
+explicitly instead of dropping the logical net from coverage. The adapter has
+passed the current independent route validator on NVDLA fpga1 with 716 fixed
+I/O pairs, 2,605 certified nets and 101,783 PIPs. Complete clock planning and
+whole-original-design OpenSTA qualification remain pending.
 
 Finally, EmuFlow binds physical logic/interface delays, board-link delays, and
 the selected TDM events to an abstract global timing model. **OpenSTA is the
