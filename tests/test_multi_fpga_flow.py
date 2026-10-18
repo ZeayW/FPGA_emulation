@@ -449,6 +449,12 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 [*base, "--no-timing-driven"]
             ).timing_driven
         )
+        resumed = _build_parser().parse_args(
+            [*base, "--tritonpart-solution", "saved.part.4"]
+        )
+        self.assertEqual(
+            resumed.tritonpart_solution, Path("saved.part.4")
+        )
         validate = _build_parser().parse_args(
             [
                 "multi-fpga",

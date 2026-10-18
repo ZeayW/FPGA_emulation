@@ -1990,6 +1990,14 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--min-used-fpgas", type=int)
     multi_fpga_compile.add_argument("--balance-tolerance", type=float)
     multi_fpga_compile.add_argument("--openroad")
+    multi_fpga_compile.add_argument(
+        "--tritonpart-solution",
+        type=Path,
+        help=(
+            "import a precomputed TritonPart .part initializer; useful for "
+            "resuming Phase 3 after a validated provider boundary"
+        ),
+    )
     multi_fpga_compile.add_argument("--repart")
     multi_fpga_compile.add_argument("--patron-refiner")
     multi_fpga_compile.add_argument("--patron-max-moves", type=int)
@@ -5850,6 +5858,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             min_used_fpgas=args.min_used_fpgas,
             balance_tolerance=args.balance_tolerance,
             openroad=args.openroad,
+            tritonpart_solution=args.tritonpart_solution,
             repart=args.repart,
             patron_refiner=args.patron_refiner,
             patron_max_moves=args.patron_max_moves,
