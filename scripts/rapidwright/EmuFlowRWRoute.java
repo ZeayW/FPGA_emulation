@@ -81,6 +81,18 @@ public final class EmuFlowRWRoute {
             runtime.maxMemory() / (1024L * 1024L)
         );
     }
+
+    static List<PIP> extendedClockPathPIPs(List<Node> sourceToSinkPath) {
+        if (sourceToSinkPath.size() < 2) {
+            throw new IllegalArgumentException("extended clock path needs two nodes");
+        }
+        // The one-argument helper defaults to sink-to-source ordering.
+        List<PIP> pips = RouterHelper.getPIPsFromNodes(sourceToSinkPath, true);
+        if (pips.size() != sourceToSinkPath.size() - 1) {
+            throw new IllegalStateException("extended clock path has missing PIPs");
+        }
+        return pips;
+    }
     private static final String[] DSP48E2_COMPONENTS = new String[] {
         "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
         "DSP_ALU", "DSP_M_DATA", "DSP_OUTPUT", "DSP_PREADD"
@@ -527,7 +539,7 @@ public final class EmuFlowRWRoute {
             );
             for (Map.Entry<SitePinInst, List<Node>> entry
                 : routes.extendedPaths.entrySet()) {
-                List<PIP> pathPIPs = RouterHelper.getPIPsFromNodes(
+                List<PIP> pathPIPs = extendedClockPathPIPs(
                     entry.getValue()
                 );
                 if (pathPIPs.isEmpty()) {

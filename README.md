@@ -225,6 +225,10 @@ check; this is not a persistent checkpoint cache. RapidWright logs heap usage
 after input indexing, cell materialization and pin connection, and before and
 after routing. `EMUFLOW_RAPIDWRIGHT_MAX_HEAP` accepts a positive Java `g`/`m`
 size (default `32g`); choose it from measured demand and available HPC memory.
+Extended clock-leaf paths use explicit source-to-sink PIP conversion and reject
+missing hops. `scripts/rapidwright/EmuFlowClockPathProbe.java` qualifies this
+conversion against a supplied node sequence in the pinned device database;
+passing that probe alone does not qualify complete NVDLA routing.
 
 Finally, EmuFlow binds physical logic/interface delays, board-link delays, and
 the selected TDM events to an abstract global timing model. **OpenSTA is the
