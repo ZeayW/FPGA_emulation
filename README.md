@@ -270,6 +270,14 @@ does not qualify complete clock routing or clock timing. Clock-aware native
 placement remains pending; extending a router search cannot certify an
 over-capacity placement.
 
+The native clock-planning candidate discovers internally driven clocks from
+actual clock-sink connectivity when clock-region enforcement is enabled,
+including gates implemented by ordinary logic models. It constructs only the
+selected UTPlace2 or UTPlaceFX planner, so selecting UTPlace2 does not initialize
+UTPlaceFX's incompatible single-RAM-class adapter. This foundation does not
+enable clock planning in the default Xilinx export; native build qualification,
+macro legalization under clock fences, and full NVDLA routing remain pending.
+
 Finally, EmuFlow binds physical logic/interface delays, board-link delays, and
 the selected TDM events to an abstract global timing model. **OpenSTA is the
 default global STA engine**. The internal timing composer is a separate engine

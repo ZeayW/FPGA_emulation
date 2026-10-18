@@ -642,12 +642,22 @@ class OpCollections(object):
         # fence region checker
         self.fence_region_checker_op = build_fence_region_checker_op(data_cls)
         if params.confine_clock_region_flag:
-            self.clock_network_planner_op = build_clock_network_planner_op(
-                placedb, params
-            )
+            # Construct only the selected planner. UTPlaceFX initialization
+            # asserts a single RAM/DSP site class, even when UTPlace2 is the
+            # requested multi-resource planner and UTPlaceFX is never called.
+            algorithm = params.clock_network_planner_algorithm
+            self.clock_network_planner_op = None
+            self.utplace2_cnp_op = None
+            if algorithm == "utplacefx":
+                self.clock_network_planner_op = build_clock_network_planner_op(
+                    placedb, params
+                )
+            elif algorithm == "utplace2":
+                self.utplace2_cnp_op = build_utplace2_cnp_op(placedb)
+            else:
+                raise ValueError("unknown clock network planner: " + str(algorithm))
             self.cr_ck_counter_op = build_cr_ck_op(data_cls, placedb)
             self.inst_cr_mover_op = build_inst_cr_mover(data_cls)
-            self.utplace2_cnp_op = build_utplace2_cnp_op(placedb)
         else:
             self.clock_network_planner_op = None
             self.cr_ck_counter_op = None

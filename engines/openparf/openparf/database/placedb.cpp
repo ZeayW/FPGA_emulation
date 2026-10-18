@@ -1049,6 +1049,27 @@ void PlaceDB::setMovableFixedAreas() {
 }
 
 void PlaceDB::initClock() {
+  if (place_params_.honor_clock_region_constraints) {
+    // Technology-mapped RTL can implement a clock gate/divider with a regular
+    // logic model. Discover its source instance from actual clock-pin
+    // connectivity instead of marking every instance of that model as a clock
+    // source. Driverless primary clocks remain the boundary-clock contract;
+    // they must not acquire a fabricated source instance here.
+    std::vector<uint8_t> clock_sink_nets(numNets(), 0);
+    for (IndexType pin_id = 0; pin_id < numPins(); ++pin_id) {
+      if (pinSignalType(pin_id) == SignalType::kClock) {
+        clock_sink_nets[pin2net_[pin_id]] = 1;
+      }
+    }
+    for (IndexType inst_id = 0; inst_id < numInsts(); ++inst_id) {
+      for (auto pin_id : inst_pins_.at(inst_id)) {
+        if (pinSignalDirect(pin_id) == SignalDirection::kOutput && clock_sink_nets[pin2net_[pin_id]]) {
+          is_inst_clocksource_[inst_id] = 1;
+          break;
+        }
+      }
+    }
+  }
   // First, we generate net to clock index mapping and net to clock source id mapping
   // clock index is the id for clocks, ranging from 0 to num_clock_nets - 1
   clock_net_indexes_.resize(numNets());
