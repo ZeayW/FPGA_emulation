@@ -287,11 +287,10 @@ struct Legalizer {
     double delta = 0.0;
     double negative_relief = 0.0;
     int vertex = -1;
-    int target = -1;
     bool operator<(const Direct& other) const {
-      return std::tie(normalized, delta, negative_relief, vertex, target)
+      return std::tie(normalized, delta, negative_relief, vertex)
              < std::tie(other.normalized, other.delta,
-                        other.negative_relief, other.vertex, other.target);
+                        other.negative_relief, other.vertex);
     }
   };
 
@@ -327,7 +326,7 @@ struct Legalizer {
       if (found) {
         candidates.push_back(Direct{
             std::get<0>(best) / relief, std::get<0>(best), -relief,
-            vertex, std::get<2>(best)});
+            vertex});
       }
     }
     std::sort(candidates.begin(), candidates.end());
@@ -336,8 +335,7 @@ struct Legalizer {
       const auto current = overload(source);
       if (std::none_of(current.begin(), current.end(),
                        [](Weight value) { return value > 0; })) break;
-      if (labels[candidate.vertex] != source
-          || !fits(candidate.vertex, candidate.target)) continue;
+      if (labels[candidate.vertex] != source) continue;
       bool contributes = false;
       for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
         contributes = contributes
@@ -345,7 +343,27 @@ struct Legalizer {
                           && problem.vertex_weights[candidate.vertex][dimension] > 0);
       }
       if (!contributes) continue;
-      apply(candidate.vertex, source, candidate.target);
+      bool found = false;
+      std::tuple<double, double, int> best;
+      const auto& weights = problem.vertex_weights[candidate.vertex];
+      for (int target = 0; target < problem.parts; ++target) {
+        if (target == source || !fits(candidate.vertex, target)) continue;
+        const double delta = edge_delta(candidate.vertex, source, target);
+        double projected_peak = 0.0;
+        for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
+          projected_peak = std::max(
+              projected_peak,
+              static_cast<double>(loads[target][dimension] + weights[dimension])
+                  / std::max<Weight>(1, problem.allowed[target][dimension]));
+        }
+        const auto key = std::make_tuple(delta, projected_peak, target);
+        if (!found || key < best) {
+          found = true;
+          best = key;
+        }
+      }
+      if (!found) continue;
+      apply(candidate.vertex, source, std::get<2>(best));
       ++direct_moves;
       changed = true;
     }
