@@ -167,11 +167,14 @@ Problem read_problem(const std::string& hgr_path,
 }
 
 struct Legalizer {
+  using Groups = std::map<std::vector<Weight>, std::set<int>>;
+
   explicit Legalizer(Problem value)
       : problem(std::move(value)),
         labels(problem.assignment),
         loads(problem.parts,
               std::vector<Weight>(problem.dimensions, 0)),
+        movable_groups(problem.parts),
         preferred_chain_weights(problem.parts),
         preferred_chain_targets(problem.parts, -1),
         preferred_chain_templates(problem.parts),
@@ -180,6 +183,10 @@ struct Legalizer {
       for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
         loads[labels[vertex]][dimension]
             += problem.vertex_weights[vertex][dimension];
+      }
+      if (problem.fixed[vertex] < 0) {
+        movable_groups[labels[vertex]][problem.vertex_weights[vertex]]
+            .insert(vertex);
       }
     }
     initial_loads = loads;
@@ -196,6 +203,7 @@ struct Legalizer {
   std::vector<int> labels;
   std::vector<std::vector<Weight>> loads;
   std::vector<std::vector<Weight>> initial_loads;
+  std::vector<Groups> movable_groups;
   std::vector<std::vector<Weight>> preferred_chain_weights;
   std::vector<int> preferred_chain_targets;
   std::vector<std::vector<ChainTemplateMove>> preferred_chain_templates;
@@ -242,6 +250,14 @@ struct Legalizer {
     return true;
   }
 
+  bool fits_weights(const std::vector<Weight>& weights, int part) const {
+    for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
+      if (loads[part][dimension] + weights[dimension]
+          > problem.allowed[part][dimension]) return false;
+    }
+    return true;
+  }
+
   double edge_delta(int vertex, int source, int target) const {
     double delta = 0.0;
     for (int edge_index : problem.incident[vertex]) {
@@ -264,13 +280,20 @@ struct Legalizer {
   void apply(int vertex, int source, int target) {
     require(labels[vertex] == source && problem.fixed[vertex] < 0,
             "internal illegal balance move");
+    const auto& weights = problem.vertex_weights[vertex];
+    auto found = movable_groups[source].find(weights);
+    require(found != movable_groups[source].end()
+                && found->second.erase(vertex) == 1,
+            "internal missing balance-index vertex");
+    if (found->second.empty()) movable_groups[source].erase(found);
+    movable_groups[target][weights].insert(vertex);
     for (int edge : problem.incident[vertex]) {
       --edge_part_counts[edge * problem.parts + source];
       ++edge_part_counts[edge * problem.parts + target];
     }
     labels[vertex] = target;
     for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
-      const Weight weight = problem.vertex_weights[vertex][dimension];
+      const Weight weight = weights[dimension];
       loads[source][dimension] -= weight;
       loads[target][dimension] += weight;
     }
@@ -315,34 +338,41 @@ struct Legalizer {
 
   bool direct(int source, const std::vector<Weight>& excess) {
     std::vector<Direct> candidates;
-    for (int vertex = 0; vertex < static_cast<int>(labels.size()); ++vertex) {
-      if (labels[vertex] != source || problem.fixed[vertex] >= 0) continue;
-      const auto& weights = problem.vertex_weights[vertex];
+    for (const auto& group : movable_groups[source]) {
+      const auto& weights = group.first;
       double relief = 0.0;
       for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
         relief += static_cast<double>(std::min(weights[dimension], excess[dimension]))
                   / std::max<Weight>(1, problem.allowed[source][dimension]);
       }
       if (relief <= 0.0) continue;
-      bool found = false;
-      std::tuple<double, double, int> best;
+      bool any_target_fits = false;
       for (int target = 0; target < problem.parts; ++target) {
-        if (target == source || !fits(vertex, target)) continue;
-        const double delta = edge_delta(vertex, source, target);
-        double projected_peak = 0.0;
-        for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
-          projected_peak = std::max(
-              projected_peak,
-              static_cast<double>(loads[target][dimension] + weights[dimension])
-                  / std::max<Weight>(1, problem.allowed[target][dimension]));
-        }
-        const auto key = std::make_tuple(projected_peak, delta, target);
-        if (!found || key < best) {
-          found = true;
-          best = key;
-        }
+        any_target_fits = any_target_fits
+                          || (target != source
+                              && fits_weights(weights, target));
       }
-      if (found) {
+      if (!any_target_fits) continue;
+      for (int vertex : group.second) {
+        bool found = false;
+        std::tuple<double, double, int> best;
+        for (int target = 0; target < problem.parts; ++target) {
+          if (target == source || !fits_weights(weights, target)) continue;
+          const double delta = edge_delta(vertex, source, target);
+          double projected_peak = 0.0;
+          for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
+            projected_peak = std::max(
+                projected_peak,
+                static_cast<double>(loads[target][dimension] + weights[dimension])
+                    / std::max<Weight>(1, problem.allowed[target][dimension]));
+          }
+          const auto key = std::make_tuple(projected_peak, delta, target);
+          if (!found || key < best) {
+            found = true;
+            best = key;
+          }
+        }
+        require(found, "internal missing direct-move target");
         candidates.push_back(Direct{
             std::get<1>(best) / relief, std::get<1>(best), -relief,
             vertex});
@@ -407,24 +437,19 @@ struct Legalizer {
   bool paired(int source, const std::vector<Weight>& excess) {
     Pair best;
     const double before_source_score = overload_score(source);
-    std::map<std::vector<Weight>, std::vector<int>> source_groups;
-    std::vector<std::map<std::vector<Weight>, std::vector<int>>> part_groups(
-        problem.parts);
-    for (int vertex = 0; vertex < static_cast<int>(labels.size()); ++vertex) {
-      if (problem.fixed[vertex] >= 0) continue;
-      part_groups[labels[vertex]][problem.vertex_weights[vertex]].push_back(vertex);
-      if (labels[vertex] != source) continue;
+    std::set<std::vector<Weight>> source_weights;
+    for (const auto& group : movable_groups[source]) {
       bool contributes = false;
       for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
         contributes = contributes
                       || (excess[dimension] > 0
-                          && problem.vertex_weights[vertex][dimension] > 0);
+                          && group.first[dimension] > 0);
       }
-      if (contributes) source_groups[problem.vertex_weights[vertex]].push_back(vertex);
+      if (contributes) source_weights.insert(group.first);
     }
 
-    for (const auto& source_group : source_groups) {
-      const auto& weights = source_group.first;
+    for (const auto& weights : source_weights) {
+      const auto& source_vertices = movable_groups[source].at(weights);
       std::vector<Weight> source_without = loads[source];
       double relief = 0.0;
       for (int d = 0; d < problem.dimensions; ++d) {
@@ -437,7 +462,7 @@ struct Legalizer {
         if (target == source) continue;
         int vertex = -1;
         double source_delta = 0.0;
-        for (int candidate : source_group.second) {
+        for (int candidate : source_vertices) {
           const double delta = edge_delta(candidate, source, target);
           if (vertex < 0 || std::tie(delta, candidate)
                               < std::tie(source_delta, vertex)) {
@@ -453,7 +478,7 @@ struct Legalizer {
           target_fits = target_fits && deficits[d] == 0;
         }
         if (target_fits) continue;
-        for (const auto& blocker_group : part_groups[target]) {
+        for (const auto& blocker_group : movable_groups[target]) {
           const auto& blocker_weights = blocker_group.first;
           bool frees = true;
           for (int d = 0; d < problem.dimensions; ++d) {
@@ -556,19 +581,12 @@ struct Legalizer {
     if (chain_template.empty() || chain_template.front().source != source) {
       return false;
     }
-    using Groups = std::map<std::vector<Weight>, std::vector<int>>;
-    std::vector<Groups> groups(problem.parts);
-    for (int vertex = 0; vertex < static_cast<int>(labels.size()); ++vertex) {
-      if (problem.fixed[vertex] < 0) {
-        groups[labels[vertex]][problem.vertex_weights[vertex]].push_back(vertex);
-      }
-    }
     std::vector<int> selected;
     std::vector<Move> sequence;
     auto candidate_loads = loads;
     for (const ChainTemplateMove& step : chain_template) {
-      const auto found = groups[step.source].find(step.weights);
-      if (found == groups[step.source].end()) return false;
+      const auto found = movable_groups[step.source].find(step.weights);
+      if (found == movable_groups[step.source].end()) return false;
       int vertex = -1;
       for (int candidate : found->second) {
         if (std::find(selected.begin(), selected.end(), candidate)
@@ -620,14 +638,6 @@ struct Legalizer {
   bool ejection_chain(int source,
                       const std::vector<Weight>& excess,
                       bool preferred_only = false) {
-    using Groups = std::map<std::vector<Weight>, std::vector<int>>;
-    std::vector<Groups> groups(problem.parts);
-    for (int vertex = 0; vertex < static_cast<int>(labels.size()); ++vertex) {
-      if (problem.fixed[vertex] < 0) {
-        groups[labels[vertex]][problem.vertex_weights[vertex]].push_back(vertex);
-      }
-    }
-
     struct Root {
       int preference = 2;
       double negative_relief = 0.0;
@@ -646,7 +656,7 @@ struct Legalizer {
 
     std::vector<Root> roots;
     const double before_source_score = overload_score(source);
-    for (const auto& group : groups[source]) {
+    for (const auto& group : movable_groups[source]) {
       const auto& weights = group.first;
       double relief = 0.0;
       for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
@@ -796,7 +806,7 @@ struct Legalizer {
           std::size_t pivot_groups = std::numeric_limits<std::size_t>::max();
           for (int dimension : exceeded) {
             std::size_t count = 0;
-            for (const auto& group : groups[blocked_part]) {
+            for (const auto& group : movable_groups[blocked_part]) {
               count += group.first[dimension] > 0;
             }
             if (std::make_pair(count, dimension)
@@ -812,7 +822,7 @@ struct Legalizer {
                        - limits[blocked_part][dimension]);
           }
           std::vector<Transition> transitions;
-          for (const auto& group : groups[blocked_part]) {
+          for (const auto& group : movable_groups[blocked_part]) {
             const auto& weights = group.first;
             if (weights[pivot] == 0) continue;
             int vertex = -1;
