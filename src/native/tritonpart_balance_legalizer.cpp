@@ -262,24 +262,28 @@ struct Legalizer {
     ++moves;
   }
 
-  int overloaded_source() const {
-    int selected = -1;
-    double selected_peak = 0.0;
-    for (int part = 0; part < problem.parts; ++part) {
-      double peak = 0.0;
-      for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
-        peak = std::max(
-            peak,
-            static_cast<double>(loads[part][dimension]
-                                - problem.allowed[part][dimension])
-                / std::max<Weight>(1, problem.allowed[part][dimension]));
-      }
-      if (peak > selected_peak) {
-        selected = part;
-        selected_peak = peak;
-      }
+  double peak_overload(int part) const {
+    double peak = 0.0;
+    for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
+      peak = std::max(
+          peak,
+          static_cast<double>(loads[part][dimension]
+                              - problem.allowed[part][dimension])
+              / std::max<Weight>(1, problem.allowed[part][dimension]));
     }
-    return selected;
+    return peak;
+  }
+
+  std::vector<int> overloaded_sources() const {
+    std::vector<int> sources;
+    for (int part = 0; part < problem.parts; ++part) {
+      if (peak_overload(part) > 0.0) sources.push_back(part);
+    }
+    std::sort(sources.begin(), sources.end(), [this](int left, int right) {
+      return std::make_pair(-peak_overload(left), left)
+             < std::make_pair(-peak_overload(right), right);
+    });
+    return sources;
   }
 
   struct Direct {
@@ -513,10 +517,17 @@ struct Legalizer {
            const std::string& report_path) {
     write_report(report_path, "RUNNING");
     while (true) {
-      const int source = overloaded_source();
-      if (source < 0) break;
-      const auto excess = overload(source);
-      if (!direct(source, excess) && !paired(source, excess)) {
+      const auto sources = overloaded_sources();
+      if (sources.empty()) break;
+      bool changed = false;
+      for (int source : sources) {
+        const auto excess = overload(source);
+        if (direct(source, excess) || paired(source, excess)) {
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) {
         write_report(report_path, "FAILED", "no deterministic direct or paired repair");
         throw std::runtime_error("no deterministic direct or paired balance repair");
       }
