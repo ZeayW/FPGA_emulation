@@ -65,6 +65,18 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
         ])
         self.assertEqual(physical.backend, "open")
 
+    def test_explicit_physical_worker_selection_reaches_dispatch(self):
+        args = _build_parser().parse_args([
+            "multi-fpga", "physical", "--split", "split", "--platform", "board.json",
+            "--schedule", "schedule.json", "--out", "worker",
+            "--fpga", "fpga2", "--fpga", "fpga1",
+        ])
+        with patch(
+            "emuflow.cli.run_multi_fpga_physical_flow", return_value={"summary": {}}
+        ) as run, patch("emuflow.cli._print_json"):
+            self.assertEqual(_dispatch(args), 0)
+        self.assertEqual(run.call_args.kwargs["fpga_ids"], ["fpga2", "fpga1"])
+
     def test_python_api_defaults_match_cli(self):
         for function, parameter, expected in [
             (run_multi_fpga_flow, "mapping_profile", XILINX_PROFILE),

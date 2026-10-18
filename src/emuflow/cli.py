@@ -2371,6 +2371,13 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_physical.add_argument("--schedule", type=Path, required=True)
     multi_fpga_physical.add_argument("--out", type=Path, required=True)
     multi_fpga_physical.add_argument(
+        "--fpga", dest="fpga_ids", action="append",
+        help=(
+            "implement only this FPGA as an explicit physical worker; repeat "
+            "for more FPGAs; emits partition records, not a whole-design summary"
+        ),
+    )
+    multi_fpga_physical.add_argument(
         "--original-ir",
         type=Path,
         help="original EmuIR used to map routed DUT timing endpoints",
@@ -5754,6 +5761,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 logic_path_database_path=args.logic_path_database,
                 workers=args.workers,
                 resume=args.resume,
+                fpga_ids=args.fpga_ids,
             )
             _print_json(report["summary"])
             return 0

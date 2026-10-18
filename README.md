@@ -246,6 +246,16 @@ I/O evidence, and publishes summaries only after both physical validators pass.
 Neither helper alone qualifies whole-design Phase 7C or creates a persistent
 intermediate cache; the NVDLA whole-design OpenSTA result remains pending.
 
+For physical workers inside an active experiment, `multi-fpga physical --fpga
+fpga1` implements only the selected FPGA through the normal backend. Repeat
+`--fpga` to select several; each worker uses an isolated output directory and
+the same immutable Phase 6 inputs. Completed partitions publish
+`<out>/<fpga>/partition-record.json`, and an explicitly selected worker writes
+`physical-partition-batch.json` with its input seals and record references.
+This worker report does not publish a whole-design physical summary. Aggregate
+all BoardDB partitions through the common checked assembler before Phase 7C.
+Without `--fpga`, the command still implements and aggregates every FPGA.
+
 Finally, EmuFlow binds physical logic/interface delays, board-link delays, and
 the selected TDM events to an abstract global timing model. **OpenSTA is the
 default global STA engine**. The internal timing composer is a separate engine

@@ -761,6 +761,28 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 self.assertFalse((root / "rejected/physical-summary.json").exists())
                 self.assertFalse((root / "rejected/multi-fpga-physical-flow-report.json").exists())
 
+                worker_barrier = threading.Barrier(1, timeout=5.0)
+                batch = run_multi_fpga_physical_flow(
+                    split, PLATFORM, root / "schedule.json", root / "worker",
+                    architecture=architecture, workers=2, backend="open",
+                    fpga_ids=["fpga1"],
+                )
+                self.assertEqual(batch["schema"], "emuflow.physical-partition-batch/v1")
+                self.assertEqual(batch["selected_fpgas"], ["fpga1"])
+                self.assertEqual(batch["expected_fpgas"], ["fpga0", "fpga1"])
+                self.assertEqual(batch["execution"]["effective_workers"], 1)
+                self.assertFalse((root / "worker/fpga0").exists())
+                self.assertFalse((root / "worker/physical-summary.json").exists())
+                self.assertFalse((root / "worker/multi-fpga-physical-flow-report.json").exists())
+                worker_record = read_json(Path(batch["records"][0]["path"]))
+                self.assertEqual(worker_record["fpga"], "fpga1")
+                self.assertEqual(batch["records"][0]["sha256"], _sha256(Path(batch["records"][0]["path"])))
+                joined = _assemble_multi_fpga_physical_results(
+                    **{**assembly_inputs, "records": [worker_record, report["fpgas"][0]]},
+                    output_dir=root / "joined-workers",
+                )
+                self.assertEqual(joined["summary"]["fpgas"], 2)
+
         self.assertEqual(report["summary"]["fpgas"], 2)
         self.assertEqual(report["summary"]["original_cells"], 2)
         self.assertEqual(report["summary"]["transport_cells"], 2)
@@ -830,6 +852,23 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                         backend_descriptor=physical_backend_descriptor(backend),
                     )
             self.assertFalse((root / "out/physical-summary.json").exists())
+
+    def test_worker_rejects_unknown_duplicate_and_empty_fpga_selection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            split = root / "split"
+            split.mkdir()
+            write_json(split / "manifest.json", {"schema": "emuflow.split-manifest/v1"})
+            write_json(root / "schedule.json", {})
+            for selected in ([], ["unknown"], ["fpga0", "fpga0"], "fpga0"):
+                with self.subTest(selected=selected), self.assertRaisesRegex(
+                    ValidationError, "FPGA selection"
+                ):
+                    run_multi_fpga_physical_flow(
+                        split, PLATFORM, root / "schedule.json", root / "out",
+                        backend="vivado", fpga_ids=selected,
+                    )
+            self.assertFalse((root / "out").exists())
 
     def test_rejects_non_positive_worker_count(self):
         with tempfile.TemporaryDirectory() as temporary:

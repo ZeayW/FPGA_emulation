@@ -728,6 +728,7 @@ def run_multi_fpga_physical_flow(
     logic_path_database_path: Optional[Path] = None,
     workers: int = 1,
     resume: bool = False,
+    fpga_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     if workers < 1:
         raise ValidationError("physical workers must be at least one")
@@ -780,6 +781,18 @@ def run_multi_fpga_physical_flow(
     virtual_binding = None
     virtual_artifacts = manifest.get("virtual_board_binding")
     expected_fpgas = [fpga.id for fpga in platform.fpgas]
+    if fpga_ids is not None:
+        if (
+            isinstance(fpga_ids, (str, bytes))
+            or not fpga_ids
+            or any(not isinstance(fpga, str) for fpga in fpga_ids)
+            or len(set(fpga_ids)) != len(fpga_ids)
+            or set(fpga_ids) - set(expected_fpgas)
+        ):
+            raise ValidationError("physical FPGA selection is empty, duplicated, or unknown")
+        selected_fpgas = [fpga for fpga in expected_fpgas if fpga in fpga_ids]
+    else:
+        selected_fpgas = expected_fpgas
     if "position_hints" in manifest:
         position_hints = read_json(split_root / manifest["position_hints"])
     if "electrical_binding" in manifest:
@@ -1908,16 +1921,26 @@ def run_multi_fpga_physical_flow(
         return record
 
     items_by_fpga = {item["fpga"]: item for item in manifest["fpgas"]}
-    ordered_items = [items_by_fpga[fpga_id] for fpga_id in expected_fpgas]
+    ordered_items = [items_by_fpga[fpga_id] for fpga_id in selected_fpgas]
+
+    def run_and_record(item: Mapping[str, Any]) -> Dict[str, Any]:
+        record = _run_partition(item)
+        write_json(
+            output_dir / record["fpga"] / "partition-record.json",
+            record,
+            compact=True,
+        )
+        return record
+
     effective_workers = min(workers, len(ordered_items))
     if effective_workers == 1:
-        partition_results = [_run_partition(item) for item in ordered_items]
+        partition_results = [run_and_record(item) for item in ordered_items]
     else:
         results_by_fpga: Dict[str, Dict[str, Any]] = {}
         failures = []
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             future_to_fpga = {
-                executor.submit(_run_partition, item): item["fpga"]
+                executor.submit(run_and_record, item): item["fpga"]
                 for item in ordered_items
             }
             for future in as_completed(future_to_fpga):
@@ -1935,8 +1958,51 @@ def run_multi_fpga_physical_flow(
                 f"parallel multi-FPGA physical flow failed: {details}"
             ) from failures[0][1]
         partition_results = [
-            results_by_fpga[fpga_id] for fpga_id in expected_fpgas
+            results_by_fpga[fpga_id] for fpga_id in selected_fpgas
         ]
+    execution = {
+        "seed": seed,
+        "requested_workers": workers,
+        "effective_workers": effective_workers,
+        "ordering": "boarddb-fpga-order",
+        "pack_place_resume": resume,
+        "route_resume": resume,
+        **(
+            {"rapidwright_placer": effective_rapidwright_placer}
+            if backend == "rapidwright"
+            else {}
+        ),
+    }
+    if fpga_ids is not None:
+        # Explicit workers may complete independently on different HPC nodes.
+        # Their records are scratch in the active experiment. Only the common
+        # assembler may publish the complete BoardDB physical summary.
+        report = {
+            "schema": "emuflow.physical-partition-batch/v1",
+            "status": "pass",
+            "scope": "selected-physical-partitions; whole-design Phase7C pending",
+            "backend": backend_descriptor,
+            "architecture": architecture_source,
+            "execution": execution,
+            "expected_fpgas": expected_fpgas,
+            "selected_fpgas": selected_fpgas,
+            "source": {
+                name: {"path": str(path.resolve()), "sha256": _sha256(path)}
+                for name, path in (
+                    ("split_manifest", manifest_path),
+                    ("platform", platform_path),
+                    ("schedule", schedule_path),
+                )
+            },
+            "records": [
+                {"fpga": record["fpga"], "path": str(path), "sha256": _sha256(path)}
+                for record in partition_results
+                for path in [output_dir / record["fpga"] / "partition-record.json"]
+            ],
+            "summary": {"status": "pass", "completed_partitions": len(partition_results)},
+        }
+        write_json(output_dir / "physical-partition-batch.json", report, compact=True)
+        return report
     return _assemble_multi_fpga_physical_results(
         records=partition_results,
         manifest=manifest,
@@ -1948,19 +2014,7 @@ def run_multi_fpga_physical_flow(
         backend_descriptor=backend_descriptor,
         architecture_source=architecture_source,
         include_logic_timing=all(path is not None for path in logic_context),
-        execution={
-            "seed": seed,
-            "requested_workers": workers,
-            "effective_workers": effective_workers,
-            "ordering": "boarddb-fpga-order",
-            "pack_place_resume": resume,
-            "route_resume": resume,
-            **(
-                {"rapidwright_placer": effective_rapidwright_placer}
-                if backend == "rapidwright"
-                else {}
-            ),
-        },
+        execution=execution,
     )
 
 
