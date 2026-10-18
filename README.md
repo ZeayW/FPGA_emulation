@@ -263,7 +263,9 @@ planning because its clock-source and multi-resource adapters are incomplete.
 For an explicit offline audit, run `python -m emuflow.xilinx_clock_capacity
 --rwroute-input <rwroute.tsv> --architecture <architecture.json> --out
 <clock-capacity.json>`. It streams the placed design, checks internal clock-pin
-consumers, and rejects missing region identities. Passing this necessary bound
+consumers, and rejects missing region identities. An incomplete region lookup
+retains any overload already proved in known regions and reports unresolved
+consumers explicitly; it cannot produce a passing certificate. Passing this necessary bound
 does not qualify complete clock routing or clock timing. Clock-aware native
 placement remains pending; extending a router search cannot certify an
 over-capacity placement.

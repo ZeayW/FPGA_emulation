@@ -69,21 +69,27 @@ def audit_xilinx_clock_capacity(input_path: Path, architecture_path: Path) -> Di
         for site in architecture["sites"]
     }
     demand = defaultdict(set)
+    unresolved = {}
     for net, cells in sinks.items():
         for cell in cells:
             region = regions.get(sites[cell])
             if not isinstance(region, str) or not region:
-                raise ValidationError(
-                    f"clock capacity lacks region for clock consumer {cell} at {sites[cell]}"
-                )
+                unresolved[cell] = sites[cell]
+                continue
             demand[region].add(net)
     over = sorted(region for region, nets in demand.items()
                   if len(nets) > ULTRASCALE_CLOCKS_PER_REGION)
     return {
         "schema": "emuflow.xilinx-clock-region-capacity-audit/v1",
-        "status": "fail" if over else "pass",
+        "status": "fail" if over or unresolved else "pass",
         "scope": "necessary internal clock-sink placement bound; not complete clock routing",
         "capacity": ULTRASCALE_CLOCKS_PER_REGION,
+        "coverage": {
+            "complete": not unresolved,
+            "unresolved_consumers": [
+                {"cell": cell, "site": site} for cell, site in sorted(unresolved.items())
+            ],
+        },
         "source": {
             "rwroute_input": {"path": str(input_path), "sha256": digest.hexdigest()},
             "architecture": {"path": str(architecture_path), "sha256": file_sha256(architecture_path)},
@@ -95,6 +101,7 @@ def audit_xilinx_clock_capacity(input_path: Path, architecture_path: Path) -> Di
             "clock_regions": len(demand),
             "maximum_distinct_clocks": max(map(len, demand.values()), default=0),
             "over_capacity_regions": len(over),
+            "unresolved_clock_sink_cells": len(unresolved),
         },
         "over_capacity_regions": over,
         "regions": [{"region": region, "clocks": sorted(nets)}

@@ -58,8 +58,22 @@ class ClockCapacityAuditTest(unittest.TestCase):
             value = json.loads(architecture.read_text())
             value["sites"][0]["physical_region"] = None
             architecture.write_text(json.dumps(value))
-            with self.assertRaisesRegex(ValidationError, "lacks region"):
-                audit_xilinx_clock_capacity(path, architecture)
+            report = audit_xilinx_clock_capacity(path, architecture)
+            self.assertEqual(report["status"], "fail")
+            self.assertFalse(report["coverage"]["complete"])
+            self.assertEqual(report["metrics"]["unresolved_clock_sink_cells"], 1)
+
+    def test_known_overload_is_preserved_when_other_regions_are_unresolved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, architecture = self.fixture(Path(directory), 25)
+            with path.open("a") as stream:
+                stream.write("CELL\tother\tother\tFDRE\tOTHER_SITE\tAFF\n")
+                stream.write("NET\tother_clock\tclock\nPIN\tother_clock\tother\tC\tsink\n")
+            report = audit_xilinx_clock_capacity(path, architecture)
+            self.assertEqual(report["status"], "fail")
+            self.assertFalse(report["coverage"]["complete"])
+            self.assertEqual(report["metrics"]["maximum_distinct_clocks"], 25)
+            self.assertEqual(report["over_capacity_regions"], ["X0Y0"])
 
     def test_device_identity_must_match(self):
         with tempfile.TemporaryDirectory() as directory:
