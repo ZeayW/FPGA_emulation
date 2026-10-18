@@ -1696,7 +1696,12 @@ def _parse_native_balance_report(
         else:
             raise ValidationError("invalid native TritonPart balance record")
     if not saw_end or status != "pass" or saw_error or set(metrics) != {
-        "moves", "direct_moves", "paired_sequences", "elapsed_milliseconds"
+        "moves",
+        "direct_moves",
+        "paired_sequences",
+        "ejection_chain_sequences",
+        "max_ejection_chain_moves",
+        "elapsed_milliseconds",
     }:
         raise ValidationError("native TritonPart balance report is incomplete")
     expected_parts = set(fpga_order)

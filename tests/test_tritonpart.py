@@ -285,6 +285,55 @@ class TritonPartTest(unittest.TestCase):
             "c0": "fpga1", "c1": "fpga0", "c2": "fpga0", "c3": "fpga1"
         })
 
+    def test_native_balance_legalizer_executes_three_move_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "partition.hgr").write_text(
+                "1 3 11\n1 1 2 3\n"
+                "1 3 0 0\n1 0 3 0\n1 0 0 3\n",
+                encoding="utf-8",
+            )
+            (root / "partition.fix").write_text("-1\n" * 3, encoding="utf-8")
+            (root / "partition.edge-classes").write_text("0\n", encoding="utf-8")
+            solution = root / "partition.hgr.part.3"
+            solution.write_text("0\n1\n2\n", encoding="utf-8")
+            artifact = {
+                "cluster_order": ["x", "y", "z"],
+                "fpga_order": ["fpga0", "fpga1", "fpga2"],
+                "vertex_dimensions": ["cells", "lut", "ff", "dsp48"],
+                "vertex_weights": [
+                    [1, 3, 0, 0],
+                    [1, 0, 3, 0],
+                    [1, 0, 0, 3],
+                ],
+                "balance_allowed_loads": {
+                    "fpga0": {"cells": 1, "lut": 1, "ff": 1, "dsp48": 3},
+                    "fpga1": {"cells": 1, "lut": 3, "ff": 1, "dsp48": 1},
+                    "fpga2": {"cells": 1, "lut": 1, "ff": 3, "dsp48": 1},
+                },
+                "files": {
+                    "hypergraph": "partition.hgr",
+                    "fixed": "partition.fix",
+                    "edge_classes": "partition.edge-classes",
+                },
+            }
+            repaired, report = _run_native_balance_legalizer(
+                {"x": "fpga0", "y": "fpga1", "z": "fpga2"},
+                artifact,
+                root,
+                solution,
+                root / "repaired.part.3",
+                executable=str(tritonpart_balance_legalizer()),
+                timeout_seconds=30,
+            )
+        self.assertEqual(
+            repaired,
+            {"x": "fpga1", "y": "fpga2", "z": "fpga0"},
+        )
+        self.assertEqual(report["ejection_chain_sequences"], 1)
+        self.assertEqual(report["max_ejection_chain_moves"], 3)
+        self.assertEqual(report["moves"], 3)
+
     def setUp(self) -> None:
         self.ir = import_yosys_json(
             ROOT / "examples" / "yosys" / "counter.json",

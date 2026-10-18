@@ -376,9 +376,12 @@ When balance repair is enabled, Phase 3 therefore invokes the compiled
 solution. It uses exact integer bounds, moves no fixed vertex, and either emits
 a legal assignment or fails the seed explicitly; it cannot widen a capacity or
 balance bound. Its compact `balance-repair-report.txt` records RUNNING/PASS/FAILED
-state, initial/final/allowed loads, and direct or paired move counts. Python does
-not perform the production graph search: it parses the result and independently
-recomputes the final per-FPGA resource loads before Phase 3 can publish it.
+state, initial/final/allowed loads, and direct, paired, or bounded ejection-chain
+move counts. The bounded chain handles cases where several complementary
+resource vectors must move before a scarce-resource cluster can enter a target.
+Python does not perform the production graph search: it parses the result and
+independently recomputes the final per-FPGA resource loads before Phase 3 can
+publish it.
 Design and communication logic consume the device resources. FPGA-internal path delays come from the physical backend
 and STA.
 RapidWright checks the whole-device budget after transport mapping, before
