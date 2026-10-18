@@ -531,7 +531,9 @@ struct Legalizer {
     return result;
   }
 
-  bool ejection_chain(int source, const std::vector<Weight>& excess) {
+  bool ejection_chain(int source,
+                      const std::vector<Weight>& excess,
+                      bool preferred_only = false) {
     using Groups = std::map<std::vector<Weight>, std::vector<int>>;
     std::vector<Groups> groups(problem.parts);
     for (int vertex = 0; vertex < static_cast<int>(labels.size()); ++vertex) {
@@ -598,6 +600,13 @@ struct Legalizer {
       }
     }
     std::sort(roots.begin(), roots.end());
+    if (preferred_only) {
+      roots.erase(
+          std::remove_if(roots.begin(), roots.end(), [](const Root& root) {
+            return root.preference > 1;
+          }),
+          roots.end());
+    }
     constexpr std::size_t root_width = 64;
     if (roots.size() > root_width) roots.resize(root_width);
 
@@ -855,6 +864,15 @@ struct Legalizer {
         if (direct(source, excess)) {
           changed = true;
           break;
+        }
+      }
+      if (!changed) {
+        for (int source : sources) {
+          if (!preferred_chain_weights[source].empty()
+              && ejection_chain(source, overload(source), true)) {
+            changed = true;
+            break;
+          }
         }
       }
       if (!changed) {
