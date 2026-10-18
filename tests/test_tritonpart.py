@@ -387,6 +387,74 @@ class TritonPartTest(unittest.TestCase):
         self.assertEqual(report["max_ejection_chain_moves"], 3)
         self.assertEqual(report["moves"], 3)
 
+    def test_native_balance_legalizer_batches_identical_chain_blockers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            weights = (
+                [[1, 20, 1], [1, 0, 1]]
+                + [[1, 1, 0]] * 20
+                + [[1, 0, 1]]
+            )
+            vertex_count = len(weights)
+            (root / "partition.hgr").write_text(
+                f"1 {vertex_count} 11\n"
+                + "1 " + " ".join(str(index) for index in range(1, vertex_count + 1))
+                + "\n"
+                + "".join(
+                    " ".join(str(value) for value in row) + "\n"
+                    for row in weights
+                ),
+                encoding="utf-8",
+            )
+            fixed = [-1, 0] + [-1] * 20 + [2]
+            initial = [0, 0] + [1] * 20 + [2]
+            (root / "partition.fix").write_text(
+                "\n".join(str(value) for value in fixed) + "\n",
+                encoding="utf-8",
+            )
+            (root / "partition.edge-classes").write_text("0\n", encoding="utf-8")
+            solution = root / "partition.hgr.part.3"
+            solution.write_text(
+                "\n".join(str(value) for value in initial) + "\n",
+                encoding="utf-8",
+            )
+            artifact = {
+                "cluster_order": [f"c{index}" for index in range(vertex_count)],
+                "fpga_order": ["fpga0", "fpga1", "fpga2"],
+                "vertex_dimensions": ["cells", "lut", "dsp48"],
+                "vertex_weights": weights,
+                "balance_allowed_loads": {
+                    "fpga0": {"cells": 2, "lut": 20, "dsp48": 1},
+                    "fpga1": {"cells": 21, "lut": 20, "dsp48": 1},
+                    "fpga2": {"cells": 21, "lut": 20, "dsp48": 1},
+                },
+                "files": {
+                    "hypergraph": "partition.hgr",
+                    "fixed": "partition.fix",
+                    "edge_classes": "partition.edge-classes",
+                },
+            }
+            candidate = {
+                cluster: f"fpga{part}"
+                for cluster, part in zip(artifact["cluster_order"], initial)
+            }
+            repaired, report = _run_native_balance_legalizer(
+                candidate,
+                artifact,
+                root,
+                solution,
+                root / "repaired.part.3",
+                executable=str(tritonpart_balance_legalizer()),
+                timeout_seconds=30,
+            )
+        self.assertEqual(repaired["c0"], "fpga1")
+        self.assertTrue(all(repaired[f"c{index}"] == "fpga2" for index in range(2, 22)))
+        self.assertEqual(report["direct_moves"], 0)
+        self.assertEqual(report["paired_sequences"], 0)
+        self.assertEqual(report["ejection_chain_sequences"], 1)
+        self.assertEqual(report["max_ejection_chain_moves"], 2)
+        self.assertEqual(report["moves"], 21)
+
     def test_native_balance_legalizer_replays_proven_chain_template(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

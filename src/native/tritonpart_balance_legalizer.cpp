@@ -42,6 +42,7 @@ struct Problem {
 
 struct ChainTemplateMove {
   std::vector<Weight> weights;
+  int count = 0;
   int source = -1;
   int target = -1;
 };
@@ -524,12 +525,16 @@ struct Legalizer {
   }
 
   struct Move {
-    int vertex = -1;
+    std::vector<int> vertices;
     int source = -1;
     int target = -1;
-    auto key() const { return std::tie(vertex, source, target); }
+    auto key() const { return std::tie(vertices, source, target); }
     bool operator<(const Move& other) const { return key() < other.key(); }
   };
+
+  void apply(const Move& move) {
+    for (int vertex : move.vertices) apply(vertex, move.source, move.target);
+  }
 
   struct Violation {
     int count = 0;
@@ -569,8 +574,12 @@ struct Legalizer {
     std::vector<ChainTemplateMove> result;
     result.reserve(sequence.size());
     for (const Move& move : sequence) {
+      require(!move.vertices.empty(), "internal empty balance-chain move");
       result.push_back(ChainTemplateMove{
-          problem.vertex_weights[move.vertex], move.source, move.target});
+          problem.vertex_weights[move.vertices.front()],
+          static_cast<int>(move.vertices.size()),
+          move.source,
+          move.target});
     }
     preferred_chain_templates[source] = std::move(result);
   }
@@ -581,26 +590,25 @@ struct Legalizer {
     if (chain_template.empty() || chain_template.front().source != source) {
       return false;
     }
-    std::vector<int> selected;
+    std::set<int> selected;
     std::vector<Move> sequence;
     auto candidate_loads = loads;
     for (const ChainTemplateMove& step : chain_template) {
       const auto found = movable_groups[step.source].find(step.weights);
       if (found == movable_groups[step.source].end()) return false;
-      int vertex = -1;
+      std::vector<int> vertices;
       for (int candidate : found->second) {
-        if (std::find(selected.begin(), selected.end(), candidate)
-            == selected.end()) {
-          vertex = candidate;
-          break;
-        }
+        if (selected.count(candidate) != 0) continue;
+        vertices.push_back(candidate);
+        if (static_cast<int>(vertices.size()) == step.count) break;
       }
-      if (vertex < 0) return false;
-      selected.push_back(vertex);
-      sequence.push_back(Move{vertex, step.source, step.target});
+      if (static_cast<int>(vertices.size()) != step.count) return false;
+      selected.insert(vertices.begin(), vertices.end());
+      sequence.push_back(Move{vertices, step.source, step.target});
       for (int dimension = 0; dimension < problem.dimensions; ++dimension) {
-        candidate_loads[step.source][dimension] -= step.weights[dimension];
-        candidate_loads[step.target][dimension] += step.weights[dimension];
+        const Weight amount = step.weights[dimension] * step.count;
+        candidate_loads[step.source][dimension] -= amount;
+        candidate_loads[step.target][dimension] += amount;
       }
     }
     const auto& root_weights = chain_template.front().weights;
@@ -625,7 +633,7 @@ struct Legalizer {
     }
     if (violation_key(candidate_loads, limits).count != 0) return false;
     for (const Move& move : sequence) {
-      apply(move.vertex, move.source, move.target);
+      apply(move);
     }
     ++ejection_chain_sequences;
     ++replayed_chain_sequences;
@@ -717,19 +725,19 @@ struct Legalizer {
       Violation violation;
       double normalized_delta = 0.0;
       double delta = 0.0;
-      int vertex = -1;
+      std::vector<int> vertices;
       int target = -1;
       std::vector<std::vector<Weight>> state_loads;
       bool operator<(const Transition& other) const {
         return std::tie(violation.count, violation.normalized_sum,
                         violation.normalized_peak, violation.absolute,
-                        normalized_delta, delta, vertex, target)
+                        normalized_delta, delta, vertices, target)
                < std::tie(other.violation.count,
                           other.violation.normalized_sum,
                           other.violation.normalized_peak,
                           other.violation.absolute,
                           other.normalized_delta, other.delta,
-                          other.vertex, other.target);
+                          other.vertices, other.target);
       }
     };
     constexpr std::size_t beam_width = 128;
@@ -757,14 +765,14 @@ struct Legalizer {
       State initial{
           root_loads,
           {root.vertex},
-          {Move{root.vertex, source, root.target}},
+          {Move{{root.vertex}, source, root.target}},
           root.delta,
           violation_key(root_loads, limits)};
       if (initial.violation.count == 0) {
         preferred_chain_weights[source] = root_weights;
         preferred_chain_targets[source] = root.target;
         remember_chain(source, initial.sequence);
-        apply(root.vertex, source, root.target);
+        apply(initial.sequence.front());
         ++ejection_chain_sequences;
         max_ejection_chain_moves = std::max<long long>(
             max_ejection_chain_moves, 1);
@@ -825,40 +833,57 @@ struct Legalizer {
           for (const auto& group : movable_groups[blocked_part]) {
             const auto& weights = group.first;
             if (weights[pivot] == 0) continue;
-            int vertex = -1;
+            const Weight pivot_deficit = std::max<Weight>(
+                1, deficits[pivot]);
+            const std::size_t wanted = static_cast<std::size_t>(
+                (pivot_deficit + weights[pivot] - 1) / weights[pivot]);
+            std::vector<int> available;
             for (int candidate : group.second) {
-              if (std::find(state.moved.begin(), state.moved.end(), candidate)
-                  == state.moved.end()) {
-                vertex = candidate;
-                break;
+              if (std::binary_search(
+                      state.moved.begin(), state.moved.end(), candidate)) {
+                continue;
               }
+              available.push_back(candidate);
+              if (available.size() == wanted) break;
             }
-            if (vertex < 0) continue;
-            double relief = 0.0;
-            for (int dimension = 0; dimension < problem.dimensions;
-                 ++dimension) {
-              relief += static_cast<double>(
-                            std::min(weights[dimension], deficits[dimension]))
-                        / std::max<Weight>(
-                              1, problem.allowed[blocked_part][dimension]);
-            }
-            if (relief <= 0.0) continue;
-            for (int target = 0; target < problem.parts; ++target) {
-              if (target == blocked_part) continue;
-              auto candidate_loads = state.state_loads;
+            if (available.empty()) continue;
+            std::set<std::size_t> batch_sizes{
+                1, std::min(wanted, available.size())};
+            for (std::size_t batch_size : batch_sizes) {
+              std::vector<int> vertices(
+                  available.begin(), available.begin() + batch_size);
+              const Weight count = static_cast<Weight>(vertices.size());
+              double relief = 0.0;
               for (int dimension = 0; dimension < problem.dimensions;
                    ++dimension) {
-                candidate_loads[blocked_part][dimension] -= weights[dimension];
-                candidate_loads[target][dimension] += weights[dimension];
+                relief += static_cast<double>(
+                              std::min(weights[dimension] * count,
+                                       deficits[dimension]))
+                          / std::max<Weight>(
+                                1, problem.allowed[blocked_part][dimension]);
               }
-              const double delta = edge_delta(vertex, blocked_part, target);
-              transitions.push_back(Transition{
-                  violation_key(candidate_loads, limits),
-                  delta / relief,
-                  delta,
-                  vertex,
-                  target,
-                  std::move(candidate_loads)});
+              if (relief <= 0.0) continue;
+              for (int target = 0; target < problem.parts; ++target) {
+                if (target == blocked_part) continue;
+                auto candidate_loads = state.state_loads;
+                for (int dimension = 0; dimension < problem.dimensions;
+                     ++dimension) {
+                  const Weight amount = weights[dimension] * count;
+                  candidate_loads[blocked_part][dimension] -= amount;
+                  candidate_loads[target][dimension] += amount;
+                }
+                double delta = 0.0;
+                for (int vertex : vertices) {
+                  delta += edge_delta(vertex, blocked_part, target);
+                }
+                transitions.push_back(Transition{
+                    violation_key(candidate_loads, limits),
+                    delta / relief,
+                    delta,
+                    vertices,
+                    target,
+                    std::move(candidate_loads)});
+              }
             }
           }
           std::sort(transitions.begin(), transitions.end());
@@ -869,11 +894,13 @@ struct Legalizer {
             State candidate;
             candidate.state_loads = std::move(transition.state_loads);
             candidate.moved = state.moved;
-            candidate.moved.push_back(transition.vertex);
+            candidate.moved.insert(candidate.moved.end(),
+                                   transition.vertices.begin(),
+                                   transition.vertices.end());
             std::sort(candidate.moved.begin(), candidate.moved.end());
             candidate.sequence = state.sequence;
             candidate.sequence.push_back(
-                Move{transition.vertex, blocked_part, transition.target});
+                Move{transition.vertices, blocked_part, transition.target});
             candidate.approximate_delta = state.approximate_delta
                                           + transition.delta;
             candidate.violation = transition.violation;
@@ -882,7 +909,7 @@ struct Legalizer {
               preferred_chain_targets[source] = root.target;
               remember_chain(source, candidate.sequence);
               for (const Move& move : candidate.sequence) {
-                apply(move.vertex, move.source, move.target);
+                apply(move);
               }
               ++ejection_chain_sequences;
               max_ejection_chain_moves = std::max<long long>(
