@@ -309,6 +309,8 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 top="static_exact_chain",
                 clocks=["clk"],
                 partition_provider="greedy",
+                # This transport fixture has one indivisible FF across two parts.
+                balance_tolerance=1.0,
                 timing_driven=False,
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
@@ -378,6 +380,8 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 top="static_exact_chain",
                 clocks=["clk"],
                 partition_provider="greedy",
+                # This transport fixture has one indivisible FF across two parts.
+                balance_tolerance=1.0,
                 timing_driven=True,
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),

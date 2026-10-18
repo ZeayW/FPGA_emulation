@@ -86,6 +86,13 @@ class Phase3Test(unittest.TestCase):
                     output / "assignment.sqlite",
                 )
             self.assertEqual(checked, report["validation"])
+            tampered = copy.deepcopy(report)
+            tampered["validation"]["effective_balance_percent"] = 210.0
+            (output / "phase3_report.json").write_text(json.dumps(tampered))
+            with self.assertRaisesRegex(ValidationError, "strict balance evidence"):
+                validate_phase3_indexed(ir_path, PLATFORM_PATH,
+                    output / "phase3_report.json", output / "assignment.sqlite")
+            (output / "phase3_report.json").write_text(json.dumps(report))
 
             with sqlite3.connect(output / "assignment.sqlite") as connection:
                 connection.execute("DELETE FROM cut_sinks")

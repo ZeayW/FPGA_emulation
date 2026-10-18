@@ -138,6 +138,7 @@ def write_phase3_assignment_index(
             "provider": assignment.get("provider"),
             "seed": assignment.get("seed"),
             "source_instance_count": len(ir.value["instances"]),
+            "constraints": assignment.get("constraints"),
             "semantic_contract_sha256": exact_digest,
         }
         connection.executemany(
@@ -355,6 +356,7 @@ def migrate_phase3_assignment_index(
             "provider": assignment.get("provider"),
             "seed": assignment.get("seed"),
             "source_instance_count": source_count,
+            "constraints": assignment.get("constraints"),
             "semantic_contract_sha256": exact_digest,
             "migration": "legacy-assignment-without-emuir-expansion-v1",
         }
@@ -708,26 +710,31 @@ def validate_phase3_assignment_index_against_emuir(
             )
 
         resources_by_fpga: dict[str, dict[str, int]] = {}
+        total_resources_by_fpga: dict[str, dict[str, int]] = {}
         for row in connection.execute(
             """
-            SELECT p.fpga,r.key AS resource,SUM(r.value) AS amount
+            SELECT p.fpga,c.is_replica,r.key AS resource,SUM(r.value) AS amount
               FROM copies c JOIN parts p ON p.part_index=c.part_index
               JOIN src.cell_records i ON i.seq=c.source_instance_seq
               JOIN src.payloads payload ON payload.seq=i.resources_seq,
                    json_each(payload.value) r
-             WHERE c.is_replica=0
-             GROUP BY p.fpga,r.key ORDER BY p.fpga,r.key
+             GROUP BY p.fpga,c.is_replica,r.key ORDER BY p.fpga,c.is_replica,r.key
             """
         ):
             amount = int(row["amount"])
             if amount:
-                resources_by_fpga.setdefault(row["fpga"], {})[
-                    row["resource"]
-                ] = amount
+                total = total_resources_by_fpga.setdefault(row["fpga"], {})
+                total[row["resource"]] = total.get(row["resource"], 0) + amount
+                if not row["is_replica"]:
+                    resources_by_fpga.setdefault(row["fpga"], {})[row["resource"]] = amount
+        instances_by_fpga = {}
         for row in connection.execute(
-            "SELECT fpga FROM parts ORDER BY part_index"
+            "SELECT p.fpga,SUM(c.is_replica=0) AS amount FROM parts p "
+            "LEFT JOIN copies c ON c.part_index=p.part_index GROUP BY p.fpga"
         ):
+            instances_by_fpga[row["fpga"]] = int(row["amount"] or 0)
             resources_by_fpga.setdefault(row["fpga"], {})
+            total_resources_by_fpga.setdefault(row["fpga"], {})
 
         return {
             "status": "pass",
@@ -748,6 +755,9 @@ def validate_phase3_assignment_index_against_emuir(
             "coverage_errors": coverage_errors,
             "cut_pair_errors": cut_pair_errors,
             "resources_by_fpga": resources_by_fpga,
+            "total_resources_by_fpga": total_resources_by_fpga,
+            "instances_by_fpga": instances_by_fpga,
+            "constraints": metadata.get("constraints"),
             "semantic_contract_sha256": metadata.get(
                 "semantic_contract_sha256"
             ),

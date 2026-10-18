@@ -29,6 +29,9 @@ from .partition_physical_feedback import (
     validate_partition_physical_feedback,
 )
 from .platform import Platform
+from .partition_limits import strict_balance_limits
+from .resource_budget import validate_device_resource_usage
+from .resources import RESOURCE_FIELDS
 from .repart import run_repart
 from .mfspart_provider import refine_mfspart_partition, run_mfspart
 from .mfspart_refine import DEFAULT_BOTTLENECK_BETA, DEFAULT_TIMING_PATH_BETA
@@ -1195,6 +1198,42 @@ def validate_phase3_indexed(
     )
     if validation.get(resource_field) != proof["resources_by_fpga"]:
         raise ValidationError("Phase 3 report resource totals disagree")
+    constraints = read_json(phase3_report_path.parent / "constraints.normalized.json")
+    if proof.get("constraints") != constraints:
+        raise ValidationError("indexed Phase 3 sealed constraints disagree or are missing")
+    active = constraints.get("active_fpgas")
+    fpgas = [fpga for fpga in platform.fpgas if fpga.id in (active or [])]
+    if not fpgas or len(fpgas) != len(set(active)):
+        raise ValidationError("indexed Phase 3 active FPGA set is invalid")
+    for fpga in platform.fpgas:
+        validate_device_resource_usage(
+            proof["total_resources_by_fpga"][fpga.id], fpga.to_dict(), stage="indexed-phase3",
+        )
+    fields = ["cells", *[field for field in RESOURCE_FIELDS
+        if any(counts.get(field, 0) for counts in proof["resources_by_fpga"].values())
+        and all(fpga.effective_capacity.get(field, 0) > 0 for fpga in fpgas)]]
+    loads = {fpga.id: {field: (proof["instances_by_fpga"][fpga.id] if field == "cells"
+                              else proof["resources_by_fpga"][fpga.id].get(field, 0))
+                       for field in fields} for fpga in fpgas}
+    if any(proof["instances_by_fpga"].get(fpga.id, 0) for fpga in platform.fpgas if fpga.id not in active):
+        raise ValidationError("indexed Phase 3 assignment uses inactive FPGA")
+    totals = {field: sum(row[field] for row in loads.values()) for field in fields}
+    tolerance = constraints["balance_tolerance"]
+    overrides = constraints.get("balance_tolerance_by_dimension", {})
+    bounds = strict_balance_limits(fpgas, totals, tolerance, overrides)
+    for fpga in loads:
+        for field in fields:
+            if loads[fpga][field] > bounds[fpga][field]:
+                raise ValidationError(f"indexed Phase 3 strict balance exceeded: {fpga} {field} used={loads[fpga][field]} allowed={bounds[fpga][field]}; automatic relaxation is forbidden")
+    percentages = {field: overrides.get(field, tolerance) * 100.0 for field in fields}
+    if (validation.get("balance_auto_relaxed") is not False
+        or validation.get("requested_balance_percent") != tolerance * 100.0
+        or validation.get("effective_balance_percent") != max(percentages.values())
+        or validation.get("effective_balance_percent_by_dimension") != percentages
+        or validation.get("requested_balance_percent_by_dimension") != percentages
+        or validation.get("balance_loads") != loads
+        or validation.get("balance_allowed_loads") != bounds):
+        raise ValidationError("indexed Phase 3 strict balance evidence disagrees with sealed constraints")
     if proof["semantic_contract_sha256"] is not None:
         if validation.get("cut_mode") != CUT_MODE_STATIC_EXACT:
             raise ValidationError(

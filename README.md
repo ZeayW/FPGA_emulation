@@ -371,7 +371,10 @@ routing the materialized circuit, and against its final occupied resources.
 DSP component expansion counts one DSP site, paired LUT halves count one CLB
 LUT, and BRAM36 consumes two BRAM18K units. Clock-prefilter logic is included.
 Completed partition assembly rejects missing or mismatched resource-budget
-evidence. SLR window selection and OpenPARF density do not redefine the
+evidence. Indexed Phase 3 publication seals the requested constraints;
+terminal SQLite validation independently recomputes primary loads, replicated
+capacity usage, and strict balance bounds against the selected platform.
+Reports cannot widen their effective tolerance or reuse an older device budget. SLR window selection and OpenPARF density do not redefine the
 whole-device utilization denominator or relax its limit.
 
 The prior NVDLA partition used a requested/effective tolerance of 2.1 and
