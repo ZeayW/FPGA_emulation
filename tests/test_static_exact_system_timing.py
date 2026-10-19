@@ -22,6 +22,7 @@ from emuflow.system_timing import (
 from emuflow.tdm import (
     build_tdm_schedule,
     reconstruct_tdm_schedule_timing,
+    validate_tdm_schedule,
 )
 from tests import test_combinational_cut as combinational_fixture
 
@@ -196,6 +197,38 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             }
         )
         return result
+
+    def test_indexed_contract_schedules_from_routed_dependency_dag(self):
+        fixture = (
+            combinational_fixture.StaticExactCombinationalCutPartitionTest()
+        )
+        fixture.setUp()
+        _, assignment = fixture._exact_artifacts(dependent_return=True)
+        routes = fixture._exact_routes(assignment)
+        routes["semantic_contract"] = {
+            "schema": assignment["semantic_contract"]["schema"],
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
+        schedule = build_tdm_schedule(routes, fixture.platform)
+        self.assertEqual(
+            schedule["schedule_dependency_certificate"]["schema"],
+            "emuflow.sampled-virtual-wire-schedule-certificate/v2",
+        )
+        self.assertEqual(
+            schedule["metrics"]["dependency_edges"],
+            sum(
+                len(route["predecessor_cut_nets"])
+                for route in routes["routes"]
+            ),
+        )
+        self.assertEqual(
+            validate_tdm_schedule(routes, fixture.platform, schedule)[
+                "status"
+            ],
+            "pass",
+        )
 
     def _system_inputs(self):
         routes = copy.deepcopy(self.routes)

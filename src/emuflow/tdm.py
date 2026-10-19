@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import heapq
+import json
 import math
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
@@ -24,6 +25,9 @@ TDM_BASELINE_PROVIDER = "deterministic-round-barrier-earliest-slot-v2"
 TDM_EXACT_DEPENDENCY_PROVIDER = "deterministic-dependency-earliest-slot-v1"
 SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA = (
     "emuflow.sampled-virtual-wire-schedule-certificate/v1"
+)
+INDEXED_SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA = (
+    "emuflow.sampled-virtual-wire-schedule-certificate/v2"
 )
 SAMPLED_VIRTUAL_WIRE_CONSTRAINTS_SCHEMA = (
     "emuflow.sampled-virtual-wire-timing-constraints/v1"
@@ -120,6 +124,45 @@ def _static_exact_contract_from_routes(
         semantic_contract_sha256,
     )
 
+    if contract.get("indexed") is True:
+        if (
+            contract.get("schema") != routes.get("semantic_contract_schema")
+            or contract.get("mode") != "static-exact-combinational"
+            or contract.get("qualification")
+            != "structural-partition-legality"
+        ):
+            raise ValidationError(
+                "routes indexed exact semantic contract binding is invalid"
+            )
+        raw_routes = routes.get("routes")
+        if not isinstance(raw_routes, list):
+            raise ValidationError("indexed exact routes must be an array")
+        for route in raw_routes:
+            if (
+                not isinstance(route, dict)
+                or not isinstance(route.get("net"), str)
+                or route.get("cut_class")
+                not in {"combinational", "register_input"}
+                or isinstance(route.get("dependency_level"), bool)
+                or not isinstance(route.get("dependency_level"), int)
+                or route["dependency_level"] < 0
+                or isinstance(
+                    route.get("combinational_dependency_depth"), bool
+                )
+                or not isinstance(
+                    route.get("combinational_dependency_depth"), int
+                )
+                or route["combinational_dependency_depth"] < 0
+                or not isinstance(route.get("predecessor_cut_nets"), list)
+                or not all(
+                    isinstance(item, str) and item
+                    for item in route["predecessor_cut_nets"]
+                )
+            ):
+                raise ValidationError(
+                    "indexed exact route dependency metadata is invalid"
+                )
+        return contract
     if (
         contract.get("schema") not in STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS
         or contract.get("mode") != "static-exact-combinational"
@@ -183,6 +226,156 @@ def _static_exact_contract_from_routes(
                     f"exact route {net_id!r} does not match contract {field}"
                 )
     return contract
+
+
+def _indexed_exact_nodes(
+    routes: Sequence[Mapping[str, Any]],
+) -> Dict[str, Mapping[str, Any]]:
+    nodes = {route.get("net"): route for route in routes}
+    if (
+        len(nodes) != len(routes)
+        or None in nodes
+        or not all(isinstance(net, str) and net for net in nodes)
+    ):
+        raise ValidationError("indexed exact route identities are invalid")
+    return nodes  # type: ignore[return-value]
+
+
+def _indexed_source_readiness(
+    route: Mapping[str, Any],
+    arrivals: Mapping[Tuple[str, str], int],
+    timing_constraints: Mapping[str, Any],
+) -> Tuple[int, List[Tuple[str, int]]]:
+    """Conservatively reconstruct readiness from the routed cut DAG.
+
+    Phase 3's indexed relation proves the predecessor edges.  A root launch
+    receives one settle slot; each dependent launch receives one settle slot
+    after every predecessor has arrived at the source FPGA.  Treating constant
+    roots the same way is conservative and avoids hydrating their individual
+    logic-segment records.
+    """
+
+    settle = timing_constraints.get("settle_slots")
+    predecessors = route.get("predecessor_cut_nets")
+    source = route.get("source")
+    if (
+        isinstance(settle, bool)
+        or not isinstance(settle, int)
+        or settle < 0
+        or not isinstance(predecessors, list)
+        or len(predecessors) != len(set(predecessors))
+        or not all(isinstance(item, str) and item for item in predecessors)
+        or not isinstance(source, str)
+    ):
+        raise ValidationError("indexed exact readiness metadata is invalid")
+    evidence: List[Tuple[str, int]] = []
+    for predecessor in sorted(predecessors):
+        key = (predecessor, source)
+        if key not in arrivals:
+            raise ValidationError(
+                f"indexed exact predecessor {predecessor!r} has not arrived "
+                f"at {source!r}"
+            )
+        evidence.append((predecessor, arrivals[key]))
+    return (
+        max((arrival + settle for _net, arrival in evidence), default=settle),
+        evidence,
+    )
+
+
+def _digest_record(digest: Any, value: Any) -> None:
+    digest.update(
+        json.dumps(value, separators=(",", ":"), sort_keys=True).encode(
+            "utf-8"
+        )
+    )
+    digest.update(b"\n")
+
+
+def _indexed_certificate(
+    ordered_routes: Sequence[Mapping[str, Any]],
+    arrivals: Mapping[Tuple[str, str], int],
+    timing_constraints: Mapping[str, Any],
+) -> Dict[str, Any]:
+    order_digest = hashlib.sha256()
+    readiness_digest = hashlib.sha256()
+    sink_digest = hashlib.sha256()
+    dependency_edges = 0
+    readiness_count = 0
+    sink_count = 0
+    minimum_sink_slack: Optional[int] = None
+    commit_slot = timing_constraints.get("commit_slot")
+    settle = timing_constraints.get("settle_slots")
+    if (
+        isinstance(commit_slot, bool)
+        or not isinstance(commit_slot, int)
+        or isinstance(settle, bool)
+        or not isinstance(settle, int)
+    ):
+        raise ValidationError("indexed exact timing constraints are invalid")
+    for route in ordered_routes:
+        _digest_record(order_digest, route["net"])
+        ready, evidence = _indexed_source_readiness(
+            route, arrivals, timing_constraints
+        )
+        dependency_edges += len(evidence)
+        readiness_count += 1
+        _digest_record(
+            readiness_digest,
+            {
+                "net": route["net"],
+                "source": route["source"],
+                "source_ready_slot": ready,
+                "predecessor_arrivals": evidence,
+            },
+        )
+        for sink in sorted(route["sinks"]):
+            key = (route["net"], sink)
+            if key not in arrivals:
+                raise ValidationError(
+                    f"indexed exact sink {route['net']!r}@{sink!r} lacks "
+                    "an arrival"
+                )
+            arrival = arrivals[key]
+            ready_slot = arrival + settle
+            slack = commit_slot - ready_slot
+            if slack < 0:
+                raise ValidationError(
+                    f"indexed exact sink {route['net']!r}@{sink!r} misses "
+                    "the commit deadline"
+                )
+            sink_count += 1
+            minimum_sink_slack = (
+                slack
+                if minimum_sink_slack is None
+                else min(minimum_sink_slack, slack)
+            )
+            _digest_record(
+                sink_digest,
+                {
+                    "net": route["net"],
+                    "fpga": sink,
+                    "arrival_slot": arrival,
+                    "budget_slots": settle,
+                    "ready_slot": ready_slot,
+                    "commit_slot": commit_slot,
+                    "slack_slots": slack,
+                },
+            )
+    return {
+        "schema": INDEXED_SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
+        "provider": "indexed-conservative-readiness-certificate-v2",
+        "launch_readiness_policy": "one-settle-slot-conservative-v1",
+        "capture_coverage": "all-routed-sinks-conservative-v1",
+        "topological_cut_count": len(ordered_routes),
+        "topological_cut_order_sha256": order_digest.hexdigest(),
+        "dependency_edges": dependency_edges,
+        "readiness_records": readiness_count,
+        "readiness_sha256": readiness_digest.hexdigest(),
+        "sink_readiness_checks": sink_count,
+        "sink_readiness_sha256": sink_digest.hexdigest(),
+        "minimum_sink_slack_slots": minimum_sink_slack,
+    }
 
 
 def _hop_key(
@@ -821,14 +1014,20 @@ def build_tdm_schedule(
     exact_captures = None
     exact_arrivals: Dict[Tuple[str, str], int] = {}
     exact_readiness_records: List[Dict[str, Any]] = []
+    indexed_exact = bool(
+        exact_contract is not None and exact_contract.get("indexed") is True
+    )
     if exact_contract is None:
         ordered_routes, active_rounds = _round_order(
             raw_routes, planned_hops
         )
     else:
-        exact_nodes, exact_segments, exact_captures = (
-            _exact_contract_indexes(exact_contract)
-        )
+        if indexed_exact:
+            exact_nodes = _indexed_exact_nodes(raw_routes)
+        else:
+            exact_nodes, exact_segments, exact_captures = (
+                _exact_contract_indexes(exact_contract)
+            )
         ordered_routes = _exact_dependency_order(
             exact_nodes, raw_routes, planned_hops
         )
@@ -856,21 +1055,30 @@ def build_tdm_schedule(
             )
         else:
             node = exact_nodes[route["net"]]
-            source_ready_slot, source_evidence = _exact_source_readiness(
-                node,
-                exact_segments,
-                exact_arrivals,
-                sampled_timing_constraints,
-            )
-            exact_readiness_records.append(
-                {
-                    "demand": route["id"],
-                    "net": route["net"],
-                    "source": route["source"],
-                    "source_ready_slot": source_ready_slot,
-                    "evidence": source_evidence,
-                }
-            )
+            if indexed_exact:
+                source_ready_slot, _source_evidence = (
+                    _indexed_source_readiness(
+                        route,
+                        exact_arrivals,
+                        sampled_timing_constraints,
+                    )
+                )
+            else:
+                source_ready_slot, source_evidence = _exact_source_readiness(
+                    node,
+                    exact_segments,
+                    exact_arrivals,
+                    sampled_timing_constraints,
+                )
+                exact_readiness_records.append(
+                    {
+                        "demand": route["id"],
+                        "net": route["net"],
+                        "source": route["source"],
+                        "source_ready_slot": source_ready_slot,
+                        "evidence": source_evidence,
+                    }
+                )
         arrival_by_node = {route["source"]: source_ready_slot - 1}
         for depth, edge in _route_hops(route):
             arc_key = (edge["link"], edge["from"], edge["to"])
@@ -1087,31 +1295,61 @@ def build_tdm_schedule(
         )
     exact_certificate = None
     if exact_contract is not None:
-        capture_records, minimum_capture_slack = _exact_capture_certificate(
-            exact_segments,
-            exact_captures,
-            exact_arrivals,
-            sampled_timing_constraints,
-        )
-        exact_certificate = {
-            "schema": SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
-            "provider": "independent-readiness-certificate-v1",
-            "topological_cut_order": [route["net"] for route in ordered_routes],
-            "demand_readiness": exact_readiness_records,
-            "capture_readiness": capture_records,
-            "minimum_capture_slack_slots": minimum_capture_slack,
-        }
-        metrics.update(
-            {
-                "commit_slot": sampled_timing_constraints["commit_slot"],
-                "dependency_edges": len(exact_contract["dependency_edges"]),
-                "maximum_combinational_dependency_depth": exact_contract[
-                    "metrics"
-                ]["maximum_combinational_dependency_depth"],
-                "capture_requirements": len(capture_records),
+        if indexed_exact:
+            exact_certificate = _indexed_certificate(
+                ordered_routes,
+                exact_arrivals,
+                sampled_timing_constraints,
+            )
+            metrics.update(
+                {
+                    "commit_slot": sampled_timing_constraints["commit_slot"],
+                    "dependency_edges": exact_certificate[
+                        "dependency_edges"
+                    ],
+                    "maximum_combinational_dependency_depth": max(
+                        (
+                            route["combinational_dependency_depth"]
+                            for route in ordered_routes
+                        ),
+                        default=0,
+                    ),
+                    "conservative_sink_readiness_checks": exact_certificate[
+                        "sink_readiness_checks"
+                    ],
+                    "minimum_capture_slack_slots": exact_certificate[
+                        "minimum_sink_slack_slots"
+                    ],
+                }
+            )
+        else:
+            capture_records, minimum_capture_slack = _exact_capture_certificate(
+                exact_segments,
+                exact_captures,
+                exact_arrivals,
+                sampled_timing_constraints,
+            )
+            exact_certificate = {
+                "schema": SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
+                "provider": "independent-readiness-certificate-v1",
+                "topological_cut_order": [
+                    route["net"] for route in ordered_routes
+                ],
+                "demand_readiness": exact_readiness_records,
+                "capture_readiness": capture_records,
                 "minimum_capture_slack_slots": minimum_capture_slack,
             }
-        )
+            metrics.update(
+                {
+                    "commit_slot": sampled_timing_constraints["commit_slot"],
+                    "dependency_edges": len(exact_contract["dependency_edges"]),
+                    "maximum_combinational_dependency_depth": exact_contract[
+                        "metrics"
+                    ]["maximum_combinational_dependency_depth"],
+                    "capture_requirements": len(capture_records),
+                    "minimum_capture_slack_slots": minimum_capture_slack,
+                }
+            )
     result = {
         "schema": TDM_SCHEDULE_SCHEMA,
         "design": routes.get("design"),
@@ -1664,12 +1902,18 @@ def validate_tdm_schedule(
     exact_captures = None
     exact_arrivals: Dict[Tuple[str, str], int] = {}
     exact_readiness_records = []
+    indexed_exact = bool(
+        exact_contract is not None and exact_contract.get("indexed") is True
+    )
     if exact_contract is None:
         ordered_routes, active_rounds = _round_order(routes["routes"])
     else:
-        exact_nodes, exact_segments, exact_captures = (
-            _exact_contract_indexes(exact_contract)
-        )
+        if indexed_exact:
+            exact_nodes = _indexed_exact_nodes(routes["routes"])
+        else:
+            exact_nodes, exact_segments, exact_captures = (
+                _exact_contract_indexes(exact_contract)
+            )
         ordered_routes = _exact_dependency_order(
             exact_nodes, routes["routes"], planned_hops
         )
@@ -1694,23 +1938,32 @@ def validate_tdm_schedule(
                 else 0
             )
         else:
-            source_ready_slot, source_evidence = (
-                _independently_reconstruct_exact_source_readiness(
-                    exact_nodes[route["net"]],
-                    exact_segments,
-                    exact_arrivals,
-                    sampled_timing_constraints,
+            if indexed_exact:
+                source_ready_slot, _source_evidence = (
+                    _indexed_source_readiness(
+                        route,
+                        exact_arrivals,
+                        sampled_timing_constraints,
+                    )
                 )
-            )
-            exact_readiness_records.append(
-                {
-                    "demand": route["id"],
-                    "net": route["net"],
-                    "source": route["source"],
-                    "source_ready_slot": source_ready_slot,
-                    "evidence": source_evidence,
-                }
-            )
+            else:
+                source_ready_slot, source_evidence = (
+                    _independently_reconstruct_exact_source_readiness(
+                        exact_nodes[route["net"]],
+                        exact_segments,
+                        exact_arrivals,
+                        sampled_timing_constraints,
+                    )
+                )
+                exact_readiness_records.append(
+                    {
+                        "demand": route["id"],
+                        "net": route["net"],
+                        "source": route["source"],
+                        "source_ready_slot": source_ready_slot,
+                        "evidence": source_evidence,
+                    }
+                )
         arrival_by_node = {route["source"]: source_ready_slot - 1}
         for depth, edge in _route_hops(route):
             del depth
@@ -1832,24 +2085,35 @@ def validate_tdm_schedule(
             raise ValidationError(
                 "cross-layer timing schedule binding is invalid"
             )
-        captures, minimum_capture_slack = (
-            _independently_reconstruct_exact_captures(
-                exact_segments,
-                exact_captures,
+        if indexed_exact:
+            expected_certificate = _indexed_certificate(
+                ordered_routes,
                 exact_arrivals,
                 sampled_timing_constraints,
             )
-        )
-        expected_certificate = {
-            "schema": SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
-            "provider": "independent-readiness-certificate-v1",
-            "topological_cut_order": [
-                route["net"] for route in ordered_routes
-            ],
-            "demand_readiness": exact_readiness_records,
-            "capture_readiness": captures,
-            "minimum_capture_slack_slots": minimum_capture_slack,
-        }
+            captures = None
+            minimum_capture_slack = expected_certificate[
+                "minimum_sink_slack_slots"
+            ]
+        else:
+            captures, minimum_capture_slack = (
+                _independently_reconstruct_exact_captures(
+                    exact_segments,
+                    exact_captures,
+                    exact_arrivals,
+                    sampled_timing_constraints,
+                )
+            )
+            expected_certificate = {
+                "schema": SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
+                "provider": "independent-readiness-certificate-v1",
+                "topological_cut_order": [
+                    route["net"] for route in ordered_routes
+                ],
+                "demand_readiness": exact_readiness_records,
+                "capture_readiness": captures,
+                "minimum_capture_slack_slots": minimum_capture_slack,
+            }
         if schedule.get("schedule_dependency_certificate") != (
             expected_certificate
         ):
@@ -1857,17 +2121,38 @@ def validate_tdm_schedule(
                 "cross-layer timing readiness certificate does not match "
                 "independent reconstruction"
             )
-        expected_metrics.update(
-            {
-                "commit_slot": sampled_timing_constraints["commit_slot"],
-                "dependency_edges": len(exact_contract["dependency_edges"]),
-                "maximum_combinational_dependency_depth": exact_contract[
-                    "metrics"
-                ]["maximum_combinational_dependency_depth"],
-                "capture_requirements": len(captures),
-                "minimum_capture_slack_slots": minimum_capture_slack,
-            }
-        )
+        if indexed_exact:
+            expected_metrics.update(
+                {
+                    "commit_slot": sampled_timing_constraints["commit_slot"],
+                    "dependency_edges": expected_certificate[
+                        "dependency_edges"
+                    ],
+                    "maximum_combinational_dependency_depth": max(
+                        (
+                            route["combinational_dependency_depth"]
+                            for route in ordered_routes
+                        ),
+                        default=0,
+                    ),
+                    "conservative_sink_readiness_checks": expected_certificate[
+                        "sink_readiness_checks"
+                    ],
+                    "minimum_capture_slack_slots": minimum_capture_slack,
+                }
+            )
+        else:
+            expected_metrics.update(
+                {
+                    "commit_slot": sampled_timing_constraints["commit_slot"],
+                    "dependency_edges": len(exact_contract["dependency_edges"]),
+                    "maximum_combinational_dependency_depth": exact_contract[
+                        "metrics"
+                    ]["maximum_combinational_dependency_depth"],
+                    "capture_requirements": len(captures),
+                    "minimum_capture_slack_slots": minimum_capture_slack,
+                }
+            )
     if academic_schedule:
         expected_metrics.update(
             {

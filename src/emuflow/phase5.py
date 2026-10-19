@@ -59,7 +59,14 @@ def _load_phase3_semantics(
         raise ValidationError(
             "sampled virtual-wire Phase 5 requires the Phase 3 assignment"
         )
-    assignment = read_phase3_assignment_view(assignment_path)
+    # Phase 4 already binds every routed cut to the Phase 3 semantic digest
+    # and carries the complete cut-dependency DAG.  Keep the graph-sized
+    # logic/capture relation in the Phase 3 SQLite data plane instead of
+    # inflating the compressed (multi-GB) contract into Python objects.
+    assignment = read_phase3_assignment_view(
+        assignment_path,
+        include_semantic_contract=False,
+    )
     contract = semantic_contract_for_routes(assignment, routes)
     if contract is None:
         raise ValidationError("Phase 3 semantic contract is missing")

@@ -129,6 +129,7 @@ def _build_contract(
             "cross-layer routes may not duplicate the Phase 3 semantic contract"
         )
     logic_segment_bindings = []
+    indexed_logic_segments = False
     if semantic_contract is None:
         if semantic_sha is not None or semantic_schema is not None:
             raise ValidationError("cross-layer semantic binding is incomplete")
@@ -146,43 +147,58 @@ def _build_contract(
             "schema": semantic_contract.get("schema"),
             "sha256": semantic_sha,
         }
-        raw_logic_segments = semantic_contract.get("logic_segments")
-        if not isinstance(raw_logic_segments, list):
-            raise ValidationError(
-                "cross-layer semantic logic segments must be an array"
-            )
-        seen_logic_segments = set()
-        for segment in raw_logic_segments:
-            segment_id = segment.get("id") if isinstance(segment, dict) else None
-            kind = segment.get("kind") if isinstance(segment, dict) else None
-            fpga = segment.get("fpga") if isinstance(segment, dict) else None
-            source_semantics = (
-                segment.get("source_semantics")
-                if isinstance(segment, dict)
-                else None
-            )
-            if (
-                not isinstance(segment_id, str)
-                or not segment_id
-                or segment_id in seen_logic_segments
-                or kind not in {"launch_to_tx", "rx_to_tx", "rx_to_capture"}
-                or not isinstance(fpga, str)
-                or not fpga
-                or source_semantics
-                not in {None, "configuration-stable-constant"}
-                or (
-                    source_semantics == "configuration-stable-constant"
-                    and kind != "launch_to_tx"
-                )
-            ):
+        indexed_logic_segments = semantic_contract.get("indexed") is True
+        if indexed_logic_segments:
+            semantic_binding["storage"] = "phase3-assignment-index"
+        else:
+            raw_logic_segments = semantic_contract.get("logic_segments")
+            if not isinstance(raw_logic_segments, list):
                 raise ValidationError(
-                    "cross-layer semantic logic-segment identity is invalid"
+                    "cross-layer semantic logic segments must be an array"
                 )
-            seen_logic_segments.add(segment_id)
-            binding = {"segment": segment_id, "kind": kind, "fpga": fpga}
-            if source_semantics is not None:
-                binding["source_semantics"] = source_semantics
-            logic_segment_bindings.append(binding)
+            seen_logic_segments = set()
+            for segment in raw_logic_segments:
+                segment_id = (
+                    segment.get("id") if isinstance(segment, dict) else None
+                )
+                kind = (
+                    segment.get("kind") if isinstance(segment, dict) else None
+                )
+                fpga = (
+                    segment.get("fpga") if isinstance(segment, dict) else None
+                )
+                source_semantics = (
+                    segment.get("source_semantics")
+                    if isinstance(segment, dict)
+                    else None
+                )
+                if (
+                    not isinstance(segment_id, str)
+                    or not segment_id
+                    or segment_id in seen_logic_segments
+                    or kind
+                    not in {"launch_to_tx", "rx_to_tx", "rx_to_capture"}
+                    or not isinstance(fpga, str)
+                    or not fpga
+                    or source_semantics
+                    not in {None, "configuration-stable-constant"}
+                    or (
+                        source_semantics == "configuration-stable-constant"
+                        and kind != "launch_to_tx"
+                    )
+                ):
+                    raise ValidationError(
+                        "cross-layer semantic logic-segment identity is invalid"
+                    )
+                seen_logic_segments.add(segment_id)
+                binding = {
+                    "segment": segment_id,
+                    "kind": kind,
+                    "fpga": fpga,
+                }
+                if source_semantics is not None:
+                    binding["source_semantics"] = source_semantics
+                logic_segment_bindings.append(binding)
 
     path_bindings = []
     timing = routes.get("timing")
@@ -376,6 +392,11 @@ def _build_contract(
     }
     if semantic_binding is not None:
         result["semantic_binding"] = semantic_binding
+    if indexed_logic_segments:
+        result["logic_segment_binding"] = {
+            "mode": "phase3-assignment-index",
+            "semantic_contract_sha256": semantic_sha,
+        }
     if schedule_binding is not None:
         result["schedule_binding"] = schedule_binding
     return result

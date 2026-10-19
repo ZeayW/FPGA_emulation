@@ -99,6 +99,34 @@ def _schedule(*, exact=False):
 
 
 class CrossLayerTimingContractTest(unittest.TestCase):
+    def test_indexed_semantic_contract_stays_compact(self):
+        semantic = {
+            "schema": "emuflow.static-exact-combinational-cut/v3",
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
+        routes = _routes(exact=True, semantic_contract=semantic)
+        # Indexed bindings use the externally supplied Phase 3 digest rather
+        # than hashing the compact locator itself.
+        routes["semantic_contract_sha256"] = "a" * 64
+        contract = build_cross_layer_timing_contract(
+            routes,
+            _schedule(exact=True),
+            semantic,
+        )
+        self.assertEqual(contract["logic_segment_bindings"], [])
+        self.assertEqual(
+            contract["logic_segment_binding"]["mode"],
+            "phase3-assignment-index",
+        )
+        self.assertEqual(
+            validate_cross_layer_timing_contract(
+                routes, contract, _schedule(exact=True), semantic
+            )["status"],
+            "pass",
+        )
+
     def _platform(self):
         return Platform.from_dict(
             {
