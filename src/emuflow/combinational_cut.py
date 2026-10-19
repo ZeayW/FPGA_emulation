@@ -30,7 +30,10 @@ STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS = {
 }
 STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2 = "assignment-derived-acyclic-v2"
 STATIC_EXACT_DEFAULT_CANDIDATE_POLICY = STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
-STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH = 8
+# Zero disables the policy guard.  Dependency acyclicity remains mandatory;
+# schedule feasibility and final timing, rather than an arbitrary graph-depth
+# threshold, decide whether a structurally legal cut can be implemented.
+STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH = 0
 STATIC_EXACT_CANDIDATE_POLICIES = {
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
 }
@@ -645,9 +648,12 @@ def _analyze_static_exact_dependencies(
     if (
         isinstance(max_dependency_depth, bool)
         or not isinstance(max_dependency_depth, int)
-        or max_dependency_depth <= 0
+        or max_dependency_depth < 0
     ):
-        raise ValidationError("exact combinational-cut depth must be positive")
+        raise ValidationError(
+            "exact combinational-cut depth must be non-negative (zero disables "
+            "the policy limit)"
+        )
     candidate_index = _build_combinational_cut_candidate_index(
         ir,
         include_dependency_levels=False,
@@ -762,7 +768,7 @@ def _analyze_static_exact_dependencies(
     if len(dependency_level) != len(cut_by_net):
         raise ValidationError("exact cut dependency graph contains a cycle")
     maximum_depth = max(combinational_depth.values(), default=0)
-    if maximum_depth > max_dependency_depth:
+    if max_dependency_depth and maximum_depth > max_dependency_depth:
         critical = min(
             net_id
             for net_id, depth in combinational_depth.items()

@@ -681,13 +681,19 @@ def compile_canonical_experiment_spec(
     mfspart_post_refinement_bottleneck_beta = float(
         mfspart_post_refinement_bottleneck_beta
     )
-    max_cross_fpga_dependency_depth = _positive_integer(
-        config.get(
-            "max_cross_fpga_dependency_depth",
-            STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
-        ),
+    max_cross_fpga_dependency_depth = config.get(
         "max_cross_fpga_dependency_depth",
+        STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
     )
+    if (
+        isinstance(max_cross_fpga_dependency_depth, bool)
+        or not isinstance(max_cross_fpga_dependency_depth, int)
+        or max_cross_fpga_dependency_depth < 0
+    ):
+        raise ValidationError(
+            "canonical experiment max_cross_fpga_dependency_depth must be a "
+            "non-negative integer (zero disables the policy limit)"
+        )
     mfspart_post_refinement_timing_path_beta = config.get(
         "mfspart_post_refinement_timing_path_beta",
         DEFAULT_TIMING_PATH_BETA,

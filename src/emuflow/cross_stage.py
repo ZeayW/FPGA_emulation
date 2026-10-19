@@ -1794,7 +1794,7 @@ def validate_cross_stage_report(
     if (
         isinstance(max_cross_fpga_dependency_depth, bool)
         or not isinstance(max_cross_fpga_dependency_depth, int)
-        or max_cross_fpga_dependency_depth <= 0
+        or max_cross_fpga_dependency_depth < 0
     ):
         raise ValidationError(
             "cross-stage report dependency depth is invalid"

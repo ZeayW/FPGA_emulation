@@ -678,10 +678,11 @@ def build_clusters(
         if (
             isinstance(max_cross_fpga_dependency_depth, bool)
             or not isinstance(max_cross_fpga_dependency_depth, int)
-            or max_cross_fpga_dependency_depth <= 0
+            or max_cross_fpga_dependency_depth < 0
         ):
             raise ValidationError(
-                "max_cross_fpga_dependency_depth must be positive"
+                "max_cross_fpga_dependency_depth must be non-negative "
+                "(zero disables the policy limit)"
             )
         candidate_index = _build_combinational_cut_candidate_index(
             ir,

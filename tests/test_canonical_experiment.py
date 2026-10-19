@@ -393,7 +393,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 partition["configuration"][
                     "max_cross_fpga_dependency_depth"
                 ],
-                8,
+                0,
             )
             self.assertFalse(
                 partition["configuration"]["mfspart_post_refinement"]
@@ -968,7 +968,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 partition["configuration"][
                     "max_cross_fpga_dependency_depth"
                 ],
-                8,
+                0,
             )
             self.assertEqual(
                 partition["configuration"][

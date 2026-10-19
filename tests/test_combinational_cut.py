@@ -1455,7 +1455,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.ir,
             constraints,
             cut_mode=CUT_MODE_STATIC_EXACT,
-            max_cross_fpga_dependency_depth=3,
+            max_cross_fpga_dependency_depth=0,
             static_exact_candidate_policy=STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
         )
         cluster_for = {
@@ -1487,6 +1487,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             seed=0,
         )
         contract = assignment["semantic_contract"]
+        self.assertEqual(contract["max_cross_fpga_dependency_depth"], 0)
         self.assertEqual(
             contract["metrics"]["maximum_combinational_dependency_depth"],
             3,
@@ -1508,12 +1509,25 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.platform.to_dict(),
             assignment["instance_assignment"],
             assignment["cut_nets"],
-            max_dependency_depth=3,
+            max_dependency_depth=0,
             candidate_selection_policy=(STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2),
         )
         self.assertNotIn(
             "uncongested_schedule_lower_bound", short_frame_contract
         )
+        with self.assertRaisesRegex(
+            ValidationError, "dependency depth exceeds the configured limit"
+        ):
+            build_static_exact_semantic_contract(
+                self.ir,
+                self.platform.to_dict(),
+                assignment["instance_assignment"],
+                assignment["cut_nets"],
+                max_dependency_depth=2,
+                candidate_selection_policy=(
+                    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+                ),
+            )
         routes = self._exact_routes(assignment, frame_slots=24)
         schedule = build_tdm_schedule(routes, self.platform)
         self.assertEqual(

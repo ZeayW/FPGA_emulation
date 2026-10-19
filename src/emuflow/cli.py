@@ -756,6 +756,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-cross-fpga-dependency-depth",
         type=int,
         default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+        help=(
+            "optional Static Exact policy guard; zero (the default) leaves "
+            "depth to schedule feasibility and final timing"
+        ),
     )
     partition_run.add_argument(
         "--static-exact-candidate-policy",
@@ -2052,6 +2056,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-cross-fpga-dependency-depth",
         type=int,
         default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+        help=(
+            "optional Static Exact policy guard; zero (the default) leaves "
+            "depth to schedule feasibility and final timing"
+        ),
     )
     multi_fpga_compile.add_argument(
         "--static-exact-candidate-policy",
@@ -3137,7 +3145,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-cross-fpga-dependency-depth",
         type=int,
         default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
-        help="static exact mode dependency-depth limit",
+        help=(
+            "optional Static Exact policy guard; zero (the default) leaves "
+            "depth to schedule feasibility and final timing"
+        ),
     )
     phase3.add_argument(
         "--static-exact-candidate-policy",
@@ -3723,6 +3734,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-cross-fpga-dependency-depth",
         type=int,
         default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+        help=(
+            "optional Static Exact policy guard; zero (the default) leaves "
+            "depth to schedule feasibility and final timing"
+        ),
     )
     cross_stage_optimize.add_argument(
         "--static-exact-candidate-policy",

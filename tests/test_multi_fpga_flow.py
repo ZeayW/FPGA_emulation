@@ -560,7 +560,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 "assignment-derived-acyclic-v2",
             )
             self.assertEqual(
-                run.call_args.kwargs["max_cross_fpga_dependency_depth"], 8
+                run.call_args.kwargs["max_cross_fpga_dependency_depth"], 0
             )
             self.assertEqual(
                 run.call_args.kwargs[
@@ -594,7 +594,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 "assignment-derived-acyclic-v2",
             )
             self.assertEqual(
-                run.call_args.kwargs["max_cross_fpga_dependency_depth"], 8
+                run.call_args.kwargs["max_cross_fpga_dependency_depth"], 0
             )
 
         explicit = parser.parse_args(
