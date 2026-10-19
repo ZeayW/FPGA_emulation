@@ -141,7 +141,11 @@ through another FPGA and Phase 5 assigns the concrete TDM ratios and events.
 PATRON does not run a capacity-closure repair loop; failure to improve its soft
 path objective retains the legal TritonPart assignment. Per-FPGA resource
 capacity, strict logic balance, fixed placement, board reachability, and the
-configured per-net route-hop bound remain structural hard constraints.
+configured per-net route-hop bound remain structural hard constraints. The
+current selection certificate records provider
+`patron-path-objective-selection-v2`; the earlier
+`patron-predictive-timing-selection-v1` identifier remains historical and does
+not describe this ordering.
 
 PATRON post-processes the initial solution rather than restarting a complete
 multilevel partitioning flow. Its route and TDM estimates do not

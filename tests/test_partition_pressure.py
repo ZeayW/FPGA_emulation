@@ -38,7 +38,7 @@ from emuflow.partition_pressure import (
 )
 from emuflow.phase3 import promote_patron_baseline, run_phase3
 from emuflow.phase3 import (
-    PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER,
+    PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER,
     _rebase_patron_initial_assignment,
     _select_patron_timing_assignment,
 )
@@ -431,7 +431,7 @@ class PartitionPressureTest(unittest.TestCase):
         self.assertIs(selected, candidate)
         self.assertEqual(report["selected"], "candidate")
         self.assertEqual(
-            report["provider"], PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER
+            report["provider"], PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER
         )
 
     def test_v14_selection_ignores_downstream_semantic_diagnostics(self) -> None:
@@ -1934,7 +1934,7 @@ class PartitionPressureTest(unittest.TestCase):
                 report["algorithm_validation"][
                     "candidate_selection"
                 ]["provider"],
-                PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER,
+                PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER,
             )
 
     def test_phase3_patron_v14_initializes_on_selected_generalized_graph(
@@ -2048,7 +2048,7 @@ class PartitionPressureTest(unittest.TestCase):
                 report["algorithm_validation"][
                     "candidate_selection"
                 ]["provider"],
-                PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER,
+                PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER,
             )
 
     def test_phase3_v14_explicit_solution_uses_static_exact_cold_start(self) -> None:

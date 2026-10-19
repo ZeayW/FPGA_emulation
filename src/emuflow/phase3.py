@@ -60,8 +60,8 @@ from .partition_ir import load_partition_ir
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
-PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER = (
-    "patron-predictive-timing-selection-v1"
+PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER = (
+    "patron-path-objective-selection-v2"
 )
 
 
@@ -128,7 +128,7 @@ def _select_patron_timing_assignment(
     accepted = assignment_changed and timing_improved
     selection = {
         "status": "pass",
-        "provider": PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER,
+        "provider": PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER,
         "policy": "path-hop-then-maximum-path-ratio-sum-v1",
         "objective_fields": [
             "maximum_path_hops",
