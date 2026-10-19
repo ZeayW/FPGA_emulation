@@ -1892,7 +1892,9 @@ std::vector<int> diagnose_flow_corridors(
         const auto run_bilateral_region_legalization
             = [&](const std::string& mode,
                   bool affinity_first,
-                  bool raw_target_first) {
+                  bool raw_target_first,
+                  bool repack_full_corridor = false,
+                  bool enforce_cut_side = false) {
                 std::vector<int> region_assignment
                     = raw_candidate_assignment;
                 std::vector<std::vector<double>> region_load
@@ -1901,9 +1903,13 @@ std::vector<int> diagnose_flow_corridors(
                 std::vector<bool> target_side(model.clusters, false);
                 for (int cluster : corridor) {
                   const int target = raw_candidate_assignment[cluster];
+                  const bool crosses_cut
+                      = target >= 0
+                        && opposite_side[state.assignment[cluster]]
+                               != opposite_side[target];
                   if (target < 0
-                      || opposite_side[state.assignment[cluster]]
-                             == opposite_side[target]) {
+                      || model.cluster[cluster].fixed >= 0
+                      || (!repack_full_corridor && !crosses_cut)) {
                     continue;
                   }
                   target_side[cluster] = opposite_side[target];
@@ -1982,6 +1988,9 @@ std::vector<int> diagnose_flow_corridors(
                   for (int target = 0; target < model.parts; ++target) {
                     const bool preferred_side
                         = opposite_side[target] == target_side[cluster];
+                    if (enforce_cut_side && !preferred_side) {
+                      continue;
+                    }
                     const bool raw_target
                         = target == raw_candidate_assignment[cluster];
                     bool fits = true;
@@ -2081,6 +2090,11 @@ std::vector<int> diagnose_flow_corridors(
                 std::cerr << "PATRON_FLOW_BILATERAL_LEGALIZATION pair="
                           << edge_left << ':' << pair_target
                           << " mode=" << mode
+                          << " scope="
+                          << (repack_full_corridor ? "full-corridor"
+                                                   : "crossing-only")
+                          << " enforce_cut_side="
+                          << (enforce_cut_side ? 1 : 0)
                           << " crossing=" << unassigned.size()
                           << " assigned="
                           << (assigned_all ? unassigned.size() : 0)
@@ -2112,6 +2126,16 @@ std::vector<int> diagnose_flow_corridors(
         run_bilateral_region_legalization("affinity-first", true, false);
         run_bilateral_region_legalization("balance-first", false, false);
         run_bilateral_region_legalization("raw-target-first", false, true);
+        // The crossing-only repackers retain the original placement of every
+        // cluster that the min-cut kept on its current topology side.  On a
+        // tight multidimensional balance contract those retained choices can
+        // fragment the two FPGA bins on one side even when their aggregate
+        // capacity is sufficient.  Repack every movable corridor cluster
+        // across the two bins of its min-cut side, and forbid fallback to the
+        // opposite side.  This preserves the cut while satisfying the exact
+        // per-FPGA resource contract; fixed clusters remain anchored.
+        run_bilateral_region_legalization(
+            "full-side-balance", false, false, true, true);
 
         // The all-at-once repacker above may paint itself into a corner even
         // though the original assignment is resource legal: an early greedy
