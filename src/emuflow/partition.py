@@ -26,6 +26,7 @@ from .combinational_cut import (
 CLUSTERS_SCHEMA = "emuflow.clusters/v1"
 PARTITION_ASSIGNMENT_SCHEMA = "emuflow.partition-assignment/v1"
 PARTITION_CONSTRAINTS_SCHEMA = "emuflow.partition-constraints/v1"
+DEFAULT_BALANCE_DIMENSIONS = ("cells", "lut", "ff")
 TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
 LEGAL_CUT_CLASSES = {*TRANSPORTED_CUT_CLASSES, "primary_input"}
 REPLICATED_NET_CLASSES = {"clock", "reset", "primary_input"}
@@ -608,6 +609,33 @@ def normalize_partition_constraints(
             )
         dimension_tolerances[dimension] = float(value)
 
+    raw_balance_dimensions = raw.get(
+        "balance_dimensions", list(DEFAULT_BALANCE_DIMENSIONS)
+    )
+    if not isinstance(raw_balance_dimensions, list):
+        raise ValidationError(
+            "constraints.balance_dimensions: expected an array"
+        )
+    if any(
+        not isinstance(dimension, str)
+        for dimension in raw_balance_dimensions
+    ):
+        raise ValidationError(
+            "constraints.balance_dimensions: expected dimension names"
+        )
+    unknown_balance_dimensions = sorted(
+        set(raw_balance_dimensions) - valid_dimensions
+    )
+    if unknown_balance_dimensions:
+        raise ValidationError(
+            "constraints.balance_dimensions: unknown dimensions "
+            f"{unknown_balance_dimensions}"
+        )
+    if len(set(raw_balance_dimensions)) != len(raw_balance_dimensions):
+        raise ValidationError(
+            "constraints.balance_dimensions: duplicate dimensions"
+        )
+
     return {
         "schema": PARTITION_CONSTRAINTS_SCHEMA,
         "groups": groups,
@@ -621,6 +649,7 @@ def normalize_partition_constraints(
         "balance_tolerance_by_dimension": dict(
             sorted(dimension_tolerances.items())
         ),
+        "balance_dimensions": sorted(raw_balance_dimensions),
     }
 
 
@@ -1257,8 +1286,6 @@ def build_partition_assignment(
             item["net"]: item for item in semantic_contract["cut_nodes"]
         }
         for cut in cut_nets:
-            if cut["cut_class"] != "combinational":
-                continue
             node = contract_nodes[cut["net"]]
             cut.update(
                 {
@@ -1467,6 +1494,7 @@ def validate_partition_artifacts_online(
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
+        constraints.get("balance_dimensions"),
     )
     result = {
         "status": "pass",
@@ -1612,6 +1640,7 @@ def validate_cluster_assignment_balance(
     requested_tolerance: float,
     requested_tolerance_by_dimension: Optional[Mapping[str, float]] = None,
     active_fpgas: Optional[Sequence[str]] = None,
+    requested_balance_dimensions: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     active_set = (
         set(active_fpgas)
@@ -1657,7 +1686,18 @@ def validate_cluster_assignment_balance(
     # Constraints are a contract, including when clusters are indivisible.
     # Infeasible assignments fail instead of changing the caller's tolerance.
     effective_percent_by_dimension = dict(requested_percent_by_dimension)
-    limits = strict_balance_limits(partition_fpgas, totals, requested_tolerance, tolerance_overrides)
+    strict_dimensions = (
+        set(dimensions)
+        if requested_balance_dimensions is None
+        else set(requested_balance_dimensions) & set(dimensions)
+    )
+    limits = strict_balance_limits(
+        partition_fpgas,
+        totals,
+        requested_tolerance,
+        tolerance_overrides,
+        strict_dimensions,
+    )
     loads = {
         fpga_id: {dimension: 0 for dimension in dimensions}
         for fpga_id in fpga_ids
@@ -1695,11 +1735,16 @@ def validate_cluster_assignment_balance(
                         "total": total,
                         "actual_share": actual_share,
                         "allowed_share": allowed_share,
+                        "constraint": (
+                            "balance"
+                            if dimension in strict_dimensions
+                            else "capacity"
+                        ),
                     }
                 )
     if violations:
         raise ValidationError(
-            "assignment violates effective multi-resource balance: "
+            "assignment violates effective multi-resource balance/capacity: "
             f"{violations[:8]}"
         )
     return {
@@ -1715,10 +1760,38 @@ def validate_cluster_assignment_balance(
         ),
         "balance_auto_relaxed": False,
         "balance_dimensions": dimensions,
+        "strict_balance_dimensions": sorted(strict_dimensions),
+        "capacity_only_dimensions": sorted(
+            set(dimensions) - strict_dimensions
+        ),
+        "constraint_mode_by_dimension": {
+            dimension: (
+                "balance" if dimension in strict_dimensions else "capacity"
+            )
+            for dimension in dimensions
+        },
+        "enforced_balance_percent_by_dimension": {
+            dimension: requested_percent_by_dimension[dimension]
+            for dimension in dimensions
+            if dimension in strict_dimensions
+        },
+        "capacity_limits": {
+            fpga.id: {
+                dimension: (
+                    totals[dimension]
+                    if dimension == "cells"
+                    else fpga.effective_capacity[dimension]
+                )
+                for dimension in dimensions
+            }
+            for fpga in partition_fpgas
+        },
         "balance_loads": loads,
         "balance_allowed_loads": allowed_loads,
         "max_balance_limit_ratio": maximum_ratio,
         "balance_violations": 0,
+        "strict_balance_violations": 0,
+        "capacity_violations": 0,
     }
 
 
@@ -1947,6 +2020,7 @@ def validate_partition_artifacts(
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
+        constraints.get("balance_dimensions"),
     )
 
     legal_cut_classes = set(LEGAL_CUT_CLASSES)
@@ -2016,8 +2090,6 @@ def validate_partition_artifacts(
             item["net"]: item for item in expected_contract["cut_nodes"]
         }
         for cut in expected_cuts:
-            if cut["cut_class"] != "combinational":
-                continue
             node = contract_nodes[cut["net"]]
             cut.update(
                 {

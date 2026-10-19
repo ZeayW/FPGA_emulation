@@ -295,6 +295,10 @@ class VtrNetlistTest(unittest.TestCase):
                 constraints,
                 {
                     "schema": "emuflow.partition-constraints/v1",
+                    # This fixture checks hard-macro integration.  Its three
+                    # indivisible instances and forced endpoints cannot also
+                    # satisfy the production 10% logic-balance contract.
+                    "balance_tolerance": 1.0,
                     "fixed": [
                         {"instance": "feed_data", "fpga": "fpga0"},
                         {

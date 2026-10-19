@@ -270,7 +270,13 @@ def _balanced_capacities(
         dimension: float(overrides.get(dimension, constraints["balance_tolerance"]))
         for dimension in dimensions
     }
-    capacities = strict_balance_limits(platform.fpgas, totals, constraints["balance_tolerance"], overrides)
+    capacities = strict_balance_limits(
+        platform.fpgas,
+        totals,
+        constraints["balance_tolerance"],
+        overrides,
+        constraints.get("balance_dimensions"),
+    )
     validate_indivisible_limits(
         ((str(node.get("id", node.get("cluster", index))), node["weights"],
           parts[node["fixed_part"]] if node["fixed_part"] >= 0 else None)
@@ -521,6 +527,7 @@ def refine_mfspart_partition(
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
+        constraints.get("balance_dimensions"),
     )
     used = len(set(refined_cluster_assignment.values()))
     if used < constraints["min_used_fpgas"]:

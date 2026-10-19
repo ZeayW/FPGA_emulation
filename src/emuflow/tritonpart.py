@@ -254,7 +254,13 @@ def export_tritonpart_inputs(
     tritonpart_ubfactor = _tritonpart_ubfactor_percent_points(base_balance, effective_balance)
     totals = {field: sum(row[index] for row in weights)
               for index, field in enumerate(dimensions)}
-    limits = strict_balance_limits(partition_fpgas, totals, constraints["balance_tolerance"], tolerances)
+    limits = strict_balance_limits(
+        partition_fpgas,
+        totals,
+        constraints["balance_tolerance"],
+        tolerances,
+        constraints.get("balance_dimensions"),
+    )
     validate_indivisible_limits(
         ((cluster["id"], dict(zip(dimensions, row)), cluster.get("fixed_fpga"))
          for cluster, row in zip(clusters, weights)), limits,
@@ -617,46 +623,21 @@ def _repair_multi_resource_balance_reference(
         for dimension in range(num_dimensions)
     ]
 
-    base_balance: List[List[float]] = []
-    for dimension in dimensions:
-        if dimension == "cells":
-            base_balance.append([1.0 / num_parts] * num_parts)
-            continue
-        fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
-        capacities = [
-            float(fpga_by_id[fpga_id].effective_capacity[dimension])
-            for fpga_id in fpga_order
-        ]
-        capacity_total = sum(capacities)
-        base_balance.append(
-            [capacity / capacity_total for capacity in capacities]
-        )
     tolerance_overrides = constraints.get(
         "balance_tolerance_by_dimension", {}
     )
-    effective_ratio_by_dimension = [
-        float(tolerance_overrides.get(dimension, constraints["balance_tolerance"]))
-        for dimension in dimensions
-    ]
-    allowed = [
-        [
-            math.floor(
-                totals[dimension]
-                * base_balance[dimension][part]
-                * (1.0 + effective_ratio_by_dimension[dimension])
-                + 1e-7
-            )
-            for dimension in range(num_dimensions)
-        ]
-        for part in range(num_parts)
-    ]
     fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
-    for part, fpga_id in enumerate(fpga_order):
-        for dimension, field in enumerate(dimensions):
-            if field != "cells":
-                allowed[part][dimension] = min(
-                    allowed[part][dimension], fpga_by_id[fpga_id].effective_capacity[field]
-                )
+    limits = strict_balance_limits(
+        [fpga_by_id[fpga_id] for fpga_id in fpga_order],
+        dict(zip(dimensions, totals)),
+        constraints["balance_tolerance"],
+        tolerance_overrides,
+        constraints.get("balance_dimensions"),
+    )
+    allowed = [
+        [limits[fpga_id][field] for field in dimensions]
+        for fpga_id in fpga_order
+    ]
     loads = [[0] * num_dimensions for _ in range(num_parts)]
     for part, weights in zip(labels, vertex_weights):
         for dimension, weight in enumerate(weights):
@@ -1566,6 +1547,7 @@ def _repair_multi_resource_balance_reference(
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
+        constraints.get("balance_dimensions"),
     )
     return assignment, {
         "moves": move_total,
@@ -2173,6 +2155,7 @@ def run_tritonpart(
                     constraints["balance_tolerance"],
                     constraints.get("balance_tolerance_by_dimension", {}),
                     constraints.get("active_fpgas"),
+                    constraints.get("balance_dimensions"),
                 )
             )
         except ValidationError as error:

@@ -1949,16 +1949,17 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         exact_assignment = assign_clusters(
             ir, self.platform, exact_clusters, constraints, seed=9
         )
-        safe_validation = validate_partition_artifacts(
-            ir, self.platform, safe_clusters, safe_assignment
-        )
+        with self.assertRaisesRegex(
+            ValidationError, "multi-resource balance/capacity"
+        ):
+            validate_partition_artifacts(
+                ir, self.platform, safe_clusters, safe_assignment
+            )
         exact_validation = validate_partition_artifacts(
             ir, self.platform, exact_clusters, exact_assignment
         )
-        self.assertLess(
-            exact_validation["effective_balance_percent"],
-            safe_validation["effective_balance_percent"],
-        )
+        self.assertEqual(exact_validation["effective_balance_percent"], 10.0)
+        self.assertFalse(exact_validation["balance_auto_relaxed"])
         self.assertGreater(
             exact_validation["combinational_cut_nets"], 0
         )

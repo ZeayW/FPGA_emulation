@@ -739,6 +739,19 @@ def build_cross_stage_candidate(
         raise ValidationError("cross-stage candidate design mismatch")
     validate_system_routes(assignment, platform, routes)
     semantic_contract = semantic_contract_for_routes(assignment, routes)
+    schedule_certificate = schedule.get("schedule_dependency_certificate")
+    if (
+        semantic_contract is not None
+        and isinstance(schedule_certificate, Mapping)
+        and schedule_certificate.get("provider")
+        == "indexed-conservative-readiness-certificate-v2"
+    ):
+        semantic_contract = {
+            "schema": semantic_contract["schema"],
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
     hydrated_routes = (
         {**routes, "semantic_contract": semantic_contract}
         if semantic_contract is not None
@@ -826,6 +839,7 @@ def evaluate_cross_stage_candidate(
             assignment_path,
             include_instance_assignment=True,
             include_cluster_assignment=True,
+            include_semantic_contract=False,
         ),
         read_json(routes_path),
         read_json(schedule_path),
@@ -860,6 +874,7 @@ def validate_cross_stage_candidate(
             assignment_path,
             include_instance_assignment=True,
             include_cluster_assignment=True,
+            include_semantic_contract=False,
         ),
         read_json(routes_path),
         read_json(schedule_path),

@@ -1523,6 +1523,7 @@ def _write_patron_native_input(
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
+        constraints.get("balance_dimensions"),
     )
     fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
     domains = sorted(model["capacities"], key=lambda item: item["key"])

@@ -783,6 +783,15 @@ def read_phase3_assignment_view(
         LEGACY_PACKED_ASSIGNMENT_SCHEMA,
         PACKED_ASSIGNMENT_SCHEMA,
     }:
+        if (
+            not include_semantic_contract
+            and isinstance(value.get("semantic_contract"), dict)
+        ):
+            result = dict(value)
+            contract = result.pop("semantic_contract")
+            result["semantic_contract_indexed"] = True
+            result["semantic_contract_schema"] = contract.get("schema")
+            return result
         return value
     document = value.get("document")
     partitions = value.get("partitions")

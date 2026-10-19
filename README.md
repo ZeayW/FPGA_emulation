@@ -364,11 +364,20 @@ kept distinct. The default four-FPGA preset applies a strict
 `utilization_limit` of **0.25 per FPGA**, measured against each device's raw
 capacity independently for LUT, FF, BRAM18K, DSP48, CARRY8, and URAM288.
 The two-FPGA comparison preset retains its explicit 0.75 limit.
-The default partition `balance_tolerance` is **0.1**, relative to the
-capacity-proportional design share (27.5% of design load per identical FPGA
-in a four-way run). Capacity and balance are separate upper bounds.
-Indivisible/fixed clusters, repair passes, and validators never automatically
-relax the requested tolerance; infeasible integer bounds fail explicitly.
+The default partition `balance_tolerance` is **0.1** for `cells`, LUT, and FF,
+relative to the capacity-proportional design share (27.5% of design load per
+identical FPGA in a four-way run). BRAM, DSP, URAM, carry, and other dedicated
+resources remain visible to the partitioner as soft balancing dimensions, but
+their hard acceptance bound is each FPGA's effective capacity (25% of the raw
+device in this preset). This avoids splitting macro-heavy modules merely to
+make every dedicated-resource count nearly equal. An explicit
+`balance_dimensions` array in the partition constraints can select a different
+set of dimensions for strict balance. Reports distinguish
+`strict_balance_dimensions` from `capacity_only_dimensions` and record the
+constraint mode and physical capacity for every active dimension. Capacity and
+balance are separate upper bounds. Indivisible/fixed clusters, repair passes,
+and validators never automatically relax either bound; infeasible integer
+bounds fail explicitly.
 OpenROAD/TritonPart can return a best-effort partition when its randomized
 initializer does not produce enough multidimensionally balanced candidates.
 When balance repair is enabled, Phase 3 therefore invokes the compiled

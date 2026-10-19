@@ -463,6 +463,34 @@ class Phase3Test(unittest.TestCase):
                 self.platform,
             )
 
+    def test_default_balance_dimensions_keep_macros_capacity_only(self) -> None:
+        constraints = normalize_partition_constraints(
+            None, self.ir, self.platform
+        )
+        self.assertEqual(
+            constraints["balance_dimensions"], ["cells", "ff", "lut"]
+        )
+
+    def test_balance_dimensions_are_explicit_and_validated(self) -> None:
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_dimensions": ["cells", "lut"],
+            },
+            self.ir,
+            self.platform,
+        )
+        self.assertEqual(constraints["balance_dimensions"], ["cells", "lut"])
+        with self.assertRaisesRegex(ValidationError, "unknown dimensions"):
+            normalize_partition_constraints(
+                {
+                    "schema": "emuflow.partition-constraints/v1",
+                    "balance_dimensions": ["cells", "unknown"],
+                },
+                self.ir,
+                self.platform,
+            )
+
     def test_pipeline_writes_valid_forced_two_fpga_partition(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)

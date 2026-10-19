@@ -83,7 +83,7 @@ class PlatformTest(unittest.TestCase):
         )
         self.assertEqual(
             sum(fpga.effective_capacity["lut"] for fpga in platform.fpgas),
-            12_257_280,
+            4_085_760,
         )
 
     def test_derived_utilization_profile_preserves_hardware_contract(self) -> None:

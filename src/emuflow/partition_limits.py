@@ -11,16 +11,30 @@ from .errors import ValidationError
 def strict_balance_limits(
     fpgas: Sequence[Any], totals: Mapping[str, int], tolerance: float,
     overrides: Optional[Mapping[str, float]] = None,
+    balance_dimensions: Optional[Iterable[str]] = None,
 ) -> dict[str, dict[str, int]]:
     if not fpgas:
         raise ValidationError("strict balance needs at least one FPGA")
     for value in [tolerance, *(overrides or {}).values()]:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
             raise ValidationError("strict balance tolerance must be finite and non-negative")
+    balanced = (
+        set(totals)
+        if balance_dimensions is None
+        else set(balance_dimensions)
+    )
+    balanced &= set(totals)
     limits = {fpga.id: {} for fpga in fpgas}
     for field, total in totals.items():
         capacity_total = sum(fpga.effective_capacity.get(field, 0) for fpga in fpgas)
         for fpga in fpgas:
+            if field not in balanced:
+                limits[fpga.id][field] = (
+                    total
+                    if field == "cells"
+                    else fpga.effective_capacity.get(field, 0)
+                )
+                continue
             share = 1.0 / len(fpgas) if field == "cells" else (
                 fpga.effective_capacity.get(field, 0) / capacity_total
                 if capacity_total else 0.0

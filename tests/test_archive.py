@@ -170,6 +170,8 @@ class ValidationArchiveTest(unittest.TestCase):
                     str(PLATFORM),
                     "--partition-provider",
                     "greedy",
+                    "--mapping-profile",
+                    "vtr-hard-blocks",
                     "--router",
                     str(tlr_router()),
                     "--frame-slots",

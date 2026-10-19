@@ -33,6 +33,15 @@ class StrictPartitionLimitsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "indivisible cluster"):
             validate_indivisible_limits([("one", {"lut": 1}, None)], limits)
 
+    def test_capacity_only_dimension_keeps_physical_limit(self):
+        limits = strict_balance_limits(
+            self.fpgas,
+            {"cells": 100, "lut": 100},
+            0.1,
+            balance_dimensions={"cells"},
+        )
+        self.assertEqual(limits["fpga0"], {"cells": 27, "lut": 100})
+
     def test_validator_cannot_relax_for_oversized_cluster(self):
         platform = SimpleNamespace(fpgas=self.fpgas)
         clusters = [{"id": f"c{i}", "instances": list(range(w)),
@@ -50,6 +59,48 @@ class StrictPartitionLimitsTest(unittest.TestCase):
                     {f"c{i}": f"fpga{i}" for i in range(4)}, 0.1)
         self.assertEqual(report["effective_balance_percent"], 10.0)
         self.assertFalse(report["balance_auto_relaxed"])
+
+    def test_capacity_only_macro_can_be_imbalanced_but_not_overfilled(self):
+        fpgas = [
+            SimpleNamespace(
+                id=f"fpga{i}",
+                effective_capacity={"lut": 100, "bram": 100},
+            )
+            for i in range(4)
+        ]
+        clusters = [
+            {
+                "id": f"c{i}",
+                "instances": [f"i{i}"],
+                "resources": {"lut": 25, "bram": bram},
+                "fixed_fpga": None,
+            }
+            for i, bram in enumerate((75, 25, 0, 0))
+        ]
+        assignment = {f"c{i}": f"fpga{i}" for i in range(4)}
+        report = validate_cluster_assignment_balance(
+            SimpleNamespace(fpgas=fpgas),
+            clusters,
+            assignment,
+            0.1,
+            requested_balance_dimensions=("cells", "lut", "ff"),
+        )
+        self.assertEqual(report["strict_balance_dimensions"], ["cells", "lut"])
+        self.assertEqual(report["capacity_only_dimensions"], ["bram"])
+        self.assertEqual(
+            report["constraint_mode_by_dimension"]["bram"], "capacity"
+        )
+        self.assertEqual(report["balance_allowed_loads"]["fpga0"]["bram"], 100)
+
+        clusters[0]["resources"]["bram"] = 101
+        with self.assertRaisesRegex(ValidationError, "balance/capacity"):
+            validate_cluster_assignment_balance(
+                SimpleNamespace(fpgas=fpgas),
+                clusters,
+                assignment,
+                0.1,
+                requested_balance_dimensions=("cells", "lut", "ff"),
+            )
 
 
 class DeviceResourceBudgetTest(unittest.TestCase):

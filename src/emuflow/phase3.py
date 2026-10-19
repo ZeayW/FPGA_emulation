@@ -1223,17 +1223,55 @@ def validate_phase3_indexed(
     totals = {field: sum(row[field] for row in loads.values()) for field in fields}
     tolerance = constraints["balance_tolerance"]
     overrides = constraints.get("balance_tolerance_by_dimension", {})
-    bounds = strict_balance_limits(fpgas, totals, tolerance, overrides)
+    strict_dimensions = set(
+        constraints.get("balance_dimensions", fields)
+    ) & set(fields)
+    bounds = strict_balance_limits(
+        fpgas,
+        totals,
+        tolerance,
+        overrides,
+        strict_dimensions,
+    )
+    expected_modes = {
+        field: ("balance" if field in strict_dimensions else "capacity")
+        for field in fields
+    }
     for fpga in loads:
         for field in fields:
             if loads[fpga][field] > bounds[fpga][field]:
-                raise ValidationError(f"indexed Phase 3 strict balance exceeded: {fpga} {field} used={loads[fpga][field]} allowed={bounds[fpga][field]}; automatic relaxation is forbidden")
+                mode = expected_modes[field]
+                raise ValidationError(
+                    f"indexed Phase 3 strict {mode} exceeded: {fpga} "
+                    f"{field} used={loads[fpga][field]} "
+                    f"allowed={bounds[fpga][field]}; automatic relaxation "
+                    "is forbidden"
+                )
     percentages = {field: overrides.get(field, tolerance) * 100.0 for field in fields}
+    expected_capacity_limits = {
+        fpga.id: {
+            field: (
+                totals[field]
+                if field == "cells"
+                else fpga.effective_capacity[field]
+            )
+            for field in fields
+        }
+        for fpga in fpgas
+    }
     if (validation.get("balance_auto_relaxed") is not False
         or validation.get("requested_balance_percent") != tolerance * 100.0
         or validation.get("effective_balance_percent") != max(percentages.values())
         or validation.get("effective_balance_percent_by_dimension") != percentages
         or validation.get("requested_balance_percent_by_dimension") != percentages
+        or validation.get("strict_balance_dimensions") != sorted(strict_dimensions)
+        or validation.get("capacity_only_dimensions") != sorted(set(fields) - strict_dimensions)
+        or validation.get("constraint_mode_by_dimension") != expected_modes
+        or validation.get("enforced_balance_percent_by_dimension")
+            != {field: percentages[field] for field in strict_dimensions}
+        or validation.get("capacity_limits") != expected_capacity_limits
+        or validation.get("strict_balance_violations") != 0
+        or validation.get("capacity_violations") != 0
         or validation.get("balance_loads") != loads
         or validation.get("balance_allowed_loads") != bounds):
         raise ValidationError("indexed Phase 3 strict balance evidence disagrees with sealed constraints")
