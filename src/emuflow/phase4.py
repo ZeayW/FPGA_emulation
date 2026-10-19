@@ -8,6 +8,7 @@ from .managed_json_storage import pack_managed_json
 from .phase3_storage import read_phase3_assignment_view
 from .platform import Platform
 from .routing import (
+    assignment_has_static_exact_contract,
     demands_from_assignment,
     load_route_constraints,
     validate_system_routes,
@@ -54,7 +55,9 @@ def run_phase4(
     candidate_workers: int = 1,
     managed_storage: bool = False,
 ) -> Dict[str, Any]:
-    assignment = read_phase3_assignment_view(assignment_path)
+    assignment = read_phase3_assignment_view(
+        assignment_path, include_semantic_contract=False
+    )
     platform = Platform.load(platform_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     candidate_pool_path = (
@@ -72,7 +75,7 @@ def run_phase4(
             if timing_paths_path is not None
             else NATIVE_ROUTER_PROVIDER
         )
-    exact_mode = assignment.get("semantic_contract") is not None
+    exact_mode = assignment_has_static_exact_contract(assignment)
     timing_paths = None
     feedback_source_paths = (
         tdm_feedback_routes_path,
@@ -312,7 +315,9 @@ def validate_phase4(
     routes_path: Path,
     timing_paths_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    assignment = read_phase3_assignment_view(assignment_path)
+    assignment = read_phase3_assignment_view(
+        assignment_path, include_semantic_contract=False
+    )
     platform = Platform.load(platform_path)
     routes = read_json(routes_path)
     provider = routes.get("provider")

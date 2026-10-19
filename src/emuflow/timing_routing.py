@@ -16,6 +16,7 @@ from .native_tools import resolve_native_executable
 from .platform import Platform
 from .bank_allocation import apply_bank_domain_ratios
 from .routing import (
+    assignment_has_static_exact_contract,
     ArcKey,
     _arc_key,
     build_directed_graph,
@@ -740,7 +741,9 @@ def _prepare_native_model(
     timing_paths: Optional[Mapping[str, Any]],
 ) -> Tuple[List[str], Dict[str, Any]]:
     demands = demands_from_assignment(assignment, platform)
-    exact_dependency_schedule = assignment.get("semantic_contract") is not None
+    exact_dependency_schedule = assignment_has_static_exact_contract(
+        assignment
+    )
     adjacency, arcs_by_key, capacities = build_directed_graph(
         platform,
         constraints,
@@ -1351,9 +1354,11 @@ def route_system_native(
             "direction_locks": direction_locks,
             "metrics": metrics,
         }
-        exact_contract = assignment.get("semantic_contract")
-        if exact_contract is not None:
-            result["semantic_contract_schema"] = exact_contract["schema"]
+        if assignment_has_static_exact_contract(assignment):
+            result["semantic_contract_schema"] = (
+                assignment.get("semantic_contract_schema")
+                or assignment["semantic_contract"]["schema"]
+            )
             result["semantic_contract_sha256"] = assignment[
                 "semantic_contract_sha256"
             ]
@@ -1433,7 +1438,7 @@ def route_system_native(
         platform,
         constraints,
         reserve_arrival_and_commit=(
-            assignment.get("semantic_contract") is not None
+            assignment_has_static_exact_contract(assignment)
         ),
     )
     routes = []
@@ -1819,13 +1824,15 @@ def route_system_native(
                 ],
             }
         )
-    exact_contract = assignment.get("semantic_contract")
-    if exact_contract is not None:
+    if assignment_has_static_exact_contract(assignment):
         # Phase 3 is the sole owner of the structural semantic contract.
         # Downstream route artifacts bind that contract by stable identity;
         # copying the full (potentially tens-of-megabytes) document here makes
         # every Phase 5/7 consumer parse the same information again.
-        result["semantic_contract_schema"] = exact_contract["schema"]
+        result["semantic_contract_schema"] = (
+            assignment.get("semantic_contract_schema")
+            or assignment["semantic_contract"]["schema"]
+        )
         result["semantic_contract_sha256"] = assignment[
             "semantic_contract_sha256"
         ]
@@ -1849,7 +1856,7 @@ def reconstruct_system_route_timing(
         platform,
         constraints,
         reserve_arrival_and_commit=(
-            assignment.get("semantic_contract") is not None
+            assignment_has_static_exact_contract(assignment)
         ),
     )
     link_by_id = {link.id: link for link in platform.links}
@@ -2316,8 +2323,9 @@ def validate_native_system_routes(
         routes,
         platform,
         constraints,
-        exact_dependency_schedule=assignment.get("semantic_contract")
-        is not None,
+        exact_dependency_schedule=assignment_has_static_exact_contract(
+            assignment
+        ),
     )
     route_delay_by_net = {}
     route_by_net = {}
@@ -2381,11 +2389,11 @@ def validate_native_system_routes(
         platform,
         constraints,
         reserve_arrival_and_commit=(
-            assignment.get("semantic_contract") is not None
+            assignment_has_static_exact_contract(assignment)
         ),
     )
     round_aware = (
-        assignment.get("semantic_contract") is None
+        not assignment_has_static_exact_contract(assignment)
         and sorted(
             {
                 int(route.get("transport_round", 0))

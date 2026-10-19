@@ -22,6 +22,14 @@ RUNTIME_BARRIER_SLOTS = 1
 ArcKey = Tuple[str, str, str]
 
 
+def assignment_has_static_exact_contract(
+    assignment: Mapping[str, Any],
+) -> bool:
+    return assignment.get("semantic_contract") is not None or (
+        assignment.get("semantic_contract_indexed") is True
+    )
+
+
 def system_route_timing_paths(
     routes: Mapping[str, Any],
     *,
@@ -53,7 +61,54 @@ def static_exact_contract_from_assignment(
 ) -> Optional[Mapping[str, Any]]:
     contract = assignment.get("semantic_contract")
     if contract is None:
-        return None
+        if assignment.get("semantic_contract_indexed") is not True:
+            return None
+        schema = assignment.get("semantic_contract_schema")
+        digest = assignment.get("semantic_contract_sha256")
+        raw_cuts = assignment.get("cut_nets")
+        if (
+            schema != STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or not isinstance(raw_cuts, list)
+        ):
+            raise ValidationError(
+                "indexed assignment semantic contract identity is incomplete"
+            )
+        for index, cut in enumerate(raw_cuts):
+            if not isinstance(cut, dict) or not isinstance(
+                cut.get("net"), str
+            ):
+                raise ValidationError(
+                    f"indexed assignment cut_nets[{index}] is invalid"
+                )
+            if cut.get("cut_class") == "combinational":
+                if (
+                    isinstance(cut.get("dependency_level"), bool)
+                    or not isinstance(cut.get("dependency_level"), int)
+                    or cut["dependency_level"] < 0
+                    or isinstance(
+                        cut.get("combinational_dependency_depth"), bool
+                    )
+                    or not isinstance(
+                        cut.get("combinational_dependency_depth"), int
+                    )
+                    or cut["combinational_dependency_depth"] < 0
+                    or not isinstance(cut.get("predecessor_cut_nets"), list)
+                    or not all(
+                        isinstance(item, str) and item
+                        for item in cut["predecessor_cut_nets"]
+                    )
+                ):
+                    raise ValidationError(
+                        "indexed assignment cut dependency is invalid"
+                    )
+        return {
+            "schema": schema,
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
     if not isinstance(contract, dict):
         raise ValidationError("assignment.semantic_contract: expected an object")
     if (
@@ -679,7 +734,7 @@ def demands_from_assignment(
     exact_contract = static_exact_contract_from_assignment(assignment)
     contract_nodes = (
         {item["net"]: item for item in exact_contract["cut_nodes"]}
-        if exact_contract is not None
+        if exact_contract is not None and not exact_contract.get("indexed")
         else {}
     )
     raw_cuts = assignment.get("cut_nets")
@@ -748,7 +803,7 @@ def demands_from_assignment(
         if "transport_round" in cut:
             demand["transport_round"] = raw_round
         if exact_contract is not None:
-            node = contract_nodes[net_id]
+            node = cut if exact_contract.get("indexed") else contract_nodes[net_id]
             demand.update(
                 {
                     "cut_class": node["cut_class"],

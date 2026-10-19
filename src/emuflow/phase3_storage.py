@@ -5,7 +5,9 @@ import json
 import sqlite3
 import threading
 import zlib
+from array import array
 from collections import OrderedDict
+from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping
@@ -762,6 +764,7 @@ def read_phase3_assignment_view(
     *,
     include_instance_assignment: bool = False,
     include_cluster_assignment: bool = False,
+    include_semantic_contract: bool = True,
 ) -> Dict[str, Any]:
     """Read only the Phase 4--7 assignment contract.
 
@@ -787,11 +790,22 @@ def read_phase3_assignment_view(
         raise ValueError("packed assignment downstream view is malformed")
     result = {**document, "partitions": partitions}
     compressed = value.get("semantic_contract")
-    if compressed is not None:
+    enrich_indexed_contract = False
+    if compressed is not None and include_semantic_contract:
         result["semantic_contract"] = _decompress_json(
             compressed,
             "packed assignment semantic contract",
         )
+    elif compressed is not None:
+        # Production packed assignments are emitted only for the generalized
+        # structural Static Exact contract.  Phase 4 needs its identity and
+        # the dependency fields already copied into ``cut_nets``; expanding
+        # every logic segment is unnecessary until the scheduler consumes it.
+        result["semantic_contract_indexed"] = True
+        result["semantic_contract_schema"] = (
+            "emuflow.static-exact-combinational-cut/v3"
+        )
+        enrich_indexed_contract = True
     if include_cluster_assignment:
         result["cluster_assignment"] = PackedClusterAssignment(value)
     if include_instance_assignment:
@@ -815,7 +829,139 @@ def read_phase3_assignment_view(
 
             return expand_phase3_assignment(value, path, read_clusters)
         result["instance_assignment"] = IndexedInstanceAssignment(index_path)
+    if enrich_indexed_contract:
+        # Drop the potentially gigabyte-scale base64 string before scanning
+        # the indexed dependency relations.  The route view retains only the
+        # cut records that Phase 4 actually consumes.
+        compressed = None
+        value = None
+        index_path = path.with_name("assignment.sqlite")
+        if index_path.is_file():
+            _enrich_indexed_cut_dependencies(result, index_path)
     return result
+
+
+def _segment_number(segment_id: Any) -> int:
+    if not isinstance(segment_id, str) or not segment_id.startswith("segment"):
+        raise ValueError("assignment index segment identity is invalid")
+    suffix = segment_id[7:]
+    if not suffix.isdigit():
+        raise ValueError("assignment index segment identity is invalid")
+    return int(suffix)
+
+
+def _enrich_indexed_cut_dependencies(
+    assignment: Dict[str, Any], index_path: Path
+) -> None:
+    """Reconstruct route-level dependency fields without semantic JSON.
+
+    ``exact_cut_sources`` identifies every segment that feeds a cut TX.  A
+    segment that also appears in ``exact_logic_segments`` is an RX-to-TX edge;
+    joining those two relations reconstructs the cut dependency DAG.  Dense
+    numeric segment IDs keep the join vector at four bytes per segment instead
+    of a multi-gigabyte Python string dictionary.
+    """
+
+    cuts = assignment.get("cut_nets")
+    if not isinstance(cuts, list):
+        raise ValueError("packed assignment cut nets are invalid")
+    net_ids = []
+    net_index: Dict[str, int] = {}
+    for index, cut in enumerate(cuts):
+        if not isinstance(cut, dict) or not isinstance(cut.get("net"), str):
+            raise ValueError("packed assignment cut net is invalid")
+        net_id = cut["net"]
+        if net_id in net_index:
+            raise ValueError("packed assignment cut nets are not unique")
+        net_index[net_id] = index
+        net_ids.append(net_id)
+
+    predecessors: List[List[int]] = [[] for _ in cuts]
+    successors: List[List[int]] = [[] for _ in cuts]
+    segment_sinks = array("i")
+    connection = sqlite3.connect(
+        f"file:{index_path.resolve()}?mode=ro&immutable=1",
+        uri=True,
+    )
+    try:
+        exact_nodes = {
+            str(row[0])
+            for row in connection.execute("SELECT net_id FROM exact_cut_nodes")
+        }
+        if exact_nodes != set(net_ids):
+            raise ValueError(
+                "assignment index exact-cut coverage is inconsistent"
+            )
+        for net_id, segment_id in connection.execute(
+            "SELECT net_id,segment_id FROM exact_cut_sources"
+        ):
+            sink = net_index.get(str(net_id))
+            if sink is None:
+                raise ValueError("assignment index cut source is unknown")
+            number = _segment_number(segment_id)
+            if number >= len(segment_sinks):
+                segment_sinks.extend(
+                    array("i", [-1]) * (number + 1 - len(segment_sinks))
+                )
+            if segment_sinks[number] != -1:
+                raise ValueError(
+                    "assignment index source segment is not unique"
+                )
+            segment_sinks[number] = sink
+        for source_net, segment_id in connection.execute(
+            "SELECT source_cut_net,segment_id FROM exact_logic_segments"
+        ):
+            number = _segment_number(segment_id)
+            if number >= len(segment_sinks):
+                continue
+            sink = segment_sinks[number]
+            if sink < 0:
+                continue
+            source = net_index.get(str(source_net))
+            if source is None:
+                raise ValueError("assignment index dependency source is unknown")
+            if source == sink:
+                raise ValueError("assignment index dependency self-loop is invalid")
+            predecessors[sink].append(source)
+            successors[source].append(sink)
+    finally:
+        connection.close()
+
+    indegree = array("I", (len(items) for items in predecessors))
+    levels = array("I", [0]) * len(cuts)
+    depths = array("I", [0]) * len(cuts)
+    pending = deque(index for index, degree in enumerate(indegree) if degree == 0)
+    visited = 0
+    while pending:
+        node = pending.popleft()
+        visited += 1
+        levels[node] = 1 + max(
+            (levels[source] for source in predecessors[node]), default=0
+        )
+        depths[node] = max(
+            (depths[source] for source in predecessors[node]), default=0
+        ) + (1 if cuts[node].get("cut_class") == "combinational" else 0)
+        for sink in successors[node]:
+            indegree[sink] -= 1
+            if indegree[sink] == 0:
+                pending.append(sink)
+    if visited != len(cuts):
+        raise ValueError("assignment index exact-cut dependency graph has a cycle")
+
+    for index, cut in enumerate(cuts):
+        fields = {
+            "dependency_level": int(levels[index]),
+            "combinational_dependency_depth": int(depths[index]),
+            "predecessor_cut_nets": sorted(
+                net_ids[source] for source in predecessors[index]
+            ),
+        }
+        for key, expected in fields.items():
+            if key in cut and cut[key] != expected:
+                raise ValueError(
+                    f"packed assignment {key} disagrees with its index"
+                )
+            cut[key] = expected
 
 
 def read_phase3_cut_timing_view(

@@ -186,6 +186,16 @@ class Phase3StorageTest(unittest.TestCase):
                 compact=True,
             )
             write_json(root / "assignment.json", packed, compact=True)
+            indexed = read_phase3_assignment_view(
+                root / "assignment.json",
+                include_semantic_contract=False,
+            )
+            self.assertTrue(indexed["semantic_contract_indexed"])
+            self.assertEqual(
+                indexed["semantic_contract_schema"],
+                "emuflow.static-exact-combinational-cut/v3",
+            )
+            self.assertNotIn("semantic_contract", indexed)
             with self.assertRaisesRegex(ValueError, "contract is corrupt"):
                 read_json(root / "assignment.json")
 
@@ -278,6 +288,21 @@ class Phase3StorageTest(unittest.TestCase):
 
     def test_cut_timing_view_uses_only_indexed_relations(self) -> None:
         clusters, assignment = _large_artifacts(4)
+        assignment["cut_nets"] = [
+            {
+                "net": "n0",
+                "cut_class": "combinational",
+                "source_fpgas": ["fpga0"],
+                "sink_fpgas": ["fpga1"],
+            },
+            {
+                "net": "n1",
+                "cut_class": "register_input",
+                "source_fpgas": ["fpga1"],
+                "sink_fpgas": ["fpga0"],
+            },
+        ]
+        assignment["semantic_contract_sha256"] = "a" * 64
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             packed = pack_phase3_assignment(assignment, clusters)
@@ -366,6 +391,25 @@ class Phase3StorageTest(unittest.TestCase):
             indexed = view["instance_assignment"]
             self.assertEqual(indexed["i1"], "fpga1")
             indexed.close()
+            route_view = read_phase3_assignment_view(
+                root / "assignment.json",
+                include_semantic_contract=False,
+            )
+            self.assertEqual(
+                [
+                    (
+                        item["net"],
+                        item["dependency_level"],
+                        item["combinational_dependency_depth"],
+                        item["predecessor_cut_nets"],
+                    )
+                    for item in route_view["cut_nets"]
+                ],
+                [
+                    ("n0", 1, 1, []),
+                    ("n1", 2, 1, ["n0"]),
+                ],
+            )
 
 
 if __name__ == "__main__":

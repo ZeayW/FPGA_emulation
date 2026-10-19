@@ -1257,8 +1257,6 @@ def build_partition_assignment(
             item["net"]: item for item in semantic_contract["cut_nodes"]
         }
         for cut in cut_nets:
-            if cut["cut_class"] != "combinational":
-                continue
             node = contract_nodes[cut["net"]]
             cut.update(
                 {

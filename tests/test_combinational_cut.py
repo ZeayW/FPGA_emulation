@@ -989,6 +989,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             },
             {32 * 8},
         )
+
         checked = validate_system_routes(assignment, self.platform, routes)
         self.assertEqual(checked["status"], "pass")
         hydrated = {
@@ -1028,6 +1029,23 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         )
         self.assertIsNone(
             plan["round_barrier_legalization"]["source_ready_slot"]
+        )
+
+    def test_phase4_indexed_contract_view_matches_full_demands(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        expected = demands_from_assignment(assignment, self.platform)
+        indexed = copy.deepcopy(assignment)
+        schema = indexed.pop("semantic_contract")["schema"]
+        indexed["semantic_contract_indexed"] = True
+        indexed["semantic_contract_schema"] = schema
+        self.assertEqual(
+            demands_from_assignment(indexed, self.platform), expected
+        )
+        routes = self._exact_routes(assignment)
+        routes.pop("semantic_contract")
+        self.assertEqual(
+            validate_system_routes(indexed, self.platform, routes)["status"],
+            "pass",
         )
 
     @staticmethod
