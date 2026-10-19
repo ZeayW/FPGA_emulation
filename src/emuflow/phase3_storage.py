@@ -891,26 +891,6 @@ def read_phase3_cut_timing_view(
         }
         exact_digest = metadata.get("semantic_contract_sha256")
         if exact_digest is not None:
-            source_segments: Dict[str, List[str]] = {}
-            all_source_segment_ids = set()
-            for row in connection.execute(
-                "SELECT net_id,segment_id FROM exact_cut_sources "
-                "ORDER BY net_id,ordinal"
-            ):
-                net_id = str(row["net_id"])
-                segment_id = str(row["segment_id"])
-                source_segments.setdefault(net_id, []).append(segment_id)
-                all_source_segment_ids.add(segment_id)
-            capture_segments: Dict[str, List[str]] = {}
-            for row in connection.execute(
-                "SELECT source_cut_net,segment_id FROM exact_logic_segments "
-                "ORDER BY source_cut_net,segment_id"
-            ):
-                segment_id = str(row["segment_id"])
-                if segment_id not in all_source_segment_ids:
-                    capture_segments.setdefault(
-                        str(row["source_cut_net"]), []
-                    ).append(segment_id)
             exact_nets = [
                 str(row["net_id"])
                 for row in connection.execute(
@@ -922,16 +902,6 @@ def read_phase3_cut_timing_view(
                     "assignment index exact-cut coverage is inconsistent"
                 )
             result["semantic_contract_sha256"] = exact_digest
-            result["semantic_contract_index"] = {
-                "cut_nodes": [
-                    {
-                        "net": net_id,
-                        "source_segment_ids": source_segments.get(net_id, []),
-                        "capture_segment_ids": capture_segments.get(net_id, []),
-                    }
-                    for net_id in exact_nets
-                ]
-            }
     finally:
         connection.close()
 

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
+import sqlite3
 from pathlib import Path
 from unittest import mock
 
 from emuflow.cut_segment_qualification import (
+    CUT_SEGMENT_INDEXED_QUALIFICATION_SCHEMA,
     CUT_SEGMENT_QUALIFICATION_SCHEMA,
     build_cut_segment_qualification,
     build_cut_segment_qualification_value,
@@ -162,3 +165,74 @@ class CutSegmentQualificationTest(unittest.TestCase):
                     input_already_validated=True,
                 )
             self.assertEqual(compact, legacy)
+
+    def test_indexed_qualification_persists_bounded_summary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path, assignment_path, database_path, cut_net = self._fixture(root)
+            compact_path = root / "design.emuir.sqlite"
+            EmuIR.load(ir_path).save(compact_path)
+            with sqlite3.connect(root / "assignment.sqlite") as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                    CREATE TABLE parts(part_index INTEGER PRIMARY KEY,fpga TEXT NOT NULL);
+                    CREATE TABLE cut_sinks(net_id TEXT,source_part_index INTEGER,sink_part_index INTEGER);
+                    CREATE TABLE exact_cut_nodes(net_id TEXT PRIMARY KEY);
+                    CREATE TABLE exact_cut_sources(net_id TEXT,ordinal INTEGER,segment_id TEXT);
+                    CREATE TABLE exact_logic_segments(source_cut_net TEXT,part_index INTEGER,segment_id TEXT);
+                    """
+                )
+                metadata = {
+                    "schema": "emuflow.phase3-assignment-sqlite/v1",
+                    "design": "counter",
+                    "platform": "two",
+                    "provider": "test",
+                    "seed": 0,
+                    "constraints": {},
+                    "semantic_contract_sha256": "b" * 64,
+                }
+                connection.executemany(
+                    "INSERT INTO metadata VALUES (?,?)",
+                    ((key, json.dumps(value)) for key, value in metadata.items()),
+                )
+                connection.executemany(
+                    "INSERT INTO parts VALUES (?,?)",
+                    [(0, "fpga0"), (1, "fpga1")],
+                )
+                connection.execute(
+                    "INSERT INTO cut_sinks VALUES (?,?,?)",
+                    (cut_net, 0, 1),
+                )
+                connection.execute(
+                    "INSERT INTO exact_cut_nodes VALUES (?)", (cut_net,)
+                )
+                connection.execute(
+                    "INSERT INTO exact_cut_sources VALUES (?,?,?)",
+                    (cut_net, 0, "segment000000"),
+                )
+                connection.execute(
+                    "INSERT INTO exact_logic_segments VALUES (?,?,?)",
+                    (cut_net, 1, "segment000001"),
+                )
+            artifact = build_cut_segment_qualification(
+                compact_path,
+                assignment_path,
+                database_path,
+                input_already_validated=True,
+            )
+            self.assertEqual(
+                artifact["schema"], CUT_SEGMENT_INDEXED_QUALIFICATION_SCHEMA
+            )
+            self.assertEqual(artifact["storage"], "indexed-summary")
+            self.assertEqual(artifact["summary"]["cut_nets"], 1)
+            self.assertEqual(
+                artifact["relation_counts"],
+                {
+                    "cut_sinks": 1,
+                    "exact_cut_nodes": 1,
+                    "exact_cut_source_segments": 1,
+                    "exact_consumer_segments": 1,
+                },
+            )
+            self.assertNotIn("records", artifact)

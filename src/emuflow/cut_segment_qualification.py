@@ -11,6 +11,9 @@ endpoint-exact delay remains a mandatory Phase 7 qualification gate.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
@@ -32,6 +35,9 @@ from .sta import (
 
 CUT_SEGMENT_QUALIFICATION_SCHEMA = (
     "emuflow.cut-segment-timing-qualification/v1"
+)
+CUT_SEGMENT_INDEXED_QUALIFICATION_SCHEMA = (
+    "emuflow.cut-segment-timing-qualification/v2"
 )
 CUT_SEGMENT_QUALIFICATION_PROVIDER = (
     "emuir-structural-cut-segment-qualification-v1"
@@ -133,19 +139,180 @@ def build_cut_segment_qualification(
     try:
         if not input_already_validated:
             validate_sta_path_database_path_value(path_database_path, database, ir)
+        records = iter_sta_path_database_paths(
+            path_database_path, database, verify_payload=False
+        )
+        assignment_index = assignment_path.with_name("assignment.sqlite")
+        if isinstance(ir, IndexedTimingView) and assignment_index.is_file():
+            return _build_indexed_cut_segment_qualification(
+                ir,
+                assignment,
+                database,
+                assignment_index_path=assignment_index,
+                timing_model_path=timing_model_path,
+                architecture_timing_db_path=architecture_timing_db_path,
+                path_records=records,
+            )
         return build_cut_segment_qualification_value(
             ir,
             assignment,
             database,
             timing_model_path=timing_model_path,
             architecture_timing_db_path=architecture_timing_db_path,
-            path_records=iter_sta_path_database_paths(
-                path_database_path, database, verify_payload=False
-            ),
+            path_records=records,
         )
     finally:
         if isinstance(ir, IndexedTimingView):
             ir.close()
+
+
+def _sealed_rows(rows: Iterable[Any]) -> Dict[str, Any]:
+    digest = hashlib.sha256()
+    count = 0
+    for row in rows:
+        encoded = json.dumps(
+            row, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, byteorder="big"))
+        digest.update(encoded)
+        count += 1
+    return {"count": count, "sha256": digest.hexdigest()}
+
+
+def _build_indexed_cut_segment_qualification(
+    ir,
+    assignment: Mapping[str, Any],
+    database: Mapping[str, Any],
+    *,
+    assignment_index_path: Path,
+    timing_model_path: Path,
+    architecture_timing_db_path: Optional[Path],
+    path_records: Iterable[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Build bounded qualification evidence from the Phase-3 data plane."""
+
+    cut_nets = _cut_nets(assignment)
+    if architecture_timing_db_path is not None:
+        model, instance_cell_types = build_architecture_opensta_timing_model(
+            ir, architecture_timing_db_path
+        )
+    else:
+        model = load_timing_model(timing_model_path)
+        instance_cell_types = None
+    structural = classify_through_net_timing_endpoints(
+        ir, model, cut_nets, instance_cell_types
+    )
+
+    alias = "cut_timing_assignment"
+    ir.connection.execute(
+        f"ATTACH DATABASE ? AS {alias}",
+        (f"file:{assignment_index_path.resolve()}?mode=ro&immutable=1",),
+    )
+    try:
+        unknown = int(
+            ir.connection.execute(
+                f"""SELECT COUNT(*) FROM (
+                  SELECT DISTINCT c.net_id FROM {alias}.cut_sinks c
+                  LEFT JOIN net_records n ON n.id=c.net_id
+                  WHERE n.seq IS NULL
+                )"""
+            ).fetchone()[0]
+        )
+        invalid_drivers = int(
+            ir.connection.execute(
+                f"""SELECT COUNT(*) FROM (
+                  SELECT n.seq FROM (
+                    SELECT DISTINCT net_id FROM {alias}.cut_sinks
+                  ) c JOIN net_records n ON n.id=c.net_id
+                  LEFT JOIN endpoint_records e
+                    ON e.net_seq=n.seq AND e.role=0
+                  GROUP BY n.seq HAVING COUNT(e.ordinal)!=1
+                )"""
+            ).fetchone()[0]
+        )
+        if unknown:
+            raise ValidationError(
+                "cut-segment qualification net is absent from EmuIR"
+            )
+        if invalid_drivers:
+            raise ValidationError(
+                "cut-segment qualification net must have one driver"
+            )
+    finally:
+        ir.connection.execute(f"DETACH DATABASE {alias}")
+
+    cut_set = set(cut_nets)
+    associated_nets = set()
+    association_count = 0
+    for path in path_records:
+        if not isinstance(path, dict) or not isinstance(
+            path.get("path_nets"), list
+        ):
+            raise ValidationError(
+                "cut-segment qualification original path record is invalid"
+            )
+        path_id = path.get("id")
+        if not isinstance(path_id, str) or not path_id:
+            raise ValidationError(
+                "cut-segment qualification original path ID is invalid"
+            )
+        matches = set(path["path_nets"]) & cut_set
+        association_count += len(matches)
+        associated_nets.update(matches)
+
+    with sqlite3.connect(
+        f"file:{assignment_index_path.resolve()}?mode=ro&immutable=1",
+        uri=True,
+    ) as index:
+        relation_counts = {
+            "cut_sinks": int(
+                index.execute("SELECT COUNT(*) FROM cut_sinks").fetchone()[0]
+            ),
+            "exact_cut_nodes": int(
+                index.execute(
+                    "SELECT COUNT(*) FROM exact_cut_nodes"
+                ).fetchone()[0]
+            ),
+            "exact_cut_source_segments": int(
+                index.execute(
+                    "SELECT COUNT(*) FROM exact_cut_sources"
+                ).fetchone()[0]
+            ),
+            "exact_consumer_segments": int(
+                index.execute(
+                    "SELECT COUNT(*) FROM exact_logic_segments"
+                ).fetchone()[0]
+            ),
+        }
+
+    timed = sum(item["status"] == "timed" for item in structural.values())
+    summary = {
+        "cut_nets": len(cut_nets),
+        "timed_structural_nets": timed,
+        "no_timed_endpoint_nets": len(cut_nets) - timed,
+        "enumerated_member_associations": association_count,
+        "functional_only_nets": len(cut_set - associated_nets),
+    }
+    return {
+        "schema": CUT_SEGMENT_INDEXED_QUALIFICATION_SCHEMA,
+        "status": "pass",
+        "provider": CUT_SEGMENT_QUALIFICATION_PROVIDER,
+        "qualification": "pre-route-structural-contract-bound",
+        "delay_evidence": "contract-budget-provisional",
+        "routed_deadline_gate": (
+            "required-phase7-endpoint-exact-or-conservative-bound"
+        ),
+        "storage": "indexed-summary",
+        "semantic_contract_sha256": assignment.get(
+            "semantic_contract_sha256"
+        ),
+        "cut_net_identity": _sealed_rows(cut_nets),
+        "structural_identity": _sealed_rows(
+            (net, structural[net]) for net in cut_nets
+        ),
+        "relation_counts": relation_counts,
+        "summary": summary,
+    }
 
 
 def build_cut_segment_qualification_value(

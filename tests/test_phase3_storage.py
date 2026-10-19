@@ -360,21 +360,9 @@ class Phase3StorageTest(unittest.TestCase):
                     },
                 ],
             )
-            self.assertEqual(
-                view["semantic_contract_index"]["cut_nodes"],
-                [
-                    {
-                        "net": "n0",
-                        "source_segment_ids": ["segment000000"],
-                        "capture_segment_ids": ["segment000002"],
-                    },
-                    {
-                        "net": "n1",
-                        "source_segment_ids": ["segment000001"],
-                        "capture_segment_ids": ["segment000003"],
-                    },
-                ],
-            )
+            self.assertEqual(view["semantic_contract_sha256"], "a" * 64)
+            self.assertNotIn("semantic_contract", view)
+            self.assertNotIn("semantic_contract_index", view)
             indexed = view["instance_assignment"]
             self.assertEqual(indexed["i1"], "fpga1")
             indexed.close()
