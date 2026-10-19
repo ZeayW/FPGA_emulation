@@ -816,3 +816,125 @@ def read_phase3_assignment_view(
             return expand_phase3_assignment(value, path, read_clusters)
         result["instance_assignment"] = IndexedInstanceAssignment(index_path)
     return result
+
+
+def read_phase3_cut_timing_view(
+    path: Path,
+    *,
+    include_instance_assignment: bool = False,
+) -> Dict[str, Any]:
+    """Read the Phase-3 relations needed by cut timing from SQLite.
+
+    Static Exact production assignments contain a compressed semantic contract
+    whose expanded Python representation can be tens of gigabytes.  Phase-4
+    cut qualification and STA projection need only cut endpoints, segment IDs,
+    and optional instance ownership; all of those relations are already sealed
+    in ``assignment.sqlite``.  Legacy fixtures without that sidecar retain the
+    ordinary JSON view.
+    """
+
+    index_path = path.with_name("assignment.sqlite")
+    if not index_path.is_file():
+        return read_phase3_assignment_view(
+            path,
+            include_instance_assignment=include_instance_assignment,
+        )
+
+    connection = sqlite3.connect(
+        f"file:{index_path.resolve()}?mode=ro&immutable=1",
+        uri=True,
+    )
+    connection.row_factory = sqlite3.Row
+    try:
+        metadata = {
+            str(row["key"]): json.loads(row["value"])
+            for row in connection.execute("SELECT key,value FROM metadata")
+        }
+        if metadata.get("schema") != "emuflow.phase3-assignment-sqlite/v1":
+            raise ValueError("assignment index schema is invalid")
+        parts = {
+            int(row["part_index"]): str(row["fpga"])
+            for row in connection.execute(
+                "SELECT part_index,fpga FROM parts ORDER BY part_index"
+            )
+        }
+        cut_records: Dict[str, Dict[str, Any]] = {}
+        for row in connection.execute(
+            "SELECT net_id,source_part_index,sink_part_index FROM cut_sinks "
+            "ORDER BY net_id,sink_part_index"
+        ):
+            net_id = str(row["net_id"])
+            source = parts.get(int(row["source_part_index"]))
+            sink = parts.get(int(row["sink_part_index"]))
+            if source is None or sink is None:
+                raise ValueError("assignment index cut endpoint is invalid")
+            record = cut_records.setdefault(
+                net_id,
+                {
+                    "net": net_id,
+                    "source_fpgas": [source],
+                    "sink_fpgas": [],
+                },
+            )
+            if record["source_fpgas"] != [source]:
+                raise ValueError("assignment index cut source is inconsistent")
+            record["sink_fpgas"].append(sink)
+
+        result: Dict[str, Any] = {
+            "schema": "emuflow.partition-assignment/v1",
+            "design": metadata.get("design"),
+            "platform": metadata.get("platform"),
+            "provider": metadata.get("provider"),
+            "seed": metadata.get("seed"),
+            "constraints": metadata.get("constraints"),
+            "cut_nets": [cut_records[net] for net in sorted(cut_records)],
+        }
+        exact_digest = metadata.get("semantic_contract_sha256")
+        if exact_digest is not None:
+            source_segments: Dict[str, List[str]] = {}
+            all_source_segment_ids = set()
+            for row in connection.execute(
+                "SELECT net_id,segment_id FROM exact_cut_sources "
+                "ORDER BY net_id,ordinal"
+            ):
+                net_id = str(row["net_id"])
+                segment_id = str(row["segment_id"])
+                source_segments.setdefault(net_id, []).append(segment_id)
+                all_source_segment_ids.add(segment_id)
+            capture_segments: Dict[str, List[str]] = {}
+            for row in connection.execute(
+                "SELECT source_cut_net,segment_id FROM exact_logic_segments "
+                "ORDER BY source_cut_net,segment_id"
+            ):
+                segment_id = str(row["segment_id"])
+                if segment_id not in all_source_segment_ids:
+                    capture_segments.setdefault(
+                        str(row["source_cut_net"]), []
+                    ).append(segment_id)
+            exact_nets = [
+                str(row["net_id"])
+                for row in connection.execute(
+                    "SELECT net_id FROM exact_cut_nodes ORDER BY net_id"
+                )
+            ]
+            if exact_nets != sorted(cut_records):
+                raise ValueError(
+                    "assignment index exact-cut coverage is inconsistent"
+                )
+            result["semantic_contract_sha256"] = exact_digest
+            result["semantic_contract_index"] = {
+                "cut_nodes": [
+                    {
+                        "net": net_id,
+                        "source_segment_ids": source_segments.get(net_id, []),
+                        "capture_segment_ids": capture_segments.get(net_id, []),
+                    }
+                    for net_id in exact_nets
+                ]
+            }
+    finally:
+        connection.close()
+
+    if include_instance_assignment:
+        result["instance_assignment"] = IndexedInstanceAssignment(index_path)
+    return result

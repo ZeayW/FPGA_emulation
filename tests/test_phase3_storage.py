@@ -13,6 +13,7 @@ from emuflow.phase3_storage import (
     pack_phase3_assignment,
     pack_phase3_clusters,
     read_phase3_assignment_view,
+    read_phase3_cut_timing_view,
 )
 
 
@@ -273,6 +274,109 @@ class Phase3StorageTest(unittest.TestCase):
             )
             self.assertEqual(len(indexed), 8)
             self.assertIsNone(indexed.get("absent"))
+            indexed.close()
+
+    def test_cut_timing_view_uses_only_indexed_relations(self) -> None:
+        clusters, assignment = _large_artifacts(4)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            packed = pack_phase3_assignment(assignment, clusters)
+            packed["semantic_contract"] = {
+                "codec": "zlib-level-1-base64-canonical-json",
+                "uncompressed_bytes": 1,
+                "data": "invalid-on-purpose",
+            }
+            write_json(root / "assignment.json", packed, compact=True)
+            with sqlite3.connect(root / "assignment.sqlite") as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                    CREATE TABLE parts(part_index INTEGER PRIMARY KEY,fpga TEXT NOT NULL);
+                    CREATE TABLE copies(source_instance_seq INTEGER,part_index INTEGER,copy_id TEXT,is_replica INTEGER);
+                    CREATE TABLE cut_sinks(net_id TEXT,source_part_index INTEGER,sink_part_index INTEGER);
+                    CREATE TABLE exact_cut_nodes(net_id TEXT PRIMARY KEY);
+                    CREATE TABLE exact_cut_sources(net_id TEXT,ordinal INTEGER,segment_id TEXT);
+                    CREATE TABLE exact_logic_segments(source_cut_net TEXT,part_index INTEGER,segment_id TEXT);
+                    """
+                )
+                metadata = {
+                    "schema": "emuflow.phase3-assignment-sqlite/v1",
+                    "design": "large",
+                    "platform": "four",
+                    "provider": "test",
+                    "seed": 1,
+                    "constraints": {"balance_tolerance": 0.25},
+                    "source_instance_count": 8,
+                    "semantic_contract_sha256": "a" * 64,
+                }
+                connection.executemany(
+                    "INSERT INTO metadata VALUES (?,?)",
+                    ((key, json.dumps(value)) for key, value in metadata.items()),
+                )
+                connection.executemany(
+                    "INSERT INTO parts VALUES (?,?)",
+                    [(0, "fpga0"), (1, "fpga1")],
+                )
+                connection.executemany(
+                    "INSERT INTO copies VALUES (?,?,?,0)",
+                    [(0, 0, "i0"), (1, 1, "i1")],
+                )
+                connection.executemany(
+                    "INSERT INTO cut_sinks VALUES (?,?,?)",
+                    [("n0", 0, 1), ("n1", 1, 0)],
+                )
+                connection.executemany(
+                    "INSERT INTO exact_cut_nodes VALUES (?)",
+                    [("n0",), ("n1",)],
+                )
+                connection.executemany(
+                    "INSERT INTO exact_cut_sources VALUES (?,?,?)",
+                    [("n0", 0, "segment000000"), ("n1", 0, "segment000001")],
+                )
+                connection.executemany(
+                    "INSERT INTO exact_logic_segments VALUES (?,?,?)",
+                    [
+                        ("n0", 1, "segment000001"),
+                        ("n0", 1, "segment000002"),
+                        ("n1", 0, "segment000003"),
+                    ],
+                )
+            view = read_phase3_cut_timing_view(
+                root / "assignment.json",
+                include_instance_assignment=True,
+            )
+            self.assertEqual(
+                view["cut_nets"],
+                [
+                    {
+                        "net": "n0",
+                        "source_fpgas": ["fpga0"],
+                        "sink_fpgas": ["fpga1"],
+                    },
+                    {
+                        "net": "n1",
+                        "source_fpgas": ["fpga1"],
+                        "sink_fpgas": ["fpga0"],
+                    },
+                ],
+            )
+            self.assertEqual(
+                view["semantic_contract_index"]["cut_nodes"],
+                [
+                    {
+                        "net": "n0",
+                        "source_segment_ids": ["segment000000"],
+                        "capture_segment_ids": ["segment000002"],
+                    },
+                    {
+                        "net": "n1",
+                        "source_segment_ids": ["segment000001"],
+                        "capture_segment_ids": ["segment000003"],
+                    },
+                ],
+            )
+            indexed = view["instance_assignment"]
+            self.assertEqual(indexed["i1"], "fpga1")
             indexed.close()
 
 

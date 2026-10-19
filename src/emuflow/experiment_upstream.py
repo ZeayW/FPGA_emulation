@@ -44,7 +44,10 @@ from .phase1 import (
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .platform import Platform
-from .phase3_storage import read_phase3_assignment_view
+from .phase3_storage import (
+    read_phase3_assignment_view,
+    read_phase3_cut_timing_view,
+)
 from .routing import load_route_constraints, semantic_contract_for_routes
 from .sta import (
     derive_partition_net_weights,
@@ -611,7 +614,7 @@ def run_cut_timing_checkpoint(
     assignment_path = _require(partition_root, "assignment.json")
     if not managed_dag_node:
         validate_timing_checkpoint(frontend_root, timing_root)
-    assignment = read_phase3_assignment_view(
+    assignment = read_phase3_cut_timing_view(
         assignment_path,
         include_instance_assignment=True,
     )

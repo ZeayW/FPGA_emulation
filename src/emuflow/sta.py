@@ -16,7 +16,10 @@ from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
-from .phase3_storage import read_phase3_assignment_view
+from .phase3_storage import (
+    read_phase3_assignment_view,
+    read_phase3_cut_timing_view,
+)
 from .timing_routing import STA_PATHS_SCHEMA, compress_sta_paths
 
 
@@ -2148,7 +2151,7 @@ def project_sta_path_database(
     input_already_validated: bool = False,
 ) -> Dict[str, Any]:
     database = read_json(database_path)
-    assignment = read_phase3_assignment_view(
+    assignment = read_phase3_cut_timing_view(
         assignment_path,
         include_instance_assignment=True,
     )
