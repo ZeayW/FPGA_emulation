@@ -120,16 +120,31 @@ affected timing paths. The core estimate is
 Thus, changing a partition changes the communication estimate used to score
 it; this is more than optimizing a fixed set of net weights.
 
-Default PATRON v6 accepts feasible improvements in lexicographic order:
-maximize the worst normalized predicted slack, then improve the sum of
-negative normalized predicted slacks toward zero; then minimize the number
-of negative-slack paths, maximum estimated TDM ratio, maximum link-capacity
-domain load, path snaking (revisits to an already visited partition), bit-hops,
-and cut bits, in that order. Slacks use the TimingPathDB clock-normalization
-policy. These are partition-search proxies, not final physical WNS/TNS.
+PATRON accepts feasible improvements in lexicographic order. It first minimizes
+the maximum cumulative physical-hop count over the supplied critical paths.
+Among assignments with the same maximum, it minimizes
+`max_path(sum_crossing_net_ratio)`: each critical path sums one predicted TDM
+ratio for every crossing net, then PATRON takes the maximum over the complete
+supplied path set. For a net whose estimated system route has multiple physical
+hops, the net ratio is the maximum link ratio on that route and is counted once
+in the path sum. Lower-priority tie breakers maximize the worst normalized
+predicted slack, improve the sum of negative normalized slacks toward zero,
+then minimize negative paths, maximum estimated TDM ratio, maximum estimated
+link load, path transitions or snaking, bit-hops, and cut bits. Slacks use the
+TimingPathDB clock-normalization policy. These are partition-search proxies,
+not final physical WNS/TNS.
+
+Estimated per-link capacity pressure is reported by Phase 3 but is not a hard
+PATRON acceptance gate. Phase 3 uses a fixed shortest-route estimate and cannot
+prove that a physical link is overloaded because Phase 4 may reroute a net
+through another FPGA and Phase 5 assigns the concrete TDM ratios and events.
+PATRON does not run a capacity-closure repair loop; failure to improve its soft
+path objective retains the legal TritonPart assignment. Per-FPGA resource
+capacity, strict logic balance, fixed placement, board reachability, and the
+configured per-net route-hop bound remain structural hard constraints.
 
 PATRON post-processes the initial solution rather than restarting a complete
-multilevel partitioning flow. Its default v6 route and TDM estimates do not
+multilevel partitioning flow. Its route and TDM estimates do not
 invoke or feed back actual Phase 4 routing, Phase 5 schedules, or Phase 7
 physical results. Any claim of final timing improvement therefore requires a
 separate complete-flow comparison. PATRON is the project's algorithm name,

@@ -733,6 +733,7 @@ def _endpoint_exact_path_transport(
     transport = 0.0
     path_hops = 0
     path_ratio_sum = 0
+    max_hops = model["configuration"]["max_route_hops"]
     for net_id in reversed(path["path_nets"]):
         net = net_by_id.get(net_id)
         if net is None:
@@ -756,7 +757,9 @@ def _endpoint_exact_path_transport(
             cluster_parts[sink] == target for sink in net["sinks"]
         )
         route = model["shortest_routes"][source][target]
-        if route is None:
+        if route is None or (
+            max_hops is not None and len(route) > max_hops
+        ):
             raise ValidationError(
                 f"endpoint-exact path {path['path']!r} has an illegal "
                 f"transition {source!r}->{target!r}"
@@ -877,6 +880,7 @@ def evaluate_partition_pressure(
     capacity_by_key = {record["key"]: record for record in model["capacities"]}
     domain_loads = {key: 0 for key in capacity_by_key}
     routes_by_net: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    max_hops = model["configuration"]["max_route_hops"]
     unreachable = []
 
     for net in model["nets"]:
@@ -890,7 +894,9 @@ def evaluate_partition_pressure(
                 if sink == source:
                     continue
                 route = model["shortest_routes"][source][sink]
-                if route is None:
+                if route is None or (
+                    max_hops is not None and len(route) > max_hops
+                ):
                     unreachable.append(
                         {"net": net["net"], "from": source, "to": sink}
                     )

@@ -693,7 +693,9 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
           continue;
         }
         const Route& route = model.route[source][sink];
-        if (!route.reachable) {
+        if (!route.reachable
+            || (model.max_hops >= 0
+                && static_cast<int>(route.arcs.size()) > model.max_hops)) {
           return result;
         }
         transitions[net_index].push_back(
@@ -771,7 +773,9 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
               return assignment[sink] == target;
             }));
         const Route& route = model.route[source][target];
-        if (!route.reachable) {
+        if (!route.reachable
+            || (model.max_hops >= 0
+                && static_cast<int>(route.arcs.size()) > model.max_hops)) {
           return result;
         }
         transport += predicted_transition_delay(
@@ -890,7 +894,9 @@ ProxyNetState build_proxy_net(const Model& model,
         continue;
       }
       const Route& route = model.route[source][sink];
-      if (!route.reachable) {
+      if (!route.reachable
+          || (model.max_hops >= 0
+              && static_cast<int>(route.arcs.size()) > model.max_hops)) {
         state.feasible = false;
         return state;
       }
@@ -978,7 +984,9 @@ ProxyPathState build_proxy_path(
         continue;
       }
       const Route& route = model.route[source][target];
-      require(route.reachable,
+      require(route.reachable
+                  && (model.max_hops < 0
+                      || static_cast<int>(route.arcs.size()) <= model.max_hops),
               "endpoint-exact scalable path chain is invalid");
       transport += predicted_transition_delay(
           model, route, ratios, sink_clusters);
