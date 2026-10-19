@@ -129,7 +129,9 @@ supplied path set. For a net whose estimated system route has multiple physical
 hops, the net ratio is the maximum link ratio on that route and is counted once
 in the path sum. The path attaining the maximum ratio sum may differ from the
 path attaining the maximum hop count; candidate generation tracks both maxima
-as independent frontiers. Lower-priority tie breakers maximize the worst normalized
+as independent frontiers. The path-frontier batch search is selected from
+those paths' domain exposure and does not require an estimated link load to
+cross a TDM-capacity threshold before it runs. Lower-priority tie breakers maximize the worst normalized
 predicted slack, improve the sum of negative normalized slacks toward zero,
 then minimize negative paths, maximum estimated TDM ratio, maximum estimated
 link load, path transitions or snaking, bit-hops, and cut bits. Slacks use the

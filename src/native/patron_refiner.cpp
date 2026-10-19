@@ -1525,6 +1525,10 @@ std::vector<int> diagnose_flow_corridors(
     }
     const std::vector<int> raw_candidate_assignment = candidate_assignment;
     const std::vector<std::vector<double>> raw_candidate_load = candidate_load;
+    const bool minimum_parts_compatible
+        = std::count_if(candidate_counts.begin(), candidate_counts.end(),
+                        [](int count) { return count > 0; })
+          >= model.min_used_parts;
     const bool transport_compatible
         = proxy_transport_feasible(model, candidate_assignment);
     std::cerr << "PATRON_FLOW_CORRIDOR pair=" << edge_left << ':'
@@ -1539,9 +1543,11 @@ std::vector<int> diagnose_flow_corridors(
               << " moved_to_left=" << moved_to_left
               << " moved_to_target=" << moved_to_target
               << " capacity_compatible=" << (capacity_compatible ? 1 : 0)
+              << " minimum_parts_compatible="
+              << (minimum_parts_compatible ? 1 : 0)
               << " transport_compatible="
               << (transport_compatible ? 1 : 0);
-    if (transport_compatible) {
+    if (transport_compatible && minimum_parts_compatible) {
       ProxyState candidate = build_proxy_state(model, &candidate_assignment);
       std::cerr << " domain_load=" << candidate.domain_load[cover_domain]
                 << " improving="
@@ -4205,11 +4211,21 @@ void run_scalable(const Model& model,
   const long long frontier_hops = state.hop_path_order.rbegin()->first;
   const long long frontier_ratio_sum
       = state.ratio_sum_path_order.rbegin()->first;
+  std::vector<int> hop_frontier_domain_paths(model.domains, 0);
+  std::vector<int> ratio_frontier_domain_paths(model.domains, 0);
   for (int path : current_paths) {
     if (state.path[path].hops == frontier_hops
         || state.path[path].ratio_sum == frontier_ratio_sum) {
       frontier_domains.insert(state.path[path].dependency_domains.begin(),
                               state.path[path].dependency_domains.end());
+    }
+    for (int domain : state.path[path].dependency_domains) {
+      if (state.path[path].hops == frontier_hops) {
+        ++hop_frontier_domain_paths[domain];
+      }
+      if (state.path[path].ratio_sum == frontier_ratio_sum) {
+        ++ratio_frontier_domain_paths[domain];
+      }
     }
   }
   int cover_domain = -1;
@@ -4231,11 +4247,47 @@ void run_scalable(const Model& model,
       cover_deficit = deficit;
     }
   }
-  if ((cover_diagnostic || flow_apply) && cover_domain >= 0) {
-    std::vector<int> flow_assignment = diagnose_flow_corridors(
-        model, state, cluster_nets, net_paths, exposure, cover_domain);
+  int flow_domain = -1;
+  const bool path_objective_can_improve
+      = frontier_hops > 1 || frontier_ratio_sum > 1;
+  for (int domain : frontier_domains) {
+    if (!path_objective_can_improve) {
+      break;
+    }
+    if (flow_domain < 0
+        || std::tie(hop_frontier_domain_paths[flow_domain],
+                    ratio_frontier_domain_paths[flow_domain],
+                    state.domain_ratio[flow_domain],
+                    state.domain_load[flow_domain])
+               < std::tie(hop_frontier_domain_paths[domain],
+                          ratio_frontier_domain_paths[domain],
+                          state.domain_ratio[domain],
+                          state.domain_load[domain])) {
+      flow_domain = domain;
+    }
+  }
+  const int refinement_domain = flow_apply ? flow_domain : cover_domain;
+  if ((cover_diagnostic || flow_apply) && refinement_domain >= 0) {
     if (flow_apply) {
+      std::cerr << "PATRON_PATH_REFINEMENT_DOMAIN domain="
+                << refinement_domain
+                << " maximum_hop_path_count="
+                << hop_frontier_domain_paths[refinement_domain]
+                << " maximum_ratio_sum_path_count="
+                << ratio_frontier_domain_paths[refinement_domain]
+                << " ratio=" << state.domain_ratio[refinement_domain]
+                << " load=" << state.domain_load[refinement_domain]
+                << '\n';
+    }
+    std::vector<int> flow_assignment = diagnose_flow_corridors(
+        model, state, cluster_nets, net_paths, exposure, refinement_domain);
+    if (flow_apply) {
+      const int used_parts = static_cast<int>([&]() {
+        std::set<int> parts(flow_assignment.begin(), flow_assignment.end());
+        return parts.size();
+      }());
       if (!flow_assignment.empty()
+          && used_parts >= model.min_used_parts
           && proxy_transport_feasible(model, flow_assignment)) {
         ProxyState refined = build_proxy_state(model, &flow_assignment);
         long long evaluated_tail_moves = 0;
