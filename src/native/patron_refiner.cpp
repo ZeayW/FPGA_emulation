@@ -4077,27 +4077,31 @@ void run_scalable(const Model& model,
                              right);
   });
   if (!current_paths.empty()) {
-    std::cerr << "PATRON_CURRENT_WORST path=" << current_paths.front()
-              << " normalized_slack="
-              << state.path[current_paths.front()].normalized_slack
-              << " nets=" << model.path[current_paths.front()].nets.size()
-              << '\n';
-    const long long worst_hops = state.path[current_paths.front()].hops;
-    const long long worst_ratio_sum
-        = state.path[current_paths.front()].ratio_sum;
-    int tied_paths = 0;
+    const long long maximum_hops = state.hop_path_order.rbegin()->first;
+    const long long maximum_ratio_sum
+        = state.ratio_sum_path_order.rbegin()->first;
+    int maximum_hop_paths = 0;
+    int maximum_ratio_sum_paths = 0;
     std::set<int> critical_domains;
     for (int path : current_paths) {
-      if (state.path[path].hops != worst_hops
-          || state.path[path].ratio_sum != worst_ratio_sum) {
-        break;
+      if (state.path[path].hops == maximum_hops) {
+        ++maximum_hop_paths;
       }
-      ++tied_paths;
-      critical_domains.insert(
-          state.path[path].dependency_domains.begin(),
-          state.path[path].dependency_domains.end());
+      if (state.path[path].ratio_sum == maximum_ratio_sum) {
+        ++maximum_ratio_sum_paths;
+      }
+      if (state.path[path].hops == maximum_hops
+          || state.path[path].ratio_sum == maximum_ratio_sum) {
+        critical_domains.insert(
+            state.path[path].dependency_domains.begin(),
+            state.path[path].dependency_domains.end());
+      }
     }
-    std::cerr << "PATRON_CURRENT_FRONTIER tied_paths=" << tied_paths
+    std::cerr << "PATRON_CURRENT_MAXIMA maximum_path_hops="
+              << maximum_hops
+              << " maximum_path_tdm_ratio_sum=" << maximum_ratio_sum
+              << " maximum_hop_paths=" << maximum_hop_paths
+              << " maximum_ratio_sum_paths=" << maximum_ratio_sum_paths
               << " domains=";
     for (int domain : critical_domains) {
       const int ratio = state.domain_ratio[domain];
@@ -4198,20 +4202,15 @@ void run_scalable(const Model& model,
     long long tns_cost = 0;
   };
   std::set<int> frontier_domains;
-  const long long frontier_hops = current_paths.empty()
-                                      ? 0
-                                      : state.path[current_paths.front()].hops;
+  const long long frontier_hops = state.hop_path_order.rbegin()->first;
   const long long frontier_ratio_sum
-      = current_paths.empty()
-            ? 0
-            : state.path[current_paths.front()].ratio_sum;
+      = state.ratio_sum_path_order.rbegin()->first;
   for (int path : current_paths) {
-    if (state.path[path].hops != frontier_hops
-        || state.path[path].ratio_sum != frontier_ratio_sum) {
-      break;
+    if (state.path[path].hops == frontier_hops
+        || state.path[path].ratio_sum == frontier_ratio_sum) {
+      frontier_domains.insert(state.path[path].dependency_domains.begin(),
+                              state.path[path].dependency_domains.end());
     }
-    frontier_domains.insert(state.path[path].dependency_domains.begin(),
-                            state.path[path].dependency_domains.end());
   }
   int cover_domain = -1;
   int cover_threshold = 0;
@@ -4263,20 +4262,34 @@ void run_scalable(const Model& model,
                                         model.net[net].sinks.end());
             }
           };
-          const auto& worst_path = *refined.objective_path_order.rbegin();
-          const long long worst_hops = std::get<0>(worst_path);
-          const long long worst_ratio_sum = std::get<1>(worst_path);
-          int exact_frontier_paths = 0;
-          for (auto item = refined.objective_path_order.rbegin();
-               item != refined.objective_path_order.rend(); ++item) {
-            if (std::get<0>(*item) != worst_hops
-                || std::get<1>(*item) != worst_ratio_sum
-                || exact_frontier_paths
+          const long long maximum_hops
+              = refined.hop_path_order.rbegin()->first;
+          const long long maximum_ratio_sum
+              = refined.ratio_sum_path_order.rbegin()->first;
+          std::set<int> exact_frontier_paths;
+          int selected_hop_paths = 0;
+          for (auto item = refined.hop_path_order.rbegin();
+               item != refined.hop_path_order.rend(); ++item) {
+            if (item->first != maximum_hops
+                || selected_hop_paths >= model.flow_max_frontier_paths) {
+              break;
+            }
+            exact_frontier_paths.insert(item->second);
+            ++selected_hop_paths;
+          }
+          int selected_ratio_sum_paths = 0;
+          for (auto item = refined.ratio_sum_path_order.rbegin();
+               item != refined.ratio_sum_path_order.rend(); ++item) {
+            if (item->first != maximum_ratio_sum
+                || selected_ratio_sum_paths
                        >= model.flow_max_frontier_paths) {
               break;
             }
-            ++exact_frontier_paths;
-            add_path_candidates(std::get<2>(*item));
+            exact_frontier_paths.insert(item->second);
+            ++selected_ratio_sum_paths;
+          }
+          for (int path : exact_frontier_paths) {
+            add_path_candidates(path);
           }
           bool found = false;
           ProxyDelta best;
@@ -4320,8 +4333,8 @@ void run_scalable(const Model& model,
           };
           evaluate_candidates();
           if (!found && model.flow_version >= 9) {
-            // Expand from the exact maximum-hop/ratio-sum frontier to the
-            // next objective-ranked paths only after the frontier stalls.
+            // Expand from the union of the independent maximum-hop and
+            // maximum-ratio-sum frontiers only after that union stalls.
             candidate_clusters.clear();
             const int frontier_paths = std::min(
                 model.flow_max_frontier_paths, model.paths);
