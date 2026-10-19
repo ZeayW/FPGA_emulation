@@ -1679,7 +1679,6 @@ std::vector<int> diagnose_flow_corridors(
       }
       std::cerr << '\n';
 
-      if (pair_target == edge_right) {
         const auto run_region_legalization
             = [&](const std::string& mode, bool affinity_first) {
                 std::vector<int> region_assignment
@@ -2103,7 +2102,6 @@ std::vector<int> diagnose_flow_corridors(
               };
         run_bilateral_region_legalization("affinity-first", true);
         run_bilateral_region_legalization("balance-first", false);
-      }
 
         // The all-at-once repacker above may paint itself into a corner even
         // though the original assignment is resource legal: an early greedy
