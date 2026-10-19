@@ -1,5 +1,7 @@
 import copy
 import json
+import sqlite3
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,6 +17,10 @@ from emuflow.cross_layer_timing import (
 )
 from emuflow.errors import ValidationError
 from emuflow.platform import Platform
+from emuflow.phase3_assignment_index import (
+    ASSIGNMENT_INDEX_APPLICATION_ID,
+    ASSIGNMENT_INDEX_USER_VERSION,
+)
 
 
 def _semantic_contract():
@@ -126,6 +132,78 @@ class CrossLayerTimingContractTest(unittest.TestCase):
             )["status"],
             "pass",
         )
+
+    def test_indexed_physical_binding_reads_exact_segments_from_sqlite(self):
+        semantic = {
+            "schema": "emuflow.static-exact-combinational-cut/v3",
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
+        routes = _routes(exact=True, semantic_contract=semantic)
+        routes["semantic_contract_sha256"] = "a" * 64
+        schedule = _schedule(exact=True)
+        contract = build_cross_layer_timing_contract(
+            routes, schedule, semantic
+        )
+        segment = {
+            "id": "segment000000",
+            "kind": "launch_to_tx",
+            "fpga": "a",
+            "sink_cut_net": "n0",
+            "source_semantics": "configuration-stable-constant",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            index = Path(temporary_directory) / "assignment.sqlite"
+            with sqlite3.connect(index) as connection:
+                connection.executescript(
+                    f"""
+                    PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
+                    PRAGMA user_version={ASSIGNMENT_INDEX_USER_VERSION};
+                    CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                    CREATE TABLE parts(part_index INTEGER PRIMARY KEY,fpga TEXT NOT NULL);
+                    CREATE TABLE exact_segment_bindings(
+                      segment_id TEXT PRIMARY KEY,kind TEXT NOT NULL,
+                      part_index INTEGER NOT NULL,payload_json TEXT NOT NULL);
+                    CREATE TABLE exact_capture_requirements(
+                      capture_id TEXT PRIMARY KEY,part_index INTEGER NOT NULL,
+                      payload_json TEXT NOT NULL);
+                    """
+                )
+                connection.executemany(
+                    "INSERT INTO metadata VALUES (?,?)",
+                    [
+                        ("semantic_contract_schema", json.dumps(semantic["schema"])),
+                        ("semantic_contract_sha256", json.dumps("a" * 64)),
+                    ],
+                )
+                connection.executemany(
+                    "INSERT INTO parts VALUES (?,?)",
+                    enumerate(("a", "b", "c")),
+                )
+                connection.execute(
+                    "INSERT INTO exact_segment_bindings VALUES (?,?,?,?)",
+                    (
+                        segment["id"],
+                        segment["kind"],
+                        0,
+                        json.dumps(segment, sort_keys=True),
+                    ),
+                )
+            binding = build_cross_layer_physical_binding(
+                contract,
+                schedule,
+                self._physical(schedule),
+                self._platform(),
+                index,
+            )
+            self.assertEqual(binding["status"], "pass")
+            self.assertEqual(binding["metrics"]["required_logic_segments"], 1)
+            self.assertEqual(binding["metrics"]["measured_logic_segments"], 1)
+            self.assertEqual(
+                binding["logic_segment_bindings"][0]["measurement"],
+                "structural-configuration-stable-constant",
+            )
 
     def _platform(self):
         return Platform.from_dict(

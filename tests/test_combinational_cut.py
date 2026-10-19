@@ -42,7 +42,10 @@ from emuflow.partition import (
 )
 from emuflow.platform import Platform
 from emuflow.phase6 import run_phase6, validate_phase6
-from emuflow.phase3_assignment_index import write_phase3_assignment_index
+from emuflow.phase3_assignment_index import (
+    read_phase3_exact_semantic_partition,
+    write_phase3_assignment_index,
+)
 from emuflow.routing import (
     build_directed_graph,
     demands_from_assignment,
@@ -2474,6 +2477,26 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             assignment_path.write_text(json.dumps(assignment), encoding="utf-8")
             write_phase3_assignment_index(
                 root / "assignment.sqlite", self.ir, assignment
+            )
+            indexed_segments = []
+            indexed_captures = []
+            for fpga in ("fpga0", "fpga1"):
+                partition = read_phase3_exact_semantic_partition(
+                    root / "assignment.sqlite", fpga
+                )
+                self.assertEqual(
+                    partition["sha256"],
+                    assignment["semantic_contract_sha256"],
+                )
+                indexed_segments.extend(partition["logic_segments"])
+                indexed_captures.extend(partition["capture_requirements"])
+            self.assertEqual(
+                sorted(indexed_segments, key=lambda item: item["id"]),
+                assignment["semantic_contract"]["logic_segments"],
+            )
+            self.assertEqual(
+                sorted(indexed_captures, key=lambda item: item["id"]),
+                assignment["semantic_contract"]["capture_requirements"],
             )
             schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
             report = run_phase6(

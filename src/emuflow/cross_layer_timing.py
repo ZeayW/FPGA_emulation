@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 from collections import defaultdict, deque
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .errors import ValidationError
@@ -21,6 +22,7 @@ from .board_link_timing import (
 )
 from .boundary_timing import validate_boundary_timing_database
 from .logic_segment_timing import validate_logic_segment_timing
+from .phase3_assignment_index import read_phase3_exact_semantic_partition
 from .platform import Platform
 from .routing import SYSTEM_ROUTES_SCHEMA
 from .tdm import TDM_SCHEDULE_SCHEMA
@@ -444,6 +446,7 @@ def _build_physical_binding(
     schedule: Mapping[str, Any],
     physical_summary: Mapping[str, Any],
     platform: Platform,
+    assignment_index_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     if (
         contract.get("schema") != CROSS_LAYER_TIMING_CONTRACT_SCHEMA
@@ -514,6 +517,49 @@ def _build_physical_binding(
             if not isinstance(segment_id, str) or segment_id in expected_logic:
                 raise ValidationError("sampled logic-segment identities are invalid")
             expected_logic[segment_id] = segment
+        indexed_binding = contract.get("logic_segment_binding")
+        if indexed_binding is not None:
+            if (
+                not isinstance(indexed_binding, dict)
+                or indexed_binding.get("mode") != "phase3-assignment-index"
+                or indexed_binding.get("semantic_contract_sha256")
+                != contract.get("semantic_binding", {}).get("sha256")
+                or assignment_index_path is None
+            ):
+                raise ValidationError(
+                    "sampled transport indexed logic binding is invalid"
+                )
+            for fpga_record in platform.fpgas:
+                partition = read_phase3_exact_semantic_partition(
+                    assignment_index_path, fpga_record.id
+                )
+                if (
+                    partition.get("sha256")
+                    != indexed_binding["semantic_contract_sha256"]
+                ):
+                    raise ValidationError(
+                        "indexed logic-segment digest disagrees"
+                    )
+                for semantic in partition["logic_segments"]:
+                    segment_id = semantic.get("id")
+                    if (
+                        not isinstance(segment_id, str)
+                        or segment_id in expected_logic
+                        or semantic.get("fpga") != fpga_record.id
+                    ):
+                        raise ValidationError(
+                            "indexed logic-segment identity is invalid"
+                        )
+                    binding = {
+                        "segment": segment_id,
+                        "kind": semantic.get("kind"),
+                        "fpga": fpga_record.id,
+                    }
+                    if semantic.get("source_semantics") is not None:
+                        binding["source_semantics"] = semantic[
+                            "source_semantics"
+                        ]
+                    expected_logic[segment_id] = binding
     logic_measurements: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
     physical_logic_ids = set()
     raw_logic = physical_summary.get("logic_segment_timing")
@@ -652,10 +698,17 @@ def build_cross_layer_physical_binding(
     schedule: Mapping[str, Any],
     physical_summary: Mapping[str, Any],
     platform: Platform,
+    assignment_index_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Bind stable route/schedule IDs to measured Phase 7 evidence."""
 
-    return _build_physical_binding(contract, schedule, physical_summary, platform)
+    return _build_physical_binding(
+        contract,
+        schedule,
+        physical_summary,
+        platform,
+        assignment_index_path,
+    )
 
 
 def validate_cross_layer_physical_binding(
@@ -664,10 +717,17 @@ def validate_cross_layer_physical_binding(
     physical_summary: Mapping[str, Any],
     platform: Platform,
     binding: Mapping[str, Any],
+    assignment_index_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Independently rebuild physical evidence coverage and exact bindings."""
 
-    expected = _build_physical_binding(contract, schedule, physical_summary, platform)
+    expected = _build_physical_binding(
+        contract,
+        schedule,
+        physical_summary,
+        platform,
+        assignment_index_path,
+    )
     if binding != expected:
         raise ValidationError(
             "cross-layer physical binding does not match canonical inputs"

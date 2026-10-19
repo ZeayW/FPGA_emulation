@@ -123,7 +123,11 @@ def run_phase7c(
                 "sampled virtual-wire Phase 7C requires the Phase 3 assignment"
             )
         semantic_contract = semantic_contract_for_routes(
-            read_phase3_assignment_view(assignment_path), routes
+            read_phase3_assignment_view(
+                assignment_path,
+                include_semantic_contract=False,
+            ),
+            routes,
         )
     routes_artifact_sha256 = (
         _sha256(routes_path) if routes_path is not None else None
@@ -154,7 +158,17 @@ def run_phase7c(
     if physical_summary is not None:
         assert cross_layer_contract is not None
         physical_binding = build_cross_layer_physical_binding(
-            cross_layer_contract, schedule, physical_summary, platform
+            cross_layer_contract,
+            schedule,
+            physical_summary,
+            platform,
+            (
+                assignment_path.with_name("assignment.sqlite")
+                if assignment_path is not None
+                and semantic_contract is not None
+                and semantic_contract.get("indexed") is True
+                else None
+            ),
         )
         physical_binding_validation = {
             "status": physical_binding["status"],

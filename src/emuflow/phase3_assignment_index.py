@@ -72,11 +72,53 @@ CREATE TABLE exact_logic_segments(
 ) WITHOUT ROWID;
 CREATE INDEX exact_logic_segments_part
   ON exact_logic_segments(part_index, source_cut_net);
+CREATE TABLE exact_segment_bindings(
+  segment_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  part_index INTEGER NOT NULL,
+  payload_json TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX exact_segment_bindings_part
+  ON exact_segment_bindings(part_index, segment_id);
+CREATE TABLE exact_capture_requirements(
+  capture_id TEXT PRIMARY KEY,
+  part_index INTEGER NOT NULL,
+  payload_json TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX exact_capture_requirements_part
+  ON exact_capture_requirements(part_index, capture_id);
 """
 
 
 def _json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def _exact_binding_rows(
+    exact_contract: Mapping[str, Any], part_index: Mapping[str, int]
+):
+    for segment in exact_contract["logic_segments"]:
+        fpga = segment.get("fpga")
+        segment_id = segment.get("id")
+        kind = segment.get("kind")
+        if (
+            fpga not in part_index
+            or not isinstance(segment_id, str)
+            or kind not in {"launch_to_tx", "rx_to_tx", "rx_to_capture"}
+        ):
+            raise ValidationError("exact logic segment binding is invalid")
+        yield (segment_id, kind, part_index[fpga], _json(segment))
+
+
+def _exact_capture_rows(
+    exact_contract: Mapping[str, Any], part_index: Mapping[str, int]
+):
+    for capture in exact_contract["capture_requirements"]:
+        fpga = capture.get("fpga")
+        capture_id = capture.get("id")
+        if fpga not in part_index or not isinstance(capture_id, str):
+            raise ValidationError("exact capture requirement is invalid")
+        yield (capture_id, part_index[fpga], _json(capture))
 
 
 def write_phase3_assignment_index(
@@ -140,6 +182,11 @@ def write_phase3_assignment_index(
             "source_instance_count": len(ir.value["instances"]),
             "constraints": assignment.get("constraints"),
             "semantic_contract_sha256": exact_digest,
+            "semantic_contract_schema": (
+                exact_contract.get("schema")
+                if exact_contract is not None
+                else None
+            ),
         }
         connection.executemany(
             "INSERT INTO metadata(key,value) VALUES (?,?)",
@@ -257,6 +304,14 @@ def write_phase3_assignment_index(
                 "INSERT INTO exact_logic_segments VALUES (?,?,?)",
                 exact_rows(),
             )
+            connection.executemany(
+                "INSERT INTO exact_segment_bindings VALUES (?,?,?,?)",
+                _exact_binding_rows(exact_contract, part_index),
+            )
+            connection.executemany(
+                "INSERT INTO exact_capture_requirements VALUES (?,?,?)",
+                _exact_capture_rows(exact_contract, part_index),
+            )
 
         connection.commit()
         summary = validate_phase3_assignment_index(
@@ -358,6 +413,11 @@ def migrate_phase3_assignment_index(
             "source_instance_count": source_count,
             "constraints": assignment.get("constraints"),
             "semantic_contract_sha256": exact_digest,
+            "semantic_contract_schema": (
+                exact_contract.get("schema")
+                if exact_contract is not None
+                else None
+            ),
             "migration": "legacy-assignment-without-emuir-expansion-v1",
         }
         connection.executemany(
@@ -465,6 +525,14 @@ def migrate_phase3_assignment_index(
                     and segment.get("fpga") in part_index
                 ),
             )
+            connection.executemany(
+                "INSERT INTO exact_segment_bindings VALUES (?,?,?,?)",
+                _exact_binding_rows(exact_contract, part_index),
+            )
+            connection.executemany(
+                "INSERT INTO exact_capture_requirements VALUES (?,?,?)",
+                _exact_capture_rows(exact_contract, part_index),
+            )
         connection.commit()
         summary = validate_phase3_assignment_index(
             temporary,
@@ -500,6 +568,105 @@ def open_phase3_assignment_index(path: Path) -> sqlite3.Connection:
     return connection
 
 
+def read_phase3_exact_semantic_partition(
+    path: Path, fpga: str
+) -> dict[str, Any]:
+    """Read one FPGA's Static Exact records from the Phase 3 index.
+
+    The packed assignment may contain a multi-gigabyte compressed semantic
+    document.  Physical timing needs one FPGA at a time, so the production
+    handoff keeps the canonical records in SQLite and never expands that
+    document into a process-wide Python graph.
+    """
+
+    connection = open_phase3_assignment_index(path)
+    try:
+        metadata = {
+            row["key"]: json.loads(row["value"])
+            for row in connection.execute("SELECT key,value FROM metadata")
+        }
+        part = connection.execute(
+            "SELECT part_index FROM parts WHERE fpga=?", (fpga,)
+        ).fetchone()
+        if part is None:
+            raise ValidationError(f"assignment index omits FPGA {fpga!r}")
+        part_index = int(part[0])
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        required = {
+            "exact_segment_bindings",
+            "exact_capture_requirements",
+        }
+        if not required.issubset(tables):
+            raise ValidationError(
+                "assignment index lacks indexed Static Exact payloads"
+            )
+        segments = [
+            json.loads(row[0])
+            for row in connection.execute(
+                "SELECT payload_json FROM exact_segment_bindings "
+                "WHERE part_index=? ORDER BY segment_id",
+                (part_index,),
+            )
+        ]
+        captures = [
+            json.loads(row[0])
+            for row in connection.execute(
+                "SELECT payload_json FROM exact_capture_requirements "
+                "WHERE part_index=? ORDER BY capture_id",
+                (part_index,),
+            )
+        ]
+        return {
+            "schema": metadata.get("semantic_contract_schema"),
+            "sha256": metadata.get("semantic_contract_sha256"),
+            "fpga": fpga,
+            "logic_segments": segments,
+            "capture_requirements": captures,
+        }
+    finally:
+        connection.close()
+
+
+def phase3_exact_semantic_counts(path: Path) -> dict[str, int]:
+    """Return bounded Static Exact population counts from the index."""
+
+    connection = open_phase3_assignment_index(path)
+    try:
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        required = {
+            "exact_segment_bindings",
+            "exact_capture_requirements",
+        }
+        if not required.issubset(tables):
+            raise ValidationError(
+                "assignment index lacks indexed Static Exact payloads"
+            )
+        return {
+            "logic_segments": int(
+                connection.execute(
+                    "SELECT count(*) FROM exact_segment_bindings"
+                ).fetchone()[0]
+            ),
+            "capture_requirements": int(
+                connection.execute(
+                    "SELECT count(*) FROM exact_capture_requirements"
+                ).fetchone()[0]
+            ),
+        }
+    finally:
+        connection.close()
+
+
 def validate_phase3_assignment_index(
     path: Path,
     *,
@@ -533,6 +700,43 @@ def validate_phase3_assignment_index(
             "SELECT count(*) FROM parts"
         ).fetchone()[0] <= 0:
             raise ValidationError("assignment index has no FPGA partitions")
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        has_exact_payloads = {
+            "exact_segment_bindings",
+            "exact_capture_requirements",
+        }.issubset(tables)
+        exact_segment_bindings = 0
+        exact_capture_requirements = 0
+        if has_exact_payloads:
+            exact_segment_bindings = int(
+                connection.execute(
+                    "SELECT count(*) FROM exact_segment_bindings"
+                ).fetchone()[0]
+            )
+            exact_capture_requirements = int(
+                connection.execute(
+                    "SELECT count(*) FROM exact_capture_requirements"
+                ).fetchone()[0]
+            )
+            invalid_exact_parts = int(
+                connection.execute(
+                    """SELECT count(*) FROM (
+                         SELECT part_index FROM exact_segment_bindings
+                         UNION ALL
+                         SELECT part_index FROM exact_capture_requirements
+                       ) x LEFT JOIN parts p USING(part_index)
+                       WHERE p.part_index IS NULL"""
+                ).fetchone()[0]
+            )
+            if invalid_exact_parts:
+                raise ValidationError(
+                    "assignment index Static Exact FPGA binding is invalid"
+                )
         return {
             "status": "pass",
             "schema": ASSIGNMENT_INDEX_SCHEMA,
@@ -549,6 +753,9 @@ def validate_phase3_assignment_index(
             "semantic_contract_sha256": metadata.get(
                 "semantic_contract_sha256"
             ),
+            "exact_segment_bindings": exact_segment_bindings,
+            "exact_capture_requirements": exact_capture_requirements,
+            "indexed_semantic_payloads": has_exact_payloads,
         }
     finally:
         connection.close()

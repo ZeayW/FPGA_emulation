@@ -33,6 +33,7 @@ from .multi_fpga_physical_flow import (
 )
 from .native_tools import resolve_native_executable
 from .phase3 import validate_phase3_indexed
+from .phase3_storage import read_phase3_assignment_view
 from .phase4 import validate_phase4
 from .phase5 import validate_phase5
 from .phase6 import run_phase6, validate_phase6
@@ -45,6 +46,7 @@ from .pin_planning import (
 )
 from .platform import Platform
 from .runtime import QOR_REPORT_SCHEMA
+from .routing import semantic_contract_for_routes
 from .vpr import VTR_HARD_BLOCK_PROFILE
 
 
@@ -1671,10 +1673,21 @@ def validate_phase7_checkpoint(
     routes = read_json(paths["routes"])
     schedule = read_json(phase6_schedule_path)
     cross_layer_timing = read_json(paths["cross_layer_timing"])
+    semantic_contract = (
+        semantic_contract_for_routes(
+            read_phase3_assignment_view(
+                paths["assignment"], include_semantic_contract=False
+            ),
+            routes,
+        )
+        if routes.get("semantic_contract_schema") is not None
+        else None
+    )
     validate_cross_layer_timing_contract(
         routes,
         cross_layer_timing,
         schedule,
+        semantic_contract,
     )
     board_link_timing_path = _board_link_timing(shared_root)
     if board_link_timing_path is not None:
@@ -1692,6 +1705,7 @@ def validate_phase7_checkpoint(
         physical_summary,
         Platform.load(platform_path),
         physical_binding,
+        paths["assignment"].with_name("assignment.sqlite"),
     )
     if physical_binding_validation.get("status") != "pass":
         raise ValidationError(

@@ -20,10 +20,11 @@ from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from .indexed_physical_ir import IndexedPhysicalIR
 from .indexed_timing import IndexedTimingView
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
+from .phase3_assignment_index import read_phase3_exact_semantic_partition
 from .phase3_storage import read_phase3_assignment_view
 from .placement import _vivado_mapped_name
 from .platform import Platform
-from .routing import system_route_timing_paths
+from .routing import static_exact_contract_from_assignment, system_route_timing_paths
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
     STA_PATH_DATABASE_INDEX_SCHEMA,
@@ -74,6 +75,25 @@ def _incoming_transported_cut_nets(
         for item in exact_contract["cut_nodes"]
         if fpga in item["sink_fpgas"]
     }
+
+
+def _incoming_assignment_cut_nets(
+    assignment: Mapping[str, Any], fpga: str
+) -> Set[str]:
+    cuts = assignment.get("cut_nets")
+    if not isinstance(cuts, list):
+        raise ValidationError("static exact assignment cut nets are invalid")
+    result = set()
+    for cut in cuts:
+        if (
+            not isinstance(cut, Mapping)
+            or not isinstance(cut.get("net"), str)
+            or not isinstance(cut.get("sink_fpgas"), list)
+        ):
+            raise ValidationError("static exact assignment cut net is invalid")
+        if fpga in cut["sink_fpgas"]:
+            result.add(cut["net"])
+    return result
 
 
 def _architectural_launch_endpoints(
@@ -569,6 +589,7 @@ class LogicSegmentQueryInputs:
     exact_launches: Mapping[
         tuple[str, str], List[Mapping[str, Any]]
     ]
+    exact_index_path: Optional[Path]
 
 
 def _route_timing_paths(
@@ -740,6 +761,7 @@ def prepare_logic_segment_query_inputs(
     assignment = read_phase3_assignment_view(
         assignment_path,
         include_instance_assignment=True,
+        include_semantic_contract=False,
     )
     path_database = read_json(path_database_path)
     routes = read_json(routes_path)
@@ -753,16 +775,25 @@ def prepare_logic_segment_query_inputs(
     }:
         raise ValidationError("logic segment STA database schema is invalid")
 
-    exact_contract = assignment.get("semantic_contract")
+    exact_contract = static_exact_contract_from_assignment(assignment)
     exact_contract_sha256 = None
     exact_segment_by_key: Dict[Any, str] = {}
     exact_captures: Dict[str, Mapping[str, Any]] = {}
+    exact_index_path: Optional[Path] = None
     if isinstance(exact_contract, dict) and exact_contract.get("mode") == (
         "static-exact-combinational"
     ):
-        from .combinational_cut import semantic_contract_sha256
+        if exact_contract.get("indexed") is True:
+            exact_contract_sha256 = assignment.get("semantic_contract_sha256")
+            exact_index_path = assignment_path.with_name("assignment.sqlite")
+            if not exact_index_path.is_file():
+                raise ValidationError(
+                    "indexed Static Exact timing requires assignment.sqlite"
+                )
+        else:
+            from .combinational_cut import semantic_contract_sha256
 
-        exact_contract_sha256 = semantic_contract_sha256(exact_contract)
+            exact_contract_sha256 = semantic_contract_sha256(exact_contract)
         if (
             schedule.get("semantic_contract_schema")
             != exact_contract.get("schema")
@@ -770,9 +801,10 @@ def prepare_logic_segment_query_inputs(
             != exact_contract_sha256
         ):
             raise ValidationError("logic segment exact contract digest disagrees")
-        exact_segment_by_key, exact_captures = _index_exact_logic_segments(
-            exact_contract
-        )
+        if exact_index_path is None:
+            exact_segment_by_key, exact_captures = _index_exact_logic_segments(
+                exact_contract
+            )
 
     route_timing_paths = _route_timing_paths(routes)
     selected_path_ids = {
@@ -816,7 +848,7 @@ def prepare_logic_segment_query_inputs(
                 for net_id in path.get("path_nets", [])
             }
             selected_ids.update(item["net"] for item in routes["routes"])
-            if isinstance(exact_contract, dict):
+            if isinstance(exact_contract, dict) and exact_index_path is None:
                 for semantic in exact_contract["logic_segments"]:
                     for field in ("source_cut_net", "sink_cut_net"):
                         if isinstance(semantic.get(field), str):
@@ -824,7 +856,7 @@ def prepare_logic_segment_query_inputs(
             original_nets = selected_net_records(
                 view.connection, selected_ids
             )
-            if isinstance(exact_contract, dict):
+            if isinstance(exact_contract, dict) and exact_index_path is None:
                 instance_assignment = assignment["instance_assignment"]
                 cache: Dict[str, Mapping[str, Any]] = dict(original_nets)
                 for semantic in exact_contract["logic_segments"]:
@@ -891,6 +923,7 @@ def prepare_logic_segment_query_inputs(
         exact_segment_by_key=exact_segment_by_key,
         exact_captures=exact_captures,
         exact_launches=exact_launches,
+        exact_index_path=exact_index_path,
     )
 
 
@@ -947,8 +980,36 @@ def _write_logic_segment_query(
         )
     exact_contract = prepared.exact_contract
     exact_contract_sha256 = prepared.exact_contract_sha256
-    exact_segment_by_key = prepared.exact_segment_by_key
-    exact_captures = prepared.exact_captures
+    exact_segment_by_key = dict(prepared.exact_segment_by_key)
+    exact_captures = dict(prepared.exact_captures)
+    exact_segments = (
+        list(exact_contract["logic_segments"])
+        if exact_contract is not None
+        and prepared.exact_index_path is None
+        else []
+    )
+    if prepared.exact_index_path is not None:
+        partition_semantics = read_phase3_exact_semantic_partition(
+            prepared.exact_index_path, fpga
+        )
+        if (
+            partition_semantics.get("schema")
+            != schedule.get("semantic_contract_schema")
+            or partition_semantics.get("sha256")
+            != exact_contract_sha256
+        ):
+            raise ValidationError(
+                "indexed Static Exact semantic identity disagrees"
+            )
+        exact_segments = list(partition_semantics["logic_segments"])
+        exact_segment_by_key, exact_captures = _index_exact_logic_segments(
+            {
+                "logic_segments": exact_segments,
+                "capture_requirements": partition_semantics[
+                    "capture_requirements"
+                ],
+            }
+        )
     database_paths = prepared.database_paths
     route_timing = prepared.route_timing
     route_by_net = prepared.route_by_net
@@ -977,9 +1038,53 @@ def _write_logic_segment_query(
             for index, net in enumerate(merged_ir.value["nets"])
         }
     )
-    original_nets = prepared.original_nets
+    original_nets = dict(prepared.original_nets)
     original_instances = prepared.original_instances
     incoming_nets_by_instance = prepared.incoming_nets_by_instance
+    exact_launches = dict(prepared.exact_launches)
+    if prepared.exact_index_path is not None and exact_contract_sha256 is not None:
+        incoming_cut_nets = _incoming_assignment_cut_nets(assignment, fpga)
+        instance_assignment = assignment["instance_assignment"]
+        if is_emuir_sqlite(original_ir_path) and is_compact_emuir(
+            original_ir_path
+        ):
+            source_view = IndexedTimingView(original_ir_path)
+            try:
+                for semantic in exact_segments:
+                    if semantic["kind"] != "launch_to_tx":
+                        continue
+                    key = (semantic["sink_cut_net"], fpga)
+                    if key in exact_launches:
+                        continue
+                    exact_launches[key] = _indexed_architectural_launch_endpoints(
+                        source_view.connection,
+                        instance_assignment,
+                        semantic["sink_cut_net"],
+                        fpga,
+                        incoming_cut_nets,
+                        original_nets,
+                    )
+            finally:
+                source_view.close()
+        else:
+            if original_ir is None:
+                raise ValidationError("Static Exact source IR is unavailable")
+            for semantic in exact_segments:
+                if semantic["kind"] != "launch_to_tx":
+                    continue
+                key = (semantic["sink_cut_net"], fpga)
+                if key in exact_launches:
+                    continue
+                exact_launches[key] = _architectural_launch_endpoints(
+                    original_ir,
+                    instance_assignment,
+                    semantic["sink_cut_net"],
+                    fpga,
+                    incoming_cut_nets,
+                    nets=original_nets,
+                    instances=original_instances,
+                    incoming=incoming_nets_by_instance,
+                )
     merged_pins = _instance_pin_inventory(merged_ir)
     eblif_top_ports = None
     if object_provider == "vpr" and eblif_report is not None:
@@ -1276,9 +1381,7 @@ def _write_logic_segment_query(
                 segments.append(segment)
     if exact_contract_sha256 is not None:
         schedule_entries = list(schedule["entries"])
-        incoming_cut_nets = _incoming_transported_cut_nets(
-            exact_contract, fpga
-        )
+        incoming_cut_nets = _incoming_assignment_cut_nets(assignment, fpga)
         entries_by_net_from: Dict[
             Tuple[str, str], List[Mapping[str, Any]]
         ] = defaultdict(list)
@@ -1428,7 +1531,7 @@ def _write_logic_segment_query(
                     )
             segments.append(segment)
 
-        for semantic in exact_contract["logic_segments"]:
+        for semantic in exact_segments:
             if semantic["fpga"] != fpga:
                 continue
             kind = semantic["kind"]
@@ -1436,9 +1539,7 @@ def _write_logic_segment_query(
                 sink_cut_net = semantic["sink_cut_net"]
                 starts = launches_by_sink_net.get(sink_cut_net)
                 if starts is None:
-                    starts = prepared.exact_launches.get(
-                        (sink_cut_net, fpga)
-                    )
+                    starts = exact_launches.get((sink_cut_net, fpga))
                     if starts is None:
                         if original_ir is None:
                             raise ValidationError(
