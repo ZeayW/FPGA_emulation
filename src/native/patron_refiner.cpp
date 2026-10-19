@@ -1295,6 +1295,16 @@ std::vector<int> diagnose_flow_corridors(
       = model.flow_refinement ? model.flow_max_legal_candidates : 8;
   const int maximum_polish_moves
       = model.flow_refinement ? model.flow_max_polish_moves : 512;
+  // Keep the already resource-legal assignment as the deterministic
+  // secondary objective.  A zero-cost side preference lets an otherwise
+  // equivalent net cut move millions of clusters onto one topology side;
+  // the later per-FPGA legalizer then cannot recover the original balance.
+  // Try every endpoint with the unit displacement cost first.  Only if that
+  // complete pass finds no legal improvement do later passes progressively
+  // prefer smaller cuts, so the normal search pays no fallback overhead.
+  constexpr std::array<long long, 4> movement_costs = {1, 2, 4, 8};
+  for (long long movement_cost : movement_costs) {
+  const int generation_before_pass = improving_candidate_generation;
   for (int pair_target = 0; pair_target < model.parts; ++pair_target) {
     if (!opposite_side[pair_target]) {
       continue;
@@ -1396,18 +1406,7 @@ std::vector<int> diagnose_flow_corridors(
       net_nodes[net] = {next_node, next_node + 1};
       next_node += 2;
     }
-    // Keep the already resource-legal assignment as the deterministic
-    // secondary objective.  A zero-cost side preference lets an otherwise
-    // equivalent net cut move millions of clusters onto one topology side;
-    // the later per-FPGA legalizer then cannot recover the original balance.
-    // Start with one cut-net equivalent per moved cluster.  If that cut has no
-    // resource-legal improving realization, progressively prefer a smaller
-    // displacement before declaring this corridor stalled.  Successful unit
-    // cost corridors keep their existing behavior and pay no sweep overhead.
-    constexpr std::array<long long, 4> movement_costs = {1, 2, 4, 8};
-    for (long long movement_cost : movement_costs) {
-      const int generation_before_cost = improving_candidate_generation;
-      DinicFlow flow(next_node);
+    DinicFlow flow(next_node);
     const long long infinity
         = static_cast<long long>(corridor_nets.size())
           + static_cast<long long>(corridor.size()) * movement_cost + 1;
@@ -3031,11 +3030,10 @@ std::vector<int> diagnose_flow_corridors(
           }
         }
       }
-      if (improving_candidate_generation != generation_before_cost
-          || !selected_assignment.empty()) {
-        break;
-      }
     }
+    }
+    if (improving_candidate_generation != generation_before_pass) {
+      break;
     }
   }
   return selected_assignment;
