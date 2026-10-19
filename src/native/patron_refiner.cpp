@@ -3064,6 +3064,16 @@ std::vector<int> diagnose_flow_corridors(
         }
       }
     }
+    if (!selected_assignment.empty()
+        && selected_rank[0] < state.evaluation.ranked[0]) {
+      std::cerr << "PATRON_FLOW_PRIMARY_IMPROVEMENT pair="
+                << edge_left << ':' << pair_target
+                << " maximum_path_hops=" << selected_rank[0]
+                << " previous_maximum_path_hops="
+                << state.evaluation.ranked[0]
+                << " action=accept-before-next-board-edge\n";
+      return selected_assignment;
+    }
     }
     if (improving_candidate_generation != generation_before_pass) {
       break;

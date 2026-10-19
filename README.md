@@ -131,7 +131,10 @@ in the path sum. The path attaining the maximum ratio sum may differ from the
 path attaining the maximum hop count; candidate generation tracks both maxima
 as independent frontiers. The path-frontier batch search is selected from
 those paths' domain exposure and does not require an estimated link load to
-cross a TDM-capacity threshold before it runs. Lower-priority tie breakers maximize the worst normalized
+cross a TDM-capacity threshold before it runs. A legal batch that strictly
+reduces the maximum path-hop objective is accepted before searching another
+board edge; the tail search then applies the ratio-sum objective and remaining
+tie breakers to that assignment. Lower-priority tie breakers maximize the worst normalized
 predicted slack, improve the sum of negative normalized slacks toward zero,
 then minimize negative paths, maximum estimated TDM ratio, maximum estimated
 link load, path transitions or snaking, bit-hops, and cut bits. Slacks use the
