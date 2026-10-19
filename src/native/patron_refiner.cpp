@@ -1,5 +1,6 @@
 #include "bank_allocation.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -2102,6 +2103,210 @@ std::vector<int> diagnose_flow_corridors(
               };
         run_bilateral_region_legalization("affinity-first", true);
         run_bilateral_region_legalization("balance-first", false);
+
+        // The all-at-once repacker above may paint itself into a corner even
+        // though the original assignment is resource legal: an early greedy
+        // choice can consume the only remaining capacity for a later cluster.
+        // Build an additional candidate monotonically from the original legal
+        // assignment.  Interleave the two crossing directions so each move
+        // can free capacity for the other side, and defer any move that is not
+        // currently legal.  Every intermediate and final assignment therefore
+        // preserves the caller's hard and balance limits without relaxation.
+        const auto run_incremental_bilateral
+            = [&](const std::string& mode, bool raw_target_first) {
+                std::vector<int> incremental_assignment = state.assignment;
+                std::vector<std::vector<double>> incremental_load
+                    = state.resource_load;
+                std::array<std::vector<int>, 2> pending;
+                std::vector<bool> desired_side(model.clusters, false);
+                for (int cluster : corridor) {
+                  const int raw_target = raw_candidate_assignment[cluster];
+                  if (raw_target < 0
+                      || opposite_side[state.assignment[cluster]]
+                             == opposite_side[raw_target]) {
+                    continue;
+                  }
+                  desired_side[cluster] = opposite_side[raw_target];
+                  pending[desired_side[cluster] ? 1 : 0].push_back(cluster);
+                }
+                std::vector<std::vector<double>> side_slack(
+                    2, std::vector<double>(model.dimensions, 0.0));
+                for (int part = 0; part < model.parts; ++part) {
+                  const int side = opposite_side[part] ? 1 : 0;
+                  for (int dim = 0; dim < model.dimensions; ++dim) {
+                    side_slack[side][dim] += std::max(
+                        0.0,
+                        std::min(model.hard_capacity[part][dim],
+                                 model.balance_capacity[part][dim])
+                            - incremental_load[part][dim]);
+                  }
+                }
+                const auto constraint_score = [&](int cluster) {
+                  const int side = desired_side[cluster] ? 1 : 0;
+                  double result = 0.0;
+                  for (int dim = 0; dim < model.dimensions; ++dim) {
+                    if (side_slack[side][dim] > 1.0e-12) {
+                      result = std::max(
+                          result,
+                          model.cluster[cluster].weight[dim]
+                              / side_slack[side][dim]);
+                    } else if (model.cluster[cluster].weight[dim] > 0.0) {
+                      result = std::numeric_limits<double>::infinity();
+                    }
+                  }
+                  return result;
+                };
+                for (auto& side_pending : pending) {
+                  std::sort(side_pending.begin(), side_pending.end(),
+                            [&](int left, int right) {
+                              const double left_score
+                                  = constraint_score(left);
+                              const double right_score
+                                  = constraint_score(right);
+                              if (left_score != right_score) {
+                                return left_score > right_score;
+                              }
+                              if (exposure[left] != exposure[right]) {
+                                return exposure[left] < exposure[right];
+                              }
+                              return left < right;
+                            });
+                }
+                int moved[2] = {0, 0};
+                constexpr int kIncrementalPasses = 6;
+                for (int pass = 0; pass < kIncrementalPasses; ++pass) {
+                  std::array<std::vector<int>, 2> deferred;
+                  std::size_t cursor[2] = {0, 0};
+                  bool progress = false;
+                  int next_side = pass % 2;
+                  while (cursor[0] < pending[0].size()
+                         || cursor[1] < pending[1].size()) {
+                    int side = next_side;
+                    if (cursor[side] >= pending[side].size()) {
+                      side = 1 - side;
+                    }
+                    if (cursor[side] >= pending[side].size()) {
+                      break;
+                    }
+                    next_side = 1 - side;
+                    const int cluster = pending[side][cursor[side]++];
+                    int best_target = -1;
+                    bool best_raw_target = false;
+                    double best_utilization
+                        = std::numeric_limits<double>::infinity();
+                    for (int target = 0; target < model.parts; ++target) {
+                      if ((opposite_side[target] ? 1 : 0) != side) {
+                        continue;
+                      }
+                      bool fits = true;
+                      double utilization = 0.0;
+                      for (int dim = 0; dim < model.dimensions; ++dim) {
+                        const double limit = std::min(
+                            model.hard_capacity[target][dim],
+                            model.balance_capacity[target][dim]);
+                        const double projected
+                            = incremental_load[target][dim]
+                              + model.cluster[cluster].weight[dim];
+                        if (projected > limit + 1.0e-9) {
+                          fits = false;
+                          break;
+                        }
+                        if (limit > 0.0) {
+                          utilization = std::max(utilization,
+                                                 projected / limit);
+                        }
+                      }
+                      if (!fits) {
+                        continue;
+                      }
+                      const bool is_raw_target
+                          = target == raw_candidate_assignment[cluster];
+                      bool better = best_target < 0;
+                      if (raw_target_first
+                          && is_raw_target != best_raw_target) {
+                        better = is_raw_target;
+                      } else {
+                        better = better
+                                 || utilization
+                                        < best_utilization - 1.0e-12
+                                 || (std::abs(utilization - best_utilization)
+                                            <= 1.0e-12
+                                     && target < best_target);
+                      }
+                      if (better) {
+                        best_target = target;
+                        best_raw_target = is_raw_target;
+                        best_utilization = utilization;
+                      }
+                    }
+                    if (best_target < 0) {
+                      deferred[side].push_back(cluster);
+                      continue;
+                    }
+                    const int source = incremental_assignment[cluster];
+                    require(source >= 0 && source != best_target,
+                            "incremental bilateral source is invalid");
+                    incremental_assignment[cluster] = best_target;
+                    for (int dim = 0; dim < model.dimensions; ++dim) {
+                      const double weight
+                          = model.cluster[cluster].weight[dim];
+                      incremental_load[source][dim] -= weight;
+                      incremental_load[best_target][dim] += weight;
+                    }
+                    ++moved[side];
+                    progress = true;
+                  }
+                  pending = std::move(deferred);
+                  if (!progress) {
+                    break;
+                  }
+                }
+                bool incremental_capacity = true;
+                for (int part = 0; part < model.parts; ++part) {
+                  for (int dim = 0; dim < model.dimensions; ++dim) {
+                    incremental_capacity
+                        = incremental_capacity
+                          && incremental_load[part][dim]
+                                 <= model.hard_capacity[part][dim] + 1.0e-9
+                          && incremental_load[part][dim]
+                                 <= model.balance_capacity[part][dim]
+                                        + 1.0e-9;
+                  }
+                }
+                require(incremental_capacity,
+                        "incremental bilateral legalization broke capacity");
+                const bool incremental_transport
+                    = proxy_transport_feasible(model,
+                                               incremental_assignment);
+                std::cerr << "PATRON_FLOW_INCREMENTAL_BILATERAL pair="
+                          << edge_left << ':' << pair_target
+                          << " mode=" << mode
+                          << " moved_to_source_side=" << moved[0]
+                          << " moved_to_sink_side=" << moved[1]
+                          << " deferred="
+                          << pending[0].size() + pending[1].size()
+                          << " capacity_compatible=1"
+                          << " transport_compatible="
+                          << (incremental_transport ? 1 : 0);
+                if (incremental_transport) {
+                  ProxyState incremental = build_proxy_state(
+                      model, &incremental_assignment);
+                  std::cerr << " domain_load="
+                            << incremental.domain_load[cover_domain]
+                            << " improving="
+                            << (less_ranked(incremental.evaluation.ranked,
+                                            state.evaluation.ranked)
+                                    ? 1 : 0)
+                            << " rank=";
+                  for (long long value : incremental.evaluation.ranked) {
+                    std::cerr << value << ',';
+                  }
+                  consider_dual_improving(incremental_assignment, true);
+                }
+                std::cerr << '\n';
+              };
+        run_incremental_bilateral("balanced", false);
+        run_incremental_bilateral("raw-target-first", true);
 
         std::vector<int> right_parts;
         for (int part = 0; part < model.parts; ++part) {
