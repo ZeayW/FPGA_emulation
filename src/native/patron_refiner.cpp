@@ -1224,6 +1224,7 @@ std::vector<int> diagnose_flow_corridors(
     int cover_domain) {
   std::vector<int> selected_assignment;
   std::vector<long long> selected_rank;
+  int improving_candidate_generation = 0;
   int edge_left = -1;
   int edge_right = -1;
   for (int source = 0; source < model.parts && edge_left < 0; ++source) {
@@ -1272,11 +1273,13 @@ std::vector<int> diagnose_flow_corridors(
             return;
           }
           ProxyState candidate = build_proxy_state(model, &assignment);
-          if (less_ranked(candidate.evaluation.ranked,
-                          state.evaluation.ranked)
-              && (selected_assignment.empty()
-                  || less_ranked(candidate.evaluation.ranked,
-                                 selected_rank))) {
+          if (!less_ranked(candidate.evaluation.ranked,
+                           state.evaluation.ranked)) {
+            return;
+          }
+          ++improving_candidate_generation;
+          if (selected_assignment.empty()
+              || less_ranked(candidate.evaluation.ranked, selected_rank)) {
             selected_assignment = candidate.assignment;
             selected_rank = candidate.evaluation.ranked;
           }
@@ -1393,14 +1396,18 @@ std::vector<int> diagnose_flow_corridors(
       net_nodes[net] = {next_node, next_node + 1};
       next_node += 2;
     }
-    DinicFlow flow(next_node);
     // Keep the already resource-legal assignment as the deterministic
     // secondary objective.  A zero-cost side preference lets an otherwise
     // equivalent net cut move millions of clusters onto one topology side;
     // the later per-FPGA legalizer then cannot recover the original balance.
-    // Unit movement cost charges one cut-net equivalent per moved cluster,
-    // while also resolving exactly degenerate cuts toward fewer moves.
-    constexpr long long movement_cost = 1;
+    // Start with one cut-net equivalent per moved cluster.  If that cut has no
+    // resource-legal improving realization, progressively prefer a smaller
+    // displacement before declaring this corridor stalled.  Successful unit
+    // cost corridors keep their existing behavior and pay no sweep overhead.
+    constexpr std::array<long long, 4> movement_costs = {1, 2, 4, 8};
+    for (long long movement_cost : movement_costs) {
+      const int generation_before_cost = improving_candidate_generation;
+      DinicFlow flow(next_node);
     const long long infinity
         = static_cast<long long>(corridor_nets.size())
           + static_cast<long long>(corridor.size()) * movement_cost + 1;
@@ -1501,6 +1508,7 @@ std::vector<int> diagnose_flow_corridors(
               << " cluster_limit=" << maximum_corridor_clusters
               << " distance_limit=" << corridor_distance
               << " nets=" << corridor_nets.size()
+              << " movement_cost=" << movement_cost
               << " mincut=" << cut
               << " moved_to_left=" << moved_to_left
               << " moved_to_target=" << moved_to_target
@@ -3011,16 +3019,22 @@ std::vector<int> diagnose_flow_corridors(
             }
             std::cerr << '\n';
             if (less_ranked(polished.evaluation.ranked,
-                            state.evaluation.ranked)
-                && (selected_assignment.empty()
-                    || less_ranked(polished.evaluation.ranked,
-                                   selected_rank))) {
-              selected_assignment = polished.assignment;
-              selected_rank = polished.evaluation.ranked;
+                            state.evaluation.ranked)) {
+              ++improving_candidate_generation;
+              if (selected_assignment.empty()
+                  || less_ranked(polished.evaluation.ranked,
+                                 selected_rank)) {
+                selected_assignment = polished.assignment;
+                selected_rank = polished.evaluation.ranked;
+              }
             }
           }
         }
       }
+      if (improving_candidate_generation != generation_before_cost) {
+        break;
+      }
+    }
     }
   }
   return selected_assignment;
