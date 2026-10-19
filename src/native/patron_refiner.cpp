@@ -1890,7 +1890,9 @@ std::vector<int> diagnose_flow_corridors(
         // left/right decision.  This keeps every resource dimension hard and
         // lets the two physical FPGAs on each side share the moved load.
         const auto run_bilateral_region_legalization
-            = [&](const std::string& mode, bool affinity_first) {
+            = [&](const std::string& mode,
+                  bool affinity_first,
+                  bool raw_target_first) {
                 std::vector<int> region_assignment
                     = raw_candidate_assignment;
                 std::vector<std::vector<double>> region_load
@@ -1973,12 +1975,15 @@ std::vector<int> diagnose_flow_corridors(
                 for (int cluster : unassigned) {
                   int best_target = -1;
                   bool best_preferred_side = false;
+                  bool best_raw_target = false;
                   int best_affinity = -1;
                   double best_utilization
                       = std::numeric_limits<double>::infinity();
                   for (int target = 0; target < model.parts; ++target) {
                     const bool preferred_side
                         = opposite_side[target] == target_side[cluster];
+                    const bool raw_target
+                        = target == raw_candidate_assignment[cluster];
                     bool fits = true;
                     double utilization = 0.0;
                     for (int dim = 0; dim < model.dimensions; ++dim) {
@@ -2009,6 +2014,9 @@ std::vector<int> diagnose_flow_corridors(
                     bool better = best_target < 0;
                     if (preferred_side != best_preferred_side) {
                       better = preferred_side;
+                    } else if (raw_target_first
+                               && raw_target != best_raw_target) {
+                      better = raw_target;
                     } else if (affinity_first) {
                       better = better || affinity > best_affinity
                                || (affinity == best_affinity
@@ -2033,6 +2041,7 @@ std::vector<int> diagnose_flow_corridors(
                     if (better) {
                       best_target = target;
                       best_preferred_side = preferred_side;
+                      best_raw_target = raw_target;
                       best_affinity = affinity;
                       best_utilization = utilization;
                     }
@@ -2100,8 +2109,9 @@ std::vector<int> diagnose_flow_corridors(
                 }
                 std::cerr << '\n';
               };
-        run_bilateral_region_legalization("affinity-first", true);
-        run_bilateral_region_legalization("balance-first", false);
+        run_bilateral_region_legalization("affinity-first", true, false);
+        run_bilateral_region_legalization("balance-first", false, false);
+        run_bilateral_region_legalization("raw-target-first", false, true);
 
         // The all-at-once repacker above may paint itself into a corner even
         // though the original assignment is resource legal: an early greedy
