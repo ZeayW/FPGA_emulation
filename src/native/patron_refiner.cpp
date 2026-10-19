@@ -361,6 +361,38 @@ std::pair<int, long long> transport_capacity_pressure(
   return {violations, excess_bits};
 }
 
+int most_overloaded_transport_domain(
+    const Model& model, const std::vector<int>& loads) {
+  int selected = -1;
+  long long selected_excess = 0;
+  for (int domain = 0; domain < model.domains; ++domain) {
+    const Domain& record = model.domain[domain];
+    if (record.is_sll) {
+      continue;
+    }
+    const long long directed_excess = std::max(
+        0LL,
+        static_cast<long long>(loads[domain]) - record.capacity_bits);
+    long long shared_excess = 0;
+    if (record.banks > 0) {
+      shared_excess = std::max(
+          0LL,
+          static_cast<long long>(loads[domain])
+              + loads[record.opposite]
+              - static_cast<long long>(record.banks) * record.wires
+                    * model.frame_slots);
+    }
+    const long long excess = std::max(directed_excess, shared_excess);
+    if (excess > selected_excess
+        || (excess == selected_excess && excess > 0
+            && (selected < 0 || domain < selected))) {
+      selected = domain;
+      selected_excess = excess;
+    }
+  }
+  return selected;
+}
+
 double predicted_route_delay(const Model& model,
                              const Route& route,
                              const std::vector<int>& ratios) {
@@ -1850,6 +1882,226 @@ std::vector<int> diagnose_flow_corridors(
               };
         run_region_legalization("affinity-first", true);
         run_region_legalization("balance-first", false);
+
+        // A topology-side min-cut moves clusters in both directions.  The
+        // one-sided legalization above can repair the destination half, but
+        // it leaves every reverse-moving cluster collapsed onto edge_left.
+        // Repack both crossing regions together while preserving the cut's
+        // left/right decision.  This keeps every resource dimension hard and
+        // lets the two physical FPGAs on each side share the moved load.
+        const auto run_bilateral_region_legalization
+            = [&](const std::string& mode, bool affinity_first) {
+                std::vector<int> region_assignment
+                    = raw_candidate_assignment;
+                std::vector<std::vector<double>> region_load
+                    = raw_candidate_load;
+                std::vector<int> unassigned;
+                std::vector<bool> target_side(model.clusters, false);
+                for (int cluster : corridor) {
+                  const int target = raw_candidate_assignment[cluster];
+                  if (target < 0
+                      || opposite_side[state.assignment[cluster]]
+                             == opposite_side[target]) {
+                    continue;
+                  }
+                  target_side[cluster] = opposite_side[target];
+                  for (int dim = 0; dim < model.dimensions; ++dim) {
+                    region_load[target][dim]
+                        -= model.cluster[cluster].weight[dim];
+                  }
+                  region_assignment[cluster] = -1;
+                  unassigned.push_back(cluster);
+                }
+                std::vector<std::vector<int>> region_net_part_pins(
+                    model.nets, std::vector<int>(model.parts, 0));
+                for (int net = 0; net < model.nets; ++net) {
+                  for (int cluster : model.net[net].drivers) {
+                    if (region_assignment[cluster] >= 0) {
+                      ++region_net_part_pins[net]
+                                             [region_assignment[cluster]];
+                    }
+                  }
+                  for (int cluster : model.net[net].sinks) {
+                    if (region_assignment[cluster] >= 0) {
+                      ++region_net_part_pins[net]
+                                             [region_assignment[cluster]];
+                    }
+                  }
+                }
+                std::vector<std::vector<double>> aggregate_slack(
+                    2, std::vector<double>(model.dimensions, 0.0));
+                for (int part = 0; part < model.parts; ++part) {
+                  const int side = opposite_side[part] ? 1 : 0;
+                  for (int dim = 0; dim < model.dimensions; ++dim) {
+                    aggregate_slack[side][dim] += std::max(
+                        0.0,
+                        std::min(model.hard_capacity[part][dim],
+                                 model.balance_capacity[part][dim])
+                            - region_load[part][dim]);
+                  }
+                }
+                std::sort(unassigned.begin(), unassigned.end(),
+                          [&](int left, int right) {
+                            const int left_side = target_side[left] ? 1 : 0;
+                            const int right_side = target_side[right] ? 1 : 0;
+                            double left_constraint = 0.0;
+                            double right_constraint = 0.0;
+                            for (int dim = 0; dim < model.dimensions; ++dim) {
+                              if (aggregate_slack[left_side][dim]
+                                  > 1.0e-12) {
+                                left_constraint = std::max(
+                                    left_constraint,
+                                    model.cluster[left].weight[dim]
+                                        / aggregate_slack[left_side][dim]);
+                              }
+                              if (aggregate_slack[right_side][dim]
+                                  > 1.0e-12) {
+                                right_constraint = std::max(
+                                    right_constraint,
+                                    model.cluster[right].weight[dim]
+                                        / aggregate_slack[right_side][dim]);
+                              }
+                            }
+                            return std::tie(right_constraint,
+                                            exposure[right],
+                                            right)
+                                   < std::tie(left_constraint,
+                                              exposure[left],
+                                              left);
+                          });
+                bool assigned_all = true;
+                for (int cluster : unassigned) {
+                  int best_target = -1;
+                  bool best_preferred_side = false;
+                  int best_affinity = -1;
+                  double best_utilization
+                      = std::numeric_limits<double>::infinity();
+                  for (int target = 0; target < model.parts; ++target) {
+                    const bool preferred_side
+                        = opposite_side[target] == target_side[cluster];
+                    bool fits = true;
+                    double utilization = 0.0;
+                    for (int dim = 0; dim < model.dimensions; ++dim) {
+                      const double limit = std::min(
+                          model.hard_capacity[target][dim],
+                          model.balance_capacity[target][dim]);
+                      const double projected
+                          = region_load[target][dim]
+                            + model.cluster[cluster].weight[dim];
+                      if (projected > limit + 1.0e-9) {
+                        fits = false;
+                        break;
+                      }
+                      if (limit > 0.0) {
+                        utilization = std::max(utilization,
+                                               projected / limit);
+                      }
+                    }
+                    if (!fits) {
+                      continue;
+                    }
+                    int affinity = 0;
+                    for (int net : cluster_nets[cluster]) {
+                      affinity += region_net_part_pins[net][target] > 0
+                                      ? 1
+                                      : 0;
+                    }
+                    bool better = best_target < 0;
+                    if (preferred_side != best_preferred_side) {
+                      better = preferred_side;
+                    } else if (affinity_first) {
+                      better = better || affinity > best_affinity
+                               || (affinity == best_affinity
+                                   && utilization
+                                          < best_utilization - 1.0e-12)
+                               || (affinity == best_affinity
+                                   && std::abs(utilization - best_utilization)
+                                          <= 1.0e-12
+                                   && target < best_target);
+                    } else {
+                      better = better
+                               || utilization
+                                      < best_utilization - 1.0e-12
+                               || (std::abs(utilization - best_utilization)
+                                          <= 1.0e-12
+                                   && affinity > best_affinity)
+                               || (std::abs(utilization - best_utilization)
+                                          <= 1.0e-12
+                                   && affinity == best_affinity
+                                   && target < best_target);
+                    }
+                    if (better) {
+                      best_target = target;
+                      best_preferred_side = preferred_side;
+                      best_affinity = affinity;
+                      best_utilization = utilization;
+                    }
+                  }
+                  if (best_target < 0) {
+                    assigned_all = false;
+                    break;
+                  }
+                  region_assignment[cluster] = best_target;
+                  for (int dim = 0; dim < model.dimensions; ++dim) {
+                    region_load[best_target][dim]
+                        += model.cluster[cluster].weight[dim];
+                  }
+                  for (int net : cluster_nets[cluster]) {
+                    int occurrences = static_cast<int>(std::count(
+                        model.net[net].drivers.begin(),
+                        model.net[net].drivers.end(), cluster));
+                    occurrences += static_cast<int>(std::count(
+                        model.net[net].sinks.begin(),
+                        model.net[net].sinks.end(), cluster));
+                    region_net_part_pins[net][best_target] += occurrences;
+                  }
+                }
+                bool region_capacity = assigned_all;
+                for (int part = 0; part < model.parts; ++part) {
+                  for (int dim = 0; dim < model.dimensions; ++dim) {
+                    region_capacity = region_capacity
+                                      && region_load[part][dim]
+                                             <= model.hard_capacity[part][dim]
+                                                    + 1.0e-9
+                                      && region_load[part][dim]
+                                             <= model.balance_capacity[part]
+                                                                      [dim]
+                                                    + 1.0e-9;
+                  }
+                }
+                std::cerr << "PATRON_FLOW_BILATERAL_LEGALIZATION pair="
+                          << edge_left << ':' << pair_target
+                          << " mode=" << mode
+                          << " crossing=" << unassigned.size()
+                          << " assigned="
+                          << (assigned_all ? unassigned.size() : 0)
+                          << " capacity_compatible="
+                          << (region_capacity ? 1 : 0);
+                const bool region_transport
+                    = region_capacity
+                      && proxy_transport_feasible(model, region_assignment);
+                std::cerr << " transport_compatible="
+                          << (region_transport ? 1 : 0);
+                if (region_transport) {
+                  ProxyState legalized = build_proxy_state(
+                      model, &region_assignment);
+                  std::cerr << " domain_load="
+                            << legalized.domain_load[cover_domain]
+                            << " improving="
+                            << (less_ranked(legalized.evaluation.ranked,
+                                            state.evaluation.ranked)
+                                    ? 1
+                                    : 0)
+                            << " rank=";
+                  for (long long value : legalized.evaluation.ranked) {
+                    std::cerr << value << ',';
+                  }
+                  consider_dual_improving(region_assignment, true);
+                }
+                std::cerr << '\n';
+              };
+        run_bilateral_region_legalization("affinity-first", true);
+        run_bilateral_region_legalization("balance-first", false);
 
         std::vector<int> right_parts;
         for (int part = 0; part < model.parts; ++part) {
@@ -3458,6 +3710,65 @@ void run_scalable(const Model& model,
             << " improving=" << improving_comoves
             << " wns_improving=" << wns_improving_comoves
             << " accepted=" << accepted_comoves << '\n';
+
+  // Capacity closure is a hard Phase-3 contract.  A single topology-side
+  // cut can relieve one overloaded physical link while exposing another, so
+  // repeat the balanced corridor refinement until every directed and shared
+  // bank capacity is legal or no lexicographic improvement exists.
+  for (int iteration = 0;
+       state.evaluation.ranked.size() == 10
+           && (state.evaluation.ranked[0] > 0
+               || state.evaluation.ranked[1] > 0)
+           && iteration < std::max(4, model.parts * 2);
+       ++iteration) {
+    const int capacity_domain = most_overloaded_transport_domain(
+        model, state.domain_load);
+    if (capacity_domain < 0) {
+      break;
+    }
+    std::vector<int> repaired_assignment = diagnose_flow_corridors(
+        model,
+        state,
+        cluster_nets,
+        net_paths,
+        exposure,
+        capacity_domain);
+    if (repaired_assignment.empty()) {
+      std::cerr << "PATRON_CAPACITY_REPAIR iteration=" << iteration
+                << " domain=" << capacity_domain
+                << " status=stalled rank=";
+      for (long long value : state.evaluation.ranked) {
+        std::cerr << value << ',';
+      }
+      std::cerr << '\n';
+      break;
+    }
+    ProxyState repaired = build_proxy_state(model, &repaired_assignment);
+    require(less_ranked(repaired.evaluation.ranked,
+                        state.evaluation.ranked),
+            "capacity repair did not improve the ranked objective");
+    NativeBatch batch;
+    batch.before = state.evaluation;
+    batch.after = repaired.evaluation;
+    for (int cluster = 0; cluster < model.clusters; ++cluster) {
+      if (state.assignment[cluster] != repaired.assignment[cluster]) {
+        batch.changes.emplace_back(cluster,
+                                   state.assignment[cluster],
+                                   repaired.assignment[cluster]);
+      }
+    }
+    require(!batch.changes.empty(), "capacity repair batch is empty");
+    std::cerr << "PATRON_CAPACITY_REPAIR iteration=" << iteration
+              << " domain=" << capacity_domain
+              << " changes=" << batch.changes.size()
+              << " rank=";
+    for (long long value : repaired.evaluation.ranked) {
+      std::cerr << value << ',';
+    }
+    std::cerr << '\n';
+    batches.push_back(std::move(batch));
+    state = std::move(repaired);
+  }
 
   long long evaluated_corridors = 0;
   long long feasible_corridors = 0;

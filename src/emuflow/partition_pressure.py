@@ -12,6 +12,7 @@ import heapq
 import json
 import math
 import os
+import shutil
 import subprocess
 import tempfile
 from collections import defaultdict
@@ -2110,6 +2111,11 @@ def run_partition_pressure_native(
             physical_feedback,
             physical_feedback_scale,
         )
+        native_input_copy = os.environ.get("EMUFLOW_PATRON_INPUT_COPY")
+        if native_input_copy:
+            copy_path = Path(native_input_copy)
+            copy_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(native_input, copy_path)
         environment = dict(os.environ)
         for name in tuple(environment):
             if name.startswith("EMUFLOW_PATRON_"):
