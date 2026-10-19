@@ -2103,6 +2103,7 @@ std::vector<int> diagnose_flow_corridors(
               };
         run_bilateral_region_legalization("affinity-first", true);
         run_bilateral_region_legalization("balance-first", false);
+      }
 
         // The all-at-once repacker above may paint itself into a corner even
         // though the original assignment is resource legal: an early greedy
@@ -2308,6 +2309,7 @@ std::vector<int> diagnose_flow_corridors(
         run_incremental_bilateral("balanced", false);
         run_incremental_bilateral("raw-target-first", true);
 
+      if (pair_target == edge_right) {
         std::vector<int> right_parts;
         for (int part = 0; part < model.parts; ++part) {
           if (opposite_side[part]) {
