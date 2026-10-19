@@ -1051,6 +1051,26 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             "pass",
         )
 
+    def test_phase5_indexed_contract_accepts_register_output_launches(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        routes = self._exact_routes(assignment)
+        schema = routes["semantic_contract"]["schema"]
+        routes["semantic_contract"] = {
+            "schema": schema,
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
+        routes["routes"][0]["cut_class"] = "register_output"
+        schedule = build_tdm_schedule(routes, self.platform)
+        self.assertEqual(
+            schedule["provider"], TDM_EXACT_DEPENDENCY_PROVIDER
+        )
+        self.assertEqual(
+            validate_tdm_schedule(routes, self.platform, schedule)["status"],
+            "pass",
+        )
+
     @staticmethod
     def _persisted_routes(routes):
         persisted = copy.deepcopy(routes)

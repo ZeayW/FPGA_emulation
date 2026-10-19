@@ -142,7 +142,11 @@ def _static_exact_contract_from_routes(
                 not isinstance(route, dict)
                 or not isinstance(route.get("net"), str)
                 or route.get("cut_class")
-                not in {"combinational", "register_input"}
+                not in {
+                    "combinational",
+                    "register_input",
+                    "register_output",
+                }
                 or isinstance(route.get("dependency_level"), bool)
                 or not isinstance(route.get("dependency_level"), int)
                 or route["dependency_level"] < 0
