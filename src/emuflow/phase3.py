@@ -70,24 +70,35 @@ def _select_patron_timing_assignment(
     candidate: Dict[str, Any],
     patron_trace: Dict[str, Any],
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    """Select a legal PATRON candidate using only its generic timing proxy.
+    """Select a legal PATRON candidate using its Phase-3 path objective.
 
     Exact cut dependencies, schedule readiness, and physical timing are not
     knowable in Phase 3.  They are materialized and checked by the common
     Phase 4--7 timing contract after the assignment has been selected.
     """
 
-    initial_objective = patron_trace.get("initial_metrics", {}).get(
-        "objective_key"
+    initial_metrics = patron_trace.get("initial_metrics", {})
+    candidate_metrics = patron_trace.get("final_metrics", {})
+    initial_objective = initial_metrics.get("objective_key")
+    candidate_objective = candidate_metrics.get("objective_key")
+    initial_path_rank = (
+        initial_metrics.get("maximum_path_hops"),
+        initial_metrics.get("maximum_path_tdm_ratio_sum"),
     )
-    candidate_objective = patron_trace.get("final_metrics", {}).get(
-        "objective_key"
+    candidate_path_rank = (
+        candidate_metrics.get("maximum_path_hops"),
+        candidate_metrics.get("maximum_path_tdm_ratio_sum"),
     )
     if (
         not isinstance(initial_objective, list)
         or not isinstance(candidate_objective, list)
         or len(initial_objective) != 8
         or len(candidate_objective) != 8
+        or not all(
+            isinstance(value, int) and not isinstance(value, bool)
+            and value >= 0
+            for value in initial_path_rank + candidate_path_rank
+        )
         or not all(
             isinstance(value, (int, float))
             and not isinstance(value, bool)
@@ -96,11 +107,11 @@ def _select_patron_timing_assignment(
         )
     ):
         raise ValidationError("PATRON v14 timing objective certificate is invalid")
-    initial_rank = tuple(
+    initial_rank = initial_path_rank + tuple(
         round(float(value) / 1.0e-9) if index < 2 else round(float(value))
         for index, value in enumerate(initial_objective)
     )
-    candidate_rank = tuple(
+    candidate_rank = candidate_path_rank + tuple(
         round(float(value) / 1.0e-9) if index < 2 else round(float(value))
         for index, value in enumerate(candidate_objective)
     )
@@ -109,15 +120,19 @@ def _select_patron_timing_assignment(
     )
     timing_improved = candidate_rank < initial_rank
     # Both assignments have already passed the scheduler-independent Phase 3
-    # legality gate.  PATRON may rank them with generic predicted delay, TDM
-    # pressure, path-transition, hop, and cut costs; no downstream exact
-    # dependency or schedule certificate participates in this choice.
+    # legality gate.  PATRON first ranks the maximum physical-hop count over
+    # the supplied critical paths, then the maximum per-path sum of crossing
+    # net TDM ratios.  Generic timing, load, transition, and cut metrics are
+    # lower-priority tie breakers; no downstream schedule certificate
+    # participates in this choice.
     accepted = assignment_changed and timing_improved
     selection = {
         "status": "pass",
         "provider": PATRON_PREDICTIVE_TIMING_SELECTION_PROVIDER,
-        "policy": "structural-legality-and-predictive-timing-v1",
+        "policy": "path-hop-then-maximum-path-ratio-sum-v1",
         "objective_fields": [
+            "maximum_path_hops",
+            "maximum_path_tdm_ratio_sum",
             "negative_worst_normalized_slack",
             "negative_total_negative_normalized_slack",
             "negative_paths",

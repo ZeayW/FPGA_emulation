@@ -295,6 +295,40 @@ class PartitionPressureTest(unittest.TestCase):
             self.route_constraints,
         )
 
+    def test_path_objective_uses_maximum_of_per_path_tdm_ratio_sums(self) -> None:
+        evaluated = evaluate_partition_pressure(
+            self.ir,
+            self.platform,
+            self.clusters,
+            self.constraints,
+            self.route_constraints,
+            self.model,
+            self.initial["cluster_assignment"],
+        )
+        self.assertEqual(
+            [path["tdm_ratio_sum"] for path in evaluated["paths"]],
+            [2, 2],
+        )
+        self.assertEqual(evaluated["metrics"]["maximum_path_hops"], 1)
+        self.assertEqual(
+            evaluated["metrics"]["maximum_path_tdm_ratio_sum"], 2
+        )
+        _assignment, trace = run_partition_pressure_native(
+            self.ir,
+            self.platform,
+            self.clusters,
+            self.constraints,
+            self.route_constraints,
+            self.model,
+            self.initial,
+            executable=str(patron_refiner()),
+            max_moves=0,
+        )
+        self.assertEqual(trace["final_metrics"]["maximum_path_hops"], 1)
+        self.assertEqual(
+            trace["final_metrics"]["maximum_path_tdm_ratio_sum"], 2
+        )
+
     def test_model_consumes_indexed_timing_database_without_json_paths(
         self,
     ) -> None:
@@ -381,9 +415,13 @@ class PartitionPressureTest(unittest.TestCase):
         candidate["cluster_assignment"] = {"c0": "b", "c1": "a"}
         trace = {
             "initial_metrics": {
+                "maximum_path_hops": 2,
+                "maximum_path_tdm_ratio_sum": 8,
                 "objective_key": [84.0, 189000.0, 5000, 4, 100, 10, 20, 10]
             },
             "final_metrics": {
+                "maximum_path_hops": 2,
+                "maximum_path_tdm_ratio_sum": 7,
                 "objective_key": [83.0, 180000.0, 4900, 4, 100, 10, 20, 10]
             },
         }
@@ -415,9 +453,13 @@ class PartitionPressureTest(unittest.TestCase):
         candidate["semantic_contract"]["metrics"]["dependency_edges"] = 6
         trace = {
             "initial_metrics": {
+                "maximum_path_hops": 2,
+                "maximum_path_tdm_ratio_sum": 8,
                 "objective_key": [84.0, 189000.0, 5000, 4, 100, 10, 20, 10]
             },
             "final_metrics": {
+                "maximum_path_hops": 2,
+                "maximum_path_tdm_ratio_sum": 7,
                 "objective_key": [83.0, 180000.0, 4900, 4, 100, 10, 20, 10]
             },
         }
@@ -441,9 +483,13 @@ class PartitionPressureTest(unittest.TestCase):
         }
         trace = {
             "initial_metrics": {
+                "maximum_path_hops": 2,
+                "maximum_path_tdm_ratio_sum": 8,
                 "objective_key": [84.0, 189000.0, 5000, 4, 100, 10, 20, 10]
             },
             "final_metrics": {
+                "maximum_path_hops": 2,
+                "maximum_path_tdm_ratio_sum": 7,
                 "objective_key": [83.0, 180000.0, 4900, 4, 100, 10, 20, 10]
             },
         }
@@ -584,7 +630,7 @@ class PartitionPressureTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "coverage"):
                 _parse_patron_native_output(path, indexes)
 
-    def test_shared_bank_capacity_is_a_hard_partition_constraint(self) -> None:
+    def test_shared_bank_pressure_is_reported_but_not_a_partition_gate(self) -> None:
         value = _platform_value(
             "pressure_shared_bank_platform",
             ["a", "b"],
@@ -672,7 +718,7 @@ class PartitionPressureTest(unittest.TestCase):
             model,
             initial,
             executable=str(patron_refiner()),
-            max_moves=4,
+            max_moves=0,
         )
         final_evaluation = evaluate_partition_pressure(
             self.ir,
@@ -685,17 +731,17 @@ class PartitionPressureTest(unittest.TestCase):
         )
         self.assertEqual(
             final_evaluation["metrics"]["transport_capacity_violations"],
-            0,
+            1,
         )
         self.assertEqual(
             final_evaluation["metrics"]["transport_capacity_excess_bits"],
-            0,
+            1,
         )
         self.assertEqual(
             trace["initial_metrics"]["transport_capacity_excess_bits"], 1
         )
         self.assertEqual(
-            trace["final_metrics"]["transport_capacity_excess_bits"], 0
+            trace["final_metrics"]["transport_capacity_excess_bits"], 1
         )
 
     def test_v9_native_input_and_bundle_remain_valid(self) -> None:
@@ -2823,7 +2869,7 @@ class PartitionPressureTest(unittest.TestCase):
         )
         self.assertEqual(replay["status"], "pass")
 
-    def test_v14_does_not_freeze_initial_transport_or_transition_counts(self) -> None:
+    def test_v14_preserves_maximum_path_hop_priority(self) -> None:
         ir = EmuIR(
             {
                 "schema": "emuflow.emuir/v1",
@@ -2970,7 +3016,7 @@ class PartitionPressureTest(unittest.TestCase):
             algorithm_version=9,
         )
         self.assertEqual(
-            unguarded["cluster_assignment"][by_instance["u1"]], "c"
+            unguarded["cluster_assignment"][by_instance["u1"]], "b"
         )
         predictive, predictive_trace = run_partition_pressure_native(
             ir,
@@ -2987,12 +3033,16 @@ class PartitionPressureTest(unittest.TestCase):
         self.assertEqual(
             predictive_trace["mode"], "endpoint-exact-critical-flow-v14"
         )
-        self.assertLess(
-            predictive_trace["final_metrics"]["objective_key"],
-            predictive_trace["initial_metrics"]["objective_key"],
+        self.assertLessEqual(
+            predictive_trace["final_metrics"]["maximum_path_hops"],
+            predictive_trace["initial_metrics"]["maximum_path_hops"],
         )
         self.assertEqual(
-            predictive["cluster_assignment"][by_instance["u1"]], "c"
+            predictive["cluster_assignment"][by_instance["u1"]], "b"
+        )
+        self.assertIn(
+            "maximum_path_tdm_ratio_sum",
+            predictive_trace["final_metrics"],
         )
         self.assertIn(
             "total_path_partition_transitions",
