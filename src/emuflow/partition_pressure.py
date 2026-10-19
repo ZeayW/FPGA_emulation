@@ -479,7 +479,12 @@ def _reconstruct_partition_pressure_model(
         raise ValidationError("partition pressure requires timing paths")
 
     adjacency, _, capacities = build_directed_graph(
-        platform, route_constraints
+        platform,
+        route_constraints,
+        reserve_arrival_and_commit=(
+            clusters_artifact.get("policy", {}).get("cut_mode")
+            == CUT_MODE_STATIC_EXACT
+        ),
     )
     if not any(adjacency.values()):
         raise ValidationError("partition pressure requires routable links")
@@ -912,6 +917,33 @@ def evaluate_partition_pressure(
     domain_ratios = apply_bank_domain_ratios(
         capacity_by_key, domain_loads, domain_ratios, route_constraints
     )
+    transport_capacity_violations = 0
+    transport_capacity_excess_bits = 0
+    for key, capacity in capacity_by_key.items():
+        excess = max(0, domain_loads[key] - int(capacity["capacity_bits"]))
+        if excess:
+            transport_capacity_violations += 1
+            transport_capacity_excess_bits += excess
+        opposite = capacity.get("opposite_capacity_key")
+        if (
+            capacity.get("bank_group")
+            and isinstance(opposite, str)
+            and key < opposite
+        ):
+            shared_capacity = (
+                int(capacity["bank_count"])
+                * int(capacity["wires_per_bank"])
+                * int(route_constraints["frame_slots"])
+            )
+            shared_excess = max(
+                0,
+                domain_loads[key]
+                + domain_loads[opposite]
+                - shared_capacity,
+            )
+            if shared_excess:
+                transport_capacity_violations += 1
+                transport_capacity_excess_bits += shared_excess
     net_delay: Dict[str, float] = {}
     net_worst_transition: Dict[str, Tuple[str, str]] = {}
     total_bit_hops = 0
@@ -1046,6 +1078,8 @@ def evaluate_partition_pressure(
         "total_path_partition_transitions": total_transitions,
         "total_bit_hops": total_bit_hops,
         "cut_bits": cut_bits,
+        "transport_capacity_violations": transport_capacity_violations,
+        "transport_capacity_excess_bits": transport_capacity_excess_bits,
     }
     metrics["objective_key"] = [
         -worst,
@@ -1073,13 +1107,20 @@ def evaluate_partition_pressure(
 
 
 def _ranked_key(evaluation: Mapping[str, Any]) -> Tuple[int, ...]:
-    result = []
-    for value in evaluation["metrics"]["objective_key"]:
-        if isinstance(value, int):
-            result.append(value)
-        else:
-            result.append(round(float(value) / GAIN_QUANTUM))
-    return tuple(result)
+    metrics = evaluation["metrics"]
+    objective = metrics["objective_key"]
+    return (
+        int(metrics["transport_capacity_violations"]),
+        int(metrics["transport_capacity_excess_bits"]),
+        round(float(objective[0]) / GAIN_QUANTUM),
+        round(float(objective[1]) / GAIN_QUANTUM),
+        int(objective[2]),
+        int(objective[3]),
+        int(objective[4]),
+        int(objective[5]),
+        int(objective[6]),
+        int(objective[7]),
+    )
 
 
 def refine_partition_pressure_exhaustive(
@@ -1576,7 +1617,8 @@ def _write_patron_native_input(
             f"{int(domain['link'] in set(route_constraints['sll_links']))} "
             f"{route_link_delay_coefficients_ns(platform, link.id, link.endpoints[0], link.endpoints[1], route_constraints)[1]:.17g} "
             f"{domain_index.get(domain.get('opposite_capacity_key'), -1)} "
-            f"{domain.get('bank_count', 0)} {domain.get('wires_per_bank', 0)}"
+            f"{domain.get('bank_count', 0)} {domain.get('wires_per_bank', 0)} "
+            f"{int(domain['capacity_bits'])}"
         )
     for source in parts:
         for sink in parts:
@@ -1731,6 +1773,7 @@ def _parse_patron_native_output(
     initial_metrics = None
     mode = None
     summary = None
+    capacity_summary = None
     for line in lines[1:]:
         fields = line.split()
         if not fields:
@@ -1746,7 +1789,7 @@ def _parse_patron_native_output(
                 [float(item) for item in fields[1:]],
                 path_transition_objective=path_transition_objective,
             )
-        elif fields[0] == "STEP" and len(fields) == 34:
+        elif fields[0] == "STEP" and len(fields) in (34, 36):
             (
                 index,
                 phase,
@@ -1764,7 +1807,7 @@ def _parse_patron_native_output(
                 raise ValidationError("native PATRON step phase is invalid")
             before = [float(item) for item in fields[10:18]]
             after = [float(item) for item in fields[18:26]]
-            ranked = [int(item) for item in fields[26:34]]
+            ranked = [int(item) for item in fields[26:]]
             moves.append(
                 {
                     "index": index,
@@ -1806,7 +1849,7 @@ def _parse_patron_native_output(
                     "ranked_objective_key": ranked,
                 }
             )
-        elif fields[0] == "BATCH" and len(fields) == 27:
+        elif fields[0] == "BATCH" and len(fields) in (27, 29):
             if output_version not in (
                 "EMUFLOW_PATRON_OUTPUT_V7",
                 "EMUFLOW_PATRON_OUTPUT_V8",
@@ -1831,7 +1874,7 @@ def _parse_patron_native_output(
                         float(item) for item in fields[11:19]
                     ],
                     "ranked_objective_key": [
-                        int(item) for item in fields[19:27]
+                        int(item) for item in fields[19:]
                     ],
                 }
             )
@@ -1867,6 +1910,19 @@ def _parse_patron_native_output(
                 [float(item) for item in fields[1:]],
                 path_transition_objective=path_transition_objective,
             )
+        elif fields[0] == "CAPACITY" and len(fields) == 5:
+            if capacity_summary is not None:
+                raise ValidationError(
+                    "native PATRON returned duplicate CAPACITY"
+                )
+            capacity_summary = [int(item) for item in fields[1:]]
+            if (
+                any(value < 0 for value in capacity_summary)
+                or capacity_summary[2:] != [0, 0]
+            ):
+                raise ValidationError(
+                    "native PATRON transport capacity summary is invalid"
+                )
         elif fields[0] == "SUMMARY" and len(fields) == 5:
             if summary is not None:
                 raise ValidationError(
@@ -1934,6 +1990,19 @@ def _parse_patron_native_output(
         )
     if final_metrics is None or initial_metrics is None or mode is None:
         raise ValidationError("native PATRON output metadata is incomplete")
+    if capacity_summary is not None:
+        initial_metrics.update(
+            {
+                "transport_capacity_violations": capacity_summary[0],
+                "transport_capacity_excess_bits": capacity_summary[1],
+            }
+        )
+        final_metrics.update(
+            {
+                "transport_capacity_violations": capacity_summary[2],
+                "transport_capacity_excess_bits": capacity_summary[3],
+            }
+        )
     summary["output_bytes"] = path.stat().st_size
     return (
         assignment,
@@ -2604,6 +2673,21 @@ def validate_partition_pressure_native_bundle(
     )
     sweep_index = {cluster: index for index, cluster in enumerate(sweep_order)}
     current = dict(initial_assignment["cluster_assignment"])
+    initial_evaluation = evaluate_partition_pressure(
+        ir,
+        platform,
+        clusters_artifact,
+        constraints,
+        route_constraints,
+        model,
+        current,
+        include_tdm_wait=True,
+        physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
+        physical_feedback=physical_feedback,
+        physical_feedback_scale=physical_feedback_scale,
+        path_transition_objective=(flow_version == 8),
+    )
+    previous_rank = _ranked_key(initial_evaluation)
     previous_sweep = -1
     previous_sweep_index = -1
     previous_phase = 0
@@ -2679,7 +2763,7 @@ def validate_partition_pressure_native_bundle(
             or not isinstance(ranked, list)
             or len(before) != 8
             or len(after) != 8
-            or len(ranked) != 8
+            or len(ranked) != 10
             or not all(
                 isinstance(value, (int, float))
                 and not isinstance(value, bool)
@@ -2690,23 +2774,20 @@ def validate_partition_pressure_native_bundle(
                 isinstance(value, int) and not isinstance(value, bool)
                 for value in ranked
             )
-            or tuple(ranked) >= tuple(
-                round(float(value) / GAIN_QUANTUM)
-                if objective_index < 2
-                else round(float(value))
-                for objective_index, value in enumerate(before)
-            )
+            or ranked[0] < 0
+            or ranked[1] < 0
+            or tuple(ranked) >= previous_rank
         ):
             raise ValidationError(
                 f"native PATRON move {index} objective is invalid"
             )
-        expected_rank = [
+        expected_objective_rank = [
             round(float(value) / GAIN_QUANTUM)
             if objective_index < 2
             else round(float(value))
             for objective_index, value in enumerate(after)
         ]
-        if ranked != expected_rank:
+        if ranked[2:] != expected_objective_rank:
             raise ValidationError(
                 f"native PATRON move {index} ranked objective is invalid"
             )
@@ -2724,6 +2805,7 @@ def validate_partition_pressure_native_bundle(
             previous_ejection_index = sweep_index[cluster]
             ejection_count += 1
         previous_after = after
+        previous_rank = tuple(ranked)
         if phase == 0:
             if sweep != previous_sweep:
                 previous_sweep_index = -1
@@ -2805,7 +2887,7 @@ def validate_partition_pressure_native_bundle(
             or not isinstance(ranked, list)
             or len(before) != 8
             or len(after) != 8
-            or len(ranked) != 8
+            or len(ranked) != 10
             or not all(
                 isinstance(value, (int, float))
                 and not isinstance(value, bool)
@@ -2843,11 +2925,10 @@ def validate_partition_pressure_native_bundle(
         before_rank = _ranked_key(before_evaluation)
         if (
             ranked != expected_rank
-            or ranked[0] >= before_rank[0]
-            or ranked[1] >= before_rank[1]
+            or tuple(ranked) >= before_rank
         ):
             raise ValidationError(
-                "native PATRON batch is not dual-objective improving"
+                "native PATRON batch is not lexicographically improving"
             )
         if previous_after is not None:
             maximum_chain_error = max(
@@ -2864,20 +2945,6 @@ def validate_partition_pressure_native_bundle(
     if maximum_chain_error > 1.0e-9:
         raise ValidationError("native PATRON objective chain is discontinuous")
 
-    initial_evaluation = evaluate_partition_pressure(
-        ir,
-        platform,
-        clusters_artifact,
-        constraints,
-        route_constraints,
-        model,
-        initial_assignment["cluster_assignment"],
-        include_tdm_wait=True,
-        physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
-        physical_feedback=physical_feedback,
-        physical_feedback_scale=physical_feedback_scale,
-        path_transition_objective=(flow_version == 8),
-    )
     final_evaluation = evaluate_partition_pressure(
         ir,
         platform,

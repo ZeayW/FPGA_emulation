@@ -584,6 +584,120 @@ class PartitionPressureTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "coverage"):
                 _parse_patron_native_output(path, indexes)
 
+    def test_shared_bank_capacity_is_a_hard_partition_constraint(self) -> None:
+        value = _platform_value(
+            "pressure_shared_bank_platform",
+            ["a", "b"],
+            [_link("ab", "a", "b", lanes=1, latency=0)],
+        )
+        for fpga in value["fpgas"]:
+            fpga["hp_io_bank_count"] = 1
+        value["links"][0].update(
+            {
+                "capacity_sharing": "shared_bidirectional",
+                "bank_count": 1,
+                "wires_per_bank": 1,
+            }
+        )
+        platform = Platform.from_dict(value)
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "min_used_fpgas": 2,
+                "balance_tolerance": 1.0,
+            },
+            self.ir,
+            platform,
+        )
+        clusters = build_clusters(self.ir, constraints)
+        by_instance = {
+            cluster["instances"][0]: cluster["id"]
+            for cluster in clusters["clusters"]
+        }
+        initial = build_partition_assignment(
+            self.ir,
+            platform,
+            clusters,
+            constraints,
+            {
+                by_instance["u0"]: "a",
+                by_instance["u1"]: "b",
+                by_instance["u2"]: "b",
+                by_instance["u3"]: "a",
+            },
+            provider="fixture",
+            seed=7,
+        )
+        routes = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": 1,
+                "tdm_ratio_quantum": 1,
+                "max_route_hops": 1,
+            },
+            platform,
+        )
+        model = build_partition_pressure_model(
+            self.ir,
+            platform,
+            clusters,
+            constraints,
+            self.timing,
+            routes,
+        )
+        initial_evaluation = evaluate_partition_pressure(
+            self.ir,
+            platform,
+            clusters,
+            constraints,
+            routes,
+            model,
+            initial["cluster_assignment"],
+        )
+        self.assertEqual(
+            initial_evaluation["metrics"]["transport_capacity_violations"],
+            1,
+        )
+        self.assertEqual(
+            initial_evaluation["metrics"]["transport_capacity_excess_bits"],
+            1,
+        )
+
+        final, trace = run_partition_pressure_native(
+            self.ir,
+            platform,
+            clusters,
+            constraints,
+            routes,
+            model,
+            initial,
+            executable=str(patron_refiner()),
+            max_moves=4,
+        )
+        final_evaluation = evaluate_partition_pressure(
+            self.ir,
+            platform,
+            clusters,
+            constraints,
+            routes,
+            model,
+            final["cluster_assignment"],
+        )
+        self.assertEqual(
+            final_evaluation["metrics"]["transport_capacity_violations"],
+            0,
+        )
+        self.assertEqual(
+            final_evaluation["metrics"]["transport_capacity_excess_bits"],
+            0,
+        )
+        self.assertEqual(
+            trace["initial_metrics"]["transport_capacity_excess_bits"], 1
+        )
+        self.assertEqual(
+            trace["final_metrics"]["transport_capacity_excess_bits"], 0
+        )
+
     def test_v9_native_input_and_bundle_remain_valid(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             native_input = Path(temporary) / "patron-v9.in"
@@ -844,7 +958,7 @@ class PartitionPressureTest(unittest.TestCase):
             except ValidationError:
                 continue
             objective = evaluation["metrics"]["objective_key"]
-            rank = tuple(
+            rank = (0, 0) + tuple(
                 round(float(value) / 1.0e-9)
                 if index < 2
                 else round(float(value))
@@ -860,7 +974,7 @@ class PartitionPressureTest(unittest.TestCase):
         # Every timing path can be made local in this compact fixture.  Since
         # transport delay is non-negative, the following rank is also a
         # constructive lower bound on all eight objective components.
-        global_best_rank = (-1000000000, 0, 0, 1, 0, 0, 0, 0)
+        global_best_rank = (0, 0, -1000000000, 0, 0, 1, 0, 0, 0, 0)
 
         results = []
         for _repeat in range(2):
