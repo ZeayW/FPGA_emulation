@@ -1394,8 +1394,16 @@ std::vector<int> diagnose_flow_corridors(
       next_node += 2;
     }
     DinicFlow flow(next_node);
+    // Keep the already resource-legal assignment as the deterministic
+    // secondary objective.  A zero-cost side preference lets an otherwise
+    // equivalent net cut move millions of clusters onto one topology side;
+    // the later per-FPGA legalizer then cannot recover the original balance.
+    // Unit movement cost charges one cut-net equivalent per moved cluster,
+    // while also resolving exactly degenerate cuts toward fewer moves.
+    constexpr long long movement_cost = 1;
     const long long infinity
-        = static_cast<long long>(corridor_nets.size()) + 1;
+        = static_cast<long long>(corridor_nets.size())
+          + static_cast<long long>(corridor.size()) * movement_cost + 1;
     for (const auto& item : net_nodes) {
       const int net = item.first;
       const int in_node = item.second.first;
@@ -1425,10 +1433,12 @@ std::vector<int> diagnose_flow_corridors(
       }
     }
     for (int cluster : corridor) {
-      if (state.assignment[cluster] == edge_left) {
-        flow.add_edge(source_node, cluster_node[cluster], 0);
+      if (!opposite_side[state.assignment[cluster]]) {
+        flow.add_edge(
+            source_node, cluster_node[cluster], movement_cost);
       } else {
-        flow.add_edge(cluster_node[cluster], sink_node, 0);
+        flow.add_edge(
+            cluster_node[cluster], sink_node, movement_cost);
       }
     }
     const long long cut = flow.maximum_flow(source_node, sink_node);
