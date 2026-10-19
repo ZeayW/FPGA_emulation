@@ -3031,7 +3031,8 @@ std::vector<int> diagnose_flow_corridors(
           }
         }
       }
-      if (improving_candidate_generation != generation_before_cost) {
+      if (improving_candidate_generation != generation_before_cost
+          || !selected_assignment.empty()) {
         break;
       }
     }
