@@ -497,10 +497,11 @@ def _exact_dependency_order(
     successors: Dict[str, List[str]] = {
         net: [] for net in exact_nodes
     }
+    known_nets = set(exact_nodes)
     indegree: Dict[str, int] = {}
     for net, node in exact_nodes.items():
         predecessors = list(node.get("predecessor_cut_nets", []))
-        unknown = sorted(set(predecessors) - set(exact_nodes))
+        unknown = sorted(set(predecessors) - known_nets)
         if unknown:
             raise ValidationError(
                 f"cross-layer timing cut {net!r} has unknown predecessors "
