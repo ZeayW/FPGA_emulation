@@ -223,7 +223,8 @@ equivalence checks are project implementations, not part of Chimew.
 ### Phase 7: FPGA physical implementation and global timing
 
 Compact VTR netlist export preserves sparse SQLite instance identities through
-pin binding and physical atom naming.
+pin binding and physical atom naming. Indexed partitions retain their declared
+DUT clock requirements when generating runtime SDC.
 
 The physical backends share a result contract but use different device models:
 

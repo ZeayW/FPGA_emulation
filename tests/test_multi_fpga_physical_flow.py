@@ -1,5 +1,7 @@
 import copy
 import hashlib
+import json
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -23,6 +25,11 @@ from emuflow.multi_fpga_physical_flow import (
 )
 from emuflow.physical_backend import physical_backend_descriptor
 from emuflow.platform import Platform
+from emuflow.split_netlist_storage import (
+    DDL as SPLIT_DDL,
+    SPLIT_NETLIST_APPLICATION_ID,
+    SPLIT_NETLIST_USER_VERSION,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -446,6 +453,12 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             )
 
     def test_every_partition_is_bound_through_checked_route(self):
+        self._assert_every_partition_is_bound_through_checked_route()
+
+    def test_indexed_partition_clock_requirement_reaches_runtime_sdc(self):
+        self._assert_every_partition_is_bound_through_checked_route(indexed=True)
+
+    def _assert_every_partition_is_bound_through_checked_route(self, indexed=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             split = root / "split"
@@ -465,6 +478,15 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 "module emuflow_virtual_runtime_controller; endmodule\n",
                 encoding="utf-8",
             )
+            if indexed:
+                with sqlite3.connect(split / "split-netlists.sqlite") as connection:
+                    connection.executescript(SPLIT_DDL)
+                    connection.execute(f"PRAGMA application_id={SPLIT_NETLIST_APPLICATION_ID}")
+                    connection.execute(f"PRAGMA user_version={SPLIT_NETLIST_USER_VERSION}")
+                    for index, fpga in enumerate(("fpga0", "fpga1")):
+                        connection.execute("INSERT INTO parts VALUES (?,?)", (index, fpga))
+                        connection.execute("INSERT INTO instance_copies VALUES (?,0,NULL,0)", (index,))
+                        connection.execute("INSERT INTO ports VALUES (?,?,?)", (index, "clk", json.dumps({"id": "clk", "clock": fpga == "fpga0"})))
             for fpga in ("fpga0", "fpga1"):
                 fpga_root = split / fpga
                 fpga_root.mkdir()
@@ -498,6 +520,10 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                         "virtual_anchors": f"{fpga}/virtual_anchors.json",
                     }
                 )
+                if indexed:
+                    manifest["fpgas"][-1].update(
+                        netlist="split-netlists.sqlite", netlist_selector=fpga
+                    )
             # Deliberately reverse the producer order; the physical report is
             # required to follow the BoardDB order even under concurrency.
             manifest["fpgas"].reverse()
@@ -671,6 +697,12 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     side_effect=fake_lower,
                 ),
                 patch(
+                    "emuflow.multi_fpga_physical_flow.run_placement_ir_lowering_from_split",
+                    side_effect=lambda _source, fpga, *args: fake_lower(
+                        {"instances": [{"id": f"{fpga}_original"}]}, *args
+                    ),
+                ),
+                patch(
                     "emuflow.multi_fpga_physical_flow.run_vpr_pack_place",
                     side_effect=fake_pack,
                 ),
@@ -720,6 +752,11 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     (root / "physical/architecture/vtr-flagship.xml").resolve(),
                 )
                 for item in report["fpgas"]:
+                    if indexed:
+                        self.assertEqual(
+                            item["stages"]["runtime_sdc"]["dut_clock_required"],
+                            item["fpga"] == "fpga0",
+                        )
                     runtime_sdc = Path(item["stages"]["runtime_sdc"]["path"])
                     self.assertNotIn(
                         "virtual_clock_enable",

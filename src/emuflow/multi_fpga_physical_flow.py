@@ -1086,6 +1086,9 @@ def run_multi_fpga_physical_flow(
         if split_selector is not None:
             with SplitNetlistView(netlist_path, split_selector) as split_view:
                 split_counts = split_view.counts()
+                dut_clock_required = _partition_declares_dut_clock(
+                    {"ports": split_view.ports}
+                )
             netlist = None
             original_cells = split_counts["instances"]
             physical_work = any(split_counts.values()) or any(
@@ -1094,6 +1097,7 @@ def run_multi_fpga_physical_flow(
             )
         else:
             netlist = read_json(netlist_path)
+            dut_clock_required = _partition_declares_dut_clock(netlist)
             original_cells = len(netlist["instances"])
             physical_work = _partition_has_physical_work(netlist, transport)
 
@@ -1397,7 +1401,7 @@ def run_multi_fpga_physical_flow(
                 fabric_period_ns=fabric_period,
                 dut_periods_ns=dut_periods,
                 cross_period_ns=cross_period,
-                dut_clock_required=_partition_declares_dut_clock(netlist),
+                dut_clock_required=dut_clock_required,
             )
             pack_report = run_vpr_pack_place(
                 architecture_path,
