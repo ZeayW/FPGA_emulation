@@ -722,6 +722,8 @@ lookahead path currently requires the explicit VTR backend/profile combination.
   copy. Physical timing measures each copy and reports the worst per original
   path; the split net/bit bindings are checked independently. Output-copy
   timing with replicated cells is currently unsupported and fails explicitly.
+  Declared copy constraints are checked separately from STA engine rounding;
+  target and runtime slack each use the worst measured copy.
   See [timing-model scope](docs/global-opensta-qualification.md).
 
 Unsupported inputs must be reported explicitly; a backend must not silently

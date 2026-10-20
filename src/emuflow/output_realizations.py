@@ -128,8 +128,21 @@ def aggregate_output_realizations(
         if original in originals:
             # Copies represent one logical timing constraint. Different periods
             # would make max-delay and min-slack inconsistent.
-            fields = (("clock_domain", "target_period_ns", "target_required_time_ns", "virtual_period_ns")
-                      if physical else ("clock_domain", "clock_period_ns", "required_time_ns"))
+            declared = physical and any("declared_target_required_time_ns" in copy for copy in copies)
+            fields = (("clock_domain", "target_period_ns", "declared_target_required_time_ns",
+                       "declared_runtime_required_time_ns", "virtual_period_ns") if declared else
+                      (("clock_domain", "target_period_ns", "target_required_time_ns", "virtual_period_ns")
+                       if physical else ("clock_domain", "clock_period_ns", "required_time_ns")))
+            if declared:
+                for copy in copies:
+                    item = index[copy["path"]]
+                    if (any(key not in copy for key in fields)
+                            or copy["clock_domain"] != item["clock_domain"]
+                            or copy["target_period_ns"] != item["clock_period_ns"]
+                            or copy["declared_target_required_time_ns"] != item["required_time_ns"]
+                            or copy["declared_runtime_required_time_ns"] != copy["virtual_period_ns"] - (
+                                item["clock_period_ns"] - item["required_time_ns"])):
+                        raise ValidationError("output copy declared source timing constraint disagrees")
             if any(any(copy.get(key) != copies[0].get(key) for key in fields)
                    for copy in copies[1:]):
                 raise ValidationError("output copies have different timing constraints")
@@ -139,5 +152,17 @@ def aggregate_output_realizations(
         if original in originals:
             selected["worst_realization"] = worst["path"]
             selected["realization_ids"] = sorted(copy["path"] for copy in copies)
+            if declared:
+                # Engine-rounded deadlines can differ by ulps. Retain the
+                # maximum-arrival structural representative, but each clock
+                # role's observed slack must cover every physical copy.
+                for role in ("target", "runtime"):
+                    field = f"{role}_clock_slack_bound_ns"
+                    role_worst = min(copies, key=lambda copy: (copy[field], copy["path"]))
+                    selected[field] = role_worst[field]
+                    selected[f"{role}_required_time_ns"] = role_worst[f"{role}_required_time_ns"]
+                    selected[f"{role}_worst_realization"] = role_worst["path"]
+                    selected[f"{role}_measured_arrival_ns"] = role_worst.get(
+                        f"{role}_measured_arrival_ns", role_worst[delay_field])
         result.append(selected)
     return result

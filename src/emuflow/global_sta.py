@@ -486,6 +486,29 @@ the Python event propagator or consume its per-path numerical results.
                 result.append(EventCheck(path["id"], role, "capture", 0.0,
                                          (float(path["delay_ns"]),), deadline))
     rows = validate_checks(result)
+    # Required times read back from OpenSTA are observations, not identifiers
+    # of the source constraints. Relative event launches and float32 engine
+    # arithmetic can round two physical copies of one deadline differently.
+    target_requirements = {row.path: row.required_ns for row in rows if row.role == "target"}
+    for row in rows:
+        if row.role not in {"target", "runtime"}:
+            continue
+        info = path_metadata[row.path]
+        item = realizations.get(row.path)
+        period = info["target_period_ns"]
+        declared_target = (item["required_time_ns"] if item is not None
+                           else target_requirements[row.path])
+        virtual = runtime_clock_period_ns(runtime, info.get("clock_domain"))
+        declared = (declared_target if row.role == "target"
+                    else virtual - (period - declared_target))
+        if (item is not None and (info.get("clock_domain") != item["clock_domain"]
+                                 or period != item["clock_period_ns"])):
+            raise ValidationError("global STA output source clock constraint disagrees")
+        if not math.isclose(row.required_ns, declared, rel_tol=0.0, abs_tol=1e-9):
+            raise ValidationError("global STA declared output timing constraint disagrees")
+        info[f"declared_{row.role}_required_time_ns"] = declared
+        info[f"{row.role}_event_launch_ns"] = row.launch_ns
+        info["virtual_period_ns"] = virtual
     if metadata is not None:
         source_ids = {original_path_id(pid, realizations) for pid in path_metadata}
         if source is not None and (
@@ -537,8 +560,15 @@ def build_opensta_timing(runtime, metadata, measurements):
                                   else ("routed-selected-path-chain-exact" if local else "routed-staging-chain-exact")))
         for role in ("target", "runtime"):
             row = observed[pid, role]
+            declared = info.get(f"declared_{role}_required_time_ns")
+            if declared is not None:
+                local_required = declared - info[f"{role}_event_launch_ns"]
+                allowance = max(1e-3, 4 * 2**-23 * abs(local_required))
+                if abs(row["required_ns"] - declared) > allowance:
+                    raise ValidationError("global STA measured required time disagrees with declared constraint")
             path[f"{role}_required_time_ns"] = row["required_ns"]
             path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
+            path[f"{role}_measured_arrival_ns"] = row["arrival_ns"]
         paths.append(path)
     if not paths:
         raise ValidationError("global STA empty standalone result")
@@ -546,9 +576,6 @@ def build_opensta_timing(runtime, metadata, measurements):
     registry = metadata.get("output_realizations")
     if registry is not None:
         from .output_realizations import aggregate_output_realizations
-        for path in paths:
-            path["virtual_period_ns"] = path["runtime_required_time_ns"] + (
-                path["target_period_ns"] - path["target_required_time_ns"])
         paths = aggregate_output_realizations(paths, {"timing": {"output_realizations": registry}},
             delay_field="system_delay_bound_ns", physical=True)
     failures = sum(r["slack_ns"] < -1e-3 for r in measurements if r["role"] in {"tx", "commit"})
@@ -706,6 +733,7 @@ def adopt_opensta_results(timing, measurements):
             row = observed[path["path"], role]
             path[f"{role}_required_time_ns"] = row["required_ns"]
             path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
+            path[f"{role}_measured_arrival_ns"] = row["arrival_ns"]
     if timing.get("output_realizations") is not None:
         from .output_realizations import aggregate_output_realizations
         timing["paths"] = aggregate_output_realizations(timing["realization_paths"],

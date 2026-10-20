@@ -106,6 +106,10 @@ class OutputRealizationTimingTest(unittest.TestCase):
         metadata = {"paths": {item["path"]: {
             "path_scope": item["path_scope"], "logical_fpga_sequence": item["logical_fpga_sequence"],
             "clock_domain": "clk", "target_period_ns": 10.0,
+            "declared_target_required_time_ns": 10.0,
+            "declared_runtime_required_time_ns": 100.0,
+            "target_event_launch_ns": 0.0, "runtime_event_launch_ns": 0.0,
+            "virtual_period_ns": 100.0,
             "physical_logic_segments_cone_bound": False,
         } for item in records}, "source_binding": {
             "original_paths": 2, "original_path_ids_sha256": path_id_set_sha256(["p", "q"])},
@@ -154,6 +158,90 @@ class OutputRealizationTimingTest(unittest.TestCase):
                 row["arrival_ns"] += .5
         with self.assertRaises(ValidationError):
             compare_system_timing(bad, report)
+
+    def rounding_inputs(self):
+        value = registry(("p",))
+        for item in value["realizations"]:
+            item["required_time_ns"] = 9.999999
+        metadata = {"paths": {}, "output_realizations": value,
+                    "source_binding": {"original_paths": 1, "original_path_ids_sha256": path_id_set_sha256(["p"])},
+                    "compressed_representative_paths": 1}
+        rows = []
+        # Numeric regression from the real engine failure: identical declared
+        # deadlines, independently rounded engine values on local/remote pads.
+        numbers = {
+            "fpga0": (1.6022592141951009, 9.999998624595491, 1279.99996429232,
+                      8.39773941040039, 1278.397705078125),
+            "fpga1": (62.24508032280028, 9.999997467575668, 1279.9999631353003,
+                      -52.24508285522461, 1217.7548828125),
+        }
+        for item in value["realizations"]:
+            metadata["paths"][item["id"]] = {
+                "clock_domain": "clk", "target_period_ns": 10.0,
+                "declared_target_required_time_ns": 9.999999,
+                "declared_runtime_required_time_ns": 1279.999999,
+                "virtual_period_ns": 1280.0,
+                "target_event_launch_ns": 0.0, "runtime_event_launch_ns": 0.0,
+                "physical_logic_segments_cone_bound": False,
+                "path_scope": "same-fpga-local" if item["local"] else "cross-fpga",
+                "logical_fpga_sequence": ["fpga0"] if item["local"] else ["fpga0", "fpga1"],
+            }
+            arrival, target_required, runtime_required, target_slack, runtime_slack = numbers[item["fpga"]]
+            rows.extend({"path": item["id"], "role": role, "event": "capture", "arrival_ns": arrival,
+                         "required_ns": required, "slack_ns": slack}
+                        for role, required, slack in (("target", target_required, target_slack),
+                                                     ("runtime", runtime_required, runtime_slack)))
+        runtime = {"virtual_dut_clocks": {"clk": {"nominal_period_ns": 1280}}}
+        return runtime, metadata, rows
+
+    def test_engine_rounding_preserves_observations_and_exact_declared_constraints(self):
+        runtime, metadata, rows = self.rounding_inputs()
+        report = build_opensta_timing(runtime, metadata, rows)
+        path = report["paths"][0]
+        self.assertEqual(path["virtual_period_ns"], 1280.0)
+        self.assertEqual(path["declared_target_required_time_ns"], 9.999999)
+        self.assertEqual(path["target_required_time_ns"], 9.999997467575668)
+        self.assertEqual(report["target_clock"]["tns_bound_ns"], -52.24508285522461)
+        self.assertEqual(len(report["realization_paths"]), 2)
+
+    def test_real_constraint_changes_and_large_engine_required_errors_still_fail(self):
+        runtime, metadata, rows = self.rounding_inputs()
+        changed = copy.deepcopy(metadata)
+        changed["paths"]["p:fpga1"]["declared_target_required_time_ns"] += 1e-10
+        with self.assertRaises(ValidationError):
+            build_opensta_timing(runtime, changed, rows)
+        changed = copy.deepcopy(rows)
+        changed[0]["required_ns"] += .01
+        with self.assertRaises(ValidationError):
+            build_opensta_timing(runtime, metadata, changed)
+        missing = copy.deepcopy(rows[:-1])
+        with self.assertRaises(ValidationError):
+            build_opensta_timing(runtime, metadata, missing)
+
+    def test_near_tie_observed_slack_uses_each_role_worst_copy_once(self):
+        runtime, metadata, rows = self.rounding_inputs()
+        for item in metadata["output_realizations"]["realizations"]:
+            item["required_time_ns"] = 10.0
+        for info in metadata["paths"].values():
+            info.update(declared_target_required_time_ns=10.0, declared_runtime_required_time_ns=1280.0)
+        for row in rows:
+            local = row["path"] == "p:fpga0"
+            row["arrival_ns"] = 9.9999998 if local else 10.0000001
+            row["required_ns"] = ((9.999999 if local else 10.000001) if row["role"] == "target"
+                                  else (1280.000002 if local else 1280.0))
+            row["slack_ns"] = row["required_ns"] - row["arrival_ns"]
+        report = build_opensta_timing(runtime, metadata, rows)
+        path = report["paths"][0]
+        self.assertEqual(path["worst_realization"], "p:fpga1")
+        self.assertEqual(path["target_worst_realization"], "p:fpga0")
+        self.assertEqual(path["runtime_worst_realization"], "p:fpga1")
+        self.assertEqual(report["target_clock"]["negative_slack_paths"], 1)
+        expected = min(row["slack_ns"] for row in rows if row["role"] == "target")
+        self.assertEqual(report["target_clock"]["tns_bound_ns"], expected)
+        gate = compare_system_timing(rows, report)
+        self.assertEqual(gate["metrics"]["target"]["original_path_tns_ns"], expected)
+        adopt_opensta_results(report, rows)
+        self.assertEqual(report["target_clock"]["tns_bound_ns"], expected)
 
     def test_real_local_preparation_keeps_source_local_copy_of_cross_output(self):
         start = {"instance": "launch", "port": "Q", "bit": 0}
