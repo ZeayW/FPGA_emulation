@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
 from unittest import mock
 
@@ -28,6 +29,53 @@ def _instance(name, cell_type, parameters=None, constants=None):
 
 
 class VtrEblifTest(unittest.TestCase):
+    def test_compact_sparse_owner_ids_keep_pin_and_atom_identity(self):
+        value = {
+            "schema": "emuflow.emuir/v1",
+            "design": {"name": "sparse", "top": "sparse", "source_format": "test"},
+            "ports": [{"id": name, "name": name, "direction": direction, "width": 1,
+                       "clock": False, "reset": False}
+                      for name, direction in (("a", "input"), ("y", "output"))],
+            "instances": [_instance("first", "LUT1", {"INIT": "10"}),
+                          _instance("second", "LUT1", {"INIT": "01"})],
+            "nets": [
+                {"id": "a", "drivers": [_endpoint(None, "a")],
+                 "sinks": [_endpoint("first", "I0")], "cut_class": "primary_input"},
+                {"id": "middle", "drivers": [_endpoint("first", "O")],
+                 "sinks": [_endpoint("second", "I0")], "cut_class": "combinational"},
+                {"id": "y", "drivers": [_endpoint("second", "O")],
+                 "sinks": [_endpoint(None, "y")], "cut_class": "combinational"},
+            ],
+            "clocks": [], "warnings": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for offset in (0, 1):
+                with self.subTest(first_owner=offset):
+                    source = root / f"sparse-{offset}.emuir.sqlite"
+                    output = root / f"sparse-{offset}.eblif"
+                    EmuIR(value).save(source)
+                    emit_vtr_eblif(source, output)
+                    dense_text = output.read_text()
+                    # Phase-7 merge can use one-based or noncontiguous integer
+                    # owners; changing these storage keys preserves the circuit.
+                    with sqlite3.connect(source) as connection:
+                        connection.execute("UPDATE cell_records SET seq=-seq-1")
+                        connection.execute("UPDATE cell_records SET seq=(-seq-1)*2+?", (offset,))
+                        connection.execute("UPDATE endpoint_records SET instance_seq=instance_seq*2+? WHERE instance_seq IS NOT NULL", (offset,))
+                    report = emit_vtr_eblif(source, output)
+                    expected = dense_text.replace(".cname i1\n", f".cname i{2+offset}\n")
+                    expected = expected.replace(".cname i0\n", f".cname i{offset}\n")
+                    self.assertEqual(output.read_text(), expected)
+                    self.assertEqual(report["source_instances"], 2)
+                    self.assertEqual(report["dangling_outputs"], 0)
+                    with IndexedPhysicalIR(source) as indexed:
+                        self.assertEqual(indexed.instance_indices["second"], 2 + offset)
+                    with sqlite3.connect(source) as connection:
+                        connection.execute("UPDATE endpoint_records SET instance_seq=999 WHERE instance_seq=?", (2 + offset,))
+                    with self.assertRaisesRegex(ValidationError, "endpoint owner"):
+                        emit_vtr_eblif(source, output)
+
     def test_top_port_aliases_may_share_a_packed_io_block(self) -> None:
         report = {
             "schema": "emuflow.vtr-eblif-report/v1",

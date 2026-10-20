@@ -222,6 +222,9 @@ equivalence checks are project implementations, not part of Chimew.
 
 ### Phase 7: FPGA physical implementation and global timing
 
+Compact VTR netlist export preserves sparse SQLite instance identities through
+pin binding and physical atom naming.
+
 The physical backends share a result contract but use different device models:
 
 | Backend | Device model and physical algorithms | Upstream foundation |

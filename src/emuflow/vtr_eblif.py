@@ -643,7 +643,15 @@ def _emit_vtr_eblif_compact(
             output.write(".names emuflow_const0\n.names emuflow_const1\n1\n")
             for source_net, output_net in output_aliases:
                 output.write(f".names {source_net} {output_net}\n1 1\n")
-            for index, instance in enumerate(compact_instances(connection)):
+            # Integer owners are persistent SQLite identities, not dense
+            # iteration ordinals. Phase-7 merge may start at one or retain
+            # gaps; use the same identity for pin binding and VPR atom names.
+            instance_sequences = connection.execute(
+                "SELECT seq FROM cell_records ORDER BY seq"
+            )
+            for (index,), instance in zip(
+                instance_sequences, compact_instances(connection)
+            ):
                 rows = []
                 while endpoint_row is not None and int(endpoint_row[0]) == index:
                     if int(endpoint_row[4]) not in (0, 1):
