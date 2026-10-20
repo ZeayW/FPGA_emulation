@@ -59,6 +59,7 @@ def run_phase4(
     physical_feedback_weight: float = 1.0,
     candidate_workers: int = 1,
     managed_storage: bool = False,
+    author_cost_policy: Optional[str] = None,
 ) -> Dict[str, Any]:
     assignment = read_phase3_assignment_view(
         assignment_path, include_semantic_contract=False
@@ -81,6 +82,8 @@ def run_phase4(
             else NATIVE_ROUTER_PROVIDER
         )
     exact_mode = assignment_has_static_exact_contract(assignment)
+    if author_cost_policy is not None and provider != AUTHOR_ROUTER_PROVIDER:
+        raise ValueError("author cost policy requires the author routing provider")
     timing_paths = None
     feedback_source_paths = (
         tdm_feedback_routes_path,
@@ -166,7 +169,8 @@ def run_phase4(
                 timing_paths_path, demands_from_assignment(assignment, platform)
             )
         routes = route_system_author(
-            assignment, platform, constraints, timing_paths, executable=router
+            assignment, platform, constraints, timing_paths, executable=router,
+            **({"cost_policy": author_cost_policy} if author_cost_policy is not None else {}),
         )
         validation = validate_author_system_routes(
             assignment, platform, routes, timing_paths

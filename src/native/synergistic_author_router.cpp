@@ -204,7 +204,7 @@ struct Tree {
   std::vector<int> parent_arc;
 };
 
-enum class CostPolicy { kAuthorPressure, kQuantizedRatio };
+enum class CostPolicy { kAuthorPressure, kQuantizedRatio, kAuthorSllPressure };
 
 class Router {
  public:
@@ -468,13 +468,17 @@ class Router {
   }
 
   bool sll_allows(const Domain& domain, long long addition) const {
-    long long used = 0;
+    return addition <= sll_available(domain);
+  }
+
+  long long sll_available(const Domain& domain) const {
+    long long available = domain.capacity;
     for (const int other : sll_layers_.at({domain.sll_link, domain.sll_orientation})) {
       const long long usage = domains_.at(other).usage;
-      if (usage > domain.capacity - used) return false;
-      used += usage;
+      if (usage > available) return -1;
+      available -= usage;
     }
-    return addition <= domain.capacity - used;
+    return available;
   }
 
   bool direction_allows(int arc_index) const {
@@ -490,7 +494,16 @@ class Router {
     const Domain& domain = domains_.at(arc.domain);
     const long long addition = shared ? 0 : width;
     double delay = arc.delay;
-    if (!domain.sll && policy_ == CostPolicy::kAuthorPressure) {
+    if (domain.sll && !shared && policy_ == CostPolicy::kAuthorSllPressure) {
+      // Explicit diagnostic, not an author-source reproduction. Price the
+      // marginal claim on scarce physical SLL wires before hard saturation.
+      // Feasibility has already established C-U >= width >= 1, so C/(C-U)
+      // is finite even for the last wire. Shared tree edges claim no new wire
+      // and retain their ordinary delay/discount; zero-delay stays zero.
+      const long long available = sll_available(domain);
+      if (available <= 0) throw std::runtime_error("no available SLL wire for priced arc");
+      delay *= static_cast<double>(domain.capacity) / available;
+    } else if (!domain.sll && policy_ != CostPolicy::kQuantizedRatio) {
       // Eq. (2) increases price inside a quantization bucket. Looking only at
       // the next legal integer ratio creates a plateau that can overload one
       // route before another route becomes cheaper (observed on EDA2023 case3).
@@ -632,9 +645,10 @@ class Router {
 int main(int argc, char** argv) {
   const auto usage = [](std::ostream& stream) {
     stream << "usage: emuflow_synergistic_author_router INPUT OUTPUT "
-              "[--cost-policy author-pressure-v1|quantized-ratio-v1]\n"
+              "[--cost-policy author-pressure-v1|quantized-ratio-v1|author-sll-pressure-v1]\n"
               "default: author-pressure-v1 (continuous pre-insertion pressure); "
-              "quantized-ratio-v1 preserves the first adapter for diagnostics.\n";
+              "quantized-ratio-v1 preserves the first adapter; "
+              "author-sll-pressure-v1 adds exploratory SLL scarcity pricing.\n";
   };
   if (argc == 2 && std::string(argv[1]) == "--help") {
     usage(std::cout);
@@ -644,6 +658,7 @@ int main(int argc, char** argv) {
   if (argc == 5 && std::string(argv[3]) == "--cost-policy") {
     const std::string name = argv[4];
     if (name == "quantized-ratio-v1") policy = CostPolicy::kQuantizedRatio;
+    else if (name == "author-sll-pressure-v1") policy = CostPolicy::kAuthorSllPressure;
     else if (name != "author-pressure-v1") {
       std::cerr << "unsupported cost policy: " << name << '\n';
       usage(std::cerr);

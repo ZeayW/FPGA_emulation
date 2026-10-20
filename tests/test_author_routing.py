@@ -79,6 +79,21 @@ class AuthorRoutingTest(unittest.TestCase):
         self.assertEqual(routed["author_routing"]["counters"]["connections"], 0)
         self.assertNotIn("timing", routed)
 
+    def test_explicit_sll_policy_is_independently_identifiable(self):
+        assignment, platform, constraints = self._inputs()
+        routed = route_system_author(
+            assignment, platform, constraints, executable=author_router(),
+            cost_policy="author-sll-pressure-v1",
+        )
+        self.assertEqual(routed["author_routing"]["cost_policy"], "author-sll-pressure-v1")
+        self.assertEqual(validate_author_system_routes(assignment, platform, routed)["status"], "pass")
+        tampered = copy.deepcopy(routed)
+        tampered["author_routing"]["cost_policy"] = "author-pressure-v1"
+        with self.assertRaisesRegex(ValidationError, "execution metadata"):
+            validate_author_system_routes(assignment, platform, tampered)
+        with self.assertRaisesRegex(ValueError, "unsupported author routing cost policy"):
+            route_system_author(assignment, platform, constraints, cost_policy="unknown-policy")
+
     def test_timing_evaluated_from_platform_and_checked_again(self):
         assignment, platform, constraints = self._inputs()
         timing = compress_sta_paths(normalize_sta_paths({"schema": "emuflow.sta-paths/v1", "design": "route_test", "paths": [{

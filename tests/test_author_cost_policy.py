@@ -98,6 +98,60 @@ class AuthorCostPolicyTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("default: author-pressure-v1", result.stdout)
         self.assertIn("quantized-ratio-v1", result.stdout)
+        self.assertIn("author-sll-pressure-v1", result.stdout)
+
+    def test_sll_scarcity_prices_new_claims_before_hard_saturation(self):
+        arcs = [
+            "ARC 0 0 0 1 0 -1 -1 2 2 1 0 1 0 0",
+            "ARC 1 1 0 1 1 -1 -1 2 2 1 0 1 0 0",
+        ]
+        demands = ["DEMAND 0 0 1 1 0 0", "DEMAND 1 0 1 1 0 0"]
+        result, original = self._run(arcs, demands, "author-pressure-v1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._trees(original), {0: "0", 1: "0"})
+        result, diagnostic = self._run(arcs, demands, "author-sll-pressure-v1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._trees(diagnostic), {0: "0", 1: "1"})
+        result, default = self._run(arcs, demands)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(default, original)
+
+    def test_sll_scarcity_keeps_last_wire_legal_and_zero_delay_zero(self):
+        demands = ["DEMAND 0 0 1 1 0 0", "DEMAND 1 0 1 1 0 0"]
+        for delay in (0, 1):
+            with self.subTest(delay=delay):
+                arcs = [f"ARC 0 0 0 1 0 -1 -1 2 2 {delay} 0 1 0 0"]
+                result, text = self._run(arcs, demands, "author-sll-pressure-v1")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self._trees(text), {0: "0", 1: "0"})
+                result, text = self._run(arcs, demands + ["DEMAND 2 0 1 1 0 0"], "author-sll-pressure-v1")
+                self.assertEqual(result.returncode, 1)
+                self.assertIsNone(text)
+
+    def test_sll_shared_prefix_claims_no_additional_saturated_wire(self):
+        arcs = [
+            "ARC 0 0 0 1 0 -1 -1 1 1 1 0 1 0 0",
+            "ARC 1 1 1 2 1 -1 -1 1 1 1 0 1 0 0",
+            "ARC 2 2 1 3 2 -1 -1 1 1 1 0 1 0 0",
+        ]
+        result, text = self._run(arcs, ["DEMAND 0 0 2,3 1 0 0"], "author-sll-pressure-v1", nodes=4)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._trees(text), {0: "0,1,2"})
+
+    def test_sll_scarcity_uses_physical_usage_across_round_layers(self):
+        arcs = [
+            "ARC 0 0 0 1 0 -1 -1 2 2 1 0 1 0 0",
+            "ARC 1 1 0 1 1 -1 -1 2 2 1.5 0 1 0 0",
+            "ARC 2 0 2 3 2 -1 -1 2 2 1 0 1 0 0",
+            "ARC 3 1 2 3 3 -1 -1 2 2 1.5 0 1 0 0",
+        ]
+        demands = ["DEMAND 0 0 1 1 0 0", "DEMAND 1 2 3 1 0 0"]
+        result, baseline = self._run(arcs, demands, "author-pressure-v1", nodes=4)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._trees(baseline), {0: "0", 1: "2"})
+        result, diagnostic = self._run(arcs, demands, "author-sll-pressure-v1", nodes=4)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._trees(diagnostic), {0: "0", 1: "3"})
 
 
 if __name__ == "__main__":

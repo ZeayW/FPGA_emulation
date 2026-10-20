@@ -170,6 +170,8 @@ SLL capacities are shared across transport rounds. Select it with
 It currently requires one candidate worker, evaluates STA paths after routing
 and does not accept TDM feedback. Full physical/global timing qualification
 is pending; the default provider remains unchanged.
+The comparison script's `--author-cost-policy author-sll-pressure-v1` enables
+experimental SLL scarcity pricing without changing evaluated platform delays.
 
 ### Phase 5: TDM ratio, lane, and slot assignment
 

@@ -101,6 +101,7 @@ def build_binaries(build_root, compiler, output):
 def worker(manifest_path):
     from emuflow.contest_eda2023 import optimize_eda2023_tdm, evaluate_eda2023_solution
     from emuflow.phase4 import run_phase4
+    from emuflow.author_routing import AUTHOR_ROUTER_PROVIDER
 
     manifest = json.loads(manifest_path.read_text())
     output = Path(manifest["output"])
@@ -119,11 +120,16 @@ def worker(manifest_path):
         artifacts = {key: Path(value) for key, value in manifest["artifacts"].items()}
         progress("phase4-running")
         stamp = time.monotonic()
+        author_options = {}
+        if manifest["provider"] == AUTHOR_ROUTER_PROVIDER:
+            author_options["author_cost_policy"] = manifest.get(
+                "author_cost_policy", "author-pressure-v1")
+            result["author_cost_policy"] = author_options["author_cost_policy"]
         result["phase4"] = run_phase4(
             artifacts["assignment"], artifacts["boarddb"], output / "phase4",
             constraints_path=artifacts["route_constraints"],
             timing_paths_path=artifacts["timing_paths"], provider=manifest["provider"],
-            router=manifest["router"], candidate_workers=1)
+            router=manifest["router"], candidate_workers=1, **author_options)
         result["stage_seconds"]["phase4"] = time.monotonic() - stamp
         progress("phase4-done")
         if result["phase4"].get("status") != "pass":
@@ -333,6 +339,9 @@ def main():
     parser.add_argument("--arms", default="A,B", help="fresh arms to run: A,B, A or B")
     parser.add_argument("--baseline-summary", type=Path,
                         help="reuse validated previous arm A and its normalized inputs; never rerun A")
+    parser.add_argument("--author-cost-policy", default="author-pressure-v1",
+                        choices=("author-pressure-v1", "author-sll-pressure-v1"),
+                        help="explicit author-arm cost policy; SLL pressure is a diagnostic ablation")
     parser.add_argument("--arm-timeout", type=float, default=180)
     parser.add_argument("--sample-interval", type=float, default=2)
     parser.add_argument("--rss-limit-gib", type=float, default=24,
@@ -374,6 +383,7 @@ def main():
                "source_commit": git("rev-parse", "HEAD"), "branch": git("branch", "--show-current"),
                "git_status": git("status", "--porcelain"), "cases_requested": cases,
                "arms_requested": arms,
+               "author_cost_policy": args.author_cost_policy,
                "baseline_summary": str(args.baseline_summary.resolve()) if args.baseline_summary else None,
                "python": sys.version, "runner_sha256": digest(__file__),
                "python_source_sha256": {str(p.relative_to(ROOT)): digest(p)
@@ -423,6 +433,7 @@ def main():
                     record["status"] = f"{label}-running"
                     write(output / "summary.json", summary)
                     manifest = {"output": str(output / case / label), "provider": provider,
+                                "author_cost_policy": args.author_cost_policy if label == "B" else None,
                                 "artifacts": record["import"]["artifacts"],
                                 "router": summary["tools"][binary]["path"],
                                 "optimizer": summary["tools"]["tdm_ratio_optimizer"]["path"],

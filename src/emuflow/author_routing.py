@@ -35,6 +35,10 @@ AUTHOR_ROUTER_PROVIDER = "synergistic-author-route-v1"
 AUTHOR_OUTPUT_PROTOCOL = "EMUFLOW_SYNERGISTIC_ROUTE_OUTPUT_V1"
 AUTHOR_METHOD = "author-global-connection-order-shared-tree-maze-continuous-pressure-v1"
 AUTHOR_COST_POLICY = "author-pressure-v1"
+AUTHOR_COST_METHODS = {
+    AUTHOR_COST_POLICY: AUTHOR_METHOD,
+    "author-sll-pressure-v1": "author-global-connection-order-shared-tree-maze-sll-scarcity-v1",
+}
 _COUNTERS = {"connections", "routed_connections", "search_expansions", "tree_edges"}
 _TIMING_METRICS = (
     "worst_slack_ns", "worst_normalized_slack",
@@ -132,7 +136,10 @@ def _round_contract(model, capacities, usage, platform, constraints):
     }
 
 
-def route_system_author(assignment, platform, constraints, timing_paths=None, *, executable=None):
+def route_system_author(assignment, platform, constraints, timing_paths=None, *, executable=None,
+                        cost_policy=AUTHOR_COST_POLICY):
+    if not isinstance(cost_policy, str) or cost_policy not in AUTHOR_COST_METHODS:
+        raise ValueError(f"unsupported author routing cost policy: {cost_policy}")
     nodes, model = _prepare_native_model(assignment, platform, constraints, None)
     _validate_single_node_cut_capacity(nodes, model)
     resolved = resolve_native_executable("emuflow_synergistic_author_router", executable)
@@ -145,7 +152,7 @@ def route_system_author(assignment, platform, constraints, timing_paths=None, *,
         _write_native_input(root / "input", len(nodes), model, constraints, NATIVE_ROUTER_PROVIDER)
         completed = subprocess.run(
             [resolved, str(root / "input"), str(root / "output"),
-             "--cost-policy", AUTHOR_COST_POLICY],
+             "--cost-policy", cost_policy],
             capture_output=True, text=True, check=False,
         )
         if completed.returncode:
@@ -185,8 +192,8 @@ def route_system_author(assignment, platform, constraints, timing_paths=None, *,
         "constraints": dict(constraints), "demands": model["demands"], "routes": routes,
         "link_utilization": utilization, "direction_locks": locks,
         "author_routing": {
-            "method": AUTHOR_METHOD, "output_protocol": AUTHOR_OUTPUT_PROTOCOL,
-            "cost_policy": AUTHOR_COST_POLICY,
+            "method": AUTHOR_COST_METHODS[cost_policy], "output_protocol": AUTHOR_OUTPUT_PROTOCOL,
+            "cost_policy": cost_policy,
             "executable_sha256": digest.hexdigest(), "counters": counters,
             "timing_optimization": False, "tdm_assignment": "downstream-phase5",
         },
@@ -238,8 +245,10 @@ def validate_author_system_routes(assignment, platform, routes, timing_paths=Non
     if not isinstance(metadata, dict):
         raise ValidationError("invalid author routing execution metadata")
     counters = metadata.get("counters", {})
-    if (metadata.get("method") != AUTHOR_METHOD or metadata.get("output_protocol") != AUTHOR_OUTPUT_PROTOCOL
-            or metadata.get("cost_policy") != AUTHOR_COST_POLICY
+    policy = metadata.get("cost_policy")
+    expected_method = AUTHOR_COST_METHODS.get(policy) if isinstance(policy, str) else None
+    if (expected_method is None or metadata.get("method") != expected_method
+            or metadata.get("output_protocol") != AUTHOR_OUTPUT_PROTOCOL
             or metadata.get("timing_optimization") is not False or metadata.get("tdm_assignment") != "downstream-phase5"
             or not isinstance(metadata.get("executable_sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", metadata["executable_sha256"])
