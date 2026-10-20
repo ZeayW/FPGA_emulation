@@ -54,7 +54,7 @@ from .physical_backend import (
     validate_physical_backend_descriptor,
     validate_physical_partition_result,
 )
-from .physical_summary_storage import publish_physical_evidence_reference
+from .physical_summary_storage import publish_physical_evidence
 from .platform import Platform
 from .resource_budget import validate_device_resource_usage
 from .rapidwright_provider import validate_rapidwright_provider_manifest
@@ -2149,36 +2149,30 @@ def _assemble_multi_fpga_physical_results(
         identity_path = Path(
             item["stages"]["placement_ir"]["boundary_identity"]["output"]
         )
-        identity_database = read_json(identity_path)
+        identity_database, identity_reference = publish_physical_evidence(
+            identity_path,
+            output_dir,
+            Path(fpga_id) / identity_path.name,
+        )
         validate_boundary_identity_database(
             identity_database, transports_by_fpga[fpga_id]
         )
-        physical_summary["boundary_identities"][fpga_id] = (
-            publish_physical_evidence_reference(
-                identity_path,
-                identity_database["schema"],
-                output_dir,
-                Path(fpga_id) / identity_path.name,
-            )
-        )
+        physical_summary["boundary_identities"][fpga_id] = identity_reference
         timing_path = Path(
             _implementation_stage(item, backend, "boundary_timing")[
                 "import"
             ]["output"]
         )
-        timing_database = read_json(timing_path)
+        timing_database, timing_reference = publish_physical_evidence(
+            timing_path,
+            output_dir,
+            Path(fpga_id) / timing_path.name,
+        )
         validate_boundary_timing_database(
             timing_database,
             identity_database,
         )
-        physical_summary["boundary_timing"][fpga_id] = (
-            publish_physical_evidence_reference(
-                timing_path,
-                timing_database["schema"],
-                output_dir,
-                Path(fpga_id) / timing_path.name,
-            )
-        )
+        physical_summary["boundary_timing"][fpga_id] = timing_reference
     if include_logic_timing:
         physical_summary["logic_segment_timing"] = {}
         for item in records:
@@ -2187,16 +2181,13 @@ def _assemble_multi_fpga_physical_results(
                     "import"
                 ]["output"]
             )
-            database = read_json(path)
-            validate_logic_segment_timing(database)
-            physical_summary["logic_segment_timing"][item["fpga"]] = (
-                publish_physical_evidence_reference(
-                    path,
-                    database["schema"],
-                    output_dir,
-                    Path(item["fpga"]) / path.name,
-                )
+            database, reference = publish_physical_evidence(
+                path,
+                output_dir,
+                Path(item["fpga"]) / path.name,
             )
+            validate_logic_segment_timing(database)
+            physical_summary["logic_segment_timing"][item["fpga"]] = reference
         if backend in {"open", "rapidwright"}:
             physical_summary["local_path_timing"] = {}
             for item in records:
@@ -2205,16 +2196,13 @@ def _assemble_multi_fpga_physical_results(
                         "import"
                     ]["output"]
                 )
-                database = read_json(path)
-                validate_local_path_timing(database)
-                physical_summary["local_path_timing"][item["fpga"]] = (
-                    publish_physical_evidence_reference(
-                        path,
-                        database["schema"],
-                        output_dir,
-                        Path(item["fpga"]) / path.name,
-                    )
+                database, reference = publish_physical_evidence(
+                    path,
+                    output_dir,
+                    Path(item["fpga"]) / path.name,
                 )
+                validate_local_path_timing(database)
+                physical_summary["local_path_timing"][item["fpga"]] = reference
     physical_summary["validation"] = validate_physical_summary(
         physical_summary, runtime, platform
     )

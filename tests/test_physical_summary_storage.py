@@ -3,18 +3,50 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
+import emuflow.physical_summary_storage as physical_summary_storage
 from emuflow.physical_summary_storage import (
     PHYSICAL_EVIDENCE_REFERENCE_SCHEMA,
     canonical_physical_summary_sha256,
     physical_evidence_reference,
+    publish_physical_evidence,
     read_physical_summary,
 )
 
 
 class PhysicalSummaryStorageTest(unittest.TestCase):
+    def test_publish_parses_and_seals_in_one_read_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source/boundary.json"
+            write_json(
+                source,
+                {
+                    "schema": "emuflow.boundary-identity/v1",
+                    "endpoints": [{"id": "endpoint0"}],
+                },
+            )
+            with patch.object(
+                physical_summary_storage,
+                "_read_sealed_json",
+                wraps=physical_summary_storage._read_sealed_json,
+            ) as read_sealed:
+                document, reference = publish_physical_evidence(
+                    source,
+                    root / "published",
+                    Path("fpga0/boundary.json"),
+                )
+
+            self.assertEqual(read_sealed.call_count, 1)
+            self.assertEqual(document["endpoints"], [{"id": "endpoint0"}])
+            self.assertEqual(reference["bytes"], source.stat().st_size)
+            self.assertEqual(
+                read_json(root / "published/fpga0/boundary.json"), document
+            )
+
     def test_evidence_is_resolved_lazily_and_sealed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

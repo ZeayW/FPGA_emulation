@@ -107,7 +107,8 @@ Whole-design physical assembly no longer embeds every FPGA's boundary
 identity, boundary timing, logic-segment timing and local-path timing database
 inside `physical-summary.json`. The summary is now a bounded control artifact
 whose per-FPGA entries are relocatable references sealed by logical schema,
-byte count and SHA-256. Assembly validates and publishes one FPGA at a time;
+byte count and SHA-256. Assembly publishes, parses and seals each evidence file
+in one read pass, then validates one FPGA at a time;
 Phase 4 feedback, Phase 7C, global timing, Vivado timing import and experiment
 validation resolve those files lazily. Logical canonical hashing streams one
 referenced database at a time and remains equal to the previous inline JSON

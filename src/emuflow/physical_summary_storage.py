@@ -99,6 +99,21 @@ def publish_physical_evidence_reference(
 ) -> Dict[str, Any]:
     """Publish a relocatable evidence member, preferring a zero-copy link."""
 
+    document, reference = publish_physical_evidence(
+        source, output_directory, relative_path
+    )
+    if document.get("schema") != logical_schema:
+        raise ValidationError("physical evidence logical schema disagrees")
+    return reference
+
+
+def publish_physical_evidence(
+    source: Path,
+    output_directory: Path,
+    relative_path: Path,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Publish, parse, and seal one evidence member in a single read pass."""
+
     if relative_path.is_absolute() or ".." in relative_path.parts:
         raise ValidationError("physical evidence relative path is unsafe")
     resolved_source = source.resolve()
@@ -125,9 +140,19 @@ def publish_physical_evidence_reference(
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
-    return physical_evidence_reference(
-        target, logical_schema, relative_to=output_directory
-    )
+    document, byte_count, digest = _read_sealed_json(target.resolve())
+    logical_schema = document.get("schema")
+    if not isinstance(logical_schema, str) or not logical_schema:
+        raise ValidationError("physical evidence logical schema is invalid")
+    reference = {
+        "schema": PHYSICAL_EVIDENCE_REFERENCE_SCHEMA,
+        "logical_schema": logical_schema,
+        "path": str(relative_path),
+        "bytes": byte_count,
+        "sha256": digest,
+    }
+    _validate_reference(reference)
+    return document, reference
 
 
 def _validate_reference(value: Any) -> Mapping[str, Any]:
