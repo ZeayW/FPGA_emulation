@@ -1009,6 +1009,7 @@ class Phase4Test(unittest.TestCase):
                 output_dir=root / "phase4",
                 constraints_path=constraints_path,
                 timing_paths_path=timing_path,
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(executable),
             )
             self.assertEqual(report["status"], "pass")
@@ -1191,6 +1192,7 @@ class Phase4Test(unittest.TestCase):
                 platform_path=PLATFORM_PATH,
                 output_dir=root / "phase4",
                 frame_slots=1,
+                provider=NATIVE_ROUTER_PROVIDER,
                 router=str(tlr_router()),
             )
             self.assertEqual(report["status"], "pass")
@@ -1214,6 +1216,7 @@ class Phase4Test(unittest.TestCase):
                 platform_path=PLATFORM_PATH,
                 output_dir=root / "phase4-managed",
                 frame_slots=1,
+                provider=NATIVE_ROUTER_PROVIDER,
                 router=str(tlr_router()),
                 managed_storage=True,
             )

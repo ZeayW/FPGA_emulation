@@ -21,6 +21,7 @@ from emuflow.repart import (
     parse_repart_solution,
 )
 from emuflow.yosys import import_yosys_json
+from emuflow.timing_routing import NATIVE_ROUTER_PROVIDER
 from tests.native_build import tlr_router
 
 
@@ -295,6 +296,7 @@ class RePartTest(unittest.TestCase):
                 assignment_path=output / "phase3" / "assignment.json",
                 platform_path=PLATFORM_PATH,
                 output_dir=output / "phase4",
+                provider=NATIVE_ROUTER_PROVIDER,
                 router=str(tlr_router()),
             )
             phase5 = run_phase5(

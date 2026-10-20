@@ -37,9 +37,13 @@ from .mfspart_refine import (
 )
 from .routing import load_route_constraints
 from .tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
+from .author_routing import AUTHOR_COST_METHODS, AUTHOR_ROUTER_PROVIDER
+from .author_route_tdm import resolve_author_flow_policy
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
     NATIVE_TIMING_EVALUATED_PROVIDER,
+    ROUTE_TDM_PROVIDER,
+    TLR_PROVIDER,
 )
 CANONICAL_EXPERIMENT_CONFIG_SCHEMA = "emuflow.canonical-experiment-config/v1"
 
@@ -254,6 +258,8 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
     "route": (
         "src/emuflow/experiment_upstream.py::run_route_checkpoint,validate_route_checkpoint",
         "src/emuflow/phase4.py",
+        "src/emuflow/author_routing.py",
+        "src/emuflow/output_realizations.py",
         "src/emuflow/routing.py",
         "src/emuflow/combinational_cut.py",
         "src/emuflow/timing_routing.py",
@@ -262,6 +268,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/tdm_feedback.py",
         "src/emuflow/physical_route_feedback.py",
         "src/native/tlr_router.cpp",
+        "src/native/synergistic_author_router.cpp",
     ),
     "tdm": (
         "src/emuflow/experiment_upstream.py::run_tdm_checkpoint,validate_tdm_checkpoint",
@@ -590,10 +597,22 @@ def compile_canonical_experiment_spec(
         config.get("phase6_candidate_peak_gib", 12),
         "phase6_candidate_peak_gib",
     )
+    route_provider, author_cost_policy, author_order_policy = resolve_author_flow_policy(
+        config.get("route_provider"), config.get("author_cost_policy"), config.get("author_order_policy")
+    )
+    if not isinstance(route_provider, str) or route_provider not in {
+        AUTHOR_ROUTER_PROVIDER, GLOBAL_CANDIDATE_PROVIDER,
+        NATIVE_TIMING_EVALUATED_PROVIDER, TLR_PROVIDER, ROUTE_TDM_PROVIDER,
+    }:
+        raise ValidationError("canonical experiment route_provider must accept projected timing paths")
+    if route_provider == AUTHOR_ROUTER_PROVIDER and author_cost_policy not in AUTHOR_COST_METHODS:
+        raise ValidationError("canonical Phase 4 requires a single author cost policy")
     route_candidate_workers = _positive_integer(
-        config.get("route_candidate_workers", workers),
+        config.get("route_candidate_workers", 1),
         "route_candidate_workers",
     )
+    if route_provider == AUTHOR_ROUTER_PROVIDER and route_candidate_workers != 1:
+        raise ValidationError("the author routing provider requires route_candidate_workers=1")
     channel_width = _positive_integer(
         config.get("physical_route_channel_width", 300),
         "physical_route_channel_width",
@@ -1291,15 +1310,21 @@ def compile_canonical_experiment_spec(
         configuration={"clock_periods": periods},
         peak_gib=4, retained_gib=1,
     )
-    route_provider = GLOBAL_CANDIDATE_PROVIDER
     effective_candidate_workers = route_candidate_workers
+    route_command = [executable, "experiment-stage", "route-run", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers), "--router", str(tools["router"]), "--managed-storage", "--managed-dag-node", "--out", "{output_dir}"]
+    route_validator = [executable, "experiment-stage", "route-validate", "{artifact_root}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers), "--managed-dag-node"]
+    route_configuration = {"provider": route_provider, "candidate_workers": effective_candidate_workers, "route_constraints": contract["route_constraints"], "cut_mode": cut_mode}
+    if route_provider == AUTHOR_ROUTER_PROVIDER:
+        route_command.extend(("--author-cost-policy", author_cost_policy, "--author-order-policy", author_order_policy))
+        route_validator.extend(("--author-cost-policy", author_cost_policy, "--author-order-policy", author_order_policy))
+        route_configuration.update(author_cost_policy=author_cost_policy, author_order_policy=author_order_policy)
     node(
         "route", "route", ["partition", "cut-timing"],
-        [executable, "experiment-stage", "route-run", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers), "--router", str(tools["router"]), "--managed-storage", "--managed-dag-node", "--out", "{output_dir}"],
-        [executable, "experiment-stage", "route-validate", "{artifact_root}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers), "--managed-dag-node"],
+        route_command,
+        route_validator,
         [_artifact("routes.json", "consumer-checkpoint"), _artifact("phase4_report.json", "consumer-checkpoint"), _artifact("experiment-route-report.json", "evidence-critical")],
         inputs=("platform", "route_constraints", "tool.emuflow", "tool.router"),
-        configuration={"provider": route_provider, "candidate_workers": effective_candidate_workers, "route_constraints": contract["route_constraints"], "cut_mode": cut_mode},
+        configuration=route_configuration,
         peak_gib=12, retained_gib=3,
     )
     tdm_provider = TDM_TIMING_DAG_RATIO_PROVIDER

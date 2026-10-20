@@ -890,7 +890,9 @@ def _build_parser() -> argparse.ArgumentParser:
     route_run.add_argument("--constraints", type=Path)
     route_run.add_argument("--frame-slots", type=int)
     route_run.add_argument("--max-iterations", type=int)
-    route_run.add_argument("--provider")
+    route_run.add_argument("--provider", default=AUTHOR_ROUTER_PROVIDER)
+    route_run.add_argument("--author-cost-policy", choices=("author-pressure-v1", "author-sll-pressure-v1"))
+    route_run.add_argument("--author-order-policy", choices=AUTHOR_ORDER_POLICIES)
     route_run.add_argument("--candidate-workers", type=int, default=1)
     route_run.add_argument("--router")
     route_run.add_argument("--managed-storage", action="store_true")
@@ -905,6 +907,10 @@ def _build_parser() -> argparse.ArgumentParser:
     route_validate.add_argument("--platform", type=Path, required=True)
     route_validate.add_argument("--constraints", type=Path)
     route_validate.add_argument("--provider")
+    route_validate.add_argument(
+        "--author-cost-policy", choices=("author-pressure-v1", "author-sll-pressure-v1")
+    )
+    route_validate.add_argument("--author-order-policy", choices=AUTHOR_ORDER_POLICIES)
     route_validate.add_argument("--candidate-workers", type=int)
     route_validate.add_argument("--managed-dag-node", action="store_true")
 
@@ -1646,6 +1652,10 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2025_routing.add_argument("--out", type=Path, required=True)
     eda2025_routing.add_argument("--topology", type=Path)
     eda2025_routing.add_argument("--router")
+    eda2025_routing.add_argument(
+        "--route-provider", default=AUTHOR_ROUTER_PROVIDER,
+        help="Phase 4 provider for rerouting; legacy providers require explicit selection",
+    )
     eda2025_routing.add_argument("--topology-optimizer")
     eda2025_routing.add_argument("--max-rounds", type=int, default=4)
     eda2025_routing.add_argument(
@@ -2178,9 +2188,10 @@ def _build_parser() -> argparse.ArgumentParser:
             GLOBAL_CANDIDATE_PROVIDER,
             AUTHOR_ROUTER_PROVIDER,
         ),
+        default=AUTHOR_ROUTER_PROVIDER,
         help=(
-            f"explicit Phase 4 provider; timing-enabled flows default to "
-            f"{GLOBAL_CANDIDATE_PROVIDER}"
+            f"defaults to {AUTHOR_ROUTER_PROVIDER} with author-pressure-v1 "
+            "and hard-connections-v1; legacy providers require explicit selection"
         ),
     )
     multi_fpga_compile.add_argument(
@@ -2195,7 +2206,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--route-candidate-workers",
         type=int,
         default=1,
-        help="parallel deterministic candidate generators for global routing",
+        help="Author requires 1; parallel generators require the explicit global candidate provider",
     )
     multi_fpga_compile.add_argument("--frame-slots", type=int)
     multi_fpga_compile.add_argument(
@@ -3436,7 +3447,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--candidate-workers",
         type=int,
         default=1,
-        help="parallel global-candidate generators (default: 1)",
+        help="Author requires 1; parallel generators require the explicit global candidate provider",
     )
     phase4.add_argument(
         "--tdm-feedback",
@@ -3489,10 +3500,10 @@ def _build_parser() -> argparse.ArgumentParser:
             GLOBAL_CANDIDATE_PROVIDER,
             AUTHOR_ROUTER_PROVIDER,
         ],
-        default=None,
+        default=AUTHOR_ROUTER_PROVIDER,
         help=(
-            f"defaults to {GLOBAL_CANDIDATE_PROVIDER} when --timing-paths is "
-            f"supplied, otherwise {NATIVE_ROUTER_PROVIDER}"
+            f"defaults to {AUTHOR_ROUTER_PROVIDER} with author-pressure-v1 "
+            "and hard-connections-v1; legacy providers require explicit selection"
         ),
     )
     phase4.add_argument(
@@ -3506,7 +3517,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase4.add_argument(
         "--timing-paths",
         type=Path,
-        help="emuflow.sta-paths/v1 input required by the timing-aware provider",
+        help="optional for Author hard ordering; required by sta-incidence-v1 and timing-aware legacy providers",
     )
     phase4.add_argument(
         "--router",
@@ -3812,9 +3823,10 @@ def _build_parser() -> argparse.ArgumentParser:
             GLOBAL_CANDIDATE_PROVIDER,
             AUTHOR_ROUTER_PROVIDER,
         ),
+        default=AUTHOR_ROUTER_PROVIDER,
         help=(
-            f"defaults to {GLOBAL_CANDIDATE_PROVIDER}; the historical "
-            f"{ROUTE_TDM_PROVIDER} remains available for rollback"
+            f"defaults to {AUTHOR_ROUTER_PROVIDER} with author-pressure-v1 "
+            "and hard-connections-v1; legacy providers require explicit selection"
         ),
     )
     cross_stage_optimize.add_argument(
@@ -3829,7 +3841,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--route-candidate-workers",
         type=int,
         default=1,
-        help="parallel deterministic candidate generators for global routing",
+        help="Author requires 1; parallel generators require the explicit global candidate provider",
     )
     cross_stage_optimize.add_argument("--frame-slots", type=int)
     cross_stage_optimize.add_argument(
@@ -4451,6 +4463,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                     frame_slots=args.frame_slots,
                     max_iterations=args.max_iterations,
                     provider=args.provider,
+                    author_cost_policy=args.author_cost_policy,
+                    author_order_policy=args.author_order_policy,
                     candidate_workers=args.candidate_workers,
                     router=args.router,
                     managed_storage=args.managed_storage,
@@ -4464,6 +4478,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.root,
                 constraints_path=args.constraints,
                 expected_provider=args.provider,
+                expected_author_cost_policy=args.author_cost_policy,
+                expected_author_order_policy=args.author_order_policy,
                 expected_candidate_workers=args.candidate_workers,
                 managed_dag_node=args.managed_dag_node,
             )
@@ -5170,6 +5186,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 routes_path=args.routes,
                 output_dir=args.out,
                 router=args.router,
+                provider=args.route_provider,
                 topology_optimizer=args.topology_optimizer,
                 current_topology_path=args.topology,
                 enable_shortcut_portfolio=not args.capacity_only,

@@ -81,7 +81,13 @@ class AuthorFlowModesTest(unittest.TestCase):
             with self.subTest(mode=mode):
                 self._complete_compile(**mode, order_policy="sta-incidence-v1")
 
-    def _complete_compile(self, optimize_frames=False, cross_stage=False, order_policy=None):
+    def test_omitted_flow_policies_reach_frame_and_cross_stage(self):
+        for mode in ({"optimize_frames": True}, {"cross_stage": True}):
+            with self.subTest(mode=mode):
+                self._complete_compile(**mode, cost_policy=None, route_provider=None)
+
+    def _complete_compile(self, optimize_frames=False, cross_stage=False, order_policy=None,
+                          cost_policy="best-of-two-v1", route_provider=AUTHOR_ROUTER_PROVIDER):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             timing = root / "timing.json.gz"
@@ -99,7 +105,7 @@ class AuthorFlowModesTest(unittest.TestCase):
                 timing_paths=None if optimize_frames or cross_stage else timing,
                 clock_periods={"clk": 20.0} if optimize_frames or cross_stage else None,
                 opensta=str(ROOT / "tests/fixtures/fake_opensta_paths.py") if optimize_frames or cross_stage else None,
-                route_provider=AUTHOR_ROUTER_PROVIDER, author_cost_policy="best-of-two-v1",
+                route_provider=route_provider, author_cost_policy=cost_policy,
                 author_order_policy=order_policy,
                 router=author_router(), frame_slots=32, optimize_frame_slots=optimize_frames,
                 tdm_provider=TDM_TIMING_DAG_RATIO_PROVIDER if cross_stage else TDM_BASELINE_PROVIDER,
@@ -110,12 +116,21 @@ class AuthorFlowModesTest(unittest.TestCase):
                 cross_stage_feedback_optimizer=str(tdm_partition_feedback()) if cross_stage else None,
                 phase6_provider="baseline", equivalence_cycles=2, mapping_profile="vtr-hard-blocks",
             )
-            self.assertEqual(result["author_cost_policy"], "best-of-two-v1")
+            expected_cost = cost_policy or "author-pressure-v1"
+            self.assertEqual(result["author_cost_policy"], expected_cost)
             self.assertEqual(result["stages"]["system_route"]["provider"], AUTHOR_ROUTER_PROVIDER)
             if order_policy is not None:
                 self.assertEqual(result["author_order_policy"], order_policy)
                 routes = read_json(out / "system-route/routes.json")
                 self.assertEqual(routes["author_routing"]["order_policy"], order_policy)
+            if expected_cost != "best-of-two-v1":
+                self.assertEqual(result["author_order_policy"], "hard-connections-v1")
+                config = result["frame_search" if optimize_frames else "cross_stage"]["configuration"]
+                self.assertEqual(config["route_provider"], AUTHOR_ROUTER_PROVIDER)
+                self.assertEqual(config["author_cost_policy"], "author-pressure-v1")
+                self.assertEqual(config["author_order_policy"], "hard-connections-v1")
+                self.assertEqual(validate_multi_fpga_flow_bundle(out)["status"], "pass")
+                return
             if not optimize_frames and not cross_stage:
                 self.assertEqual(read_json(out / "author-route-tdm/selection.json")["status"], "pass")
             elif optimize_frames:
@@ -130,7 +145,10 @@ class AuthorFlowModesTest(unittest.TestCase):
             self.assertEqual(checked["equivalence_mismatches"], 0)
 
     def test_order_only_frame_configuration_validates(self):
-        from jsonschema import Draft202012Validator
+        try:
+            from jsonschema import Draft202012Validator
+        except ImportError:
+            self.skipTest("jsonschema unavailable")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             assignment, platform, timing, _ = self._inputs(root)
@@ -141,8 +159,8 @@ class AuthorFlowModesTest(unittest.TestCase):
                 tdm_provider=TDM_BASELINE_PROVIDER, simulation_frames=2,
             )
             self.assertEqual(report["configuration"]["author_order_policy"], "sta-incidence-v1")
-            self.assertNotIn("author_cost_policy", report["configuration"])
-            validator = Draft202012Validator(read_json(ROOT / "schemas/frame-search-v4.schema.json"))
+            self.assertEqual(report["configuration"]["author_cost_policy"], "author-pressure-v1")
+            validator = Draft202012Validator(read_json(ROOT / "schemas/frame-search-v5.schema.json"))
             validator.validate(report)
             del report["configuration"]["route_provider"]
             self.assertFalse(validator.is_valid(report))
@@ -166,7 +184,7 @@ class AuthorFlowModesTest(unittest.TestCase):
             except ImportError:
                 pass
             else:
-                schema = read_json(ROOT / "schemas/frame-search-v4.schema.json")
+                schema = read_json(ROOT / "schemas/frame-search-v5.schema.json")
                 Draft202012Validator(schema).validate(report)
             selected = root / "search" / report["selected_candidate"]
             pair = read_json(selected / "author-route-tdm/selection.json")

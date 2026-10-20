@@ -147,42 +147,38 @@ established after routing and TDM assignment, not by a Phase 3 timing proxy.
 
 ### Phase 4: system-level multicast routing
 
-EmuFlow's native C++ router connects each cross-FPGA net's source to its sinks
-on the BoardDB graph. It supports shortest-path and delay-demand-balanced tree
-construction, additional Steiner-style candidates, and iterative rerouting.
-Candidate costs account for delay, congestion, shared link capacity, and TDM
-pressure, with separate treatment of intra-device SLL and inter-FPGA links
-when the platform provides that distinction.
+Phase 4 defaults to `synergistic-author-route-v1`, adapted from the authors'
+**Synergistic Die-Level Router** ([DAC 2025](#selected-research-references)).
+It routes complete multicast trees on BoardDB with connection ordering and
+shared-tree maze search, preserving capacities, bank directions and hop bounds.
+Physical bank directions and SLL capacities are shared across transport rounds.
+Phase 5 retains responsibility for TDM assignment; FPGA internal routing remains
+part of physical implementation.
 
-The research basis includes Wang et al.'s **Synergistic Die-Level Router**
-(DAC 2025) and Chen et al.'s **Timing-Aware Optimization of Die-Level Routing
-and TDM Assignment** (ASP-DAC 2026); links are in the
-[reference list](#selected-research-references). The in-tree implementation
-extends these ideas with EmuFlow's route contracts and candidate selection.
-System routing selects FPGA/die paths; it does not route wires inside an FPGA.
+All producer APIs, CLI commands and canonical experiment configurations use
+`author-pressure-v1` with `hard-connections-v1` by default, with or without
+timing input. The provider requires one candidate worker and does not accept
+direct TDM or physical routing feedback. `--router` and canonical `tools.router`
+must select `emuflow_synergistic_author_router`; routing workers default to one
+independently of physical workers. The previous candidate router remains
+available explicitly through `--route-provider timing-aware-global-candidate-v1`
+in compilation or `--provider timing-aware-global-candidate-v1` in `phase4`, with
+its matching `emuflow_tlr_router` binary.
 
-The explicit `synergistic-author-route-v1` provider adapts the authors'
-connection ordering and shared-tree maze search to BoardDB delays, capacities,
-bank directions and hop constraints. It emits the common route contract and
-uses the existing Phase 5 for TDM assignment. Physical bank directions and
-SLL capacities are shared across transport rounds. Select it with
-`--route-provider synergistic-author-route-v1` in complete compilation or
-`--provider synergistic-author-route-v1` in `phase4`. The root build supplies
-`emuflow_synergistic_author_router`; `--router` selects an explicit binary.
-It currently requires one candidate worker and does not accept TDM feedback.
-By default, STA paths are evaluated after routing. The optional
+STA paths are evaluated after routing. The optional
 `--author-order-policy sta-incidence-v1` uses original timing-path incidence
 to break equal-hardness connection ties; it requires timing input and leaves
-maze costs and Phase 5 unchanged. The default provider remains unchanged.
-Complete physical/global timing validation has passed on PicoRV32; broader
-QoR qualification is pending.
+maze costs and Phase 5 unchanged. Complete physical/global validation has passed
+on PicoRV32; its 10ns target remains unmet and default target TNS is 0.83% worse
+than the previous router. Routing speed improvements do not guarantee timing gains.
 `--author-cost-policy author-sll-pressure-v1` enables experimental SLL scarcity
 pricing without changing evaluated platform delays. Complete compilation,
 frame search and cross-stage optimization also accept `best-of-two-v1`: both
 author policies run through the same Phase 5, then a complete validated
 route/schedule pair is selected by realized timing (completion slot when no
 timing input exists). Ties keep continuous pressure. The selection receipt is
-sealed with the flow artifacts; existing defaults remain unchanged.
+sealed with the flow artifacts. Frame-search v5 records actual providers and
+policies; older sealed reports remain independently readable.
 Externally supplied timing test paths are also retained in the flow bundle.
 
 ### Phase 5: TDM ratio, lane, and slot assignment
@@ -634,6 +630,8 @@ per-hop `30 + 0.5R` ns model; switching to differential does not recalibrate it.
 
 The root CMake project builds EmuFlow's native kernels and selected in-tree
 engines. Python packaging alone does not build a complete flow.
+`EMUFLOW_BUILD_SYNERGISTIC_AUTHOR_ROUTER` defaults to `ON` independently of
+`EMUFLOW_BUILD_TLR_ROUTER`, so the default router can be built without the legacy one.
 
 Required tools include CMake 3.20+, GNU Make, a C++17 compiler, Python 3.9+,
 and Boost. The complete build also needs the development dependencies for

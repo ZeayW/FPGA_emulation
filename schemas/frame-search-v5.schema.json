@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/frame-search-v5.schema.json",
+  "title": "EmuFlow checked minimum-frame search with explicit routing policies",
+  "type": "object",
+  "required": [
+    "schema", "status", "provider", "objective", "maximum_frame_slots",
+    "selected_frame_slots", "speedup_over_maximum", "evaluated_candidates",
+    "configuration", "attempts", "selected_candidate"
+  ],
+  "properties": {
+    "schema": {"const": "emuflow.frame-search/v5"},
+    "status": {"const": "pass"},
+    "provider": {"const": "checked-monotone-bisection-v1"},
+    "objective": {"const": "minimum-feasible-frame-slots"},
+    "maximum_frame_slots": {"type": "integer", "minimum": 2},
+    "selected_frame_slots": {"type": "integer", "minimum": 2},
+    "speedup_over_maximum": {"type": "number", "minimum": 1},
+    "evaluated_candidates": {"type": "integer", "minimum": 1},
+    "configuration": {
+      "type": "object",
+      "required": [
+        "ratio_max_iterations", "max_ratio", "ratio_quantum",
+        "post_refinement_iterations", "slot_refinement_iterations",
+        "tdm_provider", "ratio_convergence", "simulation_frames", "route_provider"
+      ],
+      "properties": {
+        "ratio_max_iterations": {"type": "integer", "minimum": 1},
+        "max_ratio": {"type": ["integer", "null"], "minimum": 1},
+        "ratio_quantum": {"type": "integer", "minimum": 1},
+        "post_refinement_iterations": {"type": "integer", "minimum": 0},
+        "slot_refinement_iterations": {"type": "integer", "minimum": 0},
+        "tdm_provider": {"type": "string", "minLength": 1},
+        "route_provider": {"enum": ["synergistic-author-route-v1", "native-load-balanced-v1", "native-load-balanced-timing-evaluated-v1", "timing-aware-load-balanced-v1", "timing-aware-route-tdm-cooptimized-v1", "timing-aware-global-candidate-v1"]},
+        "author_cost_policy": {"enum": ["author-pressure-v1", "author-sll-pressure-v1", "best-of-two-v1"]},
+        "author_order_policy": {"enum": ["hard-connections-v1", "sta-incidence-v1"]},
+        "ratio_convergence": {"type": "number", "exclusiveMinimum": 0},
+        "simulation_frames": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false,
+      "dependentRequired": {
+        "author_cost_policy": ["route_provider"],
+        "author_order_policy": ["route_provider"]
+      },
+      "allOf": [{
+        "if": {"properties": {"route_provider": {"const": "synergistic-author-route-v1"}}},
+        "then": {"required": ["author_cost_policy", "author_order_policy"]},
+        "else": {"not": {"anyOf": [
+          {"required": ["author_cost_policy"]}, {"required": ["author_order_policy"]}
+        ]}}
+      }]
+    },
+    "attempts": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+    "selected_candidate": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": false
+}

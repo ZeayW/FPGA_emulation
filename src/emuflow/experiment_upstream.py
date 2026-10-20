@@ -820,6 +820,8 @@ def run_route_checkpoint(
     frame_slots: Optional[int] = None,
     max_iterations: Optional[int] = None,
     provider: Optional[str] = None,
+    author_cost_policy: Optional[str] = None,
+    author_order_policy: Optional[str] = None,
     candidate_workers: int = 1,
     router: Optional[str] = None,
     managed_storage: bool = False,
@@ -836,6 +838,8 @@ def run_route_checkpoint(
         frame_slots=frame_slots,
         max_iterations=max_iterations,
         provider=provider,
+        author_cost_policy=author_cost_policy,
+        author_order_policy=author_order_policy,
         timing_paths_path=timing_paths,
         router=router,
         candidate_workers=candidate_workers,
@@ -878,6 +882,8 @@ def validate_route_checkpoint(
     constraints_path: Path | None = None,
     expected_provider: str | None = None,
     expected_candidate_workers: int | None = None,
+    expected_author_cost_policy: str | None = None,
+    expected_author_order_policy: str | None = None,
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     assignment = _require(partition_root, "assignment.json")
@@ -933,7 +939,11 @@ def validate_route_checkpoint(
             expected_constraints
         ) or read_json(routes).get("constraints") != expected_constraints:
             raise ValidationError("route checkpoint constraints contract disagrees")
-    return {"status": "pass", **validate_phase4(assignment, platform_path, routes, timing_paths_path=timing_paths)}
+    return {"status": "pass", **validate_phase4(
+        assignment, platform_path, routes, timing_paths_path=timing_paths,
+        expected_author_cost_policy=expected_author_cost_policy,
+        expected_author_order_policy=expected_author_order_policy,
+    )}
 
 
 def run_tdm_checkpoint(

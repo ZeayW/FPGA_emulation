@@ -202,6 +202,9 @@ class AuthorRouteTdmTest(unittest.TestCase):
                                   ("native-load-balanced-v1", "author-pressure-v1")):
             with self.subTest(provider=provider, policy=policy), self.assertRaises(ValidationError):
                 coordinator.validate_author_flow_policy(provider, policy)
+        coordinator.resolve_author_flow_policy(None, "best-of-two-v1")
+        self.assertEqual(coordinator.resolve_author_flow_policy(None, None),
+                         (AUTHOR_ROUTER_PROVIDER, "author-pressure-v1", "hard-connections-v1"))
         coordinator.validate_author_flow_policy(None, None)
         coordinator.validate_author_flow_policy(AUTHOR_ROUTER_PROVIDER, "best-of-two-v1")
         for options in ({"provider": "native-load-balanced-v1"}, {"author_cost_policy": "author-pressure-v1"}):

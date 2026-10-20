@@ -8,10 +8,15 @@ from typing import Any, Dict, Optional
 
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
-from .author_route_tdm import run_author_route_tdm, validate_author_flow_policy
+from .author_route_tdm import run_author_route_tdm, validate_author_flow_policy, resolve_author_flow_policy
+from .author_routing import AUTHOR_ROUTER_PROVIDER
 from .phase4 import run_phase4
 from .phase5 import run_phase5
 from .platform import Platform
+from .timing_routing import (
+    GLOBAL_CANDIDATE_PROVIDER, NATIVE_ROUTER_PROVIDER, NATIVE_TIMING_EVALUATED_PROVIDER,
+    ROUTE_TDM_PROVIDER, TLR_PROVIDER,
+)
 from .runtime import (
     build_virtual_runtime,
     estimate_runtime_timing,
@@ -19,11 +24,11 @@ from .runtime import (
 )
 
 
-FRAME_SEARCH_SCHEMA = "emuflow.frame-search/v4"
+FRAME_SEARCH_SCHEMA = "emuflow.frame-search/v5"
 
 
 def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
-    if report.get("schema") != FRAME_SEARCH_SCHEMA:
+    if report.get("schema") not in {FRAME_SEARCH_SCHEMA, "emuflow.frame-search/v4"}:
         raise ValidationError("frame-search schema is invalid")
     if report.get("status") != "pass":
         raise ValidationError("frame-search report did not pass")
@@ -120,6 +125,18 @@ def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
     }
     author_options = {key for key in ("author_cost_policy", "author_order_policy") if key in configuration}
     author_keys = author_options | {"route_provider"} if author_options else set()
+    if report["schema"] == FRAME_SEARCH_SCHEMA:
+        author_keys |= {"route_provider"}
+        if (not isinstance(configuration.get("route_provider"), str)
+                or configuration["route_provider"] not in {
+                AUTHOR_ROUTER_PROVIDER, NATIVE_ROUTER_PROVIDER, NATIVE_TIMING_EVALUATED_PROVIDER,
+                TLR_PROVIDER, ROUTE_TDM_PROVIDER, GLOBAL_CANDIDATE_PROVIDER,
+            }
+                or not isinstance(configuration.get("tdm_provider"), str)
+                or not configuration["tdm_provider"]):
+            raise ValidationError("frame-search actual providers are missing")
+        if configuration["route_provider"] == AUTHOR_ROUTER_PROVIDER and author_options != {"author_cost_policy", "author_order_policy"}:
+            raise ValidationError("frame-search actual author policies are missing")
     if set(configuration) != expected_configuration_keys | author_keys:
         raise ValidationError("frame-search configuration is incomplete")
     if author_keys:
@@ -190,7 +207,7 @@ def run_frame_length_search(
     route_constraints: Optional[Path] = None,
     route_max_iterations: Optional[int] = None,
     router: Optional[str] = None,
-    route_provider: Optional[str] = None,
+    route_provider: Optional[str] = AUTHOR_ROUTER_PROVIDER,
     author_cost_policy: Optional[str] = None,
     author_order_policy: Optional[str] = None,
     candidate_workers: int = 1,
@@ -212,7 +229,11 @@ def run_frame_length_search(
     link bit-slots and ratio choices. Every accepted point is nevertheless
     rebuilt and checked by the real Phase 4 and Phase 5 providers.
     """
-    validate_author_flow_policy(route_provider, author_cost_policy, author_order_policy)
+    route_provider, author_cost_policy, author_order_policy = resolve_author_flow_policy(
+        route_provider, author_cost_policy, author_order_policy,
+    )
+    if route_provider == AUTHOR_ROUTER_PROVIDER and (isinstance(candidate_workers, bool) or candidate_workers != 1):
+        raise EmuFlowError("author routing requires --route-candidate-workers 1")
     if (
         isinstance(max_frame_slots, bool)
         or not isinstance(max_frame_slots, int)
@@ -334,6 +355,7 @@ def run_frame_length_search(
     shutil.copytree(selected_root / "system-route", route_output_dir)
     shutil.copytree(selected_root / "tdm", tdm_output_dir)
     selected_routes = read_json(route_output_dir / "routes.json")
+    selected_phase5 = read_json(tdm_output_dir / "phase5_report.json")
     resolved_ratio_quantum = (
         ratio_quantum
         if ratio_quantum is not None
@@ -354,9 +376,8 @@ def run_frame_length_search(
             "ratio_quantum": resolved_ratio_quantum,
             "post_refinement_iterations": post_refinement_iterations,
             "slot_refinement_iterations": slot_refinement_iterations,
-            "tdm_provider": tdm_provider,
-            **({"route_provider": route_provider}
-               if author_cost_policy is not None or author_order_policy is not None else {}),
+            "tdm_provider": selected_phase5["provider"],
+            "route_provider": selected_routes["provider"],
             **({"author_cost_policy": author_cost_policy} if author_cost_policy is not None else {}),
             **({"author_order_policy": author_order_policy} if author_order_policy is not None else {}),
             "ratio_convergence": ratio_convergence,

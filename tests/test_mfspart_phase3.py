@@ -29,6 +29,7 @@ from emuflow.phase3 import run_phase3
 from emuflow.platform import Platform
 from emuflow.routing import load_route_constraints
 from emuflow.yosys import import_yosys_json
+from emuflow.timing_routing import NATIVE_TIMING_EVALUATED_PROVIDER
 from tests.native_build import tlr_router
 from tests.test_combinational_cut import _chain_ir
 
@@ -595,6 +596,7 @@ class MFSPartPhase3Test(unittest.TestCase):
                     timing_driven=False,
                     clock_periods={"clk": 10.0},
                     opensta=str(FAKE_OPENSTA),
+                    route_provider=NATIVE_TIMING_EVALUATED_PROVIDER,
                     router=str(tlr_router()),
                     frame_slots=32,
                     equivalence_cycles=2,

@@ -1113,6 +1113,7 @@ def _optimize_eda2025_routing_round(
     topology_optimizer: Optional[str] = None,
     current_topology_path: Optional[Path] = None,
     enable_shortcut_portfolio: bool = True,
+    provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Evaluate topology neighborhoods with real Phase 4 rerouting closure."""
     from .phase4 import run_phase4
@@ -1174,6 +1175,7 @@ def _optimize_eda2025_routing_round(
             output_dir=routed,
             constraints_path=normalized / "route_constraints.json",
             timing_paths_path=normalized / "contest_timing_paths.json",
+            provider=provider,
             router=router,
         )
         evaluation = evaluate_eda2025_routes(
@@ -1260,6 +1262,7 @@ def optimize_eda2025_routing(
     current_topology_path: Optional[Path] = None,
     enable_shortcut_portfolio: bool = True,
     max_rounds: int = 4,
+    provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run rerouting-closed topology rounds to convergence or budget."""
     if (
@@ -1291,6 +1294,7 @@ def optimize_eda2025_routing(
             routes_path=active_routes,
             output_dir=round_root,
             router=router,
+            provider=provider,
             topology_optimizer=topology_optimizer,
             current_topology_path=active_topology,
             enable_shortcut_portfolio=enable_shortcut_portfolio,

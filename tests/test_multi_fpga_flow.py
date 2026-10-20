@@ -7,6 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import call, patch
 
+from emuflow.author_routing import AUTHOR_ROUTER_PROVIDER
+from tests.test_author_routing import author_router
+
 from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.cli import _build_parser, _dispatch
 from emuflow.errors import EmuFlowError, ValidationError
@@ -243,7 +246,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 timing_driven=True,
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
-                router=str(tlr_router()),
+                router=str(author_router()),
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 slot_optimizer=str(tdm_slot_optimizer()),
@@ -260,9 +263,9 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 report["stages"]["partition"]["validation"]["cut_nets"],
                 0,
             )
-            self.assertEqual(routes["provider"], NATIVE_ROUTER_PROVIDER)
+            self.assertEqual(routes["provider"], AUTHOR_ROUTER_PROVIDER)
             self.assertEqual(routes["routes"], [])
-            self.assertEqual(routes["metrics"]["estimated_max_tdm_ratio"], 0)
+            self.assertEqual(routes["metrics"]["tree_edges"], 0)
             self.assertEqual(schedule["provider"], TDM_BASELINE_PROVIDER)
             self.assertEqual(schedule["entries"], [])
             self.assertEqual(
@@ -315,6 +318,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
+                route_provider=NATIVE_TIMING_EVALUATED_PROVIDER,
                 frame_slots=32,
                 equivalence_cycles=2,
                 cut_mode="static-exact-combinational",
@@ -386,6 +390,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
+                route_provider=GLOBAL_CANDIDATE_PROVIDER,
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 slot_optimizer=str(tdm_slot_optimizer()),
@@ -849,6 +854,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     opensta=str(FAKE_OPENSTA),
                     global_sta_executable=str(fake_sta),
                     router=str(tlr_router()),
+                    route_provider=NATIVE_TIMING_EVALUATED_PROVIDER,
                     frame_slots=32,
                     phase6_provider="baseline",
                     physical=True,
@@ -897,6 +903,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                         clock_periods={"clk": 10.0},
                         opensta=str(FAKE_OPENSTA),
                         router=str(tlr_router()),
+                        route_provider=NATIVE_TIMING_EVALUATED_PROVIDER,
                         frame_slots=32,
                         physical=True,
                         mapping_profile="vtr-hard-blocks",
@@ -997,6 +1004,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     clock_periods={"clk": 10.0},
                     opensta=str(legacy_sta),
                     router=str(tlr_router()),
+                    route_provider=NATIVE_TIMING_EVALUATED_PROVIDER,
                     frame_slots=32,
                 )
             self.assertFalse(root.exists())
@@ -1016,6 +1024,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
+                route_provider=NATIVE_TIMING_EVALUATED_PROVIDER,
                 frame_slots=32,
                 equivalence_cycles=2,
                 mapping_profile="vtr-hard-blocks",
@@ -1168,6 +1177,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
+                route_provider=NATIVE_TIMING_EVALUATED_PROVIDER,
                 frame_slots=16,
                 equivalence_cycles=8,
                 mapping_profile="vtr-hard-blocks",
@@ -1266,6 +1276,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
+                route_provider=NATIVE_TIMING_EVALUATED_PROVIDER,
                 frame_slots=32,
                 equivalence_cycles=2,
                 mapping_profile="vtr-hard-blocks",
@@ -1351,6 +1362,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
+                route_provider=GLOBAL_CANDIDATE_PROVIDER,
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 slot_optimizer=str(tdm_slot_optimizer()),
@@ -1532,6 +1544,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
                 router=str(tlr_router()),
+                route_provider=GLOBAL_CANDIDATE_PROVIDER,
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
                 slot_optimizer=str(tdm_slot_optimizer()),
@@ -1650,6 +1663,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     clock_periods={"clk": 10.0},
                     opensta=str(FAKE_OPENSTA),
                     router=str(tlr_router()),
+                    route_provider=NATIVE_TIMING_EVALUATED_PROVIDER,
                     frame_slots=32,
                     equivalence_cycles=2,
                     serial_bsp_phy_provider=Path("provider.json"),

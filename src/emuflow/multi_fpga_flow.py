@@ -47,7 +47,8 @@ from .phase3 import (
     validate_phase3,
     validate_phase3_indexed,
 )
-from .author_route_tdm import run_author_route_tdm, validate_author_flow_policy
+from .author_route_tdm import run_author_route_tdm, resolve_author_flow_policy, validate_author_flow_policy
+from .author_routing import AUTHOR_ORDER_POLICY, AUTHOR_ROUTER_PROVIDER
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
@@ -175,6 +176,7 @@ _STAGE_SUMMARY_FIELDS = {
         "qualification",
         "cut_mode",
         "candidate_generation",
+        "author_routing",
         "validation",
     ),
     "tdm": (
@@ -632,6 +634,27 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _validate_flow_author_policy(report, route_stage, *, require_metadata=False):
+    if "author_cost_policy" not in report and "author_order_policy" not in report:
+        return
+    cost = report.get("author_cost_policy")
+    order = report.get("author_order_policy")
+    validate_author_flow_policy(route_stage.get("provider"), cost, order)
+    actual = route_stage.get("author_routing")
+    if actual is None:
+        # Older bounded summaries omitted this metadata. The bundle replay
+        # checks the original Phase 4 report instead of inventing old defaults.
+        if require_metadata:
+            raise ValidationError("flow author routing metadata is missing")
+        return
+    if not isinstance(actual, dict):
+        raise ValidationError("flow author routing metadata is invalid")
+    if cost is not None and cost != "best-of-two-v1" and actual.get("cost_policy") != cost:
+        raise ValidationError("flow author cost policy disagrees with Phase 4")
+    if order is not None and actual.get("order_policy", AUTHOR_ORDER_POLICY) != order:
+        raise ValidationError("flow author order policy disagrees with Phase 4")
+
+
 def validate_multi_fpga_flow_report(
     report: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -669,6 +692,9 @@ def validate_multi_fpga_flow_report(
     tdm_validation = stages["tdm"].get("validation", {})
     split_validation = stages["split"].get("validation", {})
     equivalence = stages["split"].get("equivalence", {})
+    _validate_flow_author_policy(report, stages["system_route"])
+    if report.get("author_cost_policy") == "best-of-two-v1" and "author_route_tdm_selection" not in report.get("artifacts", {}):
+        raise ValidationError("flow author selection receipt is missing")
     timing = report.get("timing")
     timing_optimization = None
     if timing is not None:
@@ -688,6 +714,11 @@ def validate_multi_fpga_flow_report(
                 "timing-driven report is missing partition weights"
             )
         if not timing_optimization:
+            has_cuts = partition_validation.get("cut_nets", 0) > 0
+            allowed_routes = {AUTHOR_ROUTER_PROVIDER, NATIVE_TIMING_EVALUATED_PROVIDER}
+            if not has_cuts:
+                allowed_routes.add(NATIVE_ROUTER_PROVIDER)
+            tdm_timing = stages["tdm"].get("timing_validation")
             expected_tdm_provider = (
                 TDM_EXACT_DEPENDENCY_PROVIDER
                 if partition_validation.get("cut_mode")
@@ -696,13 +727,11 @@ def validate_multi_fpga_flow_report(
             )
             if (
                 stages["system_route"].get("provider")
-                != NATIVE_TIMING_EVALUATED_PROVIDER
+                not in allowed_routes
                 or stages["tdm"].get("provider")
                 != expected_tdm_provider
-                or stages["tdm"].get("timing_validation", {}).get(
-                    "status"
-                )
-                != "pass"
+                or (has_cuts and not isinstance(tdm_timing, dict))
+                or (tdm_timing is not None and (not isinstance(tdm_timing, dict) or tdm_timing.get("status") != "pass"))
                 or "partition_weights" in timing
                 or timing.get("partition_weights_applied") is not False
             ):
@@ -1028,7 +1057,12 @@ def validate_multi_fpga_flow_bundle(
         live = read_json(
             _checked_flow_member(flow_root, Path(relative), f"{stage} report")
         )
-        if _stage_summary(stage, live) != report["stages"][stage]:
+        live_summary = _stage_summary(stage, live)
+        if stage == "system_route":
+            _validate_flow_author_policy(report, live, require_metadata=True)
+            if "author_routing" not in report["stages"][stage]:
+                live_summary.pop("author_routing", None)
+        if live_summary != report["stages"][stage]:
             raise ValidationError(
                 f"multi-FPGA live {stage} report disagrees with the flow report"
             )
@@ -1053,14 +1087,19 @@ def validate_multi_fpga_flow_bundle(
                 "than required"
             )
 
-    route_provider = report["stages"]["system_route"].get("provider")
+    # Timing-annotated validation has a reconstructed worst slack. This
+    # bounded stage summary avoids loading the routes solely to inspect a flag;
+    # Phase 4 independently reconstructs and compares the actual payload below.
+    route_has_timing = "worst_slack_ns" in report["stages"]["system_route"]["validation"]
+    timing_artifact = report.get("artifacts", {}).get("cut_timing_paths")
     timing_paths_path = (
         _checked_flow_member(
             flow_root,
-            Path("timing/cut-timing-paths.json"),
+            Path(timing_artifact["path"] if timing_artifact is not None
+                 else "timing/cut-timing-paths.json"),
             "projected timing paths",
         )
-        if route_provider != NATIVE_ROUTER_PROVIDER
+        if route_has_timing
         else None
     )
     phase4_validation = validate_phase4(
@@ -1299,7 +1338,7 @@ def run_multi_fpga_flow(
     transport_cost_db: Optional[Path] = None,
     timing_paths: Optional[Path] = None,
     router: Optional[str] = None,
-    route_provider: Optional[str] = None,
+    route_provider: Optional[str] = AUTHOR_ROUTER_PROVIDER,
     author_cost_policy: Optional[str] = None,
     author_order_policy: Optional[str] = None,
     route_candidate_workers: int = 1,
@@ -1368,7 +1407,11 @@ def run_multi_fpga_flow(
 ) -> Dict[str, Any]:
     """Compile RTL/EmuIR, using the bundled research BoardDB when omitted."""
 
-    validate_author_flow_policy(route_provider, author_cost_policy, author_order_policy)
+    route_provider, author_cost_policy, author_order_policy = resolve_author_flow_policy(
+        route_provider, author_cost_policy, author_order_policy,
+    )
+    if route_provider == AUTHOR_ROUTER_PROVIDER and (isinstance(route_candidate_workers, bool) or route_candidate_workers != 1):
+        raise EmuFlowError("author routing requires --route-candidate-workers 1")
     if output_dir is None:
         raise EmuFlowError("multi-FPGA compilation requires an output directory")
 
@@ -1450,6 +1493,17 @@ def run_multi_fpga_flow(
             mapping_profile, architecture_timing_db
         )
     internal_timing_database = timing_paths is None
+    if internal_timing_database and not timing_driven and (
+        author_order_policy == "sta-incidence-v1" or author_cost_policy == "best-of-two-v1"
+    ):
+        raise EmuFlowError(
+            "--no-timing-driven cannot use STA incidence or timing-based author pair selection"
+        )
+    if timing_paths is not None and route_provider == NATIVE_ROUTER_PROVIDER:
+        raise EmuFlowError(
+            f"{NATIVE_ROUTER_PROVIDER} does not consume timing paths; use "
+            f"{NATIVE_TIMING_EVALUATED_PROVIDER} for timing annotation"
+        )
     if partition_provider == "patron" and not internal_timing_database:
         raise EmuFlowError(
             "--partition-provider patron requires the internally generated "
@@ -2073,14 +2127,20 @@ def run_multi_fpga_flow(
             )
         )
     if internal_timing_database and not timing_driven:
+        if has_inter_fpga_cuts and route_provider == NATIVE_ROUTER_PROVIDER:
+            raise EmuFlowError(
+                "--no-timing-driven still requires complete Phase 5 timing "
+                f"for inter-FPGA cuts; explicitly select {NATIVE_TIMING_EVALUATED_PROVIDER} "
+                f"instead of {NATIVE_ROUTER_PROVIDER}"
+            )
         if route_provider not in {
-            None,
+            AUTHOR_ROUTER_PROVIDER,
             NATIVE_ROUTER_PROVIDER,
             NATIVE_TIMING_EVALUATED_PROVIDER,
         }:
             raise EmuFlowError(
-                "--no-timing-driven requires the timing-oblivious Phase 4 "
-                "baseline; remove --route-provider"
+                "--no-timing-driven requires the author router or an explicit "
+                "timing-oblivious Phase 4 provider"
             )
         no_timing_tdm_provider = (
             TDM_EXACT_DEPENDENCY_PROVIDER
@@ -2097,13 +2157,11 @@ def run_multi_fpga_flow(
             raise EmuFlowError(
                 "--no-timing-driven requires --route-candidate-workers 1"
             )
-        effective_route_provider = NATIVE_TIMING_EVALUATED_PROVIDER
         effective_tdm_provider = no_timing_tdm_provider
     if not has_inter_fpga_cuts:
         # Timing-aware interconnect optimization is vacuous for a packed
         # single-FPGA solution.  Keep Phase 4/5 artifacts explicit and
         # independently replayable with the ordinary zero-demand providers.
-        effective_route_provider = NATIVE_ROUTER_PROVIDER
         effective_tdm_provider = (
             TDM_EXACT_DEPENDENCY_PROVIDER
             if exact_cut_mode
@@ -2278,7 +2336,7 @@ def run_multi_fpga_flow(
             constraints_path=effective_route_constraints,
             frame_slots=frame_slots,
             max_iterations=route_max_iterations,
-            timing_paths_path=projected_timing_paths,
+            timing_paths_path=(None if effective_route_provider == NATIVE_ROUTER_PROVIDER else projected_timing_paths),
             router=router,
             provider=effective_route_provider,
             candidate_workers=(route_candidate_workers if has_inter_fpga_cuts else 1),
@@ -2296,16 +2354,16 @@ def run_multi_fpga_flow(
             slot_refinement_iterations=slot_refinement_iterations,
             convergence=ratio_convergence,
         )
-        if has_inter_fpga_cuts and author_order_policy is not None:
+        if author_order_policy is not None:
             route_options["author_order_policy"] = author_order_policy
-        if has_inter_fpga_cuts and author_cost_policy == "best-of-two-v1":
+        if author_cost_policy == "best-of-two-v1":
             paired = measured("author-route-tdm", run_author_route_tdm,
                 assignment_path, platform_path, phase4_root, phase5_root,
                 route_options=route_options, tdm_options=tdm_options,
             )
             phase4_report, phase5_report = paired["phase4"], paired["phase5"]
         else:
-            if has_inter_fpga_cuts and author_cost_policy is not None:
+            if author_cost_policy is not None:
                 route_options["author_cost_policy"] = author_cost_policy
             phase4_report = measured("phase4", run_phase4,
                 assignment_path, platform_path, phase4_root, **route_options,
@@ -2317,7 +2375,7 @@ def run_multi_fpga_flow(
     routes_path = phase4_root / "routes.json"
     schedule_path = phase5_root / "schedule.json"
     author_selection_path = None
-    if has_inter_fpga_cuts and author_cost_policy == "best-of-two-v1":
+    if author_cost_policy == "best-of-two-v1":
         selection_root = output_dir
         if cross_stage_report is not None:
             selection_root = (cross_stage_root / selected["routes"]).parent.parent

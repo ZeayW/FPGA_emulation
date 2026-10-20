@@ -163,6 +163,7 @@ class Iccad2019ContestAdapterTest(unittest.TestCase):
                 output_dir=routed,
                 constraints_path=normalized / "route_constraints.json",
                 timing_paths_path=normalized / "contest_timing_paths.json",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(tlr_router()),
             )
             self.assertEqual(phase4["status"], "pass")

@@ -47,7 +47,7 @@ class AuthorRoutingTest(unittest.TestCase):
         from emuflow.cli import _build_parser
         parser = _build_parser()
         args = ["phase4", "--assignment", "a.json", "--platform", "b.json", "--out", "out"]
-        self.assertIsNone(parser.parse_args(args).provider)
+        self.assertEqual(parser.parse_args(args).provider, AUTHOR_ROUTER_PROVIDER)
         self.assertEqual(parser.parse_args(args + ["--provider", AUTHOR_ROUTER_PROVIDER]).provider, AUTHOR_ROUTER_PROVIDER)
 
     def _inputs(self, cuts=None, links=None, raw_constraints=None):

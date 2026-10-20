@@ -29,6 +29,7 @@ from emuflow.phase1 import run_phase1
 from emuflow.phase3 import run_phase3
 from emuflow.phase4 import run_phase4
 from emuflow.phase5 import run_phase5
+from emuflow.timing_routing import NATIVE_ROUTER_PROVIDER
 from tests.native_build import tlr_router
 
 
@@ -93,6 +94,7 @@ class AcademicChimewTest(unittest.TestCase):
             PLATFORM,
             phase4,
             frame_slots=32,
+            provider=NATIVE_ROUTER_PROVIDER,
             router=str(tlr_router()),
         )
         run_phase5(phase4 / "routes.json", PLATFORM, phase5)

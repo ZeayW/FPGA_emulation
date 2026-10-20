@@ -31,6 +31,11 @@ option(
   ON
 )
 option(
+  EMUFLOW_BUILD_SYNERGISTIC_AUTHOR_ROUTER
+  "Build the in-tree author-derived system router"
+  ON
+)
+option(
   EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER
   "Build the in-tree Lagrangian/KKT TDM ratio optimizer"
   ON
@@ -554,6 +559,14 @@ if(EMUFLOW_BUILD_TLR_ROUTER)
   target_compile_features(emuflow_tlr_router PRIVATE cxx_std_17)
   target_compile_options(emuflow_tlr_router PRIVATE -O3)
   target_link_libraries(emuflow_tlr_router PRIVATE Threads::Threads)
+  set_target_properties(
+    emuflow_tlr_router
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_SYNERGISTIC_AUTHOR_ROUTER)
   add_executable(
     emuflow_synergistic_author_router
     "${CMAKE_SOURCE_DIR}/src/native/synergistic_author_router.cpp"
@@ -562,11 +575,6 @@ if(EMUFLOW_BUILD_TLR_ROUTER)
   target_compile_options(emuflow_synergistic_author_router PRIVATE -O3)
   set_target_properties(
     emuflow_synergistic_author_router
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  set_target_properties(
-    emuflow_tlr_router
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -1285,6 +1293,8 @@ if(BUILD_TESTING)
       NAME emuflow_tlr_router_cli
       COMMAND "$<TARGET_FILE:emuflow_tlr_router>" --help
     )
+  endif()
+  if(EMUFLOW_BUILD_SYNERGISTIC_AUTHOR_ROUTER)
     add_test(
       NAME emuflow_synergistic_author_router_cli
       COMMAND "$<TARGET_FILE:emuflow_synergistic_author_router>" --help

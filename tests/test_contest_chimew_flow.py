@@ -48,6 +48,7 @@ from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.phase7c import run_phase7c
 from emuflow.platform import Platform
 from emuflow.yosys import import_yosys_json
+from emuflow.timing_routing import NATIVE_ROUTER_PROVIDER
 from tests.native_build import tlr_router
 
 
@@ -466,6 +467,7 @@ class ContestChimewCrossFlowTest(unittest.TestCase):
                 phase3_root / "assignment.json",
                 platform_path,
                 phase4_root,
+                provider=NATIVE_ROUTER_PROVIDER,
                 router=str(tlr_router()),
             )
             phase5 = run_phase5(

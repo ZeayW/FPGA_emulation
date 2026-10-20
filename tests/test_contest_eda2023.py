@@ -13,6 +13,7 @@ from emuflow.contest_eda2023 import (
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.phase4 import run_phase4
+from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from tests.native_build import (
     tdm_ratio_optimizer,
     tdm_timing_dag_optimizer,
@@ -97,6 +98,7 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
                 output_dir=routed,
                 constraints_path=normalized / "route_constraints.json",
                 timing_paths_path=normalized / "contest_timing_paths.json",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(tlr_router()),
             )
             self.assertEqual(route_report["status"], "pass")
@@ -231,6 +233,7 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
                 output_dir=routed,
                 constraints_path=normalized / "route_constraints.json",
                 timing_paths_path=normalized / "contest_timing_paths.json",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(tlr_router()),
             )
             solution = root / "solution"

@@ -12,6 +12,7 @@ from emuflow.platform import Platform
 from emuflow.vtr_architecture import run_vtr_architecture_import
 from emuflow.vtr_netlist import normalize_vtr_hard_block_json
 from emuflow.yosys import import_yosys_json
+from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from tests.native_build import (
     tdm_ratio_optimizer,
     tdm_slot_optimizer,
@@ -321,6 +322,7 @@ class VtrNetlistTest(unittest.TestCase):
                 opensta=str(FAKE_OPENSTA),
                 architecture_timing_db=timing_db,
                 min_used_fpgas=2,
+                route_provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(tlr_router()),
                 ratio_optimizer=str(tdm_ratio_optimizer()),
                 slot_optimizer=str(tdm_slot_optimizer()),

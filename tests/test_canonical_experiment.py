@@ -15,6 +15,7 @@ from emuflow.errors import ValidationError
 from emuflow.experiment_identity import build_implementation_closure
 from emuflow.io import write_json
 from emuflow.tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
+from emuflow.author_routing import AUTHOR_ROUTER_PROVIDER
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
     NATIVE_TIMING_EVALUATED_PROVIDER,
@@ -266,20 +267,24 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertIn("--constraints", nodes["route"]["command"])
             self.assertEqual(
                 nodes["route"]["configuration"]["provider"],
-                GLOBAL_CANDIDATE_PROVIDER,
+                AUTHOR_ROUTER_PROVIDER,
             )
-            self.assertEqual(nodes["route"]["configuration"]["candidate_workers"], 8)
+            self.assertEqual(nodes["route"]["configuration"]["candidate_workers"], 1)
+            self.assertEqual(nodes["route"]["configuration"]["author_cost_policy"], "author-pressure-v1")
+            self.assertEqual(nodes["route"]["configuration"]["author_order_policy"], "hard-connections-v1")
+            self.assertIn("src/emuflow/author_routing.py", nodes["route"]["implementation"]["components"])
+            self.assertIn("src/native/synergistic_author_router.cpp", nodes["route"]["implementation"]["components"])
             self.assertEqual(
                 nodes["route"]["command"][
                     nodes["route"]["command"].index("--provider") + 1
                 ],
-                GLOBAL_CANDIDATE_PROVIDER,
+                AUTHOR_ROUTER_PROVIDER,
             )
             self.assertEqual(
                 nodes["route"]["validator"][
                     nodes["route"]["validator"].index("--candidate-workers") + 1
                 ],
-                "8",
+                "1",
             )
             self.assertEqual(
                 nodes["tdm"]["configuration"]["provider"],
@@ -834,6 +839,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             config["partition_provider"] = "tritonpart"
             config["cut_mode"] = "sequential-only"
             config["route_candidate_workers"] = 3
+            config["route_provider"] = GLOBAL_CANDIDATE_PROVIDER
             config_path.write_text(json.dumps(config), encoding="utf-8")
             output = root / "spec.json"
             compile_canonical_experiment_spec(config_path, REPOSITORY, output)
@@ -842,6 +848,9 @@ class CanonicalExperimentTest(unittest.TestCase):
             }
             route = nodes["route"]
             self.assertEqual(route["configuration"]["candidate_workers"], 3)
+            self.assertEqual(route["configuration"]["provider"], GLOBAL_CANDIDATE_PROVIDER)
+            self.assertNotIn("--author-cost-policy", route["command"])
+            self.assertNotIn("author_order_policy", route["configuration"])
             self.assertEqual(
                 route["command"][route["command"].index("--candidate-workers") + 1],
                 "3",
@@ -852,6 +861,41 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
                 "3",
             )
+
+    def test_author_configuration_and_tool_identity_are_sealed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            config = json.loads(config_path.read_text())
+            config.update(author_cost_policy="author-sll-pressure-v1", author_order_policy="sta-incidence-v1")
+            write_json(config_path, config)
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            route = next(node for node in json.loads(output.read_text())["nodes"] if node["id"] == "route")
+            for key in ("author_cost_policy", "author_order_policy"):
+                self.assertEqual(route["configuration"][key], config[key])
+                option = "--" + key.replace("_", "-")
+                self.assertEqual(route["command"][route["command"].index(option) + 1], config[key])
+                self.assertEqual(route["validator"][route["validator"].index(option) + 1], config[key])
+            self.assertEqual(route["inputs"]["tool.router"], hashlib.sha256(Path(config["tools"]["router"]).read_bytes()).hexdigest())
+            self.assertEqual(route["execution_bindings"]["tool.router"], str(Path(config["tools"]["router"]).resolve()))
+
+    def test_invalid_author_configurations_fail_before_building_nodes(self) -> None:
+        invalid = (
+            ({"route_candidate_workers": 2}, "requires route_candidate_workers=1"),
+            ({"author_cost_policy": "best-of-two-v1"}, "single author cost policy"),
+            ({"route_provider": GLOBAL_CANDIDATE_PROVIDER, "author_order_policy": "hard-connections-v1"}, "requires the author"),
+            ({"route_provider": "unknown"}, "route_provider"),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._config(root)
+            original = json.loads(config_path.read_text())
+            for overrides, message in invalid:
+                with self.subTest(overrides=overrides):
+                    write_json(config_path, {**original, **overrides})
+                    with self.assertRaisesRegex(ValidationError, message):
+                        compile_canonical_experiment_spec(config_path, REPOSITORY, root / "invalid.json")
 
     def test_static_exact_mode_defaults_to_one_physical_seed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -864,6 +908,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                     "partition_provider": "tritonpart",
                     "max_cross_fpga_dependency_depth": 2,
                     "route_candidate_workers": 7,
+                    "route_provider": GLOBAL_CANDIDATE_PROVIDER,
                 }
             )
             config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -1013,9 +1058,9 @@ class CanonicalExperimentTest(unittest.TestCase):
             route = nodes["route"]
             self.assertEqual(
                 route["configuration"]["provider"],
-                GLOBAL_CANDIDATE_PROVIDER,
+                AUTHOR_ROUTER_PROVIDER,
             )
-            self.assertEqual(route["configuration"]["candidate_workers"], 8)
+            self.assertEqual(route["configuration"]["candidate_workers"], 1)
             tdm = nodes["tdm"]
             self.assertEqual(
                 tdm["configuration"]["provider"],

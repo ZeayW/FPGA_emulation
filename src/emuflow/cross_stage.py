@@ -15,7 +15,8 @@ from .board_link_timing import (
     validate_board_link_timing,
 )
 from .errors import EmuFlowError, ValidationError
-from .author_route_tdm import run_author_route_tdm, validate_author_flow_policy
+from .author_route_tdm import run_author_route_tdm, resolve_author_flow_policy
+from .author_routing import AUTHOR_ROUTER_PROVIDER
 from .frame_search import (
     run_frame_length_search,
     validate_frame_search_report,
@@ -74,7 +75,6 @@ from .tdm_ratio import (
     TDM_TIMING_DAG_RATIO_PROVIDER,
     validate_tdm_ratio_plan,
 )
-from .timing_routing import GLOBAL_CANDIDATE_PROVIDER
 
 
 CROSS_STAGE_CANDIDATE_SCHEMA = "emuflow.cross-stage-candidate/v2"
@@ -1006,7 +1006,7 @@ def _run_candidate_flow(
         route_options = dict(
             constraints_path=route_constraints_path, frame_slots=frame_slots,
             max_iterations=route_max_iterations,
-            provider=route_provider or GLOBAL_CANDIDATE_PROVIDER,
+            provider=route_provider,
             timing_paths_path=timing_path, router=router,
             candidate_workers=route_candidate_workers,
         )
@@ -1107,7 +1107,7 @@ def run_cross_stage_optimization(
     partition_repair_min_used_fpgas: bool = False,
     partition_repair_balance: bool = False,
     router: Optional[str] = None,
-    route_provider: Optional[str] = None,
+    route_provider: Optional[str] = AUTHOR_ROUTER_PROVIDER,
     author_cost_policy: Optional[str] = None,
     author_order_policy: Optional[str] = None,
     route_candidate_workers: int = 1,
@@ -1129,7 +1129,11 @@ def run_cross_stage_optimization(
     pair_pressure_weight: float = 1.0,
     feedback_steps: Optional[Tuple[float, ...]] = None,
 ) -> Dict[str, Any]:
-    validate_author_flow_policy(route_provider, author_cost_policy, author_order_policy)
+    route_provider, author_cost_policy, author_order_policy = resolve_author_flow_policy(
+        route_provider, author_cost_policy, author_order_policy,
+    )
+    if route_provider == AUTHOR_ROUTER_PROVIDER and (isinstance(route_candidate_workers, bool) or route_candidate_workers != 1):
+        raise ValidationError("author routing requires --route-candidate-workers 1")
     if (
         isinstance(max_outer_iterations, bool)
         or not isinstance(max_outer_iterations, int)
@@ -1706,9 +1710,7 @@ def run_cross_stage_optimization(
             "seed_candidate": seed_candidate_phase3_root is not None,
             "frame_slots": frame_slots,
             "optimize_frame_slots": optimize_frame_slots,
-            "route_provider": (
-                route_provider or GLOBAL_CANDIDATE_PROVIDER
-            ),
+            "route_provider": route_provider,
             **({"author_cost_policy": author_cost_policy} if author_cost_policy is not None else {}),
             **({"author_order_policy": author_order_policy} if author_order_policy is not None else {}),
             "route_candidate_workers": route_candidate_workers,

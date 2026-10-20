@@ -23,6 +23,7 @@ from emuflow.experiment_upstream import (
     run_route_checkpoint,
     run_tdm_checkpoint,
     validate_materialized_shared_phase1_5,
+    validate_route_checkpoint,
     validate_tdm_checkpoint,
 )
 
@@ -32,6 +33,30 @@ def _sha256(path: Path) -> str:
 
 
 class ExperimentUpstreamTest(unittest.TestCase):
+    def test_real_author_checkpoint_preserves_policy_contract(self) -> None:
+        from tests.test_author_defaults import AuthorDefaultsTest
+        for managed in (False, True):
+            with self.subTest(managed=managed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                partition, timing, route = root / "partition", root / "timing", root / "route"
+                partition.mkdir()
+                timing.mkdir()
+                _, platform, _, options = AuthorDefaultsTest()._inputs(partition, timing=True)
+                options.pop("timing_paths_path").rename(timing / "cut-timing-paths.json")
+                run_route_checkpoint(
+                    partition, timing, platform, route, **options,
+                    author_cost_policy="author-pressure-v1", author_order_policy="hard-connections-v1",
+                    managed_storage=managed, managed_dag_node=managed,
+                )
+                expected = dict(expected_author_cost_policy="author-pressure-v1",
+                                expected_author_order_policy="hard-connections-v1",
+                                managed_dag_node=managed)
+                self.assertEqual(validate_route_checkpoint(partition, timing, platform, route, **expected)["status"], "pass")
+                for key, value in (("expected_author_cost_policy", "author-sll-pressure-v1"),
+                                   ("expected_author_order_policy", "sta-incidence-v1")):
+                    with self.subTest(policy=key), self.assertRaisesRegex(ValidationError, "expected policy"):
+                        validate_route_checkpoint(partition, timing, platform, route, **{**expected, key: value})
+
     def test_shared_checkpoint_calls_partition_validator(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -116,6 +141,8 @@ class ExperimentUpstreamTest(unittest.TestCase):
 
             def phase4(*_args, **kwargs):
                 self.assertTrue(kwargs["managed_storage"])
+                self.assertEqual(kwargs["author_cost_policy"], "author-pressure-v1")
+                self.assertEqual(kwargs["author_order_policy"], "hard-connections-v1")
                 (route / "routes.json").write_text("{}", encoding="utf-8")
                 (route / "phase4_report.json").write_text("{}", encoding="utf-8")
                 return {"status": "pass"}
@@ -151,6 +178,8 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     route,
                     managed_storage=True,
                     managed_dag_node=True,
+                    author_cost_policy="author-pressure-v1",
+                    author_order_policy="hard-connections-v1",
                 )
                 tdm_report = run_tdm_checkpoint(
                     route,

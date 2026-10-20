@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
+
 from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.cross_stage import (
     build_cross_stage_candidate,
@@ -523,6 +525,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                     min_used_fpgas=2,
                     balance_tolerance=1.0,
                     router=str(router),
+                    route_provider=GLOBAL_CANDIDATE_PROVIDER,
                     ratio_optimizer=str(ratio_optimizer),
                     timing_dag_optimizer=str(timing_dag_optimizer),
                     feedback_optimizer=str(feedback_optimizer),
@@ -634,6 +637,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                 min_used_fpgas=2,
                 balance_tolerance=1.0,
                 router=str(router),
+                route_provider=GLOBAL_CANDIDATE_PROVIDER,
                 ratio_optimizer=str(ratio_optimizer),
                 timing_dag_optimizer=str(timing_dag_optimizer),
                 feedback_optimizer=str(feedback_optimizer),
@@ -749,6 +753,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                 min_used_fpgas=2,
                 balance_tolerance=1.0,
                 router=str(router),
+                route_provider=GLOBAL_CANDIDATE_PROVIDER,
                 ratio_optimizer=str(ratio_optimizer),
                 timing_dag_optimizer=str(timing_dag_optimizer),
                 feedback_optimizer=str(feedback_optimizer),

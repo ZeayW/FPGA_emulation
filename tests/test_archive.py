@@ -13,6 +13,7 @@ from emuflow.cli import main
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.timing_routing import NATIVE_TIMING_EVALUATED_PROVIDER
 from tests.native_build import tlr_router
 
 
@@ -33,6 +34,7 @@ def _run_small_flow(output: Path) -> None:
         timing_driven=False,
         clock_periods={"clk": 10.0},
         opensta=str(FAKE_OPENSTA),
+        route_provider=NATIVE_TIMING_EVALUATED_PROVIDER,
         router=str(tlr_router()),
         frame_slots=32,
         equivalence_cycles=2,
@@ -172,6 +174,8 @@ class ValidationArchiveTest(unittest.TestCase):
                     "greedy",
                     "--mapping-profile",
                     "vtr-hard-blocks",
+                    "--route-provider",
+                    NATIVE_TIMING_EVALUATED_PROVIDER,
                     "--router",
                     str(tlr_router()),
                     "--frame-slots",

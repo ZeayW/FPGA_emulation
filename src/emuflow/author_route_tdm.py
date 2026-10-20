@@ -10,7 +10,9 @@ import shutil
 import time
 from typing import Any, Mapping, Optional
 
-from .author_routing import AUTHOR_ORDER_POLICIES, AUTHOR_ROUTER_PROVIDER
+from .author_routing import (
+    AUTHOR_COST_POLICY, AUTHOR_ORDER_POLICY, AUTHOR_ORDER_POLICIES, AUTHOR_ROUTER_PROVIDER,
+)
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .phase4 import run_phase4, validate_phase4
@@ -23,7 +25,7 @@ AUTHOR_FLOW_COST_POLICIES = (*AUTHOR_ROUTE_TDM_POLICIES, "best-of-two-v1")
 
 
 def validate_author_flow_policy(provider, policy, order_policy=None):
-    """Validate an explicit orchestration policy without changing defaults."""
+    """Validate explicit artifact policies without inferring producer defaults."""
     if policy is None and order_policy is None:
         return
     if policy is not None and (not isinstance(policy, str) or policy not in AUTHOR_FLOW_COST_POLICIES):
@@ -32,6 +34,16 @@ def validate_author_flow_policy(provider, policy, order_policy=None):
         raise ValidationError(f"unsupported author flow order policy: {order_policy}")
     if provider != AUTHOR_ROUTER_PROVIDER:
         raise ValidationError("an author flow policy requires the author routing provider")
+
+
+def resolve_author_flow_policy(provider=None, policy=None, order_policy=None):
+    """Resolve omitted and explicit None options to the same versioned policies."""
+    provider = AUTHOR_ROUTER_PROVIDER if provider is None else provider
+    validate_author_flow_policy(provider, policy, order_policy)
+    if provider == AUTHOR_ROUTER_PROVIDER:
+        policy = AUTHOR_COST_POLICY if policy is None else policy
+        order_policy = AUTHOR_ORDER_POLICY if order_policy is None else order_policy
+    return provider, policy, order_policy
 
 
 class _InputChanged(EmuFlowError):

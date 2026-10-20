@@ -3,11 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .errors import ValidationError
 from .io import read_json, write_json
 from .managed_json_storage import pack_managed_json
 from .phase3_storage import read_phase3_assignment_view
 from .platform import Platform
 from .author_routing import (
+    AUTHOR_ORDER_POLICY,
     AUTHOR_ROUTER_PROVIDER,
     route_system_author,
     validate_author_system_routes,
@@ -46,7 +48,7 @@ def run_phase4(
     constraints_path: Optional[Path] = None,
     frame_slots: Optional[int] = None,
     max_iterations: Optional[int] = None,
-    provider: Optional[str] = None,
+    provider: Optional[str] = AUTHOR_ROUTER_PROVIDER,
     timing_paths_path: Optional[Path] = None,
     router: Optional[str] = None,
     tdm_feedback_path: Optional[Path] = None,
@@ -77,11 +79,7 @@ def run_phase4(
         max_iterations=max_iterations,
     )
     if provider is None:
-        provider = (
-            GLOBAL_CANDIDATE_PROVIDER
-            if timing_paths_path is not None
-            else NATIVE_ROUTER_PROVIDER
-        )
+        provider = AUTHOR_ROUTER_PROVIDER
     exact_mode = assignment_has_static_exact_contract(assignment)
     if author_cost_policy is not None and provider != AUTHOR_ROUTER_PROVIDER:
         raise ValueError("author cost policy requires the author routing provider")
@@ -337,7 +335,7 @@ def run_phase4(
     write_json(
         output_dir / "routes.json",
         pack_managed_json(routes) if managed_storage else routes,
-        compact=managed_storage,
+        compact=True,
     )
     write_json(output_dir / "phase4_report.json", report)
     return report
@@ -348,6 +346,9 @@ def validate_phase4(
     platform_path: Path,
     routes_path: Path,
     timing_paths_path: Optional[Path] = None,
+    *,
+    expected_author_cost_policy: Optional[str] = None,
+    expected_author_order_policy: Optional[str] = None,
 ) -> Dict[str, Any]:
     assignment = read_phase3_assignment_view(
         assignment_path, include_semantic_contract=False
@@ -355,7 +356,24 @@ def validate_phase4(
     platform = Platform.load(platform_path)
     routes = read_json(routes_path)
     provider = routes.get("provider")
+    expect_author_policy = (
+        expected_author_cost_policy is not None
+        or expected_author_order_policy is not None
+    )
+    if expect_author_policy and provider != AUTHOR_ROUTER_PROVIDER:
+        raise ValidationError("expected author routing policy requires the author routing provider")
     if provider == AUTHOR_ROUTER_PROVIDER:
+        if expect_author_policy:
+            metadata = routes.get("author_routing")
+            if not isinstance(metadata, dict):
+                raise ValidationError("invalid author routing execution metadata")
+            for field, expected, actual in (
+                ("cost_policy", expected_author_cost_policy, metadata.get("cost_policy")),
+                ("order_policy", expected_author_order_policy,
+                 metadata.get("order_policy", AUTHOR_ORDER_POLICY)),
+            ):
+                if expected is not None and actual != expected:
+                    raise ValidationError(f"author routing {field} does not match expected policy {expected}")
         timing_paths = (
             load_sta_paths(timing_paths_path, demands_from_assignment(assignment, platform))
             if timing_paths_path is not None else None

@@ -13,6 +13,7 @@ from emuflow.contest_eda2025 import (
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.phase4 import run_phase4
+from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from tests.native_build import eda2025_topology_optimizer, tlr_router
 
 
@@ -84,6 +85,7 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                 output_dir=routed,
                 constraints_path=normalized / "route_constraints.json",
                 timing_paths_path=normalized / "contest_timing_paths.json",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(tlr_router()),
             )
             self.assertEqual(phase4["status"], "pass")
@@ -150,6 +152,7 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                 output_dir=shortcut_routed,
                 constraints_path=topology_out / "normalized" / "route_constraints.json",
                 timing_paths_path=topology_out / "normalized" / "contest_timing_paths.json",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(tlr_router()),
             )
             shortcut_evaluation = evaluate_eda2025_routes(
@@ -165,6 +168,7 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                 routes_path=routed / "routes.json",
                 output_dir=root / "portfolio",
                 router=str(tlr_router()),
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 topology_optimizer=str(eda2025_topology_optimizer()),
             )
             self.assertEqual(
@@ -360,6 +364,7 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                 output_dir=routed,
                 constraints_path=normalized / "route_constraints.json",
                 timing_paths_path=normalized / "contest_timing_paths.json",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(tlr_router()),
             )
             changed = root / "changed.topo"
@@ -408,6 +413,7 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                 output_dir=initial_routed,
                 constraints_path=normalized / "route_constraints.json",
                 timing_paths_path=normalized / "contest_timing_paths.json",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(tlr_router()),
             )
             optimized = root / "optimized"
@@ -431,6 +437,7 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                 output_dir=rerouted,
                 constraints_path=optimized / "normalized" / "route_constraints.json",
                 timing_paths_path=optimized / "normalized" / "contest_timing_paths.json",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(tlr_router()),
             )
             checked = evaluate_eda2025_routes(
@@ -490,6 +497,7 @@ class Eda2025ContestAdapterTest(unittest.TestCase):
                 output_dir=routed,
                 constraints_path=normalized / "route_constraints.json",
                 timing_paths_path=normalized / "contest_timing_paths.json",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(tlr_router()),
             )
             report = optimize_eda2025_topology(
