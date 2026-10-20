@@ -162,7 +162,8 @@ System routing selects FPGA/die paths; it does not route wires inside an FPGA.
 The explicit `synergistic-author-route-v1` provider adapts the authors'
 connection ordering and shared-tree maze search to BoardDB delays, capacities,
 bank directions and hop constraints. It emits the common route contract and
-uses the existing Phase 5 for TDM assignment. Select it with
+uses the existing Phase 5 for TDM assignment. Physical bank directions and
+SLL capacities are shared across transport rounds. Select it with
 `--route-provider synergistic-author-route-v1` in complete compilation or
 `--provider synergistic-author-route-v1` in `phase4`. The root build supplies
 `emuflow_synergistic_author_router`; `--router` selects an explicit binary.
