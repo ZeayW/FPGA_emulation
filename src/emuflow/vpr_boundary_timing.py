@@ -13,6 +13,9 @@ from .boundary_timing import (
 from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
+from .emuir_compact import is_compact_emuir
+from .emuir_storage import is_emuir_sqlite
+from .indexed_physical_ir import IndexedPhysicalIR
 
 
 VPR_BOUNDARY_QUERY_HEADER = "endpoint\tkind\tstart_pin\tend_pin"
@@ -89,21 +92,42 @@ def write_vpr_boundary_timing_query(
     *,
     eblif_report: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    ir = EmuIR.load(ir_path)
+    if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path):
+        with IndexedPhysicalIR(ir_path) as ir:
+            return _write_vpr_boundary_timing_query(
+                ir, identity_path, output_path, eblif_report=eblif_report
+            )
+    return _write_vpr_boundary_timing_query(
+        EmuIR.load(ir_path), identity_path, output_path,
+        eblif_report=eblif_report,
+    )
+
+
+def _write_vpr_boundary_timing_query(
+    ir,
+    identity_path: Path,
+    output_path: Path,
+    *,
+    eblif_report: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
     identities = read_json(identity_path)
     if identities.get("schema") != BOUNDARY_IDENTITY_SCHEMA:
         raise ValidationError("VPR boundary timing identity schema is invalid")
-    net_index = {
-        net["id"]: index for index, net in enumerate(ir.value["nets"])
-    }
-    instance_index = {
-        instance["id"]: index
-        for index, instance in enumerate(ir.value["instances"])
-    }
-    instances = {
-        instance["id"]: instance for instance in ir.value["instances"]
-    }
-    nets = {net["id"]: net for net in ir.value["nets"]}
+    if isinstance(ir, IndexedPhysicalIR):
+        net_index, instance_index = ir.net_indices, ir.instance_indices
+        instances, nets = ir.instances, ir.nets
+    else:
+        net_index = {
+            net["id"]: index for index, net in enumerate(ir.value["nets"])
+        }
+        instance_index = {
+            instance["id"]: index
+            for index, instance in enumerate(ir.value["instances"])
+        }
+        instances = {
+            instance["id"]: instance for instance in ir.value["instances"]
+        }
+        nets = {net["id"]: net for net in ir.value["nets"]}
     top_ports = None
     if eblif_report is not None:
         records = eblif_report.get("top_ports")

@@ -1,9 +1,14 @@
 import json
+import copy
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from emuflow.io import write_json
+from emuflow.ir import EmuIR
+from emuflow.errors import ValidationError
+from emuflow.vtr_eblif import emit_vtr_eblif
 from emuflow.vpr_boundary_timing import (
     import_vpr_boundary_timing,
     write_vpr_boundary_timing_query,
@@ -11,6 +16,65 @@ from emuflow.vpr_boundary_timing import (
 
 
 class VprBoundaryTimingTest(unittest.TestCase):
+    def test_compact_query_uses_persisted_net_and_atom_ids(self):
+        def endpoint(owner, port):
+            return {"instance": owner, "port": port, "bit": 0}
+        value = {
+            "schema": "emuflow.emuir/v1",
+            "design": {"name": "dut", "top": "dut", "source_format": "test"},
+            "ports": [{"id": name, "name": name, "direction": direction,
+                       "width": 1, "clock": name == "clk", "reset": False}
+                      for name, direction in (("rx", "input"), ("tx", "output"),
+                                               ("clk", "input"), ("q", "output"))],
+            "instances": [
+                {"id": "lut", "type": "LUT1", "resources": {"lut": 1},
+                 "parameters": {"INIT": "10"}, "attributes": {}, "constant_connections": []},
+                {"id": "ff", "type": "FDRE", "resources": {"ff": 1},
+                 "parameters": {"INIT": "0"}, "attributes": {},
+                 "constant_connections": [{"port": "CE", "bit": 0, "value": "1"},
+                                          {"port": "R", "bit": 0, "value": "0"}]},
+            ],
+            "nets": [
+                {"id": "rx", "drivers": [endpoint(None, "rx")],
+                 "sinks": [endpoint("lut", "I0"), endpoint("ff", "D")], "cut_class": "primary_input"},
+                {"id": "tx", "drivers": [endpoint("lut", "O")],
+                 "sinks": [endpoint(None, "tx")], "cut_class": "combinational"},
+                {"id": "clk", "drivers": [endpoint(None, "clk")],
+                 "sinks": [endpoint("ff", "C")], "cut_class": "clock"},
+                {"id": "q", "drivers": [endpoint("ff", "Q")],
+                 "sinks": [endpoint(None, "q")], "cut_class": "register_output"},
+            ],
+            "clocks": [{"id": "clk", "name": "clk", "source_port": "clk", "period_ns": None}],
+            "warnings": [],
+        }
+        identities = {"schema": "emuflow.boundary-identity/v1", "fpga": "fpga0", "endpoints": [
+            {"id": "tx0", "kind": "tx", "merged_ir": {"external_net": "tx", "logical_net": "tx",
+             "external_port": "tx", "external_port_bit": 0, "boundary_register_instances": []}},
+            {"id": "rx0", "kind": "rx", "merged_ir": {"external_net": "rx", "logical_net": "rx",
+             "external_port": "rx", "external_port_bit": 0, "boundary_register_instances": ["ff"]}},
+        ]}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, identity, query = root / "dut.emuir.sqlite", root / "identity.json", root / "query.tsv"
+            EmuIR(value).save(source)
+            with sqlite3.connect(source) as connection:
+                connection.execute("UPDATE cell_records SET seq=seq*4+3")
+                connection.execute("UPDATE endpoint_records SET instance_seq=instance_seq*4+3 WHERE instance_seq IS NOT NULL")
+                connection.execute("UPDATE net_records SET seq=seq*5+11")
+                connection.execute("UPDATE endpoint_records SET net_seq=net_seq*5+11")
+            write_json(identity, identities)
+            eblif = emit_vtr_eblif(source, root / "dut.eblif")
+            checked = write_vpr_boundary_timing_query(source, identity, query, eblif_report=eblif)
+            self.assertEqual(checked["endpoints"], 2)
+            self.assertEqual(query.read_text().splitlines()[1:], [
+                "tx0\ttx\ti3.out[0]\tout:n16.outpad[0]",
+                "rx0\trx\tn11.inpad[0]\ti7.D[0]",
+            ])
+            corrupt = copy.deepcopy(eblif)
+            next(port for port in corrupt["top_ports"] if port["port"] == "rx")["source_net"] = "n999"
+            with self.assertRaisesRegex(ValidationError, "top-port map"):
+                write_vpr_boundary_timing_query(source, identity, query, eblif_report=corrupt)
+
     def test_native_traversal_excludes_clock_capture_constraint_edges(self):
         source = (
             Path(__file__).resolve().parents[1]
