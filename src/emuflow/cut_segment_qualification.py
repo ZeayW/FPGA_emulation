@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
@@ -26,6 +25,7 @@ from .opensta import (
     classify_through_net_timing_endpoints,
     load_timing_model,
 )
+from .phase3_assignment_index import phase3_exact_relation_counts
 from .phase3_storage import read_phase3_cut_timing_view
 from .sta import (
     iter_sta_path_database_paths,
@@ -260,30 +260,7 @@ def _build_indexed_cut_segment_qualification(
         association_count += len(matches)
         associated_nets.update(matches)
 
-    with sqlite3.connect(
-        f"file:{assignment_index_path.resolve()}?mode=ro&immutable=1",
-        uri=True,
-    ) as index:
-        relation_counts = {
-            "cut_sinks": int(
-                index.execute("SELECT COUNT(*) FROM cut_sinks").fetchone()[0]
-            ),
-            "exact_cut_nodes": int(
-                index.execute(
-                    "SELECT COUNT(*) FROM exact_cut_nodes"
-                ).fetchone()[0]
-            ),
-            "exact_cut_source_segments": int(
-                index.execute(
-                    "SELECT COUNT(*) FROM exact_cut_sources"
-                ).fetchone()[0]
-            ),
-            "exact_consumer_segments": int(
-                index.execute(
-                    "SELECT COUNT(*) FROM exact_logic_segments"
-                ).fetchone()[0]
-            ),
-        }
+    relation_counts = phase3_exact_relation_counts(assignment_index_path)
 
     timed = sum(item["status"] == "timed" for item in structural.values())
     summary = {

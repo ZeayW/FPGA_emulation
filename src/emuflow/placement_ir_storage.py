@@ -23,6 +23,10 @@ from .emuir_storage import (
     _json,
 )
 from .errors import ValidationError
+from .phase3_exact_binary import (
+    iter_phase3_exact_node_sources,
+    iter_phase3_exact_segments,
+)
 
 
 def _sqlite_uri(path: Path) -> str:
@@ -238,11 +242,14 @@ def write_placement_emuir_from_split(
               segment_ids_json TEXT NOT NULL
             ) WITHOUT ROWID"""
         )
-        digest_row = connection.execute(
-            "SELECT value FROM split.metadata "
-            "WHERE key='semantic_contract_sha256'"
-        ).fetchone()
-        digest = json.loads(digest_row[0]) if digest_row is not None else None
+        exact_metadata = {
+            row[0]: json.loads(row[1])
+            for row in connection.execute(
+                "SELECT key,value FROM split.metadata WHERE key IN "
+                "('semantic_contract_sha256','semantic_contract_binary')"
+            )
+        }
+        digest = exact_metadata.get("semantic_contract_sha256")
         if digest is not None:
             connection.execute(
                 """INSERT INTO exact_info(net_id,role,segment_ids_json)
@@ -260,24 +267,85 @@ def write_placement_emuir_from_split(
                   ON s.source_net_seq=n.source_net_seq AND s.part_index=?""",
                 (part_index, part_index),
             )
-            connection.execute(
-                """UPDATE exact_info SET segment_ids_json=COALESCE((
-                  SELECT json_group_array(segment_id) FROM (
-                    SELECT segment_id FROM split.exact_cut_sources x
-                    WHERE x.net_id=exact_info.net_id ORDER BY ordinal
-                  )
-                ),'[]') WHERE role='cut_source'"""
-            )
-            connection.execute(
-                """UPDATE exact_info SET segment_ids_json=COALESCE((
-                  SELECT json_group_array(segment_id) FROM (
-                    SELECT segment_id FROM split.exact_logic_segments x
-                    WHERE x.source_cut_net=exact_info.net_id
-                      AND x.part_index=? ORDER BY segment_id
-                  )
-                ),'[]') WHERE role='transport_shadow_sink'""",
-                (part_index,),
-            )
+            descriptor = exact_metadata.get("semantic_contract_binary")
+            if isinstance(descriptor, Mapping):
+                artifact = descriptor.get("artifact")
+                if (
+                    not isinstance(artifact, str)
+                    or Path(artifact).name != artifact
+                ):
+                    raise ValidationError(
+                        "split Static Exact binary path is invalid"
+                    )
+                binary_path = split_path.with_name(artifact)
+                cut_source_nets = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT net_id FROM exact_info "
+                        "WHERE role='cut_source'"
+                    )
+                }
+                def source_rows():
+                    for net_id, numbers in iter_phase3_exact_node_sources(
+                        binary_path, descriptor
+                    ):
+                        if net_id in cut_source_nets:
+                            yield (
+                                _json([
+                                    f"segment{number:06d}"
+                                    for number in numbers
+                                ]),
+                                net_id,
+                            )
+
+                connection.executemany(
+                    "UPDATE exact_info SET segment_ids_json=? "
+                    "WHERE net_id=? AND role='cut_source'",
+                    source_rows(),
+                )
+                shadow_nets = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT net_id FROM exact_info "
+                        "WHERE role='transport_shadow_sink'"
+                    )
+                }
+                consumer_segments: dict[str, list[str]] = {
+                    net_id: [] for net_id in shadow_nets
+                }
+                for segment in iter_phase3_exact_segments(
+                    binary_path, descriptor, fpga
+                ):
+                    source_net = segment.get("source_cut_net")
+                    if source_net in consumer_segments:
+                        consumer_segments[source_net].append(segment["id"])
+                connection.executemany(
+                    "UPDATE exact_info SET segment_ids_json=? "
+                    "WHERE net_id=? AND role='transport_shadow_sink'",
+                    (
+                        (_json(segment_ids), net_id)
+                        for net_id, segment_ids in consumer_segments.items()
+                    ),
+                )
+            else:
+                connection.execute(
+                    """UPDATE exact_info SET segment_ids_json=COALESCE((
+                      SELECT json_group_array(segment_id) FROM (
+                        SELECT segment_id FROM split.exact_cut_sources x
+                        WHERE x.net_id=exact_info.net_id ORDER BY ordinal
+                      )
+                    ),'[]') WHERE role='cut_source'"""
+                )
+                connection.execute(
+                    """UPDATE exact_info SET segment_ids_json=COALESCE((
+                      SELECT json_group_array(segment_id) FROM (
+                        SELECT segment_id FROM split.exact_logic_segments x
+                        WHERE x.source_cut_net=exact_info.net_id
+                          AND x.part_index=? ORDER BY segment_id
+                      )
+                    ),'[]') WHERE role='transport_shadow_sink'""",
+                    (part_index,),
+                )
 
         connection.execute(
             """INSERT INTO stage_nets

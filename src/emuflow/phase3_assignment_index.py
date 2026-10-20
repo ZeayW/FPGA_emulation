@@ -13,6 +13,7 @@ import json
 import os
 import sqlite3
 import uuid
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -20,17 +21,28 @@ from .combinational_cut import semantic_contract_sha256
 from .errors import ValidationError
 from .ir import EmuIR
 from .io import read_json
+from .phase3_exact_binary import (
+    EXACT_BINARY_ARTIFACT,
+    iter_phase3_exact_node_sources,
+    iter_phase3_exact_segments,
+    phase3_exact_binary_counts,
+    read_phase3_exact_binary_contract,
+    read_phase3_exact_binary_partition,
+    validate_phase3_exact_binary,
+    write_phase3_exact_binary,
+)
 from .routing import static_exact_contract_from_assignment
 
 
 LEGACY_ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v1"
-ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v2"
+PREVIOUS_ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v2"
+ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v3"
 ASSIGNMENT_INDEX_APPLICATION_ID = 0x454D5541  # ASCII "EMUA"
-ASSIGNMENT_INDEX_USER_VERSION = 2
-SUPPORTED_ASSIGNMENT_INDEX_USER_VERSIONS = {1, 2}
+ASSIGNMENT_INDEX_USER_VERSION = 3
+SUPPORTED_ASSIGNMENT_INDEX_USER_VERSIONS = {1, 2, 3}
 
 
-DDL = """
+CORE_DDL = """
 CREATE TABLE metadata(
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -57,6 +69,9 @@ CREATE TABLE cut_sinks(
 ) WITHOUT ROWID;
 CREATE INDEX cut_sinks_sink
   ON cut_sinks(sink_part_index, net_id);
+"""
+
+EXACT_DDL = """
 CREATE TABLE exact_cut_nodes(
   net_id TEXT PRIMARY KEY
 ) WITHOUT ROWID;
@@ -97,6 +112,8 @@ CREATE TABLE exact_capture_requirements(
 CREATE INDEX exact_capture_requirements_part
   ON exact_capture_requirements(part_index, capture_id);
 """
+
+DDL = CORE_DDL + EXACT_DDL
 
 
 def _json(value: Any) -> str:
@@ -233,6 +250,20 @@ def write_phase3_assignment_index(
     )
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    exact_binary_path = path.with_name(EXACT_BINARY_ARTIFACT)
+    exact_binary_temporary = path.with_name(
+        f".{EXACT_BINARY_ARTIFACT}.{uuid.uuid4().hex}.tmp"
+    )
+    exact_binary = (
+        write_phase3_exact_binary(
+            exact_binary_temporary,
+            exact_contract,
+            part_ids,
+            semantic_digest=exact_digest,
+        )
+        if exact_contract is not None
+        else None
+    )
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     connection = sqlite3.connect(temporary)
     try:
@@ -244,7 +275,7 @@ def write_phase3_assignment_index(
             PRAGMA cache_size=-65536;
             PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
             PRAGMA user_version={ASSIGNMENT_INDEX_USER_VERSION};
-            {DDL}
+            {CORE_DDL}
             """
         )
         metadata = {
@@ -276,6 +307,7 @@ def write_phase3_assignment_index(
                 if exact_contract is not None
                 else None
             ),
+            "semantic_contract_binary": exact_binary,
         }
         connection.executemany(
             "INSERT INTO metadata(key,value) VALUES (?,?)",
@@ -366,58 +398,44 @@ def write_phase3_assignment_index(
             "INSERT INTO cut_sinks VALUES (?,?,?)", cut_rows()
         )
 
-        if exact_contract is not None:
-            connection.executemany(
-                "INSERT INTO exact_cut_nodes VALUES (?)",
-                ((node["net"],) for node in exact_contract["cut_nodes"]),
-            )
-            connection.executemany(
-                "INSERT INTO exact_cut_sources VALUES (?,?,?)",
-                (
-                    (node["net"], ordinal, segment_id)
-                    for node in exact_contract["cut_nodes"]
-                    for ordinal, segment_id in enumerate(
-                        node["source_segment_ids"]
-                    )
-                ),
-            )
-
-            def exact_rows():
-                for segment in exact_contract["logic_segments"]:
-                    source_cut = segment.get("source_cut_net")
-                    fpga = segment.get("fpga")
-                    if isinstance(source_cut, str) and fpga in part_index:
-                        yield (source_cut, part_index[fpga], segment["id"])
-
-            connection.executemany(
-                "INSERT INTO exact_logic_segments VALUES (?,?,?)",
-                exact_rows(),
-            )
-            connection.executemany(
-                "INSERT INTO exact_segment_bindings VALUES (?,?,?,?,?,?,?)",
-                _exact_binding_rows(exact_contract, part_index),
-            )
-            connection.executemany(
-                "INSERT INTO exact_capture_requirements VALUES (?,?,?,?,?,?,?)",
-                _exact_capture_rows(exact_contract, part_index),
-            )
-
         connection.commit()
         summary = validate_phase3_assignment_index(
             temporary,
             expected_design=str(assignment.get("design")),
             expected_platform=str(assignment.get("platform")),
+            validate_binary=False,
+            exact_binary_path=exact_binary_temporary,
         )
         connection.close()
         with temporary.open("rb") as stream:
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        previous_binary = path.with_name(
+            f".{EXACT_BINARY_ARTIFACT}.{uuid.uuid4().hex}.previous"
+        )
+        moved_previous = False
+        try:
+            if exact_contract is not None:
+                if exact_binary_path.exists():
+                    os.replace(exact_binary_path, previous_binary)
+                    moved_previous = True
+                os.replace(exact_binary_temporary, exact_binary_path)
+            os.replace(temporary, path)
+        except BaseException:
+            if exact_contract is not None:
+                exact_binary_path.unlink(missing_ok=True)
+                if moved_previous:
+                    os.replace(previous_binary, exact_binary_path)
+            raise
+        previous_binary.unlink(missing_ok=True)
+        if exact_contract is None:
+            exact_binary_path.unlink(missing_ok=True)
         return summary
     except BaseException:
         try:
             connection.close()
         finally:
             temporary.unlink(missing_ok=True)
+            exact_binary_temporary.unlink(missing_ok=True)
         raise
 
 
@@ -472,7 +490,7 @@ def migrate_phase3_assignment_index(
             PRAGMA temp_store=FILE;
             PRAGMA cache_size=-65536;
             PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
-            PRAGMA user_version={ASSIGNMENT_INDEX_USER_VERSION};
+            PRAGMA user_version=2;
             {DDL}
             CREATE TEMP TABLE requested(
               id TEXT PRIMARY KEY,
@@ -494,7 +512,7 @@ def migrate_phase3_assignment_index(
             "SELECT count(*) FROM src.cell_records"
         ).fetchone()[0]
         metadata = {
-            "schema": ASSIGNMENT_INDEX_SCHEMA,
+            "schema": PREVIOUS_ASSIGNMENT_INDEX_SCHEMA,
             "design": assignment.get("design"),
             "platform": assignment.get("platform"),
             "provider": assignment.get("provider"),
@@ -679,8 +697,9 @@ def read_phase3_exact_semantic_partition(
 
     The packed assignment may contain a multi-gigabyte compressed semantic
     document.  Physical timing needs one FPGA at a time, so the production
-    handoff keeps the canonical records in SQLite and never expands that
-    document into a process-wide Python graph.
+    handoff keeps the canonical records in a per-FPGA binary section and never
+    expands that document into a process-wide Python graph.  SQLite v1/v2
+    artifacts remain readable.
     """
 
     connection = open_phase3_assignment_index(path)
@@ -695,6 +714,19 @@ def read_phase3_exact_semantic_partition(
         if part is None:
             raise ValidationError(f"assignment index omits FPGA {fpga!r}")
         part_index = int(part[0])
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 3:
+            descriptor = metadata.get("semantic_contract_binary")
+            if not isinstance(descriptor, Mapping):
+                raise ValidationError(
+                    "assignment index lacks its Static Exact binary descriptor"
+                )
+            artifact = descriptor.get("artifact")
+            if not isinstance(artifact, str) or Path(artifact).name != artifact:
+                raise ValidationError("Static Exact binary artifact name is invalid")
+            return read_phase3_exact_binary_partition(
+                path.with_name(artifact), descriptor, fpga
+            )
         tables = {
             str(row[0])
             for row in connection.execute(
@@ -709,7 +741,6 @@ def read_phase3_exact_semantic_partition(
             raise ValidationError(
                 "assignment index lacks indexed Static Exact payloads"
             )
-        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if version == 1:
             segments = [
                 json.loads(row[0])
@@ -805,14 +836,26 @@ def read_phase3_exact_semantic_contract(
     connection = open_phase3_assignment_index(path)
     try:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version != 2:
-            raise ValidationError(
-                "full indexed Static Exact reconstruction requires index v2"
-            )
         metadata = {
             str(row["key"]): json.loads(row["value"])
             for row in connection.execute("SELECT key,value FROM metadata")
         }
+        if version == 3:
+            descriptor = metadata.get("semantic_contract_binary")
+            if not isinstance(descriptor, Mapping):
+                raise ValidationError(
+                    "assignment index lacks its Static Exact binary descriptor"
+                )
+            artifact = descriptor.get("artifact")
+            if not isinstance(artifact, str) or Path(artifact).name != artifact:
+                raise ValidationError("Static Exact binary artifact name is invalid")
+            return read_phase3_exact_binary_contract(
+                path.with_name(artifact), descriptor, assignment
+            )
+        if version != 2:
+            raise ValidationError(
+                "full indexed Static Exact reconstruction requires index v2/v3"
+            )
         header = metadata.get("semantic_contract_header")
         schema = metadata.get("semantic_contract_schema")
         expected_digest = metadata.get("semantic_contract_sha256")
@@ -972,6 +1015,27 @@ def phase3_exact_semantic_counts(path: Path) -> dict[str, int]:
 
     connection = open_phase3_assignment_index(path)
     try:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 3:
+            metadata = {
+                row["key"]: json.loads(row["value"])
+                for row in connection.execute("SELECT key,value FROM metadata")
+            }
+            descriptor = metadata.get("semantic_contract_binary")
+            if not isinstance(descriptor, Mapping):
+                raise ValidationError(
+                    "assignment index lacks its Static Exact binary descriptor"
+                )
+            artifact = descriptor.get("artifact")
+            if not isinstance(artifact, str) or Path(artifact).name != artifact:
+                raise ValidationError("Static Exact binary artifact name is invalid")
+            counts = phase3_exact_binary_counts(
+                path.with_name(artifact), descriptor
+            )
+            return {
+                "logic_segments": counts["logic_segments"],
+                "capture_requirements": counts["capture_requirements"],
+            }
         tables = {
             str(row[0])
             for row in connection.execute(
@@ -1002,11 +1066,147 @@ def phase3_exact_semantic_counts(path: Path) -> dict[str, int]:
         connection.close()
 
 
+def read_phase3_exact_split_relations(
+    path: Path,
+) -> tuple[
+    set[str], dict[str, list[str]], dict[tuple[str, int], list[str]]
+]:
+    """Read the bounded exact relations needed to construct Phase 6 metadata."""
+
+    connection = open_phase3_assignment_index(path)
+    try:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        parts = {
+            str(row[1]): int(row[0])
+            for row in connection.execute(
+                "SELECT part_index,fpga FROM parts ORDER BY part_index"
+            )
+        }
+        if version == 3:
+            metadata = {
+                str(row[0]): json.loads(row[1])
+                for row in connection.execute(
+                    "SELECT key,value FROM metadata WHERE key="
+                    "'semantic_contract_binary'"
+                )
+            }
+            descriptor = metadata.get("semantic_contract_binary")
+            if not isinstance(descriptor, Mapping):
+                raise ValidationError(
+                    "assignment index lacks its Static Exact binary descriptor"
+                )
+            artifact = descriptor.get("artifact")
+            if not isinstance(artifact, str) or Path(artifact).name != artifact:
+                raise ValidationError("Static Exact binary artifact name is invalid")
+            binary_path = path.with_name(artifact)
+            source_segments = {
+                net: [_identity_segment(number) for number in numbers]
+                for net, numbers in iter_phase3_exact_node_sources(
+                    binary_path, descriptor
+                )
+            }
+            consumer_segments: dict[tuple[str, int], list[str]] = defaultdict(list)
+            for segment in iter_phase3_exact_segments(binary_path, descriptor):
+                source = segment.get("source_cut_net")
+                if isinstance(source, str):
+                    consumer_segments[(source, parts[segment["fpga"]])].append(
+                        segment["id"]
+                    )
+            return set(source_segments), source_segments, dict(consumer_segments)
+
+        exact_nodes = {
+            str(row[0])
+            for row in connection.execute("SELECT net_id FROM exact_cut_nodes")
+        }
+        source_segments: dict[str, list[str]] = defaultdict(list)
+        for row in connection.execute(
+            "SELECT net_id,segment_id FROM exact_cut_sources "
+            "ORDER BY net_id,ordinal"
+        ):
+            source_segments[str(row[0])].append(str(row[1]))
+        consumer_segments: dict[tuple[str, int], list[str]] = defaultdict(list)
+        for row in connection.execute(
+            "SELECT source_cut_net,part_index,segment_id "
+            "FROM exact_logic_segments "
+            "ORDER BY source_cut_net,part_index,segment_id"
+        ):
+            consumer_segments[(str(row[0]), int(row[1]))].append(str(row[2]))
+        return exact_nodes, dict(source_segments), dict(consumer_segments)
+    finally:
+        connection.close()
+
+
+def _identity_segment(number: int) -> str:
+    if isinstance(number, bool) or not isinstance(number, int) or number < 0:
+        raise ValidationError("Static Exact binary segment number is invalid")
+    return f"segment{number:06d}"
+
+
+def phase3_exact_relation_counts(path: Path) -> dict[str, int]:
+    """Return storage-level relation counts for qualification evidence."""
+
+    connection = sqlite3.connect(
+        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+    )
+    try:
+        cut_sinks = int(
+            connection.execute("SELECT count(*) FROM cut_sinks").fetchone()[0]
+        )
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key='semantic_contract_binary'"
+        ).fetchone()
+        descriptor = json.loads(row[0]) if row is not None else None
+        if descriptor is not None:
+            if not isinstance(descriptor, Mapping):
+                raise ValidationError(
+                    "assignment index lacks its Static Exact binary descriptor"
+                )
+            artifact = descriptor.get("artifact")
+            if not isinstance(artifact, str) or Path(artifact).name != artifact:
+                raise ValidationError("Static Exact binary artifact name is invalid")
+            counts = phase3_exact_binary_counts(path.with_name(artifact), descriptor)
+            return {
+                "cut_sinks": cut_sinks,
+                "exact_cut_nodes": counts["cut_nodes"],
+                "exact_cut_source_segments": counts["source_segments"],
+                "exact_consumer_segments": counts["consumer_segments"],
+            }
+        tables = {
+            str(item[0])
+            for item in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "exact_cut_nodes" not in tables:
+            return {
+                "cut_sinks": cut_sinks,
+                "exact_cut_nodes": 0,
+                "exact_cut_source_segments": 0,
+                "exact_consumer_segments": 0,
+            }
+        return {
+            "cut_sinks": cut_sinks,
+            "exact_cut_nodes": int(connection.execute(
+                "SELECT count(*) FROM exact_cut_nodes"
+            ).fetchone()[0]),
+            "exact_cut_source_segments": int(connection.execute(
+                "SELECT count(*) FROM exact_cut_sources"
+            ).fetchone()[0]),
+            "exact_consumer_segments": int(connection.execute(
+                "SELECT count(*) FROM exact_logic_segments"
+            ).fetchone()[0]),
+        }
+    finally:
+        connection.close()
+
+
 def validate_phase3_assignment_index(
     path: Path,
     *,
     expected_design: str | None = None,
     expected_platform: str | None = None,
+    validate_binary: bool = True,
+    exact_binary_path: Path | None = None,
 ) -> dict[str, Any]:
     connection = open_phase3_assignment_index(path)
     try:
@@ -1016,6 +1216,7 @@ def validate_phase3_assignment_index(
         }
         if metadata.get("schema") not in {
             LEGACY_ASSIGNMENT_INDEX_SCHEMA,
+            PREVIOUS_ASSIGNMENT_INDEX_SCHEMA,
             ASSIGNMENT_INDEX_SCHEMA,
         }:
             raise ValidationError("Phase 3 assignment index schema is invalid")
@@ -1050,7 +1251,27 @@ def validate_phase3_assignment_index(
         }.issubset(tables)
         exact_segment_bindings = 0
         exact_capture_requirements = 0
-        if has_exact_payloads:
+        binary_validation = None
+        descriptor = metadata.get("semantic_contract_binary")
+        if isinstance(descriptor, Mapping):
+            artifact = descriptor.get("artifact")
+            if not isinstance(artifact, str) or Path(artifact).name != artifact:
+                raise ValidationError("Static Exact binary artifact name is invalid")
+            if validate_binary:
+                binary_validation = validate_phase3_exact_binary(
+                    exact_binary_path or path.with_name(artifact), descriptor
+                )
+            else:
+                binary_validation = {
+                    "status": "descriptor-pass",
+                    **phase3_exact_binary_counts(
+                        exact_binary_path or path.with_name(artifact), descriptor
+                    ),
+                }
+            exact_segment_bindings = binary_validation["logic_segments"]
+            exact_capture_requirements = binary_validation["capture_requirements"]
+            has_exact_payloads = True
+        elif has_exact_payloads:
             exact_segment_bindings = int(
                 connection.execute(
                     "SELECT count(*) FROM exact_segment_bindings"
@@ -1094,6 +1315,7 @@ def validate_phase3_assignment_index(
             "exact_segment_bindings": exact_segment_bindings,
             "exact_capture_requirements": exact_capture_requirements,
             "indexed_semantic_payloads": has_exact_payloads,
+            "semantic_binary": binary_validation,
         }
     finally:
         connection.close()
@@ -1138,13 +1360,23 @@ def validate_phase3_assignment_index_against_emuir(
             raise ValidationError("compact EmuIR design metadata is invalid") from error
         if (
             metadata.get("schema")
-            not in {LEGACY_ASSIGNMENT_INDEX_SCHEMA, ASSIGNMENT_INDEX_SCHEMA}
+            not in {
+                LEGACY_ASSIGNMENT_INDEX_SCHEMA,
+                PREVIOUS_ASSIGNMENT_INDEX_SCHEMA,
+                ASSIGNMENT_INDEX_SCHEMA,
+            }
             or metadata.get("design") != expected_design
             or source_design != expected_design
         ):
             raise ValidationError("indexed Phase 3 design identity disagrees")
         if metadata.get("platform") != expected_platform:
             raise ValidationError("indexed Phase 3 platform identity disagrees")
+        descriptor = metadata.get("semantic_contract_binary")
+        if isinstance(descriptor, Mapping):
+            artifact = descriptor.get("artifact")
+            if not isinstance(artifact, str) or Path(artifact).name != artifact:
+                raise ValidationError("Static Exact binary artifact name is invalid")
+            validate_phase3_exact_binary(path.with_name(artifact), descriptor)
 
         source_instances = int(connection.execute(
             "SELECT count(*) FROM src.cell_records"

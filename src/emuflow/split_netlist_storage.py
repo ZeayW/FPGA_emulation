@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import heapq
 import os
+import shutil
 import sqlite3
 import uuid
 from pathlib import Path
@@ -20,6 +21,12 @@ from .errors import ValidationError
 from .phase3_assignment_index import (
     ASSIGNMENT_INDEX_SCHEMA,
     open_phase3_assignment_index,
+    read_phase3_exact_split_relations,
+)
+from .phase3_exact_binary import (
+    iter_phase3_exact_node_sources,
+    iter_phase3_exact_segments,
+    phase3_exact_binary_counts,
 )
 from .netlist import (
     LOGICAL_LANE_MAP_SCHEMA,
@@ -150,6 +157,88 @@ def _sqlite_uri(path: Path) -> str:
     return f"file:{path.resolve()}?mode=ro&immutable=1"
 
 
+def _binary_artifact_path(
+    database_path: Path, descriptor: Mapping[str, Any]
+) -> Path:
+    artifact = descriptor.get("artifact")
+    if not isinstance(artifact, str) or Path(artifact).name != artifact:
+        raise ValidationError("Static Exact binary path is invalid")
+    return database_path.with_name(artifact)
+
+
+def _exact_relation_maps(
+    path: Path,
+    metadata: Mapping[str, Any],
+    fpga: str,
+    part_index: int,
+    connection: sqlite3.Connection,
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    descriptor = metadata.get("semantic_contract_binary")
+    source_segments: dict[str, list[str]] = defaultdict(list)
+    consumer_segments: dict[str, list[str]] = defaultdict(list)
+    local_source_nets = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT DISTINCT net_id FROM cut_sinks "
+            "WHERE source_part_index=?",
+            (part_index,),
+        )
+    }
+    if isinstance(descriptor, Mapping):
+        binary_path = _binary_artifact_path(path, descriptor)
+        for net_id, numbers in iter_phase3_exact_node_sources(
+            binary_path, descriptor
+        ):
+            if net_id in local_source_nets:
+                source_segments[net_id] = [
+                    f"segment{number:06d}" for number in numbers
+                ]
+        for segment in iter_phase3_exact_segments(
+            binary_path, descriptor, fpga
+        ):
+            source_net = segment.get("source_cut_net")
+            if isinstance(source_net, str):
+                consumer_segments[source_net].append(segment["id"])
+        return source_segments, consumer_segments
+
+    for row in connection.execute(
+        "SELECT x.net_id,x.segment_id FROM exact_cut_sources x "
+        "JOIN cut_sinks c ON c.net_id=x.net_id "
+        "WHERE c.source_part_index=? "
+        "GROUP BY x.net_id,x.ordinal ORDER BY x.net_id,x.ordinal",
+        (part_index,),
+    ):
+        source_segments[row[0]].append(row[1])
+    for row in connection.execute(
+        "SELECT source_cut_net,segment_id FROM exact_logic_segments "
+        "WHERE part_index=? ORDER BY source_cut_net,segment_id",
+        (part_index,),
+    ):
+        consumer_segments[row[0]].append(row[1])
+    return source_segments, consumer_segments
+
+
+def _stage_binary_artifact(
+    source: Path, destination: Path
+) -> Path | None:
+    if source.resolve() == destination.resolve():
+        return None
+    temporary = destination.with_name(
+        f".{destination.name}.{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        try:
+            os.link(source, temporary)
+        except OSError:
+            shutil.copyfile(source, temporary)
+            with temporary.open("rb") as stream:
+                os.fsync(stream.fileno())
+        return temporary
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def _source_metadata(connection: sqlite3.Connection) -> dict[str, Any]:
     metadata = dict(connection.execute("SELECT key,value FROM src.metadata"))
     try:
@@ -276,25 +365,6 @@ def build_streaming_split_metadata(
                 "SELECT part_index,fpga FROM parts ORDER BY part_index"
             )
         )
-        exact_nodes = {
-            row["net_id"]
-            for row in assignment.execute("SELECT net_id FROM exact_cut_nodes")
-        }
-        source_segments: dict[str, list[str]] = defaultdict(list)
-        for row in assignment.execute(
-            "SELECT net_id,segment_id FROM exact_cut_sources "
-            "ORDER BY net_id,ordinal"
-        ):
-            source_segments[row["net_id"]].append(row["segment_id"])
-        consumer_segments: dict[tuple[str, int], list[str]] = defaultdict(list)
-        for row in assignment.execute(
-            "SELECT source_cut_net,part_index,segment_id "
-            "FROM exact_logic_segments "
-            "ORDER BY source_cut_net,part_index,segment_id"
-        ):
-            consumer_segments[
-                (row["source_cut_net"], row["part_index"])
-            ].append(row["segment_id"])
     finally:
         assignment.close()
     if assignment_metadata.get("design") != design_name:
@@ -309,6 +379,9 @@ def build_streaming_split_metadata(
     exact_digest = assignment_metadata.get("semantic_contract_sha256")
     exact_mode = exact_digest is not None
     if exact_mode:
+        exact_nodes, source_segments, consumer_segments = (
+            read_phase3_exact_split_relations(assignment_index_path)
+        )
         if (
             not is_sampled_virtual_wire_schedule(schedule)
             or schedule.get("semantic_contract_sha256") != exact_digest
@@ -316,6 +389,10 @@ def build_streaming_split_metadata(
             raise ValidationError(
                 "exact split inputs do not share one semantic contract"
             )
+    else:
+        exact_nodes = set()
+        source_segments = {}
+        consumer_segments = {}
 
     physical_lane_by_entry: dict[str, int] = {}
     if pin_plan is not None:
@@ -562,8 +639,17 @@ def write_split_netlists_sqlite(
     if assignment_metadata.get("platform") != expected_platform:
         raise ValidationError("Phase 6 assignment index platform disagrees")
     part_index = {row["fpga"]: row["part_index"] for row in parts}
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    exact_binary = assignment_metadata.get("semantic_contract_binary")
+    staged_binary: Path | None = None
+    final_binary: Path | None = None
+    if isinstance(exact_binary, Mapping):
+        source_binary = _binary_artifact_path(
+            assignment_index_path, exact_binary
+        )
+        phase3_exact_binary_counts(source_binary, exact_binary)
+        final_binary = _binary_artifact_path(output_path, exact_binary)
+        staged_binary = _stage_binary_artifact(source_binary, final_binary)
     temporary = output_path.with_name(
         f".{output_path.name}.{uuid.uuid4().hex}.tmp"
     )
@@ -601,6 +687,7 @@ def write_split_netlists_sqlite(
             "semantic_contract_sha256": assignment_metadata.get(
                 "semantic_contract_sha256"
             ),
+            "semantic_contract_binary": exact_binary,
         }
         connection.executemany(
             "INSERT INTO metadata(key,value) VALUES (?,?)",
@@ -790,17 +877,23 @@ def write_split_netlists_sqlite(
         connection.execute(
             "INSERT INTO cut_sinks SELECT * FROM assignment.cut_sinks"
         )
-        connection.execute(
-            "INSERT INTO exact_cut_nodes SELECT * FROM assignment.exact_cut_nodes"
-        )
-        connection.execute(
-            "INSERT INTO exact_cut_sources "
-            "SELECT * FROM assignment.exact_cut_sources"
-        )
-        connection.execute(
-            "INSERT INTO exact_logic_segments "
-            "SELECT * FROM assignment.exact_logic_segments"
-        )
+        has_legacy_exact = connection.execute(
+            "SELECT 1 FROM assignment.sqlite_master "
+            "WHERE type='table' AND name='exact_cut_nodes'"
+        ).fetchone()
+        if not isinstance(exact_binary, Mapping) and has_legacy_exact is not None:
+            connection.execute(
+                "INSERT INTO exact_cut_nodes "
+                "SELECT * FROM assignment.exact_cut_nodes"
+            )
+            connection.execute(
+                "INSERT INTO exact_cut_sources "
+                "SELECT * FROM assignment.exact_cut_sources"
+            )
+            connection.execute(
+                "INSERT INTO exact_logic_segments "
+                "SELECT * FROM assignment.exact_logic_segments"
+            )
         connection.execute("DROP TABLE replica_net_parts")
         connection.execute("DROP TABLE incoming")
         connection.commit()
@@ -810,10 +903,18 @@ def write_split_netlists_sqlite(
             assignment_index_path,
             expected_design=expected_design,
             expected_platform=expected_platform,
+            exact_binary_path=(
+                staged_binary
+                if staged_binary is not None
+                else final_binary
+            ),
         )
         connection.close()
         with temporary.open("rb") as stream:
             os.fsync(stream.fileno())
+        if staged_binary is not None and final_binary is not None:
+            os.replace(staged_binary, final_binary)
+            staged_binary = None
         os.replace(temporary, output_path)
         return summary
     except BaseException:
@@ -821,6 +922,8 @@ def write_split_netlists_sqlite(
             connection.close()
         finally:
             temporary.unlink(missing_ok=True)
+            if staged_binary is not None:
+                staged_binary.unlink(missing_ok=True)
         raise
 
 
@@ -878,19 +981,16 @@ class SplitNetlistView:
                     (self.part_index,),
                 )
             }
-            self._source_segments: dict[str, list[str]] = defaultdict(list)
-            for row in self.connection.execute(
-                "SELECT net_id,segment_id FROM exact_cut_sources "
-                "ORDER BY net_id,ordinal"
-            ):
-                self._source_segments[row[0]].append(row[1])
-            self._consumer_segments: dict[str, list[str]] = defaultdict(list)
-            for row in self.connection.execute(
-                "SELECT source_cut_net,segment_id FROM exact_logic_segments "
-                "WHERE part_index=? ORDER BY source_cut_net,segment_id",
-                (self.part_index,),
-            ):
-                self._consumer_segments[row[0]].append(row[1])
+            (
+                self._source_segments,
+                self._consumer_segments,
+            ) = _exact_relation_maps(
+                path,
+                self.metadata,
+                fpga,
+                self.part_index,
+                self.connection,
+            )
             self._cut_source = {
                 row[0]: int(row[1])
                 for row in self.connection.execute(
@@ -1111,6 +1211,7 @@ def validate_split_netlists_sqlite(
     *,
     expected_design: str,
     expected_platform: str,
+    exact_binary_path: Path | None = None,
 ) -> dict[str, Any]:
     """Check compact construction invariants without replaying the source DB.
 
@@ -1141,6 +1242,19 @@ def validate_split_netlists_sqlite(
             raise ValidationError("split-netlist design disagrees")
         if header.get("platform") != expected_platform:
             raise ValidationError("split-netlist platform disagrees")
+        descriptor = header.get("semantic_contract_binary")
+        if isinstance(descriptor, Mapping):
+            binary_path = exact_binary_path or _binary_artifact_path(
+                path, descriptor
+            )
+            phase3_exact_binary_counts(binary_path, descriptor)
+            if (
+                descriptor.get("semantic_contract_sha256")
+                != header.get("semantic_contract_sha256")
+            ):
+                raise ValidationError(
+                    "split-netlist Static Exact identity disagrees"
+                )
 
         expected_copies = connection.execute(
             "SELECT count(*) FROM assignment.copies"
@@ -1294,22 +1408,9 @@ def read_split_netlist_sqlite(path: Path, fpga: str) -> dict[str, Any]:
                 record["replica_target_fpga"] = fpga
             instances.append(record)
 
-        source_segments: dict[str, list[str]] = {}
-        for row in connection.execute(
-            "SELECT net_id,segment_id FROM exact_cut_sources ORDER BY net_id,ordinal"
-        ):
-            source_segments.setdefault(row["net_id"], []).append(
-                row["segment_id"]
-            )
-        consumer_segments: dict[str, list[str]] = {}
-        for row in connection.execute(
-            "SELECT source_cut_net,segment_id FROM exact_logic_segments "
-            "WHERE part_index=? ORDER BY source_cut_net,segment_id",
-            (part_index,),
-        ):
-            consumer_segments.setdefault(row["source_cut_net"], []).append(
-                row["segment_id"]
-            )
+        source_segments, consumer_segments = _exact_relation_maps(
+            path, metadata, fpga, part_index, connection
+        )
         cut_source = {
             row["net_id"]: row["source_part_index"]
             for row in connection.execute(

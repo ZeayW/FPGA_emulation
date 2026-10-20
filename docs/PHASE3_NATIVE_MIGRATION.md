@@ -110,11 +110,25 @@ Their complete indexed populations also agree: 3,941,369 instance copies,
 requirements. The unchanged digest, row counts and report prove that the
 storage reduction did not weaken Static Exact semantics or validation.
 
-The remaining 613 MB JSON and 11.81 GiB index are still implementation costs,
-not logical requirements. The next Phase 3 tranche should therefore eliminate
-the remaining full Python contract materialization, write typed native records
-directly, and evaluate denser columnar or binary storage for relations whose
-SQLite B-tree overhead dominates their payload.
+The remaining 613 MB JSON and 11.81 GiB index were implementation costs, not
+logical requirements. Assignment-index v3 now keeps only the bounded control
+relations (`parts`, `copies`, and `cut_sinks`) in SQLite. Static Exact nodes,
+segments and captures use the versioned `assignment.exact.bin` data plane with
+integer identities, per-FPGA sections, section SHA-256 seals and one descriptor
+sealed by the SQLite index. Phase 6 transfers this artifact by hard link when
+the filesystem permits it; split and placement consumers read the required
+sections directly instead of rebuilding the same B-trees.
+
+A 20,000-cut-node synthetic population with the NVDLA relation proportions
+(240,000 source segments, 720,000 logic segments and 480,000 captures) occupies
+30,142,145 bytes in the binary data plane versus 134,692,864 bytes in the v2
+exact-relation SQLite tables, a 77.62% reduction. Binary publication took
+1.657 seconds and the independent full scan took 1.913 seconds on the
+development host; legacy SQLite insertion alone took 1.898 seconds. This is a
+format benchmark, not a replacement for the required full NVDLA rerun.
+
+The next Phase 3 tranche is direct native emission into the binary sections so
+the full Python semantic contract no longer has to exist before publication.
 
 ## Priority follow-on: OpenPARF to RapidWright handoff
 

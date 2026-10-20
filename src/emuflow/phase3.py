@@ -53,9 +53,11 @@ from .phase3_storage import (
     pack_phase3_assignment,
 )
 from .phase3_assignment_index import (
+    ASSIGNMENT_INDEX_SCHEMA,
     validate_phase3_assignment_index_against_emuir,
     write_phase3_assignment_index,
 )
+from .phase3_exact_binary import EXACT_BINARY_ARTIFACT, EXACT_BINARY_SCHEMA
 from .phase1 import indexed_phase1_identity
 from .partition_ir import load_partition_ir
 from .phase3_runtime import (
@@ -1066,6 +1068,7 @@ def run_phase3(
         report["artifacts"]["semantic_contract"] = (
             "assignment.json#/semantic_contract"
         )
+        report["artifacts"]["semantic_contract_data"] = EXACT_BINARY_ARTIFACT
     if single_active_selection:
         report["partition_decision"] = {
             "executed": False,
@@ -1148,7 +1151,8 @@ def run_phase3(
         report["artifact_storage"] = {
             "clusters": COMPRESSED_CLUSTERS_SCHEMA,
             "assignment": PACKED_ASSIGNMENT_SCHEMA,
-            "assignment_index": "emuflow.phase3-assignment-sqlite/v2",
+            "assignment_index": ASSIGNMENT_INDEX_SCHEMA,
+            "static_exact_data": EXACT_BINARY_SCHEMA,
             "logical_schema": "unchanged-transparent-expansion",
         }
 
@@ -1235,6 +1239,11 @@ def run_phase3(
         clusters_artifact_bytes=(output_dir / "clusters.json").stat().st_size,
         assignment_artifact_bytes=(output_dir / "assignment.json").stat().st_size,
         assignment_index_bytes=(output_dir / "assignment.sqlite").stat().st_size,
+        static_exact_binary_bytes=(
+            (output_dir / EXACT_BINARY_ARTIFACT).stat().st_size
+            if (output_dir / EXACT_BINARY_ARTIFACT).is_file()
+            else 0
+        ),
     )
     phase3_runtime_call(
         "publish.write_report",

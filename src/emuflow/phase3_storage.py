@@ -988,14 +988,15 @@ def _enrich_indexed_cut_dependencies(
         uri=True,
     )
     try:
+        metadata = {
+            str(row[0]): json.loads(row[1])
+            for row in connection.execute(
+                "SELECT key,value FROM metadata WHERE key IN "
+                "('semantic_contract_schema','semantic_contract_sha256',"
+                "'semantic_contract_binary')"
+            )
+        }
         if require_identity:
-            metadata = {
-                str(row[0]): json.loads(row[1])
-                for row in connection.execute(
-                    "SELECT key,value FROM metadata WHERE key IN "
-                    "('semantic_contract_schema','semantic_contract_sha256')"
-                )
-            }
             if (
                 metadata.get("semantic_contract_schema")
                 != assignment.get("semantic_contract_schema")
@@ -1005,33 +1006,61 @@ def _enrich_indexed_cut_dependencies(
                 raise ValueError(
                     "assignment index semantic contract identity disagrees"
                 )
-        exact_nodes = {
-            str(row[0])
-            for row in connection.execute("SELECT net_id FROM exact_cut_nodes")
-        }
+        binary = metadata.get("semantic_contract_binary")
+        if isinstance(binary, Mapping):
+            from .phase3_exact_binary import (
+                iter_phase3_exact_node_sources,
+                iter_phase3_exact_segments,
+            )
+
+            artifact = binary.get("artifact")
+            if not isinstance(artifact, str) or Path(artifact).name != artifact:
+                raise ValueError("assignment Static Exact binary path is invalid")
+            binary_path = index_path.with_name(artifact)
+            node_rows = iter_phase3_exact_node_sources(binary_path, binary)
+            segment_rows = (
+                (segment.get("source_cut_net"), segment["id"])
+                for segment in iter_phase3_exact_segments(binary_path, binary)
+                if isinstance(segment.get("source_cut_net"), str)
+            )
+        else:
+            node_rows = (
+                (str(row[0]), [
+                    _segment_number(item[0])
+                    for item in connection.execute(
+                        "SELECT segment_id FROM exact_cut_sources "
+                        "WHERE net_id=? ORDER BY ordinal", (row[0],)
+                    )
+                ])
+                for row in connection.execute(
+                    "SELECT net_id FROM exact_cut_nodes ORDER BY net_id"
+                )
+            )
+            segment_rows = connection.execute(
+                "SELECT source_cut_net,segment_id FROM exact_logic_segments"
+            )
+
+        exact_nodes = set()
+        for net_id, segment_numbers in node_rows:
+            exact_nodes.add(str(net_id))
+            sink = net_index.get(str(net_id))
+            if sink is None:
+                raise ValueError("assignment index cut source is unknown")
+            for number in segment_numbers:
+                if number >= len(segment_sinks):
+                    segment_sinks.extend(
+                        array("i", [-1]) * (number + 1 - len(segment_sinks))
+                    )
+                if segment_sinks[number] != -1:
+                    raise ValueError(
+                        "assignment index source segment is not unique"
+                    )
+                segment_sinks[number] = sink
         if exact_nodes != set(net_ids):
             raise ValueError(
                 "assignment index exact-cut coverage is inconsistent"
             )
-        for net_id, segment_id in connection.execute(
-            "SELECT net_id,segment_id FROM exact_cut_sources"
-        ):
-            sink = net_index.get(str(net_id))
-            if sink is None:
-                raise ValueError("assignment index cut source is unknown")
-            number = _segment_number(segment_id)
-            if number >= len(segment_sinks):
-                segment_sinks.extend(
-                    array("i", [-1]) * (number + 1 - len(segment_sinks))
-                )
-            if segment_sinks[number] != -1:
-                raise ValueError(
-                    "assignment index source segment is not unique"
-                )
-            segment_sinks[number] = sink
-        for source_net, segment_id in connection.execute(
-            "SELECT source_cut_net,segment_id FROM exact_logic_segments"
-        ):
+        for source_net, segment_id in segment_rows:
             number = _segment_number(segment_id)
             if number >= len(segment_sinks):
                 continue
@@ -1120,6 +1149,7 @@ def read_phase3_cut_timing_view(
         if metadata.get("schema") not in {
             "emuflow.phase3-assignment-sqlite/v1",
             "emuflow.phase3-assignment-sqlite/v2",
+            "emuflow.phase3-assignment-sqlite/v3",
         }:
             raise ValueError("assignment index schema is invalid")
         parts = {
@@ -1161,12 +1191,26 @@ def read_phase3_cut_timing_view(
         }
         exact_digest = metadata.get("semantic_contract_sha256")
         if exact_digest is not None:
-            exact_nets = [
-                str(row["net_id"])
-                for row in connection.execute(
-                    "SELECT net_id FROM exact_cut_nodes ORDER BY net_id"
-                )
-            ]
+            binary = metadata.get("semantic_contract_binary")
+            if isinstance(binary, Mapping):
+                from .phase3_exact_binary import iter_phase3_exact_node_sources
+
+                artifact = binary.get("artifact")
+                if not isinstance(artifact, str) or Path(artifact).name != artifact:
+                    raise ValueError("assignment Static Exact binary path is invalid")
+                exact_nets = [
+                    net
+                    for net, _segments in iter_phase3_exact_node_sources(
+                        path.with_name(artifact), binary
+                    )
+                ]
+            else:
+                exact_nets = [
+                    str(row["net_id"])
+                    for row in connection.execute(
+                        "SELECT net_id FROM exact_cut_nodes ORDER BY net_id"
+                    )
+                ]
             if exact_nets != sorted(cut_records):
                 raise ValueError(
                     "assignment index exact-cut coverage is inconsistent"

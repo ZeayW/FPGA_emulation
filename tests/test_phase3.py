@@ -20,6 +20,7 @@ from emuflow.partition import (
     validate_partition_artifacts,
 )
 from emuflow.phase3 import run_phase3, validate_phase3_indexed
+from emuflow.phase3_assignment_index import validate_phase3_assignment_index
 from emuflow.platform import BoardLink, FpgaNode, Platform
 from emuflow.resources import RESOURCE_FIELDS, ResourceVector
 from emuflow.yosys import import_yosys_json
@@ -109,7 +110,7 @@ class Phase3Test(unittest.TestCase):
             with sqlite3.connect(output / "assignment.sqlite") as connection:
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
-                    2,
+                    3,
                 )
                 schema = json.loads(
                     connection.execute(
@@ -117,22 +118,13 @@ class Phase3Test(unittest.TestCase):
                     ).fetchone()[0]
                 )
                 self.assertEqual(
-                    schema, "emuflow.phase3-assignment-sqlite/v2"
+                    schema, "emuflow.phase3-assignment-sqlite/v3"
                 )
-                segment_columns = {
-                    row[1]
-                    for row in connection.execute(
-                        "PRAGMA table_info(exact_segment_bindings)"
-                    )
-                }
-                capture_columns = {
-                    row[1]
-                    for row in connection.execute(
-                        "PRAGMA table_info(exact_capture_requirements)"
-                    )
-                }
-                self.assertNotIn("payload_json", segment_columns)
-                self.assertNotIn("payload_json", capture_columns)
+                exact_tables = connection.execute(
+                    "SELECT count(*) FROM sqlite_master "
+                    "WHERE type='table' AND name LIKE 'exact_%'"
+                ).fetchone()[0]
+                self.assertEqual(exact_tables, 0)
             tampered = copy.deepcopy(report)
             tampered["validation"]["effective_balance_percent"] = 210.0
             (output / "phase3_report.json").write_text(json.dumps(tampered))
@@ -208,6 +200,16 @@ class Phase3Test(unittest.TestCase):
                 packed_assignment["semantic_contract_index"]["artifact"],
                 "assignment.sqlite",
             )
+            binary_path = output / "assignment.exact.bin"
+            self.assertTrue(binary_path.is_file())
+            with sqlite3.connect(output / "assignment.sqlite") as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT count(*) FROM sqlite_master "
+                        "WHERE type='table' AND name LIKE 'exact_%'"
+                    ).fetchone()[0],
+                    0,
+                )
             runtime = read_json(output / "phase3-runtime.json")
             self.assertEqual(
                 runtime["observations"]["static_exact_native"], 0
@@ -226,6 +228,11 @@ class Phase3Test(unittest.TestCase):
                 },
             )
             self.assertNotIn("canonical_emuir_sha256", source)
+            encoded = bytearray(binary_path.read_bytes())
+            encoded[28] ^= 1
+            binary_path.write_bytes(encoded)
+            with self.assertRaisesRegex(ValidationError, "Static Exact"):
+                validate_phase3_assignment_index(output / "assignment.sqlite")
 
     def test_minimum_capacity_policy_uses_one_partition_target(self) -> None:
         constraints = normalize_partition_constraints(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import math
+import os
 import shutil
 from collections import defaultdict, deque
 from pathlib import Path
@@ -899,6 +900,20 @@ def _relative(path: Path, root: Path) -> str:
     return str(path.relative_to(root))
 
 
+def _copy_phase3_index(source_assignment: Path, destination: Path) -> None:
+    """Carry the sealed Phase 3 control/data plane into a candidate root."""
+
+    for name in ("assignment.sqlite", "assignment.exact.bin"):
+        source = source_assignment.with_name(name)
+        if not source.is_file():
+            continue
+        target = destination / name
+        try:
+            os.link(source, target)
+        except OSError:
+            shutil.copy2(source, target)
+
+
 def _validated_report_artifact(
     root: Path, record: Any, label: str
 ) -> Path:
@@ -1218,6 +1233,7 @@ def run_cross_stage_optimization(
         initial_root / "constraints.normalized.json",
         partition_constraints,
     )
+    _copy_phase3_index(initial_assignment_path, initial_root)
 
     effective_route_constraints_path = route_constraints_path
     board_link_timing_report = None
