@@ -1,5 +1,11 @@
 # EmuFlow
 
+This research branch develops the author-provided **Synergistic Die-Level
+Router** as a Phase 4 replacement. The unchanged reference source, bounded
+Linux diagnostics, and current experiment plan are described in
+[the Phase 4 study](docs/PHASE4_SYNERGISTIC_RESEARCH.md). Integration and full-flow
+qualification are in progress; no QoR improvement or timing closure is claimed.
+
 EmuFlow is a research-oriented multi-FPGA emulation flow. It compiles
 synchronous RTL into per-FPGA netlists and a statically scheduled communication
 fabric, with explicit interfaces between synthesis, partitioning, system
