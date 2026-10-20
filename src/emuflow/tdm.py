@@ -4,8 +4,11 @@ import hashlib
 import heapq
 import json
 import math
+import os
+from pathlib import Path
+import tempfile
 from collections import defaultdict, deque
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .errors import TDMScheduleInfeasibleError, ValidationError
 from .platform import Platform
@@ -2844,12 +2847,12 @@ def simulate_tdm_schedule(
     }
 
 
-def schedule_to_tsv(schedule: Mapping[str, Any]) -> str:
-    lines = [
-        "entry\tdemand\tnet\tlink\tfrom\tto\tslot\tlane\tready\tarrival"
-    ]
+def iter_schedule_tsv_lines(schedule: Mapping[str, Any]) -> Iterator[str]:
+    """Yield a schedule TSV without constructing a second hop-sized string."""
+
+    yield "entry\tdemand\tnet\tlink\tfrom\tto\tslot\tlane\tready\tarrival\n"
     for entry in schedule["entries"]:
-        lines.append(
+        yield (
             "\t".join(
                 str(entry[field])
                 for field in (
@@ -2865,8 +2868,37 @@ def schedule_to_tsv(schedule: Mapping[str, Any]) -> str:
                     "arrival_slot",
                 )
             )
+            + "\n"
         )
-    return "\n".join(lines) + "\n"
+
+
+def schedule_to_tsv(schedule: Mapping[str, Any]) -> str:
+    """Compatibility helper for callers that explicitly need TSV in memory."""
+
+    return "".join(iter_schedule_tsv_lines(schedule))
+
+
+def write_schedule_tsv(path: Path, schedule: Mapping[str, Any]) -> None:
+    """Stream and atomically publish the optional schedule diagnostic."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    )
+    temporary_path = Path(temporary.name)
+    try:
+        with temporary:
+            temporary.writelines(iter_schedule_tsv_lines(schedule))
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def build_transport_manifest(

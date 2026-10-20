@@ -522,6 +522,120 @@ def load_xilinx_openparf_atomic_placement_clusters(
     return clusters
 
 
+def iter_xilinx_openparf_atomic_placement_clusters(
+    path: Path, certificate: Mapping[str, Any]
+) -> Iterator[Dict[str, Any]]:
+    """Stream certified clusters from the normalized placement sidecar.
+
+    The compatibility loader above intentionally returns a list.  Production
+    bridge code uses this iterator so the certificate is not resident beside
+    the packed and placement trees that it is used to construct.
+    """
+
+    inline = certificate.get("clusters")
+    if inline is not None:
+        if not isinstance(inline, list) or not inline:
+            raise ValidationError("OpenPARF atomic placement clusters are invalid")
+        for cluster in inline:
+            if not isinstance(cluster, Mapping):
+                raise ValidationError(
+                    "OpenPARF atomic placement cluster is invalid"
+                )
+            yield dict(cluster)
+        return
+    descriptor = certificate.get("cluster_storage")
+    if (
+        not isinstance(descriptor, Mapping)
+        or descriptor.get("schema")
+        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
+        or not isinstance(descriptor.get("file"), str)
+        or Path(descriptor["file"]).name != descriptor["file"]
+        or not isinstance(descriptor.get("clusters"), int)
+        or not isinstance(descriptor.get("assignments"), int)
+        or descriptor["clusters"] <= 0
+        or descriptor["assignments"] <= 0
+    ):
+        raise ValidationError(
+            "OpenPARF atomic placement storage descriptor is invalid"
+        )
+    database_path = path.parent / descriptor["file"]
+    if (
+        not database_path.is_file()
+        or database_path.stat().st_size != descriptor.get("bytes")
+        or _sha256(database_path) != descriptor.get("sha256")
+    ):
+        raise ValidationError("OpenPARF atomic placement database seal is invalid")
+    uri = f"file:{database_path.resolve()}?mode=ro&immutable=1"
+    cluster_total = 0
+    assignment_total = 0
+    with sqlite3.connect(uri, uri=True) as database:
+        metadata = dict(database.execute("SELECT key, value FROM metadata"))
+        if metadata != {
+            "schema": OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
+            "clusters": str(descriptor["clusters"]),
+            "assignments": str(descriptor["assignments"]),
+        }:
+            raise ValidationError(
+                "OpenPARF atomic placement database metadata is invalid"
+            )
+        rows = database.execute(
+            "SELECT c.cluster_index,c.cluster,c.site,c.site_type,c.x,c.y,"
+            "a.assignment_index,a.instance,a.cell_type,a.bel,a.physical_site,"
+            "a.placement_mode,a.source_cluster,a.bram_tile_group "
+            "FROM clusters c LEFT JOIN assignments a "
+            "ON a.cluster_index=c.cluster_index "
+            "ORDER BY c.cluster_index,a.assignment_index"
+        )
+        current_index = None
+        current: Optional[Dict[str, Any]] = None
+        expected_assignment_index = 0
+        for row in rows:
+            if row[0] != current_index:
+                if current is not None:
+                    if not current["assignments"]:
+                        raise ValidationError(
+                            "OpenPARF atomic placement database has an empty cluster"
+                        )
+                    yield current
+                current_index = row[0]
+                current = {
+                    "cluster": row[1], "site": row[2],
+                    "site_type": row[3], "x": row[4], "y": row[5],
+                    "assignments": [],
+                }
+                cluster_total += 1
+                expected_assignment_index = 0
+            if current is None or row[6] is None:
+                continue
+            if row[6] != expected_assignment_index:
+                raise ValidationError(
+                    "OpenPARF atomic placement assignment ordering is invalid"
+                )
+            expected_assignment_index += 1
+            current["assignments"].append({
+                "instance": row[7], "cell_type": row[8], "bel": row[9],
+                "physical_site": row[10], "placement_mode": row[11],
+                "source_cluster": row[12],
+                "bram_tile_group": (
+                    json.loads(row[13]) if row[13] is not None else None
+                ),
+            })
+            assignment_total += 1
+        if current is not None:
+            if not current["assignments"]:
+                raise ValidationError(
+                    "OpenPARF atomic placement database has an empty cluster"
+                )
+            yield current
+    if (
+        cluster_total != descriptor["clusters"]
+        or assignment_total != descriptor["assignments"]
+    ):
+        raise ValidationError(
+            "OpenPARF atomic placement database coverage is invalid"
+        )
+
+
 def _write_site_database(
     path: Path, coordinate_system: Mapping[str, Any]
 ) -> int:

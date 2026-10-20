@@ -130,6 +130,29 @@ format benchmark, not a replacement for the required full NVDLA rerun.
 The next Phase 3 tranche is direct native emission into the binary sections so
 the full Python semantic contract no longer has to exist before publication.
 
+## Phase 1--7 repeated-materialization audit
+
+The Phase 3 failure mode was defined as a graph-sized population being
+expanded, sorted, serialized, indexed, reread, or revalidated more than once
+without adding a new semantic guarantee. The production flow was audited with
+that definition rather than treating every stage boundary as removable.
+
+| Phase | Finding | Current action |
+| --- | --- | --- |
+| 1 | The current frontend writes compact EmuIR SQLite and computes reports with indexed scans. The JSON report and normalized BoardDB are bounded control data. | No graph-sized duplicate found. |
+| 2 | TimingPathDB uses a compact JSON manifest plus a sealed streaming payload/index. Selected-path readers query only requested paths. | No duplicate path population found in the current indexed producer. The older standalone placement `phase2.py` remains a compatibility flow outside the canonical multi-FPGA Phase 2 timing path. |
+| 3 | Assignment JSON, SQLite, and exact relations previously repeated the same graph. | Assignment-index v3 and `assignment.exact.bin` are the implemented control/data split. Direct native emission is still pending. |
+| 4 | `routes.json` is the canonical routed-demand population; it references rather than embeds the Static Exact graph. A candidate pool is an optional qualification diagnostic and is suppressed in compact managed runs. | No mandatory duplicate graph found. |
+| 5 | `schedule.json` is canonical. The optional human-readable `schedule.tsv` formerly built a second hop-sized string in memory before writing it. | TSV publication now streams records to a temporary file, synchronizes it, and atomically renames it. Optional manifest/feedback/testbench files have distinct validation or simulation roles. |
+| 6 | Streaming split metadata still loaded all exact relations and repeated segment-ID arrays in every transport endpoint. `SplitNetlistView` also expanded the same relations even for bounded count/metadata queries, and placement lowering copied them into every net's extras. | Transport endpoints now carry boundary identity, role, digest, and one shared storage descriptor. Bounded split views do not touch exact relations. Placement lowering carries only role plus digest. The detailed IDs remain in the sealed Phase 3 binary and are expanded only by the explicit compatibility API. |
+| 7 | The OpenPARF bridge read its atomic source and certificate into Python, built two physical trees, wrote both JSON files, reread them, and replayed both validators before RWRoute export. | Certificate clusters now stream from SQLite; the atomic source stays a re-iterable indexed view; bridge outputs and validation results are passed in process to RWRoute export. Immediate JSON rereads and duplicate validation are removed. The remaining packed/placement JSON contracts are still required by current downstream consumers. |
+
+Cross-layer and global timing paths were also checked. Their current indexed
+readers stream complete payloads or selected identities and do not mirror the
+path population in both JSON and SQLite. Independent terminal validation is
+retained where it proves a different boundary; redundant replay inside the
+same producer process is removed.
+
 ## Priority follow-on: OpenPARF to RapidWright handoff
 
 The same repeated-materialization pattern exists in the Phase 7 physical hot
@@ -142,20 +165,21 @@ implementation already has useful foundations:
 - RWRoute TSV output is streamed to a temporary file, flushed, synchronized
   and atomically renamed.
 
-The remaining bridge still defeats much of that work. It loads all placement
-certificate rows into Python lists, constructs complete packed and placement
-trees, writes `packed-sites.json` and `placement.json`, reads both files back,
-repeats packing and placement validation, constructs whole-design physical and
-endpoint dictionaries, and finally writes `rwroute.tsv`. On million-instance
-partitions this repeats the same ownership, site, BEL, macro and resource data
-across memory, JSON, SQLite and TSV.
+The first bridge tranche is implemented: certificate rows stream from SQLite,
+the indexed atomic-source view remains in process, and the freshly validated
+packed/placement values flow directly into RWRoute export. The producer no
+longer reads both physical JSON files back or repeats packing and placement
+validation. On million-instance partitions the remaining cost is constructing
+and publishing the two standard physical trees themselves, followed by the
+whole-design dictionaries required by the current RWRoute exporter.
 
 The migration boundary is the OpenPARF placement certificate through RWRoute
 launch. Work proceeds in this order:
 
-1. Add per-partition runtime, peak-RSS, byte and row-count measurements around
-   certificate loading, bridge materialization, packing validation, placement
-   validation, RWRoute export and RapidWright startup. Qualification includes
+1. The bridge report now records certificate-validation and
+   publication/validation wall time, row counts, artifact bytes, and whether
+   streaming/in-process paths were used. Extend this with process-tree peak RSS,
+   RWRoute export, and RapidWright startup measurements during qualification on
    a partition with at least one million instances.
 2. Define one typed, versioned physical-handoff index containing clusters,
    instance-to-site/BEL assignments, cascades/macros, constants, source

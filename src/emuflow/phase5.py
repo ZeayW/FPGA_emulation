@@ -20,7 +20,7 @@ from .tdm import (
     build_transport_manifest,
     reconstruct_tdm_schedule_timing,
     schedule_to_systemverilog_testbench,
-    schedule_to_tsv,
+    write_schedule_tsv,
     simulate_tdm_schedule,
     validate_tdm_schedule,
 )
@@ -462,9 +462,7 @@ def run_phase5(
     )
     if not managed_storage:
         assert manifest is not None and feedback is not None
-        (output_dir / "schedule.tsv").write_text(
-            schedule_to_tsv(schedule), encoding="utf-8"
-        )
+        write_schedule_tsv(output_dir / "schedule.tsv", schedule)
         write_json(
             output_dir / "transport_manifest.json",
             manifest,

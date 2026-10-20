@@ -52,7 +52,11 @@ control plane for instance ownership, partitions and cut sinks. Static Exact
 nodes, segments and captures are integer-coded in the versioned,
 section-digested `assignment.exact.bin` data plane, partitioned by FPGA for
 sequential reads. Phase 6 transfers the sealed binary by hard link when
-possible, and placement lowering reads the needed FPGA section directly.
+possible. Its transport contracts keep only the semantic digest and sealed
+storage descriptor; they no longer repeat source/consumer segment-ID arrays
+for every scheduled hop. Production placement lowering joins the split SQLite
+data plane directly and carries only boundary role plus digest, while explicit
+legacy JSON expansion resolves detailed segment IDs on demand.
 `assignment.json` contains only the contract schema and SHA-256 identity;
 explicit legacy-style reads reconstruct and verify the same logical contract.
 Completed assignment-index v1/v2 artifacts remain readable.
@@ -61,6 +65,18 @@ capture-cone traversal runs in `emuflow_static_exact_analyzer`. The boundary is
 a versioned integer-only binary graph, and Python reconstructs the same v3
 semantic contract after validating all returned indices and graph coverage.
 Smaller designs retain the Python implementation as an executable reference.
+
+The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
+from their sealed SQLite sidecar, reuses the in-process atomic-source view, and
+passes the already validated packed/placement values directly to RWRoute
+export. It therefore avoids reparsing `openparf-atomic-source.json`,
+`packed-sites.json`, and `placement.json`, and does not replay the same packing
+and placement validators immediately after atomic publication. The bridge
+report records row counts, artifact bytes, dataflow mode, and time spent in
+certificate validation versus publication. The two standard physical JSON
+contracts still exist because current routing and timing consumers require
+them; replacing them with one typed physical handoff remains pending real
+million-instance qualification.
 
 ## Flow
 

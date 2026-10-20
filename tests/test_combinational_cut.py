@@ -44,6 +44,7 @@ from emuflow.partition import (
 )
 from emuflow.platform import Platform
 from emuflow.phase6 import run_phase6, validate_phase6
+from emuflow.split_netlist_storage import SplitNetlistView
 from emuflow.phase3_assignment_index import (
     read_phase3_exact_semantic_partition,
     write_phase3_assignment_index,
@@ -2603,6 +2604,30 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 equivalence_cycles=4,
                 equivalence_seed=31,
             )
+            manifest = read_json(output / "manifest.json")
+            self.assertEqual(
+                manifest["semantic_contract_storage"]["artifact"],
+                "assignment.exact.bin",
+            )
+            for fpga in ("fpga0", "fpga1"):
+                transport = read_json(output / fpga / "transport.json")
+                self.assertEqual(
+                    transport["semantic_contract_storage"],
+                    manifest["semantic_contract_storage"],
+                )
+                for endpoint in transport["endpoints"]:
+                    self.assertNotIn("source_logic_segment_ids", endpoint)
+                    self.assertNotIn("consumer_logic_segment_ids", endpoint)
+            with patch(
+                "emuflow.split_netlist_storage._exact_relation_maps",
+                side_effect=AssertionError(
+                    "bounded split metadata must not expand exact relations"
+                ),
+            ):
+                with SplitNetlistView(
+                    output / "split-netlists.sqlite", "fpga0"
+                ) as split_view:
+                    self.assertGreater(split_view.counts()["nets"], 0)
             evidence = report["equivalence"]
             self.assertEqual(evidence["status"], "pass")
             self.assertEqual(evidence["random_trace_count"], 3)

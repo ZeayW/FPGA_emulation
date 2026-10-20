@@ -14,7 +14,8 @@ import math
 import os
 from pathlib import Path
 import tempfile
-from typing import Any, Dict, Mapping, Optional, Tuple
+import time
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from .architecture import ArchitectureDB
 from .errors import ValidationError
@@ -23,7 +24,7 @@ from .xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_PROVIDER,
     OPENPARF_ATOMIC_SOURCE_SCHEMA,
-    load_xilinx_openparf_atomic_placement_clusters,
+    iter_xilinx_openparf_atomic_placement_clusters,
 )
 from .xilinx_native_device_constraints import (
     load_xilinx_native_device_constraints,
@@ -145,10 +146,11 @@ def _validate_certificate(
     architecture: ArchitectureDB,
     top: Optional[str],
     source_packed: Optional[Mapping[str, Any]] = None,
-    certificate_clusters: Optional[list[Dict[str, Any]]] = None,
+    certificate_clusters: Optional[Iterable[Mapping[str, Any]]] = None,
     native_bram_groups: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Tuple[
-    str, Mapping[str, Any], list[Dict[str, Any]], list[str], list[Dict[str, Any]]
+    str, Mapping[str, Any], list[Dict[str, Any]], list[str],
+    list[Dict[str, Any]], list[Dict[str, Any]]
 ]:
     if (
         certificate.get("schema") != OPENPARF_ATOMIC_PLACEMENT_SCHEMA
@@ -195,8 +197,10 @@ def _validate_certificate(
             )
         source_clusters = source_packed.get("clusters")
         source_cascades = source_packed.get("cascade_chains")
-        if not isinstance(source_clusters, list) or not isinstance(
-            source_cascades, list
+        if not isinstance(source_clusters, Sequence) or isinstance(
+            source_clusters, (str, bytes)
+        ) or not isinstance(source_cascades, Sequence) or isinstance(
+            source_cascades, (str, bytes)
         ):
             raise ValidationError(
                 "OpenPARF atomic source PackedSiteNetlist is invalid"
@@ -228,11 +232,12 @@ def _validate_certificate(
         certificate.get("clusters")
         if certificate_clusters is None else certificate_clusters
     )
-    if not isinstance(clusters, list) or not clusters:
+    if clusters is None or isinstance(clusters, (str, bytes, Mapping)):
         raise ValidationError("OpenPARF atomic placement clusters are invalid")
 
     owners: Dict[str, str] = {}
     physical_clusters: list[Dict[str, Any]] = []
+    placement_clusters: list[Dict[str, Any]] = []
     site_names = set()
     hard_counts: Counter = Counter()
     lut_count = 0
@@ -453,6 +458,18 @@ def _validate_certificate(
                 f"RAMB18E2x{len(hard_assignments)}"
             )
         physical_clusters.append(physical_cluster)
+        placement_clusters.append({
+            "cluster": entry["cluster"], "site": site_name,
+            "site_type": site["type"], "x": site["x"], "y": site["y"],
+            "fixed": False, "physical_region": site.get("physical_region"),
+            "assignments": [{
+                "instance": assignment["instance"],
+                "cell_type": assignment["cell_type"],
+                "bel": assignment["bel"],
+                "placement_mode": assignment["placement_mode"],
+                "site": assignment["physical_site"],
+            } for assignment in assignments],
+        })
     if set(owners) != expected:
         missing = sorted(expected - set(owners))
         extra = sorted(set(owners) - expected)
@@ -460,7 +477,7 @@ def _validate_certificate(
             f"OpenPARF atomic placement coverage is incomplete; missing={missing}, extra={extra}"
         )
     expected_summary = {
-        "atoms": len(expected), "occupied_sites": len(clusters),
+        "atoms": len(expected), "occupied_sites": len(physical_clusters),
         "luts": lut_count, "ffs": ff_count,
         "hard_resources": dict(sorted(hard_counts.items())),
     }
@@ -494,7 +511,11 @@ def _validate_certificate(
     if certificate.get("summary") != expected_summary:
         raise ValidationError("OpenPARF atomic placement summary is invalid")
     physical_clusters.sort(key=lambda item: item["id"])
-    return selected_top, cells, physical_clusters, constants, cascades
+    placement_clusters.sort(key=lambda item: item["cluster"])
+    return (
+        selected_top, cells, physical_clusters, constants, cascades,
+        placement_clusters,
+    )
 
 
 def materialize_xilinx_openparf_atomic_contract(
@@ -506,15 +527,19 @@ def materialize_xilinx_openparf_atomic_contract(
     *,
     top: Optional[str] = None,
     source_packed_path: Optional[Path] = None,
+    source_packed_value: Optional[Mapping[str, Any]] = None,
     constraints_path: Optional[Path] = None,
     native_constraints_path: Optional[Path] = None,
     provider_manifest_path: Optional[Path] = None,
     mapped_value: Optional[Mapping[str, Any]] = None,
     mapped_sha256: Optional[str] = None,
     architecture: Optional[ArchitectureDB] = None,
+    packed_value_sink: Optional[Dict[str, Any]] = None,
+    placement_value_sink: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Materialize standard contracts while preserving certified sites."""
 
+    bridge_started = time.perf_counter()
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     certificate = read_json(atomic_placement_path)
     if not isinstance(mapped, Mapping) or not isinstance(certificate, Mapping):
@@ -526,7 +551,10 @@ def materialize_xilinx_openparf_atomic_contract(
     mapped_sha = mapped_sha256 or _sha256(mapped_path)
     source_packed: Optional[Mapping[str, Any]] = None
     if source_packed_path is not None:
-        loaded_source_packed = read_json(source_packed_path)
+        loaded_source_packed = (
+            read_json(source_packed_path)
+            if source_packed_value is None else source_packed_value
+        )
         if not isinstance(loaded_source_packed, Mapping):
             raise ValidationError(
                 "OpenPARF atomic source PackedSiteNetlist is invalid"
@@ -550,7 +578,7 @@ def materialize_xilinx_openparf_atomic_contract(
         or not isinstance(source.get("name_map_sha256"), str)
     ):
         raise ValidationError("OpenPARF atomic placement source identity is invalid")
-    certificate_clusters = load_xilinx_openparf_atomic_placement_clusters(
+    certificate_clusters = iter_xilinx_openparf_atomic_placement_clusters(
         atomic_placement_path, certificate
     )
     has_native_seal = any(
@@ -584,11 +612,16 @@ def materialize_xilinx_openparf_atomic_contract(
             group["anchor"]: group
             for group in native["payload"].get("bram_tile_groups", [])
         }
-    selected_top, cells, clusters, constants, cascades = _validate_certificate(
+    validation_started = time.perf_counter()
+    (
+        selected_top, cells, clusters, constants, cascades,
+        placement_clusters,
+    ) = _validate_certificate(
         mapped, certificate, architecture, top, source_packed,
         certificate_clusters=certificate_clusters,
         native_bram_groups=native_bram_groups,
     )
+    certificate_validation_seconds = time.perf_counter() - validation_started
     if cascades and not has_native_seal:
         raise ValidationError(
             "OpenPARF native hardblock bridge requires a source-sealed "
@@ -639,53 +672,11 @@ def materialize_xilinx_openparf_atomic_contract(
     }
 
     occupied_local = Counter()
-    placement_clusters = []
-    certificate_by_site = {
-        entry["site"]: entry for entry in certificate_clusters
-    }
-    if len(certificate_by_site) != len(certificate_clusters):
-        raise ValidationError(
-            "OpenPARF atomic placement contains duplicate physical sites"
-        )
-    for cluster in clusters:
-        cluster_id = cluster["id"]
-        prefix = "openparf:"
-        if not cluster_id.startswith(prefix):
-            raise ValidationError(
-                f"OpenPARF bridge cluster id {cluster_id!r} does not start "
-                f"with {prefix!r}"
-            )
-        # The installed HPC container still executes this bridge with
-        # CPython 3.8.  Avoid str.removeprefix (added in Python 3.9) in the
-        # runtime path and validate the namespace instead of silently
-        # accepting a malformed id.
-        site_name = cluster_id[len(prefix):]
-        site = architecture.site_named(site_name)
+    for placement_cluster in placement_clusters:
+        site = architecture.site_named(placement_cluster["site"])
         local_key = _clock_region_key(site)
         if local_key is not None:
             occupied_local[local_key] += 1
-        assignments = []
-        certificate_entry = certificate_by_site.get(site_name)
-        if certificate_entry is None:
-            raise ValidationError(
-                "OpenPARF bridge is missing its certified physical site"
-            )
-        certificate_by_instance = {
-            item["instance"]: item for item in certificate_entry["assignments"]
-        }
-        for assignment in cluster["assignments"]:
-            source = certificate_by_instance[assignment["instance"]]
-            assignments.append({
-                **assignment,
-                "placement_mode": source["placement_mode"],
-                "site": source["physical_site"],
-            })
-        placement_clusters.append({
-            "cluster": cluster["id"], "site": site_name,
-            "site_type": site["type"], "x": site["x"], "y": site["y"],
-            "fixed": False, "physical_region": site.get("physical_region"),
-            "assignments": assignments,
-        })
     local_summary = _local_utilization_summary(architecture, occupied_local)
 
     packed_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -702,6 +693,7 @@ def materialize_xilinx_openparf_atomic_contract(
     os.close(placement_fd)
     packed_temp = Path(packed_name)
     placement_temp = Path(placement_name)
+    publication_started = time.perf_counter()
     try:
         write_json(packed_temp, packed, compact=True)
         placement = {
@@ -750,7 +742,7 @@ def materialize_xilinx_openparf_atomic_contract(
                 "provider_manifest_sha256": _sha256(provider_manifest_path),
             })
         write_json(placement_temp, placement, compact=True)
-        validate_xilinx_packing(
+        packing_validation = validate_xilinx_packing(
             mapped_path, packed_temp, top=selected_top,
             architecture_path=architecture_path,
             mapped_value=mapped,
@@ -758,7 +750,7 @@ def materialize_xilinx_openparf_atomic_contract(
             packed_value=packed,
             architecture=architecture.value,
         )
-        validate_xilinx_placement(
+        placement_validation = validate_xilinx_placement(
             packed_temp, architecture_path, placement_temp,
             constraints_path=constraints_path,
             native_constraints_path=native_constraints_path,
@@ -772,6 +764,24 @@ def materialize_xilinx_openparf_atomic_contract(
     finally:
         packed_temp.unlink(missing_ok=True)
         placement_temp.unlink(missing_ok=True)
+
+    if packed_value_sink is not None:
+        packed_value_sink.clear()
+        packed_value_sink.update(packed)
+    if placement_value_sink is not None:
+        placement_value_sink.clear()
+        placement_value_sink.update(placement)
+
+    publication_validation_seconds = time.perf_counter() - publication_started
+    cluster_storage = certificate.get("cluster_storage")
+    certificate_database_bytes = (
+        (
+            atomic_placement_path.parent / cluster_storage["file"]
+        ).stat().st_size
+        if isinstance(cluster_storage, Mapping)
+        and isinstance(cluster_storage.get("file"), str)
+        else 0
+    )
 
     return {
         "schema": OPENPARF_ATOMIC_BRIDGE_REPORT_SCHEMA,
@@ -796,5 +806,37 @@ def materialize_xilinx_openparf_atomic_contract(
         "site_pin_moved_ffs": site_pin_legalization["moved_ffs"],
         "site_pin_repaired_sites": site_pin_legalization["sites"],
         "cascade_chains": len(cascades),
+        "validation": {
+            "packing": packing_validation,
+            "placement": placement_validation,
+        },
+        "runtime_breakdown": {
+            "schema": "emuflow.openparf-bridge-runtime/v1",
+            "certificate_validation_seconds": certificate_validation_seconds,
+            "publication_and_validation_seconds": (
+                publication_validation_seconds
+            ),
+            "total_seconds": time.perf_counter() - bridge_started,
+            "rows": {
+                "mapped_cells": len(cells),
+                "physical_clusters": len(clusters),
+                "placed_assignments": len(cells) - len(constants),
+            },
+            "bytes": {
+                "placement_certificate": atomic_placement_path.stat().st_size,
+                "placement_certificate_database": certificate_database_bytes,
+                "packed_output": packed_output_path.stat().st_size,
+                "placement_output": placement_output_path.stat().st_size,
+            },
+            "dataflow": {
+                "certificate": "streaming-sqlite-or-inline-compatibility",
+                "source_packed": (
+                    "in-process-view" if source_packed_value is not None
+                    else "serialized-compatibility"
+                ),
+                "published_values": "reused-in-process",
+                "validation_replay": False,
+            },
+        },
         "runtime_validation": certificate["runtime_validation"],
     }

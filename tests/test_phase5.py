@@ -24,9 +24,11 @@ from emuflow.tdm import (
     reconstruct_tdm_schedule_timing,
     reconstruct_tdm_schedule_timing_paths,
     reconstruct_tdm_schedule_timing_paths_from_routes,
+    schedule_to_tsv,
     schedule_to_systemverilog_testbench,
     simulate_tdm_schedule,
     validate_tdm_schedule,
+    write_schedule_tsv,
 )
 from emuflow.tdm_ratio import (
     TDM_TIMING_DAG_RATIO_PROVIDER,
@@ -188,7 +190,7 @@ def _candidate_fallback_patches(schedule_side_effect):
         build_transport_manifest=mock.Mock(return_value={}),
         build_tdm_feedback=mock.Mock(return_value={}),
         validate_tdm_feedback=mock.Mock(return_value={"status": "pass"}),
-        schedule_to_tsv=mock.Mock(return_value=""),
+        write_schedule_tsv=mock.Mock(),
         schedule_to_systemverilog_testbench=mock.Mock(return_value=""),
         build_cross_layer_timing_contract=mock.Mock(return_value={}),
         validate_cross_layer_timing_contract=mock.Mock(
@@ -199,6 +201,22 @@ def _candidate_fallback_patches(schedule_side_effect):
 
 
 class Phase5Test(unittest.TestCase):
+    def test_schedule_tsv_streaming_writer_matches_compatibility_value(self):
+        schedule = {
+            "entries": [{
+                "id": "e0", "demand": "d0", "net": "n0", "link": "l0",
+                "from": "a", "to": "b", "slot": 1, "lane": 2,
+                "ready_slot": 0, "arrival_slot": 3,
+            }]
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "schedule.tsv"
+            write_schedule_tsv(output, schedule)
+            self.assertEqual(
+                output.read_text(encoding="utf-8"),
+                schedule_to_tsv(schedule),
+            )
+
     def test_zero_demand_schedule_has_no_timing_paths(self) -> None:
         platform = Platform.from_dict(
             _platform_value(

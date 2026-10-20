@@ -935,11 +935,6 @@ def run_rapidwright_openparf_native_candidate_backend(
         architecture=architecture,
         allowed_slrs=selected_slrs,
     )
-    # ``atomic_source`` is a re-iterable view backed by the mapped SQLite
-    # index, not a graph-sized list.  Release it once the exporter has consumed
-    # the view so no source adapter state overlaps RWRoute/OpenSTA.
-    del atomic_source
-    gc.collect()
     certificate_path = qualification_root / "placement-certificate.json"
     compact_qualification = _compact_openparf_qualification(
         qualification, certificate_path
@@ -949,6 +944,8 @@ def run_rapidwright_openparf_native_candidate_backend(
     del qualification
     packed_path = output_dir / "packed-sites.json"
     placement_path = output_dir / "placement.json"
+    packed: Dict[str, Any] = {}
+    placement: Dict[str, Any] = {}
     bridge = materialize_xilinx_openparf_atomic_contract(
         mapped_path,
         architecture_path,
@@ -957,35 +954,24 @@ def run_rapidwright_openparf_native_candidate_backend(
         placement_path,
         top=mapped_report["top"],
         source_packed_path=atomic_source_path,
+        source_packed_value=atomic_source,
         constraints_path=region_path,
         native_constraints_path=openparf_native_constraints,
         provider_manifest_path=openparf_provider_manifest,
         mapped_value=mapped_value,
         mapped_sha256=mapped_sha256,
         architecture=architecture,
+        packed_value_sink=packed,
+        placement_value_sink=placement,
     )
-    packed = read_json(packed_path)
-    placement = read_json(placement_path)
-    packing_check = validate_xilinx_packing(
-        mapped_path,
-        packed_path,
-        architecture_path=architecture_path,
-        mapped_value=mapped_value,
-        mapped_sha256=mapped_sha256,
-        packed_value=packed,
-        architecture=architecture.value,
-    )
-    placement_check = validate_xilinx_placement(
-        packed_path,
-        architecture_path,
-        placement_path,
-        constraints_path=region_path,
-        native_constraints_path=openparf_native_constraints,
-        provider_manifest_path=openparf_provider_manifest,
-        architecture=architecture,
-        packed_value=packed,
-        placement_value=placement,
-    )
+    # The source view and the two bridge results were already independently
+    # validated before atomic publication.  Reuse those exact in-process
+    # values instead of reparsing both large JSON artifacts and replaying the
+    # same whole-design validators before RWRoute export.
+    del atomic_source
+    gc.collect()
+    packing_check = bridge["validation"]["packing"]
+    placement_check = bridge["validation"]["placement"]
     return _run_rapidwright_routed_backend_tail(
         fpga=fpga,
         part=part,

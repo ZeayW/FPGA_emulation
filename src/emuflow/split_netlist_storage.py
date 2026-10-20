@@ -21,7 +21,6 @@ from .errors import ValidationError
 from .phase3_assignment_index import (
     ASSIGNMENT_INDEX_SCHEMA,
     open_phase3_assignment_index,
-    read_phase3_exact_split_relations,
 )
 from .phase3_exact_binary import (
     iter_phase3_exact_node_sources,
@@ -365,6 +364,20 @@ def build_streaming_split_metadata(
                 "SELECT part_index,fpga FROM parts ORDER BY part_index"
             )
         )
+        # Static Exact relations can contain tens of millions of segment IDs.
+        # Transport metadata needs only cut-node membership and the sealed
+        # relation-store identity; consumers resolve detailed segment rows from
+        # the shared Phase 3 data plane when they actually need them.
+        exact_nodes = (
+            {
+                str(row[0])
+                for row in assignment.execute(
+                    "SELECT DISTINCT net_id FROM cut_sinks"
+                )
+            }
+            if assignment_metadata.get("semantic_contract_sha256") is not None
+            else set()
+        )
     finally:
         assignment.close()
     if assignment_metadata.get("design") != design_name:
@@ -379,9 +392,6 @@ def build_streaming_split_metadata(
     exact_digest = assignment_metadata.get("semantic_contract_sha256")
     exact_mode = exact_digest is not None
     if exact_mode:
-        exact_nodes, source_segments, consumer_segments = (
-            read_phase3_exact_split_relations(assignment_index_path)
-        )
         if (
             not is_sampled_virtual_wire_schedule(schedule)
             or schedule.get("semantic_contract_sha256") != exact_digest
@@ -391,8 +401,7 @@ def build_streaming_split_metadata(
             )
     else:
         exact_nodes = set()
-        source_segments = {}
-        consumer_segments = {}
+    exact_storage = assignment_metadata.get("semantic_contract_binary")
 
     physical_lane_by_entry: dict[str, int] = {}
     if pin_plan is not None:
@@ -453,21 +462,11 @@ def build_streaming_split_metadata(
                 "source_role": (
                     "cut_source" if source_entry else "route_tree_relay"
                 ),
-                "source_logic_segment_ids": (
-                    list(source_segments.get(entry["net"], []))
-                    if source_entry
-                    else []
-                ),
                 "preserve": True,
             }
             exact_rx = {
                 "boundary_identity": f"static_exact:rx:{entry['id']}",
                 "semantic_contract_sha256": exact_digest,
-                "consumer_logic_segment_ids": list(
-                    consumer_segments.get(
-                        (entry["net"], part_index[entry["to"]]), []
-                    )
-                ),
                 "preserve": True,
             }
         endpoints_by_fpga[entry["from"]].append({
@@ -540,6 +539,9 @@ def build_streaming_split_metadata(
             **({
                 "cut_mode": "static-exact-combinational",
                 "semantic_contract_sha256": exact_digest,
+                **({
+                    "semantic_contract_storage": exact_storage,
+                } if isinstance(exact_storage, Mapping) else {}),
                 "shadow_reset_value": 0,
                 "startup_policy": "first-post-reset-frame-current-arrivals",
             } if exact_mode else {}),
@@ -594,6 +596,9 @@ def build_streaming_split_metadata(
             "cut_mode": "static-exact-combinational",
             "qualification": "exact-boundary-materialization-pass",
             "semantic_contract_sha256": exact_digest,
+            **({
+                "semantic_contract_storage": exact_storage,
+            } if isinstance(exact_storage, Mapping) else {}),
         } if exact_mode else {}),
         **({
             "pin_plan": "pin_plan.json",
@@ -951,6 +956,7 @@ class SplitNetlistView:
         path: Path,
         fpga: str,
     ):
+        self.path = path
         self.connection = open_split_netlists_sqlite(path)
         try:
             self.metadata = {
@@ -981,16 +987,6 @@ class SplitNetlistView:
                     (self.part_index,),
                 )
             }
-            (
-                self._source_segments,
-                self._consumer_segments,
-            ) = _exact_relation_maps(
-                path,
-                self.metadata,
-                fpga,
-                self.part_index,
-                self.connection,
-            )
             self._cut_source = {
                 row[0]: int(row[1])
                 for row in self.connection.execute(
@@ -1118,6 +1114,20 @@ class SplitNetlistView:
         }
 
     def nets(self):
+        # Full exact segment membership is needed only by the explicit legacy
+        # JSON expansion API.  Production placement lowering joins the split
+        # database directly and must not pay this graph-sized read at view
+        # construction time.
+        source_segments: dict[str, list[str]] = {}
+        consumer_segments: dict[str, list[str]] = {}
+        if self.metadata.get("semantic_contract_sha256") is not None:
+            source_segments, consumer_segments = _exact_relation_maps(
+                self.path,
+                self.metadata,
+                self.fpga,
+                self.part_index,
+                self.connection,
+            )
         endpoints = iter(
             self.connection.execute(
                 """SELECT n.original_net,e.source_net_seq,e.role,e.ordinal,e.bit,
@@ -1188,10 +1198,10 @@ class SplitNetlistView:
             if exact_digest is not None and row["original_net"] in self._cut_source:
                 if row["source_kind"] == "transport_shadow":
                     role = "transport_shadow_sink"
-                    segment_ids = self._consumer_segments.get(row["original_net"], [])
+                    segment_ids = consumer_segments.get(row["original_net"], [])
                 elif self._cut_source[row["original_net"]] == self.part_index:
                     role = "cut_source"
-                    segment_ids = self._source_segments.get(row["original_net"], [])
+                    segment_ids = source_segments.get(row["original_net"], [])
                 else:
                     role, segment_ids = "local_logic", []
                 record["static_exact_boundary"] = {

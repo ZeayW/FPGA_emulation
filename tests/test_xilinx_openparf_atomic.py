@@ -26,6 +26,7 @@ from emuflow.xilinx_openparf_atomic import (
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
     legalize_xilinx_openparf_ff_control_sets,
+    iter_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_sites,
     run_xilinx_openparf_atomic_qualification,
@@ -1317,13 +1318,19 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 ),
                 returned["clusters"],
             )
+            self.assertEqual(
+                list(iter_xilinx_openparf_atomic_placement_clusters(
+                    certificate_path, persisted
+                )),
+                returned["clusters"],
+            )
             database_path = output / persisted["cluster_storage"]["file"]
             with database_path.open("ab") as stream:
                 stream.write(b"tamper")
             with self.assertRaisesRegex(ValidationError, "database seal"):
-                load_xilinx_openparf_atomic_placement_clusters(
+                list(iter_xilinx_openparf_atomic_placement_clusters(
                     certificate_path, persisted
-                )
+                ))
 
     def test_compact_certificate_serializes_bram_tile_group(self):
         with tempfile.TemporaryDirectory() as temporary:
