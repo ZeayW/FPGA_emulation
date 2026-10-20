@@ -76,12 +76,12 @@ CREATE INDEX exact_logic_segments_part
   ON exact_logic_segments(part_index, source_cut_net);
 CREATE TABLE exact_segment_bindings(
   segment_id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,
+  kind INTEGER NOT NULL CHECK(kind BETWEEN 0 AND 2),
   part_index INTEGER NOT NULL,
   source_cut_net TEXT,
   sink_cut_net TEXT,
   capture_requirement TEXT,
-  source_semantics TEXT
+  source_semantics INTEGER CHECK(source_semantics IS NULL OR source_semantics=1)
 ) WITHOUT ROWID;
 CREATE INDEX exact_segment_bindings_part
   ON exact_segment_bindings(part_index, segment_id);
@@ -89,7 +89,7 @@ CREATE TABLE exact_capture_requirements(
   capture_id TEXT PRIMARY KEY,
   cut_net TEXT NOT NULL,
   part_index INTEGER NOT NULL,
-  kind TEXT NOT NULL,
+  kind INTEGER NOT NULL CHECK(kind IN (0,1)),
   endpoint TEXT NOT NULL,
   port TEXT,
   bit INTEGER
@@ -146,12 +146,12 @@ def _exact_binding_rows(
             raise ValidationError("exact logic segment payload is invalid")
         yield (
             segment_id,
-            kind,
+            {"launch_to_tx": 0, "rx_to_tx": 1, "rx_to_capture": 2}[kind],
             part_index[fpga],
             source_cut_net,
             sink_cut_net,
             capture_requirement,
-            source_semantics,
+            1 if source_semantics is not None else None,
         )
 
 
@@ -188,7 +188,7 @@ def _exact_capture_rows(
             capture_id,
             cut_net,
             part_index[fpga],
-            kind,
+            0 if kind == "top-output" else 1,
             endpoint,
             port,
             bit,
@@ -698,6 +698,7 @@ def read_phase3_exact_semantic_partition(
                 )
             ]
         else:
+            segment_kinds = ("launch_to_tx", "rx_to_tx", "rx_to_capture")
             segments = []
             for row in connection.execute(
                 "SELECT segment_id,kind,source_cut_net,sink_cut_net,"
@@ -708,7 +709,7 @@ def read_phase3_exact_semantic_partition(
             ):
                 segment = {
                     "id": str(row[0]),
-                    "kind": str(row[1]),
+                    "kind": segment_kinds[int(row[1])],
                     "fpga": fpga,
                 }
                 for key, value in zip(
@@ -721,7 +722,11 @@ def read_phase3_exact_semantic_partition(
                     row[2:],
                 ):
                     if value is not None:
-                        segment[key] = str(value)
+                        segment[key] = (
+                            "configuration-stable-constant"
+                            if key == "source_semantics"
+                            else str(value)
+                        )
                 segments.append(segment)
             captures = []
             for row in connection.execute(
@@ -734,7 +739,10 @@ def read_phase3_exact_semantic_partition(
                     "id": str(row[0]),
                     "cut_net": str(row[1]),
                     "fpga": fpga,
-                    "kind": str(row[2]),
+                    "kind": (
+                        "top-output" if int(row[2]) == 0
+                        else "architectural-state"
+                    ),
                     "endpoint": str(row[3]),
                 }
                 if row[4] is not None:
