@@ -22,7 +22,12 @@ from .errors import ValidationError
 from .io import file_sha256, write_json
 
 
-TDM_SCHEDULE_STORAGE_SCHEMA = "emuflow.tdm-schedule-storage/v1"
+LEGACY_TDM_SCHEDULE_STORAGE_SCHEMA = "emuflow.tdm-schedule-storage/v1"
+TDM_SCHEDULE_STORAGE_SCHEMA = "emuflow.tdm-schedule-storage/v2"
+TDM_SCHEDULE_STORAGE_SCHEMAS = {
+    LEGACY_TDM_SCHEDULE_STORAGE_SCHEMA,
+    TDM_SCHEDULE_STORAGE_SCHEMA,
+}
 TDM_SCHEDULE_LOGICAL_SCHEMA = "emuflow.tdm-schedule/v1"
 TDM_SCHEDULE_APPLICATION_ID = 0x454D5554  # ASCII "EMUT"
 TDM_SCHEDULE_USER_VERSION = 1
@@ -60,15 +65,23 @@ def _canonical(value: Any) -> str:
     )
 
 
-def _streaming_digest(value: Any) -> str:
+def _streaming_digest(
+    value: Any,
+    *,
+    indent: int | None = None,
+    trailing_newline: bool = False,
+) -> str:
     digest = hashlib.sha256()
     encoder = json.JSONEncoder(
-        ensure_ascii=False,
-        separators=(",", ":"),
+        ensure_ascii=True,
+        indent=indent,
+        separators=(",", ":") if indent is None else None,
         sort_keys=True,
     )
     for chunk in encoder.iterencode(value):
         digest.update(chunk.encode("utf-8"))
+    if trailing_newline:
+        digest.update(b"\n")
     return digest.hexdigest()
 
 
@@ -113,7 +126,7 @@ def _descriptor_store_path(
 
 def _validate_manifest(value: Mapping[str, Any], path: Path) -> Path:
     if (
-        value.get("schema") != TDM_SCHEDULE_STORAGE_SCHEMA
+        value.get("schema") not in TDM_SCHEDULE_STORAGE_SCHEMAS
         or value.get("logical_schema") != TDM_SCHEDULE_LOGICAL_SCHEMA
         or value.get("application_id") != TDM_SCHEDULE_APPLICATION_ID
         or value.get("user_version") != TDM_SCHEDULE_USER_VERSION
@@ -125,6 +138,11 @@ def _validate_manifest(value: Mapping[str, Any], path: Path) -> Path:
         or not isinstance(value.get("store_bytes"), int)
         or value["store_bytes"] < 0
         or not isinstance(value.get("sections"), dict)
+    ):
+        raise ValidationError(f"{path}: schedule storage manifest is malformed")
+    if value.get("schema") == TDM_SCHEDULE_STORAGE_SCHEMA and (
+        not isinstance(value.get("logical_pretty_sha256"), str)
+        or len(value["logical_pretty_sha256"]) != 64
     ):
         raise ValidationError(f"{path}: schedule storage manifest is malformed")
     sections = value["sections"]
@@ -179,6 +197,9 @@ def write_tdm_schedule_storage(
         connection.execute(f"PRAGMA user_version={TDM_SCHEDULE_USER_VERSION}")
         connection.executescript(DDL)
         logical_sha256 = _streaming_digest(schedule)
+        logical_pretty_sha256 = _streaming_digest(
+            schedule, indent=2, trailing_newline=True
+        )
         connection.executemany(
             "INSERT INTO metadata(key,value) VALUES (?,?)",
             (
@@ -245,6 +266,7 @@ def write_tdm_schedule_storage(
         "store_bytes": store_path.stat().st_size,
         "store_sha256": file_sha256(store_path),
         "logical_sha256": logical_sha256,
+        "logical_pretty_sha256": logical_pretty_sha256,
         "sections": section_summaries,
     }
     # The manifest is the publication commit point.  A reader observing the
@@ -579,7 +601,7 @@ def read_tdm_schedule(
     """Read a legacy schedule or open the indexed schedule lazily."""
 
     value = _raw_manifest(path)
-    if value.get("schema") == TDM_SCHEDULE_STORAGE_SCHEMA:
+    if value.get("schema") in TDM_SCHEDULE_STORAGE_SCHEMAS:
         view = open_tdm_schedule_view(
             path, verify_store_hash=verify_store_hash
         )
@@ -597,11 +619,24 @@ def canonical_tdm_schedule_sha256(schedule: Mapping[str, Any]) -> str:
     return _streaming_digest(schedule)
 
 
+def pretty_tdm_schedule_sha256(schedule: Mapping[str, Any]) -> str:
+    """Return the historical indented digest used by timing seals."""
+
+    if isinstance(schedule, TDMScheduleView):
+        digest = schedule.manifest.get("logical_pretty_sha256")
+        if isinstance(digest, str):
+            return digest
+        return _streaming_digest(
+            schedule.materialize(), indent=2, trailing_newline=True
+        )
+    return _streaming_digest(schedule, indent=2, trailing_newline=True)
+
+
 def tdm_schedule_store_path(manifest_path: Path) -> Path | None:
     """Return the indexed sidecar for a storage manifest, if present."""
 
     value = _raw_manifest(manifest_path)
-    if value.get("schema") != TDM_SCHEDULE_STORAGE_SCHEMA:
+    if value.get("schema") not in TDM_SCHEDULE_STORAGE_SCHEMAS:
         return None
     return _validate_manifest(value, manifest_path)
 

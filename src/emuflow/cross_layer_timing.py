@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 from collections import defaultdict, deque
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -26,6 +27,10 @@ from .phase3_assignment_index import read_phase3_exact_semantic_partition
 from .platform import Platform
 from .routing import SYSTEM_ROUTES_SCHEMA
 from .tdm import TDM_SCHEDULE_SCHEMA
+from .tdm_schedule_storage import (
+    TDMScheduleView,
+    pretty_tdm_schedule_sha256,
+)
 
 
 CROSS_LAYER_TIMING_CONTRACT_SCHEMA = "emuflow.cross-layer-timing/v1"
@@ -41,6 +46,8 @@ SAMPLED_VIRTUAL_WIRE = "sampled-virtual-wire"
 
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
+    if isinstance(value, TDMScheduleView):
+        return pretty_tdm_schedule_sha256(value)
     digest = hashlib.sha256()
     encoder = json.JSONEncoder(indent=2, sort_keys=True)
     for chunk in encoder.iterencode(value):
@@ -319,11 +326,15 @@ def _build_contract(
                 "the Phase 3 contract"
             )
         entries = schedule.get("entries")
-        if not isinstance(entries, list):
+        if not isinstance(entries, Sequence) or isinstance(
+            entries, (str, bytes)
+        ):
             raise ValidationError("cross-layer schedule entries must be an array")
         entry_by_hop = {}
         for entry in entries:
-            if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            if not isinstance(entry, Mapping) or not isinstance(
+                entry.get("id"), str
+            ):
                 raise ValidationError("cross-layer schedule entry is malformed")
             key = (
                 entry.get("demand"),
@@ -461,7 +472,9 @@ def _build_physical_binding(
         raise ValidationError("cross-layer physical binding identity is invalid")
 
     entries = schedule.get("entries")
-    if not isinstance(entries, list):
+    if not isinstance(entries, Sequence) or isinstance(
+        entries, (str, bytes)
+    ):
         raise ValidationError("cross-layer physical schedule entries are invalid")
     expected_endpoints = {
         f"__emuflow_{kind}_{entry['id']}": {

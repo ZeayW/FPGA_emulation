@@ -62,6 +62,10 @@ from .runtime import (
     validate_physical_summary,
 )
 from .synthesis import run_generic_yosys
+from .tdm_schedule_storage import (
+    canonical_tdm_schedule_sha256,
+    read_tdm_schedule,
+)
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vpr_pack_place, run_vpr_route_packed
 from .vpr_boundary_timing import (
     import_vpr_boundary_timing,
@@ -775,7 +779,7 @@ def run_multi_fpga_physical_flow(
     if manifest.get("schema") != SPLIT_MANIFEST_SCHEMA:
         raise ValidationError("multi-FPGA physical input split manifest is invalid")
     platform = Platform.load(platform_path)
-    schedule = read_json(schedule_path)
+    schedule = read_tdm_schedule(schedule_path)
     position_hints = None
     electrical_binding = None
     virtual_board = None
@@ -842,7 +846,8 @@ def run_multi_fpga_physical_flow(
         ).hexdigest()
         if (
             virtual_binding.get("board_sha256") != canonical(virtual_board)
-            or virtual_binding.get("schedule_sha256") != canonical(schedule)
+            or virtual_binding.get("schedule_sha256")
+            != canonical_tdm_schedule_sha256(schedule)
         ):
             raise ValidationError(
                 "physical virtual-board binding source seals disagree"

@@ -82,7 +82,10 @@ explicit compatibility materializer. The baseline Phase 6 splitter opens the
 store lazily and performs entry-to-route and incoming-cut joins in SQLite, so
 it no longer decodes a monolithic schedule JSON before splitting. Endpoint,
 virtual-binding and RTL/XDC construction still retain hop-sized Python
-objects and remain migration work.
+objects and remain migration work. ScheduleStore v2 also seals the historical
+indented logical digest, allowing physical orchestration, logic-segment query
+preparation and Phase 7C to keep a lazy view while preserving existing timing
+and qualification identities; v1 stores remain readable.
 
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
 from their sealed SQLite sidecar, reuses the in-process atomic-source view, and

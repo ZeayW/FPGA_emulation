@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 
 import pytest
@@ -8,9 +9,11 @@ import pytest
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.tdm_schedule_storage import (
+    LEGACY_TDM_SCHEDULE_STORAGE_SCHEMA,
     TDM_SCHEDULE_APPLICATION_ID,
     TDM_SCHEDULE_STORAGE_SCHEMA,
     open_tdm_schedule_view,
+    pretty_tdm_schedule_sha256,
     write_tdm_schedule_storage,
 )
 
@@ -78,11 +81,32 @@ def test_schedule_store_round_trip_lazy_iteration_and_relocation(tmp_path):
         assert len(view["entries"]) == 11
         assert view["entries"][3] == expected["entries"][3]
         assert list(view["entries"]) == expected["entries"]
+        expected_pretty = json.dumps(
+            expected, indent=2, sort_keys=True
+        ) + "\n"
+        assert pretty_tdm_schedule_sha256(view) == hashlib.sha256(
+            expected_pretty.encode("utf-8")
+        ).hexdigest()
     assert read_json(source / "schedule.json") == expected
 
     relocated = tmp_path / "relocated"
     shutil.copytree(source, relocated)
     assert read_json(relocated / "schedule.json") == expected
+
+
+def test_v1_schedule_manifest_remains_readable(tmp_path):
+    expected = _schedule(3)
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, expected)
+    manifest = json.loads(path.read_text())
+    manifest["schema"] = LEGACY_TDM_SCHEDULE_STORAGE_SCHEMA
+    manifest.pop("logical_pretty_sha256")
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert read_json(path) == expected
+    with open_tdm_schedule_view(path) as view:
+        assert pretty_tdm_schedule_sha256(view) == pretty_tdm_schedule_sha256(
+            expected
+        )
 
 
 @pytest.mark.parametrize("mutation", ["truncate", "replace", "manifest", "row"])

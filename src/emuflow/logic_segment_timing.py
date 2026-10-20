@@ -34,6 +34,7 @@ from .sta import (
     sta_path_endpoints,
 )
 from .tdm import reconstruct_tdm_schedule_timing_paths
+from .tdm_schedule_storage import read_tdm_schedule
 
 
 LOGIC_SEGMENT_IDENTITY_SCHEMA = "emuflow.logic-segment-identity/v1"
@@ -765,7 +766,7 @@ def prepare_logic_segment_query_inputs(
     )
     path_database = read_json(path_database_path)
     routes = read_json(routes_path)
-    schedule = read_json(schedule_path)
+    schedule = read_tdm_schedule(schedule_path)
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError("logic segment assignment schema is invalid")
     if path_database.get("schema") not in {

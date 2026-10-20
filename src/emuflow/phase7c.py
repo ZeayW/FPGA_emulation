@@ -22,6 +22,7 @@ from .runtime import (
     validate_virtual_runtime,
     virtual_runtime_controller_to_systemverilog,
 )
+from .tdm_schedule_storage import read_tdm_schedule
 
 
 PHASE7C_REPORT_SCHEMA = "emuflow.phase7c-report/v3"
@@ -81,7 +82,7 @@ def run_phase7c(
         raise ValidationError("unsupported global timing engine")
     if global_timing_engine == "python" and (global_sta_executable is not None or global_sta_results_dir is not None):
         raise ValidationError("Python timing cannot accept OpenSTA options")
-    schedule = read_json(schedule_path)
+    schedule = read_tdm_schedule(schedule_path)
     platform = Platform.load(platform_path)
     phase6_report = read_json(phase6_report_path)
     manifest_path = phase6_report_path.parent / "manifest.json"
