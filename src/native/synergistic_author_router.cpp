@@ -194,6 +194,9 @@ Input read_input(const std::string& filename) {
 struct Domain {
   long long capacity = 0, usage = 0;
   int lanes = 0, opposite = -1, banks = 0, wires = 0;
+  int bank_link = -1;
+  bool bank_forward = false;
+  int sll_link = -1, sll_orientation = -1;
   bool sll = false;
 };
 
@@ -220,6 +223,20 @@ class Router {
       domain.sll = arc.sll;
       domain.banks = arc.banks;
       domain.wires = arc.wires;
+      if (arc.sll) {
+        // Shared capacity is explicit in the common protocol: opposite arcs
+        // have the same capacity-domain id. Independently capacitated duplex
+        // directions must remain separate even when their physical link ids
+        // match. Round layers preserve link ids and node-order orientation.
+        const bool shared = arc.opposite >= 0 &&
+            arc.opposite < static_cast<int>(input_.arcs.size()) &&
+            input_.arcs[arc.opposite].domain == arc.domain;
+        const int orientation = shared ? 0 : (arc.from < arc.to ? 1 : 2);
+        if (domain.sll_link >= 0 && (domain.sll_link != arc.link || domain.sll_orientation != orientation))
+          throw std::runtime_error("inconsistent physical SLL capacity domain");
+        domain.sll_link = arc.link;
+        domain.sll_orientation = orientation;
+      }
       if (arc.direction_group >= 0) {
         const auto inserted = group_link_.emplace(arc.direction_group, arc.link);
         if (!inserted.second && inserted.first->second != arc.link)
@@ -236,8 +253,39 @@ class Router {
             opposite.banks != arc.banks || opposite.wires != arc.wires ||
             opposite.domain == arc.domain)
           throw std::runtime_error("inconsistent bank reverse ARC");
+        if (domain.bank_link >= 0 && (domain.bank_link != arc.link ||
+            domain.bank_forward != (arc.from < arc.to) || domain.opposite != opposite.domain))
+          throw std::runtime_error("inconsistent physical bank domain");
         domain.opposite = opposite.domain;
+        domain.bank_link = arc.link;
+        domain.bank_forward = arc.from < arc.to;
       }
+    }
+    // Layered transport-round inputs have different capacity domains but the
+    // same physical link id. A bank's direction must be fixed across all such
+    // layers; selecting a separate split per round can publish illegal routes.
+    for (const auto& item : domains_) {
+      const Domain& domain = item.second;
+      if (domain.banks && domain.bank_forward)
+        bank_layers_[domain.bank_link].emplace_back(item.first, domain.opposite);
+      if (domain.sll)
+        sll_layers_[{domain.sll_link, domain.sll_orientation}].push_back(item.first);
+    }
+    for (const auto& group : bank_layers_) {
+      const Domain& reference = domains_.at(group.second.front().first);
+      for (const auto& layer : group.second) {
+        const Domain& forward = domains_.at(layer.first);
+        const Domain& reverse = domains_.at(layer.second);
+        if (forward.banks != reference.banks || forward.wires != reference.wires ||
+            reverse.banks != reference.banks || reverse.wires != reference.wires)
+          throw std::runtime_error("physical bank metadata differs between layers");
+      }
+    }
+    for (const auto& group : sll_layers_) {
+      const long long capacity = domains_.at(group.second.front()).capacity;
+      for (const int domain : group.second)
+        if (domains_.at(domain).capacity != capacity)
+          throw std::runtime_error("physical SLL capacity differs between layers");
     }
     for (auto& adjacent : adjacency_) {
       std::sort(adjacent.begin(), adjacent.end(), [&](int left, int right) {
@@ -375,21 +423,37 @@ class Router {
   };
 
   BankEstimate bank_ratios(int domain_id, long long addition) const {
-    const Domain& first = domains_.at(domain_id);
-    const Domain& second = domains_.at(first.opposite);
-    const long long left_usage = first.usage + addition, right_usage = second.usage;
+    const Domain& target = domains_.at(domain_id);
+    const auto& layers = bank_layers_.at(target.bank_link);
     using Objective = std::tuple<long long, long long, double, double, int>;
-    Objective best{std::numeric_limits<long long>::max(), std::numeric_limits<long long>::max(), kInf, kInf, first.banks + 1};
+    Objective best{std::numeric_limits<long long>::max(), std::numeric_limits<long long>::max(), kInf, kInf, target.banks + 1};
     BankEstimate answer;
-    for (int left = 0; left <= first.banks; ++left) {
-      const long long left_lanes = static_cast<long long>(left) * first.wires;
-      const long long right_lanes = static_cast<long long>(first.banks - left) * first.wires;
-      const long long a = ratio(left_usage, left_lanes), b = ratio(right_usage, right_lanes);
-      if (a > maximum_ratio(first) || b > maximum_ratio(second)) continue;
-      const double p = left_usage ? static_cast<double>(left_usage) / left_lanes : 0;
-      const double q = right_usage ? static_cast<double>(right_usage) / right_lanes : 0;
-      const Objective candidate{std::max(a, b), a + b, std::max(p, q), p + q, left};
-      if (candidate < best) { best = candidate; answer = {a, b, left}; }
+    for (int left = 0; left <= target.banks; ++left) {
+      const long long left_lanes = static_cast<long long>(left) * target.wires;
+      const long long right_lanes = static_cast<long long>(target.banks - left) * target.wires;
+      long long largest_ratio = 0, sum_ratio = 0;
+      double largest_pressure = 0, sum_pressure = 0;
+      bool feasible = true;
+      BankEstimate proposed;
+      for (const auto& layer : layers) {
+        const Domain& forward = domains_.at(layer.first);
+        const Domain& reverse = domains_.at(layer.second);
+        const long long forward_usage = forward.usage + (layer.first == domain_id ? addition : 0);
+        const long long reverse_usage = reverse.usage + (layer.second == domain_id ? addition : 0);
+        const long long a = ratio(forward_usage, left_lanes), b = ratio(reverse_usage, right_lanes);
+        if (a > maximum_ratio(forward) || b > maximum_ratio(reverse)) { feasible = false; break; }
+        const double p = forward_usage ? static_cast<double>(forward_usage) / left_lanes : 0;
+        const double q = reverse_usage ? static_cast<double>(reverse_usage) / right_lanes : 0;
+        largest_ratio = std::max({largest_ratio, a, b});
+        sum_ratio += a + b;
+        largest_pressure = std::max({largest_pressure, p, q});
+        sum_pressure += p + q;
+        if (layer.first == domain_id) proposed = {a, b, left};
+        else if (layer.second == domain_id) proposed = {b, a, target.banks - left};
+      }
+      if (!feasible) continue;
+      const Objective candidate{largest_ratio, sum_ratio, largest_pressure, sum_pressure, left};
+      if (candidate < best) { best = candidate; answer = proposed; }
     }
     return answer;
   }
@@ -398,8 +462,19 @@ class Router {
     const Arc& arc = input_.arcs[arc_index];
     const Domain& domain = domains_.at(arc.domain);
     if (addition > domain.capacity - domain.usage) return false;
+    if (domain.sll) return sll_allows(domain, addition);
     if (domain.banks) return bank_ratios(arc.domain, addition).first > 0;
-    return domain.sll || ratio(domain.usage + addition, domain.lanes) <= maximum_ratio(domain);
+    return ratio(domain.usage + addition, domain.lanes) <= maximum_ratio(domain);
+  }
+
+  bool sll_allows(const Domain& domain, long long addition) const {
+    long long used = 0;
+    for (const int other : sll_layers_.at({domain.sll_link, domain.sll_orientation})) {
+      const long long usage = domains_.at(other).usage;
+      if (usage > domain.capacity - used) return false;
+      used += usage;
+    }
+    return addition <= domain.capacity - used;
   }
 
   bool direction_allows(int arc_index) const {
@@ -535,12 +610,16 @@ class Router {
         throw std::runtime_error("final capacity accounting mismatch");
       if (item.second.banks && !bank_ratios(item.first, 0).first)
         throw std::runtime_error("final shared-bank capacity violation");
+      if (item.second.sll && !sll_allows(item.second, 0))
+        throw std::runtime_error("final physical SLL capacity violation");
     }
   }
 
   Input input_;
   std::vector<std::vector<int>> adjacency_;
   std::map<int, Domain> domains_;
+  std::map<int, std::vector<std::pair<int, int>>> bank_layers_;
+  std::map<std::pair<int, int>, std::vector<int>> sll_layers_;
   std::vector<Tree> trees_;
   std::map<int, int> locks_, group_link_;
   CostPolicy policy_;

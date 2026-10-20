@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Bounded contest A/B diagnostics for current and author-derived Phase 4.
 
-Run one invocation on each host with separate --output directories. Input files
-and exact-source-keyed binaries can be reused through --data and --build-root.
+Use a separate --output directory for each experiment. Input files and
+exact-source-keyed binaries can be reused through --data and --build-root.
 This tests routing/TDM legality and contest weights, not physical implementation.
 """
 

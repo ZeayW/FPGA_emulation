@@ -185,7 +185,8 @@ class AuthorRoutingTest(unittest.TestCase):
             self.assertEqual(p5["provider"], TDM_BASELINE_PROVIDER)
             self.assertEqual(read_json(root / "phase4/routes.json")["provider"], AUTHOR_ROUTER_PROVIDER)
 
-    def test_real_counter_natural_partition_enters_existing_phase5(self):
+    def test_mapped_counter_fixture_natural_partition_enters_existing_phase5(self):
+        # Deterministic mapped fixture; fresh RTL synthesis is qualified separately.
         ir = import_yosys_json(ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"])
         platform_path = ROOT / "platforms/virtual/xcvu3p_2fpga_p2p.json"
         platform = Platform.load(platform_path)
