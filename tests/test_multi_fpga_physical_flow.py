@@ -22,6 +22,10 @@ from emuflow.multi_fpga_physical_flow import (
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
 )
+from emuflow.physical_summary_storage import (
+    PHYSICAL_EVIDENCE_REFERENCE_SCHEMA,
+    read_physical_summary,
+)
 from emuflow.physical_backend import physical_backend_descriptor
 from emuflow.platform import Platform
 
@@ -716,6 +720,21 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 )
                 physical_summary = read_json(
                     root / "physical/physical-summary.json"
+                )
+                for field in ("boundary_identities", "boundary_timing"):
+                    self.assertTrue(
+                        all(
+                            item["schema"]
+                            == PHYSICAL_EVIDENCE_REFERENCE_SCHEMA
+                            for item in physical_summary[field].values()
+                        )
+                    )
+                lazy_summary = read_physical_summary(
+                    root / "physical/physical-summary.json"
+                )
+                self.assertEqual(
+                    lazy_summary["boundary_identities"]["fpga0"]["schema"],
+                    "emuflow.boundary-identity/v1",
                 )
                 self.assertEqual(
                     (root / "physical/architecture/vtr-flagship.xml").read_bytes(),

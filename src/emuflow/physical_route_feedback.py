@@ -9,6 +9,7 @@ from typing import Any, Dict, Mapping, Optional
 from .boundary_timing import validate_boundary_timing_database
 from .errors import ValidationError
 from .platform import Platform
+from .physical_summary_storage import canonical_physical_summary_sha256
 from .runtime import validate_physical_summary
 from .tdm import reconstruct_tdm_schedule_timing_paths, validate_tdm_schedule
 from .tdm_feedback import canonical_mapping_sha256
@@ -154,7 +155,7 @@ def _reconstruct_physical_route_feedback(
         "platform": platform.name,
         "source_routes_sha256": canonical_mapping_sha256(routes),
         "source_schedule_sha256": canonical_mapping_sha256(schedule),
-        "source_physical_summary_sha256": canonical_mapping_sha256(
+        "source_physical_summary_sha256": canonical_physical_summary_sha256(
             physical_summary
         ),
         "domains": domains,

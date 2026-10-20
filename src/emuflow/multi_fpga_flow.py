@@ -51,6 +51,7 @@ from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
+from .physical_summary_storage import read_physical_summary
 from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
 from .combinational_cut import (
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
@@ -1158,7 +1159,7 @@ def validate_multi_fpga_flow_bundle(
             "physical summary",
         )
         validate_multi_fpga_physical_report(
-            live_physical, read_json(physical_summary_path)
+            live_physical, read_physical_summary(physical_summary_path)
         )
         candidate_link_timing = flow_root / "timing/board-link-timing.json"
         if candidate_link_timing.is_file():
@@ -1195,7 +1196,7 @@ def validate_multi_fpga_flow_bundle(
         from .global_sta import adopt_opensta_results, bind_physical_checks, compare_system_timing, read_engine_identity, read_measurements
         if physical_summary_path is None:
             raise ValidationError("global OpenSTA qualification lacks physical inputs")
-        physical = read_json(physical_summary_path)
+        physical = read_physical_summary(physical_summary_path)
         if board_link_timing_path is not None:
             physical["board_link_timing"] = read_json(board_link_timing_path)
         checks = bind_physical_checks(

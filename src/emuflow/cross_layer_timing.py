@@ -494,7 +494,8 @@ def _build_physical_binding(
             raise ValidationError("physical boundary evidence maps are invalid")
         if set(raw_boundary) != set(identities):
             raise ValidationError("physical boundary evidence coverage disagrees")
-        for fpga, database in sorted(raw_boundary.items()):
+        for fpga in sorted(raw_boundary):
+            database = raw_boundary[fpga]
             validate_boundary_timing_database(database, identities[fpga])
             for item in database["endpoints"]:
                 endpoint = item["id"]
@@ -579,7 +580,8 @@ def _build_physical_binding(
     if raw_logic is not None:
         if not isinstance(raw_logic, dict):
             raise ValidationError("physical logic-segment evidence is invalid")
-        for fpga, database in sorted(raw_logic.items()):
+        for fpga in sorted(raw_logic):
+            database = raw_logic[fpga]
             validation = validate_logic_segment_timing(database)
             if validation["fpga"] != fpga:
                 raise ValidationError("physical logic-segment FPGA disagrees")

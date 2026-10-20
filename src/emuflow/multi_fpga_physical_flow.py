@@ -54,6 +54,7 @@ from .physical_backend import (
     validate_physical_backend_descriptor,
     validate_physical_partition_result,
 )
+from .physical_summary_storage import publish_physical_evidence_reference
 from .platform import Platform
 from .resource_budget import validate_device_resource_usage
 from .rapidwright_provider import validate_rapidwright_provider_manifest
@@ -2119,16 +2120,7 @@ def _assemble_multi_fpga_physical_results(
         "qualification": backend_descriptor["qualification"],
         "backend": backend_descriptor,
         "fpgas": physical_fpgas,
-        "boundary_identities": {
-            item["fpga"]: read_json(
-                Path(
-                    item["stages"]["placement_ir"]["boundary_identity"][
-                        "output"
-                    ]
-                )
-            )
-            for item in records
-        },
+        "boundary_identities": {},
     }
     if requires_virtual_io:
         physical_summary["virtual_io_implementation"] = {
@@ -2151,59 +2143,78 @@ def _assemble_multi_fpga_physical_results(
         item["fpga"]: read_transport(split_root / item["transport"])
         for item in manifest["fpgas"]
     }
-    for fpga_id, database in physical_summary[
-        "boundary_identities"
-    ].items():
-        validate_boundary_identity_database(
-            database, transports_by_fpga[fpga_id]
+    physical_summary["boundary_timing"] = {}
+    for item in records:
+        fpga_id = item["fpga"]
+        identity_path = Path(
+            item["stages"]["placement_ir"]["boundary_identity"]["output"]
         )
-    physical_summary["boundary_timing"] = {
-        item["fpga"]: read_json(
-            Path(
-                _implementation_stage(item, backend, "boundary_timing")[
+        identity_database = read_json(identity_path)
+        validate_boundary_identity_database(
+            identity_database, transports_by_fpga[fpga_id]
+        )
+        physical_summary["boundary_identities"][fpga_id] = (
+            publish_physical_evidence_reference(
+                identity_path,
+                identity_database["schema"],
+                output_dir,
+                Path(fpga_id) / identity_path.name,
+            )
+        )
+        timing_path = Path(
+            _implementation_stage(item, backend, "boundary_timing")[
+                "import"
+            ]["output"]
+        )
+        timing_database = read_json(timing_path)
+        validate_boundary_timing_database(
+            timing_database,
+            identity_database,
+        )
+        physical_summary["boundary_timing"][fpga_id] = (
+            publish_physical_evidence_reference(
+                timing_path,
+                timing_database["schema"],
+                output_dir,
+                Path(fpga_id) / timing_path.name,
+            )
+        )
+    if include_logic_timing:
+        physical_summary["logic_segment_timing"] = {}
+        for item in records:
+            path = Path(
+                _implementation_stage(item, backend, "logic_segment_timing")[
                     "import"
                 ]["output"]
             )
-        )
-        for item in records
-    }
-    for fpga_id, database in physical_summary[
-        "boundary_timing"
-    ].items():
-        validate_boundary_timing_database(
-            database,
-            physical_summary["boundary_identities"][fpga_id],
-        )
-    if include_logic_timing:
-        physical_summary["logic_segment_timing"] = {
-            item["fpga"]: read_json(
-                Path(
-                    _implementation_stage(
-                        item, backend, "logic_segment_timing"
-                    )[
+            database = read_json(path)
+            validate_logic_segment_timing(database)
+            physical_summary["logic_segment_timing"][item["fpga"]] = (
+                publish_physical_evidence_reference(
+                    path,
+                    database["schema"],
+                    output_dir,
+                    Path(item["fpga"]) / path.name,
+                )
+            )
+        if backend in {"open", "rapidwright"}:
+            physical_summary["local_path_timing"] = {}
+            for item in records:
+                path = Path(
+                    _implementation_stage(item, backend, "local_path_timing")[
                         "import"
                     ]["output"]
                 )
-            )
-            for item in records
-        }
-        for database in physical_summary["logic_segment_timing"].values():
-            validate_logic_segment_timing(database)
-        if backend in {"open", "rapidwright"}:
-            physical_summary["local_path_timing"] = {
-                item["fpga"]: read_json(
-                    Path(
-                        _implementation_stage(
-                            item, backend, "local_path_timing"
-                        )[
-                            "import"
-                        ]["output"]
+                database = read_json(path)
+                validate_local_path_timing(database)
+                physical_summary["local_path_timing"][item["fpga"]] = (
+                    publish_physical_evidence_reference(
+                        path,
+                        database["schema"],
+                        output_dir,
+                        Path(item["fpga"]) / path.name,
                     )
                 )
-                for item in records
-            }
-            for database in physical_summary["local_path_timing"].values():
-                validate_local_path_timing(database)
     physical_summary["validation"] = validate_physical_summary(
         physical_summary, runtime, platform
     )

@@ -29,6 +29,7 @@ from .physical_route_feedback import (
     combine_tdm_and_physical_feedback,
     validate_physical_route_feedback,
 )
+from .physical_summary_storage import read_physical_summary
 
 
 PHASE4_REPORT_SCHEMA = "emuflow.phase4-report/v1"
@@ -127,7 +128,9 @@ def run_phase4(
                 )
             physical_feedback = read_json(physical_feedback_path)
             feedback_runtime = read_json(physical_feedback_runtime_path)
-            feedback_summary = read_json(physical_feedback_summary_path)
+            feedback_summary = read_physical_summary(
+                physical_feedback_summary_path
+            )
             physical_feedback_validation = validate_physical_route_feedback(
                 feedback_runtime,
                 feedback_routes,

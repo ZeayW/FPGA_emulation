@@ -39,6 +39,7 @@ from .phase5 import validate_phase5
 from .phase6 import run_phase6, validate_phase6
 from .phase1 import indexed_phase1_identity
 from .phase7c import run_phase7c
+from .physical_summary_storage import read_physical_summary
 from .pin_planning import (
     SIGNAL_POSITION_HINTS_SCHEMA,
     build_pin_plan,
@@ -1063,7 +1064,9 @@ def validate_physical_lookahead(
     )
     session.validate_physical(
         physical_report,
-        read_json(_require_file(root, "physical/physical-summary.json")),
+        read_physical_summary(
+            _require_file(root, "physical/physical-summary.json")
+        ),
     )
     expected = {
         "seed": expected_seed,
@@ -1666,7 +1669,7 @@ def validate_phase7_checkpoint(
     physical_report = read_json(
         _require_file(root, "physical/multi-fpga-physical-flow-report.json")
     )
-    physical_summary = read_json(
+    physical_summary = read_physical_summary(
         _require_file(root, "physical/physical-summary.json")
     )
     session.validate_physical(

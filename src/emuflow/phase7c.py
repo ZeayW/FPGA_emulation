@@ -12,6 +12,7 @@ from .cross_layer_timing import (
 from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import Platform
+from .physical_summary_storage import read_physical_summary
 from .phase3_storage import read_phase3_assignment_view
 from .routing import semantic_contract_for_routes
 from .runtime import (
@@ -97,7 +98,7 @@ def run_phase7c(
         runtime, schedule, platform, clock_periods
     )
     physical_summary = (
-        read_json(physical_summary_path)
+        read_physical_summary(physical_summary_path)
         if physical_summary_path is not None
         else None
     )

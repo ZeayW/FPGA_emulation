@@ -103,6 +103,17 @@ transport cells, nets, aliases and endpoints into `placement.emuir.sqlite`.
 The legacy file-based generic Yosys and logical lowering APIs remain available
 for compatibility and differential tests.
 
+Whole-design physical assembly no longer embeds every FPGA's boundary
+identity, boundary timing, logic-segment timing and local-path timing database
+inside `physical-summary.json`. The summary is now a bounded control artifact
+whose per-FPGA entries are relocatable references sealed by logical schema,
+byte count and SHA-256. Assembly validates and publishes one FPGA at a time;
+Phase 4 feedback, Phase 7C, global timing, Vivado timing import and experiment
+validation resolve those files lazily. Logical canonical hashing streams one
+referenced database at a time and remains equal to the previous inline JSON
+hash. The per-FPGA evidence databases are still JSON and their producers remain
+Python migration work.
+
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
 from their sealed SQLite sidecar, reuses the in-process atomic-source view, and
 publishes one versioned `physical-handoff.sqlite`. Its normalized cluster and
