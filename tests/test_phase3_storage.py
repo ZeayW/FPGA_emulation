@@ -152,6 +152,21 @@ class Phase3StorageTest(unittest.TestCase):
             )
             self.assertEqual(read_json(root / "assignment.json"), assignment)
 
+    def test_previous_v2_assignment_storage_remains_readable(self) -> None:
+        clusters, assignment = _large_artifacts(4)
+        packed = pack_phase3_assignment(assignment, clusters)
+        packed["schema"] = "emuflow.phase3-assignment-storage/v2"
+        packed.pop("semantic_contract_index", None)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            write_json(
+                root / "clusters.json",
+                pack_phase3_clusters(clusters),
+                compact=True,
+            )
+            write_json(root / "assignment.json", packed, compact=True)
+            self.assertEqual(read_json(root / "assignment.json"), assignment)
+
     def test_corrupt_cluster_vector_is_rejected(self) -> None:
         clusters, assignment = _large_artifacts(4)
         packed = pack_phase3_assignment(assignment, clusters)

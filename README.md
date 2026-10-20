@@ -51,7 +51,11 @@ New Phase 3 publications use assignment-index schema v2. Static Exact segment
 and capture fields are stored as typed SQLite columns instead of repeating a
 canonical JSON object in every row; readers continue to accept completed v1
 indexes. The logical segment and capture records returned to downstream timing
-and physical consumers are unchanged.
+and physical consumers are unchanged. Assignment storage v3 makes that index
+the sole persisted copy of the full Static Exact graph. `assignment.json`
+contains only the contract schema and SHA-256 identity; explicit legacy-style
+reads reconstruct and verify the same logical contract from
+`assignment.sqlite`. Assignment storage v1 and v2 remain readable.
 For designs with at least 100,000 instances, Static Exact dependency-cone and
 capture-cone traversal runs in `emuflow_static_exact_analyzer`. The boundary is
 a versioned integer-only binary graph, and Python reconstructs the same v3

@@ -261,6 +261,21 @@ def write_phase3_assignment_index(
                 if exact_contract is not None
                 else None
             ),
+            "semantic_contract_header": (
+                {
+                    key: value
+                    for key, value in exact_contract.items()
+                    if key
+                    not in {
+                        "cut_nodes",
+                        "dependency_edges",
+                        "logic_segments",
+                        "capture_requirements",
+                    }
+                }
+                if exact_contract is not None
+                else None
+            ),
         }
         connection.executemany(
             "INSERT INTO metadata(key,value) VALUES (?,?)",
@@ -489,6 +504,21 @@ def migrate_phase3_assignment_index(
             "semantic_contract_sha256": exact_digest,
             "semantic_contract_schema": (
                 exact_contract.get("schema")
+                if exact_contract is not None
+                else None
+            ),
+            "semantic_contract_header": (
+                {
+                    key: value
+                    for key, value in exact_contract.items()
+                    if key
+                    not in {
+                        "cut_nodes",
+                        "dependency_edges",
+                        "logic_segments",
+                        "capture_requirements",
+                    }
+                }
                 if exact_contract is not None
                 else None
             ),
@@ -757,6 +787,182 @@ def read_phase3_exact_semantic_partition(
             "logic_segments": segments,
             "capture_requirements": captures,
         }
+    finally:
+        connection.close()
+
+
+def read_phase3_exact_semantic_contract(
+    path: Path, assignment: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Reconstruct the canonical Static Exact contract from its typed index.
+
+    Production consumers query bounded per-FPGA slices and never call this
+    function.  It preserves the historical ``read_json(assignment.json)``
+    behavior for validation, replay and debugging without forcing Phase 3 to
+    publish a duplicate compressed JSON graph.
+    """
+
+    connection = open_phase3_assignment_index(path)
+    try:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version != 2:
+            raise ValidationError(
+                "full indexed Static Exact reconstruction requires index v2"
+            )
+        metadata = {
+            str(row["key"]): json.loads(row["value"])
+            for row in connection.execute("SELECT key,value FROM metadata")
+        }
+        header = metadata.get("semantic_contract_header")
+        schema = metadata.get("semantic_contract_schema")
+        expected_digest = metadata.get("semantic_contract_sha256")
+        if (
+            not isinstance(header, dict)
+            or header.get("schema") != schema
+            or not isinstance(expected_digest, str)
+            or len(expected_digest) != 64
+            or assignment.get("semantic_contract_sha256") != expected_digest
+        ):
+            raise ValidationError(
+                "assignment index semantic contract identity is incomplete"
+            )
+
+        parts = {
+            int(row[0]): str(row[1])
+            for row in connection.execute(
+                "SELECT part_index,fpga FROM parts ORDER BY part_index"
+            )
+        }
+        segment_kinds = ("launch_to_tx", "rx_to_tx", "rx_to_capture")
+        logic_segments = []
+        for row in connection.execute(
+            "SELECT segment_id,kind,part_index,source_cut_net,sink_cut_net,"
+            "capture_requirement,source_semantics "
+            "FROM exact_segment_bindings ORDER BY segment_id"
+        ):
+            kind = int(row[1])
+            part_index = int(row[2])
+            if kind < 0 or kind >= len(segment_kinds) or part_index not in parts:
+                raise ValidationError(
+                    "assignment index semantic segment is invalid"
+                )
+            segment = {
+                "id": str(row[0]),
+                "kind": segment_kinds[kind],
+                "fpga": parts[part_index],
+            }
+            for key, value in zip(
+                (
+                    "source_cut_net",
+                    "sink_cut_net",
+                    "capture_requirement",
+                    "source_semantics",
+                ),
+                row[3:],
+            ):
+                if value is not None:
+                    segment[key] = (
+                        "configuration-stable-constant"
+                        if key == "source_semantics"
+                        else str(value)
+                    )
+            logic_segments.append(segment)
+
+        capture_requirements = []
+        for row in connection.execute(
+            "SELECT capture_id,cut_net,part_index,kind,endpoint,port,bit "
+            "FROM exact_capture_requirements ORDER BY capture_id"
+        ):
+            part_index = int(row[2])
+            kind = int(row[3])
+            if part_index not in parts or kind not in {0, 1}:
+                raise ValidationError(
+                    "assignment index semantic capture is invalid"
+                )
+            capture = {
+                "id": str(row[0]),
+                "cut_net": str(row[1]),
+                "fpga": parts[part_index],
+                "kind": "top-output" if kind == 0 else "architectural-state",
+                "endpoint": str(row[4]),
+            }
+            if row[5] is not None:
+                capture["port"] = str(row[5])
+            if row[6] is not None:
+                capture["bit"] = int(row[6])
+            capture_requirements.append(capture)
+
+        cut_by_net = {
+            cut.get("net"): cut
+            for cut in assignment.get("cut_nets", [])
+            if isinstance(cut, Mapping) and isinstance(cut.get("net"), str)
+        }
+        source_segments: dict[str, list[str]] = {}
+        for row in connection.execute(
+            "SELECT net_id,ordinal,segment_id FROM exact_cut_sources "
+            "ORDER BY net_id,ordinal"
+        ):
+            source_segments.setdefault(str(row[0]), []).append(str(row[2]))
+        capture_segments: dict[str, list[str]] = {}
+        for segment in logic_segments:
+            if segment["kind"] == "rx_to_capture":
+                capture_segments.setdefault(
+                    str(segment["source_cut_net"]), []
+                ).append(str(segment["id"]))
+
+        cut_nodes = []
+        node_fields = (
+            "net",
+            "cut_class",
+            "source_fpgas",
+            "sink_fpgas",
+            "dependency_level",
+            "combinational_dependency_depth",
+            "predecessor_cut_nets",
+        )
+        for row in connection.execute(
+            "SELECT net_id FROM exact_cut_nodes ORDER BY net_id"
+        ):
+            net_id = str(row[0])
+            cut = cut_by_net.get(net_id)
+            if cut is None or any(field not in cut for field in node_fields):
+                raise ValidationError(
+                    "assignment index semantic cut node is incomplete"
+                )
+            cut_nodes.append(
+                {
+                    **{field: cut[field] for field in node_fields},
+                    "source_segment_ids": source_segments.get(net_id, []),
+                    "capture_segment_ids": sorted(
+                        capture_segments.get(net_id, [])
+                    ),
+                }
+            )
+
+        dependency_edges = [
+            {
+                "from": str(row[0]),
+                "to": str(row[1]),
+                "segment": str(row[2]),
+            }
+            for row in connection.execute(
+                "SELECT source_cut_net,sink_cut_net,segment_id "
+                "FROM exact_segment_bindings WHERE kind=1 "
+                "ORDER BY sink_cut_net,source_cut_net"
+            )
+        ]
+        contract = {
+            **header,
+            "cut_nodes": cut_nodes,
+            "dependency_edges": dependency_edges,
+            "logic_segments": logic_segments,
+            "capture_requirements": capture_requirements,
+        }
+        if semantic_contract_sha256(contract) != expected_digest:
+            raise ValidationError(
+                "reconstructed Static Exact semantic contract digest disagrees"
+            )
+        return contract
     finally:
         connection.close()
 

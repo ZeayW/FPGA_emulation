@@ -1180,6 +1180,16 @@ def run_phase3(
         output_dir / "constraints.normalized.json",
         constraints,
     )
+    # Publish the typed semantic relation before the lightweight JSON
+    # descriptor that names it.  A failed index write can therefore never
+    # leave a completed assignment document pointing at a missing sidecar.
+    phase3_runtime_call(
+        "publish.write_assignment_index",
+        write_phase3_assignment_index,
+        output_dir / "assignment.sqlite",
+        ir,
+        assignment,
+    )
     persisted_assignment = (
         assignment
         if retain_diagnostics
@@ -1198,13 +1208,6 @@ def run_phase3(
         compact=True,
     )
     del persisted_assignment
-    phase3_runtime_call(
-        "publish.write_assignment_index",
-        write_phase3_assignment_index,
-        output_dir / "assignment.sqlite",
-        ir,
-        assignment,
-    )
     if (
         provider == "patron"
         and retain_patron_baseline

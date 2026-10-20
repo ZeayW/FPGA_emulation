@@ -28,6 +28,7 @@ from emuflow.equivalence import (
     simulate_static_exact_partition_equivalence,
 )
 from emuflow.ir import EmuIR
+from emuflow.io import read_json, write_json
 from emuflow.netlist import (
     build_split_artifacts,
     transport_to_systemverilog,
@@ -46,6 +47,11 @@ from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.phase3_assignment_index import (
     read_phase3_exact_semantic_partition,
     write_phase3_assignment_index,
+)
+from emuflow.phase3_storage import (
+    pack_phase3_assignment,
+    pack_phase3_clusters,
+    read_phase3_assignment_view,
 )
 from emuflow.routing import (
     build_directed_graph,
@@ -859,6 +865,47 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     ],
                 )
             self.assertEqual(actual, expected)
+
+    def test_indexed_assignment_storage_reconstructs_exact_contract(self):
+        clusters, assignment = self._exact_artifacts(dependent_return=True)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            write_phase3_assignment_index(
+                root / "assignment.sqlite", self.ir, assignment
+            )
+            packed = pack_phase3_assignment(assignment, clusters)
+            self.assertIsNone(packed["semantic_contract"])
+            self.assertEqual(
+                packed["semantic_contract_index"],
+                {
+                    "artifact": "assignment.sqlite",
+                    "schema": STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
+                    "sha256": assignment["semantic_contract_sha256"],
+                },
+            )
+            write_json(
+                root / "clusters.json",
+                pack_phase3_clusters(clusters),
+                compact=True,
+            )
+            write_json(root / "assignment.json", packed, compact=True)
+            self.assertEqual(read_json(root / "assignment.json"), assignment)
+
+            route_view = read_phase3_assignment_view(
+                root / "assignment.json",
+                include_semantic_contract=False,
+            )
+            self.assertTrue(route_view["semantic_contract_indexed"])
+            self.assertNotIn("semantic_contract", route_view)
+            self.assertEqual(
+                route_view["semantic_contract_schema"],
+                STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
+            )
+
+            packed["semantic_contract_index"]["sha256"] = "0" * 64
+            write_json(root / "assignment.json", packed, compact=True)
+            with self.assertRaisesRegex(ValueError, "index is malformed"):
+                read_json(root / "assignment.json")
 
     def _exact_artifacts(
         self, frame_slots=16, dependent_return=False, dependency_depth=1

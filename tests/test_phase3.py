@@ -196,6 +196,18 @@ class Phase3Test(unittest.TestCase):
                     cut_mode="static-exact-combinational",
                 )
             assignment = read_json(output / "assignment.json")
+            packed_assignment = json.loads(
+                (output / "assignment.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                packed_assignment["schema"],
+                "emuflow.phase3-assignment-storage/v3",
+            )
+            self.assertIsNone(packed_assignment["semantic_contract"])
+            self.assertEqual(
+                packed_assignment["semantic_contract_index"]["artifact"],
+                "assignment.sqlite",
+            )
             runtime = read_json(output / "phase3-runtime.json")
             self.assertEqual(
                 runtime["observations"]["static_exact_native"], 0

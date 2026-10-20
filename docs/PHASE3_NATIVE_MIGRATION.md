@@ -39,8 +39,17 @@ result, and materializes the unchanged semantic contract. Small designs use
 the original Python traversal as a continuously tested reference.
 
 Assignment index v2 replaces per-row JSON copies with typed segment and capture
-columns plus compact integer enums. Version 1 remains readable. The next data
-boundary will stream native semantic records directly into the index, after
-the end-to-end NVDLA comparison proves the current native traversal. That step
-removes the remaining graph-sized Python contract without weakening the
-terminal indexed validation boundary.
+columns plus compact integer enums. Version 1 remains readable. Assignment
+storage v3 removes the duplicate compressed semantic graph from
+`assignment.json`; the JSON document carries a schema-and-digest descriptor,
+while the typed index is the canonical persisted payload. Full-document reads
+reconstruct the historical logical contract from the index and reject any
+digest mismatch. Production Phase 4--7 readers continue to request bounded
+indexed views.
+
+The next data boundary will stream native semantic records directly into the
+index. The current implementation still materializes the final logical
+contract once in Python so the independent validators can compare it before
+publication. Direct streaming may replace that allocation only after the
+end-to-end NVDLA comparison proves identical semantic populations, digest and
+downstream Phase 4--7 behavior.
