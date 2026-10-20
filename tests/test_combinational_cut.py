@@ -909,6 +909,20 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "index is malformed"):
                 read_json(root / "assignment.json")
 
+    def test_indexed_assignment_publish_reuses_owned_exact_digest(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        with tempfile.TemporaryDirectory() as temporary_directory, patch(
+            "emuflow.phase3_assignment_index.semantic_contract_sha256",
+            side_effect=AssertionError(
+                "production publication must not rehash the resident contract"
+            ),
+        ):
+            write_phase3_assignment_index(
+                Path(temporary_directory) / "assignment.sqlite",
+                self.ir,
+                assignment,
+            )
+
     def _exact_artifacts(
         self, frame_slots=16, dependent_return=False, dependency_depth=1
     ):

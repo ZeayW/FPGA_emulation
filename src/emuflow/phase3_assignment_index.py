@@ -243,8 +243,15 @@ def write_phase3_assignment_index(
         raise ValidationError("Phase 3 assignment references an unknown FPGA")
 
     exact_contract = static_exact_contract_from_assignment(assignment)
+    # ``build_partition_assignment`` owns the in-process Static Exact
+    # contract and computes this identity when it creates the final Phase 3
+    # assignment.  Recomputing it here makes publication serialize the same
+    # multi-million-record contract a second time immediately before the
+    # binary writer scans it again.  The production publisher consumes the
+    # already validated owner-provided identity; the explicit legacy migration
+    # below still reconstructs and hashes detached historical input.
     exact_digest = (
-        semantic_contract_sha256(exact_contract)
+        assignment.get("semantic_contract_sha256")
         if exact_contract is not None
         else None
     )

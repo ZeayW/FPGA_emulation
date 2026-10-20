@@ -60,6 +60,11 @@ storage descriptor; they no longer repeat source/consumer segment-ID arrays
 for every scheduled hop. Production placement lowering joins the split SQLite
 data plane directly and carries only boundary role plus digest, while explicit
 legacy JSON expansion resolves detailed segment IDs on demand.
+Phase 3 computes the canonical Static Exact digest when the final assignment is
+created. Assignment-index publication reuses that validated owner-provided
+identity instead of serializing the same multi-million-record contract for a
+second hash pass. Explicit migration of detached legacy artifacts still
+reconstructs and hashes its input independently.
 `assignment.json` contains only the contract schema and SHA-256 identity;
 explicit legacy-style reads reconstruct and verify the same logical contract.
 Completed assignment-index v1/v2 artifacts remain readable.
