@@ -323,19 +323,16 @@ def write_placement_emuir_from_split(
         )
 
         connection.executemany(
-            "INSERT OR IGNORE INTO requested_nets VALUES (?,?)",
-            (
-                [(0, net_id) for net_id in sorted(set(expected_source_nets))]
-                + [
-                    (1, net_id)
-                    for net_id, _instance_id
-                    in sorted(set(expected_rx_bindings))
-                ]
-            ),
+            "INSERT OR IGNORE INTO expected_rx VALUES (?,?)",
+            expected_rx_bindings,
         )
         connection.executemany(
-            "INSERT OR IGNORE INTO expected_rx VALUES (?,?)",
-            sorted(set(expected_rx_bindings)),
+            "INSERT OR IGNORE INTO requested_nets VALUES (0,?)",
+            ((net_id,) for net_id in expected_source_nets),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO requested_nets "
+            "SELECT 1,net_id FROM expected_rx"
         )
         missing = connection.execute(
             """SELECT r.kind,r.net_id FROM requested_nets r

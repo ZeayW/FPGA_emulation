@@ -54,6 +54,15 @@ def read_json(path: Path) -> Dict[str, Any]:
 
         return expand_tdm_schedule_storage(value, path)
     if schema in {
+        "emuflow.transport-storage/v1",
+        "emuflow.logical-lane-map-storage/v1",
+        "emuflow.virtual-io-anchors-storage/v1",
+        "emuflow.virtual-board-binding-storage/v1",
+    }:
+        from .transport_storage import expand_transport_storage
+
+        return expand_transport_storage(value, path)
+    if schema in {
         "emuflow.phase3-clusters-storage/v1",
         "emuflow.phase3-clusters-storage/v2",
         "emuflow.phase3-assignment-storage/v1",

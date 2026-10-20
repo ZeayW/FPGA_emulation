@@ -771,7 +771,9 @@ def anchors_to_xdc_template(anchors: Mapping[str, Any]) -> str:
         "# template directly in Vivado.",
         "",
     ]
-    for anchor in anchors["anchors"]:
+    records = anchors["anchors"]
+    iter_headers = getattr(records, "iter_headers", None)
+    for anchor in iter_headers() if iter_headers is not None else records:
         port = _sv_name(anchor["id"])
         lines.extend(
             [

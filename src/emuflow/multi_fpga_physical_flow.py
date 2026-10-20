@@ -66,6 +66,7 @@ from .tdm_schedule_storage import (
     canonical_tdm_schedule_sha256,
     read_tdm_schedule,
 )
+from .transport_storage import read_lane_map, read_transport, read_virtual_binding
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vpr_pack_place, run_vpr_route_packed
 from .vpr_boundary_timing import (
     import_vpr_boundary_timing,
@@ -823,12 +824,14 @@ def run_multi_fpga_physical_flow(
         ):
             raise ValidationError("physical virtual-board artifact coverage is invalid")
         virtual_board = read_json(split_root / wiring_ref)
-        virtual_binding = read_json(split_root / binding_ref)
+        virtual_binding = read_virtual_binding(split_root / binding_ref)
         validate_virtual_board(platform, virtual_board)
         virtual_phase6_artifacts = {
-            "lane_map": read_json(split_root / manifest["lane_map"]),
+            "lane_map": read_lane_map(split_root / manifest["lane_map"]),
             "transports": {
-                item["fpga"]: read_json(split_root / item["transport"])
+                item["fpga"]: read_transport(
+                    split_root / item["transport"]
+                )
                 for item in manifest["fpgas"]
             },
         }
@@ -1086,7 +1089,7 @@ def run_multi_fpga_physical_flow(
             )
         netlist_path = split_root / item["netlist"]
         transport_path = split_root / item["transport"]
-        transport = read_json(transport_path)
+        transport = read_transport(transport_path)
         split_selector = item.get("netlist_selector")
         if split_selector is not None:
             with SplitNetlistView(netlist_path, split_selector) as split_view:
@@ -2129,7 +2132,7 @@ def _assemble_multi_fpga_physical_results(
             ),
         }
     transports_by_fpga = {
-        item["fpga"]: read_json(split_root / item["transport"])
+        item["fpga"]: read_transport(split_root / item["transport"])
         for item in manifest["fpgas"]
     }
     for fpga_id, database in physical_summary[

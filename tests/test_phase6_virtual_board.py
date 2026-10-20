@@ -1,5 +1,6 @@
 """Phase 6 materializes and independently replays the declared virtual board."""
 import copy
+import json
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,8 @@ from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import build_tdm_schedule
 from emuflow.timing_routing import route_system_native
+from emuflow.transport_storage import VIRTUAL_BINDING_STORAGE_SCHEMA
+from emuflow.virtual_board import build_virtual_binding
 from emuflow.yosys import import_yosys_json
 from tests.native_build import tlr_router
 
@@ -57,6 +60,22 @@ def test_phase6_automatically_emits_binding_and_replay_matches_report(tmp_path,i
     assert report['virtual_board_binding']['physical_backend_status']=='phase7_consumption_required'
     board=read_json(out/'virtual_board_wiring.json')
     binding=read_json(out/'virtual_board_binding.json')
+    raw_binding=json.loads(
+        (out/'virtual_board_binding.json').read_text(encoding='utf-8')
+    )
+    assert raw_binding['schema']==VIRTUAL_BINDING_STORAGE_SCHEMA
+    assert (out/'virtual_board_binding.json').stat().st_size < 4096
+    manifest=read_json(out/'manifest.json')
+    compatibility_artifacts={
+        'lane_map':read_json(out/manifest['lane_map']),
+        'transports':{
+            item['fpga']:read_json(out/item['transport'])
+            for item in manifest['fpgas']
+        },
+    }
+    assert binding==build_virtual_binding(
+        Platform.load(args[3]),board,inputs[3],compatibility_artifacts
+    )
     assert board['metrics']['differential_pairs']==360
     assert board['metrics']['physical_conductors']==720
     assert board['metrics']['endpoint_data_pins']==1440
@@ -64,7 +83,6 @@ def test_phase6_automatically_emits_binding_and_replay_matches_report(tmp_path,i
     assert binding['entries'], 'The integration fixture must exercise cross-FPGA I/O'
     assert (out/'fpga0/virtual_data_pins.xdc').exists()
     assert (out/'fpga1/virtual_data_pins.xdc').exists()
-    manifest=read_json(out/'manifest.json')
     assert manifest['virtual_board_binding']['differential_io']=={
         fpga:f'{fpga}/virtual_differential_io.sv' for fpga in ('fpga0','fpga1')
     }

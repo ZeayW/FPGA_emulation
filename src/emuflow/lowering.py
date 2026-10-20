@@ -16,6 +16,7 @@ from .indexed_physical_ir import IndexedPhysicalIR
 from .netlist import FPGA_NETLIST_SCHEMA, TRANSPORT_ENDPOINTS_SCHEMA
 from .placement_ir_storage import write_placement_emuir_from_split
 from .split_netlist_storage import SplitNetlistView
+from .transport_storage import read_transport
 
 
 PLACEMENT_IR_REPORT_SCHEMA = "emuflow.placement-ir-report/v1"
@@ -364,7 +365,7 @@ def run_placement_ir_lowering_from_value(
 ) -> Dict[str, Any]:
     """Lower one already-selected partition without a JSON round trip."""
 
-    transport = read_json(transport_path)
+    transport = read_transport(transport_path)
     transport_ir = EmuIR.load(transport_ir_path)
     result = build_placement_ir(
         netlist, transport, transport_ir
@@ -422,7 +423,7 @@ def run_placement_ir_lowering_from_split(
     as nested Python objects between the two SQLite artifacts.
     """
 
-    transport = read_json(transport_path)
+    transport = read_transport(transport_path)
     if transport.get("schema") != TRANSPORT_ENDPOINTS_SCHEMA:
         raise ValidationError("invalid transport endpoint schema")
     transport_ir = EmuIR.load(transport_ir_path)
@@ -449,28 +450,24 @@ def run_placement_ir_lowering_from_split(
             value["instance"] = instance_map[value["instance"]]
         return value
 
-    shadow_signal_to_logical_net = {
-        endpoint["signal"]: endpoint["net"]
-        for endpoint in transport["endpoints"]
-        if endpoint["kind"] == "rx"
-    }
-    rx_endpoint_ids_by_signal: Dict[str, List[str]] = {}
-    for endpoint in transport["endpoints"]:
-        if endpoint["kind"] == "rx":
-            rx_endpoint_ids_by_signal.setdefault(
-                endpoint["signal"], []
-            ).append(endpoint["id"])
-    shadow_index = {
-        item["signal"]: item["index"] for item in transport["shadow_signals"]
-    }
-    source_by_net = {
-        (
-            item["signal"][4:]
-            if item["signal"].startswith("net:")
-            else item["signal"]
-        ): item["index"]
-        for item in transport["source_signals"]
-    }
+    indexed_rx_signals = getattr(transport, "iter_rx_signal_records", None)
+    indexed_rx_bindings = getattr(
+        transport, "iter_expected_rx_bindings", None
+    )
+    legacy_rx_by_signal: Dict[str, Tuple[str, List[str]]] = {}
+    if indexed_rx_signals is None:
+        for endpoint in transport["endpoints"]:
+            if endpoint["kind"] != "rx":
+                continue
+            signal = endpoint["signal"]
+            logical_net, endpoint_ids = legacy_rx_by_signal.setdefault(
+                signal, (endpoint["net"], [])
+            )
+            if logical_net != endpoint["net"]:
+                raise ValidationError(
+                    "one transport shadow signal maps to multiple nets"
+                )
+            endpoint_ids.append(endpoint["id"])
     removed_ports = {"source_values", "shadow_values"}
 
     with SplitNetlistView(split_path, fpga) as split:
@@ -499,9 +496,28 @@ def run_placement_ir_lowering_from_split(
         preserved_shadow_nets = set()
         shadow_internal_sinks: Dict[str, List[Dict[str, Any]]] = {}
         rx_internal_drivers: Dict[str, List[Dict[str, Any]]] = {}
-        expected_rx_bindings = []
         local_net_ids = split.net_ids()
-        for signal, index in shadow_index.items():
+        rx_signal_records = iter(
+            indexed_rx_signals()
+            if indexed_rx_signals is not None
+            else (
+                (signal, value[0])
+                for signal, value in sorted(legacy_rx_by_signal.items())
+            )
+        )
+        for item in transport["shadow_signals"]:
+            signal = item["signal"]
+            index = item["index"]
+            try:
+                rx_signal, logical_net = next(rx_signal_records)
+            except StopIteration as error:
+                raise ValidationError(
+                    "transport shadow signal coverage is incomplete"
+                ) from error
+            if rx_signal != signal:
+                raise ValidationError(
+                    "transport shadow signal order disagrees with RX endpoints"
+                )
             top_net = _top_net(
                 top_net_index, "shadow_values", index, "sinks"
             )
@@ -510,7 +526,6 @@ def run_placement_ir_lowering_from_split(
                 for endpoint in top_net["sinks"]
                 if endpoint["instance"] is not None
             ]
-            logical_net = shadow_signal_to_logical_net.get(signal)
             if logical_net is not None and logical_net in local_net_ids:
                 shadow_internal_sinks[logical_net] = internal
                 rx_internal_drivers[logical_net] = [
@@ -518,18 +533,23 @@ def run_placement_ir_lowering_from_split(
                     for endpoint in top_net["drivers"]
                     if endpoint["instance"] is not None
                 ]
-                expected_rx_bindings.extend(
-                    (logical_net, endpoint_id)
-                    for endpoint_id in rx_endpoint_ids_by_signal.get(
-                        signal, ()
-                    )
-                )
                 consumed_transport_nets.add(top_net["id"])
             else:
                 preserved_shadow_nets.add(top_net["id"])
+        try:
+            next(rx_signal_records)
+        except StopIteration:
+            pass
+        else:
+            raise ValidationError(
+                "transport RX endpoints contain an unindexed shadow signal"
+            )
 
         source_internal_sinks: Dict[str, List[Dict[str, Any]]] = {}
-        for original_net, index in source_by_net.items():
+        for item in transport["source_signals"]:
+            signal = item["signal"]
+            original_net = signal[4:] if signal.startswith("net:") else signal
+            index = item["index"]
             if original_net not in local_net_ids:
                 raise ValidationError(
                     f"transport source net {original_net!r} is not local"
@@ -659,7 +679,20 @@ def run_placement_ir_lowering_from_split(
             port_added_endpoints=port_added_endpoints,
             recompute_fanout=shadow_internal_sinks,
             expected_source_nets=source_internal_sinks,
-            expected_rx_bindings=expected_rx_bindings,
+            expected_rx_bindings=(
+                (
+                    (net_id, endpoint_id)
+                    for net_id, endpoint_id in indexed_rx_bindings()
+                    if net_id in local_net_ids
+                )
+                if indexed_rx_bindings is not None
+                else (
+                    (net_id, endpoint_id)
+                    for net_id, endpoint_ids in legacy_rx_by_signal.values()
+                    if net_id in local_net_ids
+                    for endpoint_id in endpoint_ids
+                )
+            ),
         )
         original_instances = split.counts()["instances"]
 

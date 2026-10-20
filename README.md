@@ -35,8 +35,11 @@ fail; it does not rerun STA or reconstruct missing timing data.
 
 The indexed Phase 3–7 data path supports the current HP-bank/cable model and
 emits Phase 6 virtual wiring, binding, per-FPGA data-pin constraints and LVDS
-adapters without reconstructing split circuits in Python. Phase 7 consumes the
-sealed binding, adapter and XDC contract to materialize fixed LVDS IOB
+adapters without reconstructing split circuits in Python. Endpoint, lane,
+virtual-anchor and virtual-board binding rows live once in the sealed
+`split/transport.sqlite`; the historical JSON paths are compact selector
+manifests with explicit compatibility materializers. Phase 7 consumes lazy
+views of the sealed binding, adapter and XDC contract to materialize fixed LVDS IOB
 boundaries, as described under [fixed virtual board wiring](#fixed-virtual-board-wiring).
 `stage-metrics/*.json` records wall time and process-tree
 RSS sampled every 0.5 seconds for each executed downstream stage. Large NVDLA
@@ -80,9 +83,13 @@ content-sealed `schedule.sqlite` ScheduleStore. Ordered routes, hops, demand
 completions and domain records are stored once; `read_json` remains the
 explicit compatibility materializer. The baseline Phase 6 splitter opens the
 store lazily and performs entry-to-route and incoming-cut joins in SQLite, so
-it no longer decodes a monolithic schedule JSON before splitting. Endpoint,
-virtual-binding and RTL/XDC construction still retain hop-sized Python
-objects and remain migration work. ScheduleStore v2 also seals the historical
+it no longer decodes a monolithic schedule JSON before splitting. Phase 6
+batch-streams endpoint, lane, anchor and fixed-board binding records into one
+content-sealed TransportStore. Validation and RTL/XDC consumers iterate its
+selectors without rebuilding global hop dictionaries, and transport RTL is
+written atomically from slot-ordered cursors. Python still constructs each
+record and assembles the remaining adapter text, so native producer migration
+remains. ScheduleStore v2 also seals the historical
 indented logical digest, allowing physical orchestration, logic-segment query
 preparation and Phase 7C to keep a lazy view while preserving existing timing
 and qualification identities; v1 stores remain readable.
@@ -652,8 +659,9 @@ python -m emuflow.virtual_board --out build/virtual-board
 During Phase 6, a declared virtual board automatically produces:
 
 - `split/virtual_board_wiring.json`: the fixed differential connection inventory;
-- `split/virtual_board_binding.json`: each scheduled hop's wire, slot, TDM ratio,
-  logical transport bit, and both endpoints' P/N pin/port identities;
+- `split/virtual_board_binding.json`: a compact selector manifest for each
+  scheduled hop's wire, slot, TDM ratio, logical transport bit, and both
+  endpoints' P/N pin/port identities in `split/transport.sqlite`;
 - `split/<fpga>/virtual_data_pins.xdc`: `PACKAGE_PIN` and `IOSTANDARD LVDS`
   constraints for both polarities of used channels, with TDM reuse deduplicated;
 - `split/<fpga>/virtual_differential_io.sv`: the differential adapter contract using

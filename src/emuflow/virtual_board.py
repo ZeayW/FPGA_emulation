@@ -13,11 +13,13 @@ import json
 import re
 import sys
 from collections import defaultdict
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
 from .errors import ValidationError
 from .io import read_json, write_json
+from .netlist import transport_endpoint_port
 from .platform import Platform
 from .tdm_schedule_storage import canonical_tdm_schedule_sha256
 
@@ -31,6 +33,15 @@ FIXED_WIRING_ROOT = Path(__file__).resolve().parents[2] / "platforms/virtual"
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _artifact_digest(value: Any) -> str:
+    """Use a sealed relation digest without expanding an indexed artifact."""
+    canonical_sha256 = getattr(value, "canonical_sha256", None)
+    if isinstance(canonical_sha256, str):
+        return canonical_sha256
+    logical_sha256 = getattr(value, "logical_sha256", None)
+    return logical_sha256 if isinstance(logical_sha256, str) else _digest(value)
 
 
 def _inventory() -> Dict[str, Any]:
@@ -350,7 +361,7 @@ def build_virtual_binding(platform: Platform, board: Mapping[str, Any], schedule
             "io_adapter_status": "phase7_top_level_integration_required",
             "board_sha256": _digest(board),
             "schedule_sha256": canonical_tdm_schedule_sha256(schedule),
-            "lane_map_sha256": _digest(artifacts["lane_map"]),
+            "lane_map_sha256": _artifact_digest(artifacts["lane_map"]),
             "entries": entries,
             "metrics": {"scheduled_hops": len(entries), "used_differential_pairs": len(direction_by_wire),
                         "bound_data_ports": len(pin_ports), "total_differential_pairs": len(board["wires"])}}
@@ -358,6 +369,161 @@ def build_virtual_binding(platform: Platform, board: Mapping[str, Any], schedule
 
 def validate_virtual_binding(platform: Platform, board: Mapping[str, Any], schedule: Mapping[str, Any],
                              artifacts: Mapping[str, Any], binding: Mapping[str, Any]) -> Dict[str, Any]:
+    relation_validator = getattr(binding, "validate_transport_relations", None)
+    if relation_validator is not None:
+        validate_virtual_board(platform, board)
+        relation_validator()
+        lane_records = artifacts["lane_map"]["entries"]
+        schedule_records = schedule["entries"]
+        schedule_identity_records = getattr(
+            schedule_records, "iter_by_identity", None
+        )
+        ordered_schedule = (
+            schedule_identity_records()
+            if schedule_identity_records is not None
+            else iter(sorted(schedule_records, key=lambda item: item["id"]))
+        )
+        wire_by_key = {
+            (wire["link"], wire["wire"]): wire for wire in board["wires"]
+        }
+        links = {link.id: link for link in platform.links}
+        occupied = set()
+        direction_by_wire = {}
+        pin_ports = {}
+        port_pins = {}
+        count = 0
+        missing = object()
+        for entry, mapped, observed in zip_longest(
+            ordered_schedule,
+            lane_records,
+            binding["entries"],
+            fillvalue=missing,
+        ):
+            if missing in (entry, mapped, observed):
+                raise ValidationError(
+                    "virtual binding schedule/lane/entry coverage differs"
+                )
+            if mapped.get("schedule_entry") != entry.get("id"):
+                raise ValidationError(
+                    "virtual binding lane-map identity differs from schedule"
+                )
+            if any(
+                mapped.get(key) != entry.get(key)
+                for key in ("link", "from", "to", "slot")
+            ):
+                raise ValidationError(
+                    "virtual binding lane-map fields differ from schedule"
+                )
+            wire = wire_by_key.get((entry["link"], mapped["lane"]))
+            if wire is None:
+                raise ValidationError(
+                    "scheduled wire has no virtual board connection"
+                )
+            key = (wire["id"], entry["slot"])
+            if key in occupied:
+                raise ValidationError(
+                    "multiple communications occupy one physical wire in "
+                    "the same slot"
+                )
+            occupied.add(key)
+            direction = (entry["from"], entry["to"])
+            if direction_by_wire.setdefault(wire["id"], direction) != direction:
+                raise ValidationError(
+                    "one physical wire cannot change direction within the schedule"
+                )
+            pins = {pin["fpga"]: pin for pin in wire["endpoints"]}
+            bound = {}
+            for role, kind, fpga, peer in (
+                ("source", "tx", entry["from"], entry["to"]),
+                ("sink", "rx", entry["to"], entry["from"]),
+            ):
+                logical_port = (
+                    f"{transport_endpoint_port({'kind': kind, 'link': entry['link'], 'peer': peer})}"
+                    f"[{mapped['lane']}]"
+                )
+                pair = pins[fpga]
+                bound_end = {
+                    key: pair[key] for key in ("fpga", "bank", "pair_id")
+                }
+                bound_end.update(
+                    logical_port=logical_port,
+                    logical_port_width=links[
+                        entry["link"]
+                    ].transport_bits_per_cycle_per_direction,
+                )
+                for polarity in ("p", "n"):
+                    pin = pair[polarity]
+                    port = (
+                        f"emuflow_io_{kind}_{_name(entry['link'])}_"
+                        f"wire{wire['wire']}_{polarity}"
+                    )
+                    identity = (fpga, pin["package_pin"])
+                    if pin_ports.setdefault(identity, port) != port:
+                        raise ValidationError(
+                            "package pin is assigned to more than one RTL port"
+                        )
+                    if port_pins.setdefault((fpga, port), identity) != identity:
+                        raise ValidationError(
+                            "physical RTL port name collides after identifier "
+                            "normalization"
+                        )
+                    bound_end[polarity] = {**pin, "port": port}
+                bound[role] = bound_end
+            expected = {
+                "schedule_entry": entry["id"],
+                "net": entry.get("net"),
+                "slot": entry["slot"],
+                "arrival_slot": entry.get("arrival_slot"),
+                "tdm_ratio": entry.get("tdm_ratio"),
+                "wire_id": wire["id"],
+                "wire": wire["wire"],
+                "link": wire["link"],
+                "bank_group": wire["bank_group"],
+                "cable": wire["cable"],
+                "iostandard": board["assumptions"]["iostandard"],
+                **bound,
+            }
+            if observed != expected:
+                raise ValidationError(
+                    "virtual board binding entry differs from schedule, lane, "
+                    "or fixed pin pair"
+                )
+            count += 1
+        expected_header = {
+            "schema": BINDING_SCHEMA,
+            "platform": platform.name,
+            "design": schedule.get("design"),
+            "qualification": "virtual_board_real_device_pins",
+            "status": "pass",
+            "integration_status": (
+                "differential_data_constraints_and_adapter_generated"
+            ),
+            "physical_backend_status": "phase7_consumption_required",
+            "board_services_status": "clock_reset_and_control_pins_not_bound",
+            "io_adapter_status": "phase7_top_level_integration_required",
+            "board_sha256": _digest(board),
+            "schedule_sha256": canonical_tdm_schedule_sha256(schedule),
+            "lane_map_sha256": _artifact_digest(artifacts["lane_map"]),
+            "metrics": {
+                "scheduled_hops": count,
+                "used_differential_pairs": len(direction_by_wire),
+                "bound_data_ports": len(pin_ports),
+                "total_differential_pairs": len(board["wires"]),
+            },
+        }
+        if any(binding.get(key) != value for key, value in expected_header.items()):
+            raise ValidationError(
+                "virtual board binding header does not match schedule, ports, "
+                "and fixed pin pairs"
+            )
+        return {
+            "status": "pass",
+            "qualification": expected_header["qualification"],
+            "physical_backend_status": expected_header[
+                "physical_backend_status"
+            ],
+            **expected_header["metrics"],
+        }
     expected = build_virtual_binding(platform, board, schedule, artifacts)
     if binding != expected:
         raise ValidationError("virtual board binding does not match schedule, ports, and fixed pin pairs")

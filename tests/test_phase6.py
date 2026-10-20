@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+import shutil
 from pathlib import Path
 from unittest import mock
 
@@ -24,6 +25,7 @@ from emuflow.lowering import (
 from emuflow.netlist import (
     build_split_artifacts,
     transport_endpoint_port,
+    transport_to_systemverilog,
     validate_split_artifacts,
 )
 from emuflow.partition import (
@@ -58,6 +60,14 @@ from emuflow.open_transport_characterization import (
 )
 from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import build_tdm_schedule
+from emuflow.tdm_schedule_storage import write_tdm_schedule_storage
+from emuflow.transport_storage import (
+    LANE_MAP_STORAGE_SCHEMA,
+    TRANSPORT_STORAGE_SCHEMA,
+    LaneMapView,
+    TransportView,
+    write_transport_storage,
+)
 from emuflow.timing_routing import route_system_native
 from emuflow.yosys import import_yosys_json
 from tests.native_build import tlr_router
@@ -133,6 +143,7 @@ class Phase6Test(unittest.TestCase):
                 float(chimew_plan["weights"]["position"]),
             )
         )
+
         binding_entries = []
         for index, (group, members) in enumerate(sorted(plan_groups.items())):
             first = schedule_by_id[members[0]["schedule_entry"]]
@@ -195,6 +206,74 @@ class Phase6Test(unittest.TestCase):
             "entries": binding_entries,
         }
         return chimew_plan, binding
+
+    def test_transport_store_is_deterministic_and_batched(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            assignment_path = root / "assignment.sqlite"
+            write_phase3_assignment_index(
+                assignment_path, self.ir, self.assignment
+            )
+            link = self.platform.links[0]
+            source, sink = link.endpoints
+            count = 5_000
+            schedule = {
+                "schema": "emuflow.tdm-schedule/v1",
+                "design": self.ir.value["design"]["name"],
+                "platform": self.platform.name,
+                "provider": "transport-store-test",
+                "transport_semantics": "registered-boundary",
+                "metrics": {"frame_slots": 8_192},
+                "routes": [
+                    {
+                        "id": f"demand_{index:06d}",
+                        "net": f"net_{index:06d}",
+                        "source": source,
+                    }
+                    for index in range(count)
+                ],
+                "entries": [
+                    {
+                        "id": f"entry_{index:06d}",
+                        "demand": f"demand_{index:06d}",
+                        "net": f"net_{index:06d}",
+                        "link": link.id,
+                        "from": source,
+                        "to": sink,
+                        "slot": index,
+                        "arrival_slot": index + 1,
+                        "lane": 0,
+                    }
+                    for index in range(count)
+                ],
+            }
+            summaries = []
+            for run in range(2):
+                output = root / f"run-{run}"
+                artifacts = write_transport_storage(
+                    output,
+                    assignment_path,
+                    schedule,
+                    self.platform,
+                    design=self.ir.value["design"],
+                    clocks=self.ir.value["clocks"],
+                )
+                summaries.append(artifacts["summary"])
+                self.assertEqual(
+                    len(artifacts["lane_map"]["entries"]), count
+                )
+                self.assertEqual(
+                    sum(
+                        len(transport["endpoints"])
+                        for transport in artifacts["transports"].values()
+                    ),
+                    2 * count,
+                )
+                self.assertLess(
+                    (output / "fpga0/transport.json").stat().st_size,
+                    4096,
+                )
+            self.assertEqual(summaries[0]["sha256"], summaries[1]["sha256"])
 
     def test_split_exact_coverage_lane_agreement_and_equivalence(self) -> None:
         artifacts = build_split_artifacts(
@@ -630,9 +709,7 @@ class Phase6Test(unittest.TestCase):
             write_phase3_assignment_index(
                 root / "assignment.sqlite", self.ir, self.assignment
             )
-            schedule_path.write_text(
-                json.dumps(self.schedule), encoding="utf-8"
-            )
+            write_tdm_schedule_storage(schedule_path, self.schedule)
             output = root / "phase6"
             report = run_phase6(
                 ir_path,
@@ -669,12 +746,70 @@ class Phase6Test(unittest.TestCase):
                 )
             self.assertEqual(reused, validation)
 
+            legacy_control = build_streaming_split_metadata(
+                root / "assignment.sqlite",
+                self.schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+            )
+            raw_lane_manifest = json.loads(
+                (output / "lane_map.json").read_text(encoding="utf-8")
+            )
+            raw_transport_manifest = json.loads(
+                (output / "fpga0/transport.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                raw_lane_manifest["schema"], LANE_MAP_STORAGE_SCHEMA
+            )
+            self.assertEqual(
+                raw_transport_manifest["schema"], TRANSPORT_STORAGE_SCHEMA
+            )
+            self.assertLess((output / "lane_map.json").stat().st_size, 4096)
+            self.assertLess(
+                (output / "fpga0/transport.json").stat().st_size, 4096
+            )
+            self.assertEqual(
+                read_json(output / "lane_map.json"),
+                legacy_control["lane_map"],
+            )
+            self.assertEqual(
+                read_json(output / "fpga0/transport.json"),
+                legacy_control["transports"]["fpga0"],
+            )
+            self.assertEqual(
+                (output / "fpga0/transport_schedule.sv").read_text(),
+                transport_to_systemverilog(
+                    legacy_control["transports"]["fpga0"], self.platform
+                ),
+            )
+            self.assertEqual(
+                len(LaneMapView(output / "lane_map.json")["entries"]),
+                len(self.schedule["entries"]),
+            )
+            self.assertEqual(
+                len(TransportView(output / "fpga0/transport.json")["endpoints"]),
+                len(legacy_control["transports"]["fpga0"]["endpoints"]),
+            )
+
+            relocated = root / "phase6-relocated"
+            shutil.copytree(output, relocated)
+            self.assertEqual(
+                read_json(relocated / "fpga0/transport.json"),
+                legacy_control["transports"]["fpga0"],
+            )
+            store = relocated / "transport.sqlite"
+            store.write_bytes(store.read_bytes()[:-31])
+            with self.assertRaises(ValidationError):
+                TransportView(relocated / "fpga0/transport.json")
+
             for filename in (
                 "manifest.json",
                 "lane_map.json",
                 "phase6_report.json",
                 "virtual_runtime_controller.sv",
                 "split-netlists.sqlite",
+                "transport.sqlite",
                 "fpga0/transport.json",
                 "fpga0/transport_schedule.sv",
                 "fpga0/virtual_anchors.json",

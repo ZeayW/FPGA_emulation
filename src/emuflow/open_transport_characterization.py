@@ -360,7 +360,12 @@ def extract_transport_features(transport: Mapping[str, Any]) -> Dict[str, float]
         )
     endpoints = transport.get("endpoints")
     shadow_signals = transport.get("shadow_signals")
-    if not isinstance(endpoints, list) or not isinstance(shadow_signals, list):
+    if (
+        not isinstance(endpoints, Sequence)
+        or isinstance(endpoints, (str, bytes))
+        or not isinstance(shadow_signals, Sequence)
+        or isinstance(shadow_signals, (str, bytes))
+    ):
         raise ValidationError("open transport production artifact is invalid")
     tx_lane_assignments: dict[tuple[str, str, int], int] = {}
     for endpoint in endpoints:
