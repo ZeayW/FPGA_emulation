@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 import hashlib
+import json
 import math
 from pathlib import Path
 import re
@@ -17,6 +18,7 @@ from typing import Any, Mapping
 
 from .errors import EmuFlowError, ValidationError
 from .native_tools import resolve_native_executable
+from .output_realizations import output_realization_index
 from .routing import (
     _arc_key, _link_utilization_records, _validate_route_tree,
     assignment_has_static_exact_contract, build_directed_graph,
@@ -35,6 +37,8 @@ AUTHOR_ROUTER_PROVIDER = "synergistic-author-route-v1"
 AUTHOR_OUTPUT_PROTOCOL = "EMUFLOW_SYNERGISTIC_ROUTE_OUTPUT_V1"
 AUTHOR_METHOD = "author-global-connection-order-shared-tree-maze-continuous-pressure-v1"
 AUTHOR_COST_POLICY = "author-pressure-v1"
+AUTHOR_ORDER_POLICY = "hard-connections-v1"
+AUTHOR_ORDER_POLICIES = (AUTHOR_ORDER_POLICY, "sta-incidence-v1")
 AUTHOR_COST_METHODS = {
     AUTHOR_COST_POLICY: AUTHOR_METHOD,
     "author-sll-pressure-v1": "author-global-connection-order-shared-tree-maze-sll-scarcity-v1",
@@ -45,6 +49,77 @@ _TIMING_METRICS = (
     "estimated_worst_tdm_slack_ns", "estimated_worst_tdm_normalized_slack",
     "estimated_max_tdm_ratio",
 )
+
+
+def _sta_incidence_order(demands, timing_paths):
+    """Count original path membership without a path-ID set for every net.
+
+    Non-output members occur once in normalized compression. Output copies
+    may occur on several records, so union their cuts one original at a time.
+    This is net-level incidence, not a per-sink priority or an STA slack cost.
+    """
+    if timing_paths is None:
+        raise ValueError("sta-incidence-v1 requires normalized timing paths")
+    counts = {demand["net"]: 0 for demand in demands}
+    copies = output_realization_index({"timing": timing_paths})
+    output_originals = {item["original_path"] for item in copies.values()}
+    seen_members = set()
+    for path in timing_paths["paths"]:
+        nets = path["cut_nets"]
+        members = path.get("compressed_path_ids", [path["id"]])
+        if (not isinstance(nets, list) or any(net not in counts for net in nets)
+                or not isinstance(members, list) or not members):
+            raise ValidationError("author incidence path membership is invalid")
+        ordinary = 0
+        for member in members:
+            if not isinstance(member, str) or not member or member in seen_members:
+                raise ValidationError("author incidence original member coverage is invalid")
+            seen_members.add(member)
+            if member in copies:
+                item = copies[member]
+                if item["local"] or item["cut_nets"] != nets:
+                    raise ValidationError("author incidence output-copy membership disagrees")
+            elif member in output_originals or member.startswith("output-copy:"):
+                raise ValidationError("author incidence output member lacks its realization")
+            else:
+                ordinary += 1
+        for net in set(nets):
+            counts[net] += ordinary
+    if seen_members & copies.keys() != {rid for rid, item in copies.items() if not item["local"]}:
+        raise ValidationError("author incidence output-copy coverage is incomplete")
+    current_original = None
+    current_nets = set()
+    for item in sorted(copies.values(), key=lambda item: (item["original_path"], item["id"])):
+        if item["original_path"] != current_original:
+            for net in current_nets:
+                counts[net] += 1
+            current_original, current_nets = item["original_path"], set()
+        if any(net not in counts for net in item["cut_nets"]):
+            raise ValidationError("author incidence output copy names an unknown cut")
+        current_nets.update(item["cut_nets"])
+    for net in current_nets:
+        counts[net] += 1
+    priority = {
+        "definition": "distinct-original-paths-containing-cut-v1",
+        "sha256": hashlib.sha256(json.dumps(sorted(counts.items()), ensure_ascii=False,
+                                            separators=(",", ":")).encode("utf-8")).hexdigest(),
+        "timed_demands": sum(count > 0 for count in counts.values()),
+        "maximum": max(counts.values(), default=0),
+    }
+    order = sorted(range(len(demands)), key=lambda index: (-counts[demands[index]["net"]], index))
+    return order, priority
+
+
+def _ordered_native_model(model, order):
+    if order == list(range(len(order))):
+        return model
+    # The author model deliberately has no native PATH records. Keep all
+    # canonical demand IDs outside this private serialization permutation.
+    if model["paths"]:
+        raise ValidationError("author serialization unexpectedly contains native timing paths")
+    return {**model, "demands": [model["demands"][index] for index in order],
+            "native_demands": [{**model["native_demands"][index], "index": position}
+                               for position, index in enumerate(order)]}
 
 
 def _parse_author_output(path: Path, model: Mapping[str, Any]):
@@ -137,11 +212,18 @@ def _round_contract(model, capacities, usage, platform, constraints):
 
 
 def route_system_author(assignment, platform, constraints, timing_paths=None, *, executable=None,
-                        cost_policy=AUTHOR_COST_POLICY):
+                        cost_policy=AUTHOR_COST_POLICY, order_policy=AUTHOR_ORDER_POLICY):
     if not isinstance(cost_policy, str) or cost_policy not in AUTHOR_COST_METHODS:
         raise ValueError(f"unsupported author routing cost policy: {cost_policy}")
+    if not isinstance(order_policy, str) or order_policy not in AUTHOR_ORDER_POLICIES:
+        raise ValueError(f"unsupported author routing order policy: {order_policy}")
     nodes, model = _prepare_native_model(assignment, platform, constraints, None)
     _validate_single_node_cut_capacity(nodes, model)
+    order = list(range(len(model["demands"])))
+    priority = None
+    if order_policy == "sta-incidence-v1":
+        order, priority = _sta_incidence_order(model["demands"], timing_paths)
+    native_model = _ordered_native_model(model, order)
     resolved = resolve_native_executable("emuflow_synergistic_author_router", executable)
     digest = hashlib.sha256()
     with Path(resolved).open("rb") as stream:
@@ -149,7 +231,7 @@ def route_system_author(assignment, platform, constraints, timing_paths=None, *,
             digest.update(chunk)
     with tempfile.TemporaryDirectory(prefix="emuflow-author-route-") as temporary:
         root = Path(temporary)
-        _write_native_input(root / "input", len(nodes), model, constraints, NATIVE_ROUTER_PROVIDER)
+        _write_native_input(root / "input", len(nodes), native_model, constraints, NATIVE_ROUTER_PROVIDER)
         completed = subprocess.run(
             [resolved, str(root / "input"), str(root / "output"),
              "--cost-policy", cost_policy],
@@ -158,7 +240,8 @@ def route_system_author(assignment, platform, constraints, timing_paths=None, *,
         if completed.returncode:
             detail = completed.stderr.strip() or completed.stdout.strip()
             raise EmuFlowError(f"author router failed with exit code {completed.returncode}: {detail}")
-        trees, counters = _parse_author_output(root / "output", model)
+        native_trees, counters = _parse_author_output(root / "output", native_model)
+        trees = {canonical: native_trees[position] for position, canonical in enumerate(order)}
     exact = assignment_has_static_exact_contract(assignment)
     _, arcs, capacities = build_directed_graph(platform, constraints, reserve_arrival_and_commit=exact)
     routes, usage, round_usage = [], {key: 0 for key in capacities}, defaultdict(int)
@@ -208,6 +291,9 @@ def route_system_author(assignment, platform, constraints, timing_paths=None, *,
     if exact:
         result["semantic_contract_schema"] = assignment.get("semantic_contract_schema") or assignment["semantic_contract"]["schema"]
         result["semantic_contract_sha256"] = assignment["semantic_contract_sha256"]
+    if priority is not None:
+        result["author_routing"].update(order_policy=order_policy, order_priority=priority,
+                                       timing_optimization=True)
     contract = _round_contract(model, capacities, round_usage, platform, constraints)
     if contract is not None:
         result["round_capacity_contract"] = contract
@@ -247,10 +333,22 @@ def validate_author_system_routes(assignment, platform, routes, timing_paths=Non
         raise ValidationError("invalid author routing execution metadata")
     counters = metadata.get("counters", {})
     policy = metadata.get("cost_policy")
+    order_policy = metadata.get("order_policy", AUTHOR_ORDER_POLICY)
+    if order_policy == "sta-incidence-v1":
+        if timing_paths is None:
+            raise ValidationError("author incidence routes require normalized timing input")
+        _order, priority = _sta_incidence_order(routes["demands"], timing_paths)
+        actual_priority = metadata.get("order_priority")
+        if (not isinstance(actual_priority, dict) or actual_priority != priority
+                or any(isinstance(actual_priority[key], bool) or not isinstance(actual_priority[key], int)
+                       for key in ("timed_demands", "maximum"))):
+            raise ValidationError("invalid author routing order priority metadata")
+    elif order_policy != AUTHOR_ORDER_POLICY or "order_priority" in metadata:
+        raise ValidationError("invalid author routing order policy metadata")
     expected_method = AUTHOR_COST_METHODS.get(policy) if isinstance(policy, str) else None
     if (expected_method is None or metadata.get("method") != expected_method
             or metadata.get("output_protocol") != AUTHOR_OUTPUT_PROTOCOL
-            or metadata.get("timing_optimization") is not False or metadata.get("tdm_assignment") != "downstream-phase5"
+            or metadata.get("timing_optimization") is not (order_policy == "sta-incidence-v1") or metadata.get("tdm_assignment") != "downstream-phase5"
             or not isinstance(metadata.get("executable_sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", metadata["executable_sha256"])
             or not isinstance(counters, dict) or set(counters) != _COUNTERS

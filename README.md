@@ -169,9 +169,13 @@ SLL capacities are shared across transport rounds. Select it with
 `--route-provider synergistic-author-route-v1` in complete compilation or
 `--provider synergistic-author-route-v1` in `phase4`. The root build supplies
 `emuflow_synergistic_author_router`; `--router` selects an explicit binary.
-It currently requires one candidate worker, evaluates STA paths after routing
-and does not accept TDM feedback. Full physical/global timing qualification
-is pending; the default provider remains unchanged.
+It currently requires one candidate worker and does not accept TDM feedback.
+By default, STA paths are evaluated after routing. The optional
+`--author-order-policy sta-incidence-v1` uses original timing-path incidence
+to break equal-hardness connection ties; it requires timing input and leaves
+maze costs and Phase 5 unchanged. The default provider remains unchanged.
+Complete physical/global timing validation has passed on PicoRV32; broader
+QoR qualification is pending.
 `--author-cost-policy author-sll-pressure-v1` enables experimental SLL scarcity
 pricing without changing evaluated platform delays. Complete compilation,
 frame search and cross-stage optimization also accept `best-of-two-v1`: both

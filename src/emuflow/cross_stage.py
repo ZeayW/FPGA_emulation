@@ -955,6 +955,7 @@ def _run_candidate_flow(
     slot_refinement_iterations: int,
     ratio_convergence: float,
     original_ir_path: Optional[Path] = None,
+    author_order_policy: Optional[str] = None,
 ) -> Dict[str, Any]:
     iteration_root = root / f"iteration_{iteration:03d}"
     timing_path = iteration_root / "timing_paths.json"
@@ -985,6 +986,7 @@ def _run_candidate_flow(
             router=router,
             route_provider=route_provider,
             author_cost_policy=author_cost_policy,
+            author_order_policy=author_order_policy,
             candidate_workers=route_candidate_workers,
             tdm_provider=tdm_provider,
             ratio_optimizer=ratio_optimizer,
@@ -1020,6 +1022,8 @@ def _run_candidate_flow(
             slot_refinement_iterations=slot_refinement_iterations,
             convergence=ratio_convergence,
         )
+        if author_order_policy is not None:
+            route_options["author_order_policy"] = author_order_policy
         if author_cost_policy == "best-of-two-v1":
             paired = run_author_route_tdm(
                 assignment_path, platform_path, phase4_root, phase5_root,
@@ -1105,6 +1109,7 @@ def run_cross_stage_optimization(
     router: Optional[str] = None,
     route_provider: Optional[str] = None,
     author_cost_policy: Optional[str] = None,
+    author_order_policy: Optional[str] = None,
     route_candidate_workers: int = 1,
     frame_slots: Optional[int] = None,
     optimize_frame_slots: bool = False,
@@ -1124,7 +1129,7 @@ def run_cross_stage_optimization(
     pair_pressure_weight: float = 1.0,
     feedback_steps: Optional[Tuple[float, ...]] = None,
 ) -> Dict[str, Any]:
-    validate_author_flow_policy(route_provider, author_cost_policy)
+    validate_author_flow_policy(route_provider, author_cost_policy, author_order_policy)
     if (
         isinstance(max_outer_iterations, bool)
         or not isinstance(max_outer_iterations, int)
@@ -1310,6 +1315,7 @@ def run_cross_stage_optimization(
         router=router,
         route_provider=route_provider,
         author_cost_policy=author_cost_policy,
+        author_order_policy=author_order_policy,
         route_candidate_workers=route_candidate_workers,
         simulation_frames=simulation_frames,
         tdm_provider=tdm_provider,
@@ -1386,6 +1392,7 @@ def run_cross_stage_optimization(
             router=router,
             route_provider=route_provider,
             author_cost_policy=author_cost_policy,
+            author_order_policy=author_order_policy,
             route_candidate_workers=route_candidate_workers,
             simulation_frames=simulation_frames,
             tdm_provider=tdm_provider,
@@ -1548,6 +1555,7 @@ def run_cross_stage_optimization(
                     router=router,
                     route_provider=route_provider,
                     author_cost_policy=author_cost_policy,
+                    author_order_policy=author_order_policy,
                     route_candidate_workers=route_candidate_workers,
                     simulation_frames=simulation_frames,
                     tdm_provider=tdm_provider,
@@ -1702,6 +1710,7 @@ def run_cross_stage_optimization(
                 route_provider or GLOBAL_CANDIDATE_PROVIDER
             ),
             **({"author_cost_policy": author_cost_policy} if author_cost_policy is not None else {}),
+            **({"author_order_policy": author_order_policy} if author_order_policy is not None else {}),
             "route_candidate_workers": route_candidate_workers,
             "tdm_provider": (
                 tdm_provider or TDM_TIMING_DAG_RATIO_PROVIDER

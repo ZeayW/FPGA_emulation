@@ -118,11 +118,13 @@ def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "ratio_convergence",
         "simulation_frames",
     }
-    author_keys = {"route_provider", "author_cost_policy"} if "author_cost_policy" in configuration else set()
+    author_options = {key for key in ("author_cost_policy", "author_order_policy") if key in configuration}
+    author_keys = author_options | {"route_provider"} if author_options else set()
     if set(configuration) != expected_configuration_keys | author_keys:
         raise ValidationError("frame-search configuration is incomplete")
     if author_keys:
-        validate_author_flow_policy(configuration["route_provider"], configuration["author_cost_policy"])
+        validate_author_flow_policy(configuration["route_provider"], configuration.get("author_cost_policy"),
+                                    configuration.get("author_order_policy"))
     for name in (
         "ratio_max_iterations",
         "ratio_quantum",
@@ -190,6 +192,7 @@ def run_frame_length_search(
     router: Optional[str] = None,
     route_provider: Optional[str] = None,
     author_cost_policy: Optional[str] = None,
+    author_order_policy: Optional[str] = None,
     candidate_workers: int = 1,
     tdm_provider: Optional[str] = None,
     ratio_optimizer: Optional[str] = None,
@@ -209,7 +212,7 @@ def run_frame_length_search(
     link bit-slots and ratio choices. Every accepted point is nevertheless
     rebuilt and checked by the real Phase 4 and Phase 5 providers.
     """
-    validate_author_flow_policy(route_provider, author_cost_policy)
+    validate_author_flow_policy(route_provider, author_cost_policy, author_order_policy)
     if (
         isinstance(max_frame_slots, bool)
         or not isinstance(max_frame_slots, int)
@@ -253,6 +256,8 @@ def run_frame_length_search(
                 slot_refinement_iterations=slot_refinement_iterations,
                 convergence=ratio_convergence,
             )
+            if author_order_policy is not None:
+                route_options["author_order_policy"] = author_order_policy
             if author_cost_policy == "best-of-two-v1":
                 paired = run_author_route_tdm(
                     assignment_path, platform_path, route_root, tdm_root,
@@ -350,8 +355,10 @@ def run_frame_length_search(
             "post_refinement_iterations": post_refinement_iterations,
             "slot_refinement_iterations": slot_refinement_iterations,
             "tdm_provider": tdm_provider,
-            **({"route_provider": route_provider, "author_cost_policy": author_cost_policy}
-               if author_cost_policy is not None else {}),
+            **({"route_provider": route_provider}
+               if author_cost_policy is not None or author_order_policy is not None else {}),
+            **({"author_cost_policy": author_cost_policy} if author_cost_policy is not None else {}),
+            **({"author_order_policy": author_order_policy} if author_order_policy is not None else {}),
             "ratio_convergence": ratio_convergence,
             "simulation_frames": simulation_frames,
         },

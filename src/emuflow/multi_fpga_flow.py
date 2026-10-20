@@ -1301,6 +1301,7 @@ def run_multi_fpga_flow(
     router: Optional[str] = None,
     route_provider: Optional[str] = None,
     author_cost_policy: Optional[str] = None,
+    author_order_policy: Optional[str] = None,
     route_candidate_workers: int = 1,
     frame_slots: Optional[int] = None,
     optimize_frame_slots: bool = False,
@@ -1367,7 +1368,7 @@ def run_multi_fpga_flow(
 ) -> Dict[str, Any]:
     """Compile RTL/EmuIR, using the bundled research BoardDB when omitted."""
 
-    validate_author_flow_policy(route_provider, author_cost_policy)
+    validate_author_flow_policy(route_provider, author_cost_policy, author_order_policy)
     if output_dir is None:
         raise EmuFlowError("multi-FPGA compilation requires an output directory")
 
@@ -2169,6 +2170,7 @@ def run_multi_fpga_flow(
             router=router,
             route_provider=route_provider,
             author_cost_policy=author_cost_policy,
+            author_order_policy=author_order_policy,
             route_candidate_workers=route_candidate_workers,
             frame_slots=frame_slots,
             optimize_frame_slots=optimize_frame_slots,
@@ -2255,6 +2257,7 @@ def run_multi_fpga_flow(
             router=router,
             route_provider=route_provider,
             author_cost_policy=author_cost_policy,
+            author_order_policy=author_order_policy,
             candidate_workers=route_candidate_workers,
             tdm_provider=tdm_provider,
             ratio_optimizer=ratio_optimizer,
@@ -2293,6 +2296,8 @@ def run_multi_fpga_flow(
             slot_refinement_iterations=slot_refinement_iterations,
             convergence=ratio_convergence,
         )
+        if has_inter_fpga_cuts and author_order_policy is not None:
+            route_options["author_order_policy"] = author_order_policy
         if has_inter_fpga_cuts and author_cost_policy == "best-of-two-v1":
             paired = measured("author-route-tdm", run_author_route_tdm,
                 assignment_path, platform_path, phase4_root, phase5_root,
@@ -2670,6 +2675,7 @@ def run_multi_fpga_flow(
         "provider": MULTI_FPGA_FLOW_PROVIDER,
         "architecture_policy": "provider-neutral",
         **({"author_cost_policy": author_cost_policy} if author_cost_policy is not None else {}),
+        **({"author_order_policy": author_order_policy} if author_order_policy is not None else {}),
         **(
             {"timing": _timing_report_summary(timing_report)}
             if timing_report is not None

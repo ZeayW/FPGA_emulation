@@ -310,7 +310,7 @@ from .serial_phy_recipe import materialize_serial_phy_recipe
 from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .author_route_tdm import AUTHOR_FLOW_COST_POLICIES
-from .author_routing import AUTHOR_ROUTER_PROVIDER
+from .author_routing import AUTHOR_ORDER_POLICIES, AUTHOR_ROUTER_PROVIDER
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
     NATIVE_ROUTER_PROVIDER,
@@ -2188,6 +2188,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="explicit author routing policy; best-of-two-v1 selects a complete route/TDM pair after Phase 5",
     )
     multi_fpga_compile.add_argument(
+        "--author-order-policy", choices=AUTHOR_ORDER_POLICIES,
+        help="explicit author connection tie ordering; sta-incidence-v1 requires timing paths",
+    )
+    multi_fpga_compile.add_argument(
         "--route-candidate-workers",
         type=int,
         default=1,
@@ -3496,6 +3500,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="explicit author kernel cost policy; two-candidate selection requires a complete flow",
     )
     phase4.add_argument(
+        "--author-order-policy", choices=AUTHOR_ORDER_POLICIES,
+        help="explicit author connection tie ordering; sta-incidence-v1 requires timing paths",
+    )
+    phase4.add_argument(
         "--timing-paths",
         type=Path,
         help="emuflow.sta-paths/v1 input required by the timing-aware provider",
@@ -3812,6 +3820,10 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument(
         "--author-cost-policy", choices=AUTHOR_FLOW_COST_POLICIES,
         help="explicit author routing policy; best-of-two-v1 selects a complete route/TDM pair after Phase 5",
+    )
+    cross_stage_optimize.add_argument(
+        "--author-order-policy", choices=AUTHOR_ORDER_POLICIES,
+        help="explicit author connection tie ordering; sta-incidence-v1 requires timing paths",
     )
     cross_stage_optimize.add_argument(
         "--route-candidate-workers",
@@ -5941,6 +5953,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             router=args.router,
             route_provider=args.route_provider,
             author_cost_policy=args.author_cost_policy,
+            author_order_policy=args.author_order_policy,
             route_candidate_workers=args.route_candidate_workers,
             frame_slots=args.frame_slots,
             optimize_frame_slots=args.optimize_frame_slots,
@@ -6230,6 +6243,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             physical_feedback_weight=args.physical_feedback_weight,
             candidate_workers=args.candidate_workers,
             author_cost_policy=args.author_cost_policy,
+            author_order_policy=args.author_order_policy,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
@@ -6376,6 +6390,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 router=args.router,
                 route_provider=args.route_provider,
                 author_cost_policy=args.author_cost_policy,
+                author_order_policy=args.author_order_policy,
                 route_candidate_workers=args.route_candidate_workers,
                 frame_slots=args.frame_slots,
                 optimize_frame_slots=args.optimize_frame_slots,

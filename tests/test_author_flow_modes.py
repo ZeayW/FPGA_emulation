@@ -31,9 +31,12 @@ class AuthorFlowModesTest(unittest.TestCase):
         parser = _build_parser()
         args = ["multi-fpga", "compile", "--out", "out"]
         self.assertIsNone(parser.parse_args(args).author_cost_policy)
+        self.assertIsNone(parser.parse_args(args).author_order_policy)
         selected = parser.parse_args(args + ["--route-provider", AUTHOR_ROUTER_PROVIDER,
                                             "--author-cost-policy", "best-of-two-v1"])
         self.assertEqual(selected.author_cost_policy, "best-of-two-v1")
+        self.assertEqual(parser.parse_args(args + ["--author-order-policy", "sta-incidence-v1"])
+                         .author_order_policy, "sta-incidence-v1")
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["phase4", "--assignment", "a", "--platform", "b", "--out", "c",
                                "--author-cost-policy", "best-of-two-v1"])
@@ -73,7 +76,12 @@ class AuthorFlowModesTest(unittest.TestCase):
     def test_complete_cross_stage_preserves_selected_pair_into_phase6(self):
         self._complete_compile(cross_stage=True)
 
-    def _complete_compile(self, optimize_frames=False, cross_stage=False):
+    def test_incidence_order_reaches_compile_frame_and_cross_stage(self):
+        for mode in ({}, {"optimize_frames": True}, {"cross_stage": True}):
+            with self.subTest(mode=mode):
+                self._complete_compile(**mode, order_policy="sta-incidence-v1")
+
+    def _complete_compile(self, optimize_frames=False, cross_stage=False, order_policy=None):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             timing = root / "timing.json.gz"
@@ -92,6 +100,7 @@ class AuthorFlowModesTest(unittest.TestCase):
                 clock_periods={"clk": 20.0} if optimize_frames or cross_stage else None,
                 opensta=str(ROOT / "tests/fixtures/fake_opensta_paths.py") if optimize_frames or cross_stage else None,
                 route_provider=AUTHOR_ROUTER_PROVIDER, author_cost_policy="best-of-two-v1",
+                author_order_policy=order_policy,
                 router=author_router(), frame_slots=32, optimize_frame_slots=optimize_frames,
                 tdm_provider=TDM_TIMING_DAG_RATIO_PROVIDER if cross_stage else TDM_BASELINE_PROVIDER,
                 ratio_optimizer=str(tdm_ratio_optimizer()) if cross_stage else None,
@@ -103,6 +112,10 @@ class AuthorFlowModesTest(unittest.TestCase):
             )
             self.assertEqual(result["author_cost_policy"], "best-of-two-v1")
             self.assertEqual(result["stages"]["system_route"]["provider"], AUTHOR_ROUTER_PROVIDER)
+            if order_policy is not None:
+                self.assertEqual(result["author_order_policy"], order_policy)
+                routes = read_json(out / "system-route/routes.json")
+                self.assertEqual(routes["author_routing"]["order_policy"], order_policy)
             if not optimize_frames and not cross_stage:
                 self.assertEqual(read_json(out / "author-route-tdm/selection.json")["status"], "pass")
             elif optimize_frames:
@@ -115,6 +128,27 @@ class AuthorFlowModesTest(unittest.TestCase):
             self.assertEqual(checked["status"], "pass")
             self.assertGreater(checked["cut_nets"], 0)
             self.assertEqual(checked["equivalence_mismatches"], 0)
+
+    def test_order_only_frame_configuration_validates(self):
+        from jsonschema import Draft202012Validator
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            assignment, platform, timing, _ = self._inputs(root)
+            report = run_frame_length_search(
+                assignment, platform, timing, root / "search", root / "routes", root / "tdm",
+                max_frame_slots=16, route_provider=AUTHOR_ROUTER_PROVIDER,
+                author_order_policy="sta-incidence-v1", router=author_router(),
+                tdm_provider=TDM_BASELINE_PROVIDER, simulation_frames=2,
+            )
+            self.assertEqual(report["configuration"]["author_order_policy"], "sta-incidence-v1")
+            self.assertNotIn("author_cost_policy", report["configuration"])
+            validator = Draft202012Validator(read_json(ROOT / "schemas/frame-search-v4.schema.json"))
+            validator.validate(report)
+            del report["configuration"]["route_provider"]
+            self.assertFalse(validator.is_valid(report))
+            report["configuration"]["route_provider"] = AUTHOR_ROUTER_PROVIDER
+            del report["configuration"]["author_order_policy"]
+            self.assertFalse(validator.is_valid(report))
 
     def test_frame_search_runs_both_author_policies_at_selected_frame(self):
         with tempfile.TemporaryDirectory() as temporary:
