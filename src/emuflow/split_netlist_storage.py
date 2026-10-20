@@ -15,7 +15,7 @@ import sqlite3
 import uuid
 from pathlib import Path
 from collections import defaultdict
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from .errors import ValidationError
 from .phase3_assignment_index import (
@@ -292,7 +292,18 @@ def read_compact_emuir_control_metadata(path: Path) -> dict[str, Any]:
 
 def _schedule_incoming_rows(
     schedule: Mapping[str, Any], part_index: Mapping[str, int]
-) -> list[tuple[str, int, str]]:
+) -> Iterable[tuple[str, int, str]]:
+    indexed_records = getattr(schedule, "iter_incoming_records", None)
+    if indexed_records is not None:
+        def rows() -> Iterable[tuple[str, int, str]]:
+            for net_id, target, entry_id in indexed_records():
+                if target not in part_index:
+                    raise ValidationError(
+                        "Phase 6 schedule entry references an unknown FPGA"
+                    )
+                yield net_id, part_index[target], entry_id
+
+        return rows()
     routes = schedule.get("routes")
     entries = schedule.get("entries")
     if not isinstance(routes, list) or not isinstance(entries, list):
@@ -417,15 +428,24 @@ def build_streaming_split_metadata(
                 "pin plan must cover every schedule entry exactly"
             )
 
-    route_by_demand = {
-        route["id"]: route for route in schedule_routes(schedule)
-    }
+    joined_records = getattr(schedule, "iter_entry_route_records", None)
+    if joined_records is None:
+        route_by_demand = {
+            route["id"]: route for route in schedule_routes(schedule)
+        }
+        entry_routes = (
+            (entry, route_by_demand.get(entry["demand"]))
+            for entry in sorted(
+                schedule["entries"], key=lambda item: item["id"]
+            )
+        )
+    else:
+        entry_routes = joined_records()
     endpoints_by_fpga: dict[str, list[dict[str, Any]]] = {
         fpga: [] for fpga in fpga_ids
     }
     lane_entries: list[dict[str, Any]] = []
-    for entry in sorted(schedule["entries"], key=lambda item: item["id"]):
-        route = route_by_demand.get(entry["demand"])
+    for entry, route in entry_routes:
         if route is None:
             raise ValidationError(
                 f"schedule entry {entry['id']!r} has no route metadata"

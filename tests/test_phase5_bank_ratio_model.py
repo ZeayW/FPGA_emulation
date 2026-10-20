@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
+from emuflow.io import read_json
 from emuflow.platform import Platform
 from emuflow.phase5 import run_phase5, validate_phase5
 from emuflow.routing import normalize_route_constraints
@@ -190,7 +191,7 @@ class BankRatioModelTest(unittest.TestCase):
             validation=validate_phase5(root/'routes.json',root/'platform.json',
                 root/'phase5/schedule.json',root/'phase5/ratio_plan.json')
             self.assertEqual(validation['status'],'pass')
-            persisted=json.loads((root/'phase5/schedule.json').read_text())
+            persisted=read_json(root/'phase5/schedule.json')
             self.assertTrue(persisted['bank_allocations'])
             self.assertTrue(all(e['tdm_ratio']==8 for e in persisted['entries']))
 

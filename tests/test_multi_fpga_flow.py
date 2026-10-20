@@ -340,7 +340,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 TDM_EXACT_DEPENDENCY_PROVIDER,
             )
             self.assertEqual(
-                json.loads((root / "tdm/schedule.json").read_text())[
+                read_json(root / "tdm/schedule.json")[
                     "transport_semantics"
                 ],
                 "sampled-virtual-wire",

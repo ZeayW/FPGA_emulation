@@ -2722,6 +2722,10 @@ def run_multi_fpga_flow(
                 "path": "tdm/schedule.json",
                 "sha256": _sha256(schedule_path),
             },
+            "schedule_store": {
+                "path": "tdm/schedule.sqlite",
+                "sha256": _sha256(phase5_root / "schedule.sqlite"),
+            },
             "split_manifest": {
                 "path": "split/manifest.json",
                 "sha256": _sha256(phase6_root / "manifest.json"),

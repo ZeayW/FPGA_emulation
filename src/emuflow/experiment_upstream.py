@@ -102,6 +102,7 @@ _SHARED_REQUIRED_ARTIFACTS = {
 }
 _SHARED_OPTIONAL_ARTIFACTS = {
     "tdm/ratio_plan.json",
+    "tdm/schedule.sqlite",
     "timing/path-database.json.paths.sqlite",
     "timing/partition-net-weights.json.weights.sqlite",
 }
@@ -1237,6 +1238,9 @@ def materialize_shared_phase1_5(
     ratio_plan = tdm_root / "ratio_plan.json"
     if ratio_plan.is_file():
         mapping["tdm/ratio_plan.json"] = (ratio_plan, "tdm")
+    schedule_store = tdm_root / "schedule.sqlite"
+    if schedule_store.is_file():
+        mapping["tdm/schedule.sqlite"] = (schedule_store, "tdm")
     for relative, (source, _stage) in mapping.items():
         _link_or_copy(source, output_dir / relative)
     managed_artifact_certificates: Dict[str, Dict[str, Any]] = {}

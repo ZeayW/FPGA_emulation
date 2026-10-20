@@ -15,6 +15,7 @@ from emuflow.errors import (
     TDMScheduleInfeasibleError,
     ValidationError,
 )
+from emuflow.io import read_json
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.phase5 import run_phase5, validate_phase5
 from emuflow.platform import Platform
@@ -157,9 +158,14 @@ def _candidate_fallback_inputs(root):
 
 def _candidate_fallback_schedule():
     return {
+        "schema": "emuflow.tdm-schedule/v1",
         "design": "candidate_fallback",
         "provider": "test-schedule-provider",
         "metrics": {"completion_slot": 1},
+        "routes": [],
+        "entries": [],
+        "demand_completions": [],
+        "domain_schedules": [],
     }
 
 
@@ -1410,10 +1416,8 @@ class Phase5Test(unittest.TestCase):
                 ],
                 timing_validation["worst_normalized_slack"],
             )
-            optimized_schedule = json.loads(
-                (root / "phase5" / "schedule.json").read_text(
-                    encoding="utf-8"
-                )
+            optimized_schedule = read_json(
+                root / "phase5" / "schedule.json"
             )
             self.assertIn("slot_optimization", optimized_schedule)
             self.assertEqual(
@@ -2301,7 +2305,15 @@ class Phase5Test(unittest.TestCase):
             )
             self.assertEqual(
                 set(managed_report["artifacts"]),
-                {"schedule", "cross_layer_timing", "report"},
+                {
+                    "schedule",
+                    "schedule_store",
+                    "cross_layer_timing",
+                    "report",
+                },
+            )
+            self.assertTrue(
+                (root / "phase5-managed" / "schedule.sqlite").is_file()
             )
             for filename in (
                 "schedule.tsv",

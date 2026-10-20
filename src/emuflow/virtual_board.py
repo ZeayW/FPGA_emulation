@@ -19,6 +19,7 @@ from typing import Any, Dict, Mapping
 from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import Platform
+from .tdm_schedule_storage import canonical_tdm_schedule_sha256
 
 MODEL = "xcvu19p-hp-lvds-cable-v1"
 WIRING_SCHEMA = "emuflow.virtual-board-wiring/v1"
@@ -347,7 +348,8 @@ def build_virtual_binding(platform: Platform, board: Mapping[str, Any], schedule
             "physical_backend_status": "phase7_consumption_required",
             "board_services_status": "clock_reset_and_control_pins_not_bound",
             "io_adapter_status": "phase7_top_level_integration_required",
-            "board_sha256": _digest(board), "schedule_sha256": _digest(schedule),
+            "board_sha256": _digest(board),
+            "schedule_sha256": canonical_tdm_schedule_sha256(schedule),
             "lane_map_sha256": _digest(artifacts["lane_map"]),
             "entries": entries,
             "metrics": {"scheduled_hops": len(entries), "used_differential_pairs": len(direction_by_wire),

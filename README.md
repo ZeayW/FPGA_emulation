@@ -74,9 +74,15 @@ For indexed Static Exact workloads with at least 100,000 routed cuts, Phase 5
 now runs dependency ordering, conservative source readiness, earliest legal
 lane/slot assignment, and sink-completion propagation in
 `emuflow_tdm_exact_scheduler`. Small cases continue to execute the Python
-reference for differential coverage. The imported native result is still
-materialized as the existing schedule contract and independently certified;
-the typed ScheduleStore and direct Phase 6 cursor path remain pending.
+reference for differential coverage. Phase 5 now publishes the logical
+schedule as a compact `schedule.json` manifest plus the versioned,
+content-sealed `schedule.sqlite` ScheduleStore. Ordered routes, hops, demand
+completions and domain records are stored once; `read_json` remains the
+explicit compatibility materializer. The baseline Phase 6 splitter opens the
+store lazily and performs entry-to-route and incoming-cut joins in SQLite, so
+it no longer decodes a monolithic schedule JSON before splitting. Endpoint,
+virtual-binding and RTL/XDC construction still retain hop-sized Python
+objects and remain migration work.
 
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
 from their sealed SQLite sidecar, reuses the in-process atomic-source view, and

@@ -34,6 +34,7 @@ from .split_netlist_storage import (
     validate_split_netlists_sqlite,
     write_split_netlists_sqlite,
 )
+from .tdm_schedule_storage import read_tdm_schedule
 
 
 PHASE6_REPORT_SCHEMA = "emuflow.phase6-report/v1"
@@ -230,7 +231,7 @@ def run_phase6(
             "Phase 6 requires the Phase 3 assignment.sqlite data-plane "
             "artifact; rerun Phase 3 with this EmuFlow version"
         )
-    schedule = read_json(schedule_path)
+    schedule = read_tdm_schedule(schedule_path)
     platform = Platform.load(platform_path)
     pin_plan = read_json(pin_plan_path) if pin_plan_path is not None else None
     position_hints = (
@@ -396,6 +397,12 @@ def run_phase6(
     if small_qualification:
         from .tdm import is_sampled_virtual_wire_schedule
 
+        materialize_schedule = getattr(schedule, "materialize", None)
+        qualification_schedule = (
+            materialize_schedule()
+            if materialize_schedule is not None
+            else schedule
+        )
         ir = EmuIR.load(ir_path)
         assignment_json_path = (
             assignment_path.with_name("assignment.json")
@@ -403,11 +410,11 @@ def run_phase6(
             else assignment_path
         )
         assignment = read_json(assignment_json_path)
-        if is_sampled_virtual_wire_schedule(schedule):
+        if is_sampled_virtual_wire_schedule(qualification_schedule):
             equivalence = _static_exact_equivalence_evidence(
                 ir,
                 assignment,
-                schedule,
+                qualification_schedule,
                 cycles=equivalence_cycles,
                 seed=equivalence_seed,
                 clock_periods=artifacts["manifest"]["clock_periods"],
@@ -416,7 +423,7 @@ def run_phase6(
             equivalence = simulate_partition_equivalence(
                 ir,
                 assignment,
-                schedule,
+                qualification_schedule,
                 cycles=equivalence_cycles,
                 seed=equivalence_seed,
             )
@@ -515,6 +522,17 @@ def run_phase6(
         "design": design_name,
         "platform": platform.name,
         "provider": artifacts["manifest"]["provider"],
+        "schedule_input": (
+            {
+                "dataflow": "indexed-lazy-sqlite-v1",
+                "logical_sha256": schedule.manifest[
+                    "logical_sha256"
+                ],
+                "store_bytes": schedule.manifest["store_bytes"],
+            }
+            if hasattr(schedule, "manifest")
+            else {"dataflow": "legacy-materialized-json-v1"}
+        ),
         "virtual_runtime_provider": runtime["provider"],
         "virtual_dut_clocks": sorted(runtime["virtual_dut_clocks"]),
         "clock_contract_ref": "manifest.json#/clock_periods",
@@ -599,7 +617,7 @@ def validate_phase6(
     # validate the cross-layer contract.  Reuse that exact object instead of
     # scanning and decoding the artifact again.
     schedule = (
-        read_json(schedule_path)
+        read_tdm_schedule(schedule_path)
         if schedule_value is None
         else schedule_value
     )
@@ -735,11 +753,17 @@ def validate_phase6(
         )
         ir = EmuIR.load(ir_path)
         assignment = read_json(assignment_json_path)
+        materialize_schedule = getattr(schedule, "materialize", None)
+        qualification_schedule = (
+            materialize_schedule()
+            if materialize_schedule is not None
+            else schedule
+        )
         validation["static_exact_equivalence"] = (
             _static_exact_equivalence_evidence(
                 ir,
                 assignment,
-                schedule,
+                qualification_schedule,
                 cycles=16,
                 seed=20260727,
                 clock_periods=clock_periods,

@@ -37,6 +37,7 @@ _IMPORTANT_JSON_NAMES = {
     "assignment.json",
     "routes.json",
     "schedule.json",
+    "schedule.sqlite",
     "ratio_plan.json",
     "platform.normalized.json",
     "synthesized.json",

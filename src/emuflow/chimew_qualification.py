@@ -64,6 +64,13 @@ CHIMEW_BYTE_BOUND_OPTIONAL_SOURCE_LABELS = {"timing_paths"}
 
 
 def canonical_sha256(document: Mapping[str, Any]) -> str:
+    from .tdm_schedule_storage import (
+        TDMScheduleView,
+        canonical_tdm_schedule_sha256,
+    )
+
+    if isinstance(document, TDMScheduleView):
+        return canonical_tdm_schedule_sha256(document)
     payload = json.dumps(
         document, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("utf-8")

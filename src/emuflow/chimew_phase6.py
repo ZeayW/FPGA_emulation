@@ -32,6 +32,7 @@ from .pin_planning import (
     validate_pin_plan,
 )
 from .platform import Platform
+from .tdm_schedule_storage import canonical_tdm_schedule_sha256
 
 
 CHIMEW_ELECTRICAL_MAP_SCHEMA_V1 = "emuflow.chimew-electrical-channel-map/v1"
@@ -532,7 +533,7 @@ def build_chimew_phase6_pin_plan(
         "entries": sorted(hint_entries, key=lambda item: item["schedule_entry"]),
     }
     weights = {"crossing": 1.0, "position": 1.0}
-    schedule_sha256 = _canonical_sha256(schedule)
+    schedule_sha256 = canonical_tdm_schedule_sha256(schedule)
     metrics = _assignment_metrics(
         schedule, platform, positions, plan_assignment, 1.0, 1.0
     )
@@ -698,7 +699,7 @@ def validate_chimew_phase6_binding(
         "schedule_sha256",
     ):
         _digest(provenance.get(field), f"electrical_binding.{field}")
-    schedule_sha256 = _canonical_sha256(schedule)
+    schedule_sha256 = canonical_tdm_schedule_sha256(schedule)
     if (
         provenance.get("schedule_sha256") != schedule_sha256
         or configuration.get("schedule_sha256") != schedule_sha256

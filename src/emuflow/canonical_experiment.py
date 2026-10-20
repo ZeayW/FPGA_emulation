@@ -1323,6 +1323,7 @@ def compile_canonical_experiment_spec(
     tdm_inputs = ["platform", "route_constraints", "tool.emuflow"]
     tdm_artifacts = [
         _artifact("schedule.json", "consumer-checkpoint"),
+        _artifact("schedule.sqlite", "consumer-checkpoint"),
         _artifact("cross_layer_timing.json", "consumer-checkpoint"),
         _artifact("phase5_report.json", "consumer-checkpoint"),
         _artifact("experiment-tdm-report.json", "evidence-critical"),

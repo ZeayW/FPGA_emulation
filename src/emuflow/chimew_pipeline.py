@@ -30,6 +30,10 @@ from .errors import ValidationError
 from .io import read_json, write_json
 from .pin_planning import validate_pin_plan
 from .platform import Platform
+from .tdm_schedule_storage import (
+    copy_tdm_schedule_storage,
+    tdm_schedule_store_path,
+)
 
 
 CHIMEW_PIPELINE_REPORT_SCHEMA = "emuflow.chimew-phase6-pipeline-report/v1"
@@ -247,8 +251,15 @@ def run_chimew_phase6_pipeline(
     artifact_paths: Dict[str, Path] = {}
     for label, source in input_sources.items():
         destination = inputs_dir / input_names[label]
-        shutil.copy2(source, destination)
+        if label == "schedule":
+            copy_tdm_schedule_storage(source, destination)
+        else:
+            shutil.copy2(source, destination)
         artifact_paths[label] = destination
+        if label == "schedule":
+            schedule_store = tdm_schedule_store_path(destination)
+            if schedule_store is not None:
+                artifact_paths["schedule_store"] = schedule_store
     if source_paths is not None:
         sources_dir = output_dir / "sources"
         sources_dir.mkdir(parents=True, exist_ok=True)
@@ -348,12 +359,16 @@ def validate_chimew_phase6_pipeline(output_dir: Path) -> Dict[str, Any]:
     ):
         raise ValidationError("Chimew pipeline qualification scope is invalid")
     artifacts = report.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValidationError("Chimew pipeline artifact inventory is invalid")
     expected_labels = set(_BASE_ARTIFACTS)
+    if "schedule_store" in artifacts:
+        expected_labels.add("schedule_store")
     if source_bound:
         expected_labels.update(f"source_{label}" for label in _SOURCE_LABELS)
         if "source_timing_paths" in artifacts:
             expected_labels.add("source_timing_paths")
-    if not isinstance(artifacts, dict) or set(artifacts) != expected_labels:
+    if set(artifacts) != expected_labels:
         raise ValidationError("Chimew pipeline artifact inventory is invalid")
     paths = {
         label: _artifact_path(output_dir, label, record)

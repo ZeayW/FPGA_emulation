@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any, Dict, Mapping, Optional
 
 from .cross_layer_timing import (
@@ -33,6 +34,7 @@ from .tdm_ratio import (
     validate_tdm_ratio_plan,
 )
 from .tdm_slot import refine_tdm_schedule_native
+from .tdm_schedule_storage import write_tdm_schedule_storage
 from .tdm_timing_dag import build_timing_dag_ratio_plan
 from .tdm_feedback import build_tdm_feedback, validate_tdm_feedback
 
@@ -416,6 +418,7 @@ def run_phase5(
         ),
         "artifacts": {
             "schedule": "schedule.json",
+            "schedule_store": "schedule.sqlite",
             "cross_layer_timing": "cross_layer_timing.json",
             "report": "phase5_report.json",
         },
@@ -447,14 +450,24 @@ def run_phase5(
             pack_managed_json(ratio_plan) if managed_storage else ratio_plan,
             compact=True,
         )
-    # Phase 5 machine artifacts can contain one record per routed hop.  Using
-    # compact JSON keeps the encoder on CPython's C fast path; pretty-printing
-    # a million-hop schedule can otherwise dominate the actual optimizer.
-    write_json(
-        output_dir / "schedule.json",
-        pack_managed_json(schedule) if managed_storage else schedule,
-        compact=True,
+    # The public JSON path is a compact commit manifest. Hop-sized ordered
+    # relations live once in the versioned SQLite ScheduleStore; read_json is
+    # the explicit compatibility materializer for legacy consumers.
+    schedule_storage_started = time.monotonic()
+    schedule_storage = write_tdm_schedule_storage(
+        output_dir / "schedule.json", schedule
     )
+    report["schedule_storage"] = {
+        "schema": schedule_storage["schema"],
+        "dataflow": "indexed-sqlite-ordered-records-v1",
+        "wall_seconds": time.monotonic() - schedule_storage_started,
+        "bytes": schedule_storage["store_bytes"],
+        "logical_sha256": schedule_storage["logical_sha256"],
+        "records": {
+            section: record["records"]
+            for section, record in schedule_storage["sections"].items()
+        },
+    }
     write_json(
         output_dir / "cross_layer_timing.json",
         cross_layer_timing,

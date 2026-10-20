@@ -47,6 +47,7 @@ from .pin_planning import (
 from .platform import Platform
 from .runtime import QOR_REPORT_SCHEMA
 from .routing import semantic_contract_for_routes
+from .tdm_schedule_storage import copy_tdm_schedule_storage
 from .vpr import VTR_HARD_BLOCK_PROFILE
 
 
@@ -1282,7 +1283,9 @@ def run_phase6_checkpoint(
             )
         phase6_schedule_path = paths["schedule"]
     else:
-        shutil.copy2(schedule_path, output_dir / "schedule.json")
+        copy_tdm_schedule_storage(
+            schedule_path, output_dir / "schedule.json"
+        )
         phase6_schedule_path = output_dir / "schedule.json"
     phase6 = run_phase6(
         paths["ir"],
