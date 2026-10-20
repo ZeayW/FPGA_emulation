@@ -460,6 +460,21 @@ def normalize_sta_paths(
             path["cut_transitions"] = transitions
         paths.append(path)
 
+    registry = value.get("output_realizations")
+    if registry is not None:
+        from .output_realizations import validate_output_realizations
+        index = validate_output_realizations(registry)
+        if {rid for rid, record in index.items() if not record["local"]} != path_ids & set(index):
+            raise ValidationError("timing paths output realization coverage mismatch")
+        for path in paths:
+            record = index.get(path["id"])
+            if record is not None and (record["cut_nets"] != path["cut_nets"]
+                    or record["cut_transitions"] != path.get("cut_transitions")):
+                raise ValidationError("timing path output realization disagrees")
+            if record is None and path["id"].startswith("output-copy:"):
+                raise ValidationError("timing path lacks its output realization")
+    elif any(path_id.startswith("output-copy:") for path_id in path_ids):
+        raise ValidationError("timing paths lack their output realization registry")
     positive_scale = max(
         (path["slack_ns"] for path in paths if path["slack_ns"] >= 0.0),
         default=1.0,
@@ -496,7 +511,13 @@ def normalize_sta_paths(
             "max_clock_period_ns": max_period,
         },
         "paths": paths,
+        **_output_realization_metadata(value),
     }
+
+
+def _output_realization_metadata(timing: Mapping[str, Any]) -> Dict[str, Any]:
+    return ({"output_realizations": timing["output_realizations"]}
+            if "output_realizations" in timing else {})
 
 
 def compress_sta_paths(paths_artifact: Mapping[str, Any]) -> Dict[str, Any]:
@@ -547,10 +568,16 @@ def compress_sta_paths(paths_artifact: Mapping[str, Any]) -> Dict[str, Any]:
         representative = dict(representatives[signature])
         representative["compressed_path_ids"] = sorted(members[signature])
         compressed.append(representative)
+    registry = paths_artifact.get("output_realizations")
+    original_by_realization = ({record["id"]: record["original_path"]
+                               for record in registry["realizations"]}
+                              if isinstance(registry, dict) else {})
     return {
         **dict(paths_artifact),
         "compression": {
-            "original_paths": len(paths_artifact["paths"]),
+            "original_paths": len({original_by_realization.get(path["id"], path["id"])
+                                   for path in paths_artifact["paths"]}),
+            **({"realized_paths": len(paths_artifact["paths"])} if registry is not None else {}),
             "compressed_paths": len(compressed),
             "lossless_by": (
                 "clock-domain+period+required-time+ordered-cut-signature+"
@@ -590,10 +617,14 @@ def load_sta_paths(
                 "normalized timing paths: compressed path count mismatch"
             )
         original_count = compression.get("original_paths")
+        member_count = compression.get("realized_paths", original_count)
         if (
             isinstance(original_count, bool)
             or not isinstance(original_count, int)
-            or original_count < len(paths)
+            or original_count <= 0
+            or isinstance(member_count, bool)
+            or not isinstance(member_count, int)
+            or member_count < len(paths)
         ):
             raise ValidationError(
                 "normalized timing paths: invalid original path count"
@@ -616,6 +647,10 @@ def load_sta_paths(
             positive=True,
         )
         ids = set()
+        all_members = set()
+        from .output_realizations import validate_output_realizations
+        registry = value.get("output_realizations")
+        realization_index = validate_output_realizations(registry) if registry is not None else {}
         for index, item in enumerate(paths):
             context = f"normalized timing paths.paths[{index}]"
             if not isinstance(item, dict):
@@ -675,6 +710,25 @@ def load_sta_paths(
                 raise ValidationError(
                     f"{context}.compressed_path_ids: invalid"
                 )
+            if registry is not None:
+                for member in members:
+                    if member in all_members:
+                        raise ValidationError("normalized timing paths: duplicate realized member")
+                    all_members.add(member)
+                    realization = realization_index.get(member)
+                    if realization is None:
+                        if member.startswith("output-copy:"):
+                            raise ValidationError("normalized timing path has an unbound output realization")
+                        continue
+                    if (realization["local"]
+                            or realization["cut_nets"] != nets
+                            or realization["cut_transitions"] != item.get("cut_transitions")
+                            or realization["clock_domain"] != item["clock_domain"]
+                            or realization["clock_period_ns"] != period
+                            or abs(realization["required_time_ns"] - (fixed_delay + slack)) > 1e-9):
+                        raise ValidationError("normalized timing path output realization disagrees")
+            elif any(member.startswith("output-copy:") for member in members):
+                raise ValidationError("normalized timing paths lack their output realization registry")
             expected_normalized = (
                 slack * period / (positive_scale * max_period)
                 if slack >= 0.0
@@ -693,6 +747,16 @@ def load_sta_paths(
                 raise ValidationError(
                     f"{context}.normalized_slack: inconsistent"
                 )
+        if registry is not None:
+            expected = {rid for rid, record in realization_index.items() if not record["local"]}
+            if expected != all_members & set(realization_index):
+                raise ValidationError("normalized timing paths output realization coverage mismatch")
+            if member_count != len(all_members):
+                raise ValidationError("normalized timing paths realized member count mismatch")
+            originals = {realization_index[member]["original_path"]
+                         if member in realization_index else member for member in all_members}
+            if original_count != len(originals):
+                raise ValidationError("normalized timing paths original member count mismatch")
         return dict(value)
     return compress_sta_paths(normalize_sta_paths(value, demands))
 
@@ -1809,6 +1873,7 @@ def route_system_native(
             "normalization": timing_paths["normalization"],
             "compression": timing_paths["compression"],
             "paths": timing_records,
+            **_output_realization_metadata(timing_paths),
         }
         result["metrics"].update(
             {
@@ -2180,6 +2245,7 @@ def annotate_system_route_timing(
         "normalization": timing_paths["normalization"],
         "compression": timing_paths["compression"],
         "paths": records,
+        **_output_realization_metadata(timing_paths),
     }
     annotated["metrics"] = {
         **routes["metrics"],
@@ -2533,6 +2599,8 @@ def validate_native_system_routes(
         raise ValidationError(
             "routes.timing.compression does not match normalized STA input"
         )
+    if timing.get("output_realizations") != timing_paths.get("output_realizations"):
+        raise ValidationError("routes.timing output realization registry does not match normalized STA input")
     positive_scale = timing_paths["normalization"][
         "positive_slack_scale_ns"
     ]

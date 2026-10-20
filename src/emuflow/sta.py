@@ -9,6 +9,7 @@ import os
 import re
 import sqlite3
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional
 
@@ -2149,20 +2150,43 @@ def project_sta_path_database(
     output_path: Path,
     *,
     input_already_validated: bool = False,
+    original_ir_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     database = read_json(database_path)
     assignment = read_phase3_cut_timing_view(
         assignment_path,
         include_instance_assignment=True,
     )
-    artifact, summary = project_sta_path_database_value(
-        database,
-        assignment,
-        source_input_sha256=_file_sha256(database_path),
-        output_path=str(output_path),
-        database_path=database_path,
-        verify_payload=not input_already_validated,
-    )
+    with ExitStack() as stack:
+        original_nets = None
+        replication_present = False
+        if original_ir_path is not None:
+            from .emuir_compact import is_compact_emuir
+            from .emuir_storage import is_emuir_sqlite
+            from .indexed_physical_ir import IndexedPhysicalIR
+            if is_emuir_sqlite(original_ir_path) and is_compact_emuir(original_ir_path):
+                original_nets = stack.enter_context(IndexedPhysicalIR(original_ir_path)).nets
+            else:
+                original = EmuIR.load(original_ir_path)
+                original_nets = {net["id"]: net for net in original.value["nets"]}
+            index_path = assignment_path.with_name("assignment.sqlite")
+            if index_path.is_file():
+                connection = sqlite3.connect(f"file:{index_path.resolve()}?mode=ro&immutable=1", uri=True)
+                try:
+                    replication_present = connection.execute(
+                        "SELECT 1 FROM copies WHERE is_replica=1 LIMIT 1").fetchone() is not None
+                finally:
+                    connection.close()
+        artifact, summary = project_sta_path_database_value(
+            database,
+            assignment,
+            source_input_sha256=_file_sha256(database_path),
+            output_path=str(output_path),
+            database_path=database_path,
+            verify_payload=not input_already_validated,
+            original_nets=original_nets,
+            replication_present=replication_present,
+        )
     write_json(output_path, artifact)
     return summary
 
@@ -2175,6 +2199,8 @@ def project_sta_path_database_value(
     output_path: str | None = None,
     database_path: Optional[Path] = None,
     verify_payload: bool = True,
+    original_nets: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    replication_present: bool = False,
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """Project one loaded TimingPathDB onto one loaded assignment.
 
@@ -2242,14 +2268,14 @@ def project_sta_path_database_value(
         instance_assignment = {}
 
     def path_transitions(
-        path: Mapping[str, Any], candidates: list[str]
+        path: Mapping[str, Any], candidates: list[str], target_fpga: Optional[str] = None,
     ) -> tuple[list[str], Optional[list[Dict[str, str]]]]:
         startpoint = path.get("startpoint")
         endpoint = path.get("endpoint")
         if not isinstance(startpoint, dict) or not isinstance(endpoint, dict):
             return candidates, None
         end_instance = endpoint.get("instance")
-        end_partition = instance_assignment.get(end_instance)
+        end_partition = target_fpga or instance_assignment.get(end_instance)
         if not isinstance(end_partition, str) or not end_partition:
             return candidates, None
         target = end_partition
@@ -2287,6 +2313,7 @@ def project_sta_path_database_value(
         return [item["net"] for item in transitions], transitions
 
     paths = []
+    output_realizations = []
     positive_scale_value: Optional[float] = None
     most_negative_value: Optional[float] = None
     max_period = 0.0
@@ -2387,27 +2414,70 @@ def project_sta_path_database_value(
                 else min(most_negative_value, numeric_slack)
             )
         candidates = [net for net in path_nets if net in cut_nets]
-        projected, transitions = path_transitions(path, candidates)
-        if not projected:
-            continue
-        covered_cut_nets.update(projected)
-        record = {
-            "id": path_id,
-            "clock_domain": clock_domain,
-            "clock_period_ns": float(clock_period),
-            "slack_ns": float(slack),
-            "fixed_delay_ns": float(fixed_delay),
-            "cut_nets": projected,
-            "cut_signature": [
-                cut_signature_by_net[net]
-                for net in projected
-            ],
-            "normalized_slack": expected_normalized,
-            "compressed_path_ids": [path_id],
-        }
-        if transitions is not None:
-            record["cut_transitions"] = transitions
-        paths.append(record)
+        realizations = [(path_id, None, None)]
+        endpoint = path.get("endpoint")
+        if original_nets is not None and isinstance(endpoint, dict) and endpoint.get("instance") is None:
+            replication = assignment.get("replication")
+            if replication_present or (isinstance(replication, Mapping) and replication.get("replicas")):
+                raise ValidationError("output realization projection requires nonreplicated cell ownership")
+            terminal_net = path_nets[-1]
+            net = original_nets.get(terminal_net)
+            if not isinstance(net, Mapping):
+                raise ValidationError(f"STA output path {path_id!r} lacks its terminal net")
+            output = {"port": endpoint.get("port"), "bit": endpoint.get("bit")}
+            drivers, sinks = net.get("drivers"), net.get("sinks")
+            if (not isinstance(drivers, list) or len(drivers) != 1
+                    or not isinstance(sinks, list)
+                    or not any(sink.get("instance") is None and sink.get("port") == output["port"]
+                               and sink.get("bit") == output["bit"] for sink in sinks)):
+                raise ValidationError(f"STA output path {path_id!r} has no unique terminal driver/output binding")
+            # Baseline splitting materializes a top output on every FPGA
+            # touched by a real terminal-net cell, including its source.
+            owners = set()
+            for cell_endpoint in drivers + sinks:
+                instance = cell_endpoint.get("instance")
+                if instance is None:
+                    continue
+                owner = instance_assignment.get(instance)
+                if not isinstance(owner, str) or not owner:
+                    raise ValidationError(f"STA output path {path_id!r} has an unassigned terminal-net cell")
+                owners.add(owner)
+            if not owners:
+                raise ValidationError(f"STA output path {path_id!r} has no materialized output owner")
+            realizations = []
+            for owner in sorted(owners):
+                identity = json.dumps([path_id, owner, output["port"], output["bit"]],
+                                      ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                rid = "output-copy:" + hashlib.sha256(identity).hexdigest()
+                realizations.append((rid, owner, {"id": rid, "original_path": path_id,
+                    "fpga": owner, "endpoint": output, "terminal_net": terminal_net,
+                    "clock_domain": clock_domain, "clock_period_ns": float(clock_period),
+                    "required_time_ns": float(fixed_delay) + float(slack),
+                    "fixed_delay_ns": float(fixed_delay)}))
+        for realized_id, target_fpga, realization in realizations:
+            projected, transitions = path_transitions(path, candidates, target_fpga)
+            if realization is not None:
+                if transitions is None:
+                    raise ValidationError(f"STA output realization {realized_id!r} lacks exact transitions")
+                realization.update(cut_nets=projected, cut_transitions=transitions, local=not projected)
+                output_realizations.append(realization)
+            if not projected:
+                continue
+            covered_cut_nets.update(projected)
+            record = {
+                "id": realized_id,
+                "clock_domain": clock_domain,
+                "clock_period_ns": float(clock_period),
+                "slack_ns": float(slack),
+                "fixed_delay_ns": float(fixed_delay),
+                "cut_nets": projected,
+                "cut_signature": [cut_signature_by_net[net] for net in projected],
+                "normalized_slack": expected_normalized,
+                "compressed_path_ids": [realized_id],
+            }
+            if transitions is not None:
+                record["cut_transitions"] = transitions
+            paths.append(record)
     if not paths:
         raise ValidationError(
             "STA path database has no path crossing this partition"
@@ -2432,6 +2502,11 @@ def project_sta_path_database_value(
         raise ValidationError(
             "STA path database normalization does not match its paths"
         )
+    output_registry = ({"output_realizations": {
+        "schema": "emuflow.output-realizations/v1", "realizations": output_realizations,
+        "original_population": {"paths": database_path_count, "path_ids_sha256": hashlib.sha256(
+            json.dumps(sorted(path_ids), ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()},
+    }} if original_nets is not None else {})
     artifact = compress_sta_paths({
         "schema": STA_PATHS_SCHEMA,
         "design": assignment["design"],
@@ -2445,6 +2520,7 @@ def project_sta_path_database_value(
         },
         "normalization": normalization,
         "paths": paths,
+        **output_registry,
     })
     return artifact, {
         "status": "pass",

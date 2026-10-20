@@ -8,6 +8,7 @@ from unittest.mock import patch
 from emuflow.cli import _build_parser
 from emuflow.errors import ValidationError
 from emuflow.io import write_json
+from emuflow.local_path_timing import path_id_set_sha256
 from emuflow.routing_tdm_comparison import (
     build_system_route_tdm_ab_comparison,
     build_system_route_tdm_scale_comparison,
@@ -244,7 +245,8 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             "partition_net_weights", "routes",
         ):
             path = root / f"{key}.json"
-            write_json(path, {"kind": key})
+            write_json(path, ({"schema": "emuflow.sta-path-database/v1", "paths": [
+                {"id": "member-a"}, {"id": "member-b"}]} if key == "timing_path_database" else {"kind": key}))
             artifacts[key] = {"path": path.name, "sha256": _sha256(path)}
         global_slack = -2.0 + value
         return {
@@ -297,7 +299,7 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                         "original_cross_fpga_paths": 1,
                         "compressed_representative_paths": 1,
                         "original_path_coverage": 1.0,
-                        "original_path_ids_sha256": "f" * 64,
+                        "original_path_ids_sha256": path_id_set_sha256(["member-a", "member-b"]),
                     },
                     "source_binding": {
                         "path_database_sha256": artifacts[
@@ -307,7 +309,7 @@ class RoutingTdmComparisonTest(unittest.TestCase):
                         "assignment_sha256": artifacts["assignment"]["sha256"],
                         "routes_sha256": artifacts["routes"]["sha256"],
                         "original_paths": 2,
-                        "original_path_ids_sha256": "f" * 64,
+                        "original_path_ids_sha256": path_id_set_sha256(["member-a", "member-b"]),
                     },
                     "target_clock": {
                         "worst_slack_bound_ns": global_slack,
@@ -602,8 +604,10 @@ class RoutingTdmComparisonTest(unittest.TestCase):
             ):
                 path = flow_root / "timing_path_database.json"
                 write_json(path, {
+                    "schema": "emuflow.sta-path-database/v1",
                     "source": {"input": f"/tmp/{staging}/paths.tsv"},
-                    "paths": [{"arrival_ns": 1.25}],
+                    "paths": [{"id": member, "arrival_ns": 1.25}
+                              for member in ("member-a", "member-b")],
                 })
                 report["artifacts"]["timing_path_database"]["sha256"] = _sha256(path)
                 report["runtime"]["system_timing"]["source_binding"][

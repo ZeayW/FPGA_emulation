@@ -2038,6 +2038,7 @@ def run_multi_fpga_flow(
                 assignment_path,
                 projected_timing_paths,
                 input_already_validated=True,
+                original_ir_path=ir_path,
             )
         else:
             # A legal single-FPGA partition has no interconnect timing problem.

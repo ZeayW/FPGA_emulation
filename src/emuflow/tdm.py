@@ -2341,6 +2341,39 @@ def reconstruct_tdm_schedule_timing(
         records = reconstruct_tdm_schedule_timing_paths(
             routes, platform, schedule, model=model, entries=entries
         )
+    from .output_realizations import (
+        aggregate_output_realizations, output_realization_index,
+    )
+    realizations = output_realization_index(routes)
+    if realizations:
+        expanded = [
+            {**record, "path": member}
+            for record in records
+            for member in record.get("compressed_path_ids", [record["path"]])
+        ]
+        from .tdm_ratio import _normalized_slack
+        normalization = routes["timing"]["normalization"]
+        for record in expanded:
+            item = realizations.get(record["path"])
+            if item is not None:
+                record["delay_ns"] = float(item["fixed_delay_ns"]) + record["transport_delay_ns"]
+                record["required_time_ns"] = float(item["required_time_ns"])
+                record["slack_ns"] = record["required_time_ns"] - record["delay_ns"]
+                record["normalized_slack"] = _normalized_slack(
+                    item["clock_period_ns"], record["slack_ns"], normalization)
+        for item in realizations.values():
+            if not item["local"]:
+                continue
+            delay = float(item["fixed_delay_ns"])
+            required = float(item["required_time_ns"])
+            period = float(item["clock_period_ns"])
+            expanded.append({
+                "path": item["id"], "clock_domain": item["clock_domain"],
+                "clock_period_ns": period, "required_time_ns": required,
+                "delay_ns": delay, "slack_ns": required - delay,
+                "normalized_slack": _normalized_slack(period, required-delay, normalization),
+            })
+        records = aggregate_output_realizations(expanded, routes, delay_field="delay_ns")
     if not records:
         raise ValidationError(
             "schedule timing reconstruction has no timing paths"

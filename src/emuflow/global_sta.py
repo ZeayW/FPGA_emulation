@@ -371,6 +371,8 @@ the Python event propagator or consume its per-path numerical results.
     from .runtime import runtime_clock_period_ns
     result = []
     path_metadata = {}
+    from .output_realizations import output_realization_index, original_path_id
+    realizations = output_realization_index(routes)
     representatives = 0
     for record in reconstruct_tdm_schedule_timing_paths(routes, platform, schedule):
         virtual = runtime_clock_period_ns(runtime, record.get("clock_domain"))
@@ -390,6 +392,11 @@ the Python event propagator or consume its per-path numerical results.
                 "physical_logic_segments_cone_bound": any(
                     s.get("measurement") == "cut-net-cone-upper-bound" for s in chain),
             }
+            if realizations:
+                path_metadata[member]["logical_fpga_sequence"] = [
+                    record["cut_transitions"][0]["from"],
+                    *(item["to"] for item in record["cut_transitions"]),
+                ]
             origin = 0.0
             trailing = ()
             ratio_mode = any(board_links[h["link"]].tdm_delay_model is not None
@@ -468,6 +475,8 @@ the Python event propagator or consume its per-path numerical results.
                 "clock_domain": path.get("clock_domain"), "target_period_ns": path["clock_period_ns"],
                 "physical_logic_segments_cone_bound": path.get("measurement") != "explicit-routed-path-chain",
             }
+            if realizations:
+                path_metadata[path["id"]]["logical_fpga_sequence"] = [fpga]
             required = float(path.get("required_time_ns", path["clock_period_ns"]))
             virtual = runtime_clock_period_ns(
                 runtime, path.get("clock_domain")
@@ -478,14 +487,24 @@ the Python event propagator or consume its per-path numerical results.
                                          (float(path["delay_ns"]),), deadline))
     rows = validate_checks(result)
     if metadata is not None:
+        source_ids = {original_path_id(pid, realizations) for pid in path_metadata}
         if source is not None and (
             source["routes_sha256"] != routes_artifact_sha256
-            or source["original_paths"] != len(path_metadata)
-            or source["original_path_ids_sha256"] != path_id_set_sha256(list(path_metadata))
+            or source["original_paths"] != len(source_ids)
+            or source["original_path_ids_sha256"] != path_id_set_sha256(list(source_ids))
         ):
             raise ValidationError("global STA original population/source binding disagrees")
         metadata.update(paths=path_metadata, source_binding=source,
                         compressed_representative_paths=representatives)
+        if realizations:
+            if set(realizations) - set(path_metadata):
+                raise ValidationError("global STA missing output copy measurements")
+            registry = routes["timing"]["output_realizations"]
+            population = registry["original_population"]
+            if (population["paths"] != len(source_ids)
+                    or population["path_ids_sha256"] != path_id_set_sha256(list(source_ids))):
+                raise ValidationError("global STA output realization original population disagrees")
+            metadata["output_realizations"] = registry
     return rows
 
 
@@ -510,6 +529,12 @@ def build_opensta_timing(runtime, metadata, measurements):
     for pid, info in sorted(metadata["paths"].items()):
         path = {"path": pid, **info,
                 "system_delay_bound_ns": observed[pid, "target"]["arrival_ns"]}
+        bound = info["physical_logic_segments_cone_bound"]
+        local = info["path_scope"] == "same-fpga-local"
+        path.update(physical_logic_segments_exact=not bound,
+            physical_logic_model=(("routed-endpoint-longest-path-conservative" if local
+                                   else "routed-staging-chain-cone-upper-bound") if bound
+                                  else ("routed-selected-path-chain-exact" if local else "routed-staging-chain-exact")))
         for role in ("target", "runtime"):
             row = observed[pid, role]
             path[f"{role}_required_time_ns"] = row["required_ns"]
@@ -517,17 +542,27 @@ def build_opensta_timing(runtime, metadata, measurements):
         paths.append(path)
     if not paths:
         raise ValidationError("global STA empty standalone result")
+    realization_paths = paths
+    registry = metadata.get("output_realizations")
+    if registry is not None:
+        from .output_realizations import aggregate_output_realizations
+        for path in paths:
+            path["virtual_period_ns"] = path["runtime_required_time_ns"] + (
+                path["target_period_ns"] - path["target_required_time_ns"])
+        paths = aggregate_output_realizations(paths, {"timing": {"output_realizations": registry}},
+            delay_field="system_delay_bound_ns", physical=True)
     failures = sum(r["slack_ns"] < -1e-3 for r in measurements if r["role"] in {"tx", "commit"})
     source = metadata["source_binding"]
     scope = "whole-original-design" if source is not None else "cross-fpga-path-subset"
     local = sum(p["path_scope"] == "same-fpga-local" for p in paths)
-    bounds = sum(p["physical_logic_segments_cone_bound"] for p in paths)
+    bounds = sum(p["physical_logic_segments_cone_bound"] for p in realization_paths)
     timing = {"schema": "emuflow.system-timing/v2", "status": "fail" if failures else "pass",
               "qualification": "opensta-fixed-event-physical-bounds", "timing_scope": scope,
               "source_binding": source, "paths": paths,
               "path_exactness": {"physical_model": "routed-staging-chain-upper-bounds",
-                  "endpoint_exact_logic_paths": len(paths)-bounds, "cone_bound_logic_paths": bounds,
+                  "endpoint_exact_logic_paths": len(realization_paths)-bounds, "cone_bound_logic_paths": bounds,
                   "fallback_logic_paths": 0, "discontinuous_compressed_paths": 0,
+                  "physical_logic_segments": bounds == 0,
                   "physical_logic_segment_bounds": True, "fixed_slot_event_failures": failures},
               "summary": {"timing_paths": len(paths), "original_paths": source["original_paths"] if source else None,
                   "original_local_paths": local, "original_cross_fpga_paths": len(paths)-local,
@@ -535,6 +570,19 @@ def build_opensta_timing(runtime, metadata, measurements):
                   "original_path_coverage": 1.0 if source else None,
                   "original_path_ids_sha256": source["original_path_ids_sha256"] if source else None,
                   "maximum_system_delay_bound_ns": max(p["system_delay_bound_ns"] for p in paths)}}
+    if registry is not None:
+        timing.update(output_realizations=registry, realization_paths=realization_paths)
+        from .output_realizations import original_path_id, validate_output_realizations
+        index = validate_output_realizations(registry)
+        local_ids = {original_path_id(path["path"], index) for path in realization_paths
+                     if path["path_scope"] == "same-fpga-local"}
+        cross_ids = {original_path_id(path["path"], index) for path in realization_paths
+                     if path["path_scope"] == "cross-fpga"}
+        timing["path_exactness"]["population"] = "physical-path-realizations"
+        timing["summary"].update(physical_path_realizations=len(realization_paths),
+            output_copy_realizations=len(registry["realizations"]), output_copy_coverage=1.0,
+            original_local_paths=len(local_ids), original_cross_fpga_paths=len(cross_ids),
+            original_paths_with_local_and_cross_realizations=len(local_ids & cross_ids))
     metrics = {}
     for role in ("target", "runtime"):
         worst = min(paths, key=lambda p:(p[f"{role}_clock_slack_bound_ns"],p["path"]))
@@ -578,8 +626,9 @@ def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
 """
     if tolerance_ns <= 0 or not math.isfinite(tolerance_ns):
         raise ValidationError("invalid global STA comparison tolerance")
-    expected = {p["path"]: p for p in reference["paths"]}
-    if not expected or len(expected) != len(reference["paths"]):
+    physical_paths = reference.get("realization_paths", reference["paths"])
+    expected = {p["path"]: p for p in physical_paths}
+    if not expected or len(expected) != len(physical_paths):
         raise ValidationError("global STA reference has empty/duplicate original paths")
     observed = {}
     identities = set()
@@ -618,14 +667,22 @@ def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
     if set(observed) != {(p, r) for p in expected for r in ("target", "runtime")}:
         raise ValidationError("global OpenSTA original-path coverage is incomplete")
     summary = {}
+    registry = reference.get("output_realizations")
+    original_by_realization = ({item["id"]: item["original_path"]
+                               for item in registry["realizations"]} if registry else {})
     for role in ("target", "runtime"):
-        slacks = [row["slack_ns"] for row in measurements if row["role"] == role]
+        by_original = {}
+        for row in measurements:
+            if row["role"] == role:
+                original = original_by_realization.get(row["path"], row["path"])
+                by_original[original] = min(by_original.get(original, math.inf), row["slack_ns"])
+        slacks = list(by_original.values())
         summary[role] = {"wns_ns": min(slacks),
                          "original_path_tns_ns": math.fsum(min(0.0, s) for s in slacks),
                          "negative_paths": sum(s < 0 for s in slacks)}
     return {"schema": "emuflow.global-opensta-check/v1", "status": "fail" if failures else "pass",
             "authority": "qualification-only-pending-full-flow-validation",
-            "timing_scope": reference["timing_scope"], "original_paths": len(expected),
+            "timing_scope": reference["timing_scope"], "original_paths": len(reference["paths"]),
             "event_failures": failures, "checks": len(measurements),
             "tolerance_ns": tolerance_ns, "maximum_difference_ns": max_error,
             "maximum_comparison_tolerance_ns": max_tolerance,
@@ -643,12 +700,17 @@ def adopt_opensta_results(timing, measurements):
     gate = compare_system_timing(measurements, timing)
     observed = {(r["path"], r["role"]): r for r in measurements
                 if r["role"] in {"target", "runtime"}}
-    for path in timing["paths"]:
+    for path in timing.get("realization_paths", timing["paths"]):
         path["system_delay_bound_ns"] = observed[path["path"], "target"]["arrival_ns"]
         for role in ("target", "runtime"):
             row = observed[path["path"], role]
             path[f"{role}_required_time_ns"] = row["required_ns"]
             path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
+    if timing.get("output_realizations") is not None:
+        from .output_realizations import aggregate_output_realizations
+        timing["paths"] = aggregate_output_realizations(timing["realization_paths"],
+            {"timing": {"output_realizations": timing["output_realizations"]}},
+            delay_field="system_delay_bound_ns", physical=True)
     for role in ("target", "runtime"):
         worst = min(timing["paths"], key=lambda p: (
             p[f"{role}_clock_slack_bound_ns"], p["path"]))

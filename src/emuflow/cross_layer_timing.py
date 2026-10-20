@@ -208,6 +208,9 @@ def _build_contract(
         raw_paths = timing.get("paths") if isinstance(timing, dict) else None
         if not isinstance(raw_paths, list):
             raise ValidationError("cross-layer timing paths must be an array")
+        from .output_realizations import output_realization_index
+        realization_index = output_realization_index(routes)
+        seen_realizations = set()
         seen_paths = set()
         for path in raw_paths:
             path_id = path.get("path") if isinstance(path, dict) else None
@@ -248,6 +251,18 @@ def _build_contract(
                     "cross-layer timing path member identities are invalid"
                 )
             seen_paths.add(path_id)
+            for member in members:
+                realization = realization_index.get(member)
+                if realization is None and member.startswith("output-copy:"):
+                    raise ValidationError("cross-layer timing path lacks its output realization")
+                if realization is not None:
+                    if member in seen_realizations:
+                        raise ValidationError("duplicate cross-layer output realization")
+                    seen_realizations.add(member)
+                if realization is not None and (
+                        realization["local"] or realization["cut_nets"] != cut_nets
+                        or realization["cut_transitions"] != transitions):
+                    raise ValidationError("cross-layer output realization does not match routed path")
             if transitions is None:
                 transition_records = []
                 for net in cut_nets:
@@ -303,6 +318,8 @@ def _build_contract(
                     "cuts": cuts,
                 }
             )
+        if seen_realizations != {rid for rid, item in realization_index.items() if not item["local"]}:
+            raise ValidationError("cross-layer timing output realization coverage mismatch")
 
     hop_bindings = []
     schedule_binding = None
@@ -394,6 +411,8 @@ def _build_contract(
     }
     if semantic_binding is not None:
         result["semantic_binding"] = semantic_binding
+    if isinstance(timing, Mapping) and "output_realizations" in timing:
+        result["output_realizations"] = timing["output_realizations"]
     if indexed_logic_segments:
         result["logic_segment_binding"] = {
             "mode": "phase3-assignment-index",

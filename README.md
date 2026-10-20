@@ -716,6 +716,10 @@ lookahead path currently requires the explicit VTR backend/profile combination.
 - WNS/TNS are scoped to the declared source TimingPathDB population.
   Original-path TNS sums negative slack per original path, not once per
   unique register endpoint. Per-FPGA metrics are separate diagnostics.
+  Original-IR timing projection preserves every materialized top-level output
+  copy. Physical timing measures each copy and reports the worst per original
+  path; the split net/bit bindings are checked independently. Output-copy
+  timing with replicated cells is currently unsupported and fails explicitly.
   See [timing-model scope](docs/global-opensta-qualification.md).
 
 Unsupported inputs must be reported explicitly; a backend must not silently

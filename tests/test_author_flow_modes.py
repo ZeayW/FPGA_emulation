@@ -127,6 +127,13 @@ class AuthorFlowModesTest(unittest.TestCase):
                 tdm_provider=TDM_BASELINE_PROVIDER, simulation_frames=2,
             )
             self.assertEqual(report["configuration"]["author_cost_policy"], "best-of-two-v1")
+            try:
+                from jsonschema import Draft202012Validator
+            except ImportError:
+                pass
+            else:
+                schema = read_json(ROOT / "schemas/frame-search-v4.schema.json")
+                Draft202012Validator(schema).validate(report)
             selected = root / "search" / report["selected_candidate"]
             pair = read_json(selected / "author-route-tdm/selection.json")
             self.assertEqual([c["status"] for c in pair["candidates"]], ["pass", "pass"])

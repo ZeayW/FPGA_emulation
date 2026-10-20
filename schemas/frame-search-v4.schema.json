@@ -31,10 +31,16 @@
         "post_refinement_iterations": {"type": "integer", "minimum": 0},
         "slot_refinement_iterations": {"type": "integer", "minimum": 0},
         "tdm_provider": {"type": ["string", "null"]},
+        "route_provider": {"const": "synergistic-author-route-v1"},
+        "author_cost_policy": {"enum": ["author-pressure-v1", "author-sll-pressure-v1", "best-of-two-v1"]},
         "ratio_convergence": {"type": "number", "exclusiveMinimum": 0},
         "simulation_frames": {"type": "integer", "minimum": 1}
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "dependentRequired": {
+        "route_provider": ["author_cost_policy"],
+        "author_cost_policy": ["route_provider"]
+      }
     },
     "attempts": {"type": "array", "minItems": 1, "items": {"type": "object"}},
     "selected_candidate": {"type": "string", "minLength": 1}

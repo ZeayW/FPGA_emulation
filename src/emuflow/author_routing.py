@@ -25,7 +25,7 @@ from .routing import (
 from .tdm import RUNTIME_BARRIER_SLOTS
 from .timing_routing import (
     NATIVE_ROUTER_PROVIDER, ROUND_CAPACITY_CONTRACT_SCHEMA, STA_PATHS_SCHEMA,
-    _prepare_native_model, _round_available_slots,
+    _prepare_native_model, _round_available_slots, _output_realization_metadata,
     _validate_round_capacity_contract, _validate_single_node_cut_capacity,
     _write_native_input, reconstruct_system_route_timing,
 )
@@ -214,7 +214,8 @@ def route_system_author(assignment, platform, constraints, timing_paths=None, *,
     if timing_paths is not None:
         evaluation = reconstruct_system_route_timing(assignment, platform, result, timing_paths, include_records=True)
         result["timing"] = {"schema": STA_PATHS_SCHEMA, "normalization": timing_paths["normalization"],
-                            "compression": timing_paths["compression"], "paths": evaluation.pop("_timing_records")}
+                            "compression": timing_paths["compression"], "paths": evaluation.pop("_timing_records"),
+                            **_output_realization_metadata(timing_paths)}
         result["metrics"].update({key: evaluation[key] for key in _TIMING_METRICS})
     return result
 
@@ -284,7 +285,8 @@ def validate_author_system_routes(assignment, platform, routes, timing_paths=Non
     else:
         checked = reconstruct_system_route_timing(assignment, platform, routes, timing_paths, include_records=True)
         expected_timing = {"schema": STA_PATHS_SCHEMA, "normalization": timing_paths["normalization"],
-                           "compression": timing_paths["compression"], "paths": checked.pop("_timing_records")}
+                           "compression": timing_paths["compression"], "paths": checked.pop("_timing_records"),
+                           **_output_realization_metadata(timing_paths)}
         if routes.get("timing") != expected_timing:
             raise ValidationError("author timing records do not match independent reconstruction")
         if any(routes["metrics"].get(key) != checked[key] for key in _TIMING_METRICS):

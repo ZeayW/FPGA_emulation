@@ -26,6 +26,7 @@
       },
       "additionalProperties": false
     },
+    "output_realizations": {"$ref": "https://emuflow.dev/schemas/output-realizations-v1.schema.json"},
     "route_binding": {"$ref": "#/$defs/artifactBinding"},
     "schedule_binding": {"$ref": "#/$defs/artifactBinding"},
     "path_bindings": {

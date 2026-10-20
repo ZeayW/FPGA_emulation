@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/output-realizations-v1.schema.json",
+  "title": "EmuFlow Original Timing Path Output Realizations v1",
+  "type": "object",
+  "required": ["schema", "original_population", "realizations"],
+  "properties": {
+    "schema": {"const": "emuflow.output-realizations/v1"},
+    "original_population": {
+      "type": "object",
+      "required": ["paths", "path_ids_sha256"],
+      "properties": {
+        "paths": {"type": "integer", "minimum": 0},
+        "path_ids_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "realizations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id", "original_path", "fpga", "endpoint", "terminal_net",
+          "clock_domain", "clock_period_ns", "required_time_ns", "fixed_delay_ns",
+          "cut_nets", "cut_transitions", "local"
+        ],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "original_path": {"type": "string", "minLength": 1},
+          "fpga": {"type": "string", "minLength": 1},
+          "terminal_net": {"type": "string", "minLength": 1},
+          "clock_domain": {"type": "string", "minLength": 1},
+          "clock_period_ns": {"type": "number", "exclusiveMinimum": 0},
+          "required_time_ns": {"type": "number"},
+          "fixed_delay_ns": {"type": "number", "minimum": 0},
+          "local": {"type": "boolean"},
+          "endpoint": {
+            "type": "object",
+            "required": ["port", "bit"],
+            "properties": {
+              "port": {"type": "string", "minLength": 1},
+              "bit": {"type": "integer", "minimum": 0}
+            },
+            "additionalProperties": false
+          },
+          "cut_nets": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+          "cut_transitions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["net", "from", "to"],
+              "properties": {
+                "net": {"type": "string", "minLength": 1},
+                "from": {"type": "string", "minLength": 1},
+                "to": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

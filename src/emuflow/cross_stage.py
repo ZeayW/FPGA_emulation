@@ -954,6 +954,7 @@ def _run_candidate_flow(
     post_refinement_iterations: int,
     slot_refinement_iterations: int,
     ratio_convergence: float,
+    original_ir_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     iteration_root = root / f"iteration_{iteration:03d}"
     timing_path = iteration_root / "timing_paths.json"
@@ -961,7 +962,8 @@ def _run_candidate_flow(
     phase5_root = iteration_root / "phase5"
     score_path = iteration_root / "candidate.json"
     projection = project_sta_path_database(
-        database_path, assignment_path, timing_path
+        database_path, assignment_path, timing_path,
+        original_ir_path=original_ir_path,
     )
     frame_search = None
     if optimize_frame_slots:
@@ -1295,6 +1297,7 @@ def run_cross_stage_optimization(
 
     candidates = []
     baseline = _run_candidate_flow(
+        original_ir_path=ir_path,
         root=output_dir,
         iteration=0,
         assignment_path=assignment_path,
@@ -1370,6 +1373,7 @@ def run_cross_stage_optimization(
         seed_root = output_dir / f"iteration_{iteration:03d}"
         shutil.copytree(source_phase3_root, seed_root / "phase3")
         candidate = _run_candidate_flow(
+            original_ir_path=ir_path,
             root=output_dir,
             iteration=iteration,
             assignment_path=seed_root / "phase3/assignment.json",
@@ -1529,6 +1533,7 @@ def run_cross_stage_optimization(
                     patron_algorithm_version=patron_algorithm_version,
                 )
                 candidate = _run_candidate_flow(
+                    original_ir_path=ir_path,
                     root=output_dir,
                     iteration=iteration,
                     assignment_path=phase3_root / "assignment.json",

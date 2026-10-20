@@ -64,6 +64,9 @@ _GLOBAL_TIMING_METRICS = (
     "physical_logic_exact_paths",
     "physical_logic_cone_bound_paths",
     "physical_logic_fallback_paths",
+    "physical_path_realizations",
+    "output_copy_realizations",
+    "original_paths_with_local_and_cross_realizations",
 )
 _BASELINE_PHASE6_PROVIDER = "deterministic-cut-shadow-split-v1"
 _SCALE_METRIC_FIELDS = (
@@ -536,6 +539,60 @@ def _global_timing_metrics(
     ids = [path.get("path") for path in paths if isinstance(path, dict)]
     if len(ids) != len(paths) or len(set(ids)) != len(paths):
         raise ValidationError("routing/TDM A/B global timing path IDs are invalid")
+    from .local_path_timing import path_id_set_sha256
+    if (any(not isinstance(identity, str) or not identity for identity in ids)
+            or path_id_set_sha256(ids) != binding["original_path_ids_sha256"]):
+        raise ValidationError("routing/TDM A/B original timing path population disagrees")
+    from .sta import iter_sta_path_database_paths
+    database_path = root / report["artifacts"]["timing_path_database"]["path"]
+    source_ids = [item.get("id") for item in iter_sta_path_database_paths(
+        database_path, read_json(database_path), verify_payload=False)]
+    if (len(source_ids) != len(ids) or len(set(source_ids)) != len(source_ids)
+            or set(source_ids) != set(ids)):
+        raise ValidationError("routing/TDM A/B global timing omits original TimingPathDB paths")
+    physical_paths = paths
+    overlap = 0
+    output_copies = 0
+    registry = timing.get("output_realizations")
+    if registry is not None:
+        from .output_realizations import (
+            aggregate_output_realizations, original_path_id, output_realization_index,
+        )
+        routes = read_json(root / report["artifacts"]["routes"]["path"])
+        if routes.get("timing", {}).get("output_realizations") != registry:
+            raise ValidationError("routing/TDM A/B output copies are bound to another route artifact")
+        index = output_realization_index(routes)
+        physical_paths = timing.get("realization_paths")
+        if not isinstance(physical_paths, list) or not physical_paths:
+            raise ValidationError("routing/TDM A/B physical output copy population is missing")
+        recomposed = aggregate_output_realizations(physical_paths, routes,
+            delay_field="system_delay_bound_ns", physical=True)
+        if recomposed != sorted(paths, key=lambda path: path["path"]):
+            raise ValidationError("routing/TDM A/B original timing does not select the measured worst copy")
+        cross_ids = {path["path"] for path in physical_paths if path.get("path_scope") == "cross-fpga"}
+        local_ids = {path["path"] for path in physical_paths if path.get("path_scope") == "same-fpga-local"}
+        if len(cross_ids) + len(local_ids) != len(physical_paths):
+            raise ValidationError("routing/TDM A/B physical realization scopes are invalid")
+        route_paths = routes["timing"]["paths"]
+        routed_members = [member for path in route_paths
+                          for member in path.get("compressed_path_ids", [path["path"]])]
+        local_originals = {original_path_id(member, index) for member in local_ids}
+        cross_originals = {original_path_id(member, index) for member in cross_ids}
+        overlap = len(local_originals & cross_originals)
+        output_copies = len(index)
+        population = registry["original_population"]
+        if (len(routed_members) != len(set(routed_members)) or set(routed_members) != cross_ids
+                or population["paths"] != len(ids)
+                or population["path_ids_sha256"] != path_id_set_sha256(ids)
+                or summary.get("physical_path_realizations") != len(physical_paths)
+                or summary.get("output_copy_realizations") != output_copies
+                or summary.get("output_copy_coverage") != 1.0
+                or summary.get("original_local_paths") != len(local_originals)
+                or summary.get("original_cross_fpga_paths") != len(cross_originals)
+                or summary.get("original_paths_with_local_and_cross_realizations") != overlap
+                or summary.get("compressed_representative_paths") != len(route_paths)
+                or timing.get("path_exactness", {}).get("population") != "physical-path-realizations"):
+            raise ValidationError("routing/TDM A/B output copy populations disagree")
     target = [path.get("target_clock_slack_bound_ns") for path in paths]
     runtime = [path.get("runtime_clock_slack_bound_ns") for path in paths]
     if any(
@@ -560,11 +617,11 @@ def _global_timing_metrics(
         or isinstance(crossing, bool)
         or not isinstance(crossing, int)
         or crossing <= 0
-        or local + crossing != original
+        or local + crossing - overlap != original
         or isinstance(representatives, bool)
         or not isinstance(representatives, int)
         or representatives <= 0
-        or representatives > original
+        or representatives > len(physical_paths)
         or not isinstance(coverage, (int, float))
         or float(coverage) != 1.0
         or binding["original_paths"] != original
@@ -583,7 +640,7 @@ def _global_timing_metrics(
         "routed-endpoint-longest-path-conservative",
         "routed-staging-chain-cone-upper-bound",
     }
-    for path in paths:
+    for path in physical_paths:
         exact = path.get("physical_logic_segments_exact")
         cone_bound = path.get("physical_logic_segments_cone_bound")
         model = path.get("physical_logic_model")
@@ -612,11 +669,11 @@ def _global_timing_metrics(
         or exactness.get("endpoint_exact_logic_paths") != exact_paths
         or exactness.get("cone_bound_logic_paths") != cone_bound_paths
         or exactness.get("fallback_logic_paths") != fallback_paths
-        or exact_paths + cone_bound_paths + fallback_paths != original
+        or exact_paths + cone_bound_paths + fallback_paths != len(physical_paths)
         or exactness.get("physical_logic_segments")
-        != (exact_paths == original)
+        != (exact_paths == len(physical_paths))
         or exactness.get("physical_logic_segment_bounds")
-        != (exact_paths + cone_bound_paths == original)
+        != (exact_paths + cone_bound_paths == len(physical_paths))
     ):
         raise ValidationError(
             "routing/TDM A/B physical logic exactness summary disagrees"
@@ -636,6 +693,9 @@ def _global_timing_metrics(
         "physical_logic_exact_paths": exact_paths,
         "physical_logic_cone_bound_paths": cone_bound_paths,
         "physical_logic_fallback_paths": fallback_paths,
+        "physical_path_realizations": len(physical_paths),
+        "output_copy_realizations": output_copies,
+        "original_paths_with_local_and_cross_realizations": overlap,
     }
     for clock, prefix in (("target_clock", "target"), ("runtime_clock", "runtime")):
         clock_report = timing.get(clock)
@@ -722,7 +782,13 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
                 or value < 0
                 for value in exactness_counts
             )
-            or sum(exactness_counts) != global_timing["original_paths"]
+            or sum(exactness_counts) != global_timing["physical_path_realizations"]
+            or global_timing["physical_path_realizations"] < global_timing["original_paths"]
+            or global_timing["original_local_paths"] + global_timing["original_cross_fpga_paths"]
+            - global_timing["original_paths_with_local_and_cross_realizations"] != global_timing["original_paths"]
+            or any(isinstance(global_timing[key], bool) or not isinstance(global_timing[key], int)
+                   or global_timing[key] < 0 for key in ("physical_path_realizations", "output_copy_realizations",
+                                                        "original_paths_with_local_and_cross_realizations"))
         ):
             raise ValidationError(
                 f"routing/TDM A/B {label} physical logic exactness is invalid"
@@ -825,6 +891,9 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
             "physical_logic_exact_paths",
             "physical_logic_cone_bound_paths",
             "physical_logic_fallback_paths",
+            "physical_path_realizations",
+            "output_copy_realizations",
+            "original_paths_with_local_and_cross_realizations",
         }
     }
     if report.get("global_timing_delta_upgrade_minus_baseline") != expected_global:
@@ -833,6 +902,9 @@ def validate_system_route_tdm_ab_comparison(report: Dict[str, Any]) -> Dict[str,
         "physical_logic_exact_paths",
         "physical_logic_cone_bound_paths",
         "physical_logic_fallback_paths",
+        "physical_path_realizations",
+        "output_copy_realizations",
+        "original_paths_with_local_and_cross_realizations",
     ):
         if (
             arms["baseline"]["global_timing"][field]
@@ -1009,6 +1081,9 @@ def build_system_route_tdm_ab_comparison(
                 "physical_logic_exact_paths",
                 "physical_logic_cone_bound_paths",
                 "physical_logic_fallback_paths",
+                "physical_path_realizations",
+                "output_copy_realizations",
+                "original_paths_with_local_and_cross_realizations",
             }
         },
         "global_timing_improvement": {

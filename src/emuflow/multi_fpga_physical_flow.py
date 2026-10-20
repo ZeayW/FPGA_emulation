@@ -42,6 +42,8 @@ from .lowering import (
     run_placement_ir_lowering_from_value,
 )
 from .split_netlist_storage import SplitNetlistView
+from .split_output_coverage import validate_split_output_realizations
+from .sta import iter_sta_path_database_paths
 from .netlist import SPLIT_MANIFEST_SCHEMA
 from .packed_netlist import run_packed_netlist_import
 from .packed_placement import run_packed_openparf_placement
@@ -898,6 +900,7 @@ def run_multi_fpga_physical_flow(
     )
     prepared_logic_inputs = None
     prepared_local_inputs = None
+    output_copy_coverage = None
     if all(path is not None for path in logic_context):
         assert original_ir_path is not None
         assert assignment_path is not None
@@ -930,6 +933,15 @@ def run_multi_fpga_physical_flow(
                 object_provider=(
                     "vpr" if backend == "open" else "xilinx"
                 ),
+            )
+        timing = prepared_logic_inputs.routes.get("timing")
+        registry = timing.get("output_realizations") if isinstance(timing, Mapping) else None
+        if registry is not None:
+            complete_database = (prepared_local_inputs.database if prepared_local_inputs is not None
+                                 else read_json(path_database_path))
+            output_copy_coverage = validate_split_output_realizations(
+                registry, split_root / manifest["netlist_storage"],
+                iter_sta_path_database_paths(path_database_path, complete_database, verify_payload=False),
             )
     manifest_fpgas = [item.get("fpga") for item in manifest.get("fpgas", [])]
     if set(manifest_fpgas) != set(expected_fpgas):
@@ -2022,6 +2034,7 @@ def run_multi_fpga_physical_flow(
         architecture_source=architecture_source,
         include_logic_timing=all(path is not None for path in logic_context),
         execution=execution,
+        output_copy_coverage=output_copy_coverage,
     )
 
 
@@ -2038,6 +2051,7 @@ def _assemble_multi_fpga_physical_results(
     architecture_source: Mapping[str, Any],
     execution: Mapping[str, Any],
     include_logic_timing: bool,
+    output_copy_coverage: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Validate and aggregate completed partitions without rerunning tools.
 
@@ -2202,6 +2216,7 @@ def _assemble_multi_fpga_physical_results(
         "execution": dict(execution),
         "expected_fpgas": expected_fpgas,
         "fpgas": records,
+        **({"output_copy_coverage": output_copy_coverage} if output_copy_coverage is not None else {}),
     }
     report["physical_summary_ref"] = "physical-summary.json"
     report["summary"] = validate_multi_fpga_physical_report(

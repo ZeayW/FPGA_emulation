@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 from .boundary_timing import BOUNDARY_IDENTITY_SCHEMA
 from .equivalence import _lut_definition
 from .errors import ValidationError
+from .output_realizations import output_realization_index, original_path_id
 from .io import read_json, write_json
 from .ir import EmuIR
 from .emuir_compact import is_compact_emuir, selected_net_records
@@ -807,8 +808,9 @@ def prepare_logic_segment_query_inputs(
             )
 
     route_timing_paths = _route_timing_paths(routes)
+    realizations = output_realization_index(routes)
     selected_path_ids = {
-        member
+        original_path_id(member, realizations)
         for item in route_timing_paths
         for member in item.get("compressed_path_ids", [item["path"]])
     }
@@ -1205,6 +1207,7 @@ def _write_logic_segment_query(
     segments = []
     exact_members = 0
     unsupported: Dict[str, str] = {}
+    realizations = output_realization_index(routes)
     for record in records:
         timing = route_timing[record["path"]]
         members = timing.get("compressed_path_ids", [record["path"]])
@@ -1228,7 +1231,8 @@ def _write_logic_segment_query(
                 )
             hops_by_net[net] = hops
         for member in members:
-            path = database_paths.get(member)
+            source_member = original_path_id(member, realizations)
+            path = database_paths.get(source_member)
             if path is None:
                 raise ValidationError(
                     f"logic timing member {member!r} is absent from STA database"
@@ -1237,7 +1241,7 @@ def _write_logic_segment_query(
                 unsupported[member] = "discontinuous-compressed-partition-chain"
                 continue
             try:
-                start_endpoint, end_endpoint = prepared.path_endpoints[member]
+                start_endpoint, end_endpoint = prepared.path_endpoints[source_member]
                 start_instance = start_endpoint["instance"]
                 end_instance = end_endpoint["instance"]
                 if (

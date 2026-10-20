@@ -14,11 +14,12 @@ from .local_path_timing import (
     validate_local_path_timing,
 )
 from .platform import Platform
+from .output_realizations import aggregate_output_realizations, output_realization_index, original_path_id
 from .static_exact_timing import (
     build_static_exact_segment_deadlines,
     validate_static_exact_segment_deadlines,
 )
-from .tdm import reconstruct_tdm_schedule_timing_paths
+from .tdm import reconstruct_tdm_schedule_timing_paths, reconstruct_tdm_schedule_timing
 
 
 SYSTEM_TIMING_SCHEMA = "emuflow.system-timing/v2"
@@ -543,12 +544,15 @@ def build_system_timing(
     reported = phase5_report.get("timing_validation")
     if not isinstance(reported, dict) or reported.get("status") != "pass":
         raise ValidationError("Phase 5 has no passing scheduled timing")
-    reconstructed_worst = min(
-        records, key=lambda record: (record["normalized_slack"], record["path"])
-    )
+    if output_realization_index(routes):
+        reconstructed = reconstruct_tdm_schedule_timing(routes, platform, schedule)
+    else:
+        worst_record = min(records, key=lambda record: (record["normalized_slack"], record["path"]))
+        reconstructed = {"worst_delay_ns": worst_record["delay_ns"],
+                         "worst_slack_ns": worst_record["slack_ns"]}
     for field, expected in (
-        ("worst_delay_ns", reconstructed_worst["delay_ns"]),
-        ("worst_slack_ns", reconstructed_worst["slack_ns"]),
+        ("worst_delay_ns", reconstructed["worst_delay_ns"]),
+        ("worst_slack_ns", reconstructed["worst_slack_ns"]),
     ):
         actual = _finite_number(reported.get(field), f"Phase 5 {field}")
         if not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1.0e-8):
@@ -944,6 +948,10 @@ def build_system_timing(
         cone_bound_logic_paths + local_cone_bound_logic_paths
     )
     whole_logic_paths = len(system_paths)
+    physical_realizations = system_paths
+    system_paths = aggregate_output_realizations(
+        physical_realizations, routes, delay_field="system_delay_bound_ns", physical=True,
+    )
     system_ids = [path["path"] for path in system_paths]
     if len(system_ids) != len(set(system_ids)):
         raise ValidationError(
@@ -964,6 +972,15 @@ def build_system_timing(
     else:
         timing_scope = "cross-fpga-path-subset"
         coverage = None
+
+    realizations = output_realization_index(routes)
+    if realizations:
+        original_population = routes["timing"]["output_realizations"]["original_population"]
+        if (len(system_ids) != original_population["paths"]
+                or path_id_set_sha256(system_ids) != original_population["path_ids_sha256"]):
+            raise ValidationError("output realizations do not cover the original TimingPathDB population")
+    local_original_ids = {original_path_id(path["path"], realizations) for path in local_paths}
+    cross_original_ids = {original_path_id(path["path"], realizations) for path in cross_paths}
 
     target_worst = min(
         system_paths,
@@ -1057,6 +1074,7 @@ def build_system_timing(
         "qualification": qualification,
         "timing_scope": timing_scope,
         "path_exactness": {
+            **({"population": "physical-path-realizations"} if realizations else {}),
             "scheduled_link_tdm": True,
             "sampled_virtual_wire_event_propagation": (
                 sampled_event_paths == len(cross_paths)
@@ -1157,8 +1175,12 @@ def build_system_timing(
                 if original_source is not None
                 else None
             ),
-            "original_local_paths": len(local_paths),
-            "original_cross_fpga_paths": len(cross_paths),
+            "original_local_paths": len(local_original_ids),
+            "original_cross_fpga_paths": len(cross_original_ids),
+            **({"physical_path_realizations": len(physical_realizations),
+                "output_copy_realizations": len(realizations),
+                "original_paths_with_local_and_cross_realizations": len(local_original_ids & cross_original_ids),
+                "output_copy_coverage": 1.0} if realizations else {}),
             "compressed_representative_paths": len(records),
             "original_path_coverage": coverage,
             "original_path_ids_sha256": (
@@ -1169,4 +1191,6 @@ def build_system_timing(
             "maximum_system_delay_bound_ns": maximum_delay,
         },
         "paths": system_paths,
+        **({"realization_paths": physical_realizations,
+            "output_realizations": routes["timing"]["output_realizations"]} if realizations else {}),
     }

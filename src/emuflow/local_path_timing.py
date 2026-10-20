@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping
 
 from .errors import ValidationError
+from .output_realizations import output_realization_index
 from .io import read_json, write_json
 from .ir import EmuIR
 from .emuir_compact import is_compact_emuir, selected_net_records
@@ -453,6 +454,21 @@ def prepare_vpr_local_path_query_inputs(
             raise ValidationError("local path route member coverage is invalid")
         cross_path_ids.update(members)
 
+    realizations = output_realization_index(routes)
+    output_originals = {item["original_path"] for item in realizations.values()}
+    local_copies: Dict[str, list[Mapping[str, Any]]] = {}
+    for item in realizations.values():
+        if item["local"]:
+            local_copies.setdefault(item["original_path"], []).append(item)
+
+    def local_candidates(path):
+        if path["id"] in output_originals:
+            return [
+                {**path, "id": item["id"], "_copy_fpga": item["fpga"]}
+                for item in local_copies.get(path["id"], [])
+            ]
+        return [] if path["id"] in cross_path_ids else [path]
+
     indexed = (
         original_ir is None
         and is_emuir_sqlite(original_ir_path)
@@ -481,10 +497,8 @@ def prepare_vpr_local_path_query_inputs(
                 if not batch:
                     break
                 all_path_ids.extend(path["id"] for path in batch)
-                candidates = [
-                    path for path in batch
-                    if path["id"] not in cross_path_ids
-                ]
+                candidates = [candidate for path in batch
+                              for candidate in local_candidates(path)]
                 selected_ids = {
                     net_id
                     for path in candidates
@@ -505,6 +519,9 @@ def prepare_vpr_local_path_query_inputs(
                             original_nets,
                             instance_assignment,
                         )
+                        if path.get("_copy_fpga") is not None:
+                            if path_fpga != path["_copy_fpga"]:
+                                raise ValidationError("local output copy owner disagrees")
                     except (KeyError, ValidationError) as error:
                         unresolved.append(
                             {"path": path["id"], "reason": str(error)}
@@ -543,39 +560,36 @@ def prepare_vpr_local_path_query_inputs(
         }
         if object_provider == "vpr":
             prepared_original_nets.update(original_nets)
-        for path in iter_sta_path_database_paths(
+        for original_path in iter_sta_path_database_paths(
             path_database_path,
             database,
             verify_payload=False,
         ):
-            all_path_ids.append(path["id"])
-            if path["id"] in cross_path_ids:
-                continue
-            try:
-                start, end = sta_path_endpoints(path, object_index)
-                path_fpga = _resolve_local_path_fpga(
-                    path,
-                    start,
-                    end,
-                    original_nets,
-                    instance_assignment,
-                )
-            except (KeyError, ValidationError) as error:
-                unresolved.append({"path": path["id"], "reason": str(error)})
-                continue
-            if path_fpga is None:
-                unresolved.append(
-                    {"path": path["id"], "reason": "path-partition-unresolved"}
-                )
-                continue
-            record = {
-                **path,
-                "startpoint": start,
-                "endpoint": end,
-            }
-            if object_provider != "vpr":
-                record.pop("path_nets", None)
-            local_paths_by_fpga.setdefault(path_fpga, []).append(record)
+            all_path_ids.append(original_path["id"])
+            for path in local_candidates(original_path):
+                try:
+                    start, end = sta_path_endpoints(path, object_index)
+                    path_fpga = _resolve_local_path_fpga(
+                        path, start, end, original_nets, instance_assignment,
+                    )
+                    if path.get("_copy_fpga") is not None:
+                        if path_fpga != path["_copy_fpga"]:
+                            raise ValidationError("local output copy owner disagrees")
+                except (KeyError, ValidationError) as error:
+                    unresolved.append({"path": path["id"], "reason": str(error)})
+                    continue
+                if path_fpga is None:
+                    unresolved.append(
+                        {"path": path["id"], "reason": "path-partition-unresolved"}
+                    )
+                    continue
+                record = {
+                    **path, "startpoint": start, "endpoint": end,
+                }
+                record.pop("_copy_fpga", None)
+                if object_provider != "vpr":
+                    record.pop("path_nets", None)
+                local_paths_by_fpga.setdefault(path_fpga, []).append(record)
     if unresolved:
         raise ValidationError(
             "complete local path timing has unresolved original endpoints: "
