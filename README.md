@@ -139,7 +139,9 @@ Explicit alternatives include upstream **RePart**, with an optional
 logic-replication route ([RePart paper](#selected-research-references)), and
 EmuFlow's separately implemented **MFSPart-based** multilevel provider
 ([MFSPart paper](#selected-research-references)). Greedy partitioning remains a
-baseline. Boundary policy is a separate choice: sequential-only and generalized
+baseline. It balances the declared cell/resource dimensions while retaining
+hard capacity checks for all resources, including indivisible hard blocks.
+Boundary policy is a separate choice: sequential-only and generalized
 Static Exact admit different cut locations. Exact transport-event legality is
 established after routing and TDM assignment, not by a Phase 3 timing proxy.
 

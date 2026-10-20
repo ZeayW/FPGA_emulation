@@ -1018,31 +1018,15 @@ def assign_clusters(
         ResourceVector.from_mapping(cluster["resources"])
         for cluster in clusters.values()
     ).to_dict()
-    soft_caps: Dict[str, Dict[str, int]] = {
-        fpga_id: {} for fpga_id in fpga_ids
-    }
-    tolerance = constraints["balance_tolerance"]
-    dimension_tolerances = constraints.get(
-        "balance_tolerance_by_dimension", {}
+    cell_loads = {fpga_id: 0 for fpga_id in fpga_ids}
+    soft_caps = strict_balance_limits(
+        partition_fpgas,
+        {"cells": sum(len(cluster["instances"]) for cluster in clusters.values()),
+         **total_resources},
+        constraints["balance_tolerance"],
+        constraints.get("balance_tolerance_by_dimension", {}),
+        constraints["balance_dimensions"],
     )
-    for field in RESOURCE_FIELDS:
-        total = total_resources[field]
-        capacities = {
-            fpga_id: effective_capacity[fpga_id].get(field, 0)
-            for fpga_id in fpga_ids
-        }
-        capacity_total = sum(capacities.values())
-        if total == 0 or capacity_total == 0:
-            continue
-        for fpga_id in fpga_ids:
-            proportional = total * capacities[fpga_id] / capacity_total
-            field_tolerance = dimension_tolerances.get(field, tolerance)
-            soft_caps[fpga_id][field] = min(
-                capacities[fpga_id],
-                math.floor(
-                    proportional * (1.0 + field_tolerance) + 1e-9
-                ),
-            )
 
     def dominant_size(cluster: Mapping[str, Any]) -> float:
         resources = cluster["resources"]
@@ -1097,6 +1081,7 @@ def assign_clusters(
             )
         assignment[cluster_id] = fpga_id
         loads[fpga_id] = projected
+        cell_loads[fpga_id] += len(clusters[cluster_id]["instances"])
 
     for cluster_id in order:
         fixed_fpga = clusters[cluster_id]["fixed_fpga"]
@@ -1181,7 +1166,8 @@ def assign_clusters(
             fpga_id
             for fpga_id in actual_candidates
             if _fits(
-                _resource_add(loads[fpga_id], resources),
+                {**_resource_add(loads[fpga_id], resources),
+                 "cells": cell_loads[fpga_id] + len(clusters[cluster_id]["instances"])},
                 soft_caps[fpga_id],
             )
         ]
