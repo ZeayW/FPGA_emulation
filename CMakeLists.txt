@@ -66,6 +66,11 @@ option(
   ON
 )
 option(
+  EMUFLOW_BUILD_STATIC_EXACT_ANALYZER
+  "Build the native Static Exact dependency and capture analyzer"
+  ON
+)
+option(
   EMUFLOW_BUILD_TRITONPART_BALANCE_LEGALIZER
   "Build the native strict multi-resource TritonPart legalizer"
   ON
@@ -658,6 +663,20 @@ if(EMUFLOW_BUILD_PATRON_REFINER)
   target_compile_options(emuflow_patron_refiner PRIVATE -O3)
   set_target_properties(
     emuflow_patron_refiner
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
+  add_executable(
+    emuflow_static_exact_analyzer
+    "${CMAKE_SOURCE_DIR}/src/native/static_exact_analyzer.cpp"
+  )
+  target_compile_features(emuflow_static_exact_analyzer PRIVATE cxx_std_17)
+  target_compile_options(emuflow_static_exact_analyzer PRIVATE -O3)
+  set_target_properties(
+    emuflow_static_exact_analyzer
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -1322,6 +1341,13 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_patron_refiner_cli
       COMMAND "$<TARGET_FILE:emuflow_patron_refiner>" --help
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
+    add_test(
+      NAME emuflow_static_exact_analyzer_cli
+      COMMAND "$<TARGET_FILE:emuflow_static_exact_analyzer>" --help
     )
   endif()
 

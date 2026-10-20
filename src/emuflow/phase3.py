@@ -44,6 +44,7 @@ from .routing import load_route_constraints
 from .combinational_cut import (
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
+    static_exact_analysis_engine,
 )
 from .phase3_storage import (
     COMPRESSED_CLUSTERS_SCHEMA,
@@ -552,6 +553,13 @@ def run_phase3(
         clusters=len(clusters["clusters"]),
         active_fpgas=len(constraints["active_fpgas"]),
     )
+    if cut_mode == CUT_MODE_STATIC_EXACT:
+        phase3_runtime_observe(
+            static_exact_native=int(
+                static_exact_analysis_engine(len(ir.value["instances"]))
+                == "native-cpp-v1"
+            )
+        )
     patron_validation = None
     patron_initialization = None
     single_active_selection = len(constraints["active_fpgas"]) == 1

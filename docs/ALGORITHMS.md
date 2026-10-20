@@ -95,6 +95,7 @@ EmuFlow algorithm or adapter.
 | OpenSTA path extraction | Direct STA-engine integration; EmuFlow path contract | [opensta.py](../src/emuflow/opensta.py) |
 | TritonPart / RePart | Upstream partitioner integrations; shared assignment/legality contracts | [partition.py](../src/emuflow/partition.py) |
 | PATRON | EmuFlow path-aware K-way refinement initialized by TritonPart; not an external paper implementation | [patron_refiner.cpp](../src/native/patron_refiner.cpp) |
+| Static Exact semantic analysis | EmuFlow structural dependency/capture traversal with a Python reference and native large-design implementation | [static_exact_analyzer.cpp](../src/native/static_exact_analyzer.cpp) |
 | System router | EmuFlow implementation drawing on DAC 2025 delay-demand balancing and ASP-DAC 2026 timing-aware routing, with additional candidate trees | [tlr_router.cpp](../src/native/tlr_router.cpp) |
 | TDM ratios | Published Lagrangian/KKT methods, discrete legalization, and EmuFlow platform constraints | [tdm_ratio_optimizer.cpp](../src/native/tdm_ratio_optimizer.cpp) |
 | Timing-DAG ratio solver | ASP-DAC 2026 equation-based continuous optimizer; distinct from runtime dependency/event binding | [tdm_timing_dag_optimizer.cpp](../src/native/tdm_timing_dag_optimizer.cpp) |

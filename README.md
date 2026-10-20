@@ -52,6 +52,11 @@ and capture fields are stored as typed SQLite columns instead of repeating a
 canonical JSON object in every row; readers continue to accept completed v1
 indexes. The logical segment and capture records returned to downstream timing
 and physical consumers are unchanged.
+For designs with at least 100,000 instances, Static Exact dependency-cone and
+capture-cone traversal runs in `emuflow_static_exact_analyzer`. The boundary is
+a versioned integer-only binary graph, and Python reconstructs the same v3
+semantic contract after validating all returned indices and graph coverage.
+Smaller designs retain the Python implementation as an executable reference.
 
 ## Flow
 

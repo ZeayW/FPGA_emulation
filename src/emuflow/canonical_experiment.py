@@ -230,6 +230,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/tritonpart.py",
         "src/emuflow/routing.py",
         "src/native/hop_partition_refiner.cpp",
+        "src/native/static_exact_analyzer.cpp",
         "src/native/mfspart_refiner.cpp",
         "src/native/mfspart_refiner_checker.cpp",
     ),
@@ -244,6 +245,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/routing.py",
         "src/native/hop_partition_refiner.cpp",
         "src/native/patron_refiner.cpp",
+        "src/native/static_exact_analyzer.cpp",
     ),
     "cut-timing": (
         "src/emuflow/experiment_upstream.py::run_cut_timing_checkpoint,validate_cut_timing_checkpoint",

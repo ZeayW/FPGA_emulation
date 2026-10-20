@@ -11,11 +11,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mmap
+import struct
+import subprocess
+import tempfile
 from collections import defaultdict, deque
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set, Tuple
 
 from .errors import ValidationError
 from .ir import EmuIR
+from .native_tools import resolve_native_executable
 from .resources import RESOURCE_FIELDS
 
 
@@ -37,6 +43,9 @@ STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH = 0
 STATIC_EXACT_CANDIDATE_POLICIES = {
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
 }
+STATIC_EXACT_NATIVE_MIN_INSTANCES = 100_000
+_STATIC_EXACT_NATIVE_INPUT_MAGIC = 0x31584553464D5545
+_STATIC_EXACT_NATIVE_OUTPUT_MAGIC = 0x315845534F4D5545
 SEQUENTIAL_TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
 SEQUENTIAL_LEGAL_CUT_CLASSES = {
     *SEQUENTIAL_TRANSPORTED_CUT_CLASSES,
@@ -73,6 +82,20 @@ _TRANSPORT_SAFE_SEQUENTIAL_INPUTS = {
     "FDRE": {"D", "CE", "R"},
     "FDSE": {"D", "CE", "S"},
 }
+
+
+def static_exact_analysis_engine(instance_count: int) -> str:
+    if (
+        isinstance(instance_count, bool)
+        or not isinstance(instance_count, int)
+        or instance_count < 0
+    ):
+        raise ValueError("Static Exact instance count is invalid")
+    return (
+        "native-cpp-v1"
+        if instance_count >= STATIC_EXACT_NATIVE_MIN_INSTANCES
+        else "python-reference-v1"
+    )
 
 
 class _UnionFind:
@@ -793,6 +816,331 @@ def _analyze_static_exact_dependencies(
     }
 
 
+def _analyze_static_exact_dependencies_native(
+    ir: EmuIR,
+    instance_assignment: Mapping[str, str],
+    cut_nets: Sequence[Mapping[str, Any]],
+    *,
+    max_dependency_depth: int,
+    candidate_selection_policy: str,
+) -> Dict[str, Any]:
+    """Run graph-sized exact-cut traversal in the first-party C++ analyzer."""
+
+    if candidate_selection_policy not in STATIC_EXACT_CANDIDATE_POLICIES:
+        raise ValidationError("unknown exact combinational-cut candidate policy")
+    if (
+        isinstance(max_dependency_depth, bool)
+        or not isinstance(max_dependency_depth, int)
+        or max_dependency_depth < 0
+    ):
+        raise ValidationError(
+            "exact combinational-cut depth must be non-negative (zero disables "
+            "the policy limit)"
+        )
+    candidate_index = _build_combinational_cut_candidate_index(
+        ir,
+        include_dependency_levels=False,
+        include_source_identity=False,
+    )
+    eligible = set(candidate_index["eligible_ids"])
+    ordered_instances = sorted(ir.value["instances"], key=lambda item: item["id"])
+    instance_index = {
+        instance["id"]: index
+        for index, instance in enumerate(ordered_instances)
+    }
+    classes = {
+        instance["id"]: _instance_class(instance)
+        for instance in ordered_instances
+    }
+    ordered_nets = sorted(ir.value["nets"], key=lambda item: item["id"])
+    nets = {item["id"]: item for item in ordered_nets}
+    net_index = {net["id"]: index for index, net in enumerate(ordered_nets)}
+    cut_by_net = {item["net"]: dict(item) for item in cut_nets}
+    if len(cut_by_net) != len(cut_nets):
+        raise ValidationError("exact semantic contract cut nets are not unique")
+    ordered_cut_ids = sorted(cut_by_net)
+    ordered_cuts = [cut_by_net[net_id] for net_id in ordered_cut_ids]
+    for net_id, cut in zip(ordered_cut_ids, ordered_cuts):
+        net = nets.get(net_id)
+        if net is None:
+            raise ValidationError(
+                f"exact semantic contract has unknown net {net_id!r}"
+            )
+        if len(cut.get("source_fpgas", [])) != 1:
+            raise ValidationError(f"exact cut {net_id!r} must have one source FPGA")
+        if net["cut_class"] == "combinational" and net_id not in eligible:
+            raise ValidationError(
+                f"combinational cut {net_id!r} is not in the independently "
+                "reconstructed eligible set"
+            )
+
+    part_ids = sorted(
+        set(instance_assignment.values())
+        | {
+            fpga
+            for cut in ordered_cuts
+            for fpga in (
+                list(cut.get("source_fpgas", []))
+                + list(cut.get("sink_fpgas", []))
+            )
+            if isinstance(fpga, str)
+        }
+    )
+    if not part_ids:
+        raise ValidationError("exact semantic contract has no FPGA parts")
+    part_index = {part: index for index, part in enumerate(part_ids)}
+    if any(
+        identity not in instance_assignment
+        or instance_assignment[identity] not in part_index
+        for identity in instance_index
+    ):
+        raise ValidationError("exact semantic contract assignment is incomplete")
+
+    endpoint_records: List[Tuple[str, str, Any, Any]] = []
+    resolved = resolve_native_executable("emuflow_static_exact_analyzer")
+    with tempfile.TemporaryDirectory(prefix="emuflow-static-exact-") as temporary:
+        root = Path(temporary)
+        native_input = root / "static-exact.in"
+        native_output = root / "static-exact.out"
+        with native_input.open("wb") as stream:
+            pending = bytearray()
+
+            def emit(format_string: str, *values: Any) -> None:
+                pending.extend(struct.pack(format_string, *values))
+                if len(pending) >= 4 * 1024 * 1024:
+                    stream.write(pending)
+                    pending.clear()
+
+            emit(
+                "<Q6I",
+                _STATIC_EXACT_NATIVE_INPUT_MAGIC,
+                1,
+                len(ordered_instances),
+                len(ordered_nets),
+                len(ordered_cuts),
+                len(part_ids),
+                sum(len(net["sinks"]) for net in ordered_nets),
+            )
+            for instance in ordered_instances:
+                emit(
+                    "<BI",
+                    int(classes[instance["id"]] == "architectural-state-or-memory"),
+                    part_index[instance_assignment[instance["id"]]],
+                )
+            for net in ordered_nets:
+                drivers = [
+                    -1
+                    if endpoint["instance"] is None
+                    else instance_index[endpoint["instance"]]
+                    for endpoint in net["drivers"]
+                ]
+                emit("<I", len(drivers))
+                for driver in drivers:
+                    emit("<i", driver)
+                emit("<I", len(net["sinks"]))
+                for endpoint in net["sinks"]:
+                    raw_instance = endpoint["instance"]
+                    endpoint_token = len(endpoint_records)
+                    if raw_instance is None:
+                        endpoint_records.append(
+                            (
+                                "top-output",
+                                f"top:{endpoint['port']}[{endpoint['bit']}]",
+                                None,
+                                None,
+                            )
+                        )
+                        sink_instance = -1
+                    else:
+                        endpoint_records.append(
+                            (
+                                "architectural-state",
+                                raw_instance,
+                                endpoint["port"],
+                                endpoint["bit"],
+                            )
+                        )
+                        sink_instance = instance_index[raw_instance]
+                    emit("<iI", sink_instance, endpoint_token)
+            for net_id, cut in zip(ordered_cut_ids, ordered_cuts):
+                sources = cut["source_fpgas"]
+                sinks = cut.get("sink_fpgas")
+                if (
+                    sources[0] not in part_index
+                    or not isinstance(sinks, list)
+                    or any(sink not in part_index for sink in sinks)
+                ):
+                    raise ValidationError(
+                        f"exact cut {net_id!r} has an invalid FPGA endpoint"
+                    )
+                ordered_sinks = sorted(set(sinks))
+                emit(
+                    "<III",
+                    net_index[net_id],
+                    part_index[sources[0]],
+                    len(ordered_sinks),
+                )
+                for sink in ordered_sinks:
+                    emit("<I", part_index[sink])
+            if pending:
+                stream.write(pending)
+        completed = subprocess.run(
+            [resolved, str(native_input), str(native_output)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise ValidationError(
+                "native Static Exact analysis failed with exit code "
+                f"{completed.returncode}: {detail}"
+            )
+        with native_output.open("rb") as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                offset = 0
+
+                def take(format_string: str) -> Tuple[Any, ...]:
+                    nonlocal offset
+                    size = struct.calcsize(format_string)
+                    if offset + size > len(data):
+                        raise ValidationError(
+                            "native Static Exact output is truncated"
+                        )
+                    values = struct.unpack_from(format_string, data, offset)
+                    offset += size
+                    return values
+
+                magic, version, output_cut_count, capture_count = take("<QIIQ")
+                if (
+                    magic != _STATIC_EXACT_NATIVE_OUTPUT_MAGIC
+                    or version != 1
+                    or output_cut_count != len(ordered_cuts)
+                ):
+                    raise ValidationError(
+                        "native Static Exact output header is invalid"
+                    )
+                dependencies: Dict[str, Set[str]] = {}
+                local_launches: Dict[str, bool] = {}
+                for net_id in ordered_cut_ids:
+                    local_launch, dependency_count = take("<BI")
+                    if local_launch not in {0, 1}:
+                        raise ValidationError(
+                            "native Static Exact local-launch flag is invalid"
+                        )
+                    dependency_ids = []
+                    for _ in range(dependency_count):
+                        (dependency_index,) = take("<I")
+                        if dependency_index >= len(ordered_cut_ids):
+                            raise ValidationError(
+                                "native Static Exact dependency is invalid"
+                            )
+                        dependency_ids.append(ordered_cut_ids[dependency_index])
+                    if len(set(dependency_ids)) != len(dependency_ids):
+                        raise ValidationError(
+                            "native Static Exact dependencies are not unique"
+                        )
+                    dependencies[net_id] = set(dependency_ids)
+                    local_launches[net_id] = bool(local_launch)
+                raw_captures: List[Tuple[str, str, str, str, Any, Any]] = []
+                for _ in range(capture_count):
+                    cut_index, sink_part_index, endpoint_token = take("<III")
+                    if (
+                        cut_index >= len(ordered_cut_ids)
+                        or sink_part_index >= len(part_ids)
+                        or endpoint_token >= len(endpoint_records)
+                    ):
+                        raise ValidationError(
+                            "native Static Exact capture is invalid"
+                        )
+                    kind, endpoint, port, bit = endpoint_records[endpoint_token]
+                    raw_captures.append(
+                        (
+                            ordered_cut_ids[cut_index],
+                            part_ids[sink_part_index],
+                            kind,
+                            endpoint,
+                            port,
+                            bit,
+                        )
+                    )
+                if offset != len(data):
+                    raise ValidationError(
+                        "native Static Exact output has trailing bytes"
+                    )
+
+    unique_capture_records = sorted(set(raw_captures))
+    capture_records = [
+        {
+            "id": f"capture{index:06d}",
+            "cut_net": cut_net,
+            "fpga": fpga,
+            "kind": kind,
+            "endpoint": endpoint,
+            **(
+                {"port": port, "bit": bit}
+                if kind == "architectural-state"
+                else {}
+            ),
+        }
+        for index, (cut_net, fpga, kind, endpoint, port, bit) in enumerate(
+            unique_capture_records
+        )
+    ]
+
+    successors: Dict[str, Set[str]] = defaultdict(set)
+    indegree = {net_id: len(items) for net_id, items in dependencies.items()}
+    for sink, sources in dependencies.items():
+        for source in sources:
+            successors[source].add(sink)
+    queue = deque(sorted(net_id for net_id, degree in indegree.items() if degree == 0))
+    dependency_level: Dict[str, int] = {}
+    combinational_depth: Dict[str, int] = {}
+    while queue:
+        net_id = queue.popleft()
+        dependency_level[net_id] = 1 + max(
+            (dependency_level[source] for source in dependencies[net_id]),
+            default=0,
+        )
+        prior_depth = max(
+            (combinational_depth[source] for source in dependencies[net_id]),
+            default=0,
+        )
+        combinational_depth[net_id] = prior_depth + (
+            1 if nets[net_id]["cut_class"] == "combinational" else 0
+        )
+        for sink in sorted(successors.get(net_id, set())):
+            indegree[sink] -= 1
+            if indegree[sink] == 0:
+                queue.append(sink)
+    if len(dependency_level) != len(cut_by_net):
+        raise ValidationError("exact cut dependency graph contains a cycle")
+    maximum_depth = max(combinational_depth.values(), default=0)
+    if max_dependency_depth and maximum_depth > max_dependency_depth:
+        critical = min(
+            net_id
+            for net_id, depth in combinational_depth.items()
+            if depth == maximum_depth
+        )
+        raise ValidationError(
+            "exact combinational-cut dependency depth exceeds the configured "
+            f"limit: net {critical!r} has depth {maximum_depth}, limit "
+            f"{max_dependency_depth}"
+        )
+    return {
+        "classes": classes,
+        "nets": nets,
+        "cut_by_net": cut_by_net,
+        "dependencies": dependencies,
+        "local_launches": local_launches,
+        "dependency_level": dependency_level,
+        "combinational_depth": combinational_depth,
+        "maximum_depth": maximum_depth,
+        "capture_records": capture_records,
+        "analysis_engine": "native-cpp-v1",
+    }
+
+
 def build_static_exact_semantic_contract(
     ir: EmuIR,
     platform: Mapping[str, Any],
@@ -809,7 +1157,13 @@ def build_static_exact_semantic_contract(
     gates and are intentionally named as pending in the returned contract.
     """
 
-    analysis = _analyze_static_exact_dependencies(
+    analyzer = (
+        _analyze_static_exact_dependencies_native
+        if static_exact_analysis_engine(len(ir.value["instances"]))
+        == "native-cpp-v1"
+        else _analyze_static_exact_dependencies
+    )
+    analysis = analyzer(
         ir,
         instance_assignment,
         cut_nets,
@@ -818,7 +1172,7 @@ def build_static_exact_semantic_contract(
     )
     classes = analysis["classes"]
     nets = analysis["nets"]
-    outgoing_by_instance = analysis["outgoing_by_instance"]
+    outgoing_by_instance = analysis.get("outgoing_by_instance")
     cut_by_net = analysis["cut_by_net"]
     dependencies = analysis["dependencies"]
     local_launches = analysis["local_launches"]
@@ -826,84 +1180,80 @@ def build_static_exact_semantic_contract(
     combinational_depth = analysis["combinational_depth"]
     maximum_depth = analysis["maximum_depth"]
 
-    capture_records: List[Dict[str, Any]] = []
-    for net_id, cut in sorted(cut_by_net.items()):
-        net = nets[net_id]
-        for sink_fpga in sorted(cut["sink_fpgas"]):
-            work = [
-                endpoint
-                for endpoint in net["sinks"]
-                if endpoint["instance"] is not None
-                and instance_assignment.get(endpoint["instance"]) == sink_fpga
-            ]
-            for endpoint in net["sinks"]:
-                if endpoint["instance"] is None:
-                    capture_records.append(
-                        {
-                            "cut_net": net_id,
-                            "fpga": sink_fpga,
-                            "kind": "top-output",
-                            "endpoint": f"top:{endpoint['port']}[{endpoint['bit']}]",
-                        }
-                    )
-            visited: Set[str] = set()
-            while work:
-                endpoint = work.pop()
-                instance_id = endpoint["instance"]
-                if instance_id is None:
-                    raise ValidationError("exact capture endpoint is unexpectedly top-level")
-                classification = classes[instance_id]
-                if classification == "architectural-state-or-memory":
-                    capture_records.append(
-                        {
-                            "cut_net": net_id,
-                            "fpga": sink_fpga,
-                            "kind": "architectural-state",
-                            "endpoint": instance_id,
-                            # A memory macro has many independent state
-                            # inputs.  Preserve the original reached pin, not
-                            # merely its instance, so Phase 7 can qualify the
-                            # exact lowered VPR/Vivado endpoint.
-                            "port": endpoint["port"],
-                            "bit": endpoint["bit"],
-                        }
-                    )
-                    continue
-                if instance_id in visited:
-                    continue
-                visited.add(instance_id)
-                for outgoing in outgoing_by_instance.get(instance_id, []):
-                    downstream_cut = cut_by_net.get(outgoing["id"])
-                    for endpoint in outgoing["sinks"]:
-                        sink = endpoint["instance"]
-                        # A transported downstream net can still have local
-                        # fanout on its source FPGA.  The downstream cut
-                        # contract owns only the remote branches; suppressing
-                        # the whole net drops real local architectural
-                        # captures and leaves Phase 7 unable to bind their
-                        # physical RX-to-capture segments.  Stop only at the
-                        # endpoints that actually leave ``sink_fpga``.
-                        if (
-                            downstream_cut is not None
-                            and downstream_cut["source_fpgas"][0]
-                            == sink_fpga
-                            and sink is not None
-                            and instance_assignment.get(sink) != sink_fpga
-                        ):
-                            continue
-                        if sink is None:
-                            capture_records.append(
-                                {
-                                    "cut_net": net_id,
-                                    "fpga": sink_fpga,
-                                    "kind": "top-output",
-                                    "endpoint": (
-                                        f"top:{endpoint['port']}[{endpoint['bit']}]"
-                                    ),
-                                }
-                            )
-                        elif instance_assignment.get(sink) == sink_fpga:
-                            work.append(endpoint)
+    capture_records: List[Dict[str, Any]] = analysis.get("capture_records", [])
+    if outgoing_by_instance is not None:
+        for net_id, cut in sorted(cut_by_net.items()):
+            net = nets[net_id]
+            for sink_fpga in sorted(cut["sink_fpgas"]):
+                work = [
+                    endpoint
+                    for endpoint in net["sinks"]
+                    if endpoint["instance"] is not None
+                    and instance_assignment.get(endpoint["instance"])
+                    == sink_fpga
+                ]
+                for endpoint in net["sinks"]:
+                    if endpoint["instance"] is None:
+                        capture_records.append(
+                            {
+                                "cut_net": net_id,
+                                "fpga": sink_fpga,
+                                "kind": "top-output",
+                                "endpoint": (
+                                    f"top:{endpoint['port']}[{endpoint['bit']}]"
+                                ),
+                            }
+                        )
+                visited: Set[str] = set()
+                while work:
+                    endpoint = work.pop()
+                    instance_id = endpoint["instance"]
+                    if instance_id is None:
+                        raise ValidationError(
+                            "exact capture endpoint is unexpectedly top-level"
+                        )
+                    classification = classes[instance_id]
+                    if classification == "architectural-state-or-memory":
+                        capture_records.append(
+                            {
+                                "cut_net": net_id,
+                                "fpga": sink_fpga,
+                                "kind": "architectural-state",
+                                "endpoint": instance_id,
+                                "port": endpoint["port"],
+                                "bit": endpoint["bit"],
+                            }
+                        )
+                        continue
+                    if instance_id in visited:
+                        continue
+                    visited.add(instance_id)
+                    for outgoing in outgoing_by_instance.get(instance_id, []):
+                        downstream_cut = cut_by_net.get(outgoing["id"])
+                        for endpoint in outgoing["sinks"]:
+                            sink = endpoint["instance"]
+                            if (
+                                downstream_cut is not None
+                                and downstream_cut["source_fpgas"][0]
+                                == sink_fpga
+                                and sink is not None
+                                and instance_assignment.get(sink) != sink_fpga
+                            ):
+                                continue
+                            if sink is None:
+                                capture_records.append(
+                                    {
+                                        "cut_net": net_id,
+                                        "fpga": sink_fpga,
+                                        "kind": "top-output",
+                                        "endpoint": (
+                                            f"top:{endpoint['port']}"
+                                            f"[{endpoint['bit']}]"
+                                        ),
+                                    }
+                                )
+                            elif instance_assignment.get(sink) == sink_fpga:
+                                work.append(endpoint)
 
     unique_capture_records = sorted(
         {

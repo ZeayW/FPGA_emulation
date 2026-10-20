@@ -2,6 +2,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -64,6 +65,7 @@ from emuflow.tdm_ratio import build_tdm_ratio_plan
 from emuflow.tdm_slot import refine_tdm_schedule_native
 from emuflow.timing_routing import route_system_native
 from tests.native_build import (
+    static_exact_analyzer,
     tdm_ratio_optimizer,
     tdm_slot_optimizer,
     tlr_router,
@@ -832,6 +834,31 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         self.constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
+
+    def test_native_semantic_analysis_matches_reference(self):
+        for dependent_return in (False, True):
+            _, assignment = self._exact_artifacts(
+                dependent_return=dependent_return
+            )
+            expected = assignment["semantic_contract"]
+            executable = static_exact_analyzer()
+            with patch.dict(
+                os.environ,
+                {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+            ), patch(
+                "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+                0,
+            ):
+                actual = build_static_exact_semantic_contract(
+                    self.ir,
+                    self.platform.to_dict(),
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=expected[
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                )
+            self.assertEqual(actual, expected)
 
     def _exact_artifacts(
         self, frame_slots=16, dependent_return=False, dependency_depth=1

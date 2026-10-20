@@ -166,6 +166,34 @@ def patron_refiner() -> Path:
 
 
 @lru_cache(maxsize=1)
+def static_exact_analyzer() -> Path:
+    compiler = (
+        shutil.which("c++")
+        or shutil.which("g++")
+        or shutil.which("clang++")
+    )
+    if compiler is None:
+        raise RuntimeError(
+            "a C++17 compiler is required for Static Exact tests"
+        )
+    root = Path(_BUILD_ROOT.name)
+    executable = root / "bin" / "emuflow_static_exact_analyzer"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            "-O2",
+            str(ROOT / "src/native/static_exact_analyzer.cpp"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    return executable
+
+
+@lru_cache(maxsize=1)
 def tritonpart_balance_legalizer() -> Path:
     compiler = (
         shutil.which("c++")
