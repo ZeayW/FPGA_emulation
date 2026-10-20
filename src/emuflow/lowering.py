@@ -494,6 +494,7 @@ def run_placement_ir_lowering_from_split(
         shadow_internal_sinks: Dict[str, List[Dict[str, Any]]] = {}
         rx_internal_drivers: Dict[str, List[Dict[str, Any]]] = {}
         expected_rx_bindings = []
+        local_net_ids = split.net_ids()
         for signal, index in shadow_index.items():
             top_net = _top_net(
                 top_net_index, "shadow_values", index, "sinks"
@@ -504,7 +505,7 @@ def run_placement_ir_lowering_from_split(
                 if endpoint["instance"] is not None
             ]
             logical_net = shadow_signal_to_logical_net.get(signal)
-            if logical_net is not None and split.has_net(logical_net):
+            if logical_net is not None and logical_net in local_net_ids:
                 shadow_internal_sinks[logical_net] = internal
                 rx_internal_drivers[logical_net] = [
                     remap_endpoint(endpoint)
@@ -523,7 +524,7 @@ def run_placement_ir_lowering_from_split(
 
         source_internal_sinks: Dict[str, List[Dict[str, Any]]] = {}
         for original_net, index in source_by_net.items():
-            if not split.has_net(original_net):
+            if original_net not in local_net_ids:
                 raise ValidationError(
                     f"transport source net {original_net!r} is not local"
                 )
