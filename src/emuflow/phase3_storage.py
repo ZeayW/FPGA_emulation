@@ -1005,7 +1005,10 @@ def read_phase3_cut_timing_view(
             str(row["key"]): json.loads(row["value"])
             for row in connection.execute("SELECT key,value FROM metadata")
         }
-        if metadata.get("schema") != "emuflow.phase3-assignment-sqlite/v1":
+        if metadata.get("schema") not in {
+            "emuflow.phase3-assignment-sqlite/v1",
+            "emuflow.phase3-assignment-sqlite/v2",
+        }:
             raise ValueError("assignment index schema is invalid")
         parts = {
             int(row["part_index"]): str(row["fpga"])

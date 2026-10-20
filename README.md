@@ -47,6 +47,11 @@ validation, packing, JSON publication, and assignment-index publication. Each
 record includes wall time, parent/child CPU time, sampled process-tree RSS and,
 on Linux, parent-process I/O counters. Search, imported-solution, and replay
 runs must be compared as distinct execution modes.
+New Phase 3 publications use assignment-index schema v2. Static Exact segment
+and capture fields are stored as typed SQLite columns instead of repeating a
+canonical JSON object in every row; readers continue to accept completed v1
+indexes. The logical segment and capture records returned to downstream timing
+and physical consumers are unchanged.
 
 ## Flow
 

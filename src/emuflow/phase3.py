@@ -1140,7 +1140,7 @@ def run_phase3(
         report["artifact_storage"] = {
             "clusters": COMPRESSED_CLUSTERS_SCHEMA,
             "assignment": PACKED_ASSIGNMENT_SCHEMA,
-            "assignment_index": "emuflow.phase3-assignment-sqlite/v1",
+            "assignment_index": "emuflow.phase3-assignment-sqlite/v2",
             "logical_schema": "unchanged-transparent-expansion",
         }
 

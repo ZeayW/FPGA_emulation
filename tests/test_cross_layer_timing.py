@@ -19,7 +19,6 @@ from emuflow.errors import ValidationError
 from emuflow.platform import Platform
 from emuflow.phase3_assignment_index import (
     ASSIGNMENT_INDEX_APPLICATION_ID,
-    ASSIGNMENT_INDEX_USER_VERSION,
 )
 
 
@@ -159,7 +158,7 @@ class CrossLayerTimingContractTest(unittest.TestCase):
                 connection.executescript(
                     f"""
                     PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
-                    PRAGMA user_version={ASSIGNMENT_INDEX_USER_VERSION};
+                    PRAGMA user_version=1;
                     CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                     CREATE TABLE parts(part_index INTEGER PRIMARY KEY,fpga TEXT NOT NULL);
                     CREATE TABLE exact_segment_bindings(

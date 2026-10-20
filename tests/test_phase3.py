@@ -106,6 +106,33 @@ class Phase3Test(unittest.TestCase):
                     output / "assignment.sqlite",
                 )
             self.assertEqual(checked, report["validation"])
+            with sqlite3.connect(output / "assignment.sqlite") as connection:
+                self.assertEqual(
+                    connection.execute("PRAGMA user_version").fetchone()[0],
+                    2,
+                )
+                schema = json.loads(
+                    connection.execute(
+                        "SELECT value FROM metadata WHERE key='schema'"
+                    ).fetchone()[0]
+                )
+                self.assertEqual(
+                    schema, "emuflow.phase3-assignment-sqlite/v2"
+                )
+                segment_columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(exact_segment_bindings)"
+                    )
+                }
+                capture_columns = {
+                    row[1]
+                    for row in connection.execute(
+                        "PRAGMA table_info(exact_capture_requirements)"
+                    )
+                }
+                self.assertNotIn("payload_json", segment_columns)
+                self.assertNotIn("payload_json", capture_columns)
             tampered = copy.deepcopy(report)
             tampered["validation"]["effective_balance_percent"] = 210.0
             (output / "phase3_report.json").write_text(json.dumps(tampered))

@@ -23,9 +23,11 @@ from .io import read_json
 from .routing import static_exact_contract_from_assignment
 
 
-ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v1"
+LEGACY_ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v1"
+ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v2"
 ASSIGNMENT_INDEX_APPLICATION_ID = 0x454D5541  # ASCII "EMUA"
-ASSIGNMENT_INDEX_USER_VERSION = 1
+ASSIGNMENT_INDEX_USER_VERSION = 2
+SUPPORTED_ASSIGNMENT_INDEX_USER_VERSIONS = {1, 2}
 
 
 DDL = """
@@ -76,14 +78,21 @@ CREATE TABLE exact_segment_bindings(
   segment_id TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
   part_index INTEGER NOT NULL,
-  payload_json TEXT NOT NULL
+  source_cut_net TEXT,
+  sink_cut_net TEXT,
+  capture_requirement TEXT,
+  source_semantics TEXT
 ) WITHOUT ROWID;
 CREATE INDEX exact_segment_bindings_part
   ON exact_segment_bindings(part_index, segment_id);
 CREATE TABLE exact_capture_requirements(
   capture_id TEXT PRIMARY KEY,
+  cut_net TEXT NOT NULL,
   part_index INTEGER NOT NULL,
-  payload_json TEXT NOT NULL
+  kind TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  port TEXT,
+  bit INTEGER
 ) WITHOUT ROWID;
 CREATE INDEX exact_capture_requirements_part
   ON exact_capture_requirements(part_index, capture_id);
@@ -107,7 +116,43 @@ def _exact_binding_rows(
             or kind not in {"launch_to_tx", "rx_to_tx", "rx_to_capture"}
         ):
             raise ValidationError("exact logic segment binding is invalid")
-        yield (segment_id, kind, part_index[fpga], _json(segment))
+        source_cut_net = segment.get("source_cut_net")
+        sink_cut_net = segment.get("sink_cut_net")
+        capture_requirement = segment.get("capture_requirement")
+        source_semantics = segment.get("source_semantics")
+        if kind == "launch_to_tx":
+            valid = (
+                source_cut_net is None
+                and isinstance(sink_cut_net, str)
+                and capture_requirement is None
+                and source_semantics
+                in {None, "configuration-stable-constant"}
+            )
+        elif kind == "rx_to_tx":
+            valid = (
+                isinstance(source_cut_net, str)
+                and isinstance(sink_cut_net, str)
+                and capture_requirement is None
+                and source_semantics is None
+            )
+        else:
+            valid = (
+                isinstance(source_cut_net, str)
+                and sink_cut_net is None
+                and isinstance(capture_requirement, str)
+                and source_semantics is None
+            )
+        if not valid:
+            raise ValidationError("exact logic segment payload is invalid")
+        yield (
+            segment_id,
+            kind,
+            part_index[fpga],
+            source_cut_net,
+            sink_cut_net,
+            capture_requirement,
+            source_semantics,
+        )
 
 
 def _exact_capture_rows(
@@ -118,7 +163,36 @@ def _exact_capture_rows(
         capture_id = capture.get("id")
         if fpga not in part_index or not isinstance(capture_id, str):
             raise ValidationError("exact capture requirement is invalid")
-        yield (capture_id, part_index[fpga], _json(capture))
+        cut_net = capture.get("cut_net")
+        kind = capture.get("kind")
+        endpoint = capture.get("endpoint")
+        port = capture.get("port")
+        bit = capture.get("bit")
+        if (
+            not isinstance(cut_net, str)
+            or kind not in {"top-output", "architectural-state"}
+            or not isinstance(endpoint, str)
+            or (
+                kind == "architectural-state"
+                and (
+                    not isinstance(port, str)
+                    or isinstance(bit, bool)
+                    or not isinstance(bit, int)
+                    or bit < 0
+                )
+            )
+            or (kind == "top-output" and (port is not None or bit is not None))
+        ):
+            raise ValidationError("exact capture requirement payload is invalid")
+        yield (
+            capture_id,
+            cut_net,
+            part_index[fpga],
+            kind,
+            endpoint,
+            port,
+            bit,
+        )
 
 
 def write_phase3_assignment_index(
@@ -305,11 +379,11 @@ def write_phase3_assignment_index(
                 exact_rows(),
             )
             connection.executemany(
-                "INSERT INTO exact_segment_bindings VALUES (?,?,?,?)",
+                "INSERT INTO exact_segment_bindings VALUES (?,?,?,?,?,?,?)",
                 _exact_binding_rows(exact_contract, part_index),
             )
             connection.executemany(
-                "INSERT INTO exact_capture_requirements VALUES (?,?,?)",
+                "INSERT INTO exact_capture_requirements VALUES (?,?,?,?,?,?,?)",
                 _exact_capture_rows(exact_contract, part_index),
             )
 
@@ -526,11 +600,11 @@ def migrate_phase3_assignment_index(
                 ),
             )
             connection.executemany(
-                "INSERT INTO exact_segment_bindings VALUES (?,?,?,?)",
+                "INSERT INTO exact_segment_bindings VALUES (?,?,?,?,?,?,?)",
                 _exact_binding_rows(exact_contract, part_index),
             )
             connection.executemany(
-                "INSERT INTO exact_capture_requirements VALUES (?,?,?)",
+                "INSERT INTO exact_capture_requirements VALUES (?,?,?,?,?,?,?)",
                 _exact_capture_rows(exact_contract, part_index),
             )
         connection.commit()
@@ -561,7 +635,7 @@ def open_phase3_assignment_index(path: Path) -> sqlite3.Connection:
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     if (
         application_id != ASSIGNMENT_INDEX_APPLICATION_ID
-        or version != ASSIGNMENT_INDEX_USER_VERSION
+        or version not in SUPPORTED_ASSIGNMENT_INDEX_USER_VERSIONS
     ):
         connection.close()
         raise ValidationError("unsupported Phase 3 assignment index")
@@ -605,22 +679,69 @@ def read_phase3_exact_semantic_partition(
             raise ValidationError(
                 "assignment index lacks indexed Static Exact payloads"
             )
-        segments = [
-            json.loads(row[0])
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 1:
+            segments = [
+                json.loads(row[0])
+                for row in connection.execute(
+                    "SELECT payload_json FROM exact_segment_bindings "
+                    "WHERE part_index=? ORDER BY segment_id",
+                    (part_index,),
+                )
+            ]
+            captures = [
+                json.loads(row[0])
+                for row in connection.execute(
+                    "SELECT payload_json FROM exact_capture_requirements "
+                    "WHERE part_index=? ORDER BY capture_id",
+                    (part_index,),
+                )
+            ]
+        else:
+            segments = []
             for row in connection.execute(
-                "SELECT payload_json FROM exact_segment_bindings "
-                "WHERE part_index=? ORDER BY segment_id",
+                "SELECT segment_id,kind,source_cut_net,sink_cut_net,"
+                "capture_requirement,source_semantics "
+                "FROM exact_segment_bindings WHERE part_index=? "
+                "ORDER BY segment_id",
                 (part_index,),
-            )
-        ]
-        captures = [
-            json.loads(row[0])
+            ):
+                segment = {
+                    "id": str(row[0]),
+                    "kind": str(row[1]),
+                    "fpga": fpga,
+                }
+                for key, value in zip(
+                    (
+                        "source_cut_net",
+                        "sink_cut_net",
+                        "capture_requirement",
+                        "source_semantics",
+                    ),
+                    row[2:],
+                ):
+                    if value is not None:
+                        segment[key] = str(value)
+                segments.append(segment)
+            captures = []
             for row in connection.execute(
-                "SELECT payload_json FROM exact_capture_requirements "
-                "WHERE part_index=? ORDER BY capture_id",
+                "SELECT capture_id,cut_net,kind,endpoint,port,bit "
+                "FROM exact_capture_requirements WHERE part_index=? "
+                "ORDER BY capture_id",
                 (part_index,),
-            )
-        ]
+            ):
+                capture = {
+                    "id": str(row[0]),
+                    "cut_net": str(row[1]),
+                    "fpga": fpga,
+                    "kind": str(row[2]),
+                    "endpoint": str(row[3]),
+                }
+                if row[4] is not None:
+                    capture["port"] = str(row[4])
+                if row[5] is not None:
+                    capture["bit"] = int(row[5])
+                captures.append(capture)
         return {
             "schema": metadata.get("semantic_contract_schema"),
             "sha256": metadata.get("semantic_contract_sha256"),
@@ -679,7 +800,10 @@ def validate_phase3_assignment_index(
             row["key"]: json.loads(row["value"])
             for row in connection.execute("SELECT key,value FROM metadata")
         }
-        if metadata.get("schema") != ASSIGNMENT_INDEX_SCHEMA:
+        if metadata.get("schema") not in {
+            LEGACY_ASSIGNMENT_INDEX_SCHEMA,
+            ASSIGNMENT_INDEX_SCHEMA,
+        }:
             raise ValidationError("Phase 3 assignment index schema is invalid")
         if expected_design is not None and metadata.get("design") != expected_design:
             raise ValidationError("assignment index design disagrees")
@@ -799,7 +923,8 @@ def validate_phase3_assignment_index_against_emuir(
         except (KeyError, TypeError, json.JSONDecodeError) as error:
             raise ValidationError("compact EmuIR design metadata is invalid") from error
         if (
-            metadata.get("schema") != ASSIGNMENT_INDEX_SCHEMA
+            metadata.get("schema")
+            not in {LEGACY_ASSIGNMENT_INDEX_SCHEMA, ASSIGNMENT_INDEX_SCHEMA}
             or metadata.get("design") != expected_design
             or source_design != expected_design
         ):
