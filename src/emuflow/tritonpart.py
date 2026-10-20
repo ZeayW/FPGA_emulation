@@ -31,6 +31,7 @@ from .partition import (
     validate_cluster_assignment_balance,
 )
 from .partition_limits import strict_balance_limits, validate_indivisible_limits
+from .phase3_runtime import phase3_runtime_call
 from .platform import Platform
 from .resources import RESOURCE_FIELDS
 from .sta import (
@@ -1901,7 +1902,9 @@ def run_tritonpart(
         raise ValueError(
             "precomputed TritonPart solutions require seed_attempts=1"
         )
-    tritonpart_input = export_tritonpart_inputs(
+    tritonpart_input = phase3_runtime_call(
+        "tritonpart.export_inputs",
+        export_tritonpart_inputs,
         ir,
         platform,
         clusters_artifact,
@@ -1996,7 +1999,12 @@ def run_tritonpart(
                     f"{solution_input}"
                 )
             if solution_input.resolve() != solution_path.resolve():
-                shutil.copyfile(solution_input, solution_path)
+                phase3_runtime_call(
+                    "tritonpart.import_solution",
+                    shutil.copyfile,
+                    solution_input,
+                    solution_path,
+                )
             mode = "import"
             log_path = None
         else:
@@ -2015,7 +2023,9 @@ def run_tritonpart(
             if provider_solution_path.exists():
                 provider_solution_path.unlink()
             try:
-                completed = subprocess.run(
+                completed = phase3_runtime_call(
+                    "tritonpart.execute_native",
+                    subprocess.run,
                     [resolved_executable, "-exit", str(tcl_path.resolve())],
                     cwd=output_dir,
                     stdout=subprocess.PIPE,
@@ -2041,8 +2051,11 @@ def run_tritonpart(
                     f"{provider_solution_path}"
                 )
 
-        candidate = parse_tritonpart_solution(
-            provider_solution_path, tritonpart_input
+        candidate = phase3_runtime_call(
+            "tritonpart.parse_solution",
+            parse_tritonpart_solution,
+            provider_solution_path,
+            tritonpart_input,
         )
         attempt_solution = None
         if len(attempt_specs) > 1:
@@ -2076,7 +2089,9 @@ def run_tritonpart(
                 else f"partition.hgr.repaired.part.{num_parts}"
             )
             try:
-                candidate, balance_repair = _run_native_balance_legalizer(
+                candidate, balance_repair = phase3_runtime_call(
+                    "tritonpart.balance_legalizer",
+                    _run_native_balance_legalizer,
                     candidate,
                     tritonpart_input,
                     output_dir,
@@ -2262,7 +2277,9 @@ def run_tritonpart(
             else {"retained": False}
         ),
     }
-    return build_partition_assignment(
+    return phase3_runtime_call(
+        "tritonpart.build_assignment",
+        build_partition_assignment,
         ir,
         platform,
         clusters_artifact,

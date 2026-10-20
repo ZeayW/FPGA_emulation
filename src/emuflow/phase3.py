@@ -57,6 +57,11 @@ from .phase3_assignment_index import (
 )
 from .phase1 import indexed_phase1_identity
 from .partition_ir import load_partition_ir
+from .phase3_runtime import (
+    measure_phase3_runtime,
+    phase3_runtime_call,
+    phase3_runtime_observe,
+)
 
 
 PHASE3_REPORT_SCHEMA = "emuflow.phase3-report/v1"
@@ -350,6 +355,7 @@ def _single_active_hop_audit_report(
     }
 
 
+@measure_phase3_runtime
 def run_phase3(
     ir_path: Path,
     platform_path: Path,
@@ -477,13 +483,15 @@ def run_phase3(
         )
     # Explicit qualification mode may request full canonical source seals and
     # replay artifacts.  Production keeps only the partition facts resident.
-    ir = (
-        EmuIR.load(ir_path)
-        if retain_diagnostics
-        else load_partition_ir(ir_path)
+    ir = phase3_runtime_call(
+        "load_partition_ir",
+        EmuIR.load if retain_diagnostics else load_partition_ir,
+        ir_path,
     )
-    platform = Platform.load(platform_path)
-    constraints = load_partition_constraints(
+    platform = phase3_runtime_call("load_platform", Platform.load, platform_path)
+    constraints = phase3_runtime_call(
+        "load_partition_constraints",
+        load_partition_constraints,
         constraints_path,
         ir,
         platform,
@@ -506,11 +514,16 @@ def run_phase3(
             f"{feature} does not yet support a selected "
             "assignment-target subset; use greedy, tritonpart, or patron"
         )
-    route_constraints = load_route_constraints(
-        route_constraints_path, platform
+    route_constraints = phase3_runtime_call(
+        "load_route_constraints",
+        load_route_constraints,
+        route_constraints_path,
+        platform,
     )
     if patron_initial_clusters_path is None:
-        clusters = build_clusters(
+        clusters = phase3_runtime_call(
+            "build_clusters",
+            build_clusters,
             ir,
             constraints,
             cut_mode=cut_mode,
@@ -520,8 +533,12 @@ def run_phase3(
             static_exact_candidate_policy=static_exact_candidate_policy,
         )
     else:
-        clusters = read_json(patron_initial_clusters_path)
-        _validate_reused_patron_clusters(
+        clusters = phase3_runtime_call(
+            "load_reused_clusters", read_json, patron_initial_clusters_path
+        )
+        phase3_runtime_call(
+            "validate_reused_clusters",
+            _validate_reused_patron_clusters,
             ir,
             clusters,
             cut_mode=cut_mode,
@@ -530,11 +547,18 @@ def run_phase3(
             ),
             static_exact_candidate_policy=static_exact_candidate_policy,
         )
+    phase3_runtime_observe(
+        instances=int(clusters["instances"]),
+        clusters=len(clusters["clusters"]),
+        active_fpgas=len(constraints["active_fpgas"]),
+    )
     patron_validation = None
     patron_initialization = None
     single_active_selection = len(constraints["active_fpgas"]) == 1
     if single_active_selection:
-        assignment = assign_clusters(
+        assignment = phase3_runtime_call(
+            "provider.single_active_assignment",
+            assign_clusters,
             ir,
             platform,
             clusters,
@@ -549,7 +573,9 @@ def run_phase3(
             "active_fpgas": list(constraints["active_fpgas"]),
         }
     elif provider == "greedy":
-        assignment = assign_clusters(
+        assignment = phase3_runtime_call(
+            "provider.greedy_assignment",
+            assign_clusters,
             ir,
             platform,
             clusters,
@@ -558,7 +584,9 @@ def run_phase3(
             route_constraints=route_constraints,
         )
     elif provider == "tritonpart":
-        tritonpart_assignment = run_tritonpart(
+        tritonpart_assignment = phase3_runtime_call(
+            "provider.tritonpart",
+            run_tritonpart,
             ir,
             platform,
             clusters,
@@ -582,7 +610,9 @@ def run_phase3(
         )
         assignment = tritonpart_assignment
     elif provider in {"repart", "repart-replication"}:
-        assignment = run_repart(
+        assignment = phase3_runtime_call(
+            "provider.repart",
+            run_repart,
             ir,
             platform,
             clusters,
@@ -595,7 +625,9 @@ def run_phase3(
             enable_replication=provider == "repart-replication",
         )
     elif provider == "mfspart":
-        assignment = run_mfspart(
+        assignment = phase3_runtime_call(
+            "provider.mfspart",
+            run_mfspart,
             ir,
             platform,
             clusters,
@@ -629,7 +661,9 @@ def run_phase3(
                 patron_initialization = (
                     "caller-supplied-generalized-tritonpart-solution-v1"
                 )
-            tritonpart_initial = run_tritonpart(
+            tritonpart_initial = phase3_runtime_call(
+                "patron.initialize_tritonpart",
+                run_tritonpart,
                 ir,
                 platform,
                 clusters,
@@ -657,7 +691,9 @@ def run_phase3(
             initial = tritonpart_initial
         else:
             patron_initialization = "caller-supplied-frozen-assignment-v1"
-            initial = _rebase_patron_initial_assignment(
+            initial = phase3_runtime_call(
+                "patron.load_frozen_assignment",
+                _rebase_patron_initial_assignment,
                 ir,
                 platform,
                 clusters,
@@ -671,11 +707,17 @@ def run_phase3(
             # silently optimize it again. Fail closed if it is not already
             # hop-feasible. Every arm can therefore reuse the one validated
             # TritonPart plus hop initializer checkpoint.
-            patron_initial_hop = _patron_hop_audit_report(
-                platform, initial, route_constraints
+            patron_initial_hop = phase3_runtime_call(
+                "patron.audit_initial_hops",
+                _patron_hop_audit_report,
+                platform,
+                initial,
+                route_constraints,
             )
         else:
-            initial, patron_initial_hop = refine_partition_hops(
+            initial, patron_initial_hop = phase3_runtime_call(
+                "patron.refine_initial_hops",
+                refine_partition_hops,
                 ir,
                 platform,
                 clusters,
@@ -687,8 +729,12 @@ def run_phase3(
                 executable=hop_refiner,
                 defer_semantic_contract=True,
             )
-        timing_database = read_json(timing_database_path)
-        model = build_partition_pressure_model(
+        timing_database = phase3_runtime_call(
+            "patron.load_timing_database", read_json, timing_database_path
+        )
+        model = phase3_runtime_call(
+            "patron.build_pressure_model",
+            build_partition_pressure_model,
             ir,
             platform,
             clusters,
@@ -698,26 +744,37 @@ def run_phase3(
             independent_validation=retain_diagnostics,
             timing_database_path=timing_database_path,
         )
+        phase3_runtime_observe(
+            pressure_clusters=len(model.get("clusters", [])),
+            pressure_nets=len(model.get("nets", [])),
+            pressure_paths=len(model.get("paths", [])),
+        )
         patron_physical_feedback = None
         patron_physical_feedback_validation = None
         if patron_physical_system_timing_path is not None:
-            patron_physical_system_timing = read_json(
-                patron_physical_system_timing_path
+            patron_physical_system_timing = phase3_runtime_call(
+                "patron.load_physical_feedback",
+                read_json,
+                patron_physical_system_timing_path,
             )
-            patron_physical_feedback = build_partition_physical_feedback(
+            patron_physical_feedback = phase3_runtime_call(
+                "patron.build_physical_feedback",
+                build_partition_physical_feedback,
                 model,
                 patron_feedback_source_assignment,
                 patron_physical_system_timing,
             )
-            patron_physical_feedback_validation = (
-                validate_partition_physical_feedback(
-                    model,
-                    patron_feedback_source_assignment,
-                    patron_physical_system_timing,
-                    patron_physical_feedback,
-                )
+            patron_physical_feedback_validation = phase3_runtime_call(
+                "patron.validate_physical_feedback",
+                validate_partition_physical_feedback,
+                model,
+                patron_feedback_source_assignment,
+                patron_physical_system_timing,
+                patron_physical_feedback,
             )
-        assignment, patron_trace = run_partition_pressure_native(
+        assignment, patron_trace = phase3_runtime_call(
+            "patron.native_refinement",
+            run_partition_pressure_native,
             ir,
             platform,
             clusters,
@@ -762,7 +819,9 @@ def run_phase3(
                     / "physical_feedback_source_assignment.json",
                     patron_feedback_source_assignment,
                 )
-            patron_validation = validate_partition_pressure_native_bundle(
+            patron_validation = phase3_runtime_call(
+                "patron.validate_diagnostic_bundle",
+                validate_partition_pressure_native_bundle,
                 ir,
                 platform,
                 clusters,
@@ -778,11 +837,19 @@ def run_phase3(
                 timing_database_path=timing_database_path,
             )
         else:
-            initial_validation = validate_partition_artifacts_online(
-                platform, clusters, initial
+            initial_validation = phase3_runtime_call(
+                "patron.validate_initial_assignment",
+                validate_partition_artifacts_online,
+                platform,
+                clusters,
+                initial,
             )
-            candidate_validation = validate_partition_artifacts_online(
-                platform, clusters, assignment
+            candidate_validation = phase3_runtime_call(
+                "patron.validate_candidate_assignment",
+                validate_partition_artifacts_online,
+                platform,
+                clusters,
+                assignment,
             )
             move_count = patron_trace.get("move_count")
             batch_count = patron_trace.get("batch_count")
@@ -827,8 +894,12 @@ def run_phase3(
                 patron_physical_feedback_validation
             )
         if patron_algorithm_version == 14:
-            assignment, candidate_selection = (
-                _select_patron_timing_assignment(initial, assignment, patron_trace)
+            assignment, candidate_selection = phase3_runtime_call(
+                "patron.select_candidate",
+                _select_patron_timing_assignment,
+                initial,
+                assignment,
+                patron_trace,
             )
             patron_validation["candidate_selection"] = candidate_selection
     else:
@@ -840,8 +911,15 @@ def run_phase3(
     mfspart_post_refinement_report = None
     if mfspart_post_refinement and not single_active_selection:
         if timing_path_database_path is not None and retain_diagnostics:
-            validate_sta_path_database(timing_path_database_path, ir_path)
-        assignment, mfspart_post_refinement_report = refine_mfspart_partition(
+            phase3_runtime_call(
+                "post_refinement.validate_timing_database",
+                validate_sta_path_database,
+                timing_path_database_path,
+                ir_path,
+            )
+        assignment, mfspart_post_refinement_report = phase3_runtime_call(
+            "post_refinement.mfspart",
+            refine_mfspart_partition,
             ir,
             platform,
             clusters,
@@ -860,18 +938,28 @@ def run_phase3(
             online_validation=True,
         )
     if single_active_selection:
-        hop_refinement = _single_active_hop_audit_report(
-            platform, assignment, route_constraints
+        hop_refinement = phase3_runtime_call(
+            "final_hops.audit_single_active",
+            _single_active_hop_audit_report,
+            platform,
+            assignment,
+            route_constraints,
         )
     elif provider == "patron":
         # PATRON already evaluates reachability and max-hop legality for every
         # native candidate. A second topology FM pass duplicates a large input
         # and obscures the exact assignment PATRON selected.
-        hop_refinement = _patron_hop_audit_report(
-            platform, assignment, route_constraints
+        hop_refinement = phase3_runtime_call(
+            "final_hops.audit_patron",
+            _patron_hop_audit_report,
+            platform,
+            assignment,
+            route_constraints,
         )
     else:
-        assignment, hop_refinement = refine_partition_hops(
+        assignment, hop_refinement = phase3_runtime_call(
+            "final_hops.refine",
+            refine_partition_hops,
             ir,
             platform,
             clusters,
@@ -893,7 +981,9 @@ def run_phase3(
         # the final Phase-3 assignment.  Materializing before the last
         # refinement silently left Static Exact cuts without dependency and
         # logic-segment semantics in Phase 4/5.
-        assignment = build_partition_assignment(
+        assignment = phase3_runtime_call(
+            "static_exact.build_semantic_contract",
+            build_partition_assignment,
             ir,
             platform,
             clusters,
@@ -903,10 +993,26 @@ def run_phase3(
             seed=int(assignment["seed"]),
             provider_metadata=assignment.get("provider_metadata"),
         )
-    validation = (
-        validate_partition_artifacts(ir, platform, clusters, assignment)
-        if retain_diagnostics or provider == "repart-replication"
-        else validate_partition_artifacts_online(platform, clusters, assignment)
+    if retain_diagnostics or provider == "repart-replication":
+        validation = phase3_runtime_call(
+            "validate_final_assignment_full",
+            validate_partition_artifacts,
+            ir,
+            platform,
+            clusters,
+            assignment,
+        )
+    else:
+        validation = phase3_runtime_call(
+            "validate_final_assignment_online",
+            validate_partition_artifacts_online,
+            platform,
+            clusters,
+            assignment,
+        )
+    phase3_runtime_observe(
+        cut_nets=len(assignment.get("cut_nets", [])),
+        partitions=len(assignment.get("partitions", [])),
     )
     persisted_hop_refinement = _hop_report_summary(hop_refinement)
     report: Dict[str, Any] = {
@@ -940,6 +1046,7 @@ def run_phase3(
             "assignment": "assignment.json",
             "assignment_index": "assignment.sqlite",
             "report": "phase3_report.json",
+            "runtime_breakdown": "phase3-runtime.json",
         },
     }
     if cut_mode != CUT_MODE_SEQUENTIAL_ONLY:
@@ -1045,24 +1152,50 @@ def run_phase3(
     if not retain_diagnostics and hop_refinement["enabled"]:
         shutil.rmtree(output_dir / "hop-refinement", ignore_errors=True)
     persisted_clusters = (
-        clusters if retain_diagnostics else compress_phase3_clusters(clusters)
+        clusters
+        if retain_diagnostics
+        else phase3_runtime_call(
+            "publish.pack_clusters", compress_phase3_clusters, clusters
+        )
     )
-    write_json(
-        output_dir / "clusters.json", persisted_clusters, compact=True
+    phase3_runtime_call(
+        "publish.write_clusters",
+        write_json,
+        output_dir / "clusters.json",
+        persisted_clusters,
+        compact=True,
     )
     del persisted_clusters
-    write_json(output_dir / "constraints.normalized.json", constraints)
+    phase3_runtime_call(
+        "publish.write_constraints",
+        write_json,
+        output_dir / "constraints.normalized.json",
+        constraints,
+    )
     persisted_assignment = (
         assignment
         if retain_diagnostics
-        else pack_phase3_assignment(assignment, clusters)
+        else phase3_runtime_call(
+            "publish.pack_assignment",
+            pack_phase3_assignment,
+            assignment,
+            clusters,
+        )
     )
-    write_json(
-        output_dir / "assignment.json", persisted_assignment, compact=True
+    phase3_runtime_call(
+        "publish.write_assignment",
+        write_json,
+        output_dir / "assignment.json",
+        persisted_assignment,
+        compact=True,
     )
     del persisted_assignment
-    write_phase3_assignment_index(
-        output_dir / "assignment.sqlite", ir, assignment
+    phase3_runtime_call(
+        "publish.write_assignment_index",
+        write_phase3_assignment_index,
+        output_dir / "assignment.sqlite",
+        ir,
+        assignment,
     )
     if (
         provider == "patron"
@@ -1087,7 +1220,18 @@ def run_phase3(
             persisted_hop_refinement,
             compact=True,
         )
-    write_json(output_dir / "phase3_report.json", report, compact=True)
+    phase3_runtime_observe(
+        clusters_artifact_bytes=(output_dir / "clusters.json").stat().st_size,
+        assignment_artifact_bytes=(output_dir / "assignment.json").stat().st_size,
+        assignment_index_bytes=(output_dir / "assignment.sqlite").stat().st_size,
+    )
+    phase3_runtime_call(
+        "publish.write_report",
+        write_json,
+        output_dir / "phase3_report.json",
+        report,
+        compact=True,
+    )
     return report
 
 

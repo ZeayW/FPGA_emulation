@@ -41,6 +41,12 @@ boundaries, as described under [fixed virtual board wiring](#fixed-virtual-board
 `stage-metrics/*.json` records wall time and process-tree
 RSS sampled every 0.5 seconds for each executed downstream stage. Large NVDLA
 validation remains pending until the physical and global OpenSTA gates pass.
+Phase 3 additionally publishes `partition/phase3-runtime.json`. It separates
+input loading, clustering, provider work, Static Exact contract construction,
+validation, packing, JSON publication, and assignment-index publication. Each
+record includes wall time, parent/child CPU time, sampled process-tree RSS and,
+on Linux, parent-process I/O counters. Search, imported-solution, and replay
+runs must be compared as distinct execution modes.
 
 ## Flow
 

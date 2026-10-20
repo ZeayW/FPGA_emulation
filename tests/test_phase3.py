@@ -73,6 +73,26 @@ class Phase3Test(unittest.TestCase):
                     provider="greedy",
                     seed=7,
                 )
+            runtime = read_json(output / "phase3-runtime.json")
+            self.assertEqual(runtime["schema"], "emuflow.phase3-runtime/v1")
+            self.assertEqual(runtime["status"], "pass")
+            self.assertEqual(
+                report["artifacts"]["runtime_breakdown"],
+                "phase3-runtime.json",
+            )
+            self.assertEqual(
+                runtime["observations"]["instances"],
+                len(self.ir.value["instances"]),
+            )
+            step_by_name = {item["name"]: item for item in runtime["steps"]}
+            for name in (
+                "load_partition_ir",
+                "build_clusters",
+                "provider.greedy_assignment",
+                "publish.write_assignment_index",
+            ):
+                self.assertEqual(step_by_name[name]["status"], "pass")
+                self.assertGreaterEqual(step_by_name[name]["wall_seconds"], 0.0)
             with patch(
                 "emuflow.phase3.EmuIR.load",
                 side_effect=AssertionError(
@@ -103,6 +123,30 @@ class Phase3Test(unittest.TestCase):
                     output / "phase3_report.json",
                     output / "assignment.sqlite",
                 )
+
+    def test_runtime_breakdown_survives_phase3_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.sqlite"
+            output = root / "phase3"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            with patch(
+                "emuflow.phase3.build_clusters",
+                side_effect=RuntimeError("synthetic cluster failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "cluster failure"):
+                    run_phase3(
+                        ir_path,
+                        PLATFORM_PATH,
+                        output,
+                        provider="greedy",
+                        seed=7,
+                    )
+            runtime = read_json(output / "phase3-runtime.json")
+            self.assertEqual(runtime["status"], "failed")
+            step_by_name = {item["name"]: item for item in runtime["steps"]}
+            self.assertEqual(step_by_name["load_partition_ir"]["status"], "pass")
+            self.assertEqual(step_by_name["build_clusters"]["status"], "failed")
 
     def test_static_exact_compact_input_uses_bounded_source_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
