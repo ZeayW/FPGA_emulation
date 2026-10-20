@@ -62,6 +62,7 @@ from .runtime import (
     validate_physical_summary,
 )
 from .synthesis import run_generic_yosys
+from .transport_fanout import buffer_transport_high_fanout_nets
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vpr_pack_place, run_vpr_route_packed
 from .vpr_boundary_timing import (
     import_vpr_boundary_timing,
@@ -1363,6 +1364,9 @@ def run_multi_fpga_physical_flow(
             top=module_match.group(1),
             clocks=("fabric_clk",),
         )
+        fanout_report = buffer_transport_high_fanout_nets(transport_ir)
+        fanout_report_path = fpga_root / "transport-fanout-buffering.json"
+        write_json(fanout_report_path, fanout_report, compact=True)
         transport_ir_path = fpga_root / "transport.emuir.sqlite"
         transport_ir.save(transport_ir_path)
         transport_report = {
@@ -1371,6 +1375,12 @@ def run_multi_fpga_physical_flow(
             "top": module_match.group(1),
             "instances": len(transport_ir.value["instances"]),
             "nets": len(transport_ir.value["nets"]),
+            "fanout_buffering": {
+                "output": str(fanout_report_path),
+                "sha256": _sha256(fanout_report_path),
+                "summary": fanout_report["summary"],
+                "policy": fanout_report["policy"],
+            },
             "output": str(transport_ir_path),
             "sha256": _sha256(transport_ir_path),
         }

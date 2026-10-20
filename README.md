@@ -247,6 +247,15 @@ and routing work are cited below. RapidWright device support does not itself
 supply a multi-FPGA board topology, cable specification, or board-link latency;
 those belong to the separate platform model.
 
+Before native OpenPARF packing and placement, Phase 7 now limits ordinary nets
+inside the separately synthesized transport design to 512 sinks by inserting
+deterministic balanced LUT1 buffer trees. Clock and reset nets retain their
+dedicated handling, and the original DUT netlist is not rewritten. The
+transport synthesis stage records the exact buffered-net, added-cell, and
+resulting-fanout counts in `transport-fanout-buffering.json`. Added LUTs pass
+through the same per-FPGA resource-budget checks as every other physical cell;
+the transform cannot relax the configured device limit.
+
 For an explicitly requested debugging continuation, `multi-fpga physical
 --resume` with the native OpenPARF placer can reuse an existing route inside
 the active experiment. It regenerates the route input and independently checks
