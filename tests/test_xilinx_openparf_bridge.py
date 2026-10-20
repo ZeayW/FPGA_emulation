@@ -391,6 +391,18 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             )
             self.assertEqual(export["logical_cells"], report["placed_cells"])
 
+            repeated = root / "physical-handoff-repeat.sqlite"
+            repeated_report = materialize_xilinx_openparf_atomic_contract(
+                mapped, architecture, certificate,
+                root / "unused-packed.json", root / "unused-placement.json",
+                physical_handoff_path=repeated,
+            )
+            self.assertEqual(
+                repeated_report["physical_handoff_sha256"],
+                report["physical_handoff_sha256"],
+            )
+            self.assertEqual(repeated.read_bytes(), handoff.read_bytes())
+
     def test_missing_atom_fails_without_publishing_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
