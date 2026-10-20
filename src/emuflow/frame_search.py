@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
+from .author_route_tdm import run_author_route_tdm, validate_author_flow_policy
 from .phase4 import run_phase4
 from .phase5 import run_phase5
 from .platform import Platform
@@ -117,8 +118,11 @@ def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "ratio_convergence",
         "simulation_frames",
     }
-    if set(configuration) != expected_configuration_keys:
+    author_keys = {"route_provider", "author_cost_policy"} if "author_cost_policy" in configuration else set()
+    if set(configuration) != expected_configuration_keys | author_keys:
         raise ValidationError("frame-search configuration is incomplete")
+    if author_keys:
+        validate_author_flow_policy(configuration["route_provider"], configuration["author_cost_policy"])
     for name in (
         "ratio_max_iterations",
         "ratio_quantum",
@@ -185,6 +189,7 @@ def run_frame_length_search(
     route_max_iterations: Optional[int] = None,
     router: Optional[str] = None,
     route_provider: Optional[str] = None,
+    author_cost_policy: Optional[str] = None,
     candidate_workers: int = 1,
     tdm_provider: Optional[str] = None,
     ratio_optimizer: Optional[str] = None,
@@ -204,6 +209,7 @@ def run_frame_length_search(
     link bit-slots and ratio choices. Every accepted point is nevertheless
     rebuilt and checked by the real Phase 4 and Phase 5 providers.
     """
+    validate_author_flow_policy(route_provider, author_cost_policy)
     if (
         isinstance(max_frame_slots, bool)
         or not isinstance(max_frame_slots, int)
@@ -228,35 +234,37 @@ def run_frame_length_search(
         route_root = root / "system-route"
         tdm_root = root / "tdm"
         try:
-            phase4 = run_phase4(
-                assignment_path,
-                platform_path,
-                route_root,
+            route_options = dict(
                 constraints_path=route_constraints,
                 frame_slots=frame_slots,
                 max_iterations=route_max_iterations,
                 timing_paths_path=timing_paths_path,
-                router=router,
-                provider=route_provider,
+                router=router, provider=route_provider,
                 candidate_workers=candidate_workers,
             )
-            phase5 = run_phase5(
-                route_root / "routes.json",
-                platform_path,
-                tdm_root,
-                assignment_path=assignment_path,
-                simulation_frames=simulation_frames,
-                provider=tdm_provider,
+            tdm_options = dict(
+                simulation_frames=simulation_frames, provider=tdm_provider,
                 ratio_optimizer=ratio_optimizer,
                 timing_dag_optimizer=timing_dag_optimizer,
                 slot_optimizer=slot_optimizer,
-                ratio_max_iterations=ratio_max_iterations,
-                max_ratio=max_ratio,
+                ratio_max_iterations=ratio_max_iterations, max_ratio=max_ratio,
                 ratio_quantum=ratio_quantum,
                 post_refinement_iterations=post_refinement_iterations,
                 slot_refinement_iterations=slot_refinement_iterations,
                 convergence=ratio_convergence,
             )
+            if author_cost_policy == "best-of-two-v1":
+                paired = run_author_route_tdm(
+                    assignment_path, platform_path, route_root, tdm_root,
+                    route_options=route_options, tdm_options=tdm_options,
+                )
+                phase4, phase5 = paired["phase4"], paired["phase5"]
+            else:
+                if author_cost_policy is not None:
+                    route_options["author_cost_policy"] = author_cost_policy
+                phase4 = run_phase4(assignment_path, platform_path, route_root, **route_options)
+                phase5 = run_phase5(route_root / "routes.json", platform_path, tdm_root,
+                                    assignment_path=assignment_path, **tdm_options)
             schedule = read_json(tdm_root / "schedule.json")
             runtime = build_virtual_runtime(schedule, platform)
             runtime_validation = validate_virtual_runtime(
@@ -342,6 +350,8 @@ def run_frame_length_search(
             "post_refinement_iterations": post_refinement_iterations,
             "slot_refinement_iterations": slot_refinement_iterations,
             "tdm_provider": tdm_provider,
+            **({"route_provider": route_provider, "author_cost_policy": author_cost_policy}
+               if author_cost_policy is not None else {}),
             "ratio_convergence": ratio_convergence,
             "simulation_frames": simulation_frames,
         },

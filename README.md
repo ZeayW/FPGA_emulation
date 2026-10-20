@@ -172,8 +172,14 @@ SLL capacities are shared across transport rounds. Select it with
 It currently requires one candidate worker, evaluates STA paths after routing
 and does not accept TDM feedback. Full physical/global timing qualification
 is pending; the default provider remains unchanged.
-The comparison script's `--author-cost-policy author-sll-pressure-v1` enables
-experimental SLL scarcity pricing without changing evaluated platform delays.
+`--author-cost-policy author-sll-pressure-v1` enables experimental SLL scarcity
+pricing without changing evaluated platform delays. Complete compilation,
+frame search and cross-stage optimization also accept `best-of-two-v1`: both
+author policies run through the same Phase 5, then a complete validated
+route/schedule pair is selected by realized timing (completion slot when no
+timing input exists). Ties keep continuous pressure. The selection receipt is
+sealed with the flow artifacts; existing defaults remain unchanged.
+Externally supplied timing test paths are also retained in the flow bundle.
 
 ### Phase 5: TDM ratio, lane, and slot assignment
 

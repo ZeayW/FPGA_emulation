@@ -15,6 +15,7 @@ from .board_link_timing import (
     validate_board_link_timing,
 )
 from .errors import EmuFlowError, ValidationError
+from .author_route_tdm import run_author_route_tdm, validate_author_flow_policy
 from .frame_search import (
     run_frame_length_search,
     validate_frame_search_report,
@@ -940,6 +941,7 @@ def _run_candidate_flow(
     route_max_iterations: Optional[int],
     router: Optional[str],
     route_provider: Optional[str],
+    author_cost_policy: Optional[str],
     route_candidate_workers: int,
     simulation_frames: int,
     tdm_provider: Optional[str],
@@ -980,6 +982,7 @@ def _run_candidate_flow(
             route_max_iterations=route_max_iterations,
             router=router,
             route_provider=route_provider,
+            author_cost_policy=author_cost_policy,
             candidate_workers=route_candidate_workers,
             tdm_provider=tdm_provider,
             ratio_optimizer=ratio_optimizer,
@@ -996,35 +999,37 @@ def _run_candidate_flow(
         phase4 = read_json(phase4_root / "phase4_report.json")
         phase5 = read_json(phase5_root / "phase5_report.json")
     else:
-        phase4 = run_phase4(
-            assignment_path,
-            platform_path,
-            phase4_root,
-            constraints_path=route_constraints_path,
-            frame_slots=frame_slots,
+        route_options = dict(
+            constraints_path=route_constraints_path, frame_slots=frame_slots,
             max_iterations=route_max_iterations,
             provider=route_provider or GLOBAL_CANDIDATE_PROVIDER,
-            timing_paths_path=timing_path,
-            router=router,
+            timing_paths_path=timing_path, router=router,
             candidate_workers=route_candidate_workers,
         )
-        phase5 = run_phase5(
-            phase4_root / "routes.json",
-            platform_path,
-            phase5_root,
-            assignment_path=assignment_path,
+        tdm_options = dict(
             simulation_frames=simulation_frames,
             provider=tdm_provider or TDM_TIMING_DAG_RATIO_PROVIDER,
             ratio_optimizer=ratio_optimizer,
             timing_dag_optimizer=timing_dag_optimizer,
             slot_optimizer=slot_optimizer,
-            ratio_max_iterations=ratio_max_iterations,
-            max_ratio=max_ratio,
+            ratio_max_iterations=ratio_max_iterations, max_ratio=max_ratio,
             ratio_quantum=ratio_quantum,
             post_refinement_iterations=post_refinement_iterations,
             slot_refinement_iterations=slot_refinement_iterations,
             convergence=ratio_convergence,
         )
+        if author_cost_policy == "best-of-two-v1":
+            paired = run_author_route_tdm(
+                assignment_path, platform_path, phase4_root, phase5_root,
+                route_options=route_options, tdm_options=tdm_options,
+            )
+            phase4, phase5 = paired["phase4"], paired["phase5"]
+        else:
+            if author_cost_policy is not None:
+                route_options["author_cost_policy"] = author_cost_policy
+            phase4 = run_phase4(assignment_path, platform_path, phase4_root, **route_options)
+            phase5 = run_phase5(phase4_root / "routes.json", platform_path, phase5_root,
+                                assignment_path=assignment_path, **tdm_options)
     score = evaluate_cross_stage_candidate(
         database_path,
         assignment_path,
@@ -1097,6 +1102,7 @@ def run_cross_stage_optimization(
     partition_repair_balance: bool = False,
     router: Optional[str] = None,
     route_provider: Optional[str] = None,
+    author_cost_policy: Optional[str] = None,
     route_candidate_workers: int = 1,
     frame_slots: Optional[int] = None,
     optimize_frame_slots: bool = False,
@@ -1116,6 +1122,7 @@ def run_cross_stage_optimization(
     pair_pressure_weight: float = 1.0,
     feedback_steps: Optional[Tuple[float, ...]] = None,
 ) -> Dict[str, Any]:
+    validate_author_flow_policy(route_provider, author_cost_policy)
     if (
         isinstance(max_outer_iterations, bool)
         or not isinstance(max_outer_iterations, int)
@@ -1299,6 +1306,7 @@ def run_cross_stage_optimization(
         route_max_iterations=route_max_iterations,
         router=router,
         route_provider=route_provider,
+        author_cost_policy=author_cost_policy,
         route_candidate_workers=route_candidate_workers,
         simulation_frames=simulation_frames,
         tdm_provider=tdm_provider,
@@ -1373,6 +1381,7 @@ def run_cross_stage_optimization(
             route_max_iterations=route_max_iterations,
             router=router,
             route_provider=route_provider,
+            author_cost_policy=author_cost_policy,
             route_candidate_workers=route_candidate_workers,
             simulation_frames=simulation_frames,
             tdm_provider=tdm_provider,
@@ -1533,6 +1542,7 @@ def run_cross_stage_optimization(
                     route_max_iterations=route_max_iterations,
                     router=router,
                     route_provider=route_provider,
+                    author_cost_policy=author_cost_policy,
                     route_candidate_workers=route_candidate_workers,
                     simulation_frames=simulation_frames,
                     tdm_provider=tdm_provider,
@@ -1686,6 +1696,7 @@ def run_cross_stage_optimization(
             "route_provider": (
                 route_provider or GLOBAL_CANDIDATE_PROVIDER
             ),
+            **({"author_cost_policy": author_cost_policy} if author_cost_policy is not None else {}),
             "route_candidate_workers": route_candidate_workers,
             "tdm_provider": (
                 tdm_provider or TDM_TIMING_DAG_RATIO_PROVIDER

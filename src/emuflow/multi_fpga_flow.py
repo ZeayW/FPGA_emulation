@@ -47,6 +47,7 @@ from .phase3 import (
     validate_phase3,
     validate_phase3_indexed,
 )
+from .author_route_tdm import run_author_route_tdm, validate_author_flow_policy
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
@@ -1299,6 +1300,7 @@ def run_multi_fpga_flow(
     timing_paths: Optional[Path] = None,
     router: Optional[str] = None,
     route_provider: Optional[str] = None,
+    author_cost_policy: Optional[str] = None,
     route_candidate_workers: int = 1,
     frame_slots: Optional[int] = None,
     optimize_frame_slots: bool = False,
@@ -1365,6 +1367,7 @@ def run_multi_fpga_flow(
 ) -> Dict[str, Any]:
     """Compile RTL/EmuIR, using the bundled research BoardDB when omitted."""
 
+    validate_author_flow_policy(route_provider, author_cost_policy)
     if output_dir is None:
         raise EmuFlowError("multi-FPGA compilation requires an output directory")
 
@@ -2003,6 +2006,13 @@ def run_multi_fpga_flow(
         patron_initial_assignment_path = phase3_root / initial_artifact
 
     projected_timing_paths = timing_paths
+    if timing_paths is not None:
+        # Keep explicitly supplied algorithm-test paths inside the same
+        # self-contained checkpoint layout used by generated timing paths.
+        projected_timing_paths = timing_root / "cut-timing-paths.json"
+        projected_timing_paths.parent.mkdir(parents=True, exist_ok=True)
+        if timing_paths.resolve() != projected_timing_paths.resolve():
+            write_json(projected_timing_paths, read_json(timing_paths), compact=True)
     if internal_timing_database and not effective_cross_stage_iterations:
         cut_segment_qualification_path = (
             timing_root / "cut-segment-qualification.json"
@@ -2157,6 +2167,7 @@ def run_multi_fpga_flow(
             partition_repair_balance=partition_repair_balance,
             router=router,
             route_provider=route_provider,
+            author_cost_policy=author_cost_policy,
             route_candidate_workers=route_candidate_workers,
             frame_slots=frame_slots,
             optimize_frame_slots=optimize_frame_slots,
@@ -2242,6 +2253,7 @@ def run_multi_fpga_flow(
             route_max_iterations=route_max_iterations,
             router=router,
             route_provider=route_provider,
+            author_cost_policy=author_cost_policy,
             candidate_workers=route_candidate_workers,
             tdm_provider=tdm_provider,
             ratio_optimizer=ratio_optimizer,
@@ -2258,42 +2270,21 @@ def run_multi_fpga_flow(
         phase4_report = read_json(phase4_root / "phase4_report.json")
         phase5_report = read_json(phase5_root / "phase5_report.json")
     else:
-        phase4_report = measured("phase4", run_phase4,
-            assignment_path,
-            platform_path,
-            phase4_root,
+        route_options = dict(
             constraints_path=effective_route_constraints,
             frame_slots=frame_slots,
             max_iterations=route_max_iterations,
             timing_paths_path=projected_timing_paths,
             router=router,
             provider=effective_route_provider,
-            candidate_workers=(
-                route_candidate_workers if has_inter_fpga_cuts else 1
-            ),
+            candidate_workers=(route_candidate_workers if has_inter_fpga_cuts else 1),
         )
-        phase5_report = measured("phase5", run_phase5,
-            phase4_root / "routes.json",
-            platform_path,
-            phase5_root,
-            assignment_path=assignment_path,
+        tdm_options = dict(
             simulation_frames=simulation_frames,
             provider=effective_tdm_provider,
-            ratio_optimizer=(
-                ratio_optimizer
-                if has_inter_fpga_cuts and academic_tdm_provider
-                else None
-            ),
-            timing_dag_optimizer=(
-                timing_dag_optimizer
-                if has_inter_fpga_cuts and academic_tdm_provider
-                else None
-            ),
-            slot_optimizer=(
-                slot_optimizer
-                if has_inter_fpga_cuts and academic_tdm_provider
-                else None
-            ),
+            ratio_optimizer=ratio_optimizer if has_inter_fpga_cuts and academic_tdm_provider else None,
+            timing_dag_optimizer=timing_dag_optimizer if has_inter_fpga_cuts and academic_tdm_provider else None,
+            slot_optimizer=slot_optimizer if has_inter_fpga_cuts and academic_tdm_provider else None,
             ratio_max_iterations=ratio_max_iterations,
             max_ratio=max_ratio,
             ratio_quantum=ratio_quantum,
@@ -2301,8 +2292,36 @@ def run_multi_fpga_flow(
             slot_refinement_iterations=slot_refinement_iterations,
             convergence=ratio_convergence,
         )
+        if has_inter_fpga_cuts and author_cost_policy == "best-of-two-v1":
+            paired = measured("author-route-tdm", run_author_route_tdm,
+                assignment_path, platform_path, phase4_root, phase5_root,
+                route_options=route_options, tdm_options=tdm_options,
+            )
+            phase4_report, phase5_report = paired["phase4"], paired["phase5"]
+        else:
+            if has_inter_fpga_cuts and author_cost_policy is not None:
+                route_options["author_cost_policy"] = author_cost_policy
+            phase4_report = measured("phase4", run_phase4,
+                assignment_path, platform_path, phase4_root, **route_options,
+            )
+            phase5_report = measured("phase5", run_phase5,
+                phase4_root / "routes.json", platform_path, phase5_root,
+                assignment_path=assignment_path, **tdm_options,
+            )
     routes_path = phase4_root / "routes.json"
     schedule_path = phase5_root / "schedule.json"
+    author_selection_path = None
+    if has_inter_fpga_cuts and author_cost_policy == "best-of-two-v1":
+        selection_root = output_dir
+        if cross_stage_report is not None:
+            selection_root = (cross_stage_root / selected["routes"]).parent.parent
+            if selected.get("frame_search"):
+                search_path = cross_stage_root / selected["frame_search"]
+                search = read_json(search_path)
+                selection_root = search_path.parent / search["selected_candidate"]
+        elif frame_search_report is not None:
+            selection_root = output_dir / "frame-search" / frame_search_report["selected_candidate"]
+        author_selection_path = selection_root / "author-route-tdm/selection.json"
 
     phase6_root = output_dir / "split"
     schedule_document = read_json(schedule_path)
@@ -2649,6 +2668,7 @@ def run_multi_fpga_flow(
         "status": "pass",
         "provider": MULTI_FPGA_FLOW_PROVIDER,
         "architecture_policy": "provider-neutral",
+        **({"author_cost_policy": author_cost_policy} if author_cost_policy is not None else {}),
         **(
             {"timing": _timing_report_summary(timing_report)}
             if timing_report is not None
@@ -2688,6 +2708,10 @@ def run_multi_fpga_flow(
             "split": _stage_summary("split", phase6_report),
         },
         "artifacts": {
+            **({"author_route_tdm_selection": {
+                "path": str(author_selection_path.relative_to(output_dir)),
+                "sha256": _sha256(author_selection_path),
+            }} if author_selection_path is not None else {}),
             "platform": {
                 "path": "frontend/phase1/platform.normalized.json",
                 "sha256": _sha256(
