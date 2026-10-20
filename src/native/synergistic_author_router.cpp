@@ -16,8 +16,10 @@
 //   policy. The original net_sink_size was accumulated before shortest paths
 //   existed; its effective sink-count tie break is explicit here. Final sink
 //   index is a deterministic tie break for otherwise equivalent connections.
-// * Board delays replace the author's hardcoded SLL/TDM cost constants; ratio
-//   pressure uses the platform quantum/minimum instead of integer division.
+// * Board delays replace hardcoded constants. The default author-pressure-v1
+//   prices continuous pre-insertion usage as in paper Eq. (2); the explicitly
+//   named quantized-ratio-v1 policy preserves the first adapter for ablation.
+//   Quantization still constrains feasibility under both cost policies.
 // * Hop-constrained search uses (node, hops) labels. No interactive getchar,
 //   dangling vector references, unchecked missing parents, or partial output.
 // * Bank directions and half-duplex links are physical constraints. This first
@@ -199,9 +201,12 @@ struct Tree {
   std::vector<int> parent_arc;
 };
 
+enum class CostPolicy { kAuthorPressure, kQuantizedRatio };
+
 class Router {
  public:
-  explicit Router(Input input) : input_(std::move(input)), adjacency_(input_.nodes) {
+  explicit Router(Input input, CostPolicy policy)
+      : input_(std::move(input)), adjacency_(input_.nodes), policy_(policy) {
     for (int index = 0; index < static_cast<int>(input_.arcs.size()); ++index) {
       const Arc& arc = input_.arcs[index];
       adjacency_[arc.from].push_back(index);
@@ -364,13 +369,18 @@ class Router {
     return slots / input_.quantum * input_.quantum;
   }
 
-  std::pair<long long, long long> bank_ratios(int domain_id, long long addition) const {
+  struct BankEstimate {
+    long long first = 0, second = 0;
+    int first_banks = 0;
+  };
+
+  BankEstimate bank_ratios(int domain_id, long long addition) const {
     const Domain& first = domains_.at(domain_id);
     const Domain& second = domains_.at(first.opposite);
     const long long left_usage = first.usage + addition, right_usage = second.usage;
     using Objective = std::tuple<long long, long long, double, double, int>;
     Objective best{std::numeric_limits<long long>::max(), std::numeric_limits<long long>::max(), kInf, kInf, first.banks + 1};
-    std::pair<long long, long long> answer{0, 0};
+    BankEstimate answer;
     for (int left = 0; left <= first.banks; ++left) {
       const long long left_lanes = static_cast<long long>(left) * first.wires;
       const long long right_lanes = static_cast<long long>(first.banks - left) * first.wires;
@@ -379,7 +389,7 @@ class Router {
       const double p = left_usage ? static_cast<double>(left_usage) / left_lanes : 0;
       const double q = right_usage ? static_cast<double>(right_usage) / right_lanes : 0;
       const Objective candidate{std::max(a, b), a + b, std::max(p, q), p + q, left};
-      if (candidate < best) { best = candidate; answer = {a, b}; }
+      if (candidate < best) { best = candidate; answer = {a, b, left}; }
     }
     return answer;
   }
@@ -404,10 +414,23 @@ class Router {
     const Arc& arc = input_.arcs[arc_index];
     const Domain& domain = domains_.at(arc.domain);
     const long long addition = shared ? 0 : width;
-    const long long estimated_ratio = domain.sll ? 1 :
-        (domain.banks ? bank_ratios(arc.domain, addition).first :
-         ratio(domain.usage + addition, domain.lanes));
-    const double delay = arc.delay + arc.beta * (estimated_ratio - 1);
+    double delay = arc.delay;
+    if (!domain.sll && policy_ == CostPolicy::kAuthorPressure) {
+      // Eq. (2) increases price inside a quantization bucket. Looking only at
+      // the next legal integer ratio creates a plateau that can overload one
+      // route before another route becomes cheaper (observed on EDA2023 case3).
+      // Insertion feasibility remains projected/quantized; optimization uses
+      // current pre-insertion load, as in the author's original maze kernel.
+      const long long lanes = domain.banks ?
+          static_cast<long long>(bank_ratios(arc.domain, addition).first_banks) * domain.wires : domain.lanes;
+      if (lanes <= 0) throw std::runtime_error("no directional bank for priced arc");
+      const double pressure = static_cast<double>(domain.usage) / lanes;
+      delay += arc.beta * (input_.minimum - 1 + pressure);
+    } else if (!domain.sll) {
+      const long long estimated_ratio = domain.banks ? bank_ratios(arc.domain, addition).first :
+          ratio(domain.usage + addition, domain.lanes);
+      delay += arc.beta * (estimated_ratio - 1);
+    }
     const double cost = (shared && !tiny_) ? 0.5 * delay : delay;
     if (!std::isfinite(cost) || cost < 0) throw std::runtime_error("nonfinite or negative arc cost");
     return cost;
@@ -520,6 +543,7 @@ class Router {
   std::map<int, Domain> domains_;
   std::vector<Tree> trees_;
   std::map<int, int> locks_, group_link_;
+  CostPolicy policy_;
   bool tiny_ = true;
   size_t connections_ = 0, routed_connections_ = 0, expansions_ = 0;
 };
@@ -527,12 +551,27 @@ class Router {
 }  // namespace
 
 int main(int argc, char** argv) {
+  const auto usage = [](std::ostream& stream) {
+    stream << "usage: emuflow_synergistic_author_router INPUT OUTPUT "
+              "[--cost-policy author-pressure-v1|quantized-ratio-v1]\n"
+              "default: author-pressure-v1 (continuous pre-insertion pressure); "
+              "quantized-ratio-v1 preserves the first adapter for diagnostics.\n";
+  };
   if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "usage: emuflow_synergistic_author_router INPUT OUTPUT\n";
+    usage(std::cout);
     return 0;
   }
-  if (argc != 3) {
-    std::cerr << "usage: emuflow_synergistic_author_router INPUT OUTPUT\n";
+  CostPolicy policy = CostPolicy::kAuthorPressure;
+  if (argc == 5 && std::string(argv[3]) == "--cost-policy") {
+    const std::string name = argv[4];
+    if (name == "quantized-ratio-v1") policy = CostPolicy::kQuantizedRatio;
+    else if (name != "author-pressure-v1") {
+      std::cerr << "unsupported cost policy: " << name << '\n';
+      usage(std::cerr);
+      return 2;
+    }
+  } else if (argc != 3) {
+    usage(std::cerr);
     return 2;
   }
   if (std::string(argv[1]) == argv[2]) {
@@ -543,7 +582,7 @@ int main(int argc, char** argv) {
     // Outputs belong to this invocation; a failed invocation cannot leave a
     // previous result looking newly successful.
     std::remove(argv[2]);
-    Router router(read_input(argv[1]));
+    Router router(read_input(argv[1]), policy);
     router.run();
     router.write_output(argv[2]);
     return 0;

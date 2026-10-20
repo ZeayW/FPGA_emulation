@@ -1,30 +1,5 @@
 # EmuFlow validation requirements
 
-## Phase 4 autonomous research authorization 2026-10-20
-
-For the author-router replacement study the user explicitly authorizes algorithm
-changes, reuse of unchanged completed intermediates, parallel independent runs
-on avent and sbms02, scheduled monitoring, evidence-based early termination and
-immediate repair/rerun. These instructions supersede older no-reuse, no-monitor
-and ephemeral-only restrictions for this study. Preserve full design function,
-timing coverage and independent result validation. Retain actionable failure
-evidence and reusable inputs until the study finishes; do not affect other jobs.
-All remote writes remain inside the existing dedicated project sandboxes.
-This includes TMPDIR, compiler and Python temporary/cache files. Avent may use
-its available memory. Aggregate study memory on sbms02 must stay within 128 GB;
-obtain explicit user approval before any experiment expected to exceed it.
-
-The only writable upstream Git branch is
-`feature/phase4-synergistic-router` in `ZeayW/FPGA_emulation`. Never push to main
-or another branch, create another study branch, force-push or merge upstream.
-Never create `codex/*` branches. Use explicit refspecs for every push.
-
-Long experiments detach and record source/input identity, process group,
-logs, progress, resource measurements and exit status. Stop clearly unproductive
-study jobs promptly, retain the reason and evidence, then revise the experiment.
-Every unfinished research turn leaves a suitable ACTIVE heartbeat. The study
-ends at a mature Phase 4 replacement with truthful flow/timing qualification.
-
 These requirements apply to all work in this repository.
 
 ## README synchronization is mandatory

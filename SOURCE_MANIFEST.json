@@ -419,8 +419,7 @@
       "stage": "Phase 4 system routing research",
       "source_paths": [
         "src/native/synergistic_author_router.cpp",
-        "src/emuflow/author_routing.py",
-        "engines/synergistic_author_reference"
+        "src/emuflow/author_routing.py"
       ],
       "build_targets": [
         "emuflow_synergistic_author_router"
@@ -428,8 +427,11 @@
       "runtime_products": [
         "emuflow_synergistic_author_router"
       ],
-      "integration": "explicit-author-derived-research-provider",
-      "source_receipt": "engines/synergistic_author_reference/SOURCE.json"
+      "integration": "default-in-tree-build",
+      "reference": {
+        "paper": "https://yibolin.com/publications/papers/ROUTE_DAC2025_Wang.pdf",
+        "author_archive_sha256": "6529662353050a1e0c155a96579f8d495008cdd65b53103fffff7f701ac3f524"
+      }
     }
   ],
   "open_path_blockers": [

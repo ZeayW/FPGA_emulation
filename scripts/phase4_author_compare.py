@@ -138,9 +138,11 @@ def worker(manifest_path):
         if result["tdm"].get("status") != "pass":
             raise RuntimeError("TDM reported a non-pass result")
         stamp = time.monotonic()
-        result["evaluation"] = evaluate_eda2023_solution(
+        evaluation = evaluate_eda2023_solution(
             artifacts["instance"], output / "phase4/routes.json",
             Path(result["tdm"]["artifacts"]["tdm_plan"]))
+        result["evaluation"] = {key: evaluation[key] for key in
+                                ("schema", "status", "instance", "metrics")}
         result["stage_seconds"]["evaluation"] = time.monotonic() - stamp
         if result["evaluation"].get("status") != "pass":
             raise RuntimeError("independent contest evaluation reported a non-pass result")
@@ -256,12 +258,81 @@ def run_arm(manifest, timeout, sample_interval, rss_limit_gib=24):
     return result
 
 
+def reuse_baseline(baseline_path, baseline, case, current, summary, provider):
+    """Validate the scientific inputs and reuse A without launching its worker.
+
+    A source commit can change while the baseline native implementation and
+    normalized problem remain identical. Compare those identities explicitly,
+    rather than requiring an unrelated author-router edit to rerun baseline A.
+    """
+    previous = baseline.get("cases", {}).get(case)
+    if not previous or "A" not in previous.get("arms", {}):
+        raise RuntimeError(f"baseline has no arm A for {case}")
+    arm = previous["arms"]["A"]
+    if arm.get("status") != "pass" or arm.get("provider") != provider:
+        raise RuntimeError(f"baseline {case}/A must be a passing {provider} result")
+    if previous.get("input_sha256") != current["input_sha256"]:
+        raise RuntimeError(f"baseline raw input hash mismatch for {case}")
+    if baseline.get("tdm_settings") != summary["tdm_settings"]:
+        raise RuntimeError("baseline TDM settings mismatch")
+    for name in ("tlr_router", "tdm_ratio_optimizer"):
+        old = baseline.get("tools", {}).get(name, {})
+        new = summary["tools"][name]
+        if (old.get("identity") != new["identity"]
+                or old.get("cache_key") != new["cache_key"]
+                or old.get("sha256") != new["sha256"]):
+            raise RuntimeError(f"baseline native tool identity mismatch: {name}")
+    original_import = previous.get("import", {})
+    artifacts = original_import.get("artifacts", {})
+    if set(artifacts) != set(current["import"]["artifacts"]):
+        raise RuntimeError(f"baseline normalized artifact set mismatch for {case}")
+    hashes = {}
+    for key, value in artifacts.items():
+        path = Path(value)
+        if not path.is_absolute():
+            raise RuntimeError(f"baseline artifact path must be absolute: {path}")
+        hashes[key] = digest(path)
+    sealed = previous.get("normalized_artifact_sha256")
+    if sealed is not None and sealed != hashes:
+        raise RuntimeError(f"baseline normalized artifacts changed after sealing for {case}")
+    if hashes != current["normalized_artifact_sha256"]:
+        raise RuntimeError(f"baseline normalized model differs from current import for {case}")
+    # Keep B bound to the original normalized input files. The newly generated
+    # files are verification evidence only and never replace the baseline.
+    current["import"] = original_import
+    current["normalized_artifact_sha256"] = hashes
+    reference = {
+        "summary": str(baseline_path), "summary_sha256": digest(baseline_path),
+        "source_commit": baseline.get("source_commit"), "host": baseline.get("host"),
+        "runner_sha256": baseline.get("runner_sha256"),
+        "input_sha256": previous["input_sha256"],
+        "normalized_artifact_sha256": hashes, "tdm_settings": baseline["tdm_settings"],
+        "tools": {name: {key: baseline["tools"][name][key]
+                         for key in ("sha256", "cache_key", "identity")}
+                  for name in ("tlr_router", "tdm_ratio_optimizer")},
+        "validation": "raw hashes, current normalized bytes, sealed hashes if present, native tools and TDM settings matched",
+    }
+    reused = {key: arm[key] for key in
+              ("status", "provider", "stage_seconds", "evaluation", "started_at", "finished_at")
+              if key in arm}
+    if "evaluation" in reused:
+        reused["evaluation"] = {key: reused["evaluation"][key] for key in
+                                ("schema", "status", "instance", "metrics")
+                                if key in reused["evaluation"]}
+    reused.update(reused=True, baseline_reference=reference)
+    current["arms"]["A"] = reused
+    current["baseline_reference"] = reference
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--data", type=Path)
     parser.add_argument("--build-root", type=Path)
     parser.add_argument("--cases", default="case1,case2,case3,case4,case5")
+    parser.add_argument("--arms", default="A,B", help="fresh arms to run: A,B, A or B")
+    parser.add_argument("--baseline-summary", type=Path,
+                        help="reuse validated previous arm A and its normalized inputs; never rerun A")
     parser.add_argument("--arm-timeout", type=float, default=180)
     parser.add_argument("--sample-interval", type=float, default=2)
     parser.add_argument("--rss-limit-gib", type=float, default=24,
@@ -280,6 +351,11 @@ def main():
         parser.error("timeouts, sampling interval and RSS threshold must be positive")
     if min(args.tdm_iterations, args.tdm_refinement_iterations, args.tdm_exact_domain_limit) < 0:
         parser.error("TDM settings must be nonnegative")
+    arms = args.arms.split(",")
+    if len(set(arms)) != len(arms) or any(arm not in {"A", "B"} for arm in arms):
+        parser.error("--arms must contain distinct A and/or B")
+    if arms == ["B"] and not args.baseline_summary:
+        parser.error("--arms B requires --baseline-summary to preserve comparison evidence")
     from fetch_eda2023_benchmarks import CASES, download
     from emuflow.contest_eda2023 import import_eda2023_case, EDA2023_TDM_PROVIDER
     from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
@@ -297,6 +373,8 @@ def main():
                "host": socket.gethostname(), "started_at": now(),
                "source_commit": git("rev-parse", "HEAD"), "branch": git("branch", "--show-current"),
                "git_status": git("status", "--porcelain"), "cases_requested": cases,
+               "arms_requested": arms,
+               "baseline_summary": str(args.baseline_summary.resolve()) if args.baseline_summary else None,
                "python": sys.version, "runner_sha256": digest(__file__),
                "python_source_sha256": {str(p.relative_to(ROOT)): digest(p)
                                         for p in sorted((ROOT / "src/emuflow").rglob("*.py"))},
@@ -308,6 +386,8 @@ def main():
                                 "exact_domain_limit": args.tdm_exact_domain_limit}, "cases": {}}
     write(output / "summary.json", summary)
     try:
+        baseline_path = args.baseline_summary.resolve() if args.baseline_summary else None
+        baseline = json.loads(baseline_path.read_text()) if baseline_path else None
         summary["tools"] = build_binaries(build_root, args.compiler, output)
         write(output / "summary.json", summary)
         for case in cases:
@@ -318,10 +398,28 @@ def main():
                 record["fetch"] = download(case, data / case)
                 record["input_sha256"] = {name: digest(data / case / name)
                                           for name, _, _ in CASES[case]}
-                record["import"] = import_eda2023_case(data / case, output / case / "inputs", case)
+                old_case = baseline.get("cases", {}).get(case, {}) if baseline else {}
+                # A sealed import from unchanged Python code needs only hash
+                # verification. Legacy unsealed imports or changed adapters are
+                # checked against a fresh normalization before read-only reuse.
+                sealed_unchanged_import = (
+                    old_case.get("normalized_artifact_sha256") is not None
+                    and baseline.get("python_source_sha256") == summary["python_source_sha256"])
+                if sealed_unchanged_import:
+                    record["import"] = old_case["import"]
+                    record["normalized_inputs_reused"] = True
+                else:
+                    record["import"] = import_eda2023_case(data / case, output / case / "inputs", case)
+                    record["normalized_inputs_reused"] = False
+                record["normalized_artifact_sha256"] = {
+                    key: digest(value) for key, value in record["import"]["artifacts"].items()}
+                if baseline is not None:
+                    reuse_baseline(baseline_path, baseline, case, record, summary, GLOBAL_CANDIDATE_PROVIDER)
                 for label, provider, binary in (
                     ("A", GLOBAL_CANDIDATE_PROVIDER, "tlr_router"),
                     ("B", AUTHOR_ROUTER_PROVIDER, "synergistic_author_router")):
+                    if label not in arms or (label == "A" and baseline is not None):
+                        continue
                     record["status"] = f"{label}-running"
                     write(output / "summary.json", summary)
                     manifest = {"output": str(output / case / label), "provider": provider,

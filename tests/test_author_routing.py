@@ -17,11 +17,13 @@ from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json
 from emuflow.phase4 import run_phase4, validate_phase4
 from emuflow.phase5 import run_phase5
+from emuflow.partition import assign_clusters, build_clusters, normalize_partition_constraints
 from emuflow.platform import Platform
 from emuflow.routing import demands_from_assignment, normalize_route_constraints
 from emuflow.tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, normalize_sta_paths
 from emuflow.tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
+from emuflow.yosys import import_yosys_json
 from tests.native_build import tlr_router, tdm_ratio_optimizer, tdm_timing_dag_optimizer
 from tests.test_phase4 import _assignment, _link, _platform_value
 
@@ -182,6 +184,30 @@ class AuthorRoutingTest(unittest.TestCase):
             self.assertEqual(p5["status"], "pass")
             self.assertEqual(p5["provider"], TDM_BASELINE_PROVIDER)
             self.assertEqual(read_json(root / "phase4/routes.json")["provider"], AUTHOR_ROUTER_PROVIDER)
+
+    def test_real_counter_natural_partition_enters_existing_phase5(self):
+        ir = import_yosys_json(ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"])
+        platform_path = ROOT / "platforms/virtual/xcvu3p_2fpga_p2p.json"
+        platform = Platform.load(platform_path)
+        constraints = normalize_partition_constraints(None, ir, platform)
+        clusters = build_clusters(ir, constraints)
+        assignment = assign_clusters(ir, platform, clusters, constraints, seed=4)
+        self.assertGreater(len(demands_from_assignment(assignment, platform)), 0)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            assignment_path = root / "assignment.json"
+            assignment_path.write_text(json.dumps(assignment), encoding="utf-8")
+            p4 = run_phase4(assignment_path, platform_path, root / "phase4", frame_slots=16,
+                            provider=AUTHOR_ROUTER_PROVIDER, router=author_router())
+            self.assertEqual(p4["status"], "pass")
+            self.assertGreater(p4["validation"]["demands"], 0)
+            self.assertGreater(p4["validation"]["routed_sinks"], 0)
+            self.assertEqual(p4["validation"]["overloaded_links"], 0)
+            self.assertEqual(validate_phase4(assignment_path, platform_path, root / "phase4/routes.json")["status"], "pass")
+            p5 = run_phase5(root / "phase4/routes.json", platform_path, root / "phase5",
+                            assignment_path=assignment_path, provider=TDM_BASELINE_PROVIDER)
+            self.assertEqual(p5["status"], "pass")
+            self.assertEqual(p5["provider"], TDM_BASELINE_PROVIDER)
 
     def test_protocol_rejects_duplicate_missing_or_unknown_records(self):
         _, _, _ = self._inputs()

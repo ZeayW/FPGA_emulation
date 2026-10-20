@@ -33,7 +33,8 @@ from .timing_routing import (
 
 AUTHOR_ROUTER_PROVIDER = "synergistic-author-route-v1"
 AUTHOR_OUTPUT_PROTOCOL = "EMUFLOW_SYNERGISTIC_ROUTE_OUTPUT_V1"
-AUTHOR_METHOD = "author-global-connection-order-shared-tree-maze-board-delay-v1"
+AUTHOR_METHOD = "author-global-connection-order-shared-tree-maze-continuous-pressure-v1"
+AUTHOR_COST_POLICY = "author-pressure-v1"
 _COUNTERS = {"connections", "routed_connections", "search_expansions", "tree_edges"}
 _TIMING_METRICS = (
     "worst_slack_ns", "worst_normalized_slack",
@@ -142,7 +143,11 @@ def route_system_author(assignment, platform, constraints, timing_paths=None, *,
     with tempfile.TemporaryDirectory(prefix="emuflow-author-route-") as temporary:
         root = Path(temporary)
         _write_native_input(root / "input", len(nodes), model, constraints, NATIVE_ROUTER_PROVIDER)
-        completed = subprocess.run([resolved, str(root / "input"), str(root / "output")], capture_output=True, text=True, check=False)
+        completed = subprocess.run(
+            [resolved, str(root / "input"), str(root / "output"),
+             "--cost-policy", AUTHOR_COST_POLICY],
+            capture_output=True, text=True, check=False,
+        )
         if completed.returncode:
             detail = completed.stderr.strip() or completed.stdout.strip()
             raise EmuFlowError(f"author router failed with exit code {completed.returncode}: {detail}")
@@ -181,6 +186,7 @@ def route_system_author(assignment, platform, constraints, timing_paths=None, *,
         "link_utilization": utilization, "direction_locks": locks,
         "author_routing": {
             "method": AUTHOR_METHOD, "output_protocol": AUTHOR_OUTPUT_PROTOCOL,
+            "cost_policy": AUTHOR_COST_POLICY,
             "executable_sha256": digest.hexdigest(), "counters": counters,
             "timing_optimization": False, "tdm_assignment": "downstream-phase5",
         },
@@ -233,6 +239,7 @@ def validate_author_system_routes(assignment, platform, routes, timing_paths=Non
         raise ValidationError("invalid author routing execution metadata")
     counters = metadata.get("counters", {})
     if (metadata.get("method") != AUTHOR_METHOD or metadata.get("output_protocol") != AUTHOR_OUTPUT_PROTOCOL
+            or metadata.get("cost_policy") != AUTHOR_COST_POLICY
             or metadata.get("timing_optimization") is not False or metadata.get("tdm_assignment") != "downstream-phase5"
             or not isinstance(metadata.get("executable_sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", metadata["executable_sha256"])
