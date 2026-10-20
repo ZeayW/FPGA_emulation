@@ -1602,6 +1602,7 @@ def run_multi_fpga_physical_flow(
                     local_query_path,
                     local_identity_path,
                     prepared_inputs=prepared_local_inputs,
+                    eblif_report=eblif_report,
                 )
                 local_raw_path = (
                     fpga_root / "vpr-route" / "local-path-timing.tsv"

@@ -292,6 +292,7 @@ def _explicit_vpr_path_pins(
     merged_instances: Mapping[str, Mapping[str, Any]],
     start: Mapping[str, Any],
     end: Mapping[str, Any],
+    eblif_top_ports: Mapping[tuple[str, int], Mapping[str, Any]] | None = None,
 ) -> list[str]:
     """Recover one unambiguous selected STA path as adjacent VPR atom pins.
 
@@ -312,7 +313,7 @@ def _explicit_vpr_path_pins(
 
     pins = [
         _vpr_atom_pin(
-            merged_ir, merged_index, start, merged_instances
+            merged_ir, merged_index, start, merged_instances, eblif_top_ports
         )
     ]
     expected_driver: Mapping[str, Any] = start
@@ -347,7 +348,7 @@ def _explicit_vpr_path_pins(
         try:
             pins.append(
                 _vpr_atom_pin(
-                    merged_ir, merged_index, candidates[0], merged_instances
+                    merged_ir, merged_index, candidates[0], merged_instances, eblif_top_ports
                 )
             )
             if next_driver is not None:
@@ -357,13 +358,14 @@ def _explicit_vpr_path_pins(
                         merged_index,
                         next_driver,
                         merged_instances,
+                        eblif_top_ports,
                     )
                 )
         except ValidationError:
             return []
         expected_driver = next_driver if next_driver is not None else end
     if pins[-1] != _vpr_atom_pin(
-        merged_ir, merged_index, end, merged_instances
+        merged_ir, merged_index, end, merged_instances, eblif_top_ports
     ):
         return []
     return pins
@@ -630,6 +632,7 @@ def _write_local_path_query(
     *,
     object_provider: str,
     prepared_inputs: LocalPathQueryInputs | None = None,
+    eblif_report: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Materialize every original same-partition path for one backend."""
     if object_provider not in {"vpr", "xilinx"}:
@@ -691,10 +694,28 @@ def _write_local_path_query(
             finally:
                 view.close()
 
+    eblif_top_ports = None
+    if object_provider == "vpr" and eblif_report is not None:
+        raw_ports = eblif_report.get("top_ports")
+        if not isinstance(raw_ports, list):
+            raise ValidationError("local path eBLIF top-port map is invalid")
+        eblif_top_ports = {}
+        for record in raw_ports:
+            if not isinstance(record, Mapping):
+                raise ValidationError("local path eBLIF top-port record is invalid")
+            identity = (record.get("port"), record.get("bit"))
+            if (not isinstance(identity[0], str) or not identity[0]
+                    or isinstance(identity[1], bool) or not isinstance(identity[1], int)
+                    or identity[1] < 0 or identity in eblif_top_ports
+                    or record.get("direction") not in {"input", "output"}
+                    or not isinstance(record.get("packed_block"), str) or not record["packed_block"]):
+                raise ValidationError("local path eBLIF top-port map is inconsistent")
+            eblif_top_ports[identity] = record
+
     def endpoint_pin(endpoint: Mapping[str, Any]) -> str:
         if object_provider == "vpr":
             return _vpr_atom_pin(
-                merged_ir, merged_index, endpoint, merged_instances
+                merged_ir, merged_index, endpoint, merged_instances, eblif_top_ports
             )
         return _xilinx_object(
             merged_ir, endpoint, merged_pins, merged_instances
@@ -704,6 +725,10 @@ def _write_local_path_query(
     for path in local_paths:
         start = path["startpoint"]
         end = path["endpoint"]
+        if object_provider == "vpr" and eblif_top_ports is None and end.get("instance") is None:
+            terminal = original_nets.get(path["path_nets"][-1], {})
+            if sum(endpoint.get("instance") is None for endpoint in terminal.get("sinks", [])) > 1:
+                raise ValidationError("aliased local output paths require the eBLIF top-port map")
         record = {
             "id": path["id"],
             "kind": "local",
@@ -724,6 +749,7 @@ def _write_local_path_query(
                 merged_instances,
                 start,
                 end,
+                eblif_top_ports,
             )
             if object_provider == "vpr"
             else []
@@ -807,6 +833,7 @@ def write_vpr_local_path_query(
     identity_path: Path,
     *,
     prepared_inputs: LocalPathQueryInputs | None = None,
+    eblif_report: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Materialize every original same-partition path as a routed VPR query."""
     return _write_local_path_query(
@@ -820,6 +847,7 @@ def write_vpr_local_path_query(
         identity_path,
         object_provider="vpr",
         prepared_inputs=prepared_inputs,
+        eblif_report=eblif_report,
     )
 
 
