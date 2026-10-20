@@ -190,6 +190,8 @@ concrete transmission events. For supported combinational cuts, the binding
 also records when upstream values become available and when downstream
 transmissions consume them. Those runtime bindings are EmuFlow integration
 work, distinct from the cited ratio-optimization algorithms.
+Indexed Static Exact schedules retain register-output roots alongside
+combinational and register-input cuts under the same dependency/readiness checks.
 
 For the default research platform, Phase 5 allocates whole communication
 banks between the two directions of each connected FPGA pair according to

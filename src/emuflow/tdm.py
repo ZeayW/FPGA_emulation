@@ -118,6 +118,7 @@ def _static_exact_contract_from_routes(
             "routes exact semantic contract binding is incomplete"
         )
     from .combinational_cut import (
+        SEQUENTIAL_TRANSPORTED_CUT_CLASSES,
         STATIC_EXACT_CANDIDATE_POLICIES,
         STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS,
         STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
@@ -142,7 +143,7 @@ def _static_exact_contract_from_routes(
                 not isinstance(route, dict)
                 or not isinstance(route.get("net"), str)
                 or route.get("cut_class")
-                not in {"combinational", "register_input"}
+                not in {"combinational", *SEQUENTIAL_TRANSPORTED_CUT_CLASSES}
                 or isinstance(route.get("dependency_level"), bool)
                 or not isinstance(route.get("dependency_level"), int)
                 or route["dependency_level"] < 0
