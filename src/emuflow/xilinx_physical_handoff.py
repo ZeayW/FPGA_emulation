@@ -317,8 +317,10 @@ def write_xilinx_physical_handoff(
         temporary.unlink(missing_ok=True)
 
 
-def validate_xilinx_physical_handoff(path: Path) -> Dict[str, Any]:
-    """Explicitly validate SQLite health, schema, and row accounting."""
+def validate_xilinx_physical_handoff(
+    path: Path, *, integrity_check: bool = False,
+) -> Dict[str, Any]:
+    """Validate schema and row accounting, with opt-in SQLite diagnostics."""
 
     connection = _connect(path)
     try:
@@ -326,9 +328,12 @@ def validate_xilinx_physical_handoff(path: Path) -> Dict[str, Any]:
             raise ValidationError("Xilinx physical handoff application ID is invalid")
         if connection.execute("PRAGMA user_version").fetchone()[0] != _USER_VERSION:
             raise ValidationError("Xilinx physical handoff version is invalid")
-        result = connection.execute("PRAGMA quick_check").fetchone()
-        if result is None or result[0] != "ok":
-            raise ValidationError("Xilinx physical handoff integrity check failed")
+        if integrity_check:
+            result = connection.execute("PRAGMA quick_check").fetchone()
+            if result is None or result[0] != "ok":
+                raise ValidationError(
+                    "Xilinx physical handoff integrity check failed"
+                )
         manifest = connection.execute("SELECT * FROM manifest WHERE singleton=1").fetchone()
         if manifest is None or manifest["schema"] != XILINX_PHYSICAL_HANDOFF_SCHEMA:
             raise ValidationError("Xilinx physical handoff schema is invalid")
@@ -358,7 +363,8 @@ def validate_xilinx_physical_handoff(path: Path) -> Dict[str, Any]:
         connection.close()
     return {
         "schema": "emuflow.xilinx-physical-handoff-validation/v1",
-        "status": "pass", **counts, "physical_handoff_sha256": file_sha256(path),
+        "status": "pass", "integrity_check": integrity_check, **counts,
+        "physical_handoff_sha256": file_sha256(path),
     }
 
 

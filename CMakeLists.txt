@@ -264,6 +264,27 @@ set(EMUFLOW_INSTALL_ROOT "${CMAKE_BINARY_DIR}/install")
 set(EMUFLOW_INSTALL_BINDIR "${EMUFLOW_INSTALL_ROOT}/${CMAKE_INSTALL_BINDIR}")
 file(MAKE_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
 
+add_library(
+  emuflow_core STATIC
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/artifact_io.cpp"
+)
+target_compile_features(emuflow_core PUBLIC cxx_std_17)
+target_compile_options(emuflow_core PRIVATE -O3)
+target_include_directories(
+  emuflow_core PUBLIC "${CMAKE_SOURCE_DIR}/src/native"
+)
+if(BUILD_TESTING)
+  add_executable(
+    emuflow_core_artifact_io_test
+    "${CMAKE_SOURCE_DIR}/tests/native_core_artifact_io_test.cpp"
+  )
+  target_link_libraries(emuflow_core_artifact_io_test PRIVATE emuflow_core)
+  add_test(
+    NAME emuflow_core_artifact_io
+    COMMAND emuflow_core_artifact_io_test
+  )
+endif()
+
 # Keep root-built products self-consistent without installing libraries into
 # system directories. General-purpose dependency prefixes remain external to
 # the source tree, but their runtime libraries are recorded in local products.
@@ -675,6 +696,7 @@ if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
   )
   target_compile_features(emuflow_static_exact_analyzer PRIVATE cxx_std_17)
   target_compile_options(emuflow_static_exact_analyzer PRIVATE -O3)
+  target_link_libraries(emuflow_static_exact_analyzer PRIVATE emuflow_core)
   set_target_properties(
     emuflow_static_exact_analyzer
     PROPERTIES

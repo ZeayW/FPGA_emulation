@@ -65,6 +65,11 @@ capture-cone traversal runs in `emuflow_static_exact_analyzer`. The boundary is
 a versioned integer-only binary graph, and Python reconstructs the same v3
 semantic contract after validating all returned indices and graph coverage.
 Smaller designs retain the Python implementation as an executable reference.
+The analyzer now uses the first `libemuflow_core` components: representation-
+scoped typed IDs, checked native artifact reads, and synchronized atomic binary
+publication. This is the W0 foundation rather than a claim that the full
+native production entry exists; Phase 5 exact scheduling, remaining Phase 6/7
+data-plane loops, and global timing stitching are still migration work.
 
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
 from their sealed SQLite sidecar, reuses the in-process atomic-source view, and
@@ -73,8 +78,9 @@ assignment rows are exposed as lazy PackedSiteNetlist and XilinxPlacement
 views, so RWRoute export and routed timing consume the same indexed artifact
 without writing or rereading `packed-sites.json` and `placement.json`. The
 independent packing and placement validators run against those read-only views
-before RapidWright starts; SQLite health and row accounting are checked
-explicitly. The standard JSON contracts remain available only through the
+before RapidWright starts; schema and row accounting are always checked, while
+SQLite `quick_check` remains an explicit diagnostic operation outside normal
+handoff. The standard JSON contracts remain available only through the
 compatibility bridge mode. The bridge report records row counts, artifact
 bytes, dataflow mode, and time spent in certificate validation versus
 publication.

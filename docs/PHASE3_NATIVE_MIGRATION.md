@@ -1,5 +1,42 @@
 # Phase 3 native migration
 
+## Program status and storage decision
+
+The staged migration plan remains the implementation direction, with one
+important storage correction. SQLite is the indexed control plane for facts
+that require joins, uniqueness constraints, or bounded random lookup. Large
+relations that are consumed in deterministic order use versioned typed binary
+sections or ordered record streams. They are not copied into SQLite merely to
+make every boundary use one container. `assignment.exact.bin` is the first
+production instance of this split. Compatibility JSON is an explicit exporter,
+not a second authoritative payload.
+
+Normal phase handoffs validate schema, source identity, required row counts,
+keys, and circuit semantics. They do not run SQLite `quick_check` or
+`integrity_check`; those remain explicit offline corruption diagnostics.
+
+The implementation status at this revision is:
+
+| Wave | Status | Implemented boundary | Remaining production work |
+| --- | --- | --- | --- |
+| W0 shared core and stores | **Started** | `libemuflow_core` now owns checked native artifact reads, synchronized atomic binary publication, and representation-scoped typed IDs. The Static Exact analyzer uses that shared boundary. | Move the remaining native tools onto the shared storage/error/metrics interfaces; add the schema registry and SQLite RAII views as consumers require them. |
+| W1 Phase 5 exact schedule | **Not implemented** | Existing ratio, DAG, and slot optimizers are native kernels for the academic provider. | The production `deterministic-dependency-earliest-slot-v1` schedule, readiness certificate, validation, and hop-sized materialization still run in Python. This is the next priority. |
+| W2 Phase 7 lowering and transport import | **Partial** | Indexed DUT lowering and placement stores avoid the former whole-DUT JSON path. | Transport import, overlay/remap, boundary identity production, and graph-sized Python ownership must move to streaming native code. |
+| W3 Phase 6 split and binding | **Partial** | DUT ownership/split uses SQLite joins; repeated Static Exact ID arrays were removed from endpoints and bounded views no longer hydrate them. | Endpoint/binding construction and RTL/XDC emission still retain hop-sized Python objects and strings. |
+| W4 Phase 3 model and publication | **Partial** | Large dependency/capture traversal is native; assignment index v3 separates bounded SQLite control data from typed binary Static Exact data. | Clustering/model construction, native provider input construction, direct native binary emission, and final publication/validation still cross graph-sized Python structures. |
+| W5 physical exporters | **Partial** | One typed physical handoff replaced production `packed-sites.json` and `placement.json`; lazy views feed validation, RWRoute export, and routed timing. | OpenPARF/RWRoute exporter dictionaries and the remaining bridge loop must move into native/Java consumers. DeviceRegionIndex and pin-aware SLR planning are separate semantic/QoR work. |
+| W6 global STA stitching | **Not implemented** | OpenSTA remains the numerical engine and indexed readers exist. | Event/check construction, member expansion, result import, and original-path stitching remain graph-sized Python work. |
+| W7 native production entry | **Not implemented** | Individual native kernels and the first shared core library exist. | There is no complete `emuflow-native compile` path and Python production memory can still scale with routes, endpoints, and timing paths. |
+
+Representation-only waves must preserve the effective provider, seed,
+constraints, ordering, and external tool versions. DeviceRegionIndex,
+pin-aware SLR cost, and other placement-policy changes are qualified in
+separate commits and A/B runs so storage migration cannot hide a QoR change.
+The completion gate remains a fresh, isolated NVDLA Phase 1--7/7C run with
+stage wall time/RSS/I/O, zero unrouted nets and DRC violations, complete
+original-path coverage, and global OpenSTA WNS/TNS. That terminal gate is
+still pending.
+
 ## Scope
 
 The first migration tranche covers the production Phase 3 path from compact

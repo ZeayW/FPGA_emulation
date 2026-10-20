@@ -85,13 +85,17 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
                 stream.seek(0)
                 stream.write(b"not-a-sqlite-db!")
             with self.assertRaises(ValidationError):
-                validate_xilinx_physical_handoff(corrupt)
+                validate_xilinx_physical_handoff(
+                    corrupt, integrity_check=True
+                )
 
             truncated = root / "truncated.sqlite"
             data = source.read_bytes()
             truncated.write_bytes(data[: max(64, len(data) // 2)])
             with self.assertRaises(ValidationError):
-                validate_xilinx_physical_handoff(truncated)
+                validate_xilinx_physical_handoff(
+                    truncated, integrity_check=True
+                )
 
     def test_relocation_and_mixed_run_protection(self):
         with tempfile.TemporaryDirectory() as temporary:

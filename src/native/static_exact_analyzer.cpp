@@ -1,8 +1,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <cstring>
-#include <fstream>
 #include <iostream>
 #include <limits>
 #include <set>
@@ -11,54 +9,13 @@
 #include <utility>
 #include <vector>
 
+#include "emuflow_core/artifact_io.hpp"
+
 namespace {
 
 constexpr std::uint64_t kInputMagic = 0x31584553464d5545ULL;
 constexpr std::uint64_t kOutputMagic = 0x315845534f4d5545ULL;
 constexpr std::uint32_t kVersion = 1;
-
-class Reader {
- public:
-  explicit Reader(const std::string& path) {
-    std::ifstream stream(path, std::ios::binary | std::ios::ate);
-    if (!stream) throw std::runtime_error("cannot open native input");
-    const auto size = stream.tellg();
-    if (size < 0) throw std::runtime_error("cannot size native input");
-    bytes_.resize(static_cast<std::size_t>(size));
-    stream.seekg(0);
-    if (!bytes_.empty()) {
-      stream.read(bytes_.data(), static_cast<std::streamsize>(bytes_.size()));
-    }
-    if (!stream) throw std::runtime_error("cannot read native input");
-  }
-
-  template <typename T>
-  T Read() {
-    if (offset_ > bytes_.size() || bytes_.size() - offset_ < sizeof(T)) {
-      throw std::runtime_error("native input is truncated");
-    }
-    T value{};
-    std::memcpy(&value, bytes_.data() + offset_, sizeof(T));
-    offset_ += sizeof(T);
-    return value;
-  }
-
-  void RequireEnd() const {
-    if (offset_ != bytes_.size()) {
-      throw std::runtime_error("native input has trailing bytes");
-    }
-  }
-
- private:
-  std::vector<char> bytes_;
-  std::size_t offset_ = 0;
-};
-
-template <typename T>
-void Write(std::ofstream& stream, const T& value) {
-  stream.write(reinterpret_cast<const char*>(&value), sizeof(T));
-  if (!stream) throw std::runtime_error("cannot write native output");
-}
 
 struct Instance {
   bool state = false;
@@ -105,7 +62,7 @@ class GenerationMarks {
 };
 
 void Analyze(const std::string& input_path, const std::string& output_path) {
-  Reader reader(input_path);
+  emuflow::core::BinaryReader reader(input_path);
   if (reader.Read<std::uint64_t>() != kInputMagic ||
       reader.Read<std::uint32_t>() != kVersion) {
     throw std::runtime_error("unsupported native input header");
@@ -298,23 +255,25 @@ void Analyze(const std::string& input_path, const std::string& output_path) {
   std::sort(captures.begin(), captures.end());
   captures.erase(std::unique(captures.begin(), captures.end()), captures.end());
 
-  std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
-  if (!output) throw std::runtime_error("cannot open native output");
-  Write(output, kOutputMagic);
-  Write(output, kVersion);
-  Write(output, cut_count);
-  Write(output, static_cast<std::uint64_t>(captures.size()));
+  emuflow::core::AtomicBinaryWriter output(output_path);
+  output.Write(kOutputMagic);
+  output.Write(kVersion);
+  output.Write(cut_count);
+  output.Write(static_cast<std::uint64_t>(captures.size()));
   for (std::uint32_t cut_index = 0; cut_index < cut_count; ++cut_index) {
-    Write(output, local_launches[cut_index]);
+    output.Write(local_launches[cut_index]);
     const auto count = static_cast<std::uint32_t>(dependencies[cut_index].size());
-    Write(output, count);
-    for (const auto dependency : dependencies[cut_index]) Write(output, dependency);
+    output.Write(count);
+    for (const auto dependency : dependencies[cut_index]) {
+      output.Write(dependency);
+    }
   }
   for (const auto& capture : captures) {
-    Write(output, capture[0]);
-    Write(output, capture[1]);
-    Write(output, capture[2]);
+    output.Write(capture[0]);
+    output.Write(capture[1]);
+    output.Write(capture[2]);
   }
+  output.Commit();
 }
 
 }  // namespace
