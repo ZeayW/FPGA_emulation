@@ -6,6 +6,23 @@ Linux diagnostics, and current experiment plan are described in
 [the Phase 4 study](docs/PHASE4_SYNERGISTIC_RESEARCH.md). Integration and full-flow
 qualification are in progress; no QoR improvement or timing closure is claimed.
 
+The explicit Phase 4 provider is `synergistic-author-route-v1`, built as
+`emuflow_synergistic_author_router` with the existing TLR build option. Select it
+with `--route-provider synergistic-author-route-v1` in complete compilation or
+`--provider synergistic-author-route-v1` in `phase4`; `--router` can bind its exact
+binary. It uses the author's global connection ordering and shared-tree maze
+search with BoardDB delays, capacities, banks and hop constraints, then leaves
+ratio/lane/slot assignment to the existing Phase 5. STA paths are independently
+evaluated after routing; this initial kernel does not optimize STA criticality.
+It requires one candidate worker and rejects feedback options it does not yet
+support. The current default provider remains unchanged during qualification.
+
+The author adapter and existing Phase 4 suite currently pass 35 focused tests,
+including identical timing-DAG Phase 5 handoff and Static Exact event scheduling.
+Run `scripts/phase4_author_compare.py --help` for bounded public-case A/B
+diagnostics with shared verified inputs, exact-source builds and an explicit
+sampled RSS guard. These diagnostics do not qualify physical/global timing.
+
 EmuFlow is a research-oriented multi-FPGA emulation flow. It compiles
 synchronous RTL into per-FPGA netlists and a statically scheduled communication
 fabric, with explicit interfaces between synthesis, partitioning, system

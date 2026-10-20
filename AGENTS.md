@@ -10,6 +10,9 @@ and ephemeral-only restrictions for this study. Preserve full design function,
 timing coverage and independent result validation. Retain actionable failure
 evidence and reusable inputs until the study finishes; do not affect other jobs.
 All remote writes remain inside the existing dedicated project sandboxes.
+This includes TMPDIR, compiler and Python temporary/cache files. Avent may use
+its available memory. Aggregate study memory on sbms02 must stay within 128 GB;
+obtain explicit user approval before any experiment expected to exceed it.
 
 The only writable upstream Git branch is
 `feature/phase4-synergistic-router` in `ZeayW/FPGA_emulation`. Never push to main

@@ -413,6 +413,23 @@
         "local-vivado-generated-gty-products"
       ],
       "integration": "in-tree-python"
+    },
+    {
+      "id": "synergistic-author-system-router",
+      "stage": "Phase 4 system routing research",
+      "source_paths": [
+        "src/native/synergistic_author_router.cpp",
+        "src/emuflow/author_routing.py",
+        "engines/synergistic_author_reference"
+      ],
+      "build_targets": [
+        "emuflow_synergistic_author_router"
+      ],
+      "runtime_products": [
+        "emuflow_synergistic_author_router"
+      ],
+      "integration": "explicit-author-derived-research-provider",
+      "source_receipt": "engines/synergistic_author_reference/SOURCE.json"
     }
   ],
   "open_path_blockers": [

@@ -52,8 +52,12 @@ and runs the unmodified reference with sanitizers before evaluating the adapter.
 ## Runtime policy
 
 Avent has about 28 GiB available at the initial observation and runs at most
-one heavy experiment. Sbms02 initially has about 739 GiB available and runs
-at most three independent trials. These are observations, not reservations.
+one heavy experiment; the user allows using its available memory. Sbms02
+initially has about 739 GiB available, but the user limits this study to
+128 GB aggregate memory unless additional explicit approval is obtained.
+Run at most three independent trials within that total. Observed availability
+is not an allocation. Every temporary/cache/build/data path stays in the
+existing sandbox, including TMPDIR and Python/compiler cache paths.
 Reuse existing native tools and immutable completed inputs. Each experiment
 has a unique output directory and an exact pushed source commit. Small-test
 timeouts begin at seconds/minutes; medium budgets are measured from observed
@@ -79,5 +83,29 @@ with negative slack is not timing closure. A contest graph is not a physical
 RTL result. Routes and schedules intentionally differ across Phase 4 arms;
 all common inputs, downstream algorithms, seeds and physical settings stay fixed.
 
-The current status is development, with server reference probes pending.
-No routing QoR or full-flow success is claimed by this initial source commit.
+## First observed result and next action
+
+Unmodified reference commit `34d8a522` compiled on avent with GCC 13 and
+ASan/UBSan. Its tiny multicast fixture immediately reports a heap-buffer
+overflow in `RouteTree::calculateDelay`, source line 144; missing-directory
+and no-argument probes also report sanitizer errors. These are completed
+negative controls, not routing passes. On sbms02 the GCC 8 sanitizer build
+failed to link a missing system libasan; this is a toolchain issue, not an
+algorithm failure. Static sanitizer archives are also absent from its checked
+GCC installations. The next sbms probe uses its ordinary compiler with
+`--sanitizers none`, while avent supplies sanitizer evidence; no external
+environment installation is needed.
+
+The replacement kernel avoids the unsafe reference delay/output routines.
+It compiled with standard C++17 headers and passed direct sanitizer fixtures.
+The combined existing Phase 4 and new author integration suite passed 35 tests,
+including both routers feeding the same current timing-DAG Phase 5, and
+Static Exact dependent-return event scheduling. The provider is opt-in while
+broader experiments run. The author route-only kernel does not yet optimize
+STA criticality; its metadata says so. The common route proxy still uses the
+maximum sink delay of a multicast net; P5 and final global timing remain the
+authoritative member/event-aware gates.
+
+Next: run bounded public-case A/B tests on both hosts, then act on measured
+capacity/ordering failures before scaling. Full physical/global timing and
+replacement-default qualification remain pending.

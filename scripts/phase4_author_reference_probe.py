@@ -15,12 +15,15 @@ import time
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--compiler", default=None)
+    parser.add_argument("--static-sanitizers", action="store_true")
+    parser.add_argument("--sanitizers", choices=["address-undefined", "none"], default="address-undefined")
     args = parser.parse_args()
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     root = Path(__file__).resolve().parents[1]
     source = root / "engines/synergistic_author_reference"
-    compiler = shutil.which("g++") or shutil.which("c++")
+    compiler = args.compiler or shutil.which("g++") or shutil.which("c++")
     if compiler is None:
         raise RuntimeError("C++ compiler missing")
     report = {"schema": "emuflow.author-reference-probe/v1", "host": os.uname().nodename,
@@ -28,9 +31,13 @@ def main() -> int:
               "compiler": subprocess.check_output([compiler, "--version"], text=True).splitlines()[0],
               "scope": "unmodified-reference-diagnostic", "trials": []}
     executable = out / "author-reference"
-    command = [compiler, "-std=c++11", "-O1", "-g", "-fsanitize=address,undefined",
+    command = [compiler, "-std=c++11", "-O1", "-g",
                "-fno-omit-frame-pointer", "-I" + str(source / "src"),
                *[str(p) for p in sorted((source / "src").rglob("*.cpp"))], "-o", str(executable)]
+    if args.sanitizers == "address-undefined":
+        command.insert(1, "-fsanitize=address,undefined")
+    if args.static_sanitizers and args.sanitizers != "none":
+        command[1:1] = ["-static-libasan", "-static-libubsan"]
     started = time.monotonic()
     with (out / "build.log").open("w") as log:
         build = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=180)

@@ -309,6 +309,7 @@ from .serial_phy_elaboration import run_serial_phy_elaboration
 from .serial_phy_recipe import materialize_serial_phy_recipe
 from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
+from .author_routing import AUTHOR_ROUTER_PROVIDER
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
     NATIVE_ROUTER_PROVIDER,
@@ -2174,6 +2175,7 @@ def _build_parser() -> argparse.ArgumentParser:
             TLR_PROVIDER,
             ROUTE_TDM_PROVIDER,
             GLOBAL_CANDIDATE_PROVIDER,
+            AUTHOR_ROUTER_PROVIDER,
         ),
         help=(
             f"explicit Phase 4 provider; timing-enabled flows default to "
@@ -3476,6 +3478,7 @@ def _build_parser() -> argparse.ArgumentParser:
             TLR_PROVIDER,
             ROUTE_TDM_PROVIDER,
             GLOBAL_CANDIDATE_PROVIDER,
+            AUTHOR_ROUTER_PROVIDER,
         ],
         default=None,
         help=(
@@ -3492,7 +3495,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--router",
         help=(
             "explicit comparison override; defaults to the in-tree "
-            "emuflow_tlr_router build"
+            "native build for the selected Phase 4 provider"
         ),
     )
 
@@ -3790,6 +3793,7 @@ def _build_parser() -> argparse.ArgumentParser:
             TLR_PROVIDER,
             ROUTE_TDM_PROVIDER,
             GLOBAL_CANDIDATE_PROVIDER,
+            AUTHOR_ROUTER_PROVIDER,
         ),
         help=(
             f"defaults to {GLOBAL_CANDIDATE_PROVIDER}; the historical "

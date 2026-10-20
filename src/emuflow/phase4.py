@@ -7,6 +7,11 @@ from .io import read_json, write_json
 from .managed_json_storage import pack_managed_json
 from .phase3_storage import read_phase3_assignment_view
 from .platform import Platform
+from .author_routing import (
+    AUTHOR_ROUTER_PROVIDER,
+    route_system_author,
+    validate_author_system_routes,
+)
 from .routing import (
     assignment_has_static_exact_contract,
     demands_from_assignment,
@@ -151,7 +156,22 @@ def run_phase4(
         )
     ):
         raise ValueError("physical feedback requires --tdm-feedback")
-    if provider == NATIVE_ROUTER_PROVIDER:
+    if provider == AUTHOR_ROUTER_PROVIDER:
+        if isinstance(candidate_workers, bool) or not isinstance(candidate_workers, int) or candidate_workers != 1:
+            raise ValueError("author routing requires one candidate worker")
+        if tdm_feedback is not None:
+            raise ValueError("author route-only provider does not accept TDM feedback")
+        if timing_paths_path is not None:
+            timing_paths = load_sta_paths(
+                timing_paths_path, demands_from_assignment(assignment, platform)
+            )
+        routes = route_system_author(
+            assignment, platform, constraints, timing_paths, executable=router
+        )
+        validation = validate_author_system_routes(
+            assignment, platform, routes, timing_paths
+        )
+    elif provider == NATIVE_ROUTER_PROVIDER:
         if timing_paths_path is not None:
             raise ValueError(
                 f"--provider {NATIVE_ROUTER_PROVIDER} does not accept "
@@ -261,9 +281,15 @@ def run_phase4(
     # persisted candidate pool.
     report["candidate_generation"] = {
         "requested_workers": candidate_workers,
-        "ordering": "demand-index-then-generator-index",
+        "ordering": (
+            "author-global-connection-priority"
+            if provider == AUTHOR_ROUTER_PROVIDER
+            else "demand-index-then-generator-index"
+        ),
         "route_artifact_deterministic": True,
     }
+    if provider == AUTHOR_ROUTER_PROVIDER:
+        report["author_routing"] = routes["author_routing"]
     if candidate_pool_path is not None and candidate_pool_path.is_file():
         report["artifacts"]["candidate_pool"] = "route_candidate_pool.json"
     if tdm_feedback is not None:
@@ -321,6 +347,12 @@ def validate_phase4(
     platform = Platform.load(platform_path)
     routes = read_json(routes_path)
     provider = routes.get("provider")
+    if provider == AUTHOR_ROUTER_PROVIDER:
+        timing_paths = (
+            load_sta_paths(timing_paths_path, demands_from_assignment(assignment, platform))
+            if timing_paths_path is not None else None
+        )
+        return validate_author_system_routes(assignment, platform, routes, timing_paths)
     if provider == NATIVE_ROUTER_PROVIDER:
         if timing_paths_path is not None:
             raise ValueError(
