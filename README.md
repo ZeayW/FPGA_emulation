@@ -168,9 +168,11 @@ its matching `emuflow_tlr_router` binary.
 STA paths are evaluated after routing. The optional
 `--author-order-policy sta-incidence-v1` uses original timing-path incidence
 to break equal-hardness connection ties; it requires timing input and leaves
-maze costs and Phase 5 unchanged. Complete physical/global validation has passed
-on PicoRV32; its 10ns target remains unmet and default target TNS is 0.83% worse
-than the previous router. Routing speed improvements do not guarantee timing gains.
+maze costs and Phase 5 unchanged. Intact PicoRV32 passes complete physical/global
+validation on fixed 17x17 VTR grids at 74--78% CLB site utilization per FPGA.
+Its 10ns target remains unmet; the 1280ns virtual runtime period closes. A matched
+32x32 comparison shows 0.83% worse target TNS than the previous router, so faster
+routing does not guarantee timing gains.
 `--author-cost-policy author-sll-pressure-v1` enables experimental SLL scarcity
 pricing without changing evaluated platform delays. Complete compilation,
 frame search and cross-stage optimization also accept `best-of-two-v1`: both
