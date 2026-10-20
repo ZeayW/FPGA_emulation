@@ -185,8 +185,12 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             physical = root / "physical"
-            packed_path = physical / "packed-sites.json"
-            placement_path = physical / "placement.json"
+            physical_handoff_path = physical / "physical-handoff.sqlite"
+            packed_path = physical_handoff_path
+            placement_path = physical_handoff_path
+            physical.mkdir(parents=True)
+            (physical / "packed-sites.json").write_text("stale\n")
+            (physical / "placement.json").write_text("stale\n")
             native_constraints = root / "native-constraints.json"
             provider_manifest = root / "provider-manifest.json"
             mapped_value = {"modules": {}}
@@ -199,6 +203,8 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             def materialize(
                 mapped, architecture_path, certificate, packed, placement, **kwargs
             ):
+                self.assertFalse((physical / "packed-sites.json").exists())
+                self.assertFalse((physical / "placement.json").exists())
                 self.assertEqual(mapped, physical / "partition.mapped.sqlite")
                 self.assertEqual(architecture_path, root / "architecture.json")
                 self.assertEqual(
@@ -217,6 +223,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     "mapped_value": mapped_value,
                     "mapped_sha256": "0" * 64,
                     "architecture": architecture_object,
+                    "physical_handoff_path": physical_handoff_path,
                 })
                 packed_value_sink.update({"summary": {"clusters": 2}})
                 placement_value_sink.update({"summary": {"clusters": 1}})

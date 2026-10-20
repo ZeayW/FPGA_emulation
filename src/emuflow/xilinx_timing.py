@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, Iterator, Mapping, Optional
 
 from .errors import ValidationError
 from .io import file_sha256, read_json, write_json
+from .xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
 from .xilinx_rwroute import iter_xilinx_route_nets, validate_xilinx_route_db
 
 
@@ -394,6 +395,7 @@ def build_xilinx_routed_timing(
         read_json(placement_path)
         if placement_value is None else placement_value
     )
+    validate_xilinx_physical_handoff_pair(packed, placement)
     route = read_json(route_path) if route_value is None else route_value
     if route_validation is None:
         route_validation = validate_xilinx_route_db(

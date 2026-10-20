@@ -48,6 +48,11 @@ from .xilinx_placement import (
     validate_xilinx_placement,
 )
 from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+from .xilinx_physical_handoff import (
+    open_xilinx_physical_handoff,
+    validate_xilinx_physical_handoff,
+    write_xilinx_physical_handoff,
+)
 
 
 OPENPARF_ATOMIC_BRIDGE_REPORT_SCHEMA = (
@@ -536,8 +541,14 @@ def materialize_xilinx_openparf_atomic_contract(
     architecture: Optional[ArchitectureDB] = None,
     packed_value_sink: Optional[Dict[str, Any]] = None,
     placement_value_sink: Optional[Dict[str, Any]] = None,
+    physical_handoff_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Materialize standard contracts while preserving certified sites."""
+    """Materialize standard contracts while preserving certified sites.
+
+    ``physical_handoff_path`` selects the production single-file data plane.
+    The two JSON output paths remain the explicit compatibility export when it
+    is absent.
+    """
 
     bridge_started = time.perf_counter()
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
@@ -628,6 +639,15 @@ def materialize_xilinx_openparf_atomic_contract(
             "native placement certificate"
         )
     site_pin_legalization = legalize_xilinx_slice_site_pins(cells, clusters)
+    # The site-pin legalizer can move an FF between BELs inside its certified
+    # site.  Keep the placement view on the same exact physical binding.
+    legalized_bels = {
+        assignment["instance"]: assignment["bel"]
+        for cluster in clusters for assignment in cluster["assignments"]
+    }
+    for placement_cluster in placement_clusters:
+        for assignment in placement_cluster["assignments"]:
+            assignment["bel"] = legalized_bels[assignment["instance"]]
     certificate_sha = _sha256(atomic_placement_path)
     architecture_sha = _sha256(architecture_path)
     kind_counts = Counter(cluster["kind"] for cluster in clusters)
@@ -679,24 +699,8 @@ def materialize_xilinx_openparf_atomic_contract(
             occupied_local[local_key] += 1
     local_summary = _local_utilization_summary(architecture, occupied_local)
 
-    packed_output_path.parent.mkdir(parents=True, exist_ok=True)
-    placement_output_path.parent.mkdir(parents=True, exist_ok=True)
-    packed_fd, packed_name = tempfile.mkstemp(
-        prefix=f".{packed_output_path.name}.", suffix=".tmp",
-        dir=packed_output_path.parent,
-    )
-    placement_fd, placement_name = tempfile.mkstemp(
-        prefix=f".{placement_output_path.name}.", suffix=".tmp",
-        dir=placement_output_path.parent,
-    )
-    os.close(packed_fd)
-    os.close(placement_fd)
-    packed_temp = Path(packed_name)
-    placement_temp = Path(placement_name)
     publication_started = time.perf_counter()
-    try:
-        write_json(packed_temp, packed, compact=True)
-        placement = {
+    placement = {
             "schema": XILINX_PLACEMENT_SCHEMA, "status": "pass",
             "part": architecture.part,
             "provider": XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER,
@@ -710,7 +714,7 @@ def materialize_xilinx_openparf_atomic_contract(
                 ),
             },
             "source": {
-                "packed_sha256": _sha256(packed_temp),
+                "packed_sha256": None,
                 "architecture_sha256": architecture_sha,
                 "guidance_sha256": None,
                 "constraints_sha256": (
@@ -734,43 +738,84 @@ def materialize_xilinx_openparf_atomic_contract(
                 ).items())),
             },
         }
-        if cascades or has_native_seal:
-            assert native_constraints_path is not None
-            assert provider_manifest_path is not None
-            placement["source"].update({
-                "native_constraints_sha256": _sha256(native_constraints_path),
-                "provider_manifest_sha256": _sha256(provider_manifest_path),
-            })
-        write_json(placement_temp, placement, compact=True)
+    if cascades or has_native_seal:
+        assert native_constraints_path is not None
+        assert provider_manifest_path is not None
+        placement["source"].update({
+            "native_constraints_sha256": _sha256(native_constraints_path),
+            "provider_manifest_sha256": _sha256(provider_manifest_path),
+        })
+
+    if physical_handoff_path is not None:
+        write_xilinx_physical_handoff(physical_handoff_path, packed, placement)
+        handoff_validation = validate_xilinx_physical_handoff(
+            physical_handoff_path
+        )
+        published_packed, published_placement = open_xilinx_physical_handoff(
+            physical_handoff_path
+        )
         packing_validation = validate_xilinx_packing(
-            mapped_path, packed_temp, top=selected_top,
+            mapped_path, physical_handoff_path, top=selected_top,
             architecture_path=architecture_path,
-            mapped_value=mapped,
-            mapped_sha256=mapped_sha,
-            packed_value=packed,
-            architecture=architecture.value,
+            mapped_value=mapped, mapped_sha256=mapped_sha,
+            packed_value=published_packed, architecture=architecture.value,
         )
         placement_validation = validate_xilinx_placement(
-            packed_temp, architecture_path, placement_temp,
+            physical_handoff_path, architecture_path, physical_handoff_path,
             constraints_path=constraints_path,
             native_constraints_path=native_constraints_path,
             provider_manifest_path=provider_manifest_path,
-            architecture=architecture,
-            packed_value=packed,
-            placement_value=placement,
+            architecture=architecture, packed_value=published_packed,
+            placement_value=published_placement,
         )
-        os.replace(packed_temp, packed_output_path)
-        os.replace(placement_temp, placement_output_path)
-    finally:
-        packed_temp.unlink(missing_ok=True)
-        placement_temp.unlink(missing_ok=True)
+        published_digest = handoff_validation["physical_handoff_sha256"]
+    else:
+        packed_output_path.parent.mkdir(parents=True, exist_ok=True)
+        placement_output_path.parent.mkdir(parents=True, exist_ok=True)
+        packed_fd, packed_name = tempfile.mkstemp(
+            prefix=f".{packed_output_path.name}.", suffix=".tmp",
+            dir=packed_output_path.parent,
+        )
+        placement_fd, placement_name = tempfile.mkstemp(
+            prefix=f".{placement_output_path.name}.", suffix=".tmp",
+            dir=placement_output_path.parent,
+        )
+        os.close(packed_fd)
+        os.close(placement_fd)
+        packed_temp = Path(packed_name)
+        placement_temp = Path(placement_name)
+        try:
+            write_json(packed_temp, packed, compact=True)
+            placement["source"]["packed_sha256"] = _sha256(packed_temp)
+            write_json(placement_temp, placement, compact=True)
+            packing_validation = validate_xilinx_packing(
+                mapped_path, packed_temp, top=selected_top,
+                architecture_path=architecture_path,
+                mapped_value=mapped, mapped_sha256=mapped_sha,
+                packed_value=packed, architecture=architecture.value,
+            )
+            placement_validation = validate_xilinx_placement(
+                packed_temp, architecture_path, placement_temp,
+                constraints_path=constraints_path,
+                native_constraints_path=native_constraints_path,
+                provider_manifest_path=provider_manifest_path,
+                architecture=architecture, packed_value=packed,
+                placement_value=placement,
+            )
+            os.replace(packed_temp, packed_output_path)
+            os.replace(placement_temp, placement_output_path)
+        finally:
+            packed_temp.unlink(missing_ok=True)
+            placement_temp.unlink(missing_ok=True)
+        published_packed, published_placement = packed, placement
+        published_digest = None
 
     if packed_value_sink is not None:
         packed_value_sink.clear()
-        packed_value_sink.update(packed)
+        packed_value_sink.update(published_packed)
     if placement_value_sink is not None:
         placement_value_sink.clear()
-        placement_value_sink.update(placement)
+        placement_value_sink.update(published_placement)
 
     publication_validation_seconds = time.perf_counter() - publication_started
     cluster_storage = certificate.get("cluster_storage")
@@ -799,8 +844,12 @@ def materialize_xilinx_openparf_atomic_contract(
                 if constraints_path is not None else None
             ),
         },
-        "packed_sha256": _sha256(packed_output_path),
-        "placement_sha256": _sha256(placement_output_path),
+        "packed_sha256": published_digest or _sha256(packed_output_path),
+        "placement_sha256": published_digest or _sha256(placement_output_path),
+        **(
+            {"physical_handoff_sha256": published_digest}
+            if published_digest is not None else {}
+        ),
         "cells": len(cells), "placed_cells": len(cells) - len(constants),
         "clusters": len(clusters),
         "site_pin_moved_ffs": site_pin_legalization["moved_ffs"],
@@ -825,8 +874,18 @@ def materialize_xilinx_openparf_atomic_contract(
             "bytes": {
                 "placement_certificate": atomic_placement_path.stat().st_size,
                 "placement_certificate_database": certificate_database_bytes,
-                "packed_output": packed_output_path.stat().st_size,
-                "placement_output": placement_output_path.stat().st_size,
+                "packed_output": (
+                    0 if physical_handoff_path is not None
+                    else packed_output_path.stat().st_size
+                ),
+                "placement_output": (
+                    0 if physical_handoff_path is not None
+                    else placement_output_path.stat().st_size
+                ),
+                "physical_handoff": (
+                    physical_handoff_path.stat().st_size
+                    if physical_handoff_path is not None else 0
+                ),
             },
             "dataflow": {
                 "certificate": "streaming-sqlite-or-inline-compatibility",
@@ -834,7 +893,11 @@ def materialize_xilinx_openparf_atomic_contract(
                     "in-process-view" if source_packed_value is not None
                     else "serialized-compatibility"
                 ),
-                "published_values": "reused-in-process",
+                "published_values": (
+                    "lazy-typed-sqlite-views"
+                    if physical_handoff_path is not None
+                    else "reused-in-process"
+                ),
                 "validation_replay": False,
             },
         },

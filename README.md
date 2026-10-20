@@ -68,15 +68,16 @@ Smaller designs retain the Python implementation as an executable reference.
 
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
 from their sealed SQLite sidecar, reuses the in-process atomic-source view, and
-passes the already validated packed/placement values directly to RWRoute
-export. It therefore avoids reparsing `openparf-atomic-source.json`,
-`packed-sites.json`, and `placement.json`, and does not replay the same packing
-and placement validators immediately after atomic publication. The bridge
-report records row counts, artifact bytes, dataflow mode, and time spent in
-certificate validation versus publication. The two standard physical JSON
-contracts still exist because current routing and timing consumers require
-them; replacing them with one typed physical handoff remains pending real
-million-instance qualification.
+publishes one versioned `physical-handoff.sqlite`. Its normalized cluster and
+assignment rows are exposed as lazy PackedSiteNetlist and XilinxPlacement
+views, so RWRoute export and routed timing consume the same indexed artifact
+without writing or rereading `packed-sites.json` and `placement.json`. The
+independent packing and placement validators run against those read-only views
+before RapidWright starts; SQLite health and row accounting are checked
+explicitly. The standard JSON contracts remain available only through the
+compatibility bridge mode. The bridge report records row counts, artifact
+bytes, dataflow mode, and time spent in certificate validation versus
+publication.
 
 ## Flow
 

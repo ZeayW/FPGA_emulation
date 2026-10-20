@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Set, 
 from .errors import ValidationError
 from .io import file_sha256, read_json
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
+from .xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
 from .xilinx_placement import XILINX_PLACEMENT_SCHEMA
 
 
@@ -520,6 +521,7 @@ def export_rwroute_input(
         read_json(placement_path)
         if placement_value is None else placement_value
     )
+    validate_xilinx_physical_handoff_pair(packed, placement)
     digests = {
         "mapped_sha256": _sha256(mapped_path),
         "packed_sha256": _sha256(packed_path),

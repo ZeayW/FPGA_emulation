@@ -559,10 +559,6 @@ def _finish_rapidwright_routed_backend(
     virtual_io_cells = int(route_input_report.get("virtual_io_cells", 0))
     artifacts = {
         "mapped": _artifact(mapped_path, source_sha256["mapped_sha256"]),
-        "packed": _artifact(packed_path, source_sha256["packed_sha256"]),
-        "placement": _artifact(
-            placement_path, source_sha256["placement_sha256"]
-        ),
         "route": _artifact(route_path, route_check["route_sha256"]),
         "routed_timing": _artifact(
             routed_timing_path, timing_check["timing_sha256"]
@@ -571,6 +567,19 @@ def _finish_rapidwright_routed_backend(
             opensta_summary_path, opensta_check["summary_sha256"]
         ),
     }
+    if packed_path == placement_path:
+        if source_sha256["packed_sha256"] != source_sha256["placement_sha256"]:
+            raise ValidationError("shared physical handoff source seals disagree")
+        artifacts["physical_handoff"] = _artifact(
+            packed_path, source_sha256["packed_sha256"]
+        )
+    else:
+        artifacts["packed"] = _artifact(
+            packed_path, source_sha256["packed_sha256"]
+        )
+        artifacts["placement"] = _artifact(
+            placement_path, source_sha256["placement_sha256"]
+        )
     artifacts.update({
         name: _artifact(path) for name, path in placement_artifacts.items()
     })
@@ -942,8 +951,11 @@ def run_rapidwright_openparf_native_candidate_backend(
     # The serialized certificate remains the independently checked boundary.
     # The complete Python assignment tree is not needed during RWRoute/OpenSTA.
     del qualification
-    packed_path = output_dir / "packed-sites.json"
-    placement_path = output_dir / "placement.json"
+    physical_handoff_path = output_dir / "physical-handoff.sqlite"
+    for legacy_name in ("packed-sites.json", "placement.json"):
+        (output_dir / legacy_name).unlink(missing_ok=True)
+    packed_path = physical_handoff_path
+    placement_path = physical_handoff_path
     packed: Dict[str, Any] = {}
     placement: Dict[str, Any] = {}
     bridge = materialize_xilinx_openparf_atomic_contract(
@@ -963,11 +975,11 @@ def run_rapidwright_openparf_native_candidate_backend(
         architecture=architecture,
         packed_value_sink=packed,
         placement_value_sink=placement,
+        physical_handoff_path=physical_handoff_path,
     )
-    # The source view and the two bridge results were already independently
-    # validated before atomic publication.  Reuse those exact in-process
-    # values instead of reparsing both large JSON artifacts and replaying the
-    # same whole-design validators before RWRoute export.
+    # The source view and shared physical handoff were already independently
+    # validated before atomic publication. Reuse their lazy indexed views
+    # instead of materializing either historical JSON contract.
     del atomic_source
     gc.collect()
     packing_check = bridge["validation"]["packing"]

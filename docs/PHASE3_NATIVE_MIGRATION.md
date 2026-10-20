@@ -145,7 +145,7 @@ that definition rather than treating every stage boundary as removable.
 | 4 | `routes.json` is the canonical routed-demand population; it references rather than embeds the Static Exact graph. A candidate pool is an optional qualification diagnostic and is suppressed in compact managed runs. | No mandatory duplicate graph found. |
 | 5 | `schedule.json` is canonical. The optional human-readable `schedule.tsv` formerly built a second hop-sized string in memory before writing it. | TSV publication now streams records to a temporary file, synchronizes it, and atomically renames it. Optional manifest/feedback/testbench files have distinct validation or simulation roles. |
 | 6 | Streaming split metadata still loaded all exact relations and repeated segment-ID arrays in every transport endpoint. `SplitNetlistView` also expanded the same relations even for bounded count/metadata queries, and placement lowering copied them into every net's extras. | Transport endpoints now carry boundary identity, role, digest, and one shared storage descriptor. Bounded split views do not touch exact relations. Placement lowering carries only role plus digest. The detailed IDs remain in the sealed Phase 3 binary and are expanded only by the explicit compatibility API. |
-| 7 | The OpenPARF bridge read its atomic source and certificate into Python, built two physical trees, wrote both JSON files, reread them, and replayed both validators before RWRoute export. | Certificate clusters now stream from SQLite; the atomic source stays a re-iterable indexed view; bridge outputs and validation results are passed in process to RWRoute export. Immediate JSON rereads and duplicate validation are removed. The remaining packed/placement JSON contracts are still required by current downstream consumers. |
+| 7 | The OpenPARF bridge read its atomic source and certificate into Python, built two physical trees, wrote both JSON files, reread them, and replayed both validators before RWRoute export. | The production native path publishes one typed `physical-handoff.sqlite`. Packing, placement, RWRoute export and routed timing consume lazy row views over that file. The two large JSON publications and their rereads are removed; explicit compatibility mode can still export the standard JSON contracts. |
 
 Cross-layer and global timing paths were also checked. Their current indexed
 readers stream complete payloads or selected identities and do not mirror the
@@ -165,13 +165,15 @@ implementation already has useful foundations:
 - RWRoute TSV output is streamed to a temporary file, flushed, synchronized
   and atomically renamed.
 
-The first bridge tranche is implemented: certificate rows stream from SQLite,
-the indexed atomic-source view remains in process, and the freshly validated
-packed/placement values flow directly into RWRoute export. The producer no
-longer reads both physical JSON files back or repeats packing and placement
-validation. On million-instance partitions the remaining cost is constructing
-and publishing the two standard physical trees themselves, followed by the
-whole-design dictionaries required by the current RWRoute exporter.
+The first two bridge tranches are implemented. Certificate rows stream from
+SQLite, the indexed atomic-source view remains in process, and one normalized,
+versioned physical-handoff database replaces the packed and placement JSON
+publications in the production native path. Independent validators, RWRoute
+export and routed timing use relocatable lazy views over that file. The bridge
+also keeps a site-pin legalizer's FF BEL moves synchronized between its packing
+and placement views. The remaining million-instance cost is the bridge's
+temporary Python packing/placement trees and RWRoute's whole-design export
+dictionaries.
 
 The migration boundary is the OpenPARF placement certificate through RWRoute
 launch. Work proceeds in this order:
@@ -181,20 +183,25 @@ launch. Work proceeds in this order:
    streaming/in-process paths were used. Extend this with process-tree peak RSS,
    RWRoute export, and RapidWright startup measurements during qualification on
    a partition with at least one million instances.
-2. Define one typed, versioned physical-handoff index containing clusters,
+2. **Implemented:** define one typed, versioned physical-handoff index
+   containing clusters,
    instance-to-site/BEL assignments, cascades/macros, constants, source
    identities and validation summaries. JSON retains only compact summaries
    and sealed references. Legacy JSON expansion remains an explicit
    compatibility operation outside the production hot path.
-3. Make packing, placement and resource/SLR checks operate over bounded index
+3. **Implemented for the production OpenPARF bridge:** make packing, placement
+   and resource/SLR checks operate over bounded index
    scans with database uniqueness, foreign-key and occupancy constraints.
    Keep an independent read-only validator; do not replace validation with
    trust in the writer.
-4. Nativeize the bridge/export loop so it consumes the mapped-netlist and
+4. Nativeize the remaining bridge/export loop so it consumes the mapped-netlist
+   and
    placement indexes and emits the RapidWright input once. Prefer direct
    certificate consumption by the RapidWright adapter when the pinned Java
    runtime can support it; otherwise emit one streaming typed or TSV contract
-   without intermediate packed and placement JSON.
+   without intermediate packed and placement JSON. The current Python exporter
+   already consumes the shared SQLite views and emits no intermediate physical
+   JSON; moving its whole-design maps into native/Java code remains pending.
 5. Publish the index, compact manifest and RapidWright input through temporary
    files plus atomic replacement. Launch RapidWright only after source seals,
    row counts, unique placement, site/BEL occupancy, macro/cascade legality,

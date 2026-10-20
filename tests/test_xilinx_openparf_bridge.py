@@ -7,6 +7,7 @@ from pathlib import Path
 
 from emuflow.errors import ValidationError
 from emuflow.architecture import ArchitectureDB
+from emuflow.io import file_sha256
 from emuflow.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_PROVIDER,
@@ -357,6 +358,38 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             self.assertEqual(rwroute_report["logical_cells"], 131)
             self.assertEqual(rwroute_report["physical_cells"], 138)
             self.assertTrue(rwroute.is_file())
+
+    def test_native_physical_handoff_replaces_both_large_json_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, architecture, certificate = _native_certificate(
+                root, include_hard=False
+            )
+            packed_json = root / "packed-sites.json"
+            placement_json = root / "placement.json"
+            handoff = root / "physical-handoff.sqlite"
+            packed = {}
+            placement = {}
+            report = materialize_xilinx_openparf_atomic_contract(
+                mapped, architecture, certificate, packed_json, placement_json,
+                physical_handoff_path=handoff,
+                packed_value_sink=packed,
+                placement_value_sink=placement,
+            )
+
+            self.assertTrue(handoff.is_file())
+            self.assertFalse(packed_json.exists())
+            self.assertFalse(placement_json.exists())
+            self.assertEqual(report["physical_handoff_sha256"], file_sha256(handoff))
+            self.assertEqual(report["packed_sha256"], report["placement_sha256"])
+            self.assertEqual(report["runtime_breakdown"]["bytes"]["packed_output"], 0)
+            self.assertEqual(len(packed["clusters"]), len(placement["clusters"]))
+            rwroute = root / "rwroute.tsv"
+            export = export_rwroute_input(
+                mapped, handoff, handoff, rwroute,
+                packed_value=packed, placement_value=placement,
+            )
+            self.assertEqual(export["logical_cells"], report["placed_cells"])
 
     def test_missing_atom_fails_without_publishing_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
