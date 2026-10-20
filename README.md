@@ -256,6 +256,15 @@ resulting-fanout counts in `transport-fanout-buffering.json`. Added LUTs pass
 through the same per-FPGA resource-budget checks as every other physical cell;
 the transform cannot relax the configured device limit.
 
+For sparse, headroom-qualified Xilinx placement regions, the pinned OpenPARF
+direct legalizer can be rebuilt with
+`scripts/openparf/build_sparse_legalizer.sh`. The alternate runtime tries the
+nearest legal LUT/FF site before invoking the upstream rip-up search and keeps
+rip-up as the failure fallback. The build script first checks that the patch
+applies to the pinned source, installs into a separate versioned directory,
+and restores the OpenPARF source file even when compilation fails; it does not
+replace the official runtime in place.
+
 For an explicitly requested debugging continuation, `multi-fpga physical
 --resume` with the native OpenPARF placer can reuse an existing route inside
 the active experiment. It regenerates the route input and independently checks
