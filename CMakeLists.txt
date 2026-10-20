@@ -71,6 +71,11 @@ option(
   ON
 )
 option(
+  EMUFLOW_BUILD_TDM_EXACT_SCHEDULER
+  "Build the native Static Exact dependency scheduler"
+  ON
+)
+option(
   EMUFLOW_BUILD_TRITONPART_BALANCE_LEGALIZER
   "Build the native strict multi-resource TritonPart legalizer"
   ON
@@ -702,6 +707,30 @@ if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
+endif()
+
+if(EMUFLOW_BUILD_TDM_EXACT_SCHEDULER)
+  add_executable(
+    emuflow_tdm_exact_scheduler
+    "${CMAKE_SOURCE_DIR}/src/native/tdm_exact_scheduler.cpp"
+  )
+  target_compile_features(emuflow_tdm_exact_scheduler PRIVATE cxx_std_17)
+  target_compile_options(emuflow_tdm_exact_scheduler PRIVATE -O3)
+  target_link_libraries(emuflow_tdm_exact_scheduler PRIVATE emuflow_core)
+  set_target_properties(
+    emuflow_tdm_exact_scheduler
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+  if(BUILD_TESTING)
+    add_test(
+      NAME emuflow_tdm_exact_scheduler_cli
+      COMMAND emuflow_tdm_exact_scheduler
+    )
+    set_tests_properties(
+      emuflow_tdm_exact_scheduler_cli PROPERTIES WILL_FAIL TRUE
+    )
+  endif()
 endif()
 
 if(EMUFLOW_BUILD_TRITONPART_BALANCE_LEGALIZER)

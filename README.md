@@ -70,6 +70,13 @@ scoped typed IDs, checked native artifact reads, and synchronized atomic binary
 publication. This is the W0 foundation rather than a claim that the full
 native production entry exists; Phase 5 exact scheduling, remaining Phase 6/7
 data-plane loops, and global timing stitching are still migration work.
+For indexed Static Exact workloads with at least 100,000 routed cuts, Phase 5
+now runs dependency ordering, conservative source readiness, earliest legal
+lane/slot assignment, and sink-completion propagation in
+`emuflow_tdm_exact_scheduler`. Small cases continue to execute the Python
+reference for differential coverage. The imported native result is still
+materialized as the existing schedule contract and independently certified;
+the typed ScheduleStore and direct Phase 6 cursor path remain pending.
 
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
 from their sealed SQLite sidecar, reuses the in-process atomic-source view, and

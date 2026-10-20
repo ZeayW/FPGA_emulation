@@ -73,6 +73,7 @@ from emuflow.tdm_slot import refine_tdm_schedule_native
 from emuflow.timing_routing import route_system_native
 from tests.native_build import (
     static_exact_analyzer,
+    tdm_exact_scheduler,
     tdm_ratio_optimizer,
     tdm_slot_optimizer,
     tlr_router,
@@ -1145,6 +1146,53 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             validate_tdm_schedule(routes, self.platform, schedule)["status"],
             "pass",
         )
+
+    def test_native_indexed_exact_schedule_matches_python_reference(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        routes = self._exact_routes(assignment)
+        schema = routes["semantic_contract"]["schema"]
+        routes["semantic_contract"] = {
+            "schema": schema,
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
+        executable = tdm_exact_scheduler()
+
+        def compare(candidate):
+            reference = build_tdm_schedule(candidate, self.platform)
+            with (
+                patch.dict(
+                    os.environ,
+                    {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+                ),
+                patch("emuflow.tdm.NATIVE_EXACT_SCHEDULE_MIN_ROUTES", 0),
+            ):
+                native = build_tdm_schedule(candidate, self.platform)
+            self.assertEqual(native, reference)
+            self.assertEqual(
+                validate_tdm_schedule(
+                    candidate, self.platform, native
+                )["status"],
+                "pass",
+            )
+
+        compare(routes)
+        template = next(
+            route
+            for route in routes["routes"]
+            if not route["predecessor_cut_nets"]
+        )
+        repeated = copy.deepcopy(routes)
+        repeated["routes"] = []
+        for index in range(300):
+            route = copy.deepcopy(template)
+            route["id"] = f"repeated-demand-{index:04d}"
+            route["net"] = f"repeated-net-{index:04d}"
+            route["predecessor_cut_nets"] = []
+            route["dependency_level"] = 0
+            repeated["routes"].append(route)
+        compare(repeated)
 
     @staticmethod
     def _persisted_routes(routes):

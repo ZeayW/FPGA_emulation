@@ -231,6 +231,8 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/routing.py",
         "src/native/hop_partition_refiner.cpp",
         "src/native/static_exact_analyzer.cpp",
+        "src/native/emuflow_core/artifact_io.cpp",
+        "src/native/emuflow_core/artifact_io.hpp",
         "src/native/mfspart_refiner.cpp",
         "src/native/mfspart_refiner_checker.cpp",
     ),
@@ -246,6 +248,8 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/native/hop_partition_refiner.cpp",
         "src/native/patron_refiner.cpp",
         "src/native/static_exact_analyzer.cpp",
+        "src/native/emuflow_core/artifact_io.cpp",
+        "src/native/emuflow_core/artifact_io.hpp",
     ),
     "cut-timing": (
         "src/emuflow/experiment_upstream.py::run_cut_timing_checkpoint,validate_cut_timing_checkpoint",
@@ -281,6 +285,9 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/native/tdm_ratio_optimizer.cpp",
         "src/native/tdm_timing_dag_optimizer.cpp",
         "src/native/tdm_slot_optimizer.cpp",
+        "src/native/tdm_exact_scheduler.cpp",
+        "src/native/emuflow_core/artifact_io.cpp",
+        "src/native/emuflow_core/artifact_io.hpp",
     ),
     "shared": (
         "src/emuflow/experiment_upstream.py::materialize_shared_phase1_5,validate_materialized_shared_phase1_5",
