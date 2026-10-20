@@ -550,6 +550,11 @@ class Phase6Test(unittest.TestCase):
                 side_effect=AssertionError(
                     "production lowering must not iterate DUT nets"
                 ),
+            ), mock.patch(
+                "emuflow.lowering.EmuIR.load",
+                side_effect=AssertionError(
+                    "production lowering must not reconstruct transport EmuIR"
+                ),
             ):
                 run_placement_ir_lowering_from_split(
                     split_path,

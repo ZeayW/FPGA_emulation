@@ -74,13 +74,33 @@ def build_boundary_identity_database(
     top_nets = _top_net_index(merged_ir)
     shadow_registers: Dict[str, list[str]] = {}
     if transport_ir is not None:
-        transport_top_nets: Dict[tuple[str, int], Mapping[str, Any]] = {}
-        for net in transport_ir.value["nets"]:
-            for endpoint in net["sinks"]:
-                if endpoint["instance"] is None:
-                    transport_top_nets[(endpoint["port"], endpoint["bit"])] = net
+        if isinstance(transport_ir, IndexedPhysicalIR):
+            transport_top_net_ids: Dict[tuple[str, int], str] = {}
+            for row in transport_ir.connection.execute(
+                """SELECT pin.name,e.bit,n.id FROM endpoint_records e
+                JOIN pin_names pin ON pin.seq=e.port_seq
+                JOIN net_records n ON n.seq=e.net_seq
+                WHERE e.instance_seq IS NULL AND e.role=1
+                ORDER BY n.seq,e.ordinal"""
+            ):
+                transport_top_net_ids[(str(row[0]), int(row[1]))] = str(row[2])
+            def synthesized_shadow_net(index: int) -> Optional[Mapping[str, Any]]:
+                net_id = transport_top_net_ids.get(("shadow_values", index))
+                return None if net_id is None else transport_ir.nets[net_id]
+        else:
+            transport_top_nets: Dict[
+                tuple[str, int], Mapping[str, Any]
+            ] = {}
+            for net in transport_ir.value["nets"]:
+                for endpoint in net["sinks"]:
+                    if endpoint["instance"] is None:
+                        transport_top_nets[
+                            (endpoint["port"], endpoint["bit"])
+                        ] = net
+            def synthesized_shadow_net(index: int) -> Optional[Mapping[str, Any]]:
+                return transport_top_nets.get(("shadow_values", index))
         for item in transport.get("shadow_signals", []):
-            net = transport_top_nets.get(("shadow_values", item["index"]))
+            net = synthesized_shadow_net(item["index"])
             if net is None:
                 raise ValidationError(
                     f"transport shadow {item['signal']!r} has no synthesized net"

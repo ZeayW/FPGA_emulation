@@ -36,6 +36,7 @@ from .local_path_timing import (
     write_xilinx_local_path_query,
 )
 from .ir import EMUIR_SCHEMA, EmuIR
+from .emuir_storage import open_emuir_sqlite_read_only
 from .lowering import (
     PLACEMENT_IR_REPORT_SCHEMA,
     run_placement_ir_lowering_from_split,
@@ -61,7 +62,7 @@ from .runtime import (
     build_virtual_runtime,
     validate_physical_summary,
 )
-from .synthesis import run_generic_yosys
+from .synthesis import run_generic_yosys_stream
 from .tdm_schedule_storage import (
     canonical_tdm_schedule_sha256,
     read_tdm_schedule,
@@ -85,7 +86,7 @@ from .virtual_board import (
 )
 from .vivado_backend import run_vivado_partition_backend
 from .vivado_netlist import emit_vivado_mapped_verilog
-from .yosys import import_yosys_json
+from .yosys import import_yosys_json_indexed
 from .xilinx_physical_backend import (
     run_rapidwright_openparf_native_candidate_backend,
     run_rapidwright_partition_backend,
@@ -116,6 +117,19 @@ def _implementation_stage(
     if backend == "rapidwright":
         return item["stages"]["rapidwright_implementation"][stage]
     return item["stages"][stage]
+
+
+def _indexed_emuir_counts(path: Path) -> tuple[int, int]:
+    """Read transport synthesis counts without reconstructing its graph."""
+
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        return (
+            int(connection.execute("SELECT count(*) FROM cell_records").fetchone()[0]),
+            int(connection.execute("SELECT count(*) FROM net_records").fetchone()[0]),
+        )
+    finally:
+        connection.close()
 
 
 def _partition_has_physical_work(
@@ -1358,27 +1372,29 @@ def run_multi_fpga_physical_flow(
         )
         if module_match is None:
             raise ValidationError(f"cannot find transport top module for {fpga_id}")
-        transport_json = fpga_root / "transport-synthesized.json"
-        run_generic_yosys(
+        transport_ir_path = fpga_root / "transport.emuir.sqlite"
+        run_generic_yosys_stream(
             [runtime_controller, transport_rtl],
             module_match.group(1),
-            transport_json,
+            lambda stream: import_yosys_json_indexed(
+                Path("<generic-yosys-stdout>"),
+                transport_ir_path,
+                top=module_match.group(1),
+                clocks=("fabric_clk",),
+                _source_stream=stream,
+            ),
             executable=yosys,
             log_path=fpga_root / "transport-yosys.log",
         )
-        transport_ir = import_yosys_json(
-            transport_json,
-            top=module_match.group(1),
-            clocks=("fabric_clk",),
+        transport_instances, transport_nets = _indexed_emuir_counts(
+            transport_ir_path
         )
-        transport_ir_path = fpga_root / "transport.emuir.sqlite"
-        transport_ir.save(transport_ir_path)
         transport_report = {
             "status": "pass",
             "provider": "yosys-generic-lut6-ff",
             "top": module_match.group(1),
-            "instances": len(transport_ir.value["instances"]),
-            "nets": len(transport_ir.value["nets"]),
+            "instances": transport_instances,
+            "nets": transport_nets,
             "output": str(transport_ir_path),
             "sha256": _sha256(transport_ir_path),
         }

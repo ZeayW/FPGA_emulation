@@ -94,6 +94,15 @@ indented logical digest, allowing physical orchestration, logic-segment query
 preparation and Phase 7C to keep a lazy view while preserving existing timing
 and qualification identities; v1 stores remain readable.
 
+Phase 7 transport synthesis no longer writes `transport-synthesized.json` or
+loads a complete synthesized transport `EmuIR` into Python. Generic Yosys JSON
+is piped directly into the indexed importer. Placement lowering opens that
+compact store read-only, resolves only required interface nets, and uses one
+SQLite `ATTACH` transaction to copy, namespace and filter all remaining
+transport cells, nets, aliases and endpoints into `placement.emuir.sqlite`.
+The legacy file-based generic Yosys and logical lowering APIs remain available
+for compatibility and differential tests.
+
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
 from their sealed SQLite sidecar, reuses the in-process atomic-source view, and
 publishes one versioned `physical-handoff.sqlite`. Its normalized cluster and

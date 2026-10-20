@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import io
 import tempfile
 import threading
 import unittest
@@ -518,9 +519,12 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
 
             worker_barrier = threading.Barrier(2, timeout=5.0)
 
-            def fake_yosys(_sources, _top, output, **_kwargs):
+            def fake_yosys(_sources, _top, consumer, **_kwargs):
                 worker_barrier.wait()
-                write_json(output, {"modules": {}})
+                return consumer(io.StringIO(""))
+
+            def fake_indexed_import(_source, output, **_kwargs):
+                _merged_ir("transport").save(output)
 
             def fake_lower(netlist, _transport, _transport_ir, output, report):
                 fpga = netlist["instances"][0]["id"].removesuffix("_original")
@@ -658,12 +662,14 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     return_value=runtime,
                 ),
                 patch(
-                    "emuflow.multi_fpga_physical_flow.run_generic_yosys",
+                    "emuflow.multi_fpga_physical_flow."
+                    "run_generic_yosys_stream",
                     side_effect=fake_yosys,
                 ),
                 patch(
-                    "emuflow.multi_fpga_physical_flow.import_yosys_json",
-                    return_value=_merged_ir("transport"),
+                    "emuflow.multi_fpga_physical_flow."
+                    "import_yosys_json_indexed",
+                    side_effect=fake_indexed_import,
                 ),
                 patch(
                     "emuflow.multi_fpga_physical_flow."
@@ -737,7 +743,8 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     execution=report["execution"], include_logic_timing=False,
                 )
                 with patch(
-                    "emuflow.multi_fpga_physical_flow.run_generic_yosys",
+                    "emuflow.multi_fpga_physical_flow."
+                    "run_generic_yosys_stream",
                     side_effect=AssertionError("synthesis rerun forbidden"),
                 ), patch(
                     "emuflow.multi_fpga_physical_flow.run_vpr_route_packed",
