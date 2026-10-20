@@ -49,7 +49,9 @@ input loading, clustering, provider work, Static Exact contract construction,
 validation, packing, JSON publication, and assignment-index publication. Each
 record includes wall time, parent/child CPU time, sampled process-tree RSS and,
 on Linux, parent-process I/O counters. Search, imported-solution, and replay
-runs must be compared as distinct execution modes.
+runs must be compared as distinct execution modes. Assignment-index
+publication further separates exact-binary emission, primary and replica copy
+rows, cut-sink rows, commit, and independent index validation.
 New Phase 3 publications use assignment-index schema v3. SQLite is the bounded
 control plane for instance ownership, partitions and cut sinks. Static Exact
 nodes, segments and captures are integer-coded in the versioned,

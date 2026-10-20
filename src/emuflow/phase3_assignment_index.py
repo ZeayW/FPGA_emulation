@@ -31,6 +31,7 @@ from .phase3_exact_binary import (
     validate_phase3_exact_binary,
     write_phase3_exact_binary,
 )
+from .phase3_runtime import phase3_runtime_call
 from .routing import static_exact_contract_from_assignment
 
 
@@ -262,7 +263,9 @@ def write_phase3_assignment_index(
         f".{EXACT_BINARY_ARTIFACT}.{uuid.uuid4().hex}.tmp"
     )
     exact_binary = (
-        write_phase3_exact_binary(
+        phase3_runtime_call(
+            "assignment_index.write_exact_binary",
+            write_phase3_exact_binary,
             exact_binary_temporary,
             exact_contract,
             part_ids,
@@ -341,8 +344,11 @@ def write_phase3_assignment_index(
                     )
                 yield (source_seq, part_index[target], identity, 0)
 
-        connection.executemany(
-            "INSERT INTO copies VALUES (?,?,?,?)", primary_rows()
+        phase3_runtime_call(
+            "assignment_index.write_primary_copies",
+            connection.executemany,
+            "INSERT INTO copies VALUES (?,?,?,?)",
+            primary_rows(),
         )
 
         replication = assignment.get("replication")
@@ -378,8 +384,11 @@ def write_phase3_assignment_index(
                         1,
                     )
 
-        connection.executemany(
-            "INSERT INTO copies VALUES (?,?,?,?)", replica_rows()
+        phase3_runtime_call(
+            "assignment_index.write_replica_copies",
+            connection.executemany,
+            "INSERT INTO copies VALUES (?,?,?,?)",
+            replica_rows(),
         )
 
         def cut_rows():
@@ -401,12 +410,19 @@ def write_phase3_assignment_index(
                         raise ValidationError("cut net targets an unknown FPGA")
                     yield (net_id, part_index[source], part_index[sink])
 
-        connection.executemany(
-            "INSERT INTO cut_sinks VALUES (?,?,?)", cut_rows()
+        phase3_runtime_call(
+            "assignment_index.write_cut_sinks",
+            connection.executemany,
+            "INSERT INTO cut_sinks VALUES (?,?,?)",
+            cut_rows(),
         )
 
-        connection.commit()
-        summary = validate_phase3_assignment_index(
+        phase3_runtime_call(
+            "assignment_index.commit", connection.commit
+        )
+        summary = phase3_runtime_call(
+            "assignment_index.validate",
+            validate_phase3_assignment_index,
             temporary,
             expected_design=str(assignment.get("design")),
             expected_platform=str(assignment.get("platform")),
