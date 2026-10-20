@@ -454,6 +454,12 @@ def run_placement_ir_lowering_from_split(
         for endpoint in transport["endpoints"]
         if endpoint["kind"] == "rx"
     }
+    rx_endpoint_ids_by_signal: Dict[str, List[str]] = {}
+    for endpoint in transport["endpoints"]:
+        if endpoint["kind"] == "rx":
+            rx_endpoint_ids_by_signal.setdefault(
+                endpoint["signal"], []
+            ).append(endpoint["id"])
     shadow_index = {
         item["signal"]: item["index"] for item in transport["shadow_signals"]
     }
@@ -513,10 +519,10 @@ def run_placement_ir_lowering_from_split(
                     if endpoint["instance"] is not None
                 ]
                 expected_rx_bindings.extend(
-                    (logical_net, endpoint["id"])
-                    for endpoint in transport["endpoints"]
-                    if endpoint["kind"] == "rx"
-                    and endpoint["signal"] == signal
+                    (logical_net, endpoint_id)
+                    for endpoint_id in rx_endpoint_ids_by_signal.get(
+                        signal, ()
+                    )
                 )
                 consumed_transport_nets.add(top_net["id"])
             else:
