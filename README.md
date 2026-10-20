@@ -390,23 +390,55 @@ kept distinct. The default four-FPGA preset applies a strict
 `utilization_limit` of **0.25 per FPGA**, measured against each device's raw
 capacity independently for LUT, FF, BRAM18K, DSP48, CARRY8, and URAM288.
 The two-FPGA comparison preset retains its explicit 0.75 limit.
-The default partition `balance_tolerance` is **0.1** for `cells`, LUT, and FF,
-relative to the capacity-proportional design share (27.5% of design load per
-identical FPGA in a four-way run). BRAM, DSP, URAM, carry, and other dedicated
-resources remain visible to the partitioner as soft balancing dimensions, but
-their hard acceptance bound is each FPGA's effective capacity (25% of the raw
-device in this preset). This avoids splitting macro-heavy modules merely to
-make every dedicated-resource count nearly equal. An explicit
-`balance_dimensions` array in the partition constraints can select a different
-set of dimensions for strict balance. Reports distinguish
-`strict_balance_dimensions` from `capacity_only_dimensions` and record the
-constraint mode and physical capacity for every active dimension. Capacity and
-balance are separate upper bounds. Indivisible/fixed clusters, repair passes,
-and validators never automatically relax either bound; infeasible integer
-bounds fail explicitly.
-OpenROAD/TritonPart can return a best-effort partition when its randomized
-initializer does not produce enough multidimensionally balanced candidates.
-When balance repair is enabled, Phase 3 therefore invokes the compiled
+Partitioning defaults to **capacity-only resource constraints**:
+`balance_dimensions` is empty. There is no 27.5% design-share ceiling and no
+requirement to distribute cells, LUTs, FFs, or dedicated resources nearly
+equally. For each FPGA `i` and physical resource type `r`, the default
+four-FPGA preset enforces
+`load[i,r] <= floor(0.25 * raw_capacity[i,r])`.
+A partition may contain more than one quarter of the design if it fits every
+resource budget and satisfies the structural, fixed-placement, FPGA-selection,
+and routing constraints. Cell count is a partition-size statistic, not a
+substitute for a physical resource budget.
+
+TritonPart initialization uses an envelope derived from these resource bounds,
+including the feasible lower bounds, rather than retaining an implicit 10%
+near-equal-share constraint. The native legalizer, PATRON refinement, and
+independent validators enforce the same per-resource limits. Existing
+initialization preferences may favor balanced loads, but resource balance is
+not a new PATRON optimization objective or a default acceptance threshold.
+The minimum number of used FPGAs remains mandatory. If optional MFSPart
+post-refinement empties a required FPGA, it retains the legal initialization
+and records why it rejected the candidate; the native candidate certificate
+and the selected assignment remain independently verifiable.
+
+Balance remains observable in `balance_observation`:
+
+- `design_share_by_fpga[i][r]` is `load[i,r] / sum_j(load[j,r])`.
+- `max_to_mean_by_dimension[r]` is
+  `N * max_i(load[i,r]) / sum_j(load[j,r])` across the active FPGAs.
+  For four identical FPGAs, a largest design share of 30% gives a ratio of
+  `1.2`; that ratio alone does not fail validation. A ratio of `1` means
+  equal loads. A dimension with zero total load reports `0` for both metrics.
+- Resource utilization uses the effective capacity as its denominator.
+  `max_balance_limit_ratio` measures load relative to an enforced upper bound;
+  it must not be interpreted as the maximum-to-mean balance ratio.
+
+Hard balance is available only through an explicit, nonempty
+`balance_dimensions` array. For those selected dimensions, `balance_tolerance`
+(default `0.1`) and optional per-dimension overrides bound the
+capacity-proportional design share in addition to physical capacity. Setting
+the tolerance alone does not enable hard balance; setting it to zero with
+selected dimensions requests exact proportional balance, not capacity-only
+partitioning. Reports identify `strict_balance_dimensions`,
+`capacity_only_dimensions`, and the constraint mode for each dimension.
+Previously sealed artifacts retain their recorded constraints during
+validation. Indivisible/fixed clusters, repair passes, and validators never
+automatically relax an applicable capacity or explicit balance bound.
+
+OpenROAD/TritonPart can return a best-effort partition that still requires
+resource legalization. Capacity legalization and minimum-used-FPGA repair
+are enabled by default. Phase 3 invokes the compiled
 `emuflow_tritonpart_balance_legalizer` directly on the native hMetis graph and
 solution. It uses exact integer bounds, moves no fixed vertex, and either emits
 a legal assignment or fails the seed explicitly; it cannot widen a capacity or
@@ -414,9 +446,17 @@ balance bound. Its compact `balance-repair-report.txt` records RUNNING/PASS/FAIL
 state, initial/final/allowed loads, and direct, paired, or bounded ejection-chain
 move counts. The bounded chain handles cases where several complementary
 resource vectors must move before a scarce-resource cluster can enter a target.
-Python does not perform the production graph search: it parses the result and
+Python does not perform this capacity-legalization search: it parses the result and
 independently recomputes the final per-FPGA resource loads before Phase 3 can
 publish it.
+The existing minimum-used-FPGA repair then handles empty required partitions,
+and final validation checks both capacity and occupancy. The `balance`
+spelling in the repair option and executable name is retained; under the
+default policy their limits come from device capacity. Explicit
+`--no-partition-repair-balance` and `--no-partition-repair-min-used-fpgas` on
+`multi-fpga compile` disable the corresponding repairs, but never disable
+the acceptance checks. Phase 3 uses the corresponding
+`--no-tritonpart-repair-*` options.
 Design and communication logic consume the device resources. FPGA-internal path delays come from the physical backend
 and STA.
 RapidWright checks the whole-device budget after transport mapping, before
@@ -426,20 +466,13 @@ LUT, and BRAM36 consumes two BRAM18K units. Clock-prefilter logic is included.
 Completed partition assembly rejects missing or mismatched resource-budget
 evidence. Indexed Phase 3 publication seals the requested constraints;
 terminal SQLite validation independently recomputes primary loads, replicated
-capacity usage, and strict balance bounds against the selected platform.
-Reports cannot widen their effective tolerance or reuse an older device budget. SLR window selection and OpenPARF density do not redefine the
-whole-device utilization denominator or relax its limit.
-
-The prior NVDLA partition used a requested/effective tolerance of 2.1 and
-75% device budgets; its fpga0/fpga2 LUT loads exceed the new 25% contract.
-Those Phase 3–7 outputs do not qualify the strict configuration. NVDLA
-validation of 25%/0.1 is pending; original Phase 1–2 inputs remain reusable
-under the explicitly authorized continuation without resynthesis.
-The physical budget adapter passed a saved NVDLA fpga1 regression: a zero-LUT
-budget was rejected before routing, while the 25% budget routed successfully
-and independently matched 2,365 LUTs, 849 FFs, 21 DSPs and 37 CARRY8s.
-BRAM and URAM were absent in that fixture. This backend check does not qualify
-the new four-way strict partition; its complete NVDLA validation is in progress.
+capacity usage, and any explicitly selected balance bounds against the
+selected platform. Reports cannot widen a configured bound or reuse a
+different device budget. SLR window selection and OpenPARF density do not
+redefine the whole-device utilization denominator or relax its limit.
+Passing partition resource checks does not establish physical routability or
+whole-design timing closure; those require the Phase 7 and global timing
+results for the same configuration.
 
 The four-FPGA topology connects each of `fpga0` and `fpga1` to both `fpga2` and
 `fpga3`. There is no direct `fpga0`–`fpga1` or `fpga2`–`fpga3` link:

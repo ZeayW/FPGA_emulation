@@ -2,7 +2,10 @@ import unittest
 from types import SimpleNamespace
 
 from emuflow.errors import ValidationError
-from emuflow.partition import validate_cluster_assignment_balance
+from emuflow.partition import summarize_balance_observation, validate_cluster_assignment_balance
+from emuflow.platform import FpgaNode
+from emuflow.repart import _balanced_repart_capacities
+from emuflow.mfspart_provider import _balanced_capacities
 from emuflow.partition_limits import strict_balance_limits, validate_indivisible_limits
 from emuflow.resource_budget import validate_device_resource_usage, validate_materialized_resource_counts
 
@@ -13,7 +16,7 @@ class StrictPartitionLimitsTest(unittest.TestCase):
                       for i in range(4)]
 
     def test_indivisible_cluster_rejected_without_changing_tolerance(self):
-        limits = strict_balance_limits(self.fpgas, {"cells": 100, "lut": 100}, 0.1)
+        limits = strict_balance_limits(self.fpgas, {"cells": 100, "lut": 100}, 0.1, balance_dimensions=("cells", "lut"))
         self.assertEqual(limits["fpga0"], {"cells": 27, "lut": 27})
         records = [(f"c{i}", {"cells": w, "lut": w}, None)
                    for i, w in enumerate([37, 21, 21, 21])]
@@ -28,7 +31,7 @@ class StrictPartitionLimitsTest(unittest.TestCase):
             validate_indivisible_limits(records, limits)
 
     def test_resource_integer_bound_is_not_raised_to_one(self):
-        limits = strict_balance_limits(self.fpgas, {"lut": 3}, 0.1)
+        limits = strict_balance_limits(self.fpgas, {"lut": 3}, 0.1, balance_dimensions=("lut",))
         self.assertTrue(all(x["lut"] == 0 for x in limits.values()))
         with self.assertRaisesRegex(ValidationError, "indivisible cluster"):
             validate_indivisible_limits([("one", {"lut": 1}, None)], limits)
@@ -49,7 +52,8 @@ class StrictPartitionLimitsTest(unittest.TestCase):
                     for i, w in enumerate([37, 21, 21, 21])]
         with self.assertRaisesRegex(ValidationError, "multi-resource balance"):
             validate_cluster_assignment_balance(platform, clusters,
-                                                {f"c{i}": f"fpga{i}" for i in range(4)}, 0.1)
+                                                {f"c{i}": f"fpga{i}" for i in range(4)}, 0.1,
+                                                requested_balance_dimensions=("cells", "lut"))
 
     def test_balanced_assignment_reports_exact_requested_tolerance(self):
         clusters = [{"id": f"c{i}", "instances": [f"i{i}"],
@@ -59,6 +63,43 @@ class StrictPartitionLimitsTest(unittest.TestCase):
                     {f"c{i}": f"fpga{i}" for i in range(4)}, 0.1)
         self.assertEqual(report["effective_balance_percent"], 10.0)
         self.assertFalse(report["balance_auto_relaxed"])
+
+    def test_default_accepts_40_percent_design_share_under_quarter_device_budget(self):
+        fpgas = [FpgaNode(f"fpga{i}", "test", 0.25, {"lut": 400}) for i in range(4)]
+        clusters = [{"id": f"c{i}", "instances": list(range(load)),
+                     "resources": {"lut": load}, "fixed_fpga": None}
+                    for i, load in enumerate((40, 20, 20, 20))]
+        assignments = {f"c{i}": f"fpga{i}" for i in range(4)}
+        report = validate_cluster_assignment_balance(
+            SimpleNamespace(fpgas=fpgas), clusters, assignments, 0.1)
+        self.assertEqual(report["strict_balance_dimensions"], [])
+        self.assertEqual(report["balance_allowed_loads"]["fpga0"], {"cells": 100, "lut": 100})
+        observed = report["balance_observation"]
+        self.assertTrue(observed["diagnostic_only"])
+        self.assertEqual(observed["design_share_by_fpga"]["fpga0"]["lut"], 0.4)
+        self.assertEqual(observed["max_to_mean_by_dimension"]["lut"], 1.6)
+        dimensions, repart_limits, _ = _balanced_repart_capacities(
+            clusters, SimpleNamespace(fpgas=fpgas), ["lut"], 0.1)
+        self.assertEqual(dimensions, ["cells", "lut"])
+        self.assertEqual(repart_limits, [[100, 100]] * 4)
+        native_limits, _ = _balanced_capacities(
+            [{"id": item["id"], "weights": {"cells": len(item["instances"]), **item["resources"]},
+              "fixed_part": -1} for item in clusters], SimpleNamespace(fpgas=fpgas),
+            ["cells", "lut"], {"balance_tolerance": 0.1})
+        self.assertEqual(native_limits["fpga0"], {"cells": 100, "lut": 100})
+        with self.assertRaisesRegex(ValidationError, "balance/capacity"):
+            validate_cluster_assignment_balance(
+                SimpleNamespace(fpgas=fpgas), clusters, assignments, 0.1,
+                requested_balance_dimensions=("cells", "lut"))
+        clusters[0]["resources"]["lut"] = 101
+        with self.assertRaisesRegex(ValidationError, "balance/capacity"):
+            validate_cluster_assignment_balance(
+                SimpleNamespace(fpgas=fpgas), clusters, assignments, 0.1)
+
+    def test_zero_load_balance_observation_is_defined(self):
+        observed = summarize_balance_observation({"a": {"lut": 0}, "b": {"lut": 0}}, ())
+        self.assertEqual(observed["max_to_mean_by_dimension"]["lut"], 0.0)
+        self.assertEqual(observed["design_share_by_fpga"]["a"]["lut"], 0.0)
 
     def test_capacity_only_macro_can_be_imbalanced_but_not_overfilled(self):
         fpgas = [

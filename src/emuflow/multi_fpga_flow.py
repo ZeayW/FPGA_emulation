@@ -1273,8 +1273,8 @@ def run_multi_fpga_flow(
     partition_seed_attempts: int = 1,
     partition_num_initial_solutions: int = 50,
     partition_num_best_initial_solutions: int = 10,
-    partition_repair_min_used_fpgas: bool = False,
-    partition_repair_balance: bool = False,
+    partition_repair_min_used_fpgas: bool = True,
+    partition_repair_balance: bool = True,
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH

@@ -18,6 +18,7 @@ from emuflow.partition import (
     normalize_partition_constraints,
     validate_cluster_assignment_balance,
     validate_partition_artifacts,
+    validate_partition_artifacts_online,
 )
 from emuflow.phase3 import run_phase3, validate_phase3_indexed
 from emuflow.platform import BoardLink, FpgaNode, Platform
@@ -90,6 +91,13 @@ class Phase3Test(unittest.TestCase):
             tampered["validation"]["effective_balance_percent"] = 210.0
             (output / "phase3_report.json").write_text(json.dumps(tampered))
             with self.assertRaisesRegex(ValidationError, "strict balance evidence"):
+                validate_phase3_indexed(ir_path, PLATFORM_PATH,
+                    output / "phase3_report.json", output / "assignment.sqlite")
+            (output / "phase3_report.json").write_text(json.dumps(report))
+            observed_tamper = copy.deepcopy(report)
+            observed_tamper["validation"]["balance_observation"]["max_to_mean_by_dimension"]["cells"] = 99
+            (output / "phase3_report.json").write_text(json.dumps(observed_tamper))
+            with self.assertRaisesRegex(ValidationError, "balance observation"):
                 validate_phase3_indexed(ir_path, PLATFORM_PATH,
                     output / "phase3_report.json", output / "assignment.sqlite")
             (output / "phase3_report.json").write_text(json.dumps(report))
@@ -437,6 +445,7 @@ class Phase3Test(unittest.TestCase):
                 clusters,
                 assignment,
                 requested_tolerance=0.25,
+                requested_balance_dimensions=("cells", "bram"),
             )
         report = validate_cluster_assignment_balance(
             self.platform,
@@ -444,6 +453,7 @@ class Phase3Test(unittest.TestCase):
             assignment,
             requested_tolerance=0.25,
             requested_tolerance_by_dimension={"bram": 0.50},
+            requested_balance_dimensions=("cells", "bram"),
         )
         self.assertEqual(
             report["requested_balance_percent_by_dimension"]["cells"], 25.0
@@ -463,13 +473,21 @@ class Phase3Test(unittest.TestCase):
                 self.platform,
             )
 
-    def test_default_balance_dimensions_keep_macros_capacity_only(self) -> None:
+    def test_default_balance_dimensions_keep_every_dimension_capacity_only(self) -> None:
         constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
         self.assertEqual(
-            constraints["balance_dimensions"], ["cells", "ff", "lut"]
+            constraints["balance_dimensions"], []
         )
+
+    def test_tolerance_alone_does_not_enable_design_share_constraint(self) -> None:
+        constraints = normalize_partition_constraints(
+            {"schema": "emuflow.partition-constraints/v1", "balance_tolerance": 0.0},
+            self.ir, self.platform, balance_tolerance=0.10,
+        )
+        self.assertEqual(constraints["balance_dimensions"], [])
+        self.assertEqual(constraints["balance_tolerance"], 0.10)
 
     def test_balance_dimensions_are_explicit_and_validated(self) -> None:
         constraints = normalize_partition_constraints(
@@ -691,7 +709,7 @@ class Phase3Test(unittest.TestCase):
                 constraints,
             )
 
-    def test_unbalanced_provider_assignment_is_rejected(self) -> None:
+    def test_capacity_only_assignment_and_sealed_legacy_balance(self) -> None:
         constraints = normalize_partition_constraints(
             {
                 "schema": "emuflow.partition-constraints/v1",
@@ -714,15 +732,21 @@ class Phase3Test(unittest.TestCase):
             provider="deliberately-unbalanced-test",
             seed=0,
         )
-        with self.assertRaisesRegex(
-            ValidationError, "multi-resource balance"
-        ):
-            validate_partition_artifacts(
-                self.ir,
-                self.platform,
-                clusters,
-                assignment,
-            )
+        checked = validate_partition_artifacts(self.ir, self.platform, clusters, assignment)
+        self.assertEqual(checked["strict_balance_dimensions"], [])
+        self.assertEqual(checked["balance_observation"]["max_to_mean_by_dimension"]["cells"], 2.0)
+        # Explicit opt-in is still strict, as is a historical v1 artifact whose
+        # sealed constraints predate the balance_dimensions field.
+        for dimensions in (["cells", "lut", "ff"], None):
+            historical = copy.deepcopy(assignment)
+            if dimensions is None:
+                historical["constraints"].pop("balance_dimensions")
+            else:
+                historical["constraints"]["balance_dimensions"] = dimensions
+            with self.assertRaisesRegex(ValidationError, "multi-resource balance"):
+                validate_partition_artifacts(self.ir, self.platform, clusters, historical)
+            with self.assertRaisesRegex(ValidationError, "multi-resource balance"):
+                validate_partition_artifacts_online(self.platform, clusters, historical)
 
 if __name__ == "__main__":
     unittest.main()

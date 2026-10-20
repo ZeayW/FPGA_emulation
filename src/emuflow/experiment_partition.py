@@ -213,7 +213,8 @@ def run_partition_checkpoint(
     mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     timeout_seconds: int = 3600,
     seed_attempts: int = 1,
-    repair_balance: bool = False,
+    repair_balance: bool = True,
+    repair_min_used_fpgas: bool = True,
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
@@ -290,6 +291,7 @@ def run_partition_checkpoint(
         tritonpart_timeout_seconds=timeout_seconds,
         tritonpart_seed_attempts=seed_attempts,
         tritonpart_repair_balance=repair_balance,
+        tritonpart_repair_min_used_fpgas=repair_min_used_fpgas,
         tritonpart_num_initial_solutions=num_initial_solutions,
         tritonpart_num_best_initial_solutions=num_best_initial_solutions,
         net_weights_path=weights_path,
@@ -338,6 +340,7 @@ def run_partition_checkpoint(
         "seed": seed,
         "seed_attempts": seed_attempts,
         "repair_balance": repair_balance,
+        "repair_min_used_fpgas": repair_min_used_fpgas,
         "mfspart_post_refinement": mfspart_post_refinement,
         "mfspart_post_refinement_early_stop": (
             mfspart_post_refinement_early_stop
@@ -441,6 +444,42 @@ def run_partition_checkpoint(
     return report
 
 
+def _validate_post_refinement_selection(
+    post_report: Dict[str, Any], post_metadata: Dict[str, Any],
+    certificate: Dict[str, Any], required_fpgas: int,
+) -> list[int]:
+    """Reconstruct selection independently from sealed native input/output."""
+    candidate = certificate["parsed"]["assignment"]
+    selection = post_report.get("assignment_selection")
+    if selection is None:
+        if post_metadata.get("assignment_selection") is not None:
+            raise ValidationError("partition MFSPart selection evidence is incomplete")
+        return candidate  # Historical reports always selected the native output.
+    initial = certificate["initial_assignment"]
+    initial_used = len(set(initial))
+    candidate_used = len(set(candidate))
+    selected_candidate = candidate_used >= required_fpgas
+    if not selected_candidate and initial_used < required_fpgas:
+        raise ValidationError("partition MFSPart selection has no legal occupancy")
+    metrics = certificate["parsed"]["metrics"]
+    expected = {
+        "policy": "required-fpga-count-v1",
+        "selected": "refined-candidate" if selected_candidate else "initialization",
+        "reason": "required-count-satisfied" if selected_candidate else "candidate-emptied-required-fpga",
+        "required_fpgas": required_fpgas,
+        "initial_used_fpgas": initial_used,
+        "candidate_used_fpgas": candidate_used,
+        "selected_used_fpgas": candidate_used if selected_candidate else initial_used,
+        "selected_prefix": int(metrics["best_prefix"]) if selected_candidate else 0,
+        "selected_cumulative_gain": metrics["best_cumulative_gain"] if selected_candidate else 0.0,
+    }
+    if (selection != expected or post_metadata.get("assignment_selection") != expected
+        or post_metadata.get("best_prefix") != expected["selected_prefix"]
+        or post_metadata.get("best_cumulative_gain") != expected["selected_cumulative_gain"]):
+        raise ValidationError("partition MFSPart selection disagrees with native certificate")
+    return candidate if selected_candidate else initial
+
+
 def validate_partition_checkpoint(
     frontend_root: Path,
     timing_root: Path,
@@ -454,6 +493,7 @@ def validate_partition_checkpoint(
     expected_seed: int | None = None,
     expected_seed_attempts: int | None = None,
     expected_repair_balance: bool | None = None,
+    expected_repair_min_used_fpgas: bool | None = None,
     expected_mfspart_post_refinement: bool | None = None,
     expected_mfspart_post_refinement_early_stop: int | None = None,
     expected_mfspart_post_refinement_bottleneck_beta: float | None = None,
@@ -631,6 +671,9 @@ def validate_partition_checkpoint(
         raise ValidationError(
             "partition PATRON initial-assignment seal is broken"
         )
+    if (expected_repair_min_used_fpgas is not None
+        and report.get("repair_min_used_fpgas") is not expected_repair_min_used_fpgas):
+        raise ValidationError("partition minimum-used repair contract disagrees")
     actual_patron_flow_refinement = report.get(
         "patron_flow_refinement", False
     )
@@ -877,9 +920,13 @@ def validate_partition_checkpoint(
             not isinstance(part, str) for part in parts
         ):
             raise ValidationError("partition MFSPart FPGA order is invalid")
+        selected_assignment = _validate_post_refinement_selection(
+            post_report, post_metadata, certificate,
+            assignment["constraints"]["min_used_fpgas"],
+        )
         try:
             expected_cluster_assignment = {
-                cluster["id"]: parts[parsed["assignment"][index]]
+                cluster["id"]: parts[selected_assignment[index]]
                 for index, cluster in enumerate(clusters)
             }
         except (IndexError, KeyError, TypeError) as error:
@@ -888,7 +935,7 @@ def validate_partition_checkpoint(
             ) from error
         if assignment.get("cluster_assignment") != expected_cluster_assignment:
             raise ValidationError(
-                "partition assignment differs from MFSPart kept prefix"
+                "partition assignment differs from MFSPart selected assignment"
             )
     if report["provider"] == "tritonpart":
         metadata = assignment.get("provider_metadata", {})
@@ -899,6 +946,10 @@ def validate_partition_checkpoint(
             if isinstance(item, dict)
         )
         actual_repair_balance = metadata.get("balance_repair", {}).get("enabled")
+        if ("repair_min_used_fpgas" in report
+            and report["repair_min_used_fpgas"]
+            is not metadata.get("min_used_fpgas_repair", {}).get("enabled")):
+            raise ValidationError("partition minimum-used repair report disagrees with assignment")
         if (
             "seed_attempts" in report
             and report["seed_attempts"] != actual_seed_attempts

@@ -481,7 +481,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
         )
         self.assertEqual(phase3.provider, "patron")
         self.assertEqual(phase3.cut_mode, "sequential-only")
-        self.assertFalse(phase3.tritonpart_repair_balance)
+        self.assertTrue(phase3.tritonpart_repair_balance)
         phase3_with_repair = _build_parser().parse_args(
             [
                 "phase3",

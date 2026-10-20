@@ -14,6 +14,7 @@ from .partition import (
     build_clusters,
     build_partition_assignment,
     load_partition_constraints,
+    summarize_balance_observation,
     validate_partition_artifacts,
     validate_partition_artifacts_online,
 )
@@ -366,8 +367,8 @@ def run_phase3(
     tritonpart_seed_attempts: int = 1,
     tritonpart_num_initial_solutions: int = 50,
     tritonpart_num_best_initial_solutions: int = 10,
-    tritonpart_repair_min_used_fpgas: bool = False,
-    tritonpart_repair_balance: bool = False,
+    tritonpart_repair_min_used_fpgas: bool = True,
+    tritonpart_repair_balance: bool = True,
     tritonpart_balance_legalizer: Optional[str] = None,
     tritonpart_run_unweighted_baseline: bool = False,
     repart: Optional[str] = None,
@@ -1290,6 +1291,11 @@ def validate_phase3_indexed(
         or validation.get("balance_loads") != loads
         or validation.get("balance_allowed_loads") != bounds):
         raise ValidationError("indexed Phase 3 strict balance evidence disagrees with sealed constraints")
+    # Older sealed reports predate this diagnostic field; when present it must
+    # agree with the independently reconstructed indexed loads.
+    if ("balance_observation" in validation and validation["balance_observation"]
+        != summarize_balance_observation(loads, strict_dimensions)):
+        raise ValidationError("indexed Phase 3 balance observation disagrees with loads")
     if proof["semantic_contract_sha256"] is not None:
         if validation.get("cut_mode") != CUT_MODE_STATIC_EXACT:
             raise ValidationError(

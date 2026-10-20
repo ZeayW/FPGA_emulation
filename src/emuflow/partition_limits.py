@@ -11,8 +11,9 @@ from .errors import ValidationError
 def strict_balance_limits(
     fpgas: Sequence[Any], totals: Mapping[str, int], tolerance: float,
     overrides: Optional[Mapping[str, float]] = None,
-    balance_dimensions: Optional[Iterable[str]] = None,
+    balance_dimensions: Optional[Iterable[str]] = (),
 ) -> dict[str, dict[str, int]]:
+    """Default to device bounds; explicit None reads historical all-field limits."""
     if not fpgas:
         raise ValidationError("strict balance needs at least one FPGA")
     for value in [tolerance, *(overrides or {}).values()]:

@@ -135,21 +135,30 @@ def _vertex_weights(
 
 def _tritonpart_ubfactor_percent_points(
     base_balance: Sequence[float],
-    effective_balance_percent: float,
+    fpga_order: Sequence[str],
+    totals: Mapping[str, int],
+    limits: Mapping[str, Mapping[str, int]],
 ) -> float:
-    """Translate EmuFlow's relative tolerance to TritonPart percentage points.
+    """Cover all exact upper-bound-feasible loads with TritonPart's scalar.
 
-    EmuFlow defines a 10% tolerance around a 25% target as an upper share of
-    27.5%. TritonPart instead adds ``UBfactor * 0.01`` directly to the target,
-    so the equivalent UBfactor is 2.5 percentage points, not 10.
-
-    A single TritonPart UBfactor is shared by all partitions. Using the largest
-    target share supplies the solver's scalar envelope; EmuFlow's strict
-    integer bounds and independent validator enforce every resource and FPGA
-    without relaxing the requested tolerance.
+    TritonPart uses target +/- UBfactor/100 in every weight dimension. Our
+    contract specifies only per-resource upper bounds, so its implicit lower
+    bound must not exclude legal assignments either. Infer a partition's lowest
+    feasible share from the other partitions' upper bounds. The exported scalar
+    is only an initializer envelope; the native legalizer and final validator
+    enforce the exact integer limits without weakening device capacity.
     """
-
-    return max(base_balance) * effective_balance_percent
+    margin = 0.0
+    for field, total in totals.items():
+        if total <= 0:
+            continue
+        upper = [min(total, limits[fpga][field]) / total for fpga in fpga_order]
+        for index, target in enumerate(base_balance):
+            lower = max(0.0, 1.0 - sum(upper[:index]) - sum(upper[index + 1:]))
+            margin = max(margin, upper[index] - target, target - lower)
+    # Round outward for the decimal Tcl interface; never truncate below the
+    # feasible envelope through floating-point/formatting error.
+    return math.ceil(max(0.0, margin) * 100.0 * 1_000_000) / 1_000_000
 
 
 def _legal_hyperedges(
@@ -251,7 +260,6 @@ def export_tritonpart_inputs(
         tolerances.get(field, constraints["balance_tolerance"]) * 100.0
         for field in dimensions
     )
-    tritonpart_ubfactor = _tritonpart_ubfactor_percent_points(base_balance, effective_balance)
     totals = {field: sum(row[index] for row in weights)
               for index, field in enumerate(dimensions)}
     limits = strict_balance_limits(
@@ -259,11 +267,14 @@ def export_tritonpart_inputs(
         totals,
         constraints["balance_tolerance"],
         tolerances,
-        constraints.get("balance_dimensions"),
+        constraints.get("balance_dimensions", ()),
     )
     validate_indivisible_limits(
         ((cluster["id"], dict(zip(dimensions, row)), cluster.get("fixed_fpga"))
          for cluster, row in zip(clusters, weights)), limits,
+    )
+    tritonpart_ubfactor = _tritonpart_ubfactor_percent_points(
+        base_balance, fpga_ids, totals, limits
     )
 
     vertex_number = {
@@ -408,6 +419,8 @@ def export_tritonpart_inputs(
         "requested_balance_percent": requested_balance,
         "effective_balance_percent": effective_balance,
         "tritonpart_ubfactor_percent_points": tritonpart_ubfactor,
+        "tritonpart_balance_envelope": "exact-upper-bound-feasible-range-v1",
+        "strict_balance_dimensions": sorted(constraints.get("balance_dimensions", ())),
         "balance_auto_relaxed": False,
         "balance_allowed_loads": limits,
         "search_effort": {
@@ -632,7 +645,7 @@ def _repair_multi_resource_balance_reference(
         dict(zip(dimensions, totals)),
         constraints["balance_tolerance"],
         tolerance_overrides,
-        constraints.get("balance_dimensions"),
+        constraints.get("balance_dimensions", ()),
     )
     allowed = [
         [limits[fpga_id][field] for field in dimensions]
@@ -1547,7 +1560,7 @@ def _repair_multi_resource_balance_reference(
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
-        constraints.get("balance_dimensions"),
+        constraints.get("balance_dimensions", ()),
     )
     return assignment, {
         "moves": move_total,
@@ -1888,8 +1901,8 @@ def run_tritonpart(
     seed_attempts: int = 1,
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
-    repair_min_used_fpgas: bool = False,
-    repair_balance: bool = False,
+    repair_min_used_fpgas: bool = True,
+    repair_balance: bool = True,
     balance_legalizer: Optional[str] = None,
     persist_input_manifest: bool = True,
     run_unweighted_baseline: bool = False,
@@ -2112,7 +2125,7 @@ def run_tritonpart(
         repair_moves: List[Dict[str, Any]] = []
         if (
             repair_min_used_fpgas
-            and raw_used_fpgas < constraints["min_used_fpgas"]
+            and len(set(candidate.values())) < constraints["min_used_fpgas"]
         ):
             candidate, repair_moves = _repair_min_used_fpgas(
                 candidate,
@@ -2155,7 +2168,7 @@ def run_tritonpart(
                     constraints["balance_tolerance"],
                     constraints.get("balance_tolerance_by_dimension", {}),
                     constraints.get("active_fpgas"),
-                    constraints.get("balance_dimensions"),
+                    constraints.get("balance_dimensions", ()),
                 )
             )
         except ValidationError as error:

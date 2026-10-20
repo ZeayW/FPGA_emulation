@@ -913,6 +913,7 @@ class PartitionPressureTest(unittest.TestCase):
             {
                 "schema": "emuflow.partition-constraints/v1",
                 "min_used_fpgas": 4,
+                "balance_dimensions": ["cells", "lut", "ff"],
                 "balance_tolerance": 0.5,
             },
             ir,
@@ -2461,6 +2462,7 @@ class PartitionPressureTest(unittest.TestCase):
                     {"instance": "u00002", "fpga": "b"},
                 ],
                 "min_used_fpgas": 2,
+                "balance_dimensions": ["cells", "lut", "ff"],
                 "balance_tolerance": 0.01,
             },
             ir,
@@ -2606,6 +2608,7 @@ class PartitionPressureTest(unittest.TestCase):
             {
                 "schema": "emuflow.partition-constraints/v1",
                 "min_used_fpgas": 2,
+                "balance_dimensions": ["cells", "lut", "ff"],
                 "balance_tolerance": 0.0,
             },
             ir,

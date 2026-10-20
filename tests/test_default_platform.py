@@ -13,6 +13,10 @@ from emuflow.default_platform import (
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.phase3 import run_phase3
+from emuflow.tritonpart import run_tritonpart
+from emuflow.cross_stage import run_cross_stage_optimization
+from emuflow.experiment_partition import run_partition_checkpoint
 from emuflow.platform import Platform
 
 
@@ -73,6 +77,21 @@ class DefaultPlatformTest(unittest.TestCase):
             "--clock", "clk", "--clock-period", "clk=10", "--out", "unused",
         ])
         self.assertEqual(args.platform, DEFAULT_PLATFORM_PATH)
+        self.assertTrue(args.partition_repair_balance)
+        self.assertTrue(args.partition_repair_min_used_fpgas)
+        disabled = parser.parse_args([
+            "multi-fpga", "compile", "design.v", "--top", "top",
+            "--clock", "clk", "--clock-period", "clk=10", "--out", "unused",
+            "--no-partition-repair-balance", "--no-partition-repair-min-used-fpgas",
+        ])
+        self.assertFalse(disabled.partition_repair_balance)
+        self.assertFalse(disabled.partition_repair_min_used_fpgas)
+        for function, prefix in ((run_multi_fpga_flow, "partition_"),
+                                 (run_phase3, "tritonpart_"),
+                                 (run_tritonpart, ""), (run_partition_checkpoint, ""),
+                                 (run_cross_stage_optimization, "partition_")):
+            for suffix in ("repair_balance", "repair_min_used_fpgas"):
+                self.assertIs(inspect.signature(function).parameters[prefix + suffix].default, True)
         self.assertEqual(
             inspect.signature(run_multi_fpga_flow).parameters["platform_path"].default,
             DEFAULT_PLATFORM_PATH,

@@ -275,7 +275,7 @@ def _balanced_capacities(
         totals,
         constraints["balance_tolerance"],
         overrides,
-        constraints.get("balance_dimensions"),
+        constraints.get("balance_dimensions", ()),
     )
     validate_indivisible_limits(
         ((str(node.get("id", node.get("cluster", index))), node["weights"],
@@ -527,14 +527,39 @@ def refine_mfspart_partition(
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
-        constraints.get("balance_dimensions"),
+        constraints.get("balance_dimensions", ()),
     )
     used = len(set(refined_cluster_assignment.values()))
-    if used < constraints["min_used_fpgas"]:
-        raise ValidationError(
-            "MFSPart post-refinement emptied a required FPGA: "
-            f"used={used}, required={constraints['min_used_fpgas']}"
+    required = constraints["min_used_fpgas"]
+    selected_candidate = used >= required
+    initial_used = len(set(initial))
+    if not selected_candidate:
+        if initial_used < required:
+            raise ValidationError(
+                "MFSPart post-refinement has no assignment using the required "
+                f"FPGAs: initial={initial_used}, candidate={used}, required={required}"
+            )
+        # The optional refiner optimizes cuts without an occupancy guard.
+        # Reject that candidate, not the already legal initialization. Preserve
+        # native candidate evidence separately from the selected assignment.
+        refined_cluster_assignment = dict(assignment["cluster_assignment"])
+        validate_cluster_assignment_balance(
+            platform, clusters, refined_cluster_assignment,
+            constraints["balance_tolerance"],
+            constraints.get("balance_tolerance_by_dimension", {}),
+            constraints.get("active_fpgas"), constraints.get("balance_dimensions", ()),
         )
+    selection = {
+        "policy": "required-fpga-count-v1",
+        "selected": "refined-candidate" if selected_candidate else "initialization",
+        "reason": "required-count-satisfied" if selected_candidate else "candidate-emptied-required-fpga",
+        "required_fpgas": required,
+        "initial_used_fpgas": initial_used,
+        "candidate_used_fpgas": used,
+        "selected_used_fpgas": used if selected_candidate else initial_used,
+        "selected_prefix": int(refinement["metrics"]["best_prefix"]) if selected_candidate else 0,
+        "selected_cumulative_gain": refinement["metrics"]["best_cumulative_gain"] if selected_candidate else 0.0,
+    }
     metadata = dict(assignment.get("provider_metadata", {}))
     metadata["directional_mfspart_post_refinement"] = {
         "algorithm": MFSPART_POST_REFINEMENT_PROVIDER,
@@ -544,12 +569,11 @@ def refine_mfspart_partition(
         "timing_path_beta": effective_timing_path_beta,
         "timing_path_objective": timing_path_objective,
         "path_safe_selection": refinement.get("path_safe_selection"),
+        "assignment_selection": selection,
         "hmax": hmax,
         "moves": int(refinement["metrics"]["attempted_moves"]),
-        "best_prefix": int(refinement["metrics"]["best_prefix"]),
-        "best_cumulative_gain": refinement["metrics"][
-            "best_cumulative_gain"
-        ],
+        "best_prefix": selection["selected_prefix"],
+        "best_cumulative_gain": selection["selected_cumulative_gain"],
         "direction_source": "EmuIR net drivers/sinks",
         "topology_guard": (
             "non-combinational-net-worst-sink-distance-non-regression-v1"
@@ -619,6 +643,7 @@ def refine_mfspart_partition(
             net["cut_class"] == "combinational" for net in nets
         ),
         "effective_balance_tolerance_by_dimension": effective_balance,
+        "assignment_selection": selection,
         "refinement": persisted_refinement,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
