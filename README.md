@@ -41,6 +41,9 @@ virtual-anchor and virtual-board binding rows live once in the sealed
 manifests with explicit compatibility materializers. Phase 7 consumes lazy
 views of the sealed binding, adapter and XDC contract to materialize fixed LVDS IOB
 boundaries, as described under [fixed virtual board wiring](#fixed-virtual-board-wiring).
+The transport writer opens its staging connection with SQLite URI handling
+enabled so the immutable Phase 3 assignment sidecar can be attached reliably
+on older production SQLite builds.
 `stage-metrics/*.json` records wall time and process-tree
 RSS sampled every 0.5 seconds for each executed downstream stage. Large NVDLA
 validation remains pending until the physical and global OpenSTA gates pass.

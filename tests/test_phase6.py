@@ -248,31 +248,44 @@ class Phase6Test(unittest.TestCase):
                 ],
             }
             summaries = []
-            for run in range(2):
-                output = root / f"run-{run}"
-                artifacts = write_transport_storage(
-                    output,
-                    assignment_path,
-                    schedule,
-                    self.platform,
-                    design=self.ir.value["design"],
-                    clocks=self.ir.value["clocks"],
-                )
-                summaries.append(artifacts["summary"])
-                self.assertEqual(
-                    len(artifacts["lane_map"]["entries"]), count
-                )
-                self.assertEqual(
-                    sum(
-                        len(transport["endpoints"])
-                        for transport in artifacts["transports"].values()
-                    ),
-                    2 * count,
-                )
-                self.assertLess(
-                    (output / "fpga0/transport.json").stat().st_size,
-                    4096,
-                )
+            writer_uri_modes = []
+            original_connect = sqlite3.connect
+
+            def recording_connect(database, *args, **kwargs):
+                if Path(database).name.startswith(".transport.sqlite."):
+                    writer_uri_modes.append(kwargs.get("uri", False))
+                return original_connect(database, *args, **kwargs)
+
+            with mock.patch(
+                "emuflow.transport_storage.sqlite3.connect",
+                side_effect=recording_connect,
+            ):
+                for run in range(2):
+                    output = root / f"run-{run}"
+                    artifacts = write_transport_storage(
+                        output,
+                        assignment_path,
+                        schedule,
+                        self.platform,
+                        design=self.ir.value["design"],
+                        clocks=self.ir.value["clocks"],
+                    )
+                    summaries.append(artifacts["summary"])
+                    self.assertEqual(
+                        len(artifacts["lane_map"]["entries"]), count
+                    )
+                    self.assertEqual(
+                        sum(
+                            len(transport["endpoints"])
+                            for transport in artifacts["transports"].values()
+                        ),
+                        2 * count,
+                    )
+                    self.assertLess(
+                        (output / "fpga0/transport.json").stat().st_size,
+                        4096,
+                    )
+            self.assertEqual(writer_uri_modes, [True, True])
             self.assertEqual(summaries[0]["sha256"], summaries[1]["sha256"])
 
     def test_split_exact_coverage_lane_agreement_and_equivalence(self) -> None:

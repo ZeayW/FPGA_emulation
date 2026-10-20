@@ -1198,7 +1198,11 @@ def write_transport_storage(
     temporary = store_path.with_name(
         f".{store_path.name}.{uuid.uuid4().hex}.tmp"
     )
-    connection = sqlite3.connect(temporary)
+    # The assignment sidecar is attached below through a read-only immutable
+    # ``file:`` URI.  URI handling is a per-connection SQLite flag; without it
+    # older production builds interpret the complete URI as a literal filename
+    # and fail after Phase 5 even though the sidecar exists.
+    connection = sqlite3.connect(temporary, uri=True)
     connection.row_factory = sqlite3.Row
     seen_pin_entries: set[str] = set()
     entry_count = 0
