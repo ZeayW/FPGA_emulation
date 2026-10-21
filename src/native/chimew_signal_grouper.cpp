@@ -369,10 +369,10 @@ BucketKey bucket_key(const Signal& signal) {
           signal.ratio};
 }
 
-void group_bucket(const std::vector<Signal>& signals,
+void group_bucket(std::vector<Signal>& signals,
                   const std::vector<int>& ordered, std::size_t begin,
-                  std::size_t end, int ratio, std::vector<int>& assignment,
-                  int& group_id, long long& crossing_bits) {
+                  std::size_t end, int ratio, int& group_id,
+                  long long& crossing_bits, std::size_t& assigned_count) {
   std::map<std::uint64_t, std::deque<int>> remaining_by_encoding;
   for (std::size_t position = begin; position < end; ++position) {
     const int index = ordered[position];
@@ -440,10 +440,15 @@ void group_bucket(const std::vector<Signal>& signals,
           std::find(selected_indices.begin(), selected_indices.end(), best_signal);
       selected_indices.erase(selected_position);
       target |= best_encoding;
-      assignment[best_signal] = group_id;
+      // The complete bucket boundary was discovered before grouping starts,
+      // and the kernel no longer reads a processed signal's domain.  Reuse
+      // that fixed-width field for the final group ID instead of retaining a
+      // second signal-sized assignment vector.
+      signals[best_signal].domain = group_id;
       used_slots.insert(signals[best_signal].slot);
       ++group_size;
       --remaining_count;
+      ++assigned_count;
     }
     if (group_size == 0) {
       throw std::runtime_error("Chimew grouping made no progress");
@@ -454,9 +459,10 @@ void group_bucket(const std::vector<Signal>& signals,
 }
 
 void run(std::vector<Signal> signals, const std::string& output_path) {
-  // Algorithm 1 still requires linear fixed-width signal, ordering and final
-  // assignment arrays.  Groups are committed directly into assignment so the
-  // former graph-sized vector<vector<int>> is not retained beside them.
+  // Algorithm 1 still requires fixed-width signal and ordering arrays.  The
+  // former graph-sized vector<vector<int>> is gone, and completed group IDs
+  // overwrite the no-longer-needed domain column so a separate assignment
+  // array is not retained either.
   std::vector<int> ordered(signals.size());
   std::iota(ordered.begin(), ordered.end(), 0);
   std::sort(ordered.begin(), ordered.end(), [&](int lhs, int rhs) {
@@ -464,9 +470,9 @@ void run(std::vector<Signal> signals, const std::string& output_path) {
            std::make_tuple(bucket_key(signals[rhs]), rhs);
   });
 
-  std::vector<int> assignment(signals.size(), -1);
   int group_id = 0;
   long long crossing_bits = 0;
+  std::size_t assigned_count = 0;
   std::size_t begin = 0;
   while (begin < ordered.size()) {
     const BucketKey key = bucket_key(signals[ordered[begin]]);
@@ -475,9 +481,12 @@ void run(std::vector<Signal> signals, const std::string& output_path) {
       ++end;
     }
     group_bucket(signals, ordered, begin, end,
-                 signals[ordered[begin]].ratio, assignment, group_id,
-                 crossing_bits);
+                 signals[ordered[begin]].ratio, group_id, crossing_bits,
+                 assigned_count);
     begin = end;
+  }
+  if (assigned_count != signals.size()) {
+    throw std::runtime_error("incomplete Chimew grouping assignment");
   }
 
   std::ofstream output_file;
@@ -491,11 +500,8 @@ void run(std::vector<Signal> signals, const std::string& output_path) {
   }
   *output << "EMUFLOW_CHIMEW_GROUPER_OUTPUT_V2\n";
   *output << "METRIC " << group_id << " " << crossing_bits << "\n";
-  for (int index = 0; index < static_cast<int>(assignment.size()); ++index) {
-    if (assignment[index] < 0) {
-      throw std::runtime_error("incomplete Chimew grouping assignment");
-    }
-    *output << "ASSIGN " << index << " " << assignment[index] << "\n";
+  for (int index = 0; index < static_cast<int>(signals.size()); ++index) {
+    *output << "ASSIGN " << index << " " << signals[index].domain << "\n";
   }
 }
 

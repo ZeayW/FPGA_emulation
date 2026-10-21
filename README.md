@@ -423,9 +423,13 @@ benchmark produced byte-identical assignments; removing the text handoff
 reduced Python traced peak from 12.923 to 1.091 MiB and native peak RSS from
 about 8.04 to 5.23 MiB in that run, while serialization rose from roughly 0.18
 to 0.31 seconds. This is a memory and contract improvement, not a CPU or NVDLA
-claim. Native signal/order/assignment/candidate arrays and the Python
-qualification oracle remain linear in signal count. The Python-wide bank list
-and global `flat_channels` map have been removed; one bank's normalized channel
+claim. Native group IDs now overwrite each processed signal's no-longer-needed
+domain field, removing the separate assignment array. In a 100,000-signal A/B,
+output was byte-identical and native peak RSS fell from 57,704,448 to
+57,278,464 bytes, while wall time changed from 23.04 to 23.30 seconds. Native
+signal/order/candidate arrays and the Python qualification oracle remain linear
+in signal count. The Python-wide bank list and global `flat_channels` map have
+been removed; one bank's normalized channel
 record remains live while it is checked, and qualification writes channel
 lookup rows in batches of at most 4,096 even when one bank is much larger.
 Native bank/channel assignment now consumes an explicit versioned little-endian
