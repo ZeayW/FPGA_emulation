@@ -1,4 +1,4 @@
-"""Incremental net histograms retain endpoint multiplicity and move semantics."""
+"""Endpoint multiplicity and equal-count swaps must preserve native semantics."""
 import shutil
 import subprocess
 import tempfile
@@ -36,9 +36,6 @@ void verify_changes(const Model& m, ProxyState& state, const ProxyDelta& delta,
   for(const auto& item:delta.nets) {
     const auto full=build_proxy_net(m,state.assignment,item.first);
     const auto& got=item.second;
-#ifdef CHECK_INCREMENTAL_COUNTS
-    require(got.driver_counts==full.driver_counts,"incremental driver multiplicity differs");
-#endif
     require(got.feasible==full.feasible && got.delay_ns==full.delay_ns
         && got.worst_transition==full.worst_transition && got.sink_counts==full.sink_counts
         && got.domain_counts==full.domain_counts && got.hops==full.hops && got.cuts==full.cuts
@@ -89,17 +86,17 @@ HARNESS = HARNESS.replace('  const auto start=std::chrono::steady_clock::now();'
 HARNESS = HARNESS.replace('        if(!perf) {\n          auto loads=state.domain_load;',
     '        if(!perf) {\n          verify_changes(m,state,delta,{{cluster,target}});\n          auto loads=state.domain_load;')
 
-def build(root, source=ROOT/'src/native/patron_refiner.cpp', name='check', check_counts=False):
+def build(root, source=ROOT/'src/native/patron_refiner.cpp', name='check'):
     wrapper=root/(name+'.cpp')
     wrapper.write_text(HARNESS.replace('PATRON_SOURCE',str(source)))
     binary=root/name
-    subprocess.run([shutil.which('c++'),'-std=c++17','-O2',*(['-DCHECK_INCREMENTAL_COUNTS'] if check_counts else []),'-I'+str(ROOT/'src/native'),str(wrapper),'-o',str(binary)],check=True)
+    subprocess.run([shutil.which('c++'),'-std=c++17','-O2','-I'+str(ROOT/'src/native'),str(wrapper),'-o',str(binary)],check=True)
     return binary
 
 class NetCountsTest(unittest.TestCase):
     def test_multiplicity_overlap_ejection_comove_and_batch_match_full_rebuild(self):
         with tempfile.TemporaryDirectory() as temp:
-            binary=build(Path(temp),check_counts=True)
+            binary=build(Path(temp))
             for args in (['24'],['24','chain']):
                 result=subprocess.run([str(binary),*args],capture_output=True,text=True,check=True,timeout=30)
                 self.assertIn('ejection:1',result.stdout)
