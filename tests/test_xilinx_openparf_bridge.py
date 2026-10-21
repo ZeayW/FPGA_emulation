@@ -441,7 +441,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                 {
                     "route_cells": "generated-from-physical-binding",
                     "physical_bindings": "typed-mapped-physical-join",
-                    "safe_names": "ordered-merge-integer-index",
+                    "safe_names": "typed-ordinal-cursor",
                     "endpoints": "typed-mapped-physical-join",
                     "tsv": "streamed-atomic-spool",
                 },

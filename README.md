@@ -152,8 +152,8 @@ handoff bottleneck. The bridge now owns each cluster and assignment once;
 packing and placement are bounded generated views over that same tree, so the
 production handoff no longer retains a second million-instance placement tree.
 RWRoute TSV export likewise derives route-cell rows directly from the physical
-binding and builds only the safe-name index; it no longer duplicates every
-cell in a second route-cell dictionary. Its report separates binding, cell/I/O
+binding and no longer duplicates every cell in a second route-cell dictionary.
+Its report separates binding, cell/I/O
 emission, endpoint indexing, clock checks, net emission, and atomic commit.
 Mapped-index v2 stores each typed cell pin once outside `record_json`; legacy
 cell mappings are reconstructed lazily. Production RWRoute groups this ordered
@@ -164,9 +164,11 @@ physical backend also computes its source digest once and reuses it for both
 historical contract identities. In the indexed production path, mapped-index
 v2 attaches the typed physical handoff read-only and streams cells and pins
 from ordered joins; RWRoute therefore no longer retains an
-`instance → (site, BEL)` dictionary either. Its remaining safe-name map stores
-integer ordinals and formats `cN` only while writing a TSV row, avoiding a
-second million-element set of generated strings.
+`instance → (site, BEL)` dictionary either. The same join computes each
+deterministic route-cell ordinal, including the two-cell LUT6_2 expansion, so
+the production exporter formats `cN` while streaming without retaining a
+million-entry safe-name map. Compatibility JSON inputs keep the historical
+lookup path.
 
 ## Flow
 

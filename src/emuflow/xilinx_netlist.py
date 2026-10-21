@@ -366,6 +366,88 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
         finally:
             connection.close()
 
+    def iter_physical_route_pins_by_net(
+        self, handoff_path: Path, *, ordinal_offset: int = 0,
+    ) -> Iterator[
+        Tuple[int, str, str, int, int, str, str, Optional[int], str]
+    ]:
+        """Stream placed pins with their deterministic RWRoute cell ordinal.
+
+        The physical assignment and mapped cell tables are already ordered by
+        instance identity.  Compute the cumulative route-cell count in SQLite
+        so the production exporter does not retain a graph-sized
+        ``instance -> cN`` dictionary merely to refer to cells again while
+        emitting nets.  LUT6_2 occupies two consecutive RapidWright cells;
+        its four routable logical pins are mapped to the same O5/O6 split used
+        by the CELL rows.  A null ordinal deliberately preserves fail-closed
+        handling for any other non-constant LUT6_2 pin.
+        """
+
+        if (
+            isinstance(ordinal_offset, bool)
+            or not isinstance(ordinal_offset, int)
+            or ordinal_offset < 0
+        ):
+            raise ValidationError("RWRoute ordinal offset is invalid")
+        connection = self._physical_connection(handoff_path)
+        direction_names = {0: "input", 1: "output", 2: "inout"}
+        try:
+            for row in connection.execute(
+                """
+                WITH physical_cells AS (
+                  SELECT a.instance,c.type,a.physical_site,
+                         ? + sum(CASE WHEN c.type='LUT6_2' THEN 2 ELSE 1 END)
+                           OVER (
+                             ORDER BY a.instance
+                             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                           )
+                           - CASE WHEN c.type='LUT6_2' THEN 2 ELSE 1 END
+                           AS route_ordinal
+                    FROM physical.assignment AS a
+                    JOIN cells AS c ON c.id=a.instance
+                )
+                SELECT p.net_bit,p.cell_id,p.port,p.port_bit,p.port_width,
+                       p.direction,r.physical_site,r.type,r.route_ordinal
+                  FROM cell_pins AS p
+                  JOIN physical_cells AS r ON r.instance=p.cell_id
+                 WHERE p.value_kind=0
+                 ORDER BY p.net_bit,p.cell_id,p.port,p.port_bit
+                """,
+                (ordinal_offset,),
+            ):
+                direction = direction_names.get(int(row["direction"]))
+                if direction is None:
+                    raise ValidationError(
+                        "indexed mapped pin direction is invalid"
+                    )
+                cell_type = str(row["type"])
+                port = str(row["port"])
+                route_ordinal: Optional[int] = int(row["route_ordinal"])
+                route_pin = (
+                    port if int(row["port_width"]) == 1
+                    else f"{port}[{int(row['port_bit'])}]"
+                )
+                if cell_type == "LUT6_2":
+                    if port == "I0":
+                        route_pin = "I0"
+                    elif port == "O5":
+                        route_pin = "O"
+                    elif port == "I1":
+                        route_ordinal += 1
+                        route_pin = "I1"
+                    elif port == "O6":
+                        route_ordinal += 1
+                        route_pin = "O"
+                    else:
+                        route_ordinal = None
+                yield (
+                    int(row["net_bit"]), str(row["cell_id"]), port,
+                    int(row["port_bit"]), int(row["port_width"]), direction,
+                    str(row["physical_site"]), route_ordinal, route_pin,
+                )
+        finally:
+            connection.close()
+
     def close(self) -> None:
         connection = getattr(self, "connection", None)
         if connection is not None:

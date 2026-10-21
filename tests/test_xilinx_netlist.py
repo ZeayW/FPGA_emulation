@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from emuflow.errors import ValidationError
 from emuflow.io import write_json
 from emuflow.verilog import mapped_verilog
 from emuflow.xilinx_netlist import (
@@ -12,10 +13,109 @@ from emuflow.xilinx_netlist import (
     is_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
+from emuflow.xilinx_physical_handoff import write_xilinx_physical_handoff
 from emuflow.yosys import import_yosys_json
 
 
 class XilinxMappedNetlistTests(unittest.TestCase):
+    def test_physical_route_pin_ordinals_stream_without_name_index(self) -> None:
+        mapped = {
+            "creator": "fixture",
+            "modules": {"top": {
+                "attributes": {"top": "1"},
+                "ports": {},
+                "cells": {
+                    "a_lut": {
+                        "type": "LUT6_2",
+                        "parameters": {"INIT": "0" * 64},
+                        "attributes": {},
+                        "port_directions": {
+                            **{f"I{index}": "input" for index in range(6)},
+                            "O5": "output", "O6": "output",
+                        },
+                        "connections": {
+                            "I0": [2], "I1": [3],
+                            **{f"I{index}": ["0"] for index in range(2, 6)},
+                            "O5": [4], "O6": [5],
+                        },
+                    },
+                    "z_ff": {
+                        "type": "FDRE", "parameters": {}, "attributes": {},
+                        "port_directions": {"D": "input", "Q": "output"},
+                        "connections": {"D": [4], "Q": [6]},
+                    },
+                },
+                "netnames": {
+                    f"n{bit}": {"bits": [bit]} for bit in range(2, 7)
+                },
+            }},
+        }
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "status": "pass",
+            "mapping_profile": "test", "top": "top", "source": {},
+            "policy": {}, "cascade_chains": [], "unplaced_constants": [],
+            "clusters": [{
+                "id": "cluster0", "kind": "slice",
+                "site_templates": ["SLICEL"], "control_set": None,
+                "assignments": [
+                    {"instance": "a_lut", "cell_type": "LUT6_2", "bel": "A6LUT"},
+                    {"instance": "z_ff", "cell_type": "FDRE", "bel": "AFF"},
+                ],
+            }],
+            "summary": {"clusters": 1},
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "status": "pass",
+            "part": "xcvu19p-test", "provider": "test", "policy": {},
+            "source": {},
+            "clusters": [{
+                "cluster": "cluster0", "site": "SLICE_X0Y0",
+                "site_type": "SLICEL", "x": 0, "y": 0,
+                "fixed": False, "physical_region": None,
+                "assignments": [
+                    {
+                        "instance": "a_lut", "cell_type": "LUT6_2",
+                        "bel": "A6LUT", "placement_mode": "SLICEL",
+                        "site": "SLICE_X0Y0",
+                    },
+                    {
+                        "instance": "z_ff", "cell_type": "FDRE",
+                        "bel": "AFF", "placement_mode": "SLICEL",
+                        "site": "SLICE_X0Y0",
+                    },
+                ],
+            }],
+            "summary": {"clusters": 1},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.json"
+            ir_path = root / "source.emuir.sqlite"
+            index = root / "mapped.sqlite"
+            handoff = root / "physical-handoff.sqlite"
+            source.write_text(json.dumps(mapped), encoding="utf-8")
+            import_yosys_json(source).save(ir_path)
+            emit_xilinx_mapped_index(ir_path, index)
+            write_xilinx_physical_handoff(handoff, packed, placement)
+            with open_xilinx_mapped_index(index) as indexed:
+                rows = list(indexed.iter_physical_route_pins_by_net(
+                    handoff, ordinal_offset=3
+                ))
+                with self.assertRaisesRegex(ValidationError, "ordinal offset"):
+                    list(indexed.iter_physical_route_pins_by_net(
+                        handoff, ordinal_offset=-1
+                    ))
+
+        by_pin = {
+            (row[1], row[2]): (row[7], row[8]) for row in rows
+        }
+        self.assertEqual(by_pin[("a_lut", "I0")], (3, "I0"))
+        self.assertEqual(by_pin[("a_lut", "I1")], (4, "I1"))
+        self.assertEqual(by_pin[("a_lut", "O5")], (3, "O"))
+        self.assertEqual(by_pin[("a_lut", "O6")], (4, "O"))
+        self.assertEqual(by_pin[("z_ff", "D")], (5, "D"))
+        self.assertEqual(by_pin[("z_ff", "Q")], (5, "Q"))
+
     def test_v1_index_remains_readable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "legacy.sqlite"

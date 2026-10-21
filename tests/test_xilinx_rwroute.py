@@ -12,6 +12,10 @@ from emuflow.xilinx_netlist import (
     emit_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
+from emuflow.xilinx_physical_handoff import (
+    open_xilinx_physical_handoff,
+    write_xilinx_physical_handoff,
+)
 from emuflow.xilinx_rwroute import (
     _validate_rapidwright_device_data,
     export_rwroute_input,
@@ -29,6 +33,109 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_typed_handoff_streams_route_ordinals_without_safe_map(self):
+        mapped = {"modules": {"top": {
+            "attributes": {"top": "1"}, "ports": {},
+            "cells": {
+                "a_src": {
+                    "type": "LUT1", "parameters": {"INIT": "10"},
+                    "attributes": {}, "port_directions": {"O": "output"},
+                    "connections": {"O": [2]},
+                },
+                "z_sink": {
+                    "type": "FDRE", "parameters": {}, "attributes": {},
+                    "port_directions": {"D": "input"},
+                    "connections": {"D": [2]},
+                },
+            },
+            "netnames": {"signal": {"bits": [2]}},
+        }}}
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "status": "pass",
+            "mapping_profile": "test", "top": "top", "source": {},
+            "policy": {}, "cascade_chains": [], "unplaced_constants": [],
+            "clusters": [
+                {
+                    "id": "cluster0", "kind": "slice",
+                    "site_templates": ["SLICEL"], "control_set": None,
+                    "assignments": [{
+                        "instance": "a_src", "cell_type": "LUT1",
+                        "bel": "A6LUT",
+                    }],
+                },
+                {
+                    "id": "cluster1", "kind": "slice",
+                    "site_templates": ["SLICEL"], "control_set": None,
+                    "assignments": [{
+                        "instance": "z_sink", "cell_type": "FDRE",
+                        "bel": "AFF",
+                    }],
+                },
+            ],
+            "summary": {"clusters": 2},
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "status": "pass",
+            "part": "xcvu19p-test", "provider": "test", "policy": {},
+            "source": {}, "clusters": [
+                {
+                    "cluster": f"cluster{index}",
+                    "site": f"SLICE_X0Y{index}", "site_type": "SLICEL",
+                    "x": 0, "y": index, "fixed": False,
+                    "physical_region": None,
+                    "assignments": [{
+                        "instance": name, "cell_type": cell_type,
+                        "bel": bel, "placement_mode": "SLICEL",
+                        "site": f"SLICE_X0Y{index}",
+                    }],
+                }
+                for index, (name, cell_type, bel) in enumerate((
+                    ("a_src", "LUT1", "A6LUT"),
+                    ("z_sink", "FDRE", "AFF"),
+                ))
+            ],
+            "summary": {"clusters": 2},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "mapped.json"
+            ir_path = root / "mapped.emuir.sqlite"
+            mapped_index = root / "mapped.sqlite"
+            handoff = root / "physical-handoff.sqlite"
+            output = root / "route.tsv"
+            source.write_text(json.dumps(mapped), encoding="utf-8")
+            import_yosys_json(source).save(ir_path)
+            emit_xilinx_mapped_index(ir_path, mapped_index)
+            write_xilinx_physical_handoff(handoff, packed, placement)
+            packed_view, placement_view = open_xilinx_physical_handoff(handoff)
+            with (
+                open_xilinx_mapped_index(mapped_index) as indexed,
+                mock.patch(
+                    "emuflow.xilinx_rwroute.heapq.merge",
+                    side_effect=AssertionError("safe-name map was built"),
+                ),
+            ):
+                report = export_rwroute_input(
+                    mapped_index, handoff, handoff, output,
+                    mapped_value=indexed, packed_value=packed_view,
+                    placement_value=placement_view,
+                    source_sha256={
+                        "mapped_sha256": "1" * 64,
+                        "packed_sha256": "2" * 64,
+                        "placement_sha256": "2" * 64,
+                    },
+                )
+            rows = output.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(
+            report["runtime_breakdown"]["dataflow"]["safe_names"],
+            "typed-ordinal-cursor",
+        )
+        self.assertIn("CELL\tc0\ta_src\tLUT1\tSLICE_X0Y0\tA6LUT", rows)
+        self.assertIn("CELL\tc1\tz_sink\tFDRE\tSLICE_X0Y1\tAFF", rows)
+        self.assertIn("PIN\tn2\tc0\tO\tdriver", rows)
+        self.assertIn("PIN\tn2\tc1\tD\tsink", rows)
+
     def test_exporter_routes_fixed_virtual_io_instead_of_excluding_top_ports(self):
         mapped = {"modules": {"top": {
             "ports": {
