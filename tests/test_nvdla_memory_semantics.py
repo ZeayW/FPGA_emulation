@@ -20,6 +20,7 @@ from scripts.benchmarks.nvdla_ram_stubs import generate, PHYSICAL_MEMORY_POLICY
 AUDIT_ROOT = os.environ.get("NVDLA_RAM_AUDIT_ROOT")
 IVERILOG = os.environ.get("IVERILOG") or shutil.which("iverilog")
 VVP = os.environ.get("VVP") or shutil.which("vvp")
+IVERILOG_LIBDIR = os.environ.get("IVERILOG_LIBDIR")
 
 
 def _bench(name, kind, depth, width):
@@ -118,6 +119,8 @@ class NvdlaMemorySemanticsTest(unittest.TestCase):
         bench.write_text(_bench(name, match[1], int(match[2]), int(match[3])))
         executable = out / (name + ".vvp")
         command = [str(IVERILOG), "-g2012", "-DSYNTHESIS", "-s", "tb", "-o", str(executable)]
+        if IVERILOG_LIBDIR:
+            command.extend(["-B", IVERILOG_LIBDIR])
         for directory in ("synth", "model", "vlibs"):
             command.extend(["-y", str(root / directory), "-I", str(root / directory)])
         command.extend([str(bench), str(models)])
