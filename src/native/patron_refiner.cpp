@@ -10,6 +10,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <queue>
 #include <set>
@@ -31,6 +32,7 @@ struct Progress {
   std::uint64_t polls = 0, candidates = 0, feasible = 0, accepted = 0;
   std::uint64_t cluster_done = 0, cluster_total = 0;
   std::uint64_t ratio_candidates = 0, affected_paths = 0, max_affected_paths = 0;
+  std::uint64_t ratio_reused_paths = 0;
   std::uint64_t net_pins = 0, exposure_pins = 0;
   using Clock = std::chrono::steady_clock;
   Clock::time_point started = Clock::now(), last = started;
@@ -50,6 +52,7 @@ struct Progress {
               << " accepted=" << accepted << " ratio_candidates=" << ratio_candidates
               << " affected_paths=" << affected_paths
               << " max_affected_paths=" << max_affected_paths
+              << " ratio_reused_paths=" << ratio_reused_paths
               << " net_pins=" << net_pins << " exposure_pins=" << exposure_pins << '\n';
   }
   void begin(const char* name) {
@@ -167,6 +170,19 @@ struct ProxyNetState {
   long long cuts = 0;
 };
 
+struct CachedTransition {
+  int source;
+  int sink;
+  double fanout_penalty_ns;
+};
+
+struct PathStructure {
+  std::vector<int> dependency_domains;
+  // Reverse endpoint traversal order, exactly as accumulated by build_proxy_path.
+  std::vector<CachedTransition> endpoint_transitions;
+  bool add_feedback = false;
+};
+
 struct ProxyPathState {
   double normalized_slack = 0.0;
   bool negative = false;
@@ -174,7 +190,7 @@ struct ProxyPathState {
   long long transitions = 0;
   long long hops = 0;
   long long ratio_sum = 0;
-  std::vector<int> dependency_domains;
+  std::shared_ptr<const PathStructure> structure;
 };
 
 struct ProxyState {
@@ -213,7 +229,8 @@ struct ProxyDelta {
   Evaluation evaluation;
   std::map<int, ProxyNetState> nets;
   std::map<int, int> domain_delta;
-  std::map<int, ProxyPathState> paths;
+  // Affected paths are already sorted and unique; preserve that accumulation order.
+  std::vector<std::pair<int, ProxyPathState>> paths;
 };
 
 struct FlowEdge {
@@ -1008,7 +1025,8 @@ ProxyPathState build_proxy_path(
   long long path_ratio_sum = 0;
   std::vector<int> sequence;
   sequence.reserve(path.nets.size() * 2);
-  std::vector<int> dependency_domains;
+  auto structure = std::make_shared<PathStructure>();
+  auto& dependency_domains = structure->dependency_domains;
   dependency_domains.reserve(path.nets.size());
   if (path.start_cluster >= 0) {
     int target = state.assignment[path.end_cluster];
@@ -1035,6 +1053,9 @@ ProxyPathState build_proxy_path(
               "endpoint-exact scalable path chain is invalid");
       transport += predicted_transition_delay(
           model, route, ratios, sink_clusters);
+      structure->endpoint_transitions.push_back({source, target,
+          model.boundary_fanout_penalty_scale_ns
+              * std::log2(1.0 + static_cast<double>(sink_clusters))});
       int net_ratio = 1;
       for (const Arc& arc : route.arcs) {
         dependency_domains.push_back(arc.domain);
@@ -1114,6 +1135,7 @@ ProxyPathState build_proxy_path(
       && sequence.front() == path.feedback_source
       && sequence.back() == path.feedback_sink) {
     transport += path.feedback_residual_ns;
+    structure->add_feedback = true;
   }
   const double predicted = path.slack_ns - transport;
   const double slack = normalized_slack(model, path.period_ns, predicted);
@@ -1124,8 +1146,32 @@ ProxyPathState build_proxy_path(
       static_cast<long long>(sequence.empty() ? 0 : sequence.size() - 1),
       path_hops,
       path_ratio_sum,
-      std::move(dependency_domains),
+      std::move(structure),
   };
+}
+
+
+// Only ratio changes: endpoint assignments, ordered transitions, fanout and
+// dependency domains remain unchanged. Preserve every original FP operation.
+ProxyPathState revalue_endpoint_path(
+    const Model& model, const ProxyPathState& old,
+    const std::vector<std::vector<double>>& route_delays,
+    const std::vector<std::vector<int>>& route_ratios, int path_index) {
+  ProxyPathState result = old;
+  double transport = 0.0;
+  long long ratio_sum = 0;
+  for (const auto& transition : old.structure->endpoint_transitions) {
+    transport += route_delays[transition.source][transition.sink]
+                 + transition.fanout_penalty_ns;
+    ratio_sum += route_ratios[transition.source][transition.sink];
+  }
+  const Path& path = model.path[path_index];
+  if (old.structure->add_feedback) transport += path.feedback_residual_ns;
+  result.normalized_slack = normalized_slack(
+      model, path.period_ns, path.slack_ns - transport);
+  result.negative = result.normalized_slack < 0.0;
+  result.ratio_sum = ratio_sum;
+  return result;
 }
 
 Evaluation proxy_evaluation(const Model& model, const ProxyState& state) {
@@ -1220,7 +1266,7 @@ ProxyState build_proxy_state(
     progress.report("initialize-paths", path, model.paths);
     state.path[path] = build_proxy_path(
         model, state, empty, state.domain_ratio, path);
-    for (int domain : state.path[path].dependency_domains) {
+    for (int domain : state.path[path].structure->dependency_domains) {
       state.domain_paths[domain].insert(path);
     }
     state.slack_path_order.emplace(
@@ -3294,25 +3340,50 @@ ProxyDelta evaluate_proxy_changes(
                           net_paths[item.first].begin(),
                           net_paths[item.first].end());
   }
-  for (int domain : ratio_changed_domains) {
-    affected_paths.insert(affected_paths.end(),
-                          state.domain_paths[domain].begin(),
-                          state.domain_paths[domain].end());
-  }
   std::sort(affected_paths.begin(), affected_paths.end());
-  affected_paths.erase(
-      std::unique(affected_paths.begin(), affected_paths.end()),
-      affected_paths.end());
+  affected_paths.erase(std::unique(affected_paths.begin(), affected_paths.end()),
+                       affected_paths.end());
+  std::vector<int> structural_paths;
+  if (!ratio_changed_domains.empty()) {
+    structural_paths = affected_paths;
+    for (int domain : ratio_changed_domains) {
+      affected_paths.insert(affected_paths.end(),
+                            state.domain_paths[domain].begin(),
+                            state.domain_paths[domain].end());
+    }
+    std::sort(affected_paths.begin(), affected_paths.end());
+    affected_paths.erase(
+        std::unique(affected_paths.begin(), affected_paths.end()),
+        affected_paths.end());
+  }
   progress.affected_paths += affected_paths.size();
   progress.max_affected_paths = std::max(progress.max_affected_paths,
       static_cast<std::uint64_t>(affected_paths.size()));
+  std::vector<std::vector<double>> route_delays;
+  std::vector<std::vector<int>> route_ratios;
+  if (!ratio_changed_domains.empty()) {
+    route_delays.assign(model.parts, std::vector<double>(model.parts));
+    route_ratios.assign(model.parts, std::vector<int>(model.parts, 1));
+    for (int source = 0; source < model.parts; ++source) {
+      for (int sink = 0; sink < model.parts; ++sink) {
+        const auto& route = model.route[source][sink];
+        route_delays[source][sink] = predicted_route_delay(model, route, projected_ratios);
+        for (const auto& arc : route.arcs)
+          route_ratios[source][sink] = std::max(route_ratios[source][sink], projected_ratios[arc.domain]);
+      }
+    }
+  }
+  delta.paths.reserve(affected_paths.size());
   std::uint64_t path_index = 0;
   for (int path : affected_paths) {
     progress.report("candidate-paths", path_index++, affected_paths.size());
-    delta.paths.emplace(
-        path,
-        build_proxy_path(
-            model, state, delta.nets, projected_ratios, path));
+    const bool ratio_only = !ratio_changed_domains.empty()
+        && model.path[path].start_cluster >= 0
+        && !std::binary_search(structural_paths.begin(), structural_paths.end(), path);
+    if (ratio_only) ++progress.ratio_reused_paths;
+    delta.paths.emplace_back(path, ratio_only
+        ? revalue_endpoint_path(model, state.path[path], route_delays, route_ratios, path)
+        : build_proxy_path(model, state, delta.nets, projected_ratios, path));
   }
   restore_assignment();
 
@@ -3509,7 +3580,7 @@ void apply_proxy_delta(const Model& model,
   }
   for (const auto& item : delta.paths) {
     ProxyPathState& old = state.path[item.first];
-    for (int domain : old.dependency_domains) {
+    for (int domain : old.structure->dependency_domains) {
       const std::size_t erased = state.domain_paths[domain].erase(item.first);
       require(erased == 1, "missing scalable domain/path dependency");
     }
@@ -3537,7 +3608,7 @@ void apply_proxy_delta(const Model& model,
     state.snaking += item.second.snaking - old.snaking;
     state.transitions += item.second.transitions - old.transitions;
     old = item.second;
-    for (int domain : old.dependency_domains) {
+    for (int domain : old.structure->dependency_domains) {
       state.domain_paths[domain].insert(item.first);
     }
     state.slack_path_order.emplace(old.normalized_slack, item.first);
@@ -4191,8 +4262,8 @@ void run_scalable(const Model& model,
       if (state.path[path].hops == maximum_hops
           || state.path[path].ratio_sum == maximum_ratio_sum) {
         critical_domains.insert(
-            state.path[path].dependency_domains.begin(),
-            state.path[path].dependency_domains.end());
+            state.path[path].structure->dependency_domains.begin(),
+            state.path[path].structure->dependency_domains.end());
       }
     }
     std::cerr << "PATRON_CURRENT_MAXIMA maximum_path_hops="
@@ -4309,10 +4380,10 @@ void run_scalable(const Model& model,
   for (int path : current_paths) {
     if (state.path[path].hops == frontier_hops
         || state.path[path].ratio_sum == frontier_ratio_sum) {
-      frontier_domains.insert(state.path[path].dependency_domains.begin(),
-                              state.path[path].dependency_domains.end());
+      frontier_domains.insert(state.path[path].structure->dependency_domains.begin(),
+                              state.path[path].structure->dependency_domains.end());
     }
-    for (int domain : state.path[path].dependency_domains) {
+    for (int domain : state.path[path].structure->dependency_domains) {
       if (state.path[path].hops == frontier_hops) {
         ++hop_frontier_domain_paths[domain];
       }
