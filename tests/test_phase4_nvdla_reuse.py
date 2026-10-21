@@ -150,3 +150,26 @@ def test_downstream_changes_do_not_allow_module_level_or_upstream_changes():
     for changed in (new + "run_side_effect()\n", new.replace("return 2", "return 4")):
         with pytest.raises(ValueError, match="outside downstream"):
             reuse.check_downstream_only_change(name, old, changed)
+
+
+def test_reused_worker_does_not_request_fresh_synthesis_profiling(tmp_path):
+    from types import SimpleNamespace
+    import phase4_nvdla_prefix as prefix
+    args = SimpleNamespace(native_root=tmp_path, output=tmp_path,
+                           benchmark=tmp_path / 'benchmark.json', reuse_prefix=tmp_path)
+    binding = {'prepared_frontend': str(tmp_path / 'frontend'),
+               'prepared_timing': str(tmp_path / 'timing')}
+    def consume(**options):
+        assert options['synthesis_profile_passes'] is False
+        assert not options['sources']
+        assert options['prepared_frontend'] == tmp_path / 'frontend'
+        raise RuntimeError('validated prepared invocation')
+    with patch.object(prefix, 'read', return_value=binding), \
+         patch.object(prefix, 'verify_provenance'), \
+         patch.object(prefix.BenchmarkRun, 'load'), \
+         patch.object(prefix, 'flow_options', return_value={'sources': ['rtl.v'],
+                                                          'synthesis_profile_passes': True}), \
+         patch.object(reuse, 'verify_reuse_binding'), \
+         patch('emuflow.multi_fpga_flow.run_multi_fpga_flow', side_effect=consume):
+        with pytest.raises(RuntimeError, match='validated prepared invocation'):
+            prefix.worker(args)

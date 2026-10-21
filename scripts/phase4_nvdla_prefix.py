@@ -61,6 +61,7 @@ def worker(args):
         reuse = read(args.output / "prepared-prefix.json")
         verify_reuse_binding(reuse)
         options.update(sources=(), include_dirs=(), defines=(),
+                       synthesis_profile_passes=False,
                        prepared_frontend=Path(reuse["prepared_frontend"]),
                        prepared_timing=Path(reuse["prepared_timing"]))
     report = run_multi_fpga_flow(**options)
