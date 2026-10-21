@@ -1313,7 +1313,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 fake_bank,
                 {
                     "schema": original_bank["schema"],
-                    "provider": original_bank["provider"],
+                    "provider": original_bank["header"]["provider"],
                 },
             )
             fake_bank_digest = hashlib.sha256(fake_bank.read_bytes()).hexdigest()

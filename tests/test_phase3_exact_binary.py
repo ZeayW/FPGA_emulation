@@ -403,6 +403,10 @@ class Phase3ExactBinaryTest(unittest.TestCase):
 
     def test_repeatable_record_stream_preserves_v3_digest_and_binary(self):
         materialized = _contract()
+        materialized["canonical_header_fixture"] = {
+            "escaped": "line\n雪/😀",
+            "values": [None, True, False, 7, 1.25],
+        }
         streamed = copy.deepcopy(materialized)
         capture_relation = [
             (
@@ -511,14 +515,20 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                 integer_topology=self._IntegerTopology([[], [0]]),
             )
         )
-        digest = semantic_contract_sha256(streamed)
 
         def forbidden_record_expansion():
             raise AssertionError("direct writer expanded semantic records")
             yield
 
-        streamed["dependency_edges"]._factory = forbidden_record_expansion
-        streamed["logic_segments"]._factory = forbidden_record_expansion
+        for key in (
+            "cut_nodes",
+            "dependency_edges",
+            "logic_segments",
+            "capture_requirements",
+        ):
+            streamed[key]._factory = forbidden_record_expansion
+        digest = semantic_contract_sha256(streamed)
+        self.assertEqual(digest, semantic_contract_sha256(materialized))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             expected_path = root / "expected.bin"
@@ -578,6 +588,176 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                 semantic_digest="0" * 64,
             )
 
+    def test_direct_digest_rejects_mixed_generation_and_truncated_raw_node(self):
+        def direct_contract(design):
+            contract = _contract(design)
+            contract["capture_requirements"] = build_static_exact_capture_stream(
+                (
+                    item["cut_net"],
+                    item["fpga"],
+                    item["kind"],
+                    item["endpoint"],
+                    item.get("port"),
+                    item.get("bit"),
+                )
+                for item in contract["capture_requirements"]
+            )
+            contract["cut_nodes"] = build_static_exact_cut_node_stream(
+                iter(contract["cut_nodes"])
+            )
+            contract.update(
+                build_static_exact_record_streams(
+                    contract["cut_nodes"],
+                    contract["capture_requirements"],
+                    bytes([1, 0]),
+                    integer_topology=self._IntegerTopology([[], [0]]),
+                )
+            )
+            return contract
+
+        first = direct_contract("first_generation")
+        second = direct_contract("second_generation")
+        first["dependency_edges"] = second["dependency_edges"]
+        with self.assertRaisesRegex(ValidationError, "generation is mixed"):
+            semantic_contract_sha256(first)
+
+        truncated = direct_contract("truncated_raw_node")
+        decoder = truncated["cut_nodes"]._binary_decoder
+        self.assertIsNotNone(decoder)
+        truncated["cut_nodes"]._binary_decoder = lambda index: decoder(index)[:-1]
+        with self.assertRaisesRegex(ValidationError, "cut node is invalid"):
+            semantic_contract_sha256(truncated)
+
+        malformed = direct_contract("malformed_source_segments")
+        decoder = malformed["cut_nodes"]._binary_decoder
+        self.assertIsNotNone(decoder)
+
+        def drop_source_segment(index):
+            node = list(decoder(index))
+            if index == 1:
+                node[7] = []
+            return tuple(node)
+
+        malformed["cut_nodes"]._binary_decoder = drop_source_segment
+        with self.assertRaisesRegex(ValidationError, "cardinality"):
+            semantic_contract_sha256(malformed)
+
+        invalid_direct = direct_contract("invalid_header")
+        invalid_materialized = _contract("invalid_header")
+        invalid_direct["opaque_header"] = b"not-json"
+        invalid_materialized["opaque_header"] = b"not-json"
+        for contract in (invalid_direct, invalid_materialized):
+            with self.assertRaises(TypeError):
+                semantic_contract_sha256(contract)
+
+    def test_mutable_launch_flags_are_frozen_for_all_record_views(self):
+        materialized = _contract("mutable_launch_flags")
+        streamed = copy.deepcopy(materialized)
+        streamed["capture_requirements"] = build_static_exact_capture_stream(
+            (
+                item["cut_net"],
+                item["fpga"],
+                item["kind"],
+                item["endpoint"],
+                item.get("port"),
+                item.get("bit"),
+            )
+            for item in streamed["capture_requirements"]
+        )
+        streamed["cut_nodes"] = build_static_exact_cut_node_stream(
+            iter(streamed["cut_nodes"])
+        )
+        flags = bytearray([1, 0])
+        streamed.update(
+            build_static_exact_record_streams(
+                streamed["cut_nodes"],
+                streamed["capture_requirements"],
+                flags,
+                integer_topology=self._IntegerTopology([[], [0]]),
+            )
+        )
+        flags[:] = b"\x00\x02"
+        replayed = {
+            **streamed,
+            "cut_nodes": list(streamed["cut_nodes"]),
+            "dependency_edges": list(streamed["dependency_edges"]),
+            "logic_segments": list(streamed["logic_segments"]),
+            "capture_requirements": list(streamed["capture_requirements"]),
+        }
+        self.assertEqual(replayed, materialized)
+        self.assertEqual(
+            semantic_contract_sha256(streamed),
+            semantic_contract_sha256(replayed),
+        )
+
+    def test_direct_digest_uses_logical_capture_order_for_kind_and_wide_bit(self):
+        materialized = _contract("capture_sort_order")
+        materialized["capture_requirements"] = [
+            {
+                "id": f"capture{index:06d}",
+                "cut_net": "net1",
+                "fpga": "fpga1",
+                "kind": kind,
+                "endpoint": endpoint,
+                **(
+                    {"port": "D", "bit": bit}
+                    if kind == "architectural-state"
+                    else {}
+                ),
+            }
+            for index, (kind, endpoint, bit) in enumerate(
+                (
+                    ("architectural-state", "state/D", 255),
+                    ("architectural-state", "state/D", 256),
+                    ("top-output", "top:out[0]", None),
+                )
+            )
+        ]
+        materialized["cut_nodes"][1]["capture_segment_ids"] = [
+            "segment000002",
+            "segment000003",
+            "segment000004",
+        ]
+        materialized["logic_segments"] = materialized["logic_segments"][:2] + [
+            {
+                "id": f"segment{index + 2:06d}",
+                "kind": "rx_to_capture",
+                "fpga": "fpga1",
+                "source_cut_net": "net1",
+                "capture_requirement": f"capture{index:06d}",
+            }
+            for index in range(3)
+        ]
+        materialized["metrics"]["logic_segments"] = 5
+        materialized["metrics"]["capture_requirements"] = 3
+        streamed = copy.deepcopy(materialized)
+        streamed["capture_requirements"] = build_static_exact_capture_stream(
+            (
+                item["cut_net"],
+                item["fpga"],
+                item["kind"],
+                item["endpoint"],
+                item.get("port"),
+                item.get("bit"),
+            )
+            for item in streamed["capture_requirements"]
+        )
+        streamed["cut_nodes"] = build_static_exact_cut_node_stream(
+            iter(streamed["cut_nodes"])
+        )
+        streamed.update(
+            build_static_exact_record_streams(
+                streamed["cut_nodes"],
+                streamed["capture_requirements"],
+                bytes([1, 0]),
+                integer_topology=self._IntegerTopology([[], [0]]),
+            )
+        )
+        self.assertEqual(
+            semantic_contract_sha256(streamed),
+            semantic_contract_sha256(materialized),
+        )
+
     def test_integer_topology_preserves_launch_before_dependency_order(self):
         materialized = _contract("launch_and_dependency")
         materialized["cut_nodes"][1]["source_fpgas"] = ["fpga0"]
@@ -633,8 +813,8 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                 integer_topology=self._IntegerTopology([[], [0]]),
             )
         )
-        digest = semantic_contract_sha256(materialized)
-        self.assertEqual(semantic_contract_sha256(streamed), digest)
+        digest = semantic_contract_sha256(streamed)
+        self.assertEqual(digest, semantic_contract_sha256(materialized))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             expected = root / "expected.bin"
@@ -677,7 +857,9 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                 integer_topology=topology,
             )
         )
-        digest = semantic_contract_sha256(materialized)
+        digest = semantic_contract_sha256(streamed)
+        self.assertEqual(digest, semantic_contract_sha256(materialized))
+        self.assertEqual(topology.calls, 0)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             expected = root / "expected.bin"

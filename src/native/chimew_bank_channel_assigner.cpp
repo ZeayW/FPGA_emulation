@@ -781,7 +781,7 @@ Stage2Result solve_bank(const Input& input, int bank_index,
                  static_cast<int>(groups.size()), candidates)};
 }
 
-void write_certificate(std::ofstream& output, const std::string& label,
+void write_certificate(std::ostream& output, const std::string& label,
                        const AssignmentResult& result) {
   output << "CERT " << label << " " << result.potentials.size() << "\n";
   for (int node = 0; node < static_cast<int>(result.potentials.size()); ++node) {
@@ -865,38 +865,43 @@ void run(const std::string& input_path, const std::string& output_path) {
     stage2_total += cost;
   }
 
-  std::ofstream output(output_path);
-  if (!output) {
-    throw std::runtime_error("cannot open Chimew bank/channel output");
+  std::ofstream output_file;
+  std::ostream* output = &std::cout;
+  if (output_path != "-") {
+    output_file.open(output_path);
+    if (!output_file) {
+      throw std::runtime_error("cannot open Chimew bank/channel output");
+    }
+    output = &output_file;
   }
-  output << "EMUFLOW_CHIMEW_BANK_CHANNEL_OUTPUT_V1\n";
-  output << "METRIC " << input.groups.size() << " " << stage1.total_cost << " "
+  *output << "EMUFLOW_CHIMEW_BANK_CHANNEL_OUTPUT_V1\n";
+  *output << "METRIC " << input.groups.size() << " " << stage1.total_cost << " "
          << stage2_total << "\n";
   for (int group = 0; group < static_cast<int>(input.groups.size()); ++group) {
-    output << "BANK_ASSIGN " << group << " " << stage1.right_for_left[group]
+    *output << "BANK_ASSIGN " << group << " " << stage1.right_for_left[group]
            << " " << stage1.cost_for_left[group] << "\n";
   }
-  write_certificate(output, "STAGE1", stage1);
+  write_certificate(*output, "STAGE1", stage1);
   for (int bank = 0; bank < static_cast<int>(input.banks.size()); ++bank) {
     if (groups_by_bank[bank].empty()) {
       continue;
     }
-    output << "CHOSEN " << bank << " " << chosen_priority[bank] << "\n";
+    *output << "CHOSEN " << bank << " " << chosen_priority[bank] << "\n";
     for (int priority = 0; priority < 2; ++priority) {
       const Stage2Result& result = priority == 0 ? alternatives[bank].first
                                                  : alternatives[bank].second;
       const std::string label =
           "BANK" + std::to_string(bank) + "P" + std::to_string(priority);
-      output << "ALTERNATIVE " << bank << " " << priority << " "
+      *output << "ALTERNATIVE " << bank << " " << priority << " "
              << result.assignment.total_cost << "\n";
       for (int left = 0; left < static_cast<int>(result.groups.size()); ++left) {
         const int local_channel = result.assignment.right_for_left[left];
-        output << "CHANNEL_ASSIGN " << bank << " " << priority << " "
+        *output << "CHANNEL_ASSIGN " << bank << " " << priority << " "
                << result.groups[left] << " "
                << input.banks[bank].channels[local_channel] << " "
                << result.assignment.cost_for_left[left] << "\n";
       }
-      write_certificate(output, label, result.assignment);
+      write_certificate(*output, label, result.assignment);
     }
   }
 }

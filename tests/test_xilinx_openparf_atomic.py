@@ -1,4 +1,6 @@
 import json
+import fcntl
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -2193,6 +2195,144 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 validate_xilinx_openparf_atomic_placement(
                     malformed, output / "name_map.json", mapped, architecture
                 )
+
+    def test_validator_joins_typed_atoms_without_materializing_name_map(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "shuffled.pl"
+            placement.write_text(
+                "a1 0 0 1 trailing-solver-field\n"
+                "# solver comment\n"
+                "a0 0 0 0\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "emuflow.xilinx_openparf_name_map_storage."
+                "_AtomSequence.__iter__",
+                side_effect=AssertionError("atom sequence was materialized"),
+            ):
+                certificate = validate_xilinx_openparf_atomic_placement(
+                    placement, output / "name_map.json", mapped, architecture
+                )
+            self.assertEqual(certificate["status"], "pass")
+            self.assertEqual(certificate["summary"]["atoms"], 2)
+            self.assertFalse(list(output.glob(".openparf-placement-*.sqlite3")))
+
+    def test_validator_releases_system_index_and_name_map_lease_on_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "placed.pl"
+            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+            created = []
+            real_mkstemp = tempfile.mkstemp
+
+            def tracked_mkstemp(*args, **kwargs):
+                descriptor, path = real_mkstemp(*args, **kwargs)
+                if kwargs.get("prefix") == "emuflow-openparf-placement-":
+                    created.append(Path(path))
+                return descriptor, path
+
+            with mock.patch(
+                "emuflow.xilinx_openparf_atomic.tempfile.mkstemp",
+                side_effect=tracked_mkstemp,
+            ), mock.patch(
+                "emuflow.xilinx_openparf_atomic."
+                "load_xilinx_openparf_atomic_sites",
+                side_effect=ValidationError("injected site failure"),
+            ):
+                with self.assertRaisesRegex(ValidationError, "injected site"):
+                    validate_xilinx_openparf_atomic_placement(
+                        placement, output / "name_map.json", mapped, architecture
+                    )
+            self.assertEqual(len(created), 1)
+            self.assertFalse(created[0].exists())
+            lock_path = output / ".name_map.json.lock"
+            descriptor = os.open(lock_path, os.O_RDWR)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+
+    def test_parser_preserves_earliest_source_error_across_batches(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            cases = (
+                (
+                    "unknown-before-duplicate.pl",
+                    "a999 0 0 0\na0 0 0 0\na0 0 0 1\n",
+                ),
+                (
+                    "unknown-before-malformed.pl",
+                    "a999 0 0 0\nmalformed\n",
+                ),
+                (
+                    "wrong-prefix-before-malformed.pl",
+                    "b0 0 0 0\nmalformed\n",
+                ),
+                (
+                    "wrong-prefix-before-duplicate.pl",
+                    "x0 0 0 0\na0 0 0 0\na0 0 0 1\n",
+                ),
+            )
+            for filename, contents in cases:
+                placement = output / filename
+                placement.write_text(contents, encoding="utf-8")
+                with self.assertRaisesRegex(
+                    ImportError, rf"{filename}:1: invalid atomic placement row"
+                ):
+                    validate_xilinx_openparf_atomic_placement(
+                        placement, output / "name_map.json", mapped, architecture
+                    )
+
+            duplicate_first = output / "duplicate-before-malformed.pl"
+            duplicate_first.write_text(
+                "a0 0 0 0\na0 0 0 1\nmalformed\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValidationError, "duplicates an atom"):
+                validate_xilinx_openparf_atomic_placement(
+                    duplicate_first,
+                    output / "name_map.json",
+                    mapped,
+                    architecture,
+                )
+
+            for filename, second_row in (
+                ("duplicate-before-nonnumeric.pl", "a0 q 0 1"),
+                ("duplicate-before-nondiscrete.pl", "a0 0.5 0 1"),
+            ):
+                duplicate_coordinate = output / filename
+                duplicate_coordinate.write_text(
+                    f"a0 0 0 0\n{second_row}\n", encoding="utf-8"
+                )
+                with self.assertRaisesRegex(
+                    ValidationError, "duplicates an atom"
+                ):
+                    validate_xilinx_openparf_atomic_placement(
+                        duplicate_coordinate,
+                        output / "name_map.json",
+                        mapped,
+                        architecture,
+                    )
+
+            duplicate = output / "duplicate.pl"
+            duplicate.write_text(
+                "a0 0 0 0\na0 0 0 1\na1 0 0 1\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValidationError, "duplicates an atom"):
+                validate_xilinx_openparf_atomic_placement(
+                    duplicate, output / "name_map.json", mapped, architecture
+                )
+            self.assertFalse(list(output.glob(".openparf-placement-*.sqlite3")))
 
     def test_exports_exact_native_dsp_chain_windows_for_in_core_legalizer(self):
         with tempfile.TemporaryDirectory() as temporary:

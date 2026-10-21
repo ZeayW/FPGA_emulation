@@ -69,6 +69,10 @@ from .cross_stage import (
 )
 from .chimew_phase6 import run_chimew_phase6_adapter
 from .chimew_bank_channel_storage import read_chimew_bank_channel_input
+from .chimew_bank_channel_report_storage import (
+    BankChannelReportView,
+    read_chimew_bank_channel_report,
+)
 from .chimew_grouping import materialize_chimew_schedule_ratios
 from .chimew_pipeline import (
     run_chimew_phase6_pipeline,
@@ -6414,18 +6418,25 @@ def _dispatch(args: argparse.Namespace) -> int:
             assignment_input = read_chimew_bank_channel_input(
                 args.assignment_input
             )
-            with assignment_input:
-                report = build_chimew_phase6_qualification(
-                    read_json(args.schedule),
-                    read_json(args.crossings),
-                    read_json(args.initial_grouping),
-                    read_position_hints(args.positions),
-                    read_json(args.refined_grouping),
-                    read_json(args.rudy_input),
-                    read_json(args.rudy_report),
-                    assignment_input,
-                    read_json(args.assignment_report),
-                )
+            assignment_report = read_chimew_bank_channel_report(
+                args.assignment_report, allow_legacy=True
+            )
+            try:
+                with assignment_input:
+                    report = build_chimew_phase6_qualification(
+                        read_json(args.schedule),
+                        read_json(args.crossings),
+                        read_json(args.initial_grouping),
+                        read_position_hints(args.positions),
+                        read_json(args.refined_grouping),
+                        read_json(args.rudy_input),
+                        read_json(args.rudy_report),
+                        assignment_input,
+                        assignment_report,
+                    )
+            finally:
+                if isinstance(assignment_report, BankChannelReportView):
+                    assignment_report.close()
             write_json(args.output, report)
             _print_json(report)
             return 0

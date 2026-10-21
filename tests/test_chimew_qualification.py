@@ -17,6 +17,10 @@ from emuflow.chimew_bank_channel import (
 from emuflow.chimew_bank_channel_storage import (
     write_chimew_bank_channel_storage,
 )
+from emuflow.chimew_bank_channel_report_storage import (
+    read_chimew_bank_channel_report,
+    write_chimew_bank_channel_report_storage,
+)
 from emuflow.chimew_binding_storage import read_chimew_binding
 from emuflow.cli import main
 from emuflow.chimew_grouping import (
@@ -330,7 +334,13 @@ class ChimewQualificationTest(unittest.TestCase):
             for label, document in documents.items():
                 paths[label] = root / f"{label}.json"
                 if label == "assignment-input":
-                    write_chimew_bank_channel_storage(paths[label], document)
+                    write_chimew_bank_channel_storage(
+                        paths[label], document
+                    ).close()
+                elif label == "assignment-report":
+                    write_chimew_bank_channel_report_storage(
+                        paths[label], document
+                    ).close()
                 else:
                     write_json(paths[label], document)
             output = root / "qualification.json"
@@ -576,7 +586,7 @@ class ChimewQualificationTest(unittest.TestCase):
             )
             self.assertEqual(main(["pin-plan", "chimew-validate", str(output)]), 0)
             validation = validate_chimew_phase6_pipeline(output)
-            self.assertEqual(validation["artifact_hashes_verified"], 28)
+            self.assertEqual(validation["artifact_hashes_verified"], 30)
             self.assertEqual(
                 validation["qualification_scope"], "byte-bound-source-artifacts"
             )
@@ -635,7 +645,7 @@ class ChimewQualificationTest(unittest.TestCase):
                 fake_json_temporary,
                 {
                     "schema": real_bank["schema"],
-                    "provider": real_bank["provider"],
+                    "provider": real_bank["header"]["provider"],
                 },
             )
             fake_json_digest = hashlib.sha256(
@@ -1046,7 +1056,7 @@ class ChimewQualificationTest(unittest.TestCase):
                     bank_input,
                     electrical,
                     qualification_document=mixed_package_pins,
-                    bank_channel_report_document=read_json(
+                    bank_channel_report_document=read_chimew_bank_channel_report(
                         output
                         / report["artifacts"]["bank_channel_report"]["path"]
                     ),

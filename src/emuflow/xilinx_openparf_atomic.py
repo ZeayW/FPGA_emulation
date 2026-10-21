@@ -54,6 +54,7 @@ from .xilinx_openparf_source_storage import (
 from .xilinx_openparf_name_map_storage import (
     OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
     OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA,
+    XilinxOpenparfAtomicNameMapView,
     read_xilinx_openparf_atomic_name_map,
     materialize_xilinx_openparf_atomic_name_map,
     write_xilinx_openparf_atomic_name_map_storage,
@@ -128,6 +129,375 @@ _DEVICE_STATIC_CACHE: "OrderedDict[Tuple[Any, ...], Dict[str, Any]]" = (
     OrderedDict()
 )
 _NATIVE_CARRY_Y_AXIS_ORDER_CACHE: Dict[Tuple[Any, str], str] = {}
+
+
+class _IndexedAtomicPlacement:
+    """Disk-backed join of native ``.pl`` rows to the typed atom contract.
+
+    The name-map reader has already authenticated every atom row and owns a
+    shared lease on its immutable sidecar.  Stage only the solver coordinates
+    here, then let SQLite prove one-to-one coverage and stream the joined rows
+    in authoritative atom order.  This avoids retaining both a graph-sized
+    ``openparf -> atom`` dictionary and a second ``openparf -> coordinate``
+    dictionary beside the final placement certificate.
+    """
+
+    def __init__(
+        self,
+        placement_path: Path,
+        name_map: XilinxOpenparfAtomicNameMapView,
+    ) -> None:
+        self._name_map: Optional[XilinxOpenparfAtomicNameMapView] = name_map
+        self._path: Optional[Path] = None
+        self._database: Optional[sqlite3.Connection] = None
+        descriptor, temporary = tempfile.mkstemp(
+            prefix="emuflow-openparf-placement-", suffix=".sqlite3",
+        )
+        os.close(descriptor)
+        self._path = Path(temporary)
+        try:
+            database = sqlite3.connect(self._path)
+            self._database = database
+            database.execute("PRAGMA journal_mode=OFF")
+            database.execute("PRAGMA synchronous=OFF")
+            database.execute("PRAGMA temp_store=FILE")
+            database.execute("PRAGMA cache_size=-4096")
+            database.execute("""
+                CREATE TABLE placement(
+                    openparf TEXT PRIMARY KEY,
+                    x INTEGER NOT NULL,
+                    y INTEGER NOT NULL,
+                    z INTEGER NOT NULL,
+                    source_line INTEGER NOT NULL
+                ) WITHOUT ROWID
+            """)
+            database.execute("""
+                CREATE TABLE occupancy(
+                    site TEXT NOT NULL,
+                    resource TEXT NOT NULL,
+                    z INTEGER NOT NULL,
+                    PRIMARY KEY(site,resource,z)
+                ) WITHOUT ROWID
+            """)
+            database.execute("""
+                CREATE TABLE normalized(
+                    seq INTEGER PRIMARY KEY,
+                    instance TEXT NOT NULL UNIQUE,
+                    cell_type TEXT NOT NULL,
+                    source_cluster TEXT NOT NULL,
+                    resource TEXT NOT NULL,
+                    z INTEGER NOT NULL,
+                    x REAL NOT NULL,
+                    y REAL NOT NULL,
+                    site TEXT NOT NULL,
+                    anchor_site TEXT NOT NULL,
+                    bel TEXT NOT NULL,
+                    placement_mode TEXT NOT NULL,
+                    bram_tile_group TEXT
+                )
+            """)
+            database.execute("""
+                CREATE TABLE requested_instances(
+                    seq INTEGER PRIMARY KEY,
+                    instance TEXT NOT NULL
+                )
+            """)
+            batch: list[tuple[str, int, int, int, int]] = []
+            atom_count = int(name_map.selector["counts"]["atoms"])
+            max_ordinal_digits = len(str(atom_count - 1))
+            seen_ordinals = bytearray((atom_count + 7) // 8)
+
+            def flush_pending() -> None:
+                if batch:
+                    self._insert(batch)
+                    batch.clear()
+
+            with placement_path.open("r", encoding="utf-8") as stream:
+                for line_number, raw in enumerate(stream, start=1):
+                    fields = raw.strip().split()
+                    if not fields or fields[0].startswith("#"):
+                        continue
+                    if len(fields) not in {4, 5}:
+                        flush_pending()
+                        raise ImportError(
+                            f"{placement_path}:{line_number}: invalid atomic "
+                            "placement row"
+                        )
+                    ordinal = fields[0][1:]
+                    valid_ordinal = (
+                        fields[0].startswith("a")
+                        and ordinal.isascii()
+                        and ordinal.isdecimal()
+                        and (ordinal == "0" or not ordinal.startswith("0"))
+                        and len(ordinal) <= max_ordinal_digits
+                    )
+                    ordinal_value = -1
+                    if valid_ordinal:
+                        ordinal_value = int(ordinal)
+                        valid_ordinal = (
+                            fields[0] == f"a{ordinal_value}"
+                            and ordinal_value < atom_count
+                        )
+                    if not valid_ordinal:
+                        flush_pending()
+                        raise ImportError(
+                            f"{placement_path}:{line_number}: invalid atomic "
+                            "placement row"
+                        )
+                    byte_index, bit_index = divmod(ordinal_value, 8)
+                    ordinal_bit = 1 << bit_index
+                    if seen_ordinals[byte_index] & ordinal_bit:
+                        flush_pending()
+                        raise ValidationError(
+                            "OpenPARF atomic placement duplicates an atom"
+                        )
+                    try:
+                        values = [float(value) for value in fields[1:4]]
+                    except ValueError as error:
+                        flush_pending()
+                        raise ImportError(
+                            "OpenPARF atomic placement is non-numeric"
+                        ) from error
+                    if any(
+                        not math.isfinite(value) or not value.is_integer()
+                        for value in values
+                    ):
+                        flush_pending()
+                        raise ValidationError(
+                            "OpenPARF atomic placement is not discrete"
+                        )
+                    seen_ordinals[byte_index] |= ordinal_bit
+                    batch.append((
+                        fields[0], *(int(value) for value in values), line_number,
+                    ))
+                    if len(batch) >= 8192:
+                        flush_pending()
+                flush_pending()
+            database.commit()
+            atom_uri = name_map.store_path.resolve().as_uri() + (
+                "?mode=ro&immutable=1"
+            )
+            database.execute("ATTACH DATABASE ? AS atom_map", (atom_uri,))
+            unknown = database.execute(
+                "SELECT p.source_line FROM placement p "
+                "LEFT JOIN atom_map.atoms a USING(openparf) "
+                "WHERE a.seq IS NULL ORDER BY p.source_line LIMIT 1"
+            ).fetchone()
+            if unknown is not None:
+                raise ImportError(
+                    f"{placement_path}:{int(unknown[0])}: invalid atomic "
+                    "placement row"
+                )
+            placed_count = int(database.execute(
+                "SELECT COUNT(*) FROM placement"
+            ).fetchone()[0])
+            if placed_count != atom_count or database.execute(
+                "SELECT 1 FROM atom_map.atoms a "
+                "LEFT JOIN placement p USING(openparf) "
+                "WHERE p.openparf IS NULL LIMIT 1"
+            ).fetchone() is not None:
+                raise ValidationError(
+                    "OpenPARF atomic placement does not cover every atom"
+                )
+        except BaseException:
+            self.close()
+            raise
+
+    def _insert(self, rows: Sequence[tuple[str, int, int, int, int]]) -> None:
+        assert self._database is not None
+        try:
+            self._database.executemany(
+                "INSERT INTO placement VALUES (?, ?, ?, ?, ?)", rows
+            )
+        except sqlite3.IntegrityError as error:
+            raise ValidationError(
+                "OpenPARF atomic placement duplicates an atom"
+            ) from error
+
+    def requested_coordinates(self) -> list[tuple[int, int]]:
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        return [
+            (int(row[0]), int(row[1]))
+            for row in self._database.execute(
+                "SELECT DISTINCT x,y FROM placement ORDER BY x,y"
+            )
+        ]
+
+    def iter_joined(
+        self,
+    ) -> Iterator[tuple[Mapping[str, str], tuple[int, int, int]]]:
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        rows = self._database.execute(
+            "SELECT a.openparf,a.instance,a.cell_type,a.source_cluster,a.resource,"
+            "p.x,p.y,p.z FROM atom_map.atoms a JOIN placement p USING(openparf) "
+            "ORDER BY a.seq"
+        )
+        for row in rows:
+            yield ({
+                "openparf": str(row[0]), "instance": str(row[1]),
+                "cell_type": str(row[2]), "source_cluster": str(row[3]),
+                "resource": str(row[4]),
+            }, (int(row[5]), int(row[6]), int(row[7])))
+
+    def claim_occupancy(self, site: str, resource: str, z: int) -> None:
+        """Record one exact physical slot without a design-sized Python set."""
+
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        try:
+            self._database.execute(
+                "INSERT INTO occupancy VALUES (?, ?, ?)", (site, resource, z)
+            )
+        except sqlite3.IntegrityError as error:
+            raise ValidationError(
+                "OpenPARF atomic placement overlaps a BEL slot"
+            ) from error
+
+    def append_normalized(
+        self,
+        atom: Mapping[str, str],
+        *,
+        z: int,
+        x: float,
+        y: float,
+        site: str,
+        anchor_site: str,
+        bel: str,
+        placement_mode: str,
+        bram_tile_group: Optional[Mapping[str, Any]],
+    ) -> None:
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        encoded_group = (
+            json.dumps(bram_tile_group, sort_keys=True, separators=(",", ":"))
+            if bram_tile_group is not None else None
+        )
+        try:
+            self._database.execute(
+                "INSERT INTO normalized VALUES "
+                "((SELECT seq FROM atom_map.atoms WHERE openparf=?),"
+                "?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    atom["openparf"], atom["instance"], atom["cell_type"],
+                    atom["source_cluster"], atom["resource"], z, x, y, site,
+                    anchor_site, bel, placement_mode, encoded_group,
+                ),
+            )
+        except sqlite3.IntegrityError as error:
+            raise ValidationError(
+                "OpenPARF normalized placement identity is duplicated"
+            ) from error
+
+    @staticmethod
+    def _normalized_record(row: Sequence[Any]) -> Dict[str, Any]:
+        return {
+            "instance": str(row[0]), "cell_type": str(row[1]),
+            "source_cluster": str(row[2]), "resource": str(row[3]),
+            "z": int(row[4]), "x": float(row[5]), "y": float(row[6]),
+            "site": str(row[7]), "anchor_site": str(row[8]),
+            "bel": str(row[9]), "placement_mode": str(row[10]),
+            "bram_tile_group": (
+                json.loads(str(row[11])) if row[11] is not None else None
+            ),
+        }
+
+    def instances(self, names: Sequence[str]) -> List[Dict[str, Any]]:
+        """Resolve one bounded macro/cascade membership in caller order."""
+
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        self._database.execute("DELETE FROM requested_instances")
+        self._database.executemany(
+            "INSERT INTO requested_instances VALUES (?, ?)", enumerate(names)
+        )
+        missing = self._database.execute(
+            "SELECT r.instance FROM requested_instances r "
+            "LEFT JOIN normalized n USING(instance) "
+            "WHERE n.seq IS NULL ORDER BY r.seq LIMIT 1"
+        ).fetchone()
+        if missing is not None:
+            raise KeyError(str(missing[0]))
+        return [
+            self._normalized_record(row)
+            for row in self._database.execute(
+                "SELECT n.instance,n.cell_type,n.source_cluster,n.resource,n.z,"
+                "n.x,n.y,n.site,n.anchor_site,n.bel,n.placement_mode,"
+                "n.bram_tile_group FROM requested_instances r "
+                "JOIN normalized n USING(instance) ORDER BY r.seq"
+            )
+        ]
+
+    def iter_site_groups(
+        self,
+    ) -> Iterator[tuple[str, List[Dict[str, Any]]]]:
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        rows = self._database.execute(
+            "SELECT instance,cell_type,source_cluster,resource,z,x,y,site,"
+            "anchor_site,bel,placement_mode,bram_tile_group FROM normalized "
+            "ORDER BY anchor_site,instance"
+        )
+        current_site: Optional[str] = None
+        current: List[Dict[str, Any]] = []
+        for row in rows:
+            site = str(row[8])
+            if current_site is not None and site != current_site:
+                yield current_site, current
+                current = []
+            current_site = site
+            current.append(self._normalized_record(row))
+        if current_site is not None:
+            yield current_site, current
+
+    def hard_resource_instances(self) -> set[str]:
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        placeholders = ",".join("?" for _ in _HARD_RESOURCES)
+        return {
+            str(row[0]) for row in self._database.execute(
+                f"SELECT instance FROM normalized WHERE resource IN ({placeholders})",
+                tuple(_HARD_RESOURCES.values()),
+            )
+        }
+
+    def summary(self) -> tuple[int, Counter[str]]:
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        total = int(self._database.execute(
+            "SELECT COUNT(*) FROM normalized"
+        ).fetchone()[0])
+        counts: Counter[str] = Counter({
+            str(row[0]): int(row[1])
+            for row in self._database.execute(
+                "SELECT resource,COUNT(*) FROM normalized GROUP BY resource"
+            )
+        })
+        return total, counts
+
+    def close(self) -> None:
+        database = self._database
+        self._database = None
+        if database is not None:
+            database.close()
+        path = self._path
+        self._path = None
+        if path is not None:
+            path.unlink(missing_ok=True)
+        name_map = self._name_map
+        self._name_map = None
+        if name_map is not None:
+            name_map.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+    def __enter__(self) -> "_IndexedAtomicPlacement":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
 
 
 def _site_claim(site_name: str) -> List[str]:
@@ -3959,625 +4329,592 @@ def validate_xilinx_openparf_atomic_placement(
     try:
         if name_map.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA:
             raise ValidationError("OpenPARF atomic name map is invalid")
+        if not isinstance(name_map, XilinxOpenparfAtomicNameMapView):
+            raise ValidationError(
+                "production OpenPARF placement validation requires the typed "
+                "atomic name map"
+            )
         name_map_top = name_map.get("top")
-        atom_sequence = name_map.get("atoms", [])
-        atoms = {
-            item["openparf"]: item for item in atom_sequence
-            if isinstance(item, Mapping) and isinstance(item.get("openparf"), str)
-        }
-        if len(atoms) != len(atom_sequence) or not atoms:
-            raise ValidationError("OpenPARF atomic name map has duplicate atoms")
         hardblock_groups = _load_physical_macro_groups(name_map_path, name_map)
         carry_cascade_chains = list(name_map.get("carry_cascade_chains", []))
-    finally:
-        close_name_map = getattr(name_map, "close", None)
-        if callable(close_name_map):
-            close_name_map()
-    _top, module = _select_module(mapped, name_map_top)
-    cells = module.get("cells")
-    if not isinstance(cells, Mapping):
-        raise ValidationError("mapped JSON cells are invalid")
-    raw_placement: Dict[str, Tuple[int, int, int]] = {}
-    with placement_path.open("r", encoding="utf-8") as stream:
-        for line_number, raw in enumerate(stream, start=1):
-            fields = raw.strip().split()
-            if not fields or fields[0].startswith("#"):
-                continue
-            if len(fields) not in {4, 5} or fields[0] not in atoms:
-                raise ImportError(
-                    f"{placement_path}:{line_number}: invalid atomic placement row"
-                )
-            if fields[0] in raw_placement:
-                raise ValidationError("OpenPARF atomic placement duplicates an atom")
-            try:
-                values = [float(value) for value in fields[1:4]]
-            except ValueError as error:
-                raise ImportError("OpenPARF atomic placement is non-numeric") from error
-            if any(
-                not math.isfinite(value) or not value.is_integer()
-                for value in values
-            ):
-                raise ValidationError("OpenPARF atomic placement is not discrete")
-            raw_placement[fields[0]] = tuple(int(value) for value in values)
-    if set(raw_placement) != set(atoms):
-        raise ValidationError("OpenPARF atomic placement does not cover every atom")
-    requested_coordinates = sorted({
-        (x, y) for x, y, _z in raw_placement.values()
-    })
-    site_map = {
-        (item["dense_x"], item["dense_y"]): item
-        for item in load_xilinx_openparf_atomic_sites(
-            name_map_path, coordinates=requested_coordinates,
-            mapped_sha256=mapped_digest,
-            packed_sha256=packed_digest,
-            architecture_sha256=architecture_digest,
-        )
-    }
-    if (
-        not isinstance(carry_cascade_chains, Sequence)
-        or isinstance(carry_cascade_chains, (str, bytes))
-        or any(
-        not isinstance(chain, Mapping)
-        or chain.get("cell_type") != "CARRY8"
-        or not isinstance(chain.get("instances"), list)
-        or len(chain["instances"]) < 2
-        for chain in carry_cascade_chains
-        )
-    ):
-        raise ValidationError("OpenPARF CARRY8 cascade contract is invalid")
-    native_hardblock_groups = [
-        group for group in hardblock_groups
-        if group.get("resource") in _HARD_RESOURCES.values()
-    ]
-    native = None
-    native_report = None
-    bram_view_by_slot: Dict[Tuple[int, int, str, int], Mapping[str, Any]] = {}
-    if native_hardblock_groups or carry_cascade_chains:
-        if native_constraints_path is None or provider_manifest_path is None:
-            raise ValidationError(
-                "typed hardblock placement validation requires native constraints"
+        placement_index = _IndexedAtomicPlacement(placement_path, name_map)
+    except BaseException:
+        name_map.close()
+        raise
+    try:
+        _top, module = _select_module(mapped, name_map_top)
+        cells = module.get("cells")
+        if not isinstance(cells, Mapping):
+            raise ValidationError("mapped JSON cells are invalid")
+        requested_coordinates = placement_index.requested_coordinates()
+        site_map = {
+            (item["dense_x"], item["dense_y"]): item
+            for item in load_xilinx_openparf_atomic_sites(
+                name_map_path, coordinates=requested_coordinates,
+                mapped_sha256=mapped_digest,
+                packed_sha256=packed_digest,
+                architecture_sha256=architecture_digest,
             )
-        native, native_report = load_xilinx_native_device_constraints(
-            native_constraints_path,
-            architecture_path=architecture_path,
-            provider_manifest_path=provider_manifest_path,
-        )
-        bram_sites = load_xilinx_openparf_atomic_sites(
-            name_map_path, resources=("RAMB18E2", "RAMB36E2"),
-            mapped_sha256=mapped_digest,
-            packed_sha256=packed_digest,
-            architecture_sha256=architecture_digest,
-        )
-        bram_candidates = _native_bram_candidates({"sites": bram_sites}, native)
-        dense_by_anchor = {}
-        for entry in bram_sites:
-            dense_x, dense_y = entry["dense_x"], entry["dense_y"]
-            physical = entry.get("physical_sites", {})
-            if not isinstance(physical, Mapping):
-                continue
-            for resource in ("RAMB18E2", "RAMB36E2"):
-                for anchor in physical.get(resource, []):
-                    dense_by_anchor[(resource, anchor)] = (dense_x, dense_y)
-        for resource, candidates in bram_candidates.items():
-            for candidate in candidates:
-                dense = dense_by_anchor.get((resource, candidate["anchor"]))
-                if dense is None:
-                    raise ValidationError("native BRAM candidate has no Bookshelf anchor")
-                key = (dense[0], dense[1], resource, int(candidate["z"]))
-                if key in bram_view_by_slot:
-                    raise ValidationError("native BRAM slot mapping is ambiguous")
-                bram_view_by_slot[key] = candidate
-    placed: Dict[str, Dict[str, Any]] = {}
-    occupied = set()
-    for openparf_name, (x, y, z) in raw_placement.items():
-            site_entry = site_map.get((x, y))
-            if site_entry is None:
-                raise ValidationError("OpenPARF atomic placement uses an unknown site")
-            atom = atoms[openparf_name]
-            cell_type = atom["cell_type"]
-            resource = atom.get("resource")
-            candidate = None
-            resources = site_entry.get("resources")
-            if (
-                not isinstance(resources, Mapping)
-                or (
-                    resource not in {"LUT", "FF", "CARRY8"}
-                    | set(_MUX_RESOURCES.values())
-                    and resources.get(resource, 0) < 1
-                )
-            ):
+        }
+        if (
+            not isinstance(carry_cascade_chains, Sequence)
+            or isinstance(carry_cascade_chains, (str, bytes))
+            or any(
+            not isinstance(chain, Mapping)
+            or chain.get("cell_type") != "CARRY8"
+            or not isinstance(chain.get("instances"), list)
+            or len(chain["instances"]) < 2
+            for chain in carry_cascade_chains
+            )
+        ):
+            raise ValidationError("OpenPARF CARRY8 cascade contract is invalid")
+        native_hardblock_groups = [
+            group for group in hardblock_groups
+            if group.get("resource") in _HARD_RESOURCES.values()
+        ]
+        native = None
+        native_report = None
+        bram_view_by_slot: Dict[Tuple[int, int, str, int], Mapping[str, Any]] = {}
+        if native_hardblock_groups or carry_cascade_chains:
+            if native_constraints_path is None or provider_manifest_path is None:
                 raise ValidationError(
-                    "OpenPARF atomic placement uses a site without the required resource"
+                    "typed hardblock placement validation requires native constraints"
                 )
-            if resource in {"LUT", "FF"}:
-                if not isinstance(resources, Mapping) or resource not in resources:
+            native, native_report = load_xilinx_native_device_constraints(
+                native_constraints_path,
+                architecture_path=architecture_path,
+                provider_manifest_path=provider_manifest_path,
+            )
+            bram_sites = load_xilinx_openparf_atomic_sites(
+                name_map_path, resources=("RAMB18E2", "RAMB36E2"),
+                mapped_sha256=mapped_digest,
+                packed_sha256=packed_digest,
+                architecture_sha256=architecture_digest,
+            )
+            bram_candidates = _native_bram_candidates({"sites": bram_sites}, native)
+            dense_by_anchor = {}
+            for entry in bram_sites:
+                dense_x, dense_y = entry["dense_x"], entry["dense_y"]
+                physical = entry.get("physical_sites", {})
+                if not isinstance(physical, Mapping):
+                    continue
+                for resource in ("RAMB18E2", "RAMB36E2"):
+                    for anchor in physical.get(resource, []):
+                        dense_by_anchor[(resource, anchor)] = (dense_x, dense_y)
+            for resource, candidates in bram_candidates.items():
+                for candidate in candidates:
+                    dense = dense_by_anchor.get((resource, candidate["anchor"]))
+                    if dense is None:
+                        raise ValidationError("native BRAM candidate has no Bookshelf anchor")
+                    key = (dense[0], dense[1], resource, int(candidate["z"]))
+                    if key in bram_view_by_slot:
+                        raise ValidationError("native BRAM slot mapping is ambiguous")
+                    bram_view_by_slot[key] = candidate
+        try:
+            for atom, (x, y, z) in placement_index.iter_joined():
+                site_entry = site_map.get((x, y))
+                if site_entry is None:
+                    raise ValidationError("OpenPARF atomic placement uses an unknown site")
+                cell_type = atom["cell_type"]
+                resource = atom.get("resource")
+                candidate = None
+                resources = site_entry.get("resources")
+                if (
+                    not isinstance(resources, Mapping)
+                    or (
+                        resource not in {"LUT", "FF", "CARRY8"}
+                        | set(_MUX_RESOURCES.values())
+                        and resources.get(resource, 0) < 1
+                    )
+                ):
                     raise ValidationError(
                         "OpenPARF atomic placement uses a site without the required resource"
                     )
-                bel_name = _slot_bel(resource, z, cell_type)
-            elif resource in _MUX_RESOURCES.values():
-                roles = _MUX_BELS.get(cell_type)
-                if roles is None or z < 0 or z >= len(roles):
-                    raise ValidationError(
-                        "OpenPARF MUX placement uses an invalid BEL slot"
-                    )
-                bel_name = roles[z]
-                physical_sites = site_entry.get("physical_sites", {}).get(resource)
-                if not isinstance(physical_sites, list) or len(physical_sites) != 1:
-                    raise ValidationError(
-                        "OpenPARF MUX placement has no unique physical slice"
-                    )
-                site_name = physical_sites[0]
-            elif resource == "CARRY8":
-                if z != 0 or cell_type != "CARRY8":
-                    raise ValidationError(
-                        "OpenPARF CARRY8 placement uses an invalid resource slot"
-                    )
-                bel_name = "CARRY8"
-                physical_sites = site_entry.get("physical_sites", {}).get(resource)
-                if not isinstance(physical_sites, list) or len(physical_sites) != 1:
-                    raise ValidationError(
-                        "OpenPARF CARRY8 placement has no unique physical slice"
-                    )
-                site_name = physical_sites[0]
-            elif resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot:
-                candidate = bram_view_by_slot.get((x, y, resource, z))
-                if candidate is None:
-                    raise ValidationError(
-                        "OpenPARF BRAM placement uses an uncertified tile view"
-                    )
-                site_name = candidate["site"]
-                bel_name = candidate["bel"]
-            elif resource in _HARD_RESOURCES.values():
-                physical_sites = site_entry.get("physical_sites", {}).get(resource)
-                if (
-                    not isinstance(physical_sites, list)
-                    or z < 0 or z >= len(physical_sites)
-                ):
-                    raise ValidationError(
-                        "OpenPARF hard-resource placement uses an invalid site slot"
-                    )
-                site_name = physical_sites[z]
-                bel_name = None
-            else:
-                raise ValidationError("OpenPARF atomic placement has an unknown resource")
-            if resource in {"LUT", "FF"}:
-                physical_sites = site_entry.get("physical_sites", {}).get(resource)
-                if not isinstance(physical_sites, list) or len(physical_sites) != 1:
-                    raise ValidationError(
-                        "OpenPARF logic placement has no unique physical slice"
-                    )
-                site_name = physical_sites[0]
-            collision = (site_name, resource, z)
-            if collision in occupied:
-                raise ValidationError("OpenPARF atomic placement overlaps a BEL slot")
-            occupied.add(collision)
-            anchor_names = site_entry.get("physical_sites", {}).get(resource)
-            anchor_name = (
-                anchor_names[0]
-                if resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot
-                and isinstance(anchor_names, list) and len(anchor_names) == 1
-                else site_name
-            )
-            site = architecture.site_named(anchor_name)
-            compatible = [
-                bel for bel in site["bels"]
-                if cell_type in bel["compatible_cells"]
-                and (bel_name is None or bel["name"] == bel_name)
-            ] if site is not None else []
-            if len(compatible) != 1:
-                raise ValidationError(
-                    "OpenPARF atomic placement has no unique compatible physical BEL"
-                )
-            physical_bel = compatible[0]
-            placed[openparf_name] = {
-                **atom, "site": site_name, "resource": resource, "z": z,
-                "x": site_entry["placement_x"],
-                "y": site_entry["placement_y"],
-                "bel": physical_bel["name"],
-                "placement_mode": (
-                    candidate["placement_mode"]
-                    if resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot
-                    else physical_bel.get("placement_mode", site["type"])
-                ),
-                "anchor_site": anchor_name,
-                "bram_tile_group": (
-                    {
-                        "anchor": candidate["anchor"],
-                        "claims": list(candidate["claims"]),
-                        "role": candidate["role"],
-                        "tile": candidate["tile"],
-                    }
-                    if candidate is not None else None
-                ),
-            }
-
-    checked_native_edges = 0
-    if hardblock_groups:
-        family_for_resource = {
-            "DSP48E2": "DSP_CASCADE", "RAMB36E2": "BRAM_CASCADE",
-            "URAM288": "URAM_CASCADE",
-        }
-        native_families = {
-            family.get("kind"): family
-            for family in (
-                native.get("payload", {}).get("dedicated_adjacency", [])
-                if native is not None else []
-            )
-            if isinstance(family, Mapping)
-        }
-        by_source_instance = {
-            item["instance"]: item for item in placed.values()
-        }
-        covered = set()
-        occupied_claims = set()
-        for group in hardblock_groups:
-            if not isinstance(group, Mapping):
-                raise ValidationError("typed hardblock group is invalid")
-            resource = group.get("resource")
-            instances = group.get("source_instances")
-            if (
-                resource not in set(_HARD_RESOURCES.values()) | {"SLICE_MACRO"}
-                or not isinstance(instances, list)
-            ):
-                raise ValidationError("typed hardblock group header is invalid")
-            if covered.intersection(instances):
-                raise ValidationError("typed hardblock placement ownership overlaps")
-            covered.update(instances)
-            try:
-                selected = [by_source_instance[name] for name in instances]
-            except KeyError as error:
-                raise ValidationError(
-                    "typed hardblock group references an unknown instance"
-                ) from error
-            template = group.get("window_template")
-            chain_template = group.get("chain_template")
-            if group.get("kind") == "site_cascade" and chain_template is not None:
-                unit_members = (
-                    chain_template.get("unit_members")
-                    if isinstance(chain_template, Mapping) else None
-                )
-                chain_length = (
-                    chain_template.get("chain_length")
-                    if isinstance(chain_template, Mapping) else None
-                )
-                chain_set = group.get("site_chain_set")
-                if (
-                    not isinstance(chain_template, Mapping)
-                    or chain_template.get("kind") != "directed-site-chain/v1"
-                    or not isinstance(unit_members, list)
-                    or not unit_members
-                    or not isinstance(chain_length, int)
-                    or isinstance(chain_length, bool)
-                    or chain_length < 2
-                    or len(selected) != chain_length * len(unit_members)
-                    or not isinstance(chain_set, Mapping)
-                ):
-                    raise ValidationError(
-                        "OpenPARF site cascade has an invalid compact template"
-                    )
-                units = [
-                    selected[index:index + len(unit_members)]
-                    for index in range(0, len(selected), len(unit_members))
-                ]
-                unit_sites = []
-                for unit in units:
+                if resource in {"LUT", "FF"}:
+                    if not isinstance(resources, Mapping) or resource not in resources:
+                        raise ValidationError(
+                            "OpenPARF atomic placement uses a site without the required resource"
+                        )
+                    bel_name = _slot_bel(resource, z, cell_type)
+                elif resource in _MUX_RESOURCES.values():
+                    roles = _MUX_BELS.get(cell_type)
+                    if roles is None or z < 0 or z >= len(roles):
+                        raise ValidationError(
+                            "OpenPARF MUX placement uses an invalid BEL slot"
+                        )
+                    bel_name = roles[z]
+                    physical_sites = site_entry.get("physical_sites", {}).get(resource)
+                    if not isinstance(physical_sites, list) or len(physical_sites) != 1:
+                        raise ValidationError(
+                            "OpenPARF MUX placement has no unique physical slice"
+                        )
+                    site_name = physical_sites[0]
+                elif resource == "CARRY8":
+                    if z != 0 or cell_type != "CARRY8":
+                        raise ValidationError(
+                            "OpenPARF CARRY8 placement uses an invalid resource slot"
+                        )
+                    bel_name = "CARRY8"
+                    physical_sites = site_entry.get("physical_sites", {}).get(resource)
+                    if not isinstance(physical_sites, list) or len(physical_sites) != 1:
+                        raise ValidationError(
+                            "OpenPARF CARRY8 placement has no unique physical slice"
+                        )
+                    site_name = physical_sites[0]
+                elif resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot:
+                    candidate = bram_view_by_slot.get((x, y, resource, z))
+                    if candidate is None:
+                        raise ValidationError(
+                            "OpenPARF BRAM placement uses an uncertified tile view"
+                        )
+                    site_name = candidate["site"]
+                    bel_name = candidate["bel"]
+                elif resource in _HARD_RESOURCES.values():
+                    physical_sites = site_entry.get("physical_sites", {}).get(resource)
                     if (
-                        len({item["site"] for item in unit}) != 1
+                        not isinstance(physical_sites, list)
+                        or z < 0 or z >= len(physical_sites)
+                    ):
+                        raise ValidationError(
+                            "OpenPARF hard-resource placement uses an invalid site slot"
+                        )
+                    site_name = physical_sites[z]
+                    bel_name = None
+                else:
+                    raise ValidationError("OpenPARF atomic placement has an unknown resource")
+                if resource in {"LUT", "FF"}:
+                    physical_sites = site_entry.get("physical_sites", {}).get(resource)
+                    if not isinstance(physical_sites, list) or len(physical_sites) != 1:
+                        raise ValidationError(
+                            "OpenPARF logic placement has no unique physical slice"
+                        )
+                    site_name = physical_sites[0]
+                placement_index.claim_occupancy(site_name, resource, z)
+                anchor_names = site_entry.get("physical_sites", {}).get(resource)
+                anchor_name = (
+                    anchor_names[0]
+                    if resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot
+                    and isinstance(anchor_names, list) and len(anchor_names) == 1
+                    else site_name
+                )
+                site = architecture.site_named(anchor_name)
+                compatible = [
+                    bel for bel in site["bels"]
+                    if cell_type in bel["compatible_cells"]
+                    and (bel_name is None or bel["name"] == bel_name)
+                ] if site is not None else []
+                if len(compatible) != 1:
+                    raise ValidationError(
+                        "OpenPARF atomic placement has no unique compatible physical BEL"
+                    )
+                physical_bel = compatible[0]
+                placement_index.append_normalized(
+                    atom,
+                    z=z,
+                    x=site_entry["placement_x"],
+                    y=site_entry["placement_y"],
+                    site=site_name,
+                    anchor_site=anchor_name,
+                    bel=physical_bel["name"],
+                    placement_mode=(
+                        candidate["placement_mode"]
+                        if resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot
+                        else physical_bel.get("placement_mode", site["type"])
+                    ),
+                    bram_tile_group=(
+                        {
+                            "anchor": candidate["anchor"],
+                            "claims": list(candidate["claims"]),
+                            "role": candidate["role"],
+                            "tile": candidate["tile"],
+                        }
+                        if candidate is not None else None
+                    ),
+                )
+        except BaseException:
+            raise
+
+        checked_native_edges = 0
+        if hardblock_groups:
+            family_for_resource = {
+                "DSP48E2": "DSP_CASCADE", "RAMB36E2": "BRAM_CASCADE",
+                "URAM288": "URAM_CASCADE",
+            }
+            native_families = {
+                family.get("kind"): family
+                for family in (
+                    native.get("payload", {}).get("dedicated_adjacency", [])
+                    if native is not None else []
+                )
+                if isinstance(family, Mapping)
+            }
+            covered = set()
+            occupied_claims = set()
+            for group in hardblock_groups:
+                if not isinstance(group, Mapping):
+                    raise ValidationError("typed hardblock group is invalid")
+                resource = group.get("resource")
+                instances = group.get("source_instances")
+                if (
+                    resource not in set(_HARD_RESOURCES.values()) | {"SLICE_MACRO"}
+                    or not isinstance(instances, list)
+                ):
+                    raise ValidationError("typed hardblock group header is invalid")
+                if covered.intersection(instances):
+                    raise ValidationError("typed hardblock placement ownership overlaps")
+                covered.update(instances)
+                try:
+                    selected = placement_index.instances(instances)
+                except KeyError as error:
+                    raise ValidationError(
+                        "typed hardblock group references an unknown instance"
+                    ) from error
+                template = group.get("window_template")
+                chain_template = group.get("chain_template")
+                if group.get("kind") == "site_cascade" and chain_template is not None:
+                    unit_members = (
+                        chain_template.get("unit_members")
+                        if isinstance(chain_template, Mapping) else None
+                    )
+                    chain_length = (
+                        chain_template.get("chain_length")
+                        if isinstance(chain_template, Mapping) else None
+                    )
+                    chain_set = group.get("site_chain_set")
+                    if (
+                        not isinstance(chain_template, Mapping)
+                        or chain_template.get("kind") != "directed-site-chain/v1"
+                        or not isinstance(unit_members, list)
+                        or not unit_members
+                        or not isinstance(chain_length, int)
+                        or isinstance(chain_length, bool)
+                        or chain_length < 2
+                        or len(selected) != chain_length * len(unit_members)
+                        or not isinstance(chain_set, Mapping)
+                    ):
+                        raise ValidationError(
+                            "OpenPARF site cascade has an invalid compact template"
+                        )
+                    units = [
+                        selected[index:index + len(unit_members)]
+                        for index in range(0, len(selected), len(unit_members))
+                    ]
+                    unit_sites = []
+                    for unit in units:
+                        if (
+                            len({item["site"] for item in unit}) != 1
+                            or not all(
+                                member.get("resource") == item["resource"]
+                                and member.get("bel") == item["bel"]
+                                and isinstance(member.get("z"), (int, float))
+                                and not isinstance(member.get("z"), bool)
+                                and float(member["z"]) == float(item["z"])
+                                for member, item in zip(unit_members, unit)
+                            )
+                        ):
+                            raise ValidationError(
+                                "OpenPARF site cascade unit violates its slice template"
+                            )
+                        unit_sites.append(unit[0]["site"])
+                    matching_chains = sum(
+                        chain[start:start + chain_length] == unit_sites
+                        for chain in chain_set["chains"]
+                        for start in range(len(chain) - chain_length + 1)
+                    )
+                    if matching_chains != 1:
+                        raise ValidationError(
+                            "OpenPARF site cascade does not match one directed site window"
+                        )
+                    selected_window = [
+                        {
+                            **dict(member), "site": item["site"],
+                            "x": item["x"], "y": item["y"],
+                            "claims": _site_claim(item["site"]),
+                        }
+                        for unit in units
+                        for member, item in zip(unit_members, unit)
+                    ]
+                elif group.get("kind") == "site_macro" and template is not None:
+                    members = (
+                        template.get("members")
+                        if isinstance(template, Mapping) else None
+                    )
+                    if (
+                        not isinstance(template, Mapping)
+                        or template.get("kind") != "same-site-slice/v1"
+                        or template.get("site_resource") != "LUT"
+                        or not isinstance(group.get("window_count"), int)
+                        or isinstance(group.get("window_count"), bool)
+                        or group["window_count"] <= 0
+                        or not isinstance(members, list)
+                        or len(members) != len(selected)
+                        or not all(isinstance(member, Mapping) for member in members)
+                        or len({item["site"] for item in selected}) != 1
                         or not all(
                             member.get("resource") == item["resource"]
                             and member.get("bel") == item["bel"]
                             and isinstance(member.get("z"), (int, float))
                             and not isinstance(member.get("z"), bool)
                             and float(member["z"]) == float(item["z"])
-                            for member, item in zip(unit_members, unit)
+                            for member, item in zip(members, selected)
                         )
                     ):
                         raise ValidationError(
-                            "OpenPARF site cascade unit violates its slice template"
+                            "OpenPARF site macro does not match its compact window template"
                         )
-                    unit_sites.append(unit[0]["site"])
-                matching_chains = sum(
-                    chain[start:start + chain_length] == unit_sites
-                    for chain in chain_set["chains"]
-                    for start in range(len(chain) - chain_length + 1)
-                )
-                if matching_chains != 1:
-                    raise ValidationError(
-                        "OpenPARF site cascade does not match one directed site window"
-                    )
-                selected_window = [
-                    {
-                        **dict(member), "site": item["site"],
-                        "x": item["x"], "y": item["y"],
-                        "claims": _site_claim(item["site"]),
-                    }
-                    for unit in units
-                    for member, item in zip(unit_members, unit)
-                ]
-            elif group.get("kind") == "site_macro" and template is not None:
-                members = (
-                    template.get("members")
-                    if isinstance(template, Mapping) else None
-                )
-                if (
-                    not isinstance(template, Mapping)
-                    or template.get("kind") != "same-site-slice/v1"
-                    or template.get("site_resource") != "LUT"
-                    or not isinstance(group.get("window_count"), int)
-                    or isinstance(group.get("window_count"), bool)
-                    or group["window_count"] <= 0
-                    or not isinstance(members, list)
-                    or len(members) != len(selected)
-                    or not all(isinstance(member, Mapping) for member in members)
-                    or len({item["site"] for item in selected}) != 1
-                    or not all(
-                        member.get("resource") == item["resource"]
-                        and member.get("bel") == item["bel"]
-                        and isinstance(member.get("z"), (int, float))
-                        and not isinstance(member.get("z"), bool)
-                        and float(member["z"]) == float(item["z"])
+                    selected_window = [
+                        {
+                            **dict(member), "site": item["site"],
+                            "x": item["x"], "y": item["y"],
+                            "claims": _site_claim(item["site"]),
+                        }
                         for member, item in zip(members, selected)
-                    )
-                ):
-                    raise ValidationError(
-                        "OpenPARF site macro does not match its compact window template"
-                    )
-                selected_window = [
-                    {
-                        **dict(member), "site": item["site"],
-                        "x": item["x"], "y": item["y"],
-                        "claims": _site_claim(item["site"]),
-                    }
-                    for member, item in zip(members, selected)
-                ]
-            else:
-                matching_windows = []
-                for window in group.get("windows", []):
-                    if not isinstance(window, list) or len(window) != len(selected):
-                        continue
-                    if not all(isinstance(entry, Mapping) for entry in window):
-                        continue
-                    if all(
-                        entry.get("site") == item["site"]
-                        and isinstance(entry.get("z"), (int, float))
-                        and not isinstance(entry.get("z"), bool)
-                        and float(entry["z"]) == float(item["z"])
-                        for entry, item in zip(window, selected)
-                    ):
-                        matching_windows.append(window)
-                if len(matching_windows) != 1:
-                    raise ValidationError(
-                        "OpenPARF typed hardblock placement does not match exactly "
-                        "one certified window"
-                    )
-                selected_window = matching_windows[0]
-            claims = []
-            for entry in selected_window:
-                raw_claims = entry.get("claims")
-                if (
-                    not isinstance(raw_claims, list) or not raw_claims
-                    or not all(isinstance(claim, str) and claim for claim in raw_claims)
-                ):
-                    raise ValidationError(
-                        "OpenPARF typed hardblock window has invalid occupancy claims"
-                    )
-                claims.extend(raw_claims)
-            unique_claims = set(claims)
-            internally_valid = (
-                group.get("kind") == "site_macro"
-                and len({item["site"] for item in selected}) == 1
-                and unique_claims == {"site:" + selected[0]["site"]}
-            ) or (
-                group.get("kind") == "site_cascade"
-                and unique_claims == {"site:" + site for site in unit_sites}
-                and len(unit_sites) == len(set(unit_sites))
-            ) or len(claims) == len(unique_claims)
-            if not internally_valid or occupied_claims.intersection(unique_claims):
-                raise ValidationError(
-                    "OpenPARF typed hardblock placement has conflicting occupancy claims"
-                )
-            occupied_claims.update(unique_claims)
-            sites = [item["site"] for item in selected]
-            if group.get("kind") == "cascade" and len(instances) > 1:
-                assert native is not None and native_report is not None
-                if resource not in family_for_resource:
-                    raise ValidationError(
-                        "typed hardblock cascade uses an unqualified resource"
-                    )
-                kind = family_for_resource[resource]
-                require_xilinx_native_constraint_capability(
-                    native_report, "dedicated_adjacency." + kind
-                )
-                family = native_families.get(kind, {})
-                native_edges = {
-                    edge
-                    for chain in family.get("chains", [])
-                    for edge in zip(chain, chain[1:])
-                }
-                for edge in zip(sites, sites[1:]):
-                    if edge not in native_edges:
+                    ]
+                else:
+                    matching_windows = []
+                    for window in group.get("windows", []):
+                        if not isinstance(window, list) or len(window) != len(selected):
+                            continue
+                        if not all(isinstance(entry, Mapping) for entry in window):
+                            continue
+                        if all(
+                            entry.get("site") == item["site"]
+                            and isinstance(entry.get("z"), (int, float))
+                            and not isinstance(entry.get("z"), bool)
+                            and float(entry["z"]) == float(item["z"])
+                            for entry, item in zip(window, selected)
+                        ):
+                            matching_windows.append(window)
+                    if len(matching_windows) != 1:
                         raise ValidationError(
-                            "OpenPARF typed hardblock chain violates native adjacency"
+                            "OpenPARF typed hardblock placement does not match exactly "
+                            "one certified window"
                         )
-                    checked_native_edges += 1
-        has_site_macro_groups = any(
-            group.get("kind") in {"site_macro", "site_cascade"}
-            for group in hardblock_groups
-        )
-        derived_macro_contract = (
-            build_xilinx_physical_macro_contract(
-                mapped_path, top=name_map_top, source=mapped
-            )
-            if has_site_macro_groups else {"site_macros": []}
-        )
-        expected_mux_members = {
-            member["instance"]
-            for macro in derived_macro_contract.get("site_macros", [])
-            if macro.get("kind") in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
-            for member in macro.get("members", [])
-        }
-        expected_carry_members = {
-            member["instance"]
-            for macro in derived_macro_contract.get("site_macros", [])
-            if macro.get("kind") == "carry8-lut6_2"
-            for member in macro.get("members", [])
-        }
-        expected = {
-            item["instance"] for item in placed.values()
-            if item["resource"] in _HARD_RESOURCES.values()
-        } | expected_mux_members | expected_carry_members
-        if covered != expected:
-            raise ValidationError("typed hardblock placement coverage is incomplete")
-
-    checked_carry_edges = 0
-    if carry_cascade_chains:
-        assert native is not None and native_report is not None
-        require_xilinx_native_constraint_capability(
-            native_report, "dedicated_adjacency.CARRY_NEXT"
-        )
-        carry_family = next((
-            family
-            for family in native.get("payload", {}).get("dedicated_adjacency", [])
-            if isinstance(family, Mapping) and family.get("kind") == "CARRY_NEXT"
-        ), None)
-        if not isinstance(carry_family, Mapping):
-            raise ValidationError("native constraints contain no CARRY_NEXT family")
-        native_carry_edges = {
-            edge for chain in carry_family.get("chains", [])
-            if isinstance(chain, list) for edge in zip(chain, chain[1:])
-        }
-        by_instance = {item["instance"]: item for item in placed.values()}
-        for chain in carry_cascade_chains:
-            instances = chain["instances"]
-            try:
-                sites = [by_instance[name]["site"] for name in instances]
-            except KeyError as error:
-                raise ValidationError(
-                    "CARRY8 cascade references an unknown placed instance"
-                ) from error
-            for edge in zip(sites, sites[1:]):
-                if edge not in native_carry_edges:
+                    selected_window = matching_windows[0]
+                claims = []
+                for entry in selected_window:
+                    raw_claims = entry.get("claims")
+                    if (
+                        not isinstance(raw_claims, list) or not raw_claims
+                        or not all(isinstance(claim, str) and claim for claim in raw_claims)
+                    ):
+                        raise ValidationError(
+                            "OpenPARF typed hardblock window has invalid occupancy claims"
+                        )
+                    claims.extend(raw_claims)
+                unique_claims = set(claims)
+                internally_valid = (
+                    group.get("kind") == "site_macro"
+                    and len({item["site"] for item in selected}) == 1
+                    and unique_claims == {"site:" + selected[0]["site"]}
+                ) or (
+                    group.get("kind") == "site_cascade"
+                    and unique_claims == {"site:" + site for site in unit_sites}
+                    and len(unit_sites) == len(set(unit_sites))
+                ) or len(claims) == len(unique_claims)
+                if not internally_valid or occupied_claims.intersection(unique_claims):
                     raise ValidationError(
-                        "OpenPARF CARRY8 chain "
-                        f"{chain.get('id')!r} violates native adjacency at "
-                        f"{edge!r}; placed sites are {sites!r}"
+                        "OpenPARF typed hardblock placement has conflicting occupancy claims"
                     )
-                checked_carry_edges += 1
+                occupied_claims.update(unique_claims)
+                sites = [item["site"] for item in selected]
+                if group.get("kind") == "cascade" and len(instances) > 1:
+                    assert native is not None and native_report is not None
+                    if resource not in family_for_resource:
+                        raise ValidationError(
+                            "typed hardblock cascade uses an unqualified resource"
+                        )
+                    kind = family_for_resource[resource]
+                    require_xilinx_native_constraint_capability(
+                        native_report, "dedicated_adjacency." + kind
+                    )
+                    family = native_families.get(kind, {})
+                    native_edges = {
+                        edge
+                        for chain in family.get("chains", [])
+                        for edge in zip(chain, chain[1:])
+                    }
+                    for edge in zip(sites, sites[1:]):
+                        if edge not in native_edges:
+                            raise ValidationError(
+                                "OpenPARF typed hardblock chain violates native adjacency"
+                            )
+                        checked_native_edges += 1
+            has_site_macro_groups = any(
+                group.get("kind") in {"site_macro", "site_cascade"}
+                for group in hardblock_groups
+            )
+            derived_macro_contract = (
+                build_xilinx_physical_macro_contract(
+                    mapped_path, top=name_map_top, source=mapped
+                )
+                if has_site_macro_groups else {"site_macros": []}
+            )
+            expected_mux_members = {
+                member["instance"]
+                for macro in derived_macro_contract.get("site_macros", [])
+                if macro.get("kind") in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
+                for member in macro.get("members", [])
+            }
+            expected_carry_members = {
+                member["instance"]
+                for macro in derived_macro_contract.get("site_macros", [])
+                if macro.get("kind") == "carry8-lut6_2"
+                for member in macro.get("members", [])
+            }
+            expected = (
+                placement_index.hard_resource_instances()
+                | expected_mux_members | expected_carry_members
+            )
+            if covered != expected:
+                raise ValidationError("typed hardblock placement coverage is incomplete")
 
-    by_site: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for item in placed.values():
-        by_site[item["anchor_site"]].append(item)
-    for site_name, items in by_site.items():
-        if sum(item["resource"] == "LUT" for item in items) > 8:
-            raise ValidationError(f"site {site_name!r} exceeds physical LUT capacity")
-        if sum(item["resource"] == "FF" for item in items) > 16:
-            raise ValidationError(f"site {site_name!r} exceeds physical FF capacity")
-        carry_items = [item for item in items if item["resource"] == "CARRY8"]
-        if carry_items:
-            if (
-                len(carry_items) != 1
-                or len(items) != 9
-                or Counter(item["cell_type"] for item in items)
-                != Counter({"CARRY8": 1, DUAL_OUTPUT_LUT_TYPE: 8})
-                or {item["bel"] for item in items}
-                != {"CARRY8", *{f"{letter}6LUT" for letter in "ABCDEFGH"}}
+        checked_carry_edges = 0
+        if carry_cascade_chains:
+            assert native is not None and native_report is not None
+            require_xilinx_native_constraint_capability(
+                native_report, "dedicated_adjacency.CARRY_NEXT"
+            )
+            carry_family = next((
+                family
+                for family in native.get("payload", {}).get("dedicated_adjacency", [])
+                if isinstance(family, Mapping) and family.get("kind") == "CARRY_NEXT"
+            ), None)
+            if not isinstance(carry_family, Mapping):
+                raise ValidationError("native constraints contain no CARRY_NEXT family")
+            native_carry_edges = {
+                edge for chain in carry_family.get("chains", [])
+                if isinstance(chain, list) for edge in zip(chain, chain[1:])
+            }
+            for chain in carry_cascade_chains:
+                instances = chain["instances"]
+                try:
+                    sites = [
+                        item["site"] for item in placement_index.instances(instances)
+                    ]
+                except KeyError as error:
+                    raise ValidationError(
+                        "CARRY8 cascade references an unknown placed instance"
+                    ) from error
+                for edge in zip(sites, sites[1:]):
+                    if edge not in native_carry_edges:
+                        raise ValidationError(
+                            "OpenPARF CARRY8 chain "
+                            f"{chain.get('id')!r} violates native adjacency at "
+                            f"{edge!r}; placed sites are {sites!r}"
+                        )
+                    checked_carry_edges += 1
+
+        clusters = []
+        for site_name, items in placement_index.iter_site_groups():
+            if sum(item["resource"] == "LUT" for item in items) > 8:
+                raise ValidationError(f"site {site_name!r} exceeds physical LUT capacity")
+            if sum(item["resource"] == "FF" for item in items) > 16:
+                raise ValidationError(f"site {site_name!r} exceeds physical FF capacity")
+            carry_items = [item for item in items if item["resource"] == "CARRY8"]
+            if carry_items:
+                if (
+                    len(carry_items) != 1
+                    or len(items) != 9
+                    or Counter(item["cell_type"] for item in items)
+                    != Counter({"CARRY8": 1, DUAL_OUTPUT_LUT_TYPE: 8})
+                    or {item["bel"] for item in items}
+                    != {"CARRY8", *{f"{letter}6LUT" for letter in "ABCDEFGH"}}
+                ):
+                    raise ValidationError(
+                        f"site {site_name!r} does not contain one exclusive full-slice "
+                        "CARRY8/LUT6_2 macro"
+                    )
+            hard_items = [
+                item for item in items if item["resource"] in _HARD_RESOURCES.values()
+            ]
+            ramb18_items = [
+                item for item in hard_items if item["resource"] == "RAMB18E2"
+            ]
+            if len(hard_items) > 1 and (
+                len(hard_items) != len(ramb18_items)
+                or len(ramb18_items) > 2
+                or len({item["bel"] for item in ramb18_items}) != len(ramb18_items)
             ):
                 raise ValidationError(
-                    f"site {site_name!r} does not contain one exclusive full-slice "
-                    "CARRY8/LUT6_2 macro"
+                    f"site {site_name!r} has incompatible hard-resource occupancy"
                 )
-        hard_items = [
-            item for item in items if item["resource"] in _HARD_RESOURCES.values()
-        ]
-        ramb18_items = [
-            item for item in hard_items if item["resource"] == "RAMB18E2"
-        ]
-        if len(hard_items) > 1 and (
-            len(hard_items) != len(ramb18_items)
-            or len(ramb18_items) > 2
-            or len({item["bel"] for item in ramb18_items}) != len(ramb18_items)
-        ):
-            raise ValidationError(
-                f"site {site_name!r} has incompatible hard-resource occupancy"
-            )
-        half_cksr: Dict[int, Tuple[Any, Any]] = {}
-        quarter_ce: Dict[Tuple[int, int], Any] = {}
-        for item in items:
-            if item["resource"] != "FF":
-                continue
-            clock, sr, enable = _control_tuple(
-                item["cell_type"], cells[item["instance"]]
-            )
-            half = 0 if item["z"] < 8 else 1
-            quarter = (half, item["z"] % 2)
-            previous_cksr = half_cksr.setdefault(half, (clock, sr))
-            previous_ce = quarter_ce.setdefault(quarter, enable)
-            if previous_cksr != (clock, sr) or previous_ce != enable:
-                raise ValidationError(
-                    f"site {site_name!r} violates native FF control-set legality"
+            half_cksr: Dict[int, Tuple[Any, Any]] = {}
+            quarter_ce: Dict[Tuple[int, int], Any] = {}
+            for item in items:
+                if item["resource"] != "FF":
+                    continue
+                clock, sr, enable = _control_tuple(
+                    item["cell_type"], cells[item["instance"]]
                 )
-
-    clusters = []
-    for site_name, items in sorted(by_site.items()):
-        site = architecture.site_named(site_name)
-        clusters.append({
-            "cluster": f"openparf:{site_name}", "site": site_name,
-            "site_type": site["type"], "x": site["x"], "y": site["y"],
-            "assignments": [
-                {
-                    "instance": item["instance"],
-                    "cell_type": item["cell_type"], "bel": item["bel"],
-                    "placement_mode": item["placement_mode"],
-                    "physical_site": item["site"],
-                    "bram_tile_group": item["bram_tile_group"],
-                    "source_cluster": item["source_cluster"],
-                }
-                for item in sorted(items, key=lambda value: value["instance"])
-            ],
-        })
-    result = {
-        "schema": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
-        "status": "pass", "part": architecture.part,
-        "provider": OPENPARF_ATOMIC_PROVIDER,
-        "runtime_validation": "unverified",
-        "source": {
-            "native_placement_sha256": _sha256(placement_path),
-            "name_map_sha256": _sha256(name_map_path),
-            "mapped_sha256": _sha256(mapped_path),
-            "architecture_sha256": _sha256(architecture_path),
-        },
-        "clusters": clusters,
-        "summary": {
-            "atoms": len(placed), "occupied_sites": len(clusters),
-            "luts": sum(item["resource"] == "LUT" for item in placed.values()),
-            "ffs": sum(item["resource"] == "FF" for item in placed.values()),
-            "hard_resources": dict(sorted(Counter(
-                item["resource"] for item in placed.values()
-                if item["resource"] in _HARD_RESOURCES.values()
-            ).items())),
-        },
-    }
-    carry8_macro_count = sum(
-        item["resource"] == "CARRY8" for item in placed.values()
-    )
-    if carry8_macro_count:
-        result["summary"]["carry8_macros"] = carry8_macro_count
-    if checked_carry_edges:
-        result["summary"]["native_carry_edges"] = checked_carry_edges
-    if hardblock_groups:
-        if native_hardblock_groups or carry_cascade_chains:
-            assert native_constraints_path is not None
-            assert provider_manifest_path is not None
-            result["source"].update({
-                "native_constraints_sha256": _sha256(native_constraints_path),
-                "provider_manifest_sha256": _sha256(provider_manifest_path),
+                half = 0 if item["z"] < 8 else 1
+                quarter = (half, item["z"] % 2)
+                previous_cksr = half_cksr.setdefault(half, (clock, sr))
+                previous_ce = quarter_ce.setdefault(quarter, enable)
+                if previous_cksr != (clock, sr) or previous_ce != enable:
+                    raise ValidationError(
+                        f"site {site_name!r} violates native FF control-set legality"
+                    )
+            site = architecture.site_named(site_name)
+            clusters.append({
+                "cluster": f"openparf:{site_name}", "site": site_name,
+                "site_type": site["type"], "x": site["x"], "y": site["y"],
+                "assignments": [
+                    {
+                        "instance": item["instance"],
+                        "cell_type": item["cell_type"], "bel": item["bel"],
+                        "placement_mode": item["placement_mode"],
+                        "physical_site": item["site"],
+                        "bram_tile_group": item["bram_tile_group"],
+                        "source_cluster": item["source_cluster"],
+                    }
+                    for item in sorted(items, key=lambda value: value["instance"])
+                ],
             })
-        if checked_native_edges:
-            result["summary"]["native_hardblock_edges"] = checked_native_edges
-    if output_path is not None:
-        write_xilinx_openparf_atomic_placement_certificate(output_path, result)
-    return result
+        atom_count, resource_counts = placement_index.summary()
+        result = {
+            "schema": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
+            "status": "pass", "part": architecture.part,
+            "provider": OPENPARF_ATOMIC_PROVIDER,
+            "runtime_validation": "unverified",
+            "source": {
+                "native_placement_sha256": _sha256(placement_path),
+                "name_map_sha256": _sha256(name_map_path),
+                "mapped_sha256": _sha256(mapped_path),
+                "architecture_sha256": _sha256(architecture_path),
+            },
+            "clusters": clusters,
+            "summary": {
+                "atoms": atom_count, "occupied_sites": len(clusters),
+                "luts": resource_counts["LUT"],
+                "ffs": resource_counts["FF"],
+                "hard_resources": dict(sorted(
+                    (resource, resource_counts[resource])
+                    for resource in _HARD_RESOURCES.values()
+                    if resource_counts[resource]
+                )),
+            },
+        }
+        carry8_macro_count = resource_counts["CARRY8"]
+        if carry8_macro_count:
+            result["summary"]["carry8_macros"] = carry8_macro_count
+        if checked_carry_edges:
+            result["summary"]["native_carry_edges"] = checked_carry_edges
+        if hardblock_groups:
+            if native_hardblock_groups or carry_cascade_chains:
+                assert native_constraints_path is not None
+                assert provider_manifest_path is not None
+                result["source"].update({
+                    "native_constraints_sha256": _sha256(native_constraints_path),
+                    "provider_manifest_sha256": _sha256(provider_manifest_path),
+                })
+            if checked_native_edges:
+                result["summary"]["native_hardblock_edges"] = checked_native_edges
+        if output_path is not None:
+            write_xilinx_openparf_atomic_placement_certificate(output_path, result)
+        return result
+    finally:
+        placement_index.close()
 
 
 def run_xilinx_openparf_atomic_qualification(

@@ -30,6 +30,7 @@ from .phase3_exact_records import (
     build_static_exact_capture_stream,
     build_static_exact_cut_node_stream,
     build_static_exact_record_streams,
+    direct_static_exact_semantic_contract_sha256,
     validate_static_exact_capture_bit,
 )
 from .resources import RESOURCE_FIELDS
@@ -148,7 +149,8 @@ def _canonical_sha256(value: Mapping[str, Any]) -> str:
 def semantic_contract_sha256(value: Mapping[str, Any]) -> str:
     """Return the canonical identity propagated across exact-mode stages."""
 
-    return _canonical_sha256(value)
+    direct = direct_static_exact_semantic_contract_sha256(value)
+    return direct if direct is not None else _canonical_sha256(value)
 
 
 def _bounded_emuir_identity(ir: EmuIR) -> Dict[str, Any]:

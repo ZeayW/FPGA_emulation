@@ -104,9 +104,18 @@ independent topological validation and is released before contract publication.
 Contract construction derives stable segment identities from ordered counters
 and expands predecessor names for only the current cut. Production publication
 derives cut nodes, dependency edges, logic segments and capture requirements
-through repeatable typed record streams. Those four graph-scale relations feed
-the canonical digest without becoming retained Python dictionary lists. The
-`assignment.exact.bin` writer now consumes the native predecessor CSR, launch
+through repeatable typed record streams. For native production contracts, the
+canonical SHA-256 reads compact cut/capture bytes, launch flags and
+counter-derived segment ordinals directly. It does not invoke the dependency,
+logic-segment or capture dictionary factories. The generic canonical encoder
+remains the compatibility path for materialized and legacy contracts, and the
+independent binary reader still reconstructs the logical contract and checks
+the same SHA-256. Launch flags are frozen once before either view is built, so
+later mutation of a caller-owned bytearray cannot split their identities. The
+digest rejects mixed typed generations and truncated raw
+nodes; the binary publisher independently rejects stateful-CSR disagreement,
+noncanonical million-range segment identities and inconsistent capture coverage.
+The `assignment.exact.bin` writer consumes the native predecessor CSR, launch
 flags, raw cut-node bytes and raw capture bytes directly. It independently
 checks every integer predecessor and counter-derived segment identity against
 the canonical record view. Validated dependency edges enter typed temporary
@@ -128,8 +137,13 @@ measurements cover isolated adapter boundaries. On the same compact 100,000-cut,
 100,000-capture writer input, direct integer publication reduced traced peak
 allocation from 23.77 MiB to 9.71 MiB (-59.2%) and wall time from 14.368 to
 6.135 seconds (-57.3%), with byte-identical binary and descriptor output. These
-are not substitutes for the required NVDLA run. Canonical digest traversal,
-clustering/model construction and the C++ capture vector remain migration work.
+are not substitutes for the required NVDLA run. On a separate synthetic
+10,000-cut chain with 79,964 dependency edges, three canonical-hash trials
+changed from 0.832--0.847 seconds with logical dictionary replay to
+0.736--0.762 seconds with the typed cursor; traced peak allocation remained
+bounded at 0.039 MiB. This is isolated adapter evidence. Canonical hashing is
+still linear in the logical record count; clustering/model construction and
+the C++ capture vector remain migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
@@ -317,8 +331,54 @@ and process peak RSS from 159.75 MiB to 121.63 MiB. The prior pretty JSON was
 12,292,219 bytes; the selector plus store were 1,881 and 6,123,520 bytes.
 Validation took 1.138 versus 0.772 seconds, so this slice is a memory/storage
 improvement rather than a runtime claim. Formal NVDLA measurement remains
-pending. Initial lookahead grouping, the assignment report and native
-certificate maps remain graph-scale Python production work.
+pending. The subsequent assignment kernel now emits its certificate on stdout;
+Python parses the stream into a temporary typed relation instead of first
+writing a complete text file and retaining bank assignments, both package-pin
+alternatives and every dual potential in nested dictionaries. Certificate
+checking walks ordered relations, retains only one bank's fixed-width group
+indices and dual vector, and uses a bounded 256-row cost cache. The logical
+assignment report is a small
+`emuflow.chimew-bank-channel-report-storage/v1` selector plus a sealed typed
+sidecar. Qualification and the Phase 6 adapter merge its ordered cursor with
+the bank/group store; package-pin collision ownership is checked in the same
+temporary relation rather than another group-sized set. Pipeline and adapter
+reports inventory both report files.
+Adapter-report v3 and pipeline-generation v2 require both report artifacts;
+older report/generation schemas remain explicit validation compatibility.
+The store has the same selector-last publication, strict schema/path checks and
+shared-reader/exclusive-writer lease as the input store; legacy report JSON is
+available only through `allow_legacy=True`.
+The stream parser enforces the native protocol as a state machine: metric,
+Stage 1 assignments and certificate, then each ordered bank's chosen priority,
+two alternatives, channel assignments and certificate. Reordered or
+interleaved sections fail closed. Certificate headers must declare exactly
+`2 + banks + groups` Stage 1 potentials or `2 + channels + assigned groups`
+per-bank potentials, so oversized and truncated claims fail before potential
+rows are buffered. Typed readers normalize every persisted
+field without SQLite string/number coercion, and qualification independently
+recomputes the complete metric and direction-priority contract. Replacement
+only treats an old selector as a GC authority after its exact envelope,
+content-addressed basename, byte/hash seals and complete store view validate;
+an invalid selector can be replaced but cannot name a file for deletion.
+
+In an isolated 30,000-group native-output parser comparison, retained traced
+allocation fell from 24.18 MiB to 0.30 MiB and peak allocation from 31.34 MiB
+to 1.74 MiB. The former 6,414,799-byte text scratch is no longer produced; the
+temporary certificate index was 4,907,008 bytes. Parsing took 1.634 versus
+0.621 seconds. A separate 100,000-assignment publication comparison reduced
+retained allocation from 55.89 MiB to 0.57 MiB and peak allocation from 55.96
+MiB to 2.99 MiB; 15,156,114 bytes of JSON became a 1,068-byte selector plus a
+10,211,328-byte sidecar. Full typed publication and validation took 7.043
+seconds versus 0.961 seconds for list construction and JSON writing. These are
+memory, contract and temporary-I/O measurements, not runtime or NVDLA
+qualification. Initial lookahead grouping and the native C++ kernel's internal
+candidate/group vectors remain graph-scale work. The Python-wide bank list and
+global `flat_channels` map have been removed; one bank's normalized channel
+record remains live while it is checked, and qualification writes channel
+lookup rows in batches of at most 4,096 even when one bank is much larger.
+Native invocation still serializes the
+complete assignment input to `input.txt`, so direct typed input consumption is
+the next I/O boundary.
 Transport RTL is written atomically from slot-ordered cursors. Python still
 decodes records into the stores and emits adapter text, so native producer
 migration remains. ScheduleStore v4 keeps Static Exact hop, route and

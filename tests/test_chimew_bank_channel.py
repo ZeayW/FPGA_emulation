@@ -12,6 +12,8 @@ from unittest import mock
 
 from emuflow import chimew_bank_channel as bank_channel_module
 from emuflow import chimew_bank_channel_storage as storage_module
+from emuflow import chimew_bank_channel_report_storage as report_storage_module
+from emuflow import chimew_qualification as qualification_module
 from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
@@ -32,7 +34,16 @@ from emuflow.chimew_bank_channel_storage import (
     read_chimew_bank_channel_input,
     write_chimew_bank_channel_storage,
 )
+from emuflow.chimew_bank_channel_report_storage import (
+    BankChannelReportView,
+    canonical_bank_channel_report_sha256,
+    read_chimew_bank_channel_report,
+    write_chimew_bank_channel_report_storage,
+)
 from emuflow.errors import EmuFlowError, ValidationError
+from emuflow.chimew_qualification import (
+    validate_chimew_bank_channel_report_artifact,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -930,6 +941,393 @@ class ChimewBankChannelTest(unittest.TestCase):
         }
         self.assertEqual(assignment["critical"], "low")
         self.assertEqual(assignment["noncritical"], "high")
+
+    def test_indexed_report_preserves_the_logical_assignment_contract(self) -> None:
+        legacy = evaluate_chimew_bank_channel_assignment(
+            self.document, executable=str(self.executable)
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "report.json"
+            indexed = evaluate_chimew_bank_channel_assignment(
+                self.document,
+                executable=str(self.executable),
+                output_path=path,
+            )
+            self.assertIsInstance(indexed, BankChannelReportView)
+            self.assertEqual(indexed.materialize(), legacy)
+            self.assertEqual(
+                canonical_bank_channel_report_sha256(indexed),
+                canonical_bank_channel_report_sha256(legacy),
+            )
+            self.assertLess(path.stat().st_size, 2048)
+            indexed.close()
+            with self.assertRaisesRegex(ValidationError, "allow_legacy"):
+                legacy_path = Path(temporary) / "legacy.json"
+                legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
+                read_chimew_bank_channel_report(legacy_path)
+            self.assertEqual(
+                read_chimew_bank_channel_report(
+                    legacy_path, allow_legacy=True
+                ),
+                legacy,
+            )
+
+    def test_native_stdout_certificate_matches_file_protocol(self) -> None:
+        problem = validate_chimew_bank_channel_input(self.document)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_path = root / "input.txt"
+            output_path = root / "output.txt"
+            bank_channel_module._serialize(problem, input_path)
+            subprocess.run(
+                [str(self.executable), str(input_path), str(output_path)],
+                check=True,
+            )
+            streamed = subprocess.run(
+                [str(self.executable), str(input_path), "-"],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(streamed.stderr, "")
+            self.assertEqual(streamed.stdout, output_path.read_text())
+
+    def test_streamed_certificate_protocol_rejects_out_of_order_sections(self) -> None:
+        problem = validate_chimew_bank_channel_input(self.document)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_path = root / "input.txt"
+            output_path = root / "output.txt"
+            bank_channel_module._serialize(problem, input_path)
+            subprocess.run(
+                [str(self.executable), str(input_path), str(output_path)],
+                check=True,
+            )
+            lines = output_path.read_text(encoding="utf-8").splitlines()
+            metric_at_end = [lines[0], *lines[2:], lines[1]]
+            first_certificate = next(
+                index for index, line in enumerate(lines) if line.startswith("CERT ")
+            )
+            bank_after_certificate = list(lines)
+            bank_record = bank_after_certificate.pop(2)
+            bank_after_certificate.insert(first_certificate, bank_record)
+            interleaved_potential = list(lines)
+            interleaved_potential.insert(first_certificate + 2, lines[1])
+            for name, malformed in (
+                ("metric-at-end", metric_at_end),
+                ("bank-after-certificate", bank_after_certificate),
+                ("stage1-potential-interleaved", interleaved_potential),
+            ):
+                with self.subTest(name=name):
+                    executable = root / name
+                    executable.write_text(
+                        "#!/usr/bin/env python3\n"
+                        "import sys\n"
+                        f"sys.stdout.write({repr(chr(10).join(malformed) + chr(10))})\n",
+                        encoding="utf-8",
+                    )
+                    executable.chmod(0o755)
+                    with self.assertRaisesRegex(
+                        EmuFlowError, "output is malformed|assignment is incomplete"
+                    ):
+                        evaluate_chimew_bank_channel_assignment(
+                            self.document, executable=str(executable)
+                        )
+
+    def test_streamed_certificate_rejects_wrong_sizes_at_each_header(self) -> None:
+        problem = validate_chimew_bank_channel_input(self.document)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_path = root / "input.txt"
+            output_path = root / "output.txt"
+            bank_channel_module._serialize(problem, input_path)
+            subprocess.run(
+                [str(self.executable), str(input_path), str(output_path)],
+                check=True,
+            )
+            lines = output_path.read_text(encoding="utf-8").splitlines()
+            labels = ("STAGE1", next(
+                line.split()[1]
+                for line in lines
+                if line.startswith("CERT BANK")
+            ))
+            for label in labels:
+                certificate_index = next(
+                    index
+                    for index, line in enumerate(lines)
+                    if line.startswith(f"CERT {label} ")
+                )
+                expected = int(lines[certificate_index].split()[2])
+                for suffix, declared in (
+                    ("truncated", expected - 1),
+                    ("huge", 1_000_000_000),
+                ):
+                    with self.subTest(label=label, suffix=suffix):
+                        malformed = list(lines)
+                        malformed[certificate_index] = (
+                            f"CERT {label} {declared}"
+                        )
+                        executable = root / f"{label}-{suffix}"
+                        executable.write_text(
+                            "#!/usr/bin/env python3\n"
+                            "import sys\n"
+                            f"sys.stdout.write({repr(chr(10).join(malformed) + chr(10))})\n",
+                            encoding="utf-8",
+                        )
+                        executable.chmod(0o755)
+                        with self.assertRaisesRegex(
+                            EmuFlowError, "certificate dimensions are invalid"
+                        ):
+                            evaluate_chimew_bank_channel_assignment(
+                                self.document, executable=str(executable)
+                            )
+
+    def test_semantic_channel_index_batches_one_large_bank(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["bank_pairs"] = [copy.deepcopy(document["bank_pairs"][0])]
+        document["bank_pairs"][0]["channels"] = [
+            {
+                "id": f"large{index}",
+                "order": index,
+                "pin_a": {"x": 0.0, "y": float(index)},
+                "pin_b": {"x": 100.0, "y": float(index)},
+            }
+            for index in range(5001)
+        ]
+        document["groups"] = [
+            {
+                "id": "only",
+                "domain": "AB",
+                "kind": "tdm_group",
+                "direction": "a_to_b",
+                "members": [member("only", 0.0, 0.0)],
+            }
+        ]
+        document["metrics"] = {
+            "groups": 1,
+            "signals": 1,
+            "fanins": 1,
+            "bank_pairs": 1,
+            "channels": 5001,
+        }
+        report = evaluate_chimew_bank_channel_assignment(
+            document, executable=str(self.executable)
+        )
+        real_connect = sqlite3.connect
+        channel_batches = []
+
+        class ConnectionSpy:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def executemany(self, sql, rows):
+                if "INSERT INTO channels" in sql:
+                    channel_batches.append(len(rows))
+                return self.connection.executemany(sql, rows)
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+        with mock.patch.object(
+            qualification_module.sqlite3,
+            "connect",
+            side_effect=lambda *args, **kwargs: ConnectionSpy(
+                real_connect(*args, **kwargs)
+            ),
+        ):
+            validate_chimew_bank_channel_report_artifact(document, report)
+        self.assertEqual(channel_batches, [4096, 905])
+
+    def test_indexed_report_rejects_resealed_malformed_store_and_symlink(self) -> None:
+        report = evaluate_chimew_bank_channel_assignment(
+            self.document, executable=str(self.executable)
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "report.json"
+            view = write_chimew_bank_channel_report_storage(path, report)
+            store = view.store_path
+            view.close()
+            with sqlite3.connect(store) as connection:
+                connection.execute("PRAGMA application_id=1")
+            digest = hashlib.sha256(store.read_bytes()).hexdigest()
+            replacement = root / f"report.{digest}.sqlite"
+            store.replace(replacement)
+            selector = json.loads(path.read_text(encoding="utf-8"))
+            selector["artifact"] = replacement.name
+            selector["store_bytes"] = replacement.stat().st_size
+            selector["store_sha256"] = digest
+            path.write_text(json.dumps(selector), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "SQLite metadata disagrees"
+            ):
+                read_chimew_bank_channel_report(path)
+
+            valid_path = root / "valid.json"
+            write_chimew_bank_channel_report_storage(valid_path, report).close()
+            symlink = root / "alias.json"
+            symlink.symlink_to(valid_path.name)
+            with self.assertRaisesRegex(ValidationError, "symlink"):
+                read_chimew_bank_channel_report(symlink)
+
+    def test_indexed_report_rejects_resealed_typed_row_corruption(self) -> None:
+        report = evaluate_chimew_bank_channel_assignment(
+            self.document, executable=str(self.executable)
+        )
+        for column, value, message in (
+            ("bank_cost", "nan", "finite number"),
+            ("channel_cost", "inf", "finite number"),
+            ("bank_cost_rank", "not-an-integer", "non-negative integer"),
+            ("bank_pair", sqlite3.Binary(b"wrong-type"), "non-empty string"),
+        ):
+            with self.subTest(column=column), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                path = root / "report.json"
+                view = write_chimew_bank_channel_report_storage(path, report)
+                store = view.store_path
+                view.close()
+                with sqlite3.connect(store) as connection:
+                    connection.execute(
+                        f"UPDATE assignments SET {column}=? WHERE seq=0", (value,)
+                    )
+                digest = hashlib.sha256(store.read_bytes()).hexdigest()
+                replacement = root / f"report.{digest}.sqlite"
+                store.replace(replacement)
+                selector = json.loads(path.read_text(encoding="utf-8"))
+                selector["artifact"] = replacement.name
+                selector["store_bytes"] = replacement.stat().st_size
+                selector["store_sha256"] = digest
+                path.write_text(json.dumps(selector), encoding="utf-8")
+                with self.assertRaisesRegex(ValidationError, message):
+                    read_chimew_bank_channel_report(path)
+
+    def test_invalid_old_selector_cannot_authorize_artifact_deletion(self) -> None:
+        report = evaluate_chimew_bank_channel_assignment(
+            self.document, executable=str(self.executable)
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "report.json"
+            victim = root / "victim.sqlite"
+            victim.write_bytes(b"must survive")
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": report_storage_module.REPORT_STORAGE_SCHEMA,
+                        "artifact": victim.name,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            current = write_chimew_bank_channel_report_storage(path, report)
+            current.close()
+            self.assertEqual(victim.read_bytes(), b"must survive")
+
+    def test_semantic_validator_rejects_header_metric_and_priority_relabelling(self) -> None:
+        report = evaluate_chimew_bank_channel_assignment(
+            self.document, executable=str(self.executable)
+        )
+        mutations = []
+        changed = copy.deepcopy(report)
+        changed["status"] = "pass"
+        mutations.append(changed)
+        changed = copy.deepcopy(report)
+        changed["paper_scope"] = "unknown"
+        mutations.append(changed)
+        changed = copy.deepcopy(report)
+        changed["metrics"]["unknown"] = 1
+        mutations.append(changed)
+        changed = copy.deepcopy(report)
+        changed["metrics"]["certified_matchings"] = float(
+            changed["metrics"]["certified_matchings"]
+        )
+        mutations.append(changed)
+        changed = copy.deepcopy(report)
+        changed["direction_priority"]["near"] = "b_to_a"
+        mutations.append(changed)
+        changed = copy.deepcopy(report)
+        changed["direction_priority"]["renamed"] = changed[
+            "direction_priority"
+        ].pop("near")
+        mutations.append(changed)
+        for changed in mutations:
+            with self.subTest(changed=changed):
+                with self.assertRaises(ValidationError):
+                    validate_chimew_bank_channel_report_artifact(
+                        self.document, changed
+                    )
+
+        changed = copy.deepcopy(report)
+        changed["assignments"][0]["group"] = "resealed-group-identity"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "report.json"
+            typed = write_chimew_bank_channel_report_storage(path, changed)
+            with typed:
+                with self.assertRaisesRegex(ValidationError, "coverage"):
+                    validate_chimew_bank_channel_report_artifact(
+                        self.document, typed
+                    )
+
+    def test_report_reader_lease_blocks_replacement_and_old_store_gc(self) -> None:
+        first = evaluate_chimew_bank_channel_assignment(
+            self.document, executable=str(self.executable)
+        )
+        second = copy.deepcopy(first)
+        second["status"] = "replacement"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "report.json"
+            old = write_chimew_bank_channel_report_storage(path, first)
+            old_store = old.store_path
+            started = threading.Event()
+            completed = threading.Event()
+            failures = []
+
+            def replace() -> None:
+                started.set()
+                try:
+                    write_chimew_bank_channel_report_storage(path, second).close()
+                except BaseException as error:
+                    failures.append(error)
+                finally:
+                    completed.set()
+
+            thread = threading.Thread(target=replace)
+            thread.start()
+            self.assertTrue(started.wait(1.0))
+            self.assertFalse(completed.wait(0.1))
+            self.assertTrue(old_store.is_file())
+            self.assertEqual(old["status"], first["status"])
+            old.close()
+            self.assertTrue(completed.wait(2.0))
+            thread.join()
+            self.assertEqual(failures, [])
+            self.assertFalse(old_store.exists())
+            current = read_chimew_bank_channel_report(path)
+            self.assertEqual(current["status"], "replacement")
+            current.close()
+
+    def test_report_publication_restores_previous_selector_on_validation_failure(self) -> None:
+        first = evaluate_chimew_bank_channel_assignment(
+            self.document, executable=str(self.executable)
+        )
+        second = copy.deepcopy(first)
+        second["status"] = "replacement"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "report.json"
+            write_chimew_bank_channel_report_storage(path, first).close()
+            original_selector = path.read_bytes()
+            original_files = {item.name for item in path.parent.iterdir()}
+            with mock.patch.object(
+                report_storage_module,
+                "BankChannelReportView",
+                side_effect=ValidationError("injected report validation failure"),
+            ):
+                with self.assertRaisesRegex(ValidationError, "injected"):
+                    write_chimew_bank_channel_report_storage(path, second)
+            self.assertEqual(path.read_bytes(), original_selector)
+            self.assertEqual(
+                {item.name for item in path.parent.iterdir()}, original_files
+            )
 
 
 if __name__ == "__main__":
