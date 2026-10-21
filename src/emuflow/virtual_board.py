@@ -9,13 +9,16 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
+import os
 import re
 import sys
+import uuid
 from collections import defaultdict
 from itertools import zip_longest
 from pathlib import Path
-from typing import Any, Dict, Iterator, Mapping
+from typing import Any, Dict, Iterator, Mapping, Protocol
 
 from .errors import ValidationError
 from .io import read_json, write_json
@@ -29,6 +32,11 @@ BINDING_SCHEMA = "emuflow.virtual-board-binding/v1"
 IO_CONTRACT_SCHEMA = "emuflow.virtual-io-physical-contract/v1"
 INVENTORY_PATH = Path(__file__).parent / "data/io/xcvu19p-fsva3824-2-e.hp-pins.json"
 FIXED_WIRING_ROOT = Path(__file__).resolve().parents[2] / "platforms/virtual"
+
+
+class _TextWriter(Protocol):
+    def write(self, value: str) -> int:
+        ...
 
 
 def _digest(value: Any) -> str:
@@ -562,11 +570,16 @@ def validate_virtual_binding(platform: Platform, board: Mapping[str, Any], sched
             "physical_backend_status": expected["physical_backend_status"], **expected["metrics"]}
 
 
-def virtual_binding_to_xdc(binding: Mapping[str, Any], fpga: str) -> str:
-    lines = ["# Hypothetical LVDS board: vendor P/N pairs, assumed P-to-P and N-to-N cables.",
-             "# Use with virtual_differential_io.sv exposed at the physical top level.",
-             "# Data ports only; 1.8 V VCCO and internal 100-ohm receiver termination assumed.",
-             "# Clock/reset/control constraints and physical backend integration remain required."]
+def _emit_virtual_binding_xdc(
+    stream: _TextWriter, binding: Mapping[str, Any], fpga: str
+) -> None:
+    for line in (
+        "# Hypothetical LVDS board: vendor P/N pairs, assumed P-to-P and N-to-N cables.",
+        "# Use with virtual_differential_io.sv exposed at the physical top level.",
+        "# Data ports only; 1.8 V VCCO and internal 100-ohm receiver termination assumed.",
+        "# Clock/reset/control constraints and physical backend integration remain required.",
+    ):
+        stream.write(line + "\n")
     records = {}
     for end in _iter_binding_adapter_ports(binding, fpga):
         for polarity in ("p", "n"):
@@ -575,22 +588,29 @@ def virtual_binding_to_xdc(binding: Mapping[str, Any], fpga: str) -> str:
     for port, (pin, standard) in sorted(records.items()):
         if any(c in port + pin + standard for c in "{}\n\r;"):
             raise ValidationError("unsafe name in virtual data-pin constraint")
-        lines += [f"set_property PACKAGE_PIN {pin} [get_ports {{{port}}}]",
-                  f"set_property IOSTANDARD {standard} [get_ports {{{port}}}]"]
-    return "\n".join(lines) + "\n"
+        stream.write(f"set_property PACKAGE_PIN {pin} [get_ports {{{port}}}]\n")
+        stream.write(
+            f"set_property IOSTANDARD {standard} [get_ports {{{port}}}]\n"
+        )
 
 
-def virtual_binding_to_systemverilog(binding: Mapping[str, Any], fpga: str) -> str:
+def virtual_binding_to_xdc(binding: Mapping[str, Any], fpga: str) -> str:
+    stream = io.StringIO()
+    _emit_virtual_binding_xdc(stream, binding, fpga)
+    return stream.getvalue()
+
+
+def _emit_virtual_binding_systemverilog(
+    stream: _TextWriter, binding: Mapping[str, Any], fpga: str
+) -> None:
     """Emit a standalone data adapter; the backend must integrate it at top level."""
     records = {
         end["p"]["port"]: (end["role"], end)
         for end in _iter_binding_adapter_ports(binding, fpga)
     }
     buses = {}
-    pins = []
-    body = []
     used_rx_bits = defaultdict(set)
-    for index, (_, (role, end)) in enumerate(sorted(records.items())):
+    for role, end in records.values():
         logical = end["logical_port"]
         match = re.fullmatch(r"([a-zA-Z_][a-zA-Z0-9_]*)\[(\d+)\]", logical)
         if match is None:
@@ -603,25 +623,136 @@ def virtual_binding_to_systemverilog(binding: Mapping[str, Any], fpga: str) -> s
         p, n = end["p"]["port"], end["n"]["port"]
         if any(re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name) is None for name in (p, n)):
             raise ValidationError("invalid differential adapter pin port")
-        physical_direction = "output" if role == "source" else "input"
-        pins.extend([f"  {physical_direction} wire {p}", f"  {physical_direction} wire {n}"])
-        if role == "source":
-            body.append(f'  OBUFDS #(.IOSTANDARD("LVDS")) tx_{index} (.I({logical}), .O({p}), .OB({n}));')
-        else:
-            body.append(f'  IBUFDS #(.IOSTANDARD("LVDS"), .DIFF_TERM("TRUE")) rx_{index} (.I({p}), .IB({n}), .O({logical}));')
+        if role == "sink":
             used_rx_bits[bus].add(bit)
-    ports = [f"  {direction} wire [{width - 1}:0] {bus}"
-             for bus, (direction, width) in sorted(buses.items())] + pins
+
+    stream.write(
+        "// Standalone LVDS data adapter. Connect logical buses to "
+        "emuflow_transport_<fpga>.\n"
+    )
+    stream.write(
+        "// Expose P/N ports at the physical top level before applying "
+        "virtual_data_pins.xdc.\n"
+    )
+    stream.write(
+        "// Whole-bank directions are static for this build; internal "
+        "receiver termination enabled.\n"
+    )
+    stream.write(f"module emuflow_virtual_io_{_name(fpga)} (\n")
+    first_port = True
+
+    def port(value: str) -> None:
+        nonlocal first_port
+        if not first_port:
+            stream.write(",\n")
+        stream.write(value)
+        first_port = False
+
+    for bus, (direction, width) in sorted(buses.items()):
+        port(f"  {direction} wire [{width - 1}:0] {bus}")
+    for role, end in records.values():
+        physical_direction = "output" if role == "source" else "input"
+        port(f"  {physical_direction} wire {end['p']['port']}")
+        port(f"  {physical_direction} wire {end['n']['port']}")
+    stream.write("\n);\n")
+
+    for index, (_, (role, end)) in enumerate(sorted(records.items())):
+        logical = end["logical_port"]
+        p, n = end["p"]["port"], end["n"]["port"]
+        if role == "source":
+            stream.write(
+                f'  OBUFDS #(.IOSTANDARD("LVDS")) tx_{index} '
+                f"(.I({logical}), .O({p}), .OB({n}));\n"
+            )
+        else:
+            stream.write(
+                f'  IBUFDS #(.IOSTANDARD("LVDS"), .DIFF_TERM("TRUE")) '
+                f"rx_{index} (.I({p}), .IB({n}), .O({logical}));\n"
+            )
     for bus, bits in sorted(used_rx_bits.items()):
         for bit in range(buses[bus][1]):
             if bit not in bits:
-                body.append(f"  assign {bus}[{bit}] = 1'b0;")
-    return "\n".join([
-        "// Standalone LVDS data adapter. Connect logical buses to emuflow_transport_<fpga>.",
-        "// Expose P/N ports at the physical top level before applying virtual_data_pins.xdc.",
-        "// Whole-bank directions are static for this build; internal receiver termination enabled.",
-        f"module emuflow_virtual_io_{_name(fpga)} (", ",\n".join(ports), ");", *body, "endmodule", "",
-    ])
+                stream.write(f"  assign {bus}[{bit}] = 1'b0;\n")
+    stream.write("endmodule\n")
+
+
+def virtual_binding_to_systemverilog(binding: Mapping[str, Any], fpga: str) -> str:
+    stream = io.StringIO()
+    _emit_virtual_binding_systemverilog(stream, binding, fpga)
+    return stream.getvalue()
+
+
+def _write_virtual_binding_artifact(
+    path: Path,
+    binding: Mapping[str, Any],
+    fpga: str,
+    *,
+    systemverilog: bool,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            if systemverilog:
+                _emit_virtual_binding_systemverilog(stream, binding, fpga)
+            else:
+                _emit_virtual_binding_xdc(stream, binding, fpga)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def write_virtual_binding_xdc(
+    path: Path, binding: Mapping[str, Any], fpga: str
+) -> None:
+    _write_virtual_binding_artifact(
+        path, binding, fpga, systemverilog=False
+    )
+
+
+def write_virtual_binding_systemverilog(
+    path: Path, binding: Mapping[str, Any], fpga: str
+) -> None:
+    _write_virtual_binding_artifact(
+        path, binding, fpga, systemverilog=True
+    )
+
+
+def _virtual_binding_artifact_sha256(
+    binding: Mapping[str, Any], fpga: str, *, systemverilog: bool
+) -> str:
+    digest = hashlib.sha256()
+
+    class DigestStream:
+        def write(self, value: str) -> int:
+            digest.update(value.encode("utf-8"))
+            return len(value)
+
+    stream = DigestStream()
+    if systemverilog:
+        _emit_virtual_binding_systemverilog(stream, binding, fpga)
+    else:
+        _emit_virtual_binding_xdc(stream, binding, fpga)
+    return digest.hexdigest()
+
+
+def virtual_binding_xdc_matches(
+    path: Path, binding: Mapping[str, Any], fpga: str
+) -> bool:
+    return path.is_file() and _file_sha256(path) == _virtual_binding_artifact_sha256(
+        binding, fpga, systemverilog=False
+    )
+
+
+def virtual_binding_systemverilog_matches(
+    path: Path, binding: Mapping[str, Any], fpga: str
+) -> bool:
+    return path.is_file() and _file_sha256(path) == _virtual_binding_artifact_sha256(
+        binding, fpga, systemverilog=True
+    )
 
 
 def _iter_binding_adapter_ports(
@@ -674,14 +805,9 @@ def build_virtual_io_physical_contract(
     """Seal the exact Phase-6 XDC/adapter inputs consumed by Phase 7."""
     if binding.get("schema") != BINDING_SCHEMA or binding.get("status") != "pass":
         raise ValidationError("virtual I/O physical contract has an invalid binding")
-    expected_xdc = virtual_binding_to_xdc(binding, fpga)
-    expected_adapter = virtual_binding_to_systemverilog(binding, fpga)
-    if not xdc_path.is_file() or xdc_path.read_text(encoding="utf-8") != expected_xdc:
+    if not virtual_binding_xdc_matches(xdc_path, binding, fpga):
         raise ValidationError(f"{fpga} virtual data-pin XDC differs from its binding")
-    if (
-        not adapter_path.is_file()
-        or adapter_path.read_text(encoding="utf-8") != expected_adapter
-    ):
+    if not virtual_binding_systemverilog_matches(adapter_path, binding, fpga):
         raise ValidationError(f"{fpga} differential I/O adapter differs from its binding")
 
     records: Dict[str, Dict[str, Any]] = {}

@@ -12,6 +12,7 @@ from emuflow.tdm_schedule_storage import (
     LEGACY_TDM_SCHEDULE_STORAGE_SCHEMA,
     TDM_SCHEDULE_APPLICATION_ID,
     TDM_SCHEDULE_STORAGE_SCHEMA,
+    canonical_tdm_schedule_sha256,
     open_tdm_schedule_view,
     pretty_tdm_schedule_sha256,
     write_tdm_schedule_storage,
@@ -92,6 +93,34 @@ def test_schedule_store_round_trip_lazy_iteration_and_relocation(tmp_path):
     relocated = tmp_path / "relocated"
     shutil.copytree(source, relocated)
     assert read_json(relocated / "schedule.json") == expected
+
+
+def test_schedule_store_publishes_large_section_in_one_pass(tmp_path):
+    class SinglePassRecords(list):
+        def __init__(self, records):
+            super().__init__(records)
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            if self.iterations > 1:
+                raise AssertionError("large schedule section was decoded twice")
+            yield from super().__iter__()
+
+    expected = _schedule(10_000)
+    value = dict(expected)
+    entries = SinglePassRecords(expected["entries"])
+    value["entries"] = entries
+    manifest = write_tdm_schedule_storage(tmp_path / "schedule.json", value)
+    assert entries.iterations == 1
+    assert manifest["logical_sha256"] == canonical_tdm_schedule_sha256(
+        expected
+    )
+    assert manifest["logical_pretty_sha256"] == pretty_tdm_schedule_sha256(
+        expected
+    )
+    with open_tdm_schedule_view(tmp_path / "schedule.json") as view:
+        assert list(view["entries"]) == expected["entries"]
 
 
 def test_v1_schedule_manifest_remains_readable(tmp_path):

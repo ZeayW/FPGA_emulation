@@ -55,6 +55,18 @@ def test_measurement_requires_exact_endpoint_coverage(tmp_path):
         read_measurements(path, example())
 
 
+def test_measurement_requires_canonical_endpoint_order(tmp_path):
+    rows = example()[:2]
+    path = tmp_path / "out"
+    path.write_text(
+        "endpoint\tarrival_ns\trequired_ns\tslack_ns\n"
+        "o1\t11\t12\t1\n"
+        "o0\t3\t4\t1\n"
+    )
+    with pytest.raises(ValidationError, match="endpoint"):
+        read_measurements(path, rows, verify_arcs=False)
+
+
 def test_engine_identity_from_existing_banner(tmp_path):
     log = tmp_path / "opensta.log"
     log.write_text("startup warning\nOpenSTA 2.6.0 0c6421e022 Copyright (c) 2024\n")

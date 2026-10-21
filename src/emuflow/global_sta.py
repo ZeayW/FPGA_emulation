@@ -13,7 +13,6 @@ from __future__ import annotations
 import math
 import re
 import subprocess
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -36,6 +35,7 @@ class EventCheck:
 def validate_checks(checks: Iterable[EventCheck]) -> list[EventCheck]:
     rows = list(checks)
     seen = set()
+    observations: dict[str, list[EventCheck | None]] = {}
     for row in rows:
         key = (row.path, row.role, row.event)
         if key in seen or not row.path or not row.event:
@@ -48,24 +48,30 @@ def validate_checks(checks: Iterable[EventCheck]) -> list[EventCheck]:
                 raise ValidationError("global STA times must be finite numbers")
         if row.launch_ns < 0 or any(x < 0 for x in row.arcs_ns):
             raise ValidationError("global STA launch/arc delay must be nonnegative")
+        if row.role in {"target", "runtime"}:
+            pair = observations.setdefault(row.path, [None, None])
+            position = 0 if row.role == "target" else 1
+            if pair[position] is not None:
+                raise ValidationError(
+                    "global STA must observe each original path once"
+                )
+            pair[position] = row
     if not rows:
         raise ValidationError("global STA has no timing checks")
-    target = {r.path for r in rows if r.role == "target"}
-    runtime = {r.path for r in rows if r.role == "runtime"}
-    if target != runtime or not target:
+    if not observations or any(
+        target is None or runtime is None
+        for target, runtime in observations.values()
+    ):
         raise ValidationError("global STA target/runtime population disagrees")
-    counts = Counter((r.path, r.role) for r in rows)
-    if any(counts[p, role] != 1
-           for p in target for role in ("target", "runtime")):
-        raise ValidationError("global STA must observe each original path once")
-    observations = {(r.path, r.role): r for r in rows
-                    if r.role in {"target", "runtime"}}
     for row in rows:
-        if row.path not in target:
+        if row.path not in observations:
             raise ValidationError("global STA event has no original-path observation")
-    for path in target:
-        a, b = observations[path, "target"], observations[path, "runtime"]
-        if (a.launch_ns, a.arcs_ns) != (b.launch_ns, b.arcs_ns):
+    for target, runtime in observations.values():
+        assert target is not None and runtime is not None
+        if (target.launch_ns, target.arcs_ns) != (
+            runtime.launch_ns,
+            runtime.arcs_ns,
+        ):
             raise ValidationError("global STA target/runtime physical chains disagree")
     return rows
 
@@ -162,13 +168,17 @@ exit 0
 
 
 def read_measurements(path: Path, rows: list[EventCheck], *, verify_arcs=True) -> list[dict]:
-    values = {}
+    result = []
     with path.open() as stream:
         if next(stream, "").strip() != "endpoint\tarrival_ns\trequired_ns\tslack_ns":
             raise ValidationError("invalid global STA measurements header")
-        for line in stream:
+        for index, line in enumerate(stream):
             fields = line.rstrip("\n").split("\t")
-            if len(fields) != 4 or fields[0] in values:
+            if (
+                index >= len(rows)
+                or len(fields) != 4
+                or fields[0] != f"o{index}"
+            ):
                 raise ValidationError("duplicate/malformed global STA endpoint")
             try:
                 numbers = tuple(float(v) for v in fields[1:])
@@ -176,24 +186,36 @@ def read_measurements(path: Path, rows: list[EventCheck], *, verify_arcs=True) -
                 raise ValidationError("invalid global STA measurement") from exc
             if not all(math.isfinite(x) for x in numbers):
                 raise ValidationError("nonfinite global STA measurement")
-            values[fields[0]] = numbers
-    if set(values) != {f"o{i}" for i in range(len(rows))}:
+            row = rows[index]
+            if verify_arcs:
+                # Check TX/commit rows as well as original-path observations.
+                # This is an independent linear arc check, performed while the
+                # measurement row is live instead of retaining a second map.
+                arrival = math.fsum(row.arcs_ns)
+                required = row.required_ns - row.launch_ns
+                for actual, expected in zip(
+                    numbers,
+                    (arrival, required, required - arrival),
+                ):
+                    if abs(actual - expected) > max(
+                        1e-3, 4 * 2**-23 * abs(expected)
+                    ):
+                        raise ValidationError(
+                            f"global STA event binding disagrees at o{index}"
+                        )
+            result.append(
+                {
+                    "path": row.path,
+                    "role": row.role,
+                    "event": row.event,
+                    "arrival_ns": numbers[0] + row.launch_ns,
+                    "required_ns": numbers[1] + row.launch_ns,
+                    "slack_ns": numbers[2],
+                }
+            )
+    if len(result) != len(rows):
         raise ValidationError("global STA missing/extra/unconstrained endpoints")
-    # Validate the exported event binding, including TX/commit rows which do
-    # not belong to the original-path TNS population. A corrupt positive slack
-    # must not conceal a late event. This is a linear independent arc check,
-    # not an optimization replay or a second persisted timing population.
-    for i, row in enumerate(rows if verify_arcs else []):
-        arrival = math.fsum(row.arcs_ns)
-        required = row.required_ns - row.launch_ns
-        for actual, expected in zip(values[f"o{i}"],
-                                    (arrival, required, required-arrival)):
-            if abs(actual-expected) > max(1e-3, 4 * 2**-23 * abs(expected)):
-                raise ValidationError(f"global STA event binding disagrees at o{i}")
-    return [{"path": r.path, "role": r.role, "event": r.event,
-             "arrival_ns": values[f"o{i}"][0] + r.launch_ns,
-             "required_ns": values[f"o{i}"][1] + r.launch_ns,
-             "slack_ns": values[f"o{i}"][2]} for i, r in enumerate(rows)]
+    return result
 
 
 def _compress_path_equivalent_checks(

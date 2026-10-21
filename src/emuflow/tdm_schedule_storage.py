@@ -164,6 +164,126 @@ def _validate_manifest(value: Mapping[str, Any], path: Path) -> Path:
     return _descriptor_store_path(path, value)
 
 
+def _update_digest(digest: Any, value: str) -> None:
+    digest.update(value.encode("utf-8"))
+
+
+def _publish_logical_schedule(
+    connection: sqlite3.Connection,
+    schedule: Mapping[str, Any],
+) -> tuple[str, str, dict[str, dict[str, Any]]]:
+    """Hash and insert the schedule with one traversal of each large section."""
+
+    compact_digest = hashlib.sha256()
+    pretty_digest = hashlib.sha256()
+    section_summaries: dict[str, dict[str, Any]] = {}
+    header = {
+        key: value
+        for key, value in schedule.items()
+        if key not in TDM_SCHEDULE_SECTIONS
+    }
+    keys = sorted(schedule)
+    _update_digest(compact_digest, "{")
+    _update_digest(pretty_digest, "{\n" if keys else "{}\n")
+    for key_index, key in enumerate(keys):
+        if key_index:
+            _update_digest(compact_digest, ",")
+        encoded_key = _canonical(key)
+        _update_digest(compact_digest, f"{encoded_key}:")
+        _update_digest(pretty_digest, f"  {encoded_key}: ")
+        value = schedule[key]
+        if key in TDM_SCHEDULE_SECTIONS:
+            if not isinstance(value, list):
+                raise ValidationError(f"schedule.{key}: expected an array")
+            section_digest = hashlib.sha256()
+            count = len(value)
+            _update_digest(compact_digest, "[")
+            _update_digest(pretty_digest, "[\n" if count else "[]")
+            pending: list[tuple[str, int, str | None, str]] = []
+            observed = 0
+            for seq, item in enumerate(value):
+                observed += 1
+                if not isinstance(item, Mapping):
+                    raise ValidationError(
+                        f"schedule.{key}[{seq}]: expected an object"
+                    )
+                encoded = _canonical(item)
+                if seq:
+                    _update_digest(compact_digest, ",")
+                _update_digest(compact_digest, encoded)
+                _update_digest(section_digest, encoded)
+                _update_digest(section_digest, "\n")
+                pretty = json.dumps(
+                    item,
+                    ensure_ascii=True,
+                    indent=2,
+                    sort_keys=True,
+                ).splitlines()
+                for line_index, line in enumerate(pretty):
+                    _update_digest(pretty_digest, f"    {line}")
+                    if line_index + 1 < len(pretty):
+                        _update_digest(pretty_digest, "\n")
+                if seq + 1 < count:
+                    _update_digest(pretty_digest, ",\n")
+                pending.append(
+                    (key, seq, _section_identity(key, item), encoded)
+                )
+                if len(pending) >= 4096:
+                    connection.executemany(
+                        "INSERT INTO records(section,seq,identity,record_json) "
+                        "VALUES (?,?,?,?)",
+                        pending,
+                    )
+                    pending.clear()
+            if observed != count:
+                raise ValidationError(
+                    f"schedule.{key}: length changed during publication"
+                )
+            if pending:
+                connection.executemany(
+                    "INSERT INTO records(section,seq,identity,record_json) "
+                    "VALUES (?,?,?,?)",
+                    pending,
+                )
+            _update_digest(compact_digest, "]")
+            if count:
+                _update_digest(pretty_digest, "\n  ]")
+            section_summaries[key] = {
+                "records": count,
+                "sha256": section_digest.hexdigest(),
+            }
+        else:
+            encoded = _canonical(value)
+            _update_digest(compact_digest, encoded)
+            pretty = json.dumps(
+                value,
+                ensure_ascii=True,
+                indent=2,
+                sort_keys=True,
+            ).splitlines()
+            _update_digest(pretty_digest, pretty[0])
+            for line in pretty[1:]:
+                _update_digest(pretty_digest, f"\n  {line}")
+        if key_index + 1 < len(keys):
+            _update_digest(pretty_digest, ",\n")
+        else:
+            _update_digest(pretty_digest, "\n}\n")
+    _update_digest(compact_digest, "}")
+    connection.executemany(
+        "INSERT INTO metadata(key,value) VALUES (?,?)",
+        (
+            ("logical_schema", _canonical(TDM_SCHEDULE_LOGICAL_SCHEMA)),
+            ("header", _canonical(header)),
+            ("logical_sha256", _canonical(compact_digest.hexdigest())),
+        ),
+    )
+    return (
+        compact_digest.hexdigest(),
+        pretty_digest.hexdigest(),
+        section_summaries,
+    )
+
+
 def write_tdm_schedule_storage(
     manifest_path: Path,
     schedule: Mapping[str, Any],
@@ -172,11 +292,6 @@ def write_tdm_schedule_storage(
 
     if schedule.get("schema") != TDM_SCHEDULE_LOGICAL_SCHEMA:
         raise ValidationError("cannot store an unsupported TDM schedule schema")
-    header = {
-        key: value
-        for key, value in schedule.items()
-        if key not in TDM_SCHEDULE_SECTIONS
-    }
     for section in TDM_SCHEDULE_SECTIONS:
         records = schedule.get(section)
         if not isinstance(records, list):
@@ -188,7 +303,6 @@ def write_tdm_schedule_storage(
         f".{store_path.name}.{uuid.uuid4().hex}.tmp"
     )
     connection = sqlite3.connect(temporary)
-    section_summaries: dict[str, dict[str, Any]] = {}
     try:
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
@@ -196,47 +310,11 @@ def write_tdm_schedule_storage(
         connection.execute(f"PRAGMA application_id={TDM_SCHEDULE_APPLICATION_ID}")
         connection.execute(f"PRAGMA user_version={TDM_SCHEDULE_USER_VERSION}")
         connection.executescript(DDL)
-        logical_sha256 = _streaming_digest(schedule)
-        logical_pretty_sha256 = _streaming_digest(
-            schedule, indent=2, trailing_newline=True
-        )
-        connection.executemany(
-            "INSERT INTO metadata(key,value) VALUES (?,?)",
-            (
-                ("logical_schema", _canonical(TDM_SCHEDULE_LOGICAL_SCHEMA)),
-                ("header", _canonical(header)),
-                ("logical_sha256", _canonical(logical_sha256)),
-            ),
-        )
-        for section in TDM_SCHEDULE_SECTIONS:
-            digest = hashlib.sha256()
-            rows = schedule[section]
-
-            def encoded_rows() -> Iterator[tuple[str, int, str | None, str]]:
-                for seq, item in enumerate(rows):
-                    if not isinstance(item, Mapping):
-                        raise ValidationError(
-                            f"schedule.{section}[{seq}]: expected an object"
-                        )
-                    encoded = _canonical(item)
-                    digest.update(encoded.encode("utf-8"))
-                    digest.update(b"\n")
-                    yield (
-                        section,
-                        seq,
-                        _section_identity(section, item),
-                        encoded,
-                    )
-
-            connection.executemany(
-                "INSERT INTO records(section,seq,identity,record_json) "
-                "VALUES (?,?,?,?)",
-                encoded_rows(),
-            )
-            section_summaries[section] = {
-                "records": len(rows),
-                "sha256": digest.hexdigest(),
-            }
+        (
+            logical_sha256,
+            logical_pretty_sha256,
+            section_summaries,
+        ) = _publish_logical_schedule(connection, schedule)
         connection.commit()
         connection.close()
         with temporary.open("rb") as stream:

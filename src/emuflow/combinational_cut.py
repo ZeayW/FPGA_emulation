@@ -1360,6 +1360,17 @@ def build_static_exact_semantic_contract(
         ]
 
     ordered_cut_ids = sorted(cut_by_net)
+    dependency_edge_count = sum(
+        len(items) for items in dependencies.values()
+    )
+    maximum_dependency_level = max(dependency_level.values(), default=0)
+    # Each predecessor set is already final after the analyzer's cycle and
+    # depth checks.  Convert it in place to the ordered list owned by the
+    # corresponding cut-node record instead of retaining a set while a second
+    # graph-sized list population is built.
+    for net_id in ordered_cut_ids:
+        dependencies[net_id] = sorted(dependencies[net_id])
+
     logic_segments: List[Dict[str, Any]] = []
     for net_id in ordered_cut_ids:
         # A reconvergent source cone can be fed both by predecessor cuts and
@@ -1395,15 +1406,29 @@ def build_static_exact_semantic_contract(
                 }
             )
     launch_segment_count = len(logic_segments)
+    capture_segment_start = launch_segment_count + dependency_edge_count
     dependency_edges: List[Dict[str, Any]] = []
+    cut_nodes = []
+    launch_segment_number = 0
+    dependency_segment_number = launch_segment_count
+    capture_index = 0
     for sink in ordered_cut_ids:
-        for source in sorted(dependencies[sink]):
+        cut = cut_by_net.pop(sink)
+        predecessor_cut_nets = dependencies.pop(sink)
+        local_launch = local_launches.pop(sink)
+        source_segments = []
+        if local_launch or not predecessor_cut_nets:
+            source_segments.append(
+                f"segment{launch_segment_number:06d}"
+            )
+            launch_segment_number += 1
+        for source in predecessor_cut_nets:
             segment_id = f"segment{len(logic_segments):06d}"
             logic_segments.append(
                 {
                     "id": segment_id,
                     "kind": "rx_to_tx",
-                    "fpga": cut_by_net[sink]["source_fpgas"][0],
+                    "fpga": cut["source_fpgas"][0],
                     "source_cut_net": source,
                     "sink_cut_net": sink,
                 }
@@ -1411,8 +1436,37 @@ def build_static_exact_semantic_contract(
             dependency_edges.append(
                 {"from": source, "to": sink, "segment": segment_id}
             )
-    dependency_segment_count = len(logic_segments) - launch_segment_count
-    capture_segment_start = len(logic_segments)
+            source_segments.append(
+                f"segment{dependency_segment_number:06d}"
+            )
+            dependency_segment_number += 1
+        capture_segments = []
+        while (
+            capture_index < len(capture_records)
+            and capture_records[capture_index]["cut_net"] == sink
+        ):
+            capture_segments.append(
+                f"segment{capture_segment_start + capture_index:06d}"
+            )
+            capture_index += 1
+        # Preserve the v3 canonical string ordering even after segment IDs
+        # grow beyond the six-digit minimum width.
+        capture_segments.sort()
+        cut_nodes.append(
+            {
+                "net": sink,
+                "cut_class": cut["cut_class"],
+                "source_fpgas": list(cut["source_fpgas"]),
+                "sink_fpgas": list(cut["sink_fpgas"]),
+                "dependency_level": dependency_level.pop(sink),
+                "combinational_dependency_depth": combinational_depth.pop(sink),
+                "predecessor_cut_nets": predecessor_cut_nets,
+                "source_segment_ids": source_segments,
+                "capture_segment_ids": capture_segments,
+            }
+        )
+    if len(logic_segments) != capture_segment_start:
+        raise ValidationError("Static Exact dependency numbering is inconsistent")
     for capture in capture_records:
         segment_id = f"segment{len(logic_segments):06d}"
         logic_segments.append(
@@ -1424,55 +1478,13 @@ def build_static_exact_semantic_contract(
                 "capture_requirement": capture["id"],
             }
         )
-
-    cut_nodes = []
-    launch_segment_number = 0
-    dependency_segment_number = launch_segment_count
-    capture_index = 0
-    for net_id in ordered_cut_ids:
-        cut = cut_by_net[net_id]
-        source_segments = []
-        if local_launches[net_id] or not dependencies[net_id]:
-            source_segments.append(
-                f"segment{launch_segment_number:06d}"
-            )
-            launch_segment_number += 1
-        predecessor_cut_nets = sorted(dependencies[net_id])
-        for _ in predecessor_cut_nets:
-            source_segments.append(
-                f"segment{dependency_segment_number:06d}"
-            )
-            dependency_segment_number += 1
-        capture_segments = []
-        while (
-            capture_index < len(capture_records)
-            and capture_records[capture_index]["cut_net"] == net_id
-        ):
-            capture_segments.append(
-                f"segment{capture_segment_start + capture_index:06d}"
-            )
-            capture_index += 1
-        # Preserve the v3 canonical string ordering even after segment IDs
-        # grow beyond the six-digit minimum width.
-        capture_segments.sort()
-        cut_nodes.append(
-            {
-                "net": net_id,
-                "cut_class": cut["cut_class"],
-                "source_fpgas": list(cut["source_fpgas"]),
-                "sink_fpgas": list(cut["sink_fpgas"]),
-                "dependency_level": dependency_level[net_id],
-                "combinational_dependency_depth": combinational_depth[net_id],
-                "predecessor_cut_nets": predecessor_cut_nets,
-                "source_segment_ids": source_segments,
-                "capture_segment_ids": capture_segments,
-            }
-        )
     if (
         launch_segment_number != launch_segment_count
         or dependency_segment_number
-        != launch_segment_count + dependency_segment_count
+        != capture_segment_start
         or capture_index != len(capture_records)
+        or len(logic_segments)
+        != capture_segment_start + len(capture_records)
     ):
         raise ValidationError("Static Exact segment numbering is inconsistent")
 
@@ -1492,8 +1504,8 @@ def build_static_exact_semantic_contract(
             "combinational_cut_nets": sum(
                 item["cut_class"] == "combinational" for item in cut_nodes
             ),
-            "dependency_edges": sum(len(items) for items in dependencies.values()),
-            "maximum_dependency_level": max(dependency_level.values(), default=0),
+            "dependency_edges": dependency_edge_count,
+            "maximum_dependency_level": maximum_dependency_level,
             "maximum_combinational_dependency_depth": maximum_depth,
             "logic_segments": len(logic_segments),
             "capture_requirements": len(capture_records),

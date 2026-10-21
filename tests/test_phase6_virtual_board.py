@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import emuflow.virtual_board as virtual_board_module
 from emuflow.default_platform import research_platform_path
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
@@ -127,6 +128,29 @@ def test_indexed_binding_emits_adapter_without_iterating_hop_entries(tmp_path, i
         assert virtual_binding_to_systemverilog(
             view, fpga
         ) == virtual_binding_to_systemverilog(materialized, fpga)
+
+
+def test_phase6_streams_adapter_files_without_building_complete_strings(
+    tmp_path, inputs, monkeypatch
+):
+    def reject_string_materialization(*_args, **_kwargs):
+        raise AssertionError('Phase 6 materialized a complete adapter string')
+
+    monkeypatch.setattr(
+        virtual_board_module,
+        'virtual_binding_to_xdc',
+        reject_string_materialization,
+    )
+    monkeypatch.setattr(
+        virtual_board_module,
+        'virtual_binding_to_systemverilog',
+        reject_string_materialization,
+    )
+    args, out, report = emit(tmp_path, inputs)
+    assert validate_phase6(*args, out / 'manifest.json') == report['validation']
+    for fpga in ('fpga0', 'fpga1'):
+        assert (out / fpga / 'virtual_data_pins.xdc').is_file()
+        assert (out / fpga / 'virtual_differential_io.sv').is_file()
 
 
 @pytest.mark.parametrize('mutation',['manifest','missing','wiring','polarity','binding','xdc',

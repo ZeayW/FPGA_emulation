@@ -86,8 +86,10 @@ Capture endpoints are now resolved by replaying only the native analyzer's
 requested endpoint ordinals, so Phase 3 no longer retains a Python tuple for
 every sink. Contract construction also derives stable segment identities from
 ordered counters instead of keeping duplicate source, dependency and capture
-lookup maps. The final logical contract is still resident once until direct
-native emission into `assignment.exact.bin` is implemented.
+lookup maps. It transfers predecessor lists into final cut nodes and releases
+the analyzer's cut, dependency, launch and depth maps as each cut is emitted.
+The final logical contract is still resident once until direct native emission
+into `assignment.exact.bin` is implemented.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
@@ -105,7 +107,10 @@ completions and domain records are stored once; `read_json` remains the
 explicit compatibility materializer. Native hop output remains in a fixed
 record file and is exposed through a lazy, memory-mapped list-compatible view;
 Phase 5 validates every record but no longer creates one resident Python
-dictionary per hop before ScheduleStore publication. The baseline Phase 6 splitter opens the
+dictionary per hop before ScheduleStore publication. ScheduleStore publication
+computes both logical seals, each section seal and the SQLite rows in one
+bounded pass, so each native hop is decoded once instead of three times. The
+baseline Phase 6 splitter opens the
 store lazily and performs entry-to-route and incoming-cut joins in SQLite, so
 it no longer decodes a monolithic schedule JSON before splitting. Phase 6
 batch-streams endpoint, lane, anchor and fixed-board binding records into one
@@ -113,9 +118,12 @@ content-sealed TransportStore. Validation and RTL/XDC consumers iterate its
 selectors without rebuilding global hop dictionaries. Unique differential
 adapter endpoints are normalized once in a typed relation, so XDC and
 SystemVerilog generation scale with physical port count instead of rescanning
-all scheduled hops for every FPGA. Transport RTL is written atomically from
-slot-ordered cursors. Python still decodes records into the stores and
-assembles adapter text, so native producer migration remains. ScheduleStore v2 also seals the historical
+all scheduled hops for every FPGA. Those XDC and SystemVerilog artifacts are
+written atomically as streams, and independent validation compares streaming
+digests instead of building expected and observed whole-file strings.
+Transport RTL is written atomically from slot-ordered cursors. Python still
+decodes records into the stores and emits adapter text, so native producer
+migration remains. ScheduleStore v2 also seals the historical
 indented logical digest, allowing physical orchestration, logic-segment query
 preparation and Phase 7C to keep a lazy view while preserving existing timing
 and qualification identities; v1 stores remain readable.
@@ -476,7 +484,11 @@ the selected TDM events to an abstract global timing model. **OpenSTA is the
 default global STA engine**. The internal timing composer is a separate engine
 option for explicit comparisons, not an implicit prerequisite for OpenSTA.
 The binding/export layer is EmuFlow code; the STA engine computes timing on the
-exported model. See [timing scope and metric definitions](docs/global-opensta-qualification.md).
+exported model. Measurement import now validates canonical endpoint order and
+the independent arc equations while streaming directly into result records;
+it no longer retains a second endpoint-keyed measurement dictionary. Check
+validation likewise keeps one per-path target/runtime state instead of several
+duplicate path populations. See [timing scope and metric definitions](docs/global-opensta-qualification.md).
 
 ### Selected research references
 

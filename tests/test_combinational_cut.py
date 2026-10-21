@@ -15,6 +15,7 @@ from emuflow.cli import main
 from emuflow.combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
+    _analyze_static_exact_dependencies,
     _build_combinational_cut_candidate_index,
     _resolve_native_capture_requests,
     build_static_exact_semantic_contract,
@@ -923,6 +924,40 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 ["net0"],
                 ["fpga0"],
             )
+
+    def test_semantic_builder_transfers_owned_analysis_maps(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        owned = {}
+
+        def analyze(*args, **kwargs):
+            result = _analyze_static_exact_dependencies(*args, **kwargs)
+            for name in (
+                "cut_by_net",
+                "dependencies",
+                "local_launches",
+                "dependency_level",
+                "combinational_depth",
+            ):
+                owned[name] = result[name]
+            return result
+
+        with patch(
+            "emuflow.combinational_cut._analyze_static_exact_dependencies",
+            side_effect=analyze,
+        ):
+            actual = build_static_exact_semantic_contract(
+                self.ir,
+                self.platform.to_dict(),
+                assignment["instance_assignment"],
+                assignment["cut_nets"],
+                max_dependency_depth=assignment["semantic_contract"][
+                    "max_cross_fpga_dependency_depth"
+                ],
+            )
+
+        self.assertEqual(actual, assignment["semantic_contract"])
+        for name, mapping in owned.items():
+            self.assertEqual(mapping, {}, name)
 
     def test_indexed_assignment_storage_reconstructs_exact_contract(self):
         clusters, assignment = self._exact_artifacts(dependent_return=True)

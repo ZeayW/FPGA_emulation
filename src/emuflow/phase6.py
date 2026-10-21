@@ -551,17 +551,17 @@ def run_phase6(
         )
         if virtual_binding is not None:
             from .virtual_board import (
-                virtual_binding_to_systemverilog,
-                virtual_binding_to_xdc,
+                write_virtual_binding_systemverilog,
+                write_virtual_binding_xdc,
             )
 
-            (fpga_root / "virtual_data_pins.xdc").write_text(
-                virtual_binding_to_xdc(virtual_binding, fpga_id),
-                encoding="utf-8",
+            write_virtual_binding_xdc(
+                fpga_root / "virtual_data_pins.xdc", virtual_binding, fpga_id
             )
-            (fpga_root / "virtual_differential_io.sv").write_text(
-                virtual_binding_to_systemverilog(virtual_binding, fpga_id),
-                encoding="utf-8",
+            write_virtual_binding_systemverilog(
+                fpga_root / "virtual_differential_io.sv",
+                virtual_binding,
+                fpga_id,
             )
     report = {
         "schema": PHASE6_REPORT_SCHEMA,
@@ -780,7 +780,10 @@ def validate_phase6(
     if platform.virtual_board_model is not None:
         if virtual_metadata != _virtual_board_artifact_paths(platform):
             raise ValidationError("Phase 6 declared virtual board requires wiring, binding and pin constraints")
-        from .virtual_board import virtual_binding_to_systemverilog, virtual_binding_to_xdc
+        from .virtual_board import (
+            virtual_binding_systemverilog_matches,
+            virtual_binding_xdc_matches,
+        )
         root = manifest_path.parent
         artifacts = {
             "manifest": manifest,
@@ -794,10 +797,12 @@ def validate_phase6(
                 platform, schedule, artifacts, board, binding
             )
             for fpga, relative in virtual_metadata["xdc"].items():
-                if (root / relative).read_text() != virtual_binding_to_xdc(binding, fpga):
+                if not virtual_binding_xdc_matches(root / relative, binding, fpga):
                     raise ValidationError(f"Phase 6 virtual data-pin XDC differs for {fpga}")
             for fpga, relative in virtual_metadata["differential_io"].items():
-                if (root / relative).read_text() != virtual_binding_to_systemverilog(binding, fpga):
+                if not virtual_binding_systemverilog_matches(
+                    root / relative, binding, fpga
+                ):
                     raise ValidationError(f"Phase 6 differential I/O adapter differs for {fpga}")
         except (OSError, ValueError) as error:
             raise ValidationError(f"Phase 6 virtual board artifact is unreadable: {error}") from error
