@@ -107,6 +107,51 @@ def _area_adjustment_is_finished(engine: Any) -> bool:
     )
 
 
+def bounded_native_area_adjustment_condition(
+    engine: Any,
+    current_metric: Any,
+    original_condition: Any,
+) -> bool:
+    """Reserve enough global-placement iterations after the last inflation.
+
+    Every RUDY/pin-area adjustment resets OpenPARF's optimizer.  Starting a
+    final adjustment too close to the hard iteration bound can therefore leave
+    a strongly perturbed placement with no time to regain density feasibility
+    and satisfy the stable-window contract.  Preserve all native adjustment
+    decisions while declining a new reset that cannot receive its configured
+    post-adjustment budget.
+    """
+
+    if not original_condition(engine, current_metric):
+        return False
+    reserve = int(
+        getattr(
+            engine.params,
+            "emuflow_post_adjustment_iteration_reserve",
+            0,
+        )
+    )
+    if reserve < 0:
+        raise RuntimeError(
+            "OpenPARF post-adjustment iteration reserve must be nonnegative"
+        )
+    iteration = _iteration(current_metric)
+    maximum = int(engine.params.max_global_place_iters)
+    remaining = maximum - iteration
+    if remaining >= reserve:
+        return True
+    engine.gp_adjust_area = False
+    engine._emuflow_area_adjustment_cutoff = {
+        "iteration": iteration,
+        "remaining_iterations": remaining,
+        "required_reserve": reserve,
+        "completed_adjustments": int(
+            getattr(engine, "num_gp_adjust_area", 0)
+        ),
+    }
+    return False
+
+
 def _restore_best_feasible(
     engine: Any, state: MutableMapping[str, Any]
 ) -> None:
@@ -268,6 +313,9 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
     weighting = getattr(engine, "_emuflow_high_fanout_weighting", None)
     if weighting is not None:
         value["high_fanout_net_weighting"] = weighting
+    cutoff = getattr(engine, "_emuflow_area_adjustment_cutoff", None)
+    if cutoff is not None:
+        value["area_adjustment_cutoff"] = cutoff
     output = native_metrics_path(placement_path)
     output.write_text(
         json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
@@ -343,6 +391,16 @@ def main() -> int:
     params.load(arguments.config)
     if not bool(getattr(params, "emuflow_stable_global_placement", False)):
         raise RuntimeError("stable native OpenPARF driver was not explicitly enabled")
+    post_adjustment_reserve = int(
+        getattr(params, "emuflow_post_adjustment_iteration_reserve", -1)
+    )
+    stable_window = int(params.emuflow_min_feasible_iterations) + int(
+        params.emuflow_convergence_patience
+    )
+    if post_adjustment_reserve < stable_window:
+        raise RuntimeError(
+            "OpenPARF post-adjustment reserve must cover the stable window"
+        )
     Path(arguments.log).parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         filename=arguments.log,
@@ -355,6 +413,7 @@ def main() -> int:
     original_call = placer.Placer.__call__
     original_write = placer.Placer.write
     original_init = placer.Placer.__init__
+    original_adjust_area_condition = placer.Placer._gp_adjust_area_condition
     completed_engine: dict[str, Any] = {}
 
     def init_with_high_fanout_weights(
@@ -369,7 +428,17 @@ def main() -> int:
         finally:
             completed_engine["value"] = engine
 
+    def adjust_area_condition_with_reserve(
+        engine: Any, current_metric: Any
+    ) -> bool:
+        return bounded_native_area_adjustment_condition(
+            engine,
+            current_metric,
+            original_adjust_area_condition,
+        )
+
     placer.Placer.stop_condition = stable_native_stop_condition
+    placer.Placer._gp_adjust_area_condition = adjust_area_condition_with_reserve
     placer.Placer.__init__ = init_with_high_fanout_weights
     placer.Placer.__call__ = call_and_capture
     placement_path = Path(params.result_dir) / f"{params.design_name()}.pl"

@@ -45,6 +45,11 @@ Each stage has versioned artifacts and independent structural, legality,
 coverage, or equivalence checks. Passing an intermediate stage does not
 establish physical timing closure.
 
+The Xilinx Phase 7 path combines fanout-aware placement, RUDY/pin-density area
+adjustment, and a reserved post-adjustment convergence window before exact
+legalization and negotiated routing. The final route still requires zero
+overused nodes and complete source-to-sink connectivity.
+
 The table names the principal upstream tools and method sources; EmuFlow's
 integration and extensions are mapped to implementation entry points in the
 [algorithm/provider overview](docs/ALGORITHMS.md). See also the

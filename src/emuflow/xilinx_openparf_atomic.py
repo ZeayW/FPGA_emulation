@@ -61,7 +61,7 @@ OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA = (
 )
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = (
-    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v6"
+    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v7"
 )
 XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-site-database/v1"
@@ -116,6 +116,7 @@ _MAX_PIN_AREA_ADJUSTMENT_RATE = 1.6
 _HIGH_FANOUT_WEIGHT_THRESHOLD = 64
 _HIGH_FANOUT_WEIGHT_EXPONENT = 0.5
 _HIGH_FANOUT_WEIGHT_MAXIMUM = 4.0
+_POST_ADJUSTMENT_ITERATION_RESERVE = 384
 _LOGIC_FILLER_LIMIT = 65_536
 _CLOCK_REGION_NAME = re.compile(r"^X([0-9]+)Y([0-9]+)$")
 _MAX_CLOCKS_PER_REGION = 24
@@ -3233,6 +3234,12 @@ def export_xilinx_openparf_atomic(
         "emuflow_min_feasible_iterations": 96,
         "emuflow_convergence_patience": 64,
         "emuflow_relative_hpwl_improvement": 1.0e-4,
+        # Area inflation resets the nonlinear optimizer.  Do not begin a late
+        # RUDY/pin adjustment unless the bounded run can still provide a full
+        # settling interval plus the stable feasible window.
+        "emuflow_post_adjustment_iteration_reserve": (
+            _POST_ADJUSTMENT_ITERATION_RESERVE
+        ),
         # The atomic/native path must use the same fanout-aware analytical
         # objective as the continuous guidance path.  Without these weights,
         # a reset or enable net with tens of thousands of sinks contributes
@@ -3769,7 +3776,7 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-stable-feasible-v3",
+            "provider": "openparf-rudy-pin-stable-feasible-v4",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW
@@ -3788,6 +3795,9 @@ def export_xilinx_openparf_atomic(
                 "patience": 64,
                 "relative_hpwl_improvement": 1.0e-4,
                 "maximum_iterations_is_failure": True,
+                "post_adjustment_iteration_reserve": (
+                    _POST_ADJUSTMENT_ITERATION_RESERVE
+                ),
             },
         },
         "runtime_validation": "unverified",

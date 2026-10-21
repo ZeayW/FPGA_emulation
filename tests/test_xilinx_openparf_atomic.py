@@ -644,6 +644,9 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["emuflow_min_feasible_iterations"], 96)
         self.assertEqual(config["emuflow_convergence_patience"], 64)
         self.assertEqual(config["emuflow_relative_hpwl_improvement"], 1.0e-4)
+        self.assertEqual(
+            config["emuflow_post_adjustment_iteration_reserve"], 384
+        )
         self.assertEqual(config["stop_overflow"], 0.10)
         self.assertEqual(config["emuflow_high_fanout_weight_threshold"], 64)
         self.assertEqual(config["emuflow_high_fanout_weight_exponent"], 0.5)
@@ -659,7 +662,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-stable-feasible-v3",
+            "provider": "openparf-rudy-pin-stable-feasible-v4",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": 0.10,
             "adjustment_overflow_threshold": 0.15,
@@ -674,6 +677,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 "patience": 64,
                 "relative_hpwl_improvement": 1.0e-4,
                 "maximum_iterations_is_failure": True,
+                "post_adjustment_iteration_reserve": 384,
             },
         })
         self.assertNotIn("fallback", config)

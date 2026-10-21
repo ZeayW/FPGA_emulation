@@ -8,6 +8,7 @@ import torch
 
 from emuflow.openparf_native_driver import (
     OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
+    bounded_native_area_adjustment_condition,
     stable_native_stop_condition,
     validate_openparf_native_metrics,
 )
@@ -34,6 +35,7 @@ def _engine(*, patience=2, minimum=3):
             emuflow_relative_hpwl_improvement=0.0,
             emuflow_min_feasible_iterations=minimum,
             emuflow_convergence_patience=patience,
+            emuflow_post_adjustment_iteration_reserve=30,
         ),
         data_cls=SimpleNamespace(
             pos=[torch.tensor([[1.0, 2.0]], dtype=torch.float64)],
@@ -50,6 +52,37 @@ def _engine(*, patience=2, minimum=3):
 
 
 class OpenparfNativeDriverTest(unittest.TestCase):
+    def test_declines_area_adjustment_without_post_reset_budget(self):
+        engine = _engine()
+        metric = _metric(80, [2, 2])
+        self.assertFalse(
+            bounded_native_area_adjustment_condition(
+                engine, metric, lambda _engine, _metric: True
+            )
+        )
+        self.assertFalse(engine.gp_adjust_area)
+        self.assertEqual(
+            engine._emuflow_area_adjustment_cutoff,
+            {
+                "iteration": 80,
+                "remaining_iterations": 20,
+                "required_reserve": 30,
+                "completed_adjustments": 1,
+            },
+        )
+
+    def test_allows_area_adjustment_with_reserved_budget(self):
+        engine = _engine()
+        engine.gp_adjust_area = True
+        self.assertTrue(
+            bounded_native_area_adjustment_condition(
+                engine,
+                _metric(60, [2, 2]),
+                lambda _engine, _metric: True,
+            )
+        )
+        self.assertTrue(engine.gp_adjust_area)
+
     def test_waits_for_patience_and_restores_best_feasible_position(self):
         engine = _engine()
         engine.data_cls.pos[0].data.fill_(11.0)
