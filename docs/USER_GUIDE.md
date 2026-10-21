@@ -53,14 +53,32 @@ models.
 ```bash
 emuflow multi-fpga compile examples/rtl/counter.v \
   --top counter --clock clk --clock-period clk=10 \
-  --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
   --out build/counter-flow
 emuflow multi-fpga validate --flow build/counter-flow
 ```
 
-This is board-independent generation through Phase 6. A successful
-`multi-fpga-flow-report.json` without physical results does not establish
-routed timing closure.
+This command intentionally exercises the current defaults: the bundled
+four-XCVU19P research BoardDB and `xilinx-ultrascaleplus-open-v1` mapping. It
+runs through Phase 6 and emits the fixed virtual-board inventory, scheduled
+pin binding, per-FPGA XDC and differential-I/O adapters, and transport RTL.
+The small counter is a smoke input; it is not a representative multi-FPGA QoR
+workload. A successful `multi-fpga-flow-report.json` without physical results
+does not establish routed timing closure.
+
+Select another BoardDB with `--platform`. The alternative VTR flow must be
+requested consistently rather than mixed with the Xilinx default:
+
+```bash
+emuflow arch fetch-default-vtr \
+  --output build/architectures/vtr-flagship.xml
+
+emuflow multi-fpga compile examples/rtl/counter.v \
+  --top counter --clock clk --clock-period clk=10 \
+  --mapping-profile vtr-hard-blocks \
+  --physical-backend open \
+  --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
+  --out build/counter-vtr-flow
+```
 
 Mapping profiles are explicit:
 
