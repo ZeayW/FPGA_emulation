@@ -33,10 +33,10 @@ These requirements apply to all work in this repository.
   and limitations; benchmark catalog links; repository layout; contribution,
   license, and provenance links. Do not append implementation diaries,
   debugging narratives, historical decisions, or repeated design details.
-- Treat 250 lines as the normal README size ceiling. Before exceeding it, move
-  detailed material to the canonical document below and leave a short summary
-  plus one link. Exceed the ceiling only when the README itself is the only
-  sensible location for user-visible entry-point information.
+- When material exceeds README's entry-point responsibilities, move the detail
+  to the canonical document below and leave a short summary plus one link.
+  Judge this by subject ownership and duplication, not by an arbitrary line
+  count.
 - Maintain one canonical location for each subject:
   - `docs/FLOW_PLAN.md`: architecture and phase contracts;
   - `docs/ALGORITHMS.md`: detailed algorithms, provider relationships,
