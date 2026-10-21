@@ -143,7 +143,8 @@ Audited prefix continuation can reuse unchanged frontend/STA inputs; see the
 [user guide](docs/USER_GUIDE.md).
 These produce a scoped stage report, not a full-flow or physical pass. Phase 5
 distinguishes exact original-member timing from legacy compressed diagnostics. Optional
-`--synthesis-profile-passes` records live Xilinx synthesis progress. Physical SRAM
+`--synthesis-profile-passes` records live Xilinx synthesis progress. PATRON writes
+rate-limited native progress to `partition/patron/refiner.log`. Physical SRAM
 enable/retention semantics, BRAM mapping and independent timing checks are described in
 [paired routing validation](docs/USER_GUIDE.md#paired-phase-4-validation).
 

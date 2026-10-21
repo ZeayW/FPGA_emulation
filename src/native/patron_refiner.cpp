@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -21,6 +22,43 @@
 namespace {
 
 constexpr double kQuantum = 1.0e-9;
+
+// Diagnostics never participate in candidate ordering or objective arithmetic.
+struct Progress {
+  bool enabled = false;
+  const char* phase = "read";
+  long long sweep = -1, cluster = -1;
+  std::uint64_t polls = 0, candidates = 0, feasible = 0, accepted = 0;
+  std::uint64_t cluster_done = 0, cluster_total = 0;
+  std::uint64_t ratio_candidates = 0, affected_paths = 0, max_affected_paths = 0;
+  std::uint64_t net_pins = 0, exposure_pins = 0;
+  using Clock = std::chrono::steady_clock;
+  Clock::time_point started = Clock::now(), last = started;
+
+  void report(const char* work, std::uint64_t done, std::uint64_t total,
+              bool force = false) {
+    if (!enabled || (!force && (++polls & 4095) != 0)) return;
+    const auto now = Clock::now();
+    if (!force && now - last < std::chrono::seconds(30)) return;
+    last = now;
+    std::cerr << "PATRON_PROGRESS phase=" << phase << " work=" << work
+              << " done=" << done << " total=" << total
+              << " elapsed_s=" << std::chrono::duration<double>(now-started).count()
+              << " sweep=" << sweep << " cluster=" << cluster
+              << " cluster_done=" << cluster_done << " cluster_total=" << cluster_total
+              << " candidates=" << candidates << " feasible=" << feasible
+              << " accepted=" << accepted << " ratio_candidates=" << ratio_candidates
+              << " affected_paths=" << affected_paths
+              << " max_affected_paths=" << max_affected_paths
+              << " net_pins=" << net_pins << " exposure_pins=" << exposure_pins << '\n';
+  }
+  void begin(const char* name) {
+    phase = name;
+    report("begin", 0, 0, true);
+  }
+};
+Progress progress;
+
 
 struct Domain {
   int lanes = 0;
@@ -496,6 +534,7 @@ Model read_model(const std::string& path) {
 
   model.cluster.resize(model.clusters);
   for (int cluster = 0; cluster < model.clusters; ++cluster) {
+    progress.report("read-clusters", cluster, model.clusters);
     stream >> token;
     require(token == "CLUSTER", "missing CLUSTER");
     int index = -1;
@@ -564,6 +603,7 @@ Model read_model(const std::string& path) {
 
   model.net.resize(model.nets);
   for (int net = 0; net < model.nets; ++net) {
+    progress.report("read-nets", net, model.nets);
     stream >> token;
     require(token == "NET", "missing NET");
     int index = -1;
@@ -586,11 +626,13 @@ Model read_model(const std::string& path) {
       require(cluster >= 0 && cluster < model.clusters,
               "invalid NET sink");
       model.net[net].sinks.push_back(cluster);
+      progress.report("read-net-sinks", count, sinks);
     }
   }
 
   model.path.resize(model.paths);
   for (int path_index = 0; path_index < model.paths; ++path_index) {
+    progress.report("read-paths", path_index, model.paths);
     stream >> token;
     require(token == "PATH", "missing PATH");
     int index = -1;
@@ -885,6 +927,8 @@ ProxyNetState build_proxy_net(const Model& model,
   }
   for (int cluster : model.net[net_index].sinks) {
     ++sink_counts[assignment[cluster]];
+    ++progress.net_pins;
+    progress.report("proxy-net-sinks", progress.net_pins, 0);
   }
   std::map<int, int> domain_counts;
   for (int source : sources) {
@@ -971,6 +1015,7 @@ ProxyPathState build_proxy_path(
     std::vector<std::pair<int, int>> reverse_transitions;
     reverse_transitions.reserve(path.nets.size());
     for (auto item = path.nets.rbegin(); item != path.nets.rend(); ++item) {
+      progress.report("proxy-path-nets", path_index, model.paths);
       const Net& net = model.net[*item];
       const ProxyNetState& net_state = selected_proxy_net(
           state, replacements, *item);
@@ -1155,6 +1200,7 @@ ProxyState build_proxy_state(
   state.domain_load.assign(model.domains, 0);
   state.net.resize(model.nets);
   for (int net = 0; net < model.nets; ++net) {
+    progress.report("initialize-nets", net, model.nets);
     state.net[net] = build_proxy_net(model, state.assignment, net);
     require(state.net[net].feasible, "initial scalable net is infeasible");
     for (const auto& item : state.net[net].domain_counts) {
@@ -1171,6 +1217,7 @@ ProxyState build_proxy_state(
   state.domain_paths.resize(model.domains);
   const std::map<int, ProxyNetState> empty;
   for (int path = 0; path < model.paths; ++path) {
+    progress.report("initialize-paths", path, model.paths);
     state.path[path] = build_proxy_path(
         model, state, empty, state.domain_ratio, path);
     for (int domain : state.path[path].dependency_domains) {
@@ -1204,9 +1251,11 @@ std::vector<std::vector<int>> build_cluster_nets(const Model& model) {
   for (int net = 0; net < model.nets; ++net) {
     for (int cluster : model.net[net].drivers) {
       sets[cluster].insert(net);
+      progress.report("cluster-index-pins", net, model.nets);
     }
     for (int cluster : model.net[net].sinks) {
       sets[cluster].insert(net);
+      progress.report("cluster-index-pins", net, model.nets);
     }
   }
   std::vector<std::vector<int>> result(model.clusters);
@@ -1221,6 +1270,7 @@ std::vector<std::vector<int>> build_net_paths(const Model& model) {
   for (int path = 0; path < model.paths; ++path) {
     for (int net : model.path[path].nets) {
       sets[net].insert(path);
+      progress.report("path-index-nets", path, model.paths);
     }
   }
   std::vector<std::vector<int>> result(model.nets);
@@ -3099,6 +3149,8 @@ ProxyDelta evaluate_proxy_changes(
     int partner_target = -1,
     const std::vector<std::pair<int, int>>& extra_changes = {},
     bool enforce_capacity = true) {
+  ++progress.candidates;
+  progress.report("candidate", progress.candidates, 0);
   ProxyDelta delta;
   delta.cluster = cluster;
   delta.source = state.assignment[cluster];
@@ -3235,6 +3287,7 @@ ProxyDelta evaluate_proxy_changes(
     if (projected_ratios[domain] != state.domain_ratio[domain])
       ratio_changed_domains.push_back(domain);
   }
+  if (!ratio_changed_domains.empty()) ++progress.ratio_candidates;
   std::vector<int> affected_paths;
   for (const auto& item : delta.nets) {
     affected_paths.insert(affected_paths.end(),
@@ -3250,7 +3303,12 @@ ProxyDelta evaluate_proxy_changes(
   affected_paths.erase(
       std::unique(affected_paths.begin(), affected_paths.end()),
       affected_paths.end());
+  progress.affected_paths += affected_paths.size();
+  progress.max_affected_paths = std::max(progress.max_affected_paths,
+      static_cast<std::uint64_t>(affected_paths.size()));
+  std::uint64_t path_index = 0;
   for (int path : affected_paths) {
+    progress.report("candidate-paths", path_index++, affected_paths.size());
     delta.paths.emplace(
         path,
         build_proxy_path(
@@ -3347,6 +3405,7 @@ ProxyDelta evaluate_proxy_changes(
   delta.evaluation.capacity_violations = pressure.first;
   delta.evaluation.capacity_excess_bits = pressure.second;
   delta.feasible = true;
+  ++progress.feasible;
 
   return delta;
 }
@@ -3492,6 +3551,7 @@ void apply_proxy_delta(const Model& model,
   state.evaluation = proxy_evaluation(model, state);
   require(state.evaluation.ranked == delta.evaluation.ranked,
           "scalable apply/evaluate mismatch");
+  ++progress.accepted;
 }
 
 void write_vector(std::ostream& stream, const std::vector<double>& values) {
@@ -3759,10 +3819,14 @@ void run_exact(const Model& model,
 void run_scalable(const Model& model,
                   const std::string& output_path,
                   bool emit_trace) {
+  progress.begin("initialize");
   ProxyState state = build_proxy_state(model);
   const Evaluation initial = state.evaluation;
+  progress.begin("cluster-index");
   const auto cluster_nets = build_cluster_nets(model);
+  progress.begin("path-index");
   const auto net_paths = build_net_paths(model);
+  progress.begin("exposure");
 
   std::vector<double> exposure(model.clusters, 0.0);
   std::vector<long long> hop_exposure(model.clusters, 0);
@@ -3775,8 +3839,16 @@ void run_scalable(const Model& model,
     const double weight = 1.0 + 9.0 * criticality * criticality;
     std::set<int> touched;
     for (int net : model.path[path].nets) {
-      touched.insert(model.net[net].drivers.begin(), model.net[net].drivers.end());
-      touched.insert(model.net[net].sinks.begin(), model.net[net].sinks.end());
+      for (int cluster : model.net[net].drivers) {
+        touched.insert(cluster);
+        ++progress.exposure_pins;
+        progress.report("exposure-paths", path, model.paths);
+      }
+      for (int cluster : model.net[net].sinks) {
+        touched.insert(cluster);
+        ++progress.exposure_pins;
+        progress.report("exposure-paths", path, model.paths);
+      }
     }
     for (int cluster : touched) {
       exposure[cluster] += weight;
@@ -3789,6 +3861,7 @@ void run_scalable(const Model& model,
       }
     }
   }
+  progress.begin("sort-clusters");
   std::vector<int> order(model.clusters);
   std::iota(order.begin(), order.end(), 0);
   std::sort(order.begin(), order.end(), [&](int left, int right) {
@@ -3801,8 +3874,15 @@ void run_scalable(const Model& model,
   std::vector<NativeMove> moves;
   std::vector<NativeBatch> batches;
   for (int sweep = 0; sweep < model.max_sweeps; ++sweep) {
+    progress.sweep = sweep;
+    progress.begin("sweep");
     const std::size_t sweep_start = moves.size();
+    std::uint64_t visited = 0;
     for (int cluster : order) {
+      progress.cluster = cluster;
+      progress.cluster_done = visited++;
+      progress.cluster_total = order.size();
+      progress.report("sweep-clusters", progress.cluster_done, order.size());
       if (static_cast<int>(moves.size()) >= model.max_moves) {
         break;
       }
@@ -3849,6 +3929,7 @@ void run_scalable(const Model& model,
     }
   }
 
+  progress.begin("ejections");
   std::vector<int> donor_order(model.clusters);
   std::iota(donor_order.begin(), donor_order.end(), 0);
   std::sort(donor_order.begin(), donor_order.end(), [&](int left, int right) {
@@ -3969,6 +4050,7 @@ void run_scalable(const Model& model,
             << " wns_improving=" << wns_improving_ejections
             << " accepted=" << accepted_ejections << '\n';
 
+  progress.begin("comoves");
   long long evaluated_comoves = 0;
   long long feasible_comoves = 0;
   long long improving_comoves = 0;
@@ -4144,6 +4226,7 @@ void run_scalable(const Model& model,
       = std::getenv("EMUFLOW_PATRON_COVER_DIAGNOSTIC");
   const bool cover_diagnostic = cover_diagnostic_value != nullptr
                                 && std::string(cover_diagnostic_value) == "1";
+  progress.begin("flow-refinement");
   const bool flow_apply = model.flow_refinement;
   if (cover_diagnostic && model.parts <= 8) {
     std::vector<int> permutation(model.parts);
@@ -4967,6 +5050,7 @@ void run_scalable(const Model& model,
     }
   }
   std::cerr << '\n';
+  progress.begin("final-reconstruction");
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   require(endpoint.evaluation.feasible,
           "final scalable assignment is infeasible");
@@ -5011,20 +5095,28 @@ void run(const Model& model,
 
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "usage: emuflow_patron_refiner [--summary-output] INPUT OUTPUT\n";
+    std::cout << "usage: emuflow_patron_refiner [--summary-output] [--progress] INPUT OUTPUT\n";
     return 0;
   }
-  const bool summary_output =
-      argc == 4 && std::string(argv[1]) == "--summary-output";
-  if (argc != 3 && !summary_output) {
-    std::cerr << "usage: emuflow_patron_refiner [--summary-output] INPUT OUTPUT\n";
+  bool summary_output = false;
+  int input_index = 1;
+  while (input_index < argc && std::string(argv[input_index]).rfind("--", 0) == 0) {
+    const std::string option = argv[input_index++];
+    if (option == "--summary-output") summary_output = true;
+    else if (option == "--progress") progress.enabled = true;
+    else { std::cerr << "unknown option: " << option << '\n'; return 2; }
+  }
+  if (argc - input_index != 2) {
+    std::cerr << "usage: emuflow_patron_refiner [--summary-output] [--progress] INPUT OUTPUT\n";
     return 2;
   }
   try {
-    const int input_index = summary_output ? 2 : 1;
-    const int output_index = summary_output ? 3 : 2;
+    const int output_index = input_index + 1;
+    progress.begin("read");
     Model model = read_model(argv[input_index]);
+    progress.begin("read-complete");
     run(model, argv[output_index], !summary_output);
+    progress.begin("complete");
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "emuflow_patron_refiner: " << error.what() << '\n';

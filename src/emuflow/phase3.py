@@ -735,6 +735,7 @@ def run_phase3(
             output_validation=("full" if retain_diagnostics else "caller"),
             retain_trace_seals=retain_diagnostics,
             timeout_seconds=tritonpart_timeout_seconds,
+            stderr_path=output_dir / "patron" / "refiner.log",
         )
         if retain_diagnostics:
             write_json(output_dir / "patron" / "pressure_model.json", model)
