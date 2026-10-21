@@ -175,9 +175,19 @@ bit ordinals, endpoint order and counts before any native search. A
 million-sink synthetic membership comparison reduced process RSS from about
 84 MiB to 28 MiB while changing construction time from 0.101 to 0.110 seconds;
 the compact net identity/member/ordinal payload was 8,000,087 bytes. This is
-isolated representation evidence rather than NVDLA qualification. Final
-cluster/path objects, the eligible candidate-name set and the C++ analyzer's
-graph/capture vectors remain graph-scale migration work.
+isolated representation evidence rather than NVDLA qualification. Production
+cluster publication now sends canonical JSON directly through zlib and
+incremental base64 into the atomic temporary file. It no longer retains a
+compressed-chunk list, joined compressed bytes, encoded bytes and the final
+base64 string before the JSON writer starts. The emitted v2 artifact is
+byte-identical and uses the existing reader. On a synthetic 100,000-cluster
+artifact, traced publication peak fell from 3,203,902 to 400,854 bytes while
+wall time changed from 2.246 to 2.494 seconds; the output was 1,058,932 bytes.
+The runtime breakdown now attributes the complete operation to
+`publish.write_clusters` instead of a separate `publish.pack_clusters` step.
+This is a bounded-publication-memory improvement rather than a runtime or
+NVDLA claim. Final cluster/path objects, the eligible candidate-name set and
+the C++ analyzer's graph/capture vectors remain graph-scale migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary

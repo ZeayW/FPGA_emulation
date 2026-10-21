@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.io import read_json, write_json
 from emuflow.phase3_storage import (
@@ -14,6 +15,7 @@ from emuflow.phase3_storage import (
     pack_phase3_clusters,
     read_phase3_assignment_view,
     read_phase3_cut_timing_view,
+    write_compressed_phase3_clusters,
 )
 
 
@@ -86,6 +88,35 @@ class Phase3StorageTest(unittest.TestCase):
             path = Path(temporary_directory) / "clusters.json"
             write_json(path, compressed, compact=True)
             self.assertEqual(read_json(path), clusters)
+
+    def test_direct_compressed_cluster_writer_is_byte_exact_and_atomic(self) -> None:
+        clusters, _ = _large_artifacts()
+        clusters["design"] = "large-设计-µ"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            reference = root / "reference.json"
+            direct = root / "direct.json"
+            write_json(
+                reference,
+                compress_phase3_clusters(clusters),
+                compact=True,
+            )
+            write_compressed_phase3_clusters(direct, clusters)
+            self.assertEqual(direct.read_bytes(), reference.read_bytes())
+            self.assertEqual(read_json(direct), clusters)
+
+            prior = direct.read_bytes()
+            with mock.patch(
+                "emuflow.phase3_storage.os.replace",
+                side_effect=OSError("injected replace failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "injected replace failure"):
+                    write_compressed_phase3_clusters(direct, clusters)
+            self.assertEqual(direct.read_bytes(), prior)
+            self.assertEqual(
+                list(root.glob(f".{direct.name}.*.tmp")),
+                [],
+            )
 
     def test_round_trip_is_lossless_and_materially_smaller(self) -> None:
         clusters, assignment = _large_artifacts()

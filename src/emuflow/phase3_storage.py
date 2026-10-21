@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sqlite3
 import threading
+import uuid
 import zlib
 from array import array
 from collections import OrderedDict
@@ -11,6 +13,8 @@ from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping
+
+from .io import json_writes_are_durable
 
 
 PACKED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v1"
@@ -157,6 +161,89 @@ def compress_phase3_clusters(value: Mapping[str, Any]) -> Dict[str, Any]:
         "cluster_count": len(clusters),
         "payload": _compress_json(value),
     }
+
+
+def write_compressed_phase3_clusters(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    durable: bool | None = None,
+) -> None:
+    """Stream the v2 cluster envelope without a compressed payload copy.
+
+    The compatibility constructor above returns an ordinary dictionary for
+    callers that explicitly need one.  Production publication instead sends
+    canonical JSON through zlib and base64 directly into an owner-unique
+    sibling temporary file.  The resulting bytes are exactly those produced
+    by ``write_json(compress_phase3_clusters(value), compact=True)``.
+    """
+
+    clusters = value.get("clusters")
+    if not isinstance(clusters, list):
+        raise ValueError("clusters.clusters: expected an array")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o666,
+    )
+    try:
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        with stream:
+            stream.write(
+                (
+                    '{"cluster_count":'
+                    + str(len(clusters))
+                    + ',"payload":{"codec":'
+                    + json.dumps(_COMPRESSED_JSON_CODEC)
+                    + ',"data":"'
+                ).encode("ascii")
+            )
+            compressor = zlib.compressobj(level=1)
+            pending = bytearray()
+            uncompressed_bytes = 0
+            encoder = json.JSONEncoder(separators=(",", ":"), sort_keys=True)
+
+            def write_compressed(chunk: bytes) -> None:
+                if not chunk:
+                    return
+                pending.extend(chunk)
+                complete = len(pending) - len(pending) % 3
+                if complete:
+                    stream.write(base64.b64encode(memoryview(pending)[:complete]))
+                    del pending[:complete]
+
+            for fragment in encoder.iterencode(value):
+                encoded = fragment.encode("utf-8")
+                uncompressed_bytes += len(encoded)
+                write_compressed(compressor.compress(encoded))
+            write_compressed(compressor.flush())
+            if pending:
+                stream.write(base64.b64encode(pending))
+            stream.write(
+                (
+                    '","uncompressed_bytes":'
+                    + str(uncompressed_bytes)
+                    + '},"schema":'
+                    + json.dumps(COMPRESSED_CLUSTERS_SCHEMA)
+                    + "}\n"
+                ).encode("ascii")
+            )
+            stream.flush()
+        effective_durable = (
+            json_writes_are_durable() if durable is None else bool(durable)
+        )
+        if effective_durable:
+            with temporary.open("rb") as sync_stream:
+                os.fsync(sync_stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def expand_compressed_phase3_clusters(value: Mapping[str, Any]) -> Dict[str, Any]:
