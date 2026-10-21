@@ -36,7 +36,7 @@ from .native_tools import resolve_native_executable
 from .phase3 import validate_phase3_indexed
 from .phase3_storage import read_phase3_assignment_view
 from .phase4 import validate_phase4
-from .phase5 import validate_phase5
+from .phase5 import validate_phase5, validate_phase5_generation
 from .phase6 import run_phase6, validate_phase6
 from .phase1 import indexed_phase1_identity
 from .phase7c import run_phase7c
@@ -567,6 +567,10 @@ def validate_shared_phase1_5(
     if reuse_managed_checkpoint:
         checkpoint = _managed_checkpoint(root, expected_stage="shared")
         if checkpoint is not None:
+            validate_phase5_generation(
+                root / "tdm/phase5_report.json",
+                managed_root_sealed=True,
+            )
             report = read_json(_require_file(root, "experiment-shared-report.json"))
             if (
                 report.get("schema") != "emuflow.experiment-shared-phase1-5/v1"

@@ -1,6 +1,7 @@
 import copy
 import json
 import math
+import os
 import shutil
 import struct
 import subprocess
@@ -186,6 +187,9 @@ def _candidate_fallback_patches(schedule_side_effect):
         "median_normalized_slack": 0.0,
     }
     plan_builder = mock.Mock(return_value=plan)
+    def write_empty_schedule_tsv(path, _schedule):
+        Path(path).write_text("", encoding="utf-8")
+
     patcher = mock.patch.multiple(
         "emuflow.phase5",
         _prepare_model=mock.Mock(return_value={}),
@@ -198,7 +202,7 @@ def _candidate_fallback_patches(schedule_side_effect):
         build_transport_manifest=mock.Mock(return_value={}),
         build_tdm_feedback=mock.Mock(return_value={}),
         validate_tdm_feedback=mock.Mock(return_value={"status": "pass"}),
-        write_schedule_tsv=mock.Mock(),
+        write_schedule_tsv=mock.Mock(side_effect=write_empty_schedule_tsv),
         schedule_to_systemverilog_testbench=mock.Mock(return_value=""),
         build_cross_layer_timing_contract=mock.Mock(return_value={}),
         validate_cross_layer_timing_contract=mock.Mock(
@@ -2328,6 +2332,40 @@ class Phase5Test(unittest.TestCase):
                     / managed_report["artifacts"]["schedule_store"]
                 ).is_file()
             )
+            committed_selector = (
+                root / "phase5-managed" / "schedule.json"
+            ).read_bytes()
+            committed_store_path = (
+                root
+                / "phase5-managed"
+                / managed_report["artifacts"]["schedule_store"]
+            )
+            committed_store = committed_store_path.read_bytes()
+            with mock.patch(
+                "emuflow.phase5.build_cross_layer_timing_contract",
+                side_effect=ValidationError("injected cross-layer failure"),
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, "injected cross-layer failure"
+                ):
+                    run_phase5(
+                        routes_path=routes_path,
+                        platform_path=platform_path,
+                        output_dir=root / "phase5-managed",
+                        simulation_frames=9,
+                        managed_storage=True,
+                    )
+            self.assertEqual(
+                (root / "phase5-managed" / "schedule.json").read_bytes(),
+                committed_selector,
+            )
+            self.assertEqual(committed_store_path.read_bytes(), committed_store)
+            self.assertFalse(
+                any(
+                    path.name.startswith(".phase5-schedule-")
+                    for path in (root / "phase5-managed").iterdir()
+                )
+            )
             for filename in (
                 "schedule.tsv",
                 "transport_manifest.json",
@@ -2335,6 +2373,244 @@ class Phase5Test(unittest.TestCase):
                 "tdm_feedback.json",
             ):
                 self.assertFalse((root / "phase5-managed" / filename).exists())
+
+    def test_generation_rollback_restores_old_changed_route_outputs(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "generation_rollback",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=4, latency=2)],
+            )
+        )
+        old_routes = _routes(
+            platform,
+            [("n0", "a", ["b"]), ("n1", "b", ["a"])],
+            frame_slots=8,
+        )
+        changed_routes = _routes(
+            platform,
+            [
+                ("n0", "a", ["b"]),
+                ("n1", "b", ["a"]),
+                ("n2", "a", ["b"]),
+            ],
+            frame_slots=8,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            old_routes_path = root / "old-routes.json"
+            changed_routes_path = root / "changed-routes.json"
+            platform_path = root / "platform.json"
+            output_dir = root / "phase5"
+            old_routes_path.write_text(json.dumps(old_routes), encoding="utf-8")
+            changed_routes_path.write_text(
+                json.dumps(changed_routes), encoding="utf-8"
+            )
+            platform_path.write_text(
+                json.dumps(platform.to_dict()), encoding="utf-8"
+            )
+            initial = run_phase5(
+                routes_path=old_routes_path,
+                platform_path=platform_path,
+                output_dir=output_dir,
+                managed_storage=True,
+            )
+            protected_names = {
+                "schedule.json",
+                "cross_layer_timing.json",
+                "phase5_report.json",
+                initial["artifacts"]["schedule_store"],
+            }
+            protected_bytes = {
+                name: (output_dir / name).read_bytes()
+                for name in protected_names
+            }
+            old_store_names = {
+                path.name for path in output_dir.glob("schedule.*.sqlite")
+            }
+
+            real_replace = os.replace
+            selector_visible = False
+
+            def fail_after_selector(source, destination):
+                nonlocal selector_visible
+                real_replace(source, destination)
+                if Path(destination).name == "schedule.json":
+                    selector_visible = True
+                elif (
+                    selector_visible
+                    and Path(destination).name == "cross_layer_timing.json"
+                ):
+                    raise OSError("injected post-selector publication failure")
+
+            with mock.patch(
+                "emuflow.phase5._replace_phase5_generation_file",
+                side_effect=fail_after_selector,
+            ), self.assertRaisesRegex(
+                OSError, "injected post-selector publication failure"
+            ):
+                run_phase5(
+                    routes_path=changed_routes_path,
+                    platform_path=platform_path,
+                    output_dir=output_dir,
+                    managed_storage=True,
+                )
+
+            self.assertEqual(
+                {
+                    name: (output_dir / name).read_bytes()
+                    for name in protected_names
+                },
+                protected_bytes,
+            )
+            self.assertEqual(
+                {path.name for path in output_dir.glob("schedule.*.sqlite")},
+                old_store_names,
+            )
+            self.assertFalse(
+                any(
+                    path.name.startswith(".phase5-generation-")
+                    for path in output_dir.iterdir()
+                )
+            )
+            self.assertEqual(
+                validate_phase5(
+                    routes_path=old_routes_path,
+                    platform_path=platform_path,
+                    schedule_path=output_dir / "schedule.json",
+                )["status"],
+                "pass",
+            )
+
+    def test_report_last_seal_rejects_unrolled_partial_generations(self) -> None:
+        class SimulatedPowerLoss(Exception):
+            pass
+
+        platform = Platform.from_dict(
+            _platform_value(
+                "report_last",
+                ["a", "b"],
+                [_link("ab", "a", "b", lanes=4, latency=2)],
+            )
+        )
+        old_routes = _routes(
+            platform,
+            [("n0", "a", ["b"])],
+            frame_slots=8,
+        )
+        changed_routes = _routes(
+            platform,
+            [("n0", "a", ["b"]), ("n1", "b", ["a"])],
+            frame_slots=8,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            old_routes_path = root / "old-routes.json"
+            changed_routes_path = root / "changed-routes.json"
+            platform_path = root / "platform.json"
+            old_routes_path.write_text(json.dumps(old_routes), encoding="utf-8")
+            changed_routes_path.write_text(
+                json.dumps(changed_routes), encoding="utf-8"
+            )
+            platform_path.write_text(
+                json.dumps(platform.to_dict()), encoding="utf-8"
+            )
+
+            def interrupted_commit(replacements):
+                def commit(staging, output_dir, relative_paths):
+                    self.assertEqual(relative_paths[-1], "phase5_report.json")
+                    for relative in relative_paths[:replacements]:
+                        source = staging / relative
+                        destination = output_dir / relative
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(source, destination)
+                    raise SimulatedPowerLoss()
+
+                return commit
+
+            for replacements in (1, 2, 3):
+                output_dir = root / f"first-partial-{replacements}"
+                with mock.patch(
+                    "emuflow.phase5._commit_phase5_generation",
+                    side_effect=interrupted_commit(replacements),
+                ), self.assertRaises(SimulatedPowerLoss):
+                    run_phase5(
+                        routes_path=old_routes_path,
+                        platform_path=platform_path,
+                        output_dir=output_dir,
+                        managed_storage=True,
+                    )
+                with self.assertRaisesRegex(
+                    ValidationError, "commit report is missing"
+                ):
+                    validate_phase5(
+                        routes_path=old_routes_path,
+                        platform_path=platform_path,
+                        schedule_path=output_dir / "schedule.json",
+                    )
+
+            for replacements in (1, 2, 3):
+                output_dir = root / f"upgrade-partial-{replacements}"
+                run_phase5(
+                    routes_path=old_routes_path,
+                    platform_path=platform_path,
+                    output_dir=output_dir,
+                    managed_storage=True,
+                )
+                old_report_bytes = (
+                    output_dir / "phase5_report.json"
+                ).read_bytes()
+                with mock.patch(
+                    "emuflow.phase5._commit_phase5_generation",
+                    side_effect=interrupted_commit(replacements),
+                ), self.assertRaises(SimulatedPowerLoss):
+                    run_phase5(
+                        routes_path=changed_routes_path,
+                        platform_path=platform_path,
+                        output_dir=output_dir,
+                        managed_storage=True,
+                    )
+                self.assertEqual(
+                    (output_dir / "phase5_report.json").read_bytes(),
+                    old_report_bytes,
+                )
+                if replacements == 1:
+                    # Only a new unreferenced content-addressed sidecar is
+                    # visible. The old report still names a complete old
+                    # generation, so consuming that generation remains safe.
+                    self.assertEqual(
+                        validate_phase5(
+                            routes_path=old_routes_path,
+                            platform_path=platform_path,
+                            schedule_path=output_dir / "schedule.json",
+                        )["status"],
+                        "pass",
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        ValidationError, "generation member seal is broken"
+                    ):
+                        validate_phase5(
+                            routes_path=old_routes_path,
+                            platform_path=platform_path,
+                            schedule_path=output_dir / "schedule.json",
+                        )
+
+            committed = root / "committed"
+            run_phase5(
+                routes_path=changed_routes_path,
+                platform_path=platform_path,
+                output_dir=committed,
+                managed_storage=True,
+            )
+            self.assertEqual(
+                validate_phase5(
+                    routes_path=changed_routes_path,
+                    platform_path=platform_path,
+                    schedule_path=committed / "schedule.json",
+                )["status"],
+                "pass",
+            )
 
     def test_multihop_precedence_includes_store_and_forward_cycle(self) -> None:
         platform = Platform.from_dict(

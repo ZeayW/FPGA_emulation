@@ -8,7 +8,10 @@ from unittest import mock
 
 from emuflow.cross_layer_timing import (
     CROSS_LAYER_PHYSICAL_BINDING_SCHEMA,
+    CROSS_LAYER_HOP_BINDING_MODE,
     CROSS_LAYER_TIMING_CONTRACT_SCHEMA,
+    LEGACY_CROSS_LAYER_TIMING_CONTRACT_SCHEMA,
+    LEGACY_CROSS_LAYER_TIMING_PROVIDER,
     REGISTERED_BOUNDARY,
     SAMPLED_VIRTUAL_WIRE,
     build_cross_layer_physical_binding,
@@ -25,6 +28,11 @@ from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
     read_tdm_schedule,
     write_tdm_schedule_storage,
+)
+from emuflow.system_route_storage import (
+    SystemRouteSequence,
+    read_system_routes,
+    write_system_route_storage,
 )
 
 
@@ -177,6 +185,14 @@ class CrossLayerTimingContractTest(unittest.TestCase):
                     routes, actual, indexed
                 )
         self.assertEqual(actual, expected)
+        self.assertNotIn("hop_bindings", actual)
+        self.assertEqual(
+            actual["hop_binding"],
+            {
+                "mode": CROSS_LAYER_HOP_BINDING_MODE,
+                "scheduled_hops": 2,
+            },
+        )
         self.assertEqual(validation["status"], "pass")
 
     def test_indexed_schedule_hop_binding_avoids_record_decode(self):
@@ -204,6 +220,48 @@ class CrossLayerTimingContractTest(unittest.TestCase):
                     routes, actual, indexed
                 )
         self.assertEqual(actual, expected)
+        self.assertEqual(validation["status"], "pass")
+
+    def test_typed_route_and_schedule_hop_merge_uses_only_cursors(self):
+        routes = _routes()
+        routes["routes"][0]["width_bits"] = 1
+        routes["demands"] = [
+            {
+                key: copy.deepcopy(routes["routes"][0][key])
+                for key in ("id", "net", "source", "sinks", "width_bits")
+            }
+        ]
+        schedule = {
+            **_schedule(),
+            "routes": [],
+            "demand_completions": [],
+            "domain_schedules": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            route_path = root / "routes.json"
+            schedule_path = root / "schedule.json"
+            write_system_route_storage(route_path, routes)
+            write_tdm_schedule_storage(schedule_path, schedule)
+            indexed_routes = read_system_routes(route_path)
+            indexed_schedule = read_tdm_schedule(schedule_path)
+            with mock.patch.object(
+                SystemRouteSequence,
+                "__iter__",
+                side_effect=AssertionError("decoded route-tree records"),
+            ), mock.patch.object(
+                ScheduleRecordSequence,
+                "__iter__",
+                side_effect=AssertionError("decoded schedule records"),
+            ):
+                contract = build_cross_layer_timing_contract(
+                    indexed_routes, indexed_schedule
+                )
+                validation = validate_cross_layer_timing_contract(
+                    indexed_routes, contract, indexed_schedule
+                )
+        self.assertNotIn("hop_bindings", contract)
+        self.assertEqual(contract["metrics"]["scheduled_hops"], 2)
         self.assertEqual(validation["status"], "pass")
 
     def test_indexed_schedule_hop_binding_fails_closed(self):
@@ -542,13 +600,59 @@ class CrossLayerTimingContractTest(unittest.TestCase):
         schedule = _schedule()
         contract = build_cross_layer_timing_contract(routes, schedule)
         tampered = copy.deepcopy(contract)
-        tampered["hop_bindings"][0]["entry"] = "wrong"
+        tampered["hop_binding"]["scheduled_hops"] = 1
         with self.assertRaisesRegex(ValidationError, "canonical inputs"):
             validate_cross_layer_timing_contract(routes, tampered, schedule)
         incomplete = copy.deepcopy(schedule)
         incomplete["entries"].pop()
         with self.assertRaisesRegex(ValidationError, "does not cover"):
             build_cross_layer_timing_contract(routes, incomplete)
+
+    def test_v1_materialized_hop_contract_remains_validatable(self):
+        routes = _routes()
+        schedule = _schedule()
+        current = build_cross_layer_timing_contract(routes, schedule)
+        legacy = copy.deepcopy(current)
+        legacy["schema"] = LEGACY_CROSS_LAYER_TIMING_CONTRACT_SCHEMA
+        legacy["provider"] = LEGACY_CROSS_LAYER_TIMING_PROVIDER
+        legacy.pop("hop_binding")
+        legacy["hop_bindings"] = [
+            {
+                "demand": entry["demand"],
+                "link": entry["link"],
+                "from": entry["from"],
+                "to": entry["to"],
+                "entry": entry["id"],
+            }
+            for entry in schedule["entries"]
+        ]
+        self.assertEqual(
+            validate_cross_layer_timing_contract(routes, legacy, schedule)[
+                "status"
+            ],
+            "pass",
+        )
+        physical = self._physical(schedule)
+        self.assertEqual(
+            build_cross_layer_physical_binding(
+                legacy, schedule, physical, self._platform()
+            )["status"],
+            "pass",
+        )
+        route_only = build_cross_layer_timing_contract(routes)
+        route_only["schema"] = LEGACY_CROSS_LAYER_TIMING_CONTRACT_SCHEMA
+        route_only["provider"] = LEGACY_CROSS_LAYER_TIMING_PROVIDER
+        route_only["hop_bindings"] = []
+        self.assertEqual(
+            validate_cross_layer_timing_contract(routes, route_only)["status"],
+            "pass",
+        )
+
+    def test_legacy_schedule_rejects_duplicate_entry_identity(self):
+        schedule = _schedule()
+        schedule["entries"][1]["id"] = schedule["entries"][0]["id"]
+        with self.assertRaisesRegex(ValidationError, "entry is malformed"):
+            build_cross_layer_timing_contract(_routes(), schedule)
 
     def test_multicast_path_requires_explicit_sink_transition(self):
         routes = _routes()
@@ -597,7 +701,7 @@ class CrossLayerTimingContractTest(unittest.TestCase):
             contract, schedule, physical, self._platform()
         )
         for filename, artifact in (
-            ("cross-layer-timing-v1.schema.json", contract),
+            ("cross-layer-timing-v2.schema.json", contract),
             ("cross-layer-physical-binding-v1.schema.json", binding),
         ):
             schema = json.loads((root / filename).read_text(encoding="utf-8"))

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, Set, Tuple
 
 from .errors import ValidationError
+from .emuir_storage import open_emuir_sqlite_read_only
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .phase3_exact_records import (
@@ -1024,6 +1025,275 @@ class _NativeStaticExactCaptureRequests:
         self._previous = None
 
 
+def _compact_partition_ir_path(ir: Any) -> Path | None:
+    """Return the authoritative compact store behind a production IR view."""
+
+    # Import lazily to keep the reference-only in-memory EmuIR path independent
+    # of the production SQLite view and to avoid treating an unrelated object
+    # with a ``path`` attribute as a trusted compact store.
+    from .partition_ir import CompactPartitionIR
+
+    return ir.path if isinstance(ir, CompactPartitionIR) else None
+
+
+def _validate_compact_native_cuts(
+    path: Path,
+    ordered_cuts: Sequence[Mapping[str, Any]],
+    ordered_cut_ids: Sequence[str],
+    ordered_cut_ordinals: Sequence[int],
+    eligible: Set[str],
+) -> Sequence[Mapping[str, Any]]:
+    """Validate cut names, ordinals and classes with one indexed-store scan.
+
+    Compact production IRs intentionally do not expose an in-memory net-name
+    index.  Looking up every cut through ``Sequence.__getitem__`` used to open
+    and decode one net record at a time.  The cut IDs are already canonical,
+    so an ordered merge proves the same identity relation without retaining a
+    graph-sized dictionary or issuing one SQLite query per cut.
+    """
+
+    if len(ordered_cuts) != len(ordered_cut_ordinals):
+        raise ValidationError("exact semantic contract net ordinals are invalid")
+    normalized: List[Mapping[str, Any]] | None = None
+    cut_index = 0
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        rows = connection.execute(
+            "SELECT seq,id,cut_class FROM net_records ORDER BY id"
+        )
+        for row in rows:
+            if cut_index >= len(ordered_cut_ids):
+                break
+            net_id = ordered_cut_ids[cut_index]
+            if row["id"] < net_id:
+                continue
+            if row["id"] > net_id:
+                raise ValidationError(
+                    f"exact semantic contract has unknown net {net_id!r}"
+                )
+            ordinal = ordered_cut_ordinals[cut_index]
+            if (
+                isinstance(ordinal, bool)
+                or not isinstance(ordinal, int)
+                or ordinal < 0
+                or ordinal >= 2**32
+                or row["seq"] != ordinal
+            ):
+                raise ValidationError(
+                    "exact semantic contract net ordinals are invalid"
+                )
+            cut = ordered_cuts[cut_index]
+            if len(cut.get("source_fpgas", [])) != 1:
+                raise ValidationError(
+                    f"exact cut {net_id!r} must have one source FPGA"
+                )
+            if cut.get("cut_class") is None:
+                cut = {**cut, "cut_class": row["cut_class"]}
+                if normalized is None:
+                    normalized = list(ordered_cuts)
+                normalized[cut_index] = cut
+            elif cut.get("cut_class") != row["cut_class"]:
+                raise ValidationError(
+                    f"exact cut {net_id!r} class disagrees with EmuIR"
+                )
+            if row["cut_class"] == "combinational" and net_id not in eligible:
+                raise ValidationError(
+                    f"combinational cut {net_id!r} is not in the "
+                    "independently reconstructed eligible set"
+                )
+            cut_index += 1
+    finally:
+        connection.close()
+    if cut_index != len(ordered_cut_ids):
+        unknown = ordered_cut_ids[cut_index]
+        raise ValidationError(
+            f"exact semantic contract has unknown net {unknown!r}"
+        )
+    return ordered_cuts if normalized is None else normalized
+
+
+def _write_compact_native_static_exact_graph(
+    path: Path,
+    emit: Any,
+    instance_assignment: Mapping[str, str],
+    part_index: Mapping[str, int],
+) -> tuple[int, int, int]:
+    """Emit the native graph straight from compact integer EmuIR relations.
+
+    The returned counts are independently checked against the IR view before
+    the caller writes the protocol header.  Instance names are used only for
+    the authoritative assignment lookup; endpoints already carry stable cell
+    ordinals and never pass through a second ``name -> ordinal`` dictionary.
+    """
+
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        metadata_row = connection.execute(
+            "SELECT value FROM metadata WHERE key='record_counts_json'"
+        ).fetchone()
+        if metadata_row is None:
+            raise ValidationError("compact EmuIR record counts are missing")
+        try:
+            counts = json.loads(metadata_row[0])
+            instance_count = counts["cell_records"]
+            net_count = counts["net_records"]
+            endpoint_count = counts["endpoint_records"]
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ValidationError("compact EmuIR record counts are invalid") from error
+        sink_count = connection.execute(
+            "SELECT COUNT(*) FROM endpoint_records WHERE role=1"
+        ).fetchone()[0]
+        if (
+            any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                or value >= 2**32
+                for value in (instance_count, net_count, sink_count)
+            )
+            or isinstance(endpoint_count, bool)
+            or not isinstance(endpoint_count, int)
+            or endpoint_count < 0
+            or endpoint_count < sink_count
+        ):
+            raise ValidationError("compact EmuIR record counts are invalid")
+
+        observed_instances = 0
+        for row in connection.execute(
+            """SELECT c.seq,c.id,p.value AS resources_json
+                 FROM cell_records c JOIN payloads p ON p.seq=c.resources_seq
+                ORDER BY c.seq"""
+        ):
+            if row["seq"] != observed_instances:
+                raise ValidationError("compact EmuIR instance sequence is invalid")
+            target = instance_assignment.get(row["id"])
+            if target not in part_index:
+                raise ValidationError(
+                    "exact semantic contract assignment is incomplete"
+                )
+            try:
+                resources = json.loads(row["resources_json"])
+            except (TypeError, json.JSONDecodeError) as error:
+                raise ValidationError(
+                    "compact EmuIR instance resources are invalid"
+                ) from error
+            if not isinstance(resources, Mapping):
+                raise ValidationError(
+                    "compact EmuIR instance resources are invalid"
+                )
+            emit(
+                "<BI",
+                int(
+                    _instance_class({"resources": resources})
+                    == "architectural-state-or-memory"
+                ),
+                part_index[target],
+            )
+            observed_instances += 1
+        if (
+            observed_instances != instance_count
+            or len(instance_assignment) != instance_count
+        ):
+            raise ValidationError(
+                "exact semantic contract assignment is incomplete"
+            )
+
+        endpoint_rows = iter(
+            connection.execute(
+                """SELECT net_seq,role,ordinal,instance_seq
+                     FROM endpoint_records
+                    ORDER BY net_seq,role,ordinal"""
+            )
+        )
+        endpoint = next(endpoint_rows, None)
+        observed_nets = 0
+        observed_endpoints = 0
+        observed_sinks = 0
+        for row in connection.execute(
+            "SELECT seq FROM net_records ORDER BY seq"
+        ):
+            net_seq = row["seq"]
+            if net_seq != observed_nets:
+                raise ValidationError("compact EmuIR net sequence is invalid")
+            groups: list[list[int]] = [[], []]
+            while endpoint is not None and endpoint["net_seq"] == net_seq:
+                role = endpoint["role"]
+                if (
+                    role not in {0, 1}
+                    or endpoint["ordinal"] != len(groups[role])
+                ):
+                    raise ValidationError(
+                        "compact EmuIR endpoint sequence is invalid"
+                    )
+                owner = endpoint["instance_seq"]
+                if owner is None:
+                    groups[role].append(-1)
+                elif (
+                    isinstance(owner, bool)
+                    or not isinstance(owner, int)
+                    or owner < 0
+                    or owner >= instance_count
+                ):
+                    raise ValidationError(
+                        "compact EmuIR endpoint owner is invalid"
+                    )
+                else:
+                    groups[role].append(owner)
+                observed_endpoints += 1
+                observed_sinks += int(role == 1)
+                endpoint = next(endpoint_rows, None)
+            if endpoint is not None and endpoint["net_seq"] < net_seq:
+                raise ValidationError("compact EmuIR has orphaned endpoints")
+            for owners in groups:
+                emit("<I", len(owners))
+                for owner in owners:
+                    emit("<i", owner)
+            observed_nets += 1
+        if endpoint is not None:
+            raise ValidationError("compact EmuIR has orphaned endpoints")
+        if (
+            observed_nets != net_count
+            or observed_endpoints != endpoint_count
+            or observed_sinks != sink_count
+        ):
+            raise ValidationError("compact EmuIR record counts disagree")
+        return instance_count, net_count, sink_count
+    finally:
+        connection.close()
+
+
+def _compact_native_static_exact_counts(path: Path) -> tuple[int, int, int]:
+    """Read the fixed protocol counts without reconstructing graph records."""
+
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key='record_counts_json'"
+        ).fetchone()
+        if row is None:
+            raise ValidationError("compact EmuIR record counts are missing")
+        try:
+            counts = json.loads(row[0])
+            instance_count = counts["cell_records"]
+            net_count = counts["net_records"]
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ValidationError("compact EmuIR record counts are invalid") from error
+        sink_count = connection.execute(
+            "SELECT COUNT(*) FROM endpoint_records WHERE role=1"
+        ).fetchone()[0]
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            or value >= 2**32
+            for value in (instance_count, net_count, sink_count)
+        ):
+            raise ValidationError("compact EmuIR record counts are invalid")
+        return instance_count, net_count, sink_count
+    finally:
+        connection.close()
+
+
 def _resolve_legacy_static_exact_cut_net_ordinals(
     nets: Sequence[Mapping[str, Any]], ordered_cut_ids: Sequence[str]
 ) -> array:
@@ -1077,11 +1347,16 @@ def _analyze_static_exact_dependencies_native(
     eligible = set(candidate_index["eligible_ids"])
     del candidate_index
     instances = ir.value["instances"]
-    instance_index = {
-        instance["id"]: index
-        for index, instance in enumerate(instances)
-    }
     nets = ir.value["nets"]
+    compact_ir_path = _compact_partition_ir_path(ir)
+    instance_index = (
+        None
+        if compact_ir_path is not None
+        else {
+            instance["id"]: index
+            for index, instance in enumerate(instances)
+        }
+    )
     already_ordered = all(
         cut_nets[index - 1]["net"] < cut_nets[index]["net"]
         for index in range(1, len(cut_nets))
@@ -1125,7 +1400,13 @@ def _analyze_static_exact_dependencies_native(
                 or not isinstance(net_ordinal, int)
                 or net_ordinal < 0
                 or net_ordinal >= len(nets)
-                or nets[net_ordinal]["id"] != cut_nets[position]["net"]
+            ):
+                raise ValidationError(
+                    "exact semantic contract net ordinals are invalid"
+                )
+            if (
+                compact_ir_path is None
+                and nets[net_ordinal]["id"] != cut_nets[position]["net"]
             ):
                 raise ValidationError(
                     "exact semantic contract net ordinals are invalid"
@@ -1142,28 +1423,39 @@ def _analyze_static_exact_dependencies_native(
             nets, ordered_cut_ids
         )
 
-    normalized_cuts: List[Mapping[str, Any]] | None = None
-    for cut_index, cut in enumerate(ordered_cuts):
-        net_id = ordered_cut_ids[cut_index]
-        net = nets[resolved_cut_ordinals[cut_index]]
-        if len(cut.get("source_fpgas", [])) != 1:
-            raise ValidationError(f"exact cut {net_id!r} must have one source FPGA")
-        if cut.get("cut_class") is None:
-            cut = {**cut, "cut_class": net["cut_class"]}
-            if normalized_cuts is None:
-                normalized_cuts = list(ordered_cuts)
-            normalized_cuts[cut_index] = cut
-        elif cut.get("cut_class") != net.get("cut_class"):
-            raise ValidationError(
-                f"exact cut {net_id!r} class disagrees with EmuIR"
-            )
-        if net["cut_class"] == "combinational" and net_id not in eligible:
-            raise ValidationError(
-                f"combinational cut {net_id!r} is not in the independently "
-                "reconstructed eligible set"
-            )
-    if normalized_cuts is not None:
-        ordered_cuts = normalized_cuts
+    if compact_ir_path is not None:
+        ordered_cuts = _validate_compact_native_cuts(
+            compact_ir_path,
+            ordered_cuts,
+            ordered_cut_ids,
+            resolved_cut_ordinals,
+            eligible,
+        )
+    else:
+        normalized_cuts: List[Mapping[str, Any]] | None = None
+        for cut_index, cut in enumerate(ordered_cuts):
+            net_id = ordered_cut_ids[cut_index]
+            net = nets[resolved_cut_ordinals[cut_index]]
+            if len(cut.get("source_fpgas", [])) != 1:
+                raise ValidationError(
+                    f"exact cut {net_id!r} must have one source FPGA"
+                )
+            if cut.get("cut_class") is None:
+                cut = {**cut, "cut_class": net["cut_class"]}
+                if normalized_cuts is None:
+                    normalized_cuts = list(ordered_cuts)
+                normalized_cuts[cut_index] = cut
+            elif cut.get("cut_class") != net.get("cut_class"):
+                raise ValidationError(
+                    f"exact cut {net_id!r} class disagrees with EmuIR"
+                )
+            if net["cut_class"] == "combinational" and net_id not in eligible:
+                raise ValidationError(
+                    f"combinational cut {net_id!r} is not in the independently "
+                    "reconstructed eligible set"
+                )
+        if normalized_cuts is not None:
+            ordered_cuts = normalized_cuts
     del ordered_positions
     del eligible
 
@@ -1182,7 +1474,7 @@ def _analyze_static_exact_dependencies_native(
     if not part_ids:
         raise ValidationError("exact semantic contract has no FPGA parts")
     part_index = {part: index for index, part in enumerate(part_ids)}
-    if any(
+    if instance_index is not None and any(
         identity not in instance_assignment
         or instance_assignment[identity] not in part_index
         for identity in instance_index
@@ -1203,44 +1495,66 @@ def _analyze_static_exact_dependencies_native(
                     stream.write(pending)
                     pending.clear()
 
+            if compact_ir_path is None:
+                instance_count = len(instances)
+                net_count = len(nets)
+                sink_count = sum(len(net["sinks"]) for net in nets)
+            else:
+                instance_count, net_count, sink_count = (
+                    _compact_native_static_exact_counts(compact_ir_path)
+                )
+                if instance_count != len(instances) or net_count != len(nets):
+                    raise ValidationError("compact EmuIR record counts disagree")
             emit(
                 "<Q6I",
                 _STATIC_EXACT_NATIVE_INPUT_MAGIC,
                 _STATIC_EXACT_NATIVE_PROTOCOL_VERSION,
-                len(instances),
-                len(nets),
+                instance_count,
+                net_count,
                 len(ordered_cut_ids),
                 len(part_ids),
-                sum(len(net["sinks"]) for net in nets),
+                sink_count,
             )
-            for instance in instances:
-                emit(
-                    "<BI",
-                    int(
-                        _instance_class(instance)
-                        == "architectural-state-or-memory"
-                    ),
-                    part_index[instance_assignment[instance["id"]]],
+            if compact_ir_path is not None:
+                emitted_counts = _write_compact_native_static_exact_graph(
+                    compact_ir_path,
+                    emit,
+                    instance_assignment,
+                    part_index,
                 )
-            for net in nets:
-                emit("<I", len(net["drivers"]))
-                for endpoint in net["drivers"]:
-                    raw_instance = endpoint["instance"]
+                if emitted_counts != (instance_count, net_count, sink_count):
+                    raise ValidationError("compact EmuIR record counts disagree")
+            else:
+                if instance_index is None:
+                    raise ValidationError("native Static Exact input is incomplete")
+                for instance in instances:
                     emit(
-                        "<i",
-                        -1
-                        if raw_instance is None
-                        else instance_index[raw_instance],
+                        "<BI",
+                        int(
+                            _instance_class(instance)
+                            == "architectural-state-or-memory"
+                        ),
+                        part_index[instance_assignment[instance["id"]]],
                     )
-                emit("<I", len(net["sinks"]))
-                for endpoint in net["sinks"]:
-                    raw_instance = endpoint["instance"]
-                    sink_instance = (
-                        -1
-                        if raw_instance is None
-                        else instance_index[raw_instance]
-                    )
-                    emit("<i", sink_instance)
+                for net in nets:
+                    emit("<I", len(net["drivers"]))
+                    for endpoint in net["drivers"]:
+                        raw_instance = endpoint["instance"]
+                        emit(
+                            "<i",
+                            -1
+                            if raw_instance is None
+                            else instance_index[raw_instance],
+                        )
+                    emit("<I", len(net["sinks"]))
+                    for endpoint in net["sinks"]:
+                        raw_instance = endpoint["instance"]
+                        sink_instance = (
+                            -1
+                            if raw_instance is None
+                            else instance_index[raw_instance]
+                        )
+                        emit("<i", sink_instance)
             for cut_index, net_id in enumerate(ordered_cut_ids):
                 cut = ordered_cuts[cut_index]
                 sources = cut["source_fpgas"]
@@ -1347,17 +1661,34 @@ def _analyze_static_exact_dependencies_native(
                     for _ in range(capture_count):
                         yield take("<IIII")
 
-                capture_stream = _resolve_native_coordinate_capture_stream(
-                    instances,
-                    nets,
-                    instance_index,
-                    capture_coordinates(),
-                    ordered_cut_ids,
-                    part_ids,
-                    ordered_cuts,
-                    instance_assignment,
-                    root / "capture-relation.sqlite3",
-                )
+                if compact_ir_path is not None:
+                    capture_stream = (
+                        _resolve_compact_native_coordinate_capture_stream(
+                            compact_ir_path,
+                            capture_coordinates(),
+                            ordered_cut_ids,
+                            part_ids,
+                            ordered_cuts,
+                            instance_assignment,
+                            root / "capture-relation.sqlite3",
+                        )
+                    )
+                else:
+                    if instance_index is None:
+                        raise ValidationError(
+                            "native Static Exact capture input is incomplete"
+                        )
+                    capture_stream = _resolve_native_coordinate_capture_stream(
+                        instances,
+                        nets,
+                        instance_index,
+                        capture_coordinates(),
+                        ordered_cut_ids,
+                        part_ids,
+                        ordered_cuts,
+                        instance_assignment,
+                        root / "capture-relation.sqlite3",
+                    )
                 if offset != len(data):
                     raise ValidationError(
                         "native Static Exact output has trailing bytes"
@@ -1657,6 +1988,138 @@ def _resolve_native_coordinate_capture_stream(
             )
 
     return _normalize_native_capture_stream(capture_relation(), sorter_path)
+
+
+def _resolve_compact_native_coordinate_capture_stream(
+    path: Path,
+    capture_coordinates: Iterable[Tuple[int, int, int, int]],
+    ordered_cut_ids: Sequence[str],
+    part_ids: Sequence[str],
+    ordered_cuts: Sequence[Mapping[str, Any]],
+    instance_assignment: Mapping[str, str],
+    sorter_path: Path,
+) -> StaticExactRecordSequence:
+    """Resolve native captures with one ordered compact-EmuIR merge.
+
+    Protocol v3 coordinates already name the authoritative net and sink
+    ordinals.  Both the native stream and the source endpoint cursor use that
+    order, so Python advances one source cursor and keeps at most the current
+    endpoint row.  This avoids both a graph-sized coordinate container and
+    decoding a complete net once per capture (including every unrequested
+    sibling sink).
+    """
+
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        endpoint_rows = iter(
+            connection.execute(
+                """SELECT e.net_seq,e.ordinal,e.instance_seq,
+                          c.id AS instance_id,p.name AS port,e.bit,
+                          r.value AS resources_json
+                     FROM endpoint_records e
+                     LEFT JOIN cell_records c ON c.seq=e.instance_seq
+                     JOIN pin_names p ON p.seq=e.port_seq
+                     LEFT JOIN payloads r ON r.seq=c.resources_seq
+                    WHERE e.role=1
+                    ORDER BY e.net_seq,e.ordinal"""
+            )
+        )
+
+        def capture_relation() -> Iterator[
+            Tuple[str, str, str, str, Any, Any]
+        ]:
+            previous: Tuple[int, int, int, int] | None = None
+            endpoint = next(endpoint_rows, None)
+            for (
+                cut_index,
+                part_index,
+                net_index,
+                sink_index,
+            ) in capture_coordinates:
+                canonical = (net_index, sink_index, cut_index, part_index)
+                invalid_coordinate = any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value < 0
+                    or value >= 2**32
+                    for value in canonical
+                )
+                cut_sinks = (
+                    ordered_cuts[cut_index].get("sink_fpgas")
+                    if isinstance(cut_index, int)
+                    and not isinstance(cut_index, bool)
+                    and 0 <= cut_index < len(ordered_cuts)
+                    else None
+                )
+                if (
+                    invalid_coordinate
+                    or (previous is not None and canonical <= previous)
+                    or cut_index >= len(ordered_cut_ids)
+                    or part_index >= len(part_ids)
+                    or not isinstance(cut_sinks, list)
+                    or part_ids[part_index] not in cut_sinks
+                ):
+                    raise ValidationError("native Static Exact capture is invalid")
+                previous = canonical
+                target = (net_index, sink_index)
+                while endpoint is not None and (
+                    endpoint["net_seq"], endpoint["ordinal"]
+                ) < target:
+                    endpoint = next(endpoint_rows, None)
+                if endpoint is None or (
+                    endpoint["net_seq"], endpoint["ordinal"]
+                ) != target:
+                    raise ValidationError("native Static Exact capture is invalid")
+                cut_net = ordered_cut_ids[cut_index]
+                fpga = part_ids[part_index]
+                raw_instance = endpoint["instance_id"]
+                if endpoint["instance_seq"] is None:
+                    if (
+                        raw_instance is not None
+                        or endpoint["resources_json"] is not None
+                    ):
+                        raise ValidationError(
+                            "native Static Exact capture is invalid"
+                        )
+                    kind = "top-output"
+                    top_bit = validate_static_exact_capture_bit(endpoint["bit"])
+                    identity = f"top:{endpoint['port']}[{top_bit}]"
+                    port = None
+                    bit = None
+                else:
+                    if (
+                        not isinstance(raw_instance, str)
+                        or not raw_instance
+                        or instance_assignment.get(raw_instance) != fpga
+                    ):
+                        raise ValidationError(
+                            "native Static Exact capture is invalid"
+                        )
+                    try:
+                        resources = json.loads(endpoint["resources_json"])
+                    except (TypeError, json.JSONDecodeError) as error:
+                        raise ValidationError(
+                            "native Static Exact capture is invalid"
+                        ) from error
+                    if (
+                        not isinstance(resources, Mapping)
+                        or _instance_class({"resources": resources})
+                        != "architectural-state-or-memory"
+                    ):
+                        raise ValidationError(
+                            "native Static Exact capture is invalid"
+                        )
+                    kind = "architectural-state"
+                    identity = raw_instance
+                    port = endpoint["port"]
+                    bit = endpoint["bit"]
+                yield cut_net, fpga, kind, identity, port, bit
+
+        return _normalize_native_capture_stream(
+            capture_relation(), sorter_path
+        )
+    finally:
+        connection.close()
 
 
 def _resolve_native_capture_requests(

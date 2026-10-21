@@ -186,6 +186,14 @@ class _IndexedCells(_IndexedRecords):
         for _name, value in self.items():
             yield value
 
+    def types_by_id(self) -> Iterator[Tuple[str, str]]:
+        """Stream the source-owned cell identity/type projection only."""
+
+        for row in self.connection.execute(
+            "SELECT id,type FROM cells ORDER BY id"
+        ):
+            yield str(row[0]), str(row[1])
+
 
 class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
     """Bounded read interface for a production Xilinx mapped netlist."""

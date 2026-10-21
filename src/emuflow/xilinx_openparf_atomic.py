@@ -15,7 +15,6 @@ from __future__ import annotations
 from collections import Counter, OrderedDict, defaultdict
 import hashlib
 import json
-import itertools
 import math
 import os
 from pathlib import Path
@@ -46,6 +45,12 @@ from .xilinx_packing import (
     _derive_cascade_chains,
 )
 from .xilinx_physical_macros import build_xilinx_physical_macro_contract
+from .xilinx_openparf_source_storage import (
+    OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
+    materialize_xilinx_openparf_atomic_source,
+    read_xilinx_openparf_atomic_source,
+    write_xilinx_openparf_atomic_source_storage,
+)
 
 
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
@@ -1845,7 +1850,7 @@ def _collect_atoms(
             raise ValidationError("mapped JSON cell is invalid")
         cell_types[name] = cell["type"]
     cascades = packed.get("cascade_chains", [])
-    if not isinstance(cascades, list):
+    if not isinstance(cascades, Sequence) or isinstance(cascades, (str, bytes)):
         raise ValidationError("atomic mixed-resource cascade constraints are invalid")
     if cascades and not allow_hardblock_cascades:
         raise ValidationError("atomic mixed-resource adapter rejects all cascade constraints")
@@ -2058,36 +2063,6 @@ def _collect_atoms(
     return selected_top, cells, sorted(atoms, key=lambda item: item["instance"])
 
 
-def _atomic_singleton_cluster(
-    index: int, name: str, cell: Mapping[str, Any]
-) -> Dict[str, Any]:
-    cell_type = str(cell["type"])
-    hard = cell_type in _HARD_RESOURCES
-    hard_bel_candidates = (
-        ["RAMB18E2_L", "RAMB18E2_U"]
-        if cell_type == "RAMB18E2" else [cell_type]
-    )
-    return {
-        "id": f"atomic-source-{index:06d}",
-        "kind": "hard" if hard else "slice",
-        "site_templates": [cell_type] if hard else ["SLICEL", "SLICEM"],
-        "control_set": None,
-        "assignments": [{
-            "instance": name,
-            "cell_type": cell_type,
-            "bel_candidates": (
-                hard_bel_candidates if hard
-                else [f"{letter}6LUT" for letter in "ABCDEFGH"]
-                if cell_type in _SLICE_LUT_TYPES
-                else [
-                    bel for letter in "ABCDEFGH"
-                    for bel in (f"{letter}FF", f"{letter}FF2")
-                ]
-            ),
-        }],
-    }
-
-
 def _ordered_cell_items(
     cells: Mapping[str, Any],
 ) -> Iterator[Tuple[str, Mapping[str, Any]]]:
@@ -2098,97 +2073,6 @@ def _ordered_cell_items(
     yield from sorted(cells.items())
 
 
-class _AtomicClusterSequence(Sequence[Mapping[str, Any]]):
-    """Re-iterable atomic clusters without retaining one dict per cell."""
-
-    def __init__(
-        self,
-        cells: Mapping[str, Any],
-        macro_clusters: Sequence[Mapping[str, Any]],
-        macro_owned: set[str],
-        *,
-        singleton_count: int,
-    ) -> None:
-        self._cells = cells
-        self._macro_clusters = tuple(macro_clusters)
-        self._macro_owned = frozenset(macro_owned)
-        self._singleton_count = singleton_count
-
-    def __len__(self) -> int:
-        return len(self._macro_clusters) + self._singleton_count
-
-    def __iter__(self) -> Iterator[Mapping[str, Any]]:
-        yield from self._macro_clusters
-        for index, (name, cell) in enumerate(_ordered_cell_items(self._cells)):
-            cell_type = cell.get("type") if isinstance(cell, Mapping) else None
-            if cell_type in CONSTANT_TYPES or name in self._macro_owned:
-                continue
-            if not isinstance(cell, Mapping):
-                raise ValidationError("mapped JSON cell is invalid")
-            yield _atomic_singleton_cluster(index, name, cell)
-
-    def __getitem__(self, index):  # type: ignore[no-untyped-def,override]
-        if isinstance(index, slice):
-            start, stop, step = index.indices(len(self))
-            if step < 0:
-                return [self[position] for position in range(start, stop, step)]
-            return list(itertools.islice(iter(self), start, stop, step))
-        if not isinstance(index, int):
-            raise TypeError("atomic cluster index must be an integer")
-        if index < 0:
-            index += len(self)
-        if index < 0 or index >= len(self):
-            raise IndexError(index)
-        return next(itertools.islice(iter(self), index, index + 1))
-
-
-def _write_atomic_source(
-    output_path: Path, value: Mapping[str, Any]
-) -> None:
-    """Serialize the large clusters array without a graph-sized JSON tree."""
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=output_path.parent,
-        prefix=f".{output_path.name}.", suffix=".tmp", delete=False,
-    )
-    temporary_path = Path(temporary.name)
-    try:
-        with temporary:
-            temporary.write("{")
-            first_member = True
-            for key in sorted(value):
-                item = value[key]
-                if not first_member:
-                    temporary.write(",")
-                first_member = False
-                temporary.write(json.dumps(key, ensure_ascii=False))
-                temporary.write(":")
-                if key != "clusters":
-                    temporary.write(json.dumps(
-                        item, ensure_ascii=False, separators=(",", ":"),
-                        sort_keys=True,
-                    ))
-                    continue
-                temporary.write("[")
-                first_cluster = True
-                for cluster in item:
-                    if not first_cluster:
-                        temporary.write(",")
-                    first_cluster = False
-                    temporary.write(json.dumps(
-                        cluster, ensure_ascii=False, separators=(",", ":"),
-                        sort_keys=True,
-                    ))
-                temporary.write("]")
-            temporary.write("}\n")
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        os.replace(temporary_path, output_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-
-
 def build_xilinx_openparf_atomic_source(
     mapped_path: Path,
     output_path: Path,
@@ -2196,7 +2080,7 @@ def build_xilinx_openparf_atomic_source(
     top: Optional[str] = None,
     mapped_value: Optional[Mapping[str, Any]] = None,
     mapped_sha256: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> Mapping[str, Any]:
     """Build an unplaced singleton-atom source without legacy site packing."""
 
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
@@ -2248,14 +2132,11 @@ def build_xilinx_openparf_atomic_source(
             "OpenPARF atomic source does not yet support site macros: "
             + ", ".join(sorted(str(macro.get("kind")) for macro in unsupported_site_macros))
         )
-    constants = []
-    macro_owned = set()
     macro_clusters = []
     for macro in macro_contract.get("site_macros", []):
         assignments = []
         for member in macro["members"]:
             instance = member["instance"]
-            macro_owned.add(instance)
             if macro["kind"] == "ramb18-half-site-occupancy":
                 assignments.append({
                     "instance": instance,
@@ -2280,42 +2161,16 @@ def build_xilinx_openparf_atomic_source(
             "control_set": None,
             "assignments": assignments,
         })
-    physical_singletons = 0
-    for index, (name, cell) in enumerate(_ordered_cell_items(cells)):
-        cell_type = cell["type"]
-        if cell_type in CONSTANT_TYPES:
-            constants.append(name)
-            continue
-        if name in macro_owned:
-            continue
-        physical_singletons += 1
-
-    clusters = _AtomicClusterSequence(
-        cells, macro_clusters, macro_owned,
-        singleton_count=physical_singletons,
+    return write_xilinx_openparf_atomic_source_storage(
+        output_path,
+        mapped_path=mapped_path,
+        mapped_value=mapped,
+        mapped_sha256=mapped_sha256 or _sha256(mapped_path),
+        top=selected_top,
+        macro_clusters=macro_clusters,
+        cascades=cascades,
+        physical_macro_count=len(macro_contract.get("site_macros", [])),
     )
-    summary = {
-        "physical_atoms": len(clusters),
-        "constant_cells": len(constants),
-    }
-    if macro_contract.get("site_macros"):
-        summary["physical_macros"] = len(macro_contract["site_macros"])
-    value = {
-        "schema": OPENPARF_ATOMIC_SOURCE_SCHEMA,
-        "status": "pass",
-        "top": selected_top,
-        "source": {"mapped_sha256": mapped_sha256 or _sha256(mapped_path)},
-        "policy": {
-            "provider": "mapped-singleton-atoms-no-site-packing-v1",
-            "dedicated_or_relative_constraints": "fail-closed",
-        },
-        "clusters": clusters,
-        "cascade_chains": cascades,
-        "unplaced_constants": constants,
-        "summary": summary,
-    }
-    _write_atomic_source(output_path, value)
-    return value
 
 
 def probe_xilinx_openparf_atomic_eligibility(
@@ -3174,7 +3029,19 @@ def export_xilinx_openparf_atomic(
     """Export the fail-closed native mixed-resource qualification subset."""
 
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
-    packed = read_json(packed_path) if packed_value is None else packed_value
+    if packed_value is None:
+        candidate = read_json(packed_path)
+        packed = (
+            read_xilinx_openparf_atomic_source(
+                packed_path, mapped_path=mapped_path, mapped_value=mapped,
+                mapped_sha256=_sha256(mapped_path),
+            )
+            if isinstance(candidate, Mapping)
+            and candidate.get("schema") == OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA
+            else candidate
+        )
+    else:
+        packed = packed_value
     if (
         not isinstance(packed, Mapping)
         or packed.get("schema") not in {

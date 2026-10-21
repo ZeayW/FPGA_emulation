@@ -78,7 +78,8 @@ the native analyzer result has stopped rebuilding dependency, launch, level,
 and depth dictionaries in Python: those relations now remain in fixed-width
 integer arrays/CSR and expand only the current cut while byte-backed semantic
 records are emitted. A fresh NVDLA replay is still required to measure the new
-peak and attribute the remaining clustering, input, cut-name, and capture cost.
+peak and attribute the remaining clustering, semantic-record, exact-binary and
+native internal graph/capture costs.
 `assignment.json` contains only the contract schema and SHA-256 identity;
 explicit legacy-style reads reconstruct and verify the same logical contract.
 Completed assignment-index v1/v2 artifacts remain readable.
@@ -86,14 +87,19 @@ For designs with at least 100,000 instances, Static Exact dependency-cone and
 capture-cone traversal runs in `emuflow_static_exact_analyzer`. The boundary is
 a versioned integer-only binary graph, and Python reconstructs the same v3
 semantic contract after validating all returned indices and graph coverage.
-Capture protocol v3 contains fixed-width integer ordinals only. It preserves
-the original EmuIR instance and net ordinals in the native input and returns
-`(cut, partition, net ordinal, sink ordinal)` records. Python dereferences only
-the returned capture population, independently checking the sink FPGA, state
-type and assignment before constructing the authoritative capture identity.
-This removes the ordered instance/net copies, graph-sized net-index map and
-full post-native endpoint replay. Native dependencies use predecessor CSR plus
-fixed-width launch, level, and depth arrays; a transient successor CSR performs
+Capture protocol v3 contains fixed-width integer ordinals only. For the
+production compact EmuIR path, native input now scans `cell_records`,
+`net_records` and integer `endpoint_records` directly. It does not build a
+second instance-name-to-ordinal dictionary or decode every endpoint into Python
+objects. Cut name/ordinal/class validation is one ordered merge instead of one
+random SQLite lookup per cut. The analyzer returns `(cut, partition, net
+ordinal, sink ordinal)` records; Python resolves them with one ordered merge
+against the authoritative sink cursor, independently checking sink FPGA, state
+type and assignment before constructing each capture identity. This removes
+the ordered instance/net copies, graph-sized net-index map, per-capture whole-net
+decoding and full post-native endpoint replay. Native dependencies use
+predecessor CSR plus fixed-width launch, level, and depth arrays; a transient
+successor CSR performs
 independent topological validation and is released before contract publication.
 Contract construction derives stable segment identities from ordered counters
 and expands predecessor names for only the current cut. Production publication
@@ -106,9 +112,12 @@ reads v1 artifacts. Readers validate every section count against remaining
 bytes before allocating from it. A 300,000-record synthetic adapter benchmark
 reduced measured transient allocation from 44,295,916 to 20,615,888 bytes
 (-53.5%); a sparse 100-capture parse fell from 89.9 ms and 22,222 bytes to
-1.61 ms and 13,464 bytes. These measurements cover the adapter boundary, not
-the required NVDLA run. Direct native binary emission, the analyzer's initial
-cut-name map and native input/capture vectors remain migration work.
+1.61 ms and 13,464 bytes. A separate 100,000-cell/100,000-net compact-input
+microbenchmark reduced bridge peak Python allocation from 15.42 MiB to
+2.03 MiB (-86.85%) and measured 1.50 seconds versus 1.58 seconds. These
+measurements cover isolated adapter boundaries, not the required NVDLA run.
+Direct native binary emission, clustering/model construction and the C++
+capture vector remain migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
@@ -138,7 +147,18 @@ reference for differential coverage. Phase 5 now publishes the logical
 schedule as a compact `schedule.json` manifest plus a versioned,
 content-addressed `schedule.<sha256>.sqlite` ScheduleStore. The SQLite object
 is published first and the manifest switches generations last, so an
-interrupted overwrite leaves the previous schedule readable. Ordered routes, hops, demand
+interrupted overwrite leaves the previous schedule readable. Phase 5 also
+stages the ScheduleStore, selector, cross-layer contract and report as one
+generation. `phase5_report.json` is the commit point; any failed replacement
+restores the prior selector, sidecar, cross-layer contract and report
+byte-for-byte. The report carries a canonical self-identity plus the name,
+size and SHA-256 of every other Phase 5 artifact. Publication fsyncs every
+staged member, makes all pre-report directory entries durable, and only then
+replaces and syncs the report. A SIGKILL or power loss before that final commit
+therefore leaves the old report visible; direct Phase 5 validation, Phase 7C
+and canonical/shared replay reject any partially visible mixed generation
+before opening its schedule or cross-layer contract. Legacy report-less data
+is accepted only through an explicit compatibility option. Ordered routes, hops, demand
 completions and domain records are stored once; `read_json` remains the
 explicit compatibility materializer. Native hop output remains in a fixed
 record file and is exposed through a lazy, memory-mapped list-compatible view;
@@ -157,19 +177,36 @@ uses ScheduleStore v4: routes, route sinks/edges, completions and sink arrivals
 are typed relations, while only link-domain-scale records remain JSON.
 Cross-layer timing and the baseline splitter consume these relations directly;
 entry-route reconstruction uses one set query rather than two sink/edge queries
-per hop. A synthetic 100,000-route one-hop Static Exact build reduced Python
+per hop. Cross-layer timing contract v2 binds the RouteStore and ScheduleStore
+digests plus the validated hop count; it verifies exact hop coverage by merging
+their ordered typed cursors and does not copy hop identities into
+`cross_layer_timing.json`. Physical timing derives the same canonical records
+from the bound ScheduleStore. Materialized v1 contracts remain independently
+validatable. A synthetic 100,000-route one-hop Static Exact build reduced Python
 peak allocation from 346.1 MB to 108.2 MB, retained allocation from 332.9 MB
 to 83.5 MB, and route artifact bytes from 46.60 MB to 32.19 MB; two repeated
 runs measured the typed build at 8.16--8.32 seconds versus 8.92--9.59 seconds
 for whole-JSON loading. This is adapter evidence rather than NVDLA
 qualification, and the standalone independent validator still constructs
 route-level dependency maps. The native adapter also retains route-scale
-compact columns, cross-layer timing still builds hop-scale `hop_bindings`, and
-the ratio-delay baseline branch still performs hop-scale work when a platform
-declares a TDM delay model. Production Phase 6 dispatch reads only the lazy
+compact columns, and the ratio-delay baseline branch still performs hop-scale
+work when a platform declares a TDM delay model. Production Phase 6 dispatch reads only the lazy
 schedule entry count, and Phase 7C plus physical/local timing consumers open
 RouteStore lazily. Terminal full-bundle validation still uses compatibility
-materialization in some replay paths and remains migration work. Older v1--v3
+materialization in some replay paths and remains migration work. The retired
+canonical checkpoint compatibility code inventories complete Phase 4 and
+Phase 5 output directories because content-addressed sidecar names are unknown
+when a static experiment specification is compiled. Its shared materializer
+resolves RouteStore and ScheduleStore selectors, copies each referenced
+sidecar before its selector, and rejects dangling selectors. A managed root
+checkpoint has already sealed the directory bytes, so this compatibility path
+checks the strict selector envelope, content-addressed basename and declared
+file size without opening or rehashing the large SQLite stores. The trusted
+root seal also binds the Phase 5 report and its member table, so this bounded
+path still detects a dangling or cross-generation selector. Standalone
+replay still performs full content hashes and semantic validation. This
+preserves historical artifact validation without re-enabling checkpoint
+execution in the production lifecycle. Older v1--v3
 stores remain readable. Phase 6
 batch-streams endpoint, lane, anchor and fixed-board binding records into one
 content-sealed TransportStore. Validation and RTL/XDC consumers iterate its
@@ -255,7 +292,13 @@ qualification identities; fixed-name v1/v2 stores remain readable, while new
 stores use selector-last content-addressed publication. Cross-layer timing
 certificate construction now merges a typed, ordered ScheduleStore hop cursor
 with routed-hop identities, avoiding per-hop JSON decoding and the former
-entry map plus duplicate coverage set/map.
+entry map plus duplicate coverage set/map. Contract v2 retains only the two
+artifact digests, merge policy and checked hop count, eliminating the second
+hop-sized JSON list. In an isolated 100,000-hop typed-store comparison,
+retained Python allocation fell from 38.69 MiB to 0.17 MiB, peak allocation
+from 82.58 MiB to 44.06 MiB, and serialized contract size from 6.87 MiB to
+0.00063 MiB; build time was 0.746 seconds versus 0.730 seconds. This is an
+adapter measurement, not NVDLA qualification.
 Static Exact validation now keeps ScheduleStore lazy and queries its persisted
 typed hop relation directly. It checks route and hop
 coverage, ordering, readiness, arrival, collisions, bank allocation, baseline
@@ -288,8 +331,25 @@ hash. The per-FPGA evidence databases are still JSON and their producers remain
 Python migration work.
 
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
-from their sealed SQLite sidecar, reuses the in-process atomic-source view, and
-publishes one versioned `physical-handoff.sqlite`. Normalized clusters stream
+from their sealed SQLite sidecar. `openparf-atomic-source.json` is a bounded
+selector instead of a graph-sized cluster document: its sealed typed sidecar
+owns only physical macros, cascades and constants, while ordinary singleton
+clusters are derived lazily from the authoritative `partition.mapped.sqlite`
+cell/type relation. The selector binds both artifacts by byte count and
+SHA-256, validates typed row counts and logical record seals, and publishes
+selector-last. Replacement discovers and seal-checks the previous selector and
+sidecar without consulting the newly generated mapped artifact, validates the
+new generation in staging, commits its selector, and only then removes the old
+sidecar. Injected failures therefore leave the previous generation intact.
+The versioned selector, header, counts and mapped descriptors require exact
+key sets while remaining insensitive to JSON key order and whitespace. The
+`atomic-source-*` cluster namespace belongs exclusively to mapped-derived
+singletons; macro and cascade identities cannot alias it or one another. The
+historical complete atomic-source JSON is available only
+through the explicit compatibility materializer. The per-partition physical
+report records source-build wall time, selector/sidecar bytes, stored macro
+count and derived singleton count. The bridge then publishes
+one versioned `physical-handoff.sqlite`. Normalized clusters stream
 directly into a private same-directory SQLite artifact; the site-pin legalizer
 retains only slices containing MUX cells, while the independent validator keeps
 only the MUX/CARRY topology it must cross-check. Its cluster and assignment
@@ -323,6 +383,13 @@ view, and certificate coverage uses validated owner cardinality rather than a
 duplicate expected-cell set. Fixed-I/O anchor preparation queries indexed
 position hints by schedule-entry key for the current partition instead of
 reconstructing a whole-design `hint_by_entry` dictionary.
+
+On a synthetic 100,000-singleton source projection, the production selector
+plus typed sidecar occupied 1,073 bytes plus 45,056 bytes and peaked at 1.10
+MiB of traced Python allocation in 0.614 seconds. Explicitly materializing the
+legacy JSON produced 28,500,397 bytes and peaked at 167.93 MiB in 3.10 seconds.
+This isolates the representation boundary; NVDLA Phase 7 wall time, process
+RSS and temporary-I/O qualification remain pending.
 RWRoute TSV export likewise derives route-cell rows directly from the physical
 binding and no longer duplicates every cell in a second route-cell dictionary.
 Its report separates binding, cell/I/O

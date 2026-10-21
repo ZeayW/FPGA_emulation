@@ -200,6 +200,10 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             )
             atomic_source = {"summary": {"physical_atoms": 2}}
 
+            def publish_atomic_source(_mapped, output, **_kwargs):
+                output.write_text("{}\n", encoding="utf-8")
+                return atomic_source
+
             def materialize(
                 mapped, architecture_path, certificate, packed, placement, **kwargs
             ):
@@ -291,7 +295,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 mock.patch("emuflow.xilinx_physical_backend.read_json") as read,
                 mock.patch(
                     "emuflow.xilinx_physical_backend.build_xilinx_openparf_atomic_source",
-                    return_value=atomic_source,
+                    side_effect=publish_atomic_source,
                 ) as build_source,
                 mock.patch(
                     "emuflow.xilinx_physical_backend._select_xilinx_slr_window",

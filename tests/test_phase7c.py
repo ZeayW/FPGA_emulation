@@ -4,10 +4,16 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
+from emuflow.phase5 import (
+    PHASE5_GENERATION_SCHEMA,
+    PHASE5_REPORT_SCHEMA,
+    _canonical_phase5_report_identity,
+)
 from emuflow.phase7c import run_phase7c
 from emuflow.platform import Platform
 from emuflow.local_path_timing import path_id_set_sha256
@@ -179,6 +185,115 @@ class Phase7CTest(unittest.TestCase):
                 self.routes, self.platform, self.schedule
             )
         )
+
+    def test_phase7c_rejects_uncommitted_phase5_before_schedule_open(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with mock.patch(
+                "emuflow.phase7c.read_tdm_schedule",
+                side_effect=AssertionError("uncommitted schedule was opened"),
+            ) as read_schedule, self.assertRaisesRegex(
+                ValidationError, "commit report is missing"
+            ):
+                run_phase7c(
+                    root / "schedule.json",
+                    root / "platform.json",
+                    root / "phase3.json",
+                    root / "phase4.json",
+                    root / "phase5_report.json",
+                    root / "phase6.json",
+                    root / "out",
+                )
+            read_schedule.assert_not_called()
+
+    def test_phase7c_rejects_cross_generation_before_schedule_open(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store_bytes = b"typed-store"
+            store_digest = hashlib.sha256(store_bytes).hexdigest()
+            store_name = f"schedule.{store_digest}.sqlite"
+            (root / store_name).write_bytes(store_bytes)
+            selector = {
+                "artifact": store_name,
+                "store_bytes": len(store_bytes),
+                "store_sha256": store_digest,
+            }
+            (root / "schedule.json").write_text(
+                json.dumps(selector), encoding="utf-8"
+            )
+            (root / "cross_layer_timing.json").write_bytes(b"old")
+            artifacts = {
+                "schedule": "schedule.json",
+                "schedule_store": store_name,
+                "cross_layer_timing": "cross_layer_timing.json",
+                "report": "phase5_report.json",
+            }
+            members = []
+            for relative in (
+                store_name,
+                "schedule.json",
+                "cross_layer_timing.json",
+            ):
+                path = root / relative
+                members.append(
+                    {
+                        "path": relative,
+                        "bytes": path.stat().st_size,
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                )
+            report = {
+                "schema": PHASE5_REPORT_SCHEMA,
+                "status": "pass",
+                "artifacts": artifacts,
+                "generation": {
+                    "schema": PHASE5_GENERATION_SCHEMA,
+                    "commit_point": "phase5_report.json",
+                    "members": members,
+                },
+            }
+            report["generation"]["report_identity_sha256"] = (
+                _canonical_phase5_report_identity(report)
+            )
+            (root / "phase5_report.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+            (root / "cross_layer_timing.json").write_bytes(b"new")
+
+            with mock.patch(
+                "emuflow.phase7c.read_tdm_schedule",
+                side_effect=AssertionError("cross-generation schedule was opened"),
+            ) as read_schedule, self.assertRaisesRegex(
+                ValidationError, "generation member seal is broken"
+            ):
+                run_phase7c(
+                    root / "schedule.json",
+                    root / "platform.json",
+                    root / "phase3.json",
+                    root / "phase4.json",
+                    root / "phase5_report.json",
+                    root / "phase6.json",
+                    root / "out",
+                )
+            read_schedule.assert_not_called()
+
+            (root / "cross_layer_timing.json").write_bytes(b"old")
+            with mock.patch(
+                "emuflow.phase7c.read_tdm_schedule",
+                side_effect=AssertionError("unsealed schedule path was opened"),
+            ) as read_schedule, self.assertRaisesRegex(
+                ValidationError, "schedule path disagrees"
+            ):
+                run_phase7c(
+                    root / "other-schedule.json",
+                    root / "platform.json",
+                    root / "phase3.json",
+                    root / "phase4.json",
+                    root / "phase5_report.json",
+                    root / "phase6.json",
+                    root / "out",
+                )
+            read_schedule.assert_not_called()
 
     def _physical_summary(self):
         return {
@@ -1129,6 +1244,7 @@ class Phase7CTest(unittest.TestCase):
                 paths["phase5"],
                 paths["phase6"],
                 root / "generated",
+                allow_legacy_phase5_generation=True,
             )
             self.assertEqual(generated["status"], "generated")
             self.assertIn("runtime_timing_summary", generated)
@@ -1145,6 +1261,7 @@ class Phase7CTest(unittest.TestCase):
                 global_timing_engine="python",
                 routes_path=paths["routes"],
                 board_link_timing_path=paths["link_timing"],
+                allow_legacy_phase5_generation=True,
             )
             self.assertEqual(closed["status"], "incomplete")
             self.assertNotIn("system_timing", closed)
@@ -1250,6 +1367,7 @@ class Phase7CTest(unittest.TestCase):
                 physical_summary_path=paths["physical"],
                 global_timing_engine="python",
                 routes_path=paths["routes"],
+                allow_legacy_phase5_generation=True,
             )
             self.assertEqual(closed["status"], "incomplete")
             self.assertEqual(

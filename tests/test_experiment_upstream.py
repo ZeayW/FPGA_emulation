@@ -13,6 +13,11 @@ from emuflow.experiment_partition import (
     run_partition_checkpoint,
     validate_partition_checkpoint,
 )
+from emuflow.phase5 import (
+    PHASE5_GENERATION_SCHEMA,
+    PHASE5_REPORT_SCHEMA,
+    _canonical_phase5_report_identity,
+)
 from emuflow.experiment_upstream import (
     MANAGED_DAG_VALIDATION_MODE,
     EXPERIMENT_PARTITION_SCHEMA,
@@ -25,10 +30,62 @@ from emuflow.experiment_upstream import (
     validate_materialized_shared_phase1_5,
     validate_tdm_checkpoint,
 )
+from emuflow.routing import SYSTEM_ROUTES_SCHEMA
+from emuflow.system_route_storage import (
+    system_route_store_path,
+    write_system_route_storage,
+)
+from emuflow.tdm_schedule_storage import (
+    tdm_schedule_store_path,
+    write_tdm_schedule_storage,
+)
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_phase5_generation_report(
+    root: Path,
+    schedule_manifest: dict,
+) -> dict:
+    artifacts = {
+        "schedule": "schedule.json",
+        "schedule_store": schedule_manifest["artifact"],
+        "cross_layer_timing": "cross_layer_timing.json",
+        "report": "phase5_report.json",
+    }
+    members = []
+    for relative in (
+        schedule_manifest["artifact"],
+        "schedule.json",
+        "cross_layer_timing.json",
+    ):
+        path = root / relative
+        members.append(
+            {
+                "path": relative,
+                "bytes": path.stat().st_size,
+                "sha256": _sha256(path),
+            }
+        )
+    report = {
+        "schema": PHASE5_REPORT_SCHEMA,
+        "status": "pass",
+        "artifacts": artifacts,
+        "generation": {
+            "schema": PHASE5_GENERATION_SCHEMA,
+            "commit_point": "phase5_report.json",
+            "members": members,
+        },
+    }
+    report["generation"]["report_identity_sha256"] = (
+        _canonical_phase5_report_identity(report)
+    )
+    (root / "phase5_report.json").write_text(
+        json.dumps(report), encoding="utf-8"
+    )
+    return report
 
 
 class ExperimentUpstreamTest(unittest.TestCase):
@@ -254,6 +311,8 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     path = roots[stage] / relative
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(f"{stage}:{relative}\n", encoding="utf-8")
+            (roots["route"] / "routes.json").write_text("{}", encoding="utf-8")
+            (roots["tdm"] / "schedule.json").write_text("{}", encoding="utf-8")
             (roots["timing"] / "path-database.json").write_text(
                 json.dumps(
                     {
@@ -344,6 +403,10 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 mock.patch(
                     "emuflow.experiment_upstream.validate_shared_phase1_5"
                 ) as shared_validate,
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_phase5_generation",
+                    return_value={"status": "legacy"},
+                ),
             ):
                 report = materialize_shared_phase1_5(
                     roots["frontend"],
@@ -378,15 +441,294 @@ class ExperimentUpstreamTest(unittest.TestCase):
 
             assignment = root / "shared/partition/assignment.json"
             assignment.write_text("different-size", encoding="utf-8")
-            with mock.patch(
-                "emuflow.experiment_upstream.Platform.load",
-                return_value=SimpleNamespace(name="fixture-platform"),
-            ), self.assertRaisesRegex(ValidationError, "artifact certificate"):
+            with (
+                mock.patch(
+                    "emuflow.experiment_upstream.Platform.load",
+                    return_value=SimpleNamespace(name="fixture-platform"),
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_phase5_generation",
+                    return_value={"status": "legacy"},
+                ),
+                self.assertRaisesRegex(ValidationError, "artifact certificate"),
+            ):
                 validate_materialized_shared_phase1_5(
                     root / "shared",
                     root / "platform.json",
                     managed_dag_node=True,
                 )
+
+    def test_shared_materialization_replays_content_addressed_sidecars(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            roots = {
+                name: root / name
+                for name in (
+                    "frontend",
+                    "timing",
+                    "partition",
+                    "cut-timing",
+                    "route",
+                    "tdm",
+                )
+            }
+            required = {
+                "frontend": (
+                    "phase1/design.emuir.sqlite",
+                    "phase1/phase1_report.json",
+                ),
+                "timing": (
+                    "path-database.json",
+                    "partition-net-weights.json",
+                ),
+                "partition": (
+                    "clusters.json",
+                    "assignment.json",
+                    "phase3_report.json",
+                ),
+                "cut-timing": (
+                    "cut-timing-paths.json",
+                    "cut-segment-qualification.json",
+                ),
+                "route": ("phase4_report.json",),
+                "tdm": ("cross_layer_timing.json", "phase5_report.json"),
+            }
+            for stage, relative_files in required.items():
+                for relative in relative_files:
+                    path = roots[stage] / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("{}", encoding="utf-8")
+            (roots["timing"] / "path-database.json").write_text(
+                json.dumps({"schema": "emuflow.sta-path-database/v1"}),
+                encoding="utf-8",
+            )
+            (
+                roots["timing"] / "partition-net-weights.json"
+            ).write_text(
+                json.dumps({"schema": "emuflow.partition-net-weights/v1"}),
+                encoding="utf-8",
+            )
+            route_manifest = write_system_route_storage(
+                roots["route"] / "routes.json",
+                {
+                    "schema": SYSTEM_ROUTES_SCHEMA,
+                    "design": "fixture",
+                    "platform": "fixture",
+                    "demands": [],
+                    "routes": [],
+                },
+            )
+            schedule_manifest = write_tdm_schedule_storage(
+                roots["tdm"] / "schedule.json",
+                {
+                    "schema": "emuflow.tdm-schedule/v1",
+                    "design": "fixture",
+                    "provider": "deterministic-dependency-earliest-slot-v1",
+                    "qualification": "dependency-schedule-readiness-pass",
+                    "metrics": {},
+                    "routes": [],
+                    "entries": [],
+                    "demand_completions": [],
+                    "domain_schedules": [],
+                },
+            )
+            _write_phase5_generation_report(roots["tdm"], schedule_manifest)
+            platform = root / "platform.json"
+            platform.write_text("{}", encoding="utf-8")
+            output = root / "shared"
+            with (
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_frontend_checkpoint"
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_timing_checkpoint"
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_partition_checkpoint"
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_cut_timing_checkpoint"
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_route_checkpoint"
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_tdm_checkpoint"
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.validate_shared_phase1_5",
+                    return_value={"status": "pass"},
+                ),
+            ):
+                report = materialize_shared_phase1_5(
+                    roots["frontend"],
+                    roots["timing"],
+                    roots["partition"],
+                    roots["cut-timing"],
+                    roots["route"],
+                    roots["tdm"],
+                    platform,
+                    output,
+                )
+            expected_route = f"system-route/{route_manifest['artifact']}"
+            expected_schedule = f"tdm/{schedule_manifest['artifact']}"
+            self.assertIn(expected_route, report["artifacts"])
+            self.assertIn(expected_schedule, report["artifacts"])
+            self.assertEqual(
+                system_route_store_path(
+                    output / "system-route/routes.json"
+                ).resolve(),
+                (output / expected_route).resolve(),
+            )
+            self.assertEqual(
+                tdm_schedule_store_path(
+                    output / "tdm/schedule.json"
+                ).resolve(),
+                (output / expected_schedule).resolve(),
+            )
+            copied_contract = output / "tdm/cross_layer_timing.json"
+            copied_contract_bytes = copied_contract.read_bytes()
+            copied_contract.unlink()
+            copied_contract.write_bytes(
+                b"[]" if copied_contract_bytes == b"{}" else b"{}"
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "generation member (seal is broken|is missing)"
+            ):
+                validate_materialized_shared_phase1_5(output, platform)
+            copied_contract.unlink()
+            copied_contract.write_bytes(copied_contract_bytes)
+            managed_output = root / "shared-managed"
+
+            def managed_checkpoint(source_root, *, expected_stage):
+                del source_root
+                stage = (
+                    "|".join(expected_stage)
+                    if isinstance(expected_stage, tuple)
+                    else expected_stage
+                )
+                return {
+                    "execution_key": hashlib.sha256(
+                        stage.encode("utf-8")
+                    ).hexdigest(),
+                    "artifacts": {
+                        ".": {
+                            "kind": "directory",
+                            "sha256": hashlib.sha256(
+                                f"root:{stage}".encode("utf-8")
+                            ).hexdigest(),
+                        }
+                    },
+                }
+
+            with (
+                mock.patch(
+                    "emuflow.experiment_upstream._managed_checkpoint",
+                    side_effect=managed_checkpoint,
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream._sha256",
+                    side_effect=AssertionError("managed replay rehashed a file"),
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.system_route_store_path",
+                    side_effect=AssertionError("managed replay opened RouteStore"),
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.tdm_schedule_store_path",
+                    side_effect=AssertionError("managed replay opened ScheduleStore"),
+                ),
+                mock.patch(
+                    "emuflow.system_route_storage.file_sha256",
+                    side_effect=AssertionError("managed replay hashed RouteStore"),
+                ),
+                mock.patch(
+                    "emuflow.system_route_storage.SystemRoutesView",
+                    side_effect=AssertionError("managed replay opened RouteStore view"),
+                ),
+                mock.patch(
+                    "emuflow.tdm_schedule_storage.file_sha256",
+                    side_effect=AssertionError("managed replay hashed ScheduleStore"),
+                ),
+                mock.patch(
+                    "emuflow.tdm_schedule_storage.TDMScheduleView",
+                    side_effect=AssertionError(
+                        "managed replay opened ScheduleStore view"
+                    ),
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.Platform.load",
+                    return_value=SimpleNamespace(name="fixture"),
+                ),
+            ):
+                managed_report = materialize_shared_phase1_5(
+                    roots["frontend"],
+                    roots["timing"],
+                    roots["partition"],
+                    roots["cut-timing"],
+                    roots["route"],
+                    roots["tdm"],
+                    platform,
+                    managed_output,
+                    managed_dag_node=True,
+                )
+            self.assertIn(expected_route, managed_report["artifacts"])
+            self.assertIn(expected_schedule, managed_report["artifacts"])
+            self.assertEqual(
+                managed_report["artifacts"][expected_route][
+                    "source_artifact"
+                ],
+                ".",
+            )
+            managed_schedule_store = managed_output / expected_schedule
+            managed_schedule_store.unlink()
+            with (
+                mock.patch(
+                    "emuflow.experiment_upstream.system_route_store_path",
+                    side_effect=AssertionError("managed validator opened RouteStore"),
+                ),
+                mock.patch(
+                    "emuflow.experiment_upstream.tdm_schedule_store_path",
+                    side_effect=AssertionError("managed validator opened ScheduleStore"),
+                ),
+                self.assertRaisesRegex(
+                    ValidationError, "member is missing|sidecar is missing"
+                ),
+            ):
+                validate_materialized_shared_phase1_5(
+                    managed_output,
+                    platform,
+                    managed_dag_node=True,
+                )
+            managed_schedule_store.write_bytes(
+                (roots["tdm"] / schedule_manifest["artifact"]).read_bytes()
+            )
+            managed_route_selector = managed_output / "system-route/routes.json"
+            route_selector_bytes = managed_route_selector.read_bytes()
+            malformed_selector = json.loads(route_selector_bytes)
+            malformed_selector["artifact"] = "../escape.sqlite"
+            managed_route_selector.unlink()
+            managed_route_selector.write_text(
+                json.dumps(malformed_selector), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValidationError, "envelope is invalid"):
+                validate_materialized_shared_phase1_5(
+                    managed_output,
+                    platform,
+                    managed_dag_node=True,
+                )
+            managed_route_selector.unlink()
+            managed_route_selector.write_bytes(route_selector_bytes)
+            route_store_bytes = (output / expected_route).read_bytes()
+            (output / expected_route).unlink()
+            with self.assertRaises(ValidationError):
+                validate_materialized_shared_phase1_5(output, platform)
+            (output / expected_route).write_bytes(route_store_bytes)
+            (output / expected_schedule).unlink()
+            with self.assertRaises(ValidationError):
+                validate_materialized_shared_phase1_5(output, platform)
 
     def test_managed_partition_hot_path_performs_no_hashing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -988,8 +1330,9 @@ class ExperimentUpstreamTest(unittest.TestCase):
         return_value={"status": "pass"},
     )
     @mock.patch("emuflow.experiment_upstream.validate_phase5")
+    @mock.patch("emuflow.experiment_upstream.validate_phase5_generation")
     def test_tdm_validator_binds_academic_optimization_provider(
-        self, validate_phase5, _validate_cross_layer
+        self, _validate_generation, validate_phase5, _validate_cross_layer
     ) -> None:
         validate_phase5.return_value = {"status": "pass"}
         with tempfile.TemporaryDirectory() as temporary:
@@ -1024,8 +1367,9 @@ class ExperimentUpstreamTest(unittest.TestCase):
         return_value={"status": "pass"},
     )
     @mock.patch("emuflow.experiment_upstream.validate_phase5")
+    @mock.patch("emuflow.experiment_upstream.validate_phase5_generation")
     def test_tdm_validator_preserves_baseline_provider_contract(
-        self, validate_phase5, _validate_cross_layer
+        self, _validate_generation, validate_phase5, _validate_cross_layer
     ) -> None:
         validate_phase5.return_value = {"status": "pass"}
         with tempfile.TemporaryDirectory() as temporary:

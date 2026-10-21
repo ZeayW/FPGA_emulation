@@ -1306,7 +1306,7 @@ def compile_canonical_experiment_spec(
         "route", "route", ["partition", "cut-timing"],
         [executable, "experiment-stage", "route-run", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers), "--router", str(tools["router"]), "--managed-storage", "--managed-dag-node", "--out", "{output_dir}"],
         [executable, "experiment-stage", "route-validate", "{artifact_root}", "--partition", "{dependency:partition}", "--cut-timing", "{dependency:cut-timing}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", route_provider, "--candidate-workers", str(effective_candidate_workers), "--managed-dag-node"],
-        [_artifact("routes.json", "consumer-checkpoint"), _artifact("phase4_report.json", "consumer-checkpoint"), _artifact("experiment-route-report.json", "evidence-critical")],
+        [_artifact(".", "consumer-checkpoint")],
         inputs=("platform", "route_constraints", "tool.emuflow", "tool.router"),
         configuration={"provider": route_provider, "candidate_workers": effective_candidate_workers, "route_constraints": contract["route_constraints"], "cut_mode": cut_mode},
         peak_gib=12, retained_gib=3,
@@ -1322,11 +1322,7 @@ def compile_canonical_experiment_spec(
     ]
     tdm_inputs = ["platform", "route_constraints", "tool.emuflow"]
     tdm_artifacts = [
-        _artifact("schedule.json", "consumer-checkpoint"),
-        _artifact("schedule.sqlite", "consumer-checkpoint"),
-        _artifact("cross_layer_timing.json", "consumer-checkpoint"),
-        _artifact("phase5_report.json", "consumer-checkpoint"),
-        _artifact("experiment-tdm-report.json", "evidence-critical"),
+        _artifact(".", "consumer-checkpoint"),
     ]
     tdm_command.extend((
         "--ratio-quantum", str(contract["route_constraints"]["tdm_ratio_quantum"]),
@@ -1341,7 +1337,6 @@ def compile_canonical_experiment_spec(
         "tool.timing_dag_optimizer",
         "tool.slot_optimizer",
     ))
-    tdm_artifacts.insert(1, _artifact("ratio_plan.json", "consumer-checkpoint"))
     tdm_command.extend(("--out", "{output_dir}"))
     node(
         "tdm", "tdm", ["route", "partition"],

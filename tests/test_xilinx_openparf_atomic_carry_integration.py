@@ -6,6 +6,7 @@ from emuflow.io import read_json, write_json
 from emuflow.xilinx_openparf_atomic import (
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
+    read_xilinx_openparf_atomic_source,
     validate_xilinx_openparf_atomic_placement,
 )
 from emuflow.xilinx_openparf_bridge import (
@@ -65,7 +66,7 @@ class XilinxOpenparfAtomicCarryIntegrationTest(unittest.TestCase):
             }, compact=True)
             source = root / "atomic-source.json"
             build_xilinx_openparf_atomic_source(mapped, source, top="top")
-            clusters = read_json(source)["clusters"]
+            clusters = read_xilinx_openparf_atomic_source(source)["clusters"]
             self.assertEqual(len(clusters), 2)
             for cluster in clusters:
                 self.assertEqual(cluster["kind"], "hard")
@@ -81,7 +82,7 @@ class XilinxOpenparfAtomicCarryIntegrationTest(unittest.TestCase):
             mapped, _packed, architecture, native, provider = _write_fixture(root)
             source = root / "atomic-source.json"
             build_xilinx_openparf_atomic_source(mapped, source, top="top")
-            source_value = read_json(source)
+            source_value = read_xilinx_openparf_atomic_source(source)
             self.assertEqual(
                 [cluster["kind"] for cluster in source_value["clusters"]].count(
                     "carry"

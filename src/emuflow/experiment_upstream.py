@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import math
 import os
 import re
@@ -42,13 +43,29 @@ from .phase1 import (
     run_phase1,
 )
 from .phase4 import run_phase4, validate_phase4
-from .phase5 import run_phase5, validate_phase5
+from .phase5 import (
+    run_phase5,
+    validate_phase5,
+    validate_phase5_generation,
+)
 from .platform import Platform
 from .phase3_storage import (
     read_phase3_assignment_view,
     read_phase3_cut_timing_view,
 )
-from .routing import load_route_constraints, semantic_contract_for_routes
+from .routing import (
+    SYSTEM_ROUTES_SCHEMA,
+    load_route_constraints,
+    semantic_contract_for_routes,
+)
+from .system_route_storage import (
+    SYSTEM_ROUTE_APPLICATION_ID,
+    SYSTEM_ROUTE_STORAGE_SCHEMA,
+    SYSTEM_ROUTE_STORE_PREFIX,
+    SYSTEM_ROUTE_STORE_SUFFIX,
+    SYSTEM_ROUTE_USER_VERSION,
+    system_route_store_path,
+)
 from .sta import (
     derive_partition_net_weights,
     iter_sta_path_database_paths,
@@ -67,6 +84,25 @@ from .tdm import (
     TDM_BASELINE_PROVIDER,
     TDM_EXACT_DEPENDENCY_PROVIDER,
     is_sampled_virtual_wire_schedule,
+)
+from .tdm_schedule_storage import (
+    FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    FULLY_TYPED_TDM_SCHEDULE_USER_VERSION,
+    LEGACY_TDM_SCHEDULE_STORAGE_SCHEMA,
+    TDM_SCHEDULE_APPLICATION_ID,
+    TDM_SCHEDULE_LOGICAL_SCHEMA,
+    TDM_SCHEDULE_SECTIONS,
+    TDM_SCHEDULE_STORAGE_SCHEMA,
+    TDM_SCHEDULE_STORAGE_SCHEMAS,
+    TDM_SCHEDULE_STORE_PREFIX,
+    TDM_SCHEDULE_STORE_SUFFIX,
+    TDM_SCHEDULE_USER_VERSION,
+    TYPED_COMPLETION_RELATION_SCHEMA,
+    TYPED_ENTRY_RELATION_SCHEMA,
+    TYPED_ROUTE_RELATION_SCHEMA,
+    TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    TYPED_TDM_SCHEDULE_USER_VERSION,
+    tdm_schedule_store_path,
 )
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_netlist import normalize_vtr_hard_block_json
@@ -122,6 +158,279 @@ def _require(root: Path, relative: str) -> Path:
     if not path.is_file() or path.is_symlink():
         raise ValidationError(f"upstream experiment artifact is missing: {relative}")
     return path
+
+
+def _selector_digest(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+    )
+
+
+def _read_selector_envelope(path: Path, label: str) -> Dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            value = json.load(stream)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValidationError(f"managed {label} selector is unreadable") from error
+    if not isinstance(value, dict):
+        raise ValidationError(f"managed {label} selector envelope is invalid")
+    return value
+
+
+def _trusted_selector_store(
+    selector: Path,
+    *,
+    artifact: Any,
+    expected_name: Optional[str],
+    expected_bytes: Any,
+    label: str,
+) -> Path:
+    if (
+        not isinstance(artifact, str)
+        or not artifact
+        or Path(artifact).name != artifact
+        or (expected_name is not None and artifact != expected_name)
+        or isinstance(expected_bytes, bool)
+        or not isinstance(expected_bytes, int)
+        or expected_bytes < 0
+    ):
+        raise ValidationError(f"managed {label} selector envelope is invalid")
+    store = selector.with_name(artifact)
+    try:
+        valid_store = (
+            store.is_file()
+            and not store.is_symlink()
+            and store.stat().st_size == expected_bytes
+        )
+    except OSError:
+        valid_store = False
+    if not valid_store:
+        raise ValidationError(f"managed {label} selector sidecar is missing")
+    return store
+
+
+def _trusted_route_store_path(selector: Path) -> Optional[Path]:
+    """Resolve a sealed managed RouteStore without opening or rehashing it."""
+
+    if selector.is_symlink() or not selector.is_file():
+        raise ValidationError("managed system-route selector is missing")
+    value = _read_selector_envelope(selector, "system-route")
+    schema = value.get("schema")
+    if schema != SYSTEM_ROUTE_STORAGE_SCHEMA:
+        if isinstance(schema, str) and schema.startswith(
+            "emuflow.system-route-storage/"
+        ):
+            raise ValidationError("managed system-route selector schema is invalid")
+        return None
+    required_keys = {
+        "schema",
+        "logical_schema",
+        "application_id",
+        "user_version",
+        "header",
+        "sections",
+        "logical_sha256",
+        "artifact",
+        "store_bytes",
+        "store_sha256",
+    }
+    header = value.get("header")
+    sections = value.get("sections")
+    if (
+        set(value) != required_keys
+        or value.get("logical_schema") != SYSTEM_ROUTES_SCHEMA
+        or value.get("application_id") != SYSTEM_ROUTE_APPLICATION_ID
+        or value.get("user_version") != SYSTEM_ROUTE_USER_VERSION
+        or not isinstance(header, dict)
+        or header.get("schema") != SYSTEM_ROUTES_SCHEMA
+        or any(key in header for key in ("demands", "routes"))
+        or not isinstance(sections, dict)
+        or set(sections) != {"demands", "routes", "timing_paths"}
+        or not _selector_digest(value.get("logical_sha256"))
+        or not _selector_digest(value.get("store_sha256"))
+    ):
+        raise ValidationError("managed system-route selector envelope is invalid")
+    for record in sections.values():
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"records", "sha256"}
+            or isinstance(record.get("records"), bool)
+            or not isinstance(record.get("records"), int)
+            or record["records"] < 0
+            or not _selector_digest(record.get("sha256"))
+        ):
+            raise ValidationError(
+                "managed system-route selector sections are invalid"
+            )
+    digest = value["store_sha256"]
+    return _trusted_selector_store(
+        selector,
+        artifact=value.get("artifact"),
+        expected_name=(
+            f"{SYSTEM_ROUTE_STORE_PREFIX}{digest}"
+            f"{SYSTEM_ROUTE_STORE_SUFFIX}"
+        ),
+        expected_bytes=value.get("store_bytes"),
+        label="system-route",
+    )
+
+
+def _trusted_schedule_store_path(selector: Path) -> Optional[Path]:
+    """Resolve a sealed managed ScheduleStore without opening or rehashing it."""
+
+    if selector.is_symlink() or not selector.is_file():
+        raise ValidationError("managed TDM schedule selector is missing")
+    value = _read_selector_envelope(selector, "TDM schedule")
+    schema = value.get("schema")
+    if schema not in TDM_SCHEDULE_STORAGE_SCHEMAS:
+        if isinstance(schema, str) and schema.startswith(
+            "emuflow.tdm-schedule-storage/"
+        ):
+            raise ValidationError("managed TDM schedule selector schema is invalid")
+        return None
+    base_keys = {
+        "schema",
+        "logical_schema",
+        "artifact",
+        "application_id",
+        "user_version",
+        "store_bytes",
+        "store_sha256",
+        "logical_sha256",
+        "sections",
+    }
+    expected_user_version = TDM_SCHEDULE_USER_VERSION
+    if schema != LEGACY_TDM_SCHEDULE_STORAGE_SCHEMA:
+        base_keys.add("logical_pretty_sha256")
+    if schema in {
+        TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+        FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    }:
+        base_keys.add("entry_relation")
+        expected_user_version = TYPED_TDM_SCHEDULE_USER_VERSION
+    if schema == FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA:
+        base_keys.update(("route_relation", "completion_relation"))
+        expected_user_version = FULLY_TYPED_TDM_SCHEDULE_USER_VERSION
+    sections = value.get("sections")
+    if (
+        set(value) != base_keys
+        or value.get("logical_schema") != TDM_SCHEDULE_LOGICAL_SCHEMA
+        or value.get("application_id") != TDM_SCHEDULE_APPLICATION_ID
+        or value.get("user_version") != expected_user_version
+        or not _selector_digest(value.get("store_sha256"))
+        or not _selector_digest(value.get("logical_sha256"))
+        or (
+            schema != LEGACY_TDM_SCHEDULE_STORAGE_SCHEMA
+            and not _selector_digest(value.get("logical_pretty_sha256"))
+        )
+        or not isinstance(sections, dict)
+        or set(sections) != set(TDM_SCHEDULE_SECTIONS)
+    ):
+        raise ValidationError("managed TDM schedule selector envelope is invalid")
+    for record in sections.values():
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"records", "sha256"}
+            or isinstance(record.get("records"), bool)
+            or not isinstance(record.get("records"), int)
+            or record["records"] < 0
+            or not _selector_digest(record.get("sha256"))
+        ):
+            raise ValidationError(
+                "managed TDM schedule selector sections are invalid"
+            )
+    if schema in {
+        TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+        FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    }:
+        relation = value.get("entry_relation")
+        if (
+            not isinstance(relation, dict)
+            or set(relation) != {"schema", "records"}
+            or relation.get("schema") != TYPED_ENTRY_RELATION_SCHEMA
+            or isinstance(relation.get("records"), bool)
+            or not isinstance(relation.get("records"), int)
+            or relation["records"] < 0
+            or relation.get("records") != sections["entries"]["records"]
+        ):
+            raise ValidationError(
+                "managed TDM schedule entry relation is invalid"
+            )
+    if schema == FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA:
+        for key, relation_schema, fields, section in (
+            (
+                "route_relation",
+                TYPED_ROUTE_RELATION_SCHEMA,
+                {"schema", "records", "sink_records", "edge_records"},
+                "routes",
+            ),
+            (
+                "completion_relation",
+                TYPED_COMPLETION_RELATION_SCHEMA,
+                {"schema", "records", "arrival_records"},
+                "demand_completions",
+            ),
+        ):
+            relation = value.get(key)
+            if (
+                not isinstance(relation, dict)
+                or set(relation) != fields
+                or relation.get("schema") != relation_schema
+                or relation.get("records") != sections[section]["records"]
+                or any(
+                    isinstance(relation.get(field), bool)
+                    or not isinstance(relation.get(field), int)
+                    or relation[field] < 0
+                    for field in fields - {"schema"}
+                )
+            ):
+                raise ValidationError(
+                    f"managed TDM schedule {key} is invalid"
+                )
+    digest = value["store_sha256"]
+    expected_name = (
+        f"{TDM_SCHEDULE_STORE_PREFIX}{digest}{TDM_SCHEDULE_STORE_SUFFIX}"
+        if schema in {
+            TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+            FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+        }
+        else None
+    )
+    return _trusted_selector_store(
+        selector,
+        artifact=value.get("artifact"),
+        expected_name=expected_name,
+        expected_bytes=value.get("store_bytes"),
+        label="TDM schedule",
+    )
+
+
+def _shared_indexed_sidecars(
+    root: Path,
+    *,
+    trusted_selectors: bool,
+) -> set[str]:
+    """Resolve selector sidecars, using bounded checks for sealed roots."""
+
+    sidecars: set[str] = set()
+    route_selector = _require(root, "system-route/routes.json")
+    schedule_selector = _require(root, "tdm/schedule.json")
+    route_store = (
+        _trusted_route_store_path(route_selector)
+        if trusted_selectors
+        else system_route_store_path(route_selector)
+    )
+    if route_store is not None:
+        sidecars.add(f"system-route/{route_store.name}")
+    schedule_store = (
+        _trusted_schedule_store_path(schedule_selector)
+        if trusted_selectors
+        else tdm_schedule_store_path(schedule_selector)
+    )
+    if schedule_store is not None:
+        sidecars.add(f"tdm/{schedule_store.name}")
+    return sidecars
 
 
 def _float_equal(left: float, right: float) -> bool:
@@ -1028,6 +1337,10 @@ def validate_tdm_checkpoint(
     elif report.get("validation_mode") is not None:
         raise ValidationError("TDM checkpoint requires managed validation")
     phase5_report = _require(root, "phase5_report.json")
+    validate_phase5_generation(
+        phase5_report,
+        managed_root_sealed=managed_dag_node,
+    )
     phase5 = read_json(phase5_report)
     route_document = read_json(routes)
     schedule_document = read_json(schedule)
@@ -1106,6 +1419,7 @@ def validate_tdm_checkpoint(
         schedule,
         ratio_plan_path=ratio_plan if ratio_plan.is_file() else None,
         assignment_path=assignment,
+        managed_root_sealed=managed_dag_node,
     )
     return {
         "status": "pass",
@@ -1155,6 +1469,10 @@ def materialize_shared_phase1_5(
                     f"a validated immutable {label} dependency"
                 )
             managed_dependencies[label] = checkpoint
+        validate_phase5_generation(
+            tdm_root / "phase5_report.json",
+            managed_root_sealed=True,
+        )
     else:
         validate_frontend_checkpoint(frontend_root, platform_path)
         validate_timing_checkpoint(frontend_root, timing_root)
@@ -1194,12 +1512,10 @@ def materialize_shared_phase1_5(
             partition_root / "phase3_report.json",
             "partition",
         ),
-        "system-route/routes.json": (route_root / "routes.json", "route"),
         "system-route/phase4_report.json": (
             route_root / "phase4_report.json",
             "route",
         ),
-        "tdm/schedule.json": (tdm_root / "schedule.json", "tdm"),
         "tdm/cross_layer_timing.json": (
             tdm_root / "cross_layer_timing.json",
             "tdm",
@@ -1238,9 +1554,39 @@ def materialize_shared_phase1_5(
     ratio_plan = tdm_root / "ratio_plan.json"
     if ratio_plan.is_file():
         mapping["tdm/ratio_plan.json"] = (ratio_plan, "tdm")
-    schedule_store = tdm_root / "schedule.sqlite"
-    if schedule_store.is_file():
-        mapping["tdm/schedule.sqlite"] = (schedule_store, "tdm")
+    route_selector = route_root / "routes.json"
+    if route_selector.is_file():
+        route_store = (
+            _trusted_route_store_path(route_selector)
+            if managed_dag_node
+            else system_route_store_path(route_selector)
+        )
+        if route_store is not None:
+            mapping[f"system-route/{route_store.name}"] = (
+                route_store,
+                "route",
+            )
+    schedule_selector = tdm_root / "schedule.json"
+    if schedule_selector.is_file():
+        schedule_store = (
+            _trusted_schedule_store_path(schedule_selector)
+            if managed_dag_node
+            else tdm_schedule_store_path(schedule_selector)
+        )
+        if schedule_store is not None:
+            mapping[f"tdm/{schedule_store.name}"] = (schedule_store, "tdm")
+        else:
+            legacy_schedule_store = tdm_root / "schedule.sqlite"
+            if legacy_schedule_store.is_file():
+                mapping["tdm/schedule.sqlite"] = (
+                    legacy_schedule_store,
+                    "tdm",
+                )
+    # Typed sidecars are copied first. Their compact selectors are the local
+    # commit points and therefore become visible only after their referenced
+    # stores are complete.
+    mapping["system-route/routes.json"] = (route_selector, "route")
+    mapping["tdm/schedule.json"] = (schedule_selector, "tdm")
     for relative, (source, _stage) in mapping.items():
         _link_or_copy(source, output_dir / relative)
     managed_artifact_certificates: Dict[str, Dict[str, Any]] = {}
@@ -1262,6 +1608,7 @@ def materialize_shared_phase1_5(
                 if isinstance(record, dict)
                 and (
                     source_relative == name
+                    or name == "."
                     or source_relative.startswith(name.rstrip("/") + "/")
                 )
             ]
@@ -1269,7 +1616,7 @@ def materialize_shared_phase1_5(
                 raise ValidationError(
                     f"managed shared source has no dependency artifact owner: {relative}"
                 )
-            owner = max(owners, key=len)
+            owner = max(owners, key=lambda name: (name != ".", len(name)))
             owner_record = artifact_records[owner]
             managed_artifact_certificates[relative] = {
                 "source_artifact": owner,
@@ -1333,6 +1680,10 @@ def validate_materialized_shared_phase1_5(
     *,
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
+    validate_phase5_generation(
+        root / "tdm/phase5_report.json",
+        managed_root_sealed=managed_dag_node,
+    )
     report = read_json(_require(root, "experiment-shared-report.json"))
     if report.get("schema") != EXPERIMENT_SHARED_SCHEMA or report.get("status") != "pass":
         raise ValidationError("shared Phase 1-5 checkpoint report is invalid")
@@ -1340,11 +1691,20 @@ def validate_materialized_shared_phase1_5(
     if not isinstance(artifacts, dict):
         raise ValidationError("shared Phase 1-5 artifact table is invalid")
     artifact_names = set(artifacts)
+    indexed_sidecars = _shared_indexed_sidecars(
+        root,
+        trusted_selectors=managed_dag_node,
+    )
+    allowed_artifacts = (
+        _SHARED_REQUIRED_ARTIFACTS
+        | _SHARED_OPTIONAL_ARTIFACTS
+        | indexed_sidecars
+    )
     if (
-        not _SHARED_REQUIRED_ARTIFACTS.issubset(artifact_names)
-        or not artifact_names.issubset(
-            _SHARED_REQUIRED_ARTIFACTS | _SHARED_OPTIONAL_ARTIFACTS
+        not (_SHARED_REQUIRED_ARTIFACTS | indexed_sidecars).issubset(
+            artifact_names
         )
+        or not artifact_names.issubset(allowed_artifacts)
     ):
         raise ValidationError("shared Phase 1-5 artifact inventory is invalid")
     if managed_dag_node:

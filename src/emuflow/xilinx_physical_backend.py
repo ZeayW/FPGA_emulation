@@ -6,6 +6,7 @@ import gc
 import hashlib
 import json
 import math
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
@@ -909,6 +910,7 @@ def run_rapidwright_openparf_native_candidate_backend(
     mapped_value = open_xilinx_mapped_index(mapped_path)
     mapped_sha256 = mapped_report.get("output_sha256") or _sha256(mapped_path)
     atomic_source_path = output_dir / "openparf-atomic-source.json"
+    atomic_source_started = time.perf_counter()
     atomic_source = build_xilinx_openparf_atomic_source(
         mapped_path,
         atomic_source_path,
@@ -916,6 +918,30 @@ def run_rapidwright_openparf_native_candidate_backend(
         mapped_value=mapped_value,
         mapped_sha256=mapped_sha256,
     )
+    atomic_source_seconds = time.perf_counter() - atomic_source_started
+    atomic_source_store_path = getattr(atomic_source, "store_path", None)
+    atomic_source_selector = getattr(atomic_source, "selector", None)
+    atomic_source_storage = {
+        "dataflow": (
+            "mapped-index-derived-singletons+typed-exception-sidecar"
+            if isinstance(atomic_source_selector, Mapping)
+            else "legacy-logical-view"
+        ),
+        "build_seconds": atomic_source_seconds,
+        "selector_bytes": atomic_source_path.stat().st_size,
+        "store_bytes": (
+            atomic_source_store_path.stat().st_size
+            if atomic_source_store_path is not None else None
+        ),
+        "stored_macro_clusters": (
+            atomic_source_selector.get("counts", {}).get("macro_clusters")
+            if isinstance(atomic_source_selector, Mapping) else None
+        ),
+        "derived_singleton_clusters": (
+            atomic_source_selector.get("counts", {}).get("singleton_clusters")
+            if isinstance(atomic_source_selector, Mapping) else None
+        ),
+    }
     selected_slrs = _select_xilinx_slr_window(
         atomic_source_path,
         architecture_path,
@@ -1017,6 +1043,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         provider="rapidwright-rwroute-openparf-native-candidate-v1",
         packing_stage={
             "source": atomic_summary,
+            "source_storage": atomic_source_storage,
             "result": packed["summary"],
             "validation": packing_check,
         },
@@ -1034,6 +1061,9 @@ def run_rapidwright_openparf_native_candidate_backend(
         placement_artifacts={
             "placement_region": region_path,
             "openparf_atomic_source": atomic_source_path,
+            **({
+                "openparf_atomic_source_store": atomic_source_store_path,
+            } if atomic_source_store_path is not None else {}),
             "openparf_atomic_certificate": certificate_path,
         },
         mapped_sha256=mapped_sha256,

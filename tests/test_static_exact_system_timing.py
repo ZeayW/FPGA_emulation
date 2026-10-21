@@ -343,7 +343,10 @@ class StaticExactSystemTimingTest(unittest.TestCase):
                 ),
             ):
                 result = validate_phase5(
-                    routes_path, platform_path, schedule_path
+                    routes_path,
+                    platform_path,
+                    schedule_path,
+                    allow_legacy_generation=True,
                 )
             self.assertEqual(result["status"], "pass")
 

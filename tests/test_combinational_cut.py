@@ -39,6 +39,7 @@ from emuflow.equivalence import (
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
 from emuflow.io import read_json, write_json
+from emuflow.partition_ir import load_partition_ir
 from emuflow.netlist import (
     build_split_artifacts,
     transport_to_systemverilog,
@@ -990,6 +991,124 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             )
 
         self.assertEqual(actual, assignment["semantic_contract"])
+
+    def test_compact_native_path_uses_integer_store_without_net_random_access(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        expected = assignment["semantic_contract"]
+        ordinal_by_net = {
+            net["id"]: index for index, net in enumerate(self.ir.value["nets"])
+        }
+        ordinals = [
+            ordinal_by_net[cut["net"]] for cut in assignment["cut_nets"]
+        ]
+        executable = static_exact_analyzer()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, self.ir.to_dict())
+            compact_ir = load_partition_ir(path)
+            with patch.dict(
+                os.environ,
+                {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+            ), patch(
+                "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+                0,
+            ), patch(
+                "emuflow.partition_ir._CompactPartitionNets.__getitem__",
+                side_effect=AssertionError(
+                    "compact native bridge must not randomly decode nets"
+                ),
+            ), patch(
+                "emuflow.combinational_cut."
+                "_resolve_native_coordinate_capture_stream",
+                side_effect=AssertionError(
+                    "compact captures must use the indexed ordered merge"
+                ),
+            ):
+                actual = build_static_exact_semantic_contract(
+                    compact_ir,
+                    self.platform.to_dict(),
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=expected[
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                    cut_net_ordinals=ordinals,
+                )
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(
+            semantic_contract_sha256(actual),
+            semantic_contract_sha256(expected),
+        )
+
+    def test_compact_native_path_rejects_forged_cut_ordinal(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        ordinal_by_net = {
+            net["id"]: index for index, net in enumerate(self.ir.value["nets"])
+        }
+        ordinals = [
+            ordinal_by_net[cut["net"]] for cut in assignment["cut_nets"]
+        ]
+        ordinals[0] = (ordinals[0] + 1) % len(self.ir.value["nets"])
+        executable = static_exact_analyzer()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, self.ir.to_dict())
+            compact_ir = load_partition_ir(path)
+            with patch.dict(
+                os.environ,
+                {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+            ), patch(
+                "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+                0,
+            ), self.assertRaisesRegex(
+                ValidationError, "net ordinals are invalid"
+            ):
+                build_static_exact_semantic_contract(
+                    compact_ir,
+                    self.platform.to_dict(),
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=assignment["semantic_contract"][
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                    cut_net_ordinals=ordinals,
+                )
+
+    def test_compact_native_path_rejects_incomplete_assignment(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        ordinal_by_net = {
+            net["id"]: index for index, net in enumerate(self.ir.value["nets"])
+        }
+        ordinals = [
+            ordinal_by_net[cut["net"]] for cut in assignment["cut_nets"]
+        ]
+        incomplete = dict(assignment["instance_assignment"])
+        incomplete.pop(next(iter(incomplete)))
+        executable = static_exact_analyzer()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, self.ir.to_dict())
+            compact_ir = load_partition_ir(path)
+            with patch.dict(
+                os.environ,
+                {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+            ), patch(
+                "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+                0,
+            ), self.assertRaisesRegex(
+                ValidationError, "assignment is incomplete"
+            ):
+                build_static_exact_semantic_contract(
+                    compact_ir,
+                    self.platform.to_dict(),
+                    incomplete,
+                    assignment["cut_nets"],
+                    max_dependency_depth=assignment["semantic_contract"][
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                    cut_net_ordinals=ordinals,
+                )
 
     def test_partition_build_carries_cut_ordinals_without_name_lookup(self):
         executable = static_exact_analyzer()

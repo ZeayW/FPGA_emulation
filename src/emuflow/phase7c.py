@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -14,6 +15,7 @@ from .io import read_json, write_json
 from .platform import Platform
 from .physical_summary_storage import read_physical_summary
 from .phase3_storage import read_phase3_assignment_view
+from .phase5 import validate_phase5_generation
 from .routing import semantic_contract_for_routes
 from .system_route_storage import read_system_routes
 from .runtime import (
@@ -79,11 +81,22 @@ def run_phase7c(
     global_sta_executable: Optional[str] = None,
     global_sta_results_dir: Optional[Path] = None,
     global_timing_engine: str = "opensta",
+    allow_legacy_phase5_generation: bool = False,
 ) -> Dict[str, Any]:
     if global_timing_engine not in {"opensta", "python"}:
         raise ValidationError("unsupported global timing engine")
     if global_timing_engine == "python" and (global_sta_executable is not None or global_sta_results_dir is not None):
         raise ValidationError("Python timing cannot accept OpenSTA options")
+    generation_validation = validate_phase5_generation(
+        phase5_report_path,
+        allow_legacy=allow_legacy_phase5_generation,
+    )
+    if generation_validation.get("status") != "legacy" and Path(
+        os.path.abspath(schedule_path)
+    ) != Path(os.path.abspath(phase5_report_path.parent / "schedule.json")):
+        raise ValidationError(
+            "Phase 7C schedule path disagrees with Phase 5 generation report"
+        )
     schedule = read_tdm_schedule(schedule_path)
     platform = Platform.load(platform_path)
     phase6_report = read_json(phase6_report_path)

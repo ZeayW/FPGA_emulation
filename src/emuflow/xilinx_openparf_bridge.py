@@ -29,6 +29,10 @@ from .xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_SOURCE_SCHEMA,
     iter_xilinx_openparf_atomic_placement_clusters,
 )
+from .xilinx_openparf_source_storage import (
+    OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
+    read_xilinx_openparf_atomic_source,
+)
 from .xilinx_native_device_constraints import (
     load_xilinx_native_device_constraints,
 )
@@ -295,43 +299,67 @@ def _validate_certificate(
             raise ValidationError(
                 "OpenPARF atomic source PackedSiteNetlist is invalid"
             )
-        for source_cluster in source_clusters:
-            if not isinstance(source_cluster, Mapping) or not isinstance(
-                source_cluster.get("id"), str
+        indexed_source_assignments = getattr(
+            source_packed, "iter_source_assignments", None
+        )
+        if callable(indexed_source_assignments):
+            for instance, source_cluster_id, source_cell_type in (
+                indexed_source_assignments()
             ):
-                raise ValidationError(
-                    "OpenPARF atomic source cluster identity is invalid"
-                )
-            for assignment in source_cluster.get("assignments", []):
-                if not isinstance(assignment, Mapping):
-                    raise ValidationError(
-                        "OpenPARF atomic source assignment is invalid"
-                    )
-                instance = assignment.get("instance")
                 if (
                     not isinstance(instance, str)
-                    or (
-                        source_owner is not None
-                        and instance in source_owner
-                    )
-                ):
-                    raise ValidationError(
-                        "OpenPARF atomic source cell ownership is invalid"
-                    )
-                source_cell = cells.get(instance)
-                if (
-                    not isinstance(source_cell, Mapping)
-                    or source_cell.get("type") in CONSTANT_TYPES
+                    or not isinstance(source_cluster_id, str)
+                    or not isinstance(source_cell_type, str)
+                    or source_cell_type in CONSTANT_TYPES
+                    or (source_owner is not None and instance in source_owner)
                 ):
                     raise ValidationError(
                         "OpenPARF atomic source cell ownership is invalid"
                     )
                 if source_owner is not None:
-                    source_owner[instance] = source_cluster["id"]
+                    source_owner[instance] = source_cluster_id
                 else:
                     assert source_assignment_sink is not None
-                    source_assignment_sink(instance, source_cluster["id"])
+                    source_assignment_sink(instance, source_cluster_id)
                 source_owner_count += 1
+        else:
+            for source_cluster in source_clusters:
+                if not isinstance(source_cluster, Mapping) or not isinstance(
+                    source_cluster.get("id"), str
+                ):
+                    raise ValidationError(
+                        "OpenPARF atomic source cluster identity is invalid"
+                    )
+                for assignment in source_cluster.get("assignments", []):
+                    if not isinstance(assignment, Mapping):
+                        raise ValidationError(
+                            "OpenPARF atomic source assignment is invalid"
+                        )
+                    instance = assignment.get("instance")
+                    if (
+                        not isinstance(instance, str)
+                        or (
+                            source_owner is not None
+                            and instance in source_owner
+                        )
+                    ):
+                        raise ValidationError(
+                            "OpenPARF atomic source cell ownership is invalid"
+                        )
+                    source_cell = cells.get(instance)
+                    if (
+                        not isinstance(source_cell, Mapping)
+                        or source_cell.get("type") in CONSTANT_TYPES
+                    ):
+                        raise ValidationError(
+                            "OpenPARF atomic source cell ownership is invalid"
+                        )
+                    if source_owner is not None:
+                        source_owner[instance] = source_cluster["id"]
+                    else:
+                        assert source_assignment_sink is not None
+                        source_assignment_sink(instance, source_cluster["id"])
+                    source_owner_count += 1
         if source_owner_count != expected_count:
             raise ValidationError(
                 "OpenPARF atomic source cell coverage is incomplete"
@@ -1161,10 +1189,22 @@ def materialize_xilinx_openparf_atomic_contract(
     mapped_sha = mapped_sha256 or _sha256(mapped_path)
     source_packed: Optional[Mapping[str, Any]] = None
     if source_packed_path is not None:
-        loaded_source_packed = (
-            read_json(source_packed_path)
-            if source_packed_value is None else source_packed_value
-        )
+        if source_packed_value is None:
+            candidate = read_json(source_packed_path)
+            loaded_source_packed = (
+                read_xilinx_openparf_atomic_source(
+                    source_packed_path,
+                    mapped_path=mapped_path,
+                    mapped_value=mapped,
+                    mapped_sha256=mapped_sha,
+                )
+                if isinstance(candidate, Mapping)
+                and candidate.get("schema")
+                == OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA
+                else candidate
+            )
+        else:
+            loaded_source_packed = source_packed_value
         if not isinstance(loaded_source_packed, Mapping):
             raise ValidationError(
                 "OpenPARF atomic source PackedSiteNetlist is invalid"

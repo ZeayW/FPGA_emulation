@@ -614,7 +614,8 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch):
     run_phase7c(*(tmp_path / f"{n}.json" for n in
                  ("schedule", "platform", "phase3", "phase4", "phase5", "phase6")),
                 tmp_path / "out", physical_summary_path=tmp_path / "physical.json",
-                routes_path=tmp_path / "routes.json")
+                routes_path=tmp_path / "routes.json",
+                allow_legacy_phase5_generation=True)
     timing = read_json(tmp_path / "out/qor_report.json")["timing"]
     assert timing["global_opensta"]["execution"] == "standalone"
     assert "cross_checker" not in timing["global_opensta"]
