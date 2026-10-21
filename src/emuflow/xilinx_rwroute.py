@@ -695,11 +695,14 @@ def export_rwroute_input(
     # Both inputs are ordered. Merge them directly so safe-name assignment
     # does not first retain another whole-design route-cell table.
     safe = {
-        name: f"c{index}"
+        name: index
         for index, name in enumerate(heapq.merge(
             sorted(io_rows), route_keys()
         ))
     }
+
+    def safe_name(name: str) -> str:
+        return f"c{safe[name]}"
     binding_seconds = time.perf_counter() - binding_started
     cell_rows_started = time.perf_counter()
     lines = _TsvSpool(output_path)
@@ -738,7 +741,7 @@ def export_rwroute_input(
                     f"cell name {display_name!r} is not TSV-safe"
                 )
             lines.append(
-                f"CELL\t{safe[route_name]}\t{display_name}\t{route_type}"
+                f"CELL\t{safe_name(route_name)}\t{display_name}\t{route_type}"
                 f"\t{site}\t{route_bel}"
             )
         if cell_type in {"RAMB18E2", "RAMB36E2"}:
@@ -755,11 +758,11 @@ def export_rwroute_input(
                 value = _primitive_parameter(parameters, parameter)
                 if value is not None:
                     lines.append(
-                        f"PARAM\t{safe[name]}\t{parameter}\t{value}"
+                        f"PARAM\t{safe_name(name)}\t{parameter}\t{value}"
                     )
     for key, entry in sorted(io_rows.items()):
         fields = [
-            "IOB", safe[key], str(entry["id"]), str(entry["direction"]),
+            "IOB", safe_name(key), str(entry["id"]), str(entry["direction"]),
             str(entry["p"]["port"]), str(entry["n"]["port"]),
             str(entry["p"]["package_pin"]), str(entry["n"]["package_pin"]),
             str(entry["p"]["site"]), str(entry["n"]["site"]),
@@ -849,7 +852,7 @@ def export_rwroute_input(
     clock_gates = _qualified_lut_clock_gates(cells, clock_endpoints)
     for name in sorted(clock_gates):
         lines.append(
-            f"CLOCK_GATE\t{safe[name]}\tI0\tI1\tO\t"
+            f"CLOCK_GATE\t{safe_name(name)}\tI0\tI1\tO\t"
             "lut2-init-1000-fdre-latched-enable-v1"
         )
 
@@ -991,7 +994,7 @@ def export_rwroute_input(
                     f"cell {name!r} pin {pin!r} has no RWRoute physical binding"
                 )
             lines.append(
-                f"PIN\t{net_name}\t{safe[route_name]}\t{route_pin}\t{role}"
+                f"PIN\t{net_name}\t{safe_name(route_name)}\t{route_pin}\t{role}"
             )
         included += 1
     net_rows_seconds = time.perf_counter() - net_rows_started
@@ -1023,7 +1026,7 @@ def export_rwroute_input(
                     "typed-mapped-physical-join"
                     if use_typed_physical else "compatibility-python-map"
                 ),
-                "safe_names": "ordered-merge-index",
+                "safe_names": "ordered-merge-integer-index",
                 "endpoints": endpoint_dataflow,
                 "tsv": "streamed-atomic-spool",
             },

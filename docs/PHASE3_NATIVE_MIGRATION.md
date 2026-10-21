@@ -262,7 +262,9 @@ indexes remain readable. The production exporter obtains mapped cell types,
 site/BEL bindings, and net-ordered pins from read-only joins between
 mapped-index v2 and the typed physical handoff, so it no longer builds the
 former million-entry physical-binding dictionary. The remaining
-million-instance costs are the shared Python bridge tree and safe-name map.
+million-instance costs are the shared Python bridge tree and safe-name map;
+the latter now stores integer ordinals and formats textual `cN` names only as
+rows are emitted.
 
 The migration boundary is the OpenPARF placement certificate through RWRoute
 launch. Work proceeds in this order:
