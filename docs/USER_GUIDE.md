@@ -70,14 +70,19 @@ and identical Phase 5 settings; its `--help` lists the required native tools.
 Reports distinguish projected inter-FPGA Phase 5 timing from whole-design
 physical timing. Phase 5 includes per-clock WNS/TNS and path counts, preserving
 original clock identities and counting each original path after output-copy
-aggregation. For whole-original-population estimates, use
+aggregation. New compressed inputs retain each member’s logic delay; reports
+mark these observations `original-member-timing/v1`. Older inputs without that
+information remain explicitly `legacy-diagnostic-only`, with
+`original_member_tns_available: false`. Candidate selection retains its existing
+compressed scoring policy, separate from the corrected final timing report.
+This report covers projected paths and registered output copies, not all local
+paths. For whole-original-population estimates, use
 `scripts/phase4_nvdla_timing.py --producer-root ... --contract ...
 --comparison-root ... --output ...`. It restores each original path’s own logic
 delay, checks population coverage, and counts the worst output copy once.
 The evaluator accepts ordinary and managed route/schedule artifacts while
 sealing the original stored files. These estimates do not establish physical
-timing closure. Successful preparation
-alone is not qualification evidence.
+timing closure. Successful preparation alone is not qualification evidence.
 
 The contest comparison tool separately reuses a baseline only when its Python
 producer/evaluator, runtime, native tools, settings, inputs and sealed outputs

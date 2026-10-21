@@ -138,7 +138,8 @@ interface; faster routing does not establish better timing. See the
 
 Use `--stop-after phase3` or `--stop-after phase5` for an explicit intermediate
 boundary, and `--sta-require-complete` to reject truncated path exports.
-These produce a scoped stage report, not a full-flow or physical pass. Optional
+These produce a scoped stage report, not a full-flow or physical pass. Phase 5
+distinguishes exact original-member timing from legacy compressed diagnostics. Optional
 `--synthesis-profile-passes` records live Xilinx synthesis progress. Physical SRAM
 enable/retention semantics, BRAM mapping and independent timing checks are described in
 [paired routing validation](docs/USER_GUIDE.md#paired-phase-4-validation).

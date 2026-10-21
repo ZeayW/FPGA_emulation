@@ -520,6 +520,55 @@ def _output_realization_metadata(timing: Mapping[str, Any]) -> Dict[str, Any]:
             if "output_realizations" in timing else {})
 
 
+MEMBER_CONSTRAINTS_FORMAT = "fixed-delay-shared-required/v1"
+
+
+def validate_member_constraints(timing: Mapping[str, Any], *, routed: bool = False) -> bool:
+    """Validate the versioned dense member constraints without expanding them."""
+    compression = timing.get("compression", {})
+    if not isinstance(compression, Mapping):
+        raise ValidationError("invalid timing compression metadata")
+    marker = compression.get("member_constraints")
+    paths = timing.get("paths", [])
+    if marker is None:
+        if any("member_fixed_delay_ns" in path for path in paths):
+            raise ValidationError("member constraints lack their format marker")
+        return False
+    if marker != MEMBER_CONSTRAINTS_FORMAT:
+        raise ValidationError("unsupported member constraint format")
+    seen = set()
+    registry = timing.get("output_realizations", {})
+    copies = {item["id"]: item for item in registry.get("realizations", [])}
+    for path in paths:
+        ids = path.get("compressed_path_ids")
+        fixed = path.get("member_fixed_delay_ns")
+        required = path.get("required_time_ns")
+        if (not isinstance(ids, list) or not ids
+                or not all(isinstance(member, str) and member for member in ids)
+                or len(set(ids)) != len(ids)
+                or seen.intersection(ids) or not isinstance(fixed, list) or len(fixed) != len(ids)):
+            raise ValidationError("member constraint identity/length mismatch")
+        seen.update(ids)
+        if (isinstance(required, bool) or not isinstance(required, (int, float)) or not math.isfinite(required)
+                or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                       or not math.isfinite(value) or value < 0 for value in fixed)):
+            raise ValidationError("invalid member timing number")
+        identity = path.get("path" if routed else "id")
+        if (identity not in ids or fixed[ids.index(identity)] != path.get("fixed_delay_ns")
+                or max(fixed) != path.get("fixed_delay_ns")):
+            raise ValidationError("member timing representative disagrees")
+        if not routed and required != path["fixed_delay_ns"] + path["slack_ns"]:
+            raise ValidationError("member shared deadline disagrees")
+        for member, delay in zip(ids, fixed):
+            copy = copies.get(member)
+            if copy is not None and (copy["fixed_delay_ns"] != delay or copy["required_time_ns"] != required):
+                raise ValidationError("member timing differs from output realization")
+    expected = timing["compression"].get("realized_paths", timing["compression"].get("original_paths"))
+    if expected != len(seen):
+        raise ValidationError("member constraint population mismatch")
+    return True
+
+
 def compress_sta_paths(paths_artifact: Mapping[str, Any]) -> Dict[str, Any]:
     """Losslessly compress paths with timing-equivalent ordered cuts.
 
@@ -532,7 +581,11 @@ def compress_sta_paths(paths_artifact: Mapping[str, Any]) -> Dict[str, Any]:
 
     representatives: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
     members: Dict[Tuple[Any, ...], List[str]] = defaultdict(list)
+    member_fixed = {}
     for path in paths_artifact["paths"]:
+        if path["id"] in member_fixed:
+            raise ValidationError("duplicate original member during compression")
+        member_fixed[path["id"]] = path["fixed_delay_ns"]
         required_time_ns = path["fixed_delay_ns"] + path["slack_ns"]
         signature = (
             path["clock_domain"],
@@ -567,6 +620,8 @@ def compress_sta_paths(paths_artifact: Mapping[str, Any]) -> Dict[str, Any]:
     for signature in sorted(representatives):
         representative = dict(representatives[signature])
         representative["compressed_path_ids"] = sorted(members[signature])
+        representative["member_fixed_delay_ns"] = [member_fixed[member] for member in representative["compressed_path_ids"]]
+        representative["required_time_ns"] = signature[2]
         compressed.append(representative)
     registry = paths_artifact.get("output_realizations")
     original_by_realization = ({record["id"]: record["original_path"]
@@ -575,6 +630,7 @@ def compress_sta_paths(paths_artifact: Mapping[str, Any]) -> Dict[str, Any]:
     return {
         **dict(paths_artifact),
         "compression": {
+            "member_constraints": MEMBER_CONSTRAINTS_FORMAT,
             "original_paths": len({original_by_realization.get(path["id"], path["id"])
                                    for path in paths_artifact["paths"]}),
             **({"realized_paths": len(paths_artifact["paths"])} if registry is not None else {}),
@@ -596,6 +652,7 @@ def load_sta_paths(
     if not isinstance(value, dict):
         raise ValidationError("timing paths: expected an object")
     if "compression" in value or "normalization" in value:
+        validate_member_constraints(value)
         if value.get("schema") != STA_PATHS_SCHEMA:
             raise ValidationError(
                 f"timing paths.schema: expected {STA_PATHS_SCHEMA!r}"
@@ -1661,6 +1718,8 @@ def route_system_native(
                     "cut_nets": path["cut_nets"],
                     "cut_signature": path["cut_signature"],
                     "compressed_path_ids": path["compressed_path_ids"],
+                    **({"member_fixed_delay_ns": path["member_fixed_delay_ns"]}
+                       if "member_fixed_delay_ns" in path else {}),
                     **(
                         {"cut_transitions": path["cut_transitions"]}
                         if "cut_transitions" in path
@@ -2126,6 +2185,8 @@ def reconstruct_system_route_timing(
                 "cut_nets": path["cut_nets"],
                 "cut_signature": path["cut_signature"],
                 "compressed_path_ids": path["compressed_path_ids"],
+                **({"member_fixed_delay_ns": path["member_fixed_delay_ns"]}
+                   if "member_fixed_delay_ns" in path else {}),
                 **(
                     {"cut_transitions": path["cut_transitions"]}
                     if "cut_transitions" in path
@@ -2599,6 +2660,7 @@ def validate_native_system_routes(
         raise ValidationError(
             "routes.timing.compression does not match normalized STA input"
         )
+    validate_member_constraints(timing, routed=True)
     if timing.get("output_realizations") != timing_paths.get("output_realizations"):
         raise ValidationError("routes.timing output realization registry does not match normalized STA input")
     positive_scale = timing_paths["normalization"][
@@ -2615,6 +2677,8 @@ def validate_native_system_routes(
     for expected, actual in zip(timing_paths["paths"], records):
         if actual.get("path") != expected["id"]:
             raise ValidationError("routes.timing.paths: order/identity mismatch")
+        if actual.get("member_fixed_delay_ns") != expected.get("member_fixed_delay_ns"):
+            raise ValidationError("routes.timing member constraints differ from normalized STA input")
         for key in (
             "clock_domain",
             "clock_period_ns",

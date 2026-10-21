@@ -2313,6 +2313,7 @@ def reconstruct_tdm_schedule_timing(
     schedule: Mapping[str, Any],
     *,
     model: Optional[Mapping[str, Any]] = None,
+    metric_semantics: str = "artifact",
 ) -> Dict[str, Any]:
     """Reconstruct delay on every imported STA path.
 
@@ -2320,6 +2321,11 @@ def reconstruct_tdm_schedule_timing(
     Legacy links retain their projected fixed-slot event semantics. Physical
     readiness and arrival slots are checked separately by schedule validation.
     """
+    from .timing_routing import validate_member_constraints
+    if metric_semantics not in {"artifact", "legacy-compressed-selection/v1"}:
+        raise ValidationError("unsupported schedule timing metric semantics")
+    member_contract = validate_member_constraints(routes.get("timing", {}), routed=True)
+    exact_members = member_contract and metric_semantics == "artifact"
     if model is None:
         records = reconstruct_tdm_schedule_timing_paths_from_routes(
             routes, platform, schedule
@@ -2342,12 +2348,28 @@ def reconstruct_tdm_schedule_timing(
         records = reconstruct_tdm_schedule_timing_paths(
             routes, platform, schedule, model=model, entries=entries
         )
+    if exact_members:
+        from .tdm_ratio import _normalized_slack
+        normalized_input = routes["timing"]["normalization"]
+        constraints_by_path = {path["path"]: path for path in routes["timing"]["paths"]}
+        restored = []
+        for record in records:
+            constraints = constraints_by_path[record["path"]]
+            for member, fixed in zip(constraints["compressed_path_ids"], constraints["member_fixed_delay_ns"]):
+                required = constraints["required_time_ns"]
+                delay = fixed + record["transport_delay_ns"]
+                slack = required - delay
+                restored.append({**record, "path": member, "compressed_path_ids": [member],
+                    "preplacement_fixed_delay_ns": fixed, "required_time_ns": required,
+                    "delay_ns": delay, "slack_ns": slack,
+                    "normalized_slack": _normalized_slack(record["clock_period_ns"], slack, normalized_input)})
+        records = restored
     from .output_realizations import (
         aggregate_output_realizations, output_realization_index,
     )
     realizations = output_realization_index(routes)
     if realizations:
-        expanded = [
+        expanded = records if exact_members else [
             {**record, "path": member}
             for record in records
             for member in record.get("compressed_path_ids", [record["path"]])
@@ -2407,6 +2429,11 @@ def reconstruct_tdm_schedule_timing(
         metrics["negative_slack_paths"] += int(slack < 0.0)
     return {
         "status": "pass",
+        "metric_semantics": ("original-member-timing/v1" if exact_members else
+                             "legacy-compressed-selection/v1" if metric_semantics != "artifact" else
+                             "legacy-compressed-observation/v1"),
+        "original_member_tns_available": bool(exact_members),
+        "timing_population_scope": "projected-paths-and-registered-output-copies",
         "per_clock": dict(sorted(per_clock.items())),
         "timing_model": ("per-hop-ratio-delay-v1" if any(link.tdm_delay_model is not None for link in platform.links) else "projected-fixed-slot-event-v1"),
         "timing_paths": len(records),

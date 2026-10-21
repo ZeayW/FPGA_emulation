@@ -233,6 +233,7 @@ def run_phase5(
                 platform,
                 candidate_schedule,
                 model=prepared_ratio_model,
+                metric_semantics="legacy-compressed-selection/v1",
             )
             score = (
                 candidate_timing["worst_normalized_slack"],
@@ -275,6 +276,7 @@ def run_phase5(
         validation = selected["validation"]
         timing_validation = selected["timing_validation"]
         candidate_selection = {
+            "metric_semantics": "legacy-compressed-selection/v1",
             "objective": (
                 "lexicographic realized worst and total negative normalized "
                 "slack; negative path count; p01 and median normalized "
@@ -349,6 +351,12 @@ def run_phase5(
             if isinstance(routes.get("timing"), dict)
             else None
         )
+    # Keep candidate selection unchanged; final QoR uses its own versioned
+    # original-member observation rather than the historical selection score.
+    if timing_validation is not None and timing_validation.get("metric_semantics") == "legacy-compressed-selection/v1":
+        timing_validation = reconstruct_tdm_schedule_timing(
+            routes, platform, schedule, model=prepared_ratio_model,
+        )
     cross_layer_timing = build_cross_layer_timing_contract(
         persisted_routes, schedule, semantic_contract
     )
@@ -405,7 +413,9 @@ def run_phase5(
         "validation": validation,
         "cross_layer_timing_validation": cross_layer_validation,
         **(
-            {"timing_validation": timing_validation}
+            {"timing_validation": timing_validation,
+             "timing_qualification": ("projected-original-members" if timing_validation.get("original_member_tns_available")
+                                      else "legacy-diagnostic-only")}
             if timing_validation is not None
             else {}
         ),

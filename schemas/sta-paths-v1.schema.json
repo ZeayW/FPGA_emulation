@@ -36,6 +36,7 @@
         "original_paths": {"type": "integer", "minimum": 1},
         "compressed_paths": {"type": "integer", "minimum": 1},
         "realized_paths": {"type": "integer", "minimum": 1},
+        "member_constraints": {"const": "fixed-delay-shared-required/v1"},
         "lossless_by": {"type": "string", "minLength": 1}
       },
       "additionalProperties": false
@@ -59,6 +60,11 @@
           "clock_period_ns": {"type": "number", "exclusiveMinimum": 0},
           "slack_ns": {"type": "number"},
           "fixed_delay_ns": {"type": "number", "minimum": 0},
+          "required_time_ns": {"type": "number"},
+          "member_fixed_delay_ns": {
+            "type": "array", "minItems": 1,
+            "items": {"type": "number", "minimum": 0}
+          },
           "cut_nets": {
             "type": "array",
             "minItems": 1,
@@ -91,5 +97,25 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["compression"],
+        "properties": {"compression": {"required": ["member_constraints"]}}
+      },
+      "then": {
+        "properties": {"paths": {"items": {
+          "required": ["compressed_path_ids", "member_fixed_delay_ns", "required_time_ns"]
+        }}}
+      }
+    },
+    {
+      "if": {"properties": {"paths": {"contains": {"required": ["member_fixed_delay_ns"]}}}},
+      "then": {
+        "required": ["compression"],
+        "properties": {"compression": {"required": ["member_constraints"]}}
+      }
+    }
+  ],
   "additionalProperties": false
 }
