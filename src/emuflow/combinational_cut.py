@@ -16,6 +16,7 @@ import sqlite3
 import struct
 import subprocess
 import tempfile
+from array import array
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, Set, Tuple
@@ -830,6 +831,145 @@ def _analyze_static_exact_dependencies(
     }
 
 
+class _NativeStaticExactAnalysisRecords:
+    """Compact integer relation returned by the native dependency analyzer.
+
+    The analyzer already numbers cut nets in canonical order.  Retaining that
+    relation as CSR arrays avoids expanding every edge into Python strings,
+    sets, and dictionaries merely to build the final typed record stream.
+    ``finalize`` independently reconstructs dependency levels and rejects
+    cycles before the compact relation is consumed by contract publication.
+    """
+
+    def __init__(self, count: int) -> None:
+        if count < 0 or count >= 2**32:
+            raise ValidationError("native Static Exact cut count is invalid")
+        self._count = count
+        self._offsets = array("Q", [0])
+        self._dependencies = array("I")
+        self._local_launches = bytearray()
+        self._dependency_levels = array("I")
+        self._combinational_depths = array("I")
+        self.maximum_dependency_level = 0
+        self.maximum_combinational_depth = 0
+
+    def __len__(self) -> int:
+        return self._count
+
+    @property
+    def dependency_edge_count(self) -> int:
+        return len(self._dependencies)
+
+    def append(
+        self, local_launch: bool, dependency_indices: Sequence[int]
+    ) -> None:
+        if len(self._local_launches) >= self._count:
+            raise ValidationError("native Static Exact output has excess cuts")
+        self._local_launches.append(int(local_launch))
+        self._dependencies.extend(dependency_indices)
+        self._offsets.append(len(self._dependencies))
+
+    def dependency_count(self, index: int) -> int:
+        return self._offsets[index + 1] - self._offsets[index]
+
+    def dependency_indices(self, index: int) -> Iterator[int]:
+        start = self._offsets[index]
+        end = self._offsets[index + 1]
+        for ordinal in range(start, end):
+            yield self._dependencies[ordinal]
+
+    def local_launch(self, index: int) -> bool:
+        return bool(self._local_launches[index])
+
+    def dependency_level(self, index: int) -> int:
+        return self._dependency_levels[index]
+
+    def combinational_depth(self, index: int) -> int:
+        return self._combinational_depths[index]
+
+    def finalize(self, combinational: bytearray) -> None:
+        if (
+            len(self._local_launches) != self._count
+            or len(self._offsets) != self._count + 1
+            or len(combinational) != self._count
+            or any(value not in {0, 1} for value in combinational)
+        ):
+            raise ValidationError("native Static Exact output is incomplete")
+
+        # Build a compact transient successor CSR to topologically evaluate
+        # the predecessor relation.  It is released before capture identity or
+        # cut-node records are materialized.  Compared with dict[str, set[str]],
+        # this uses fixed-width integers and no per-edge Python objects.
+        successor_counts = array("I", [0]) * self._count
+        for source in self._dependencies:
+            if successor_counts[source] == 0xFFFFFFFF:
+                raise ValidationError("native Static Exact dependency is invalid")
+            successor_counts[source] += 1
+        successor_offsets = array("Q", [0])
+        for count in successor_counts:
+            successor_offsets.append(successor_offsets[-1] + count)
+        cursors = array("Q", successor_offsets[:-1])
+        successors = array("I", [0]) * len(self._dependencies)
+        for sink in range(self._count):
+            for source in self.dependency_indices(sink):
+                offset = cursors[source]
+                successors[offset] = sink
+                cursors[source] += 1
+        del cursors
+        del successor_counts
+
+        indegree = array(
+            "I", (self.dependency_count(index) for index in range(self._count))
+        )
+        queue = array(
+            "I", (index for index, degree in enumerate(indegree) if degree == 0)
+        )
+        self._dependency_levels = array("I", [0]) * self._count
+        self._combinational_depths = array("I", [0]) * self._count
+        queue_index = 0
+        visited = 0
+        while queue_index < len(queue):
+            index = queue[queue_index]
+            queue_index += 1
+            dependency_level = 1
+            combinational_depth = 0
+            for source in self.dependency_indices(index):
+                dependency_level = max(
+                    dependency_level, self._dependency_levels[source] + 1
+                )
+                combinational_depth = max(
+                    combinational_depth,
+                    self._combinational_depths[source],
+                )
+            combinational_depth += combinational[index]
+            if dependency_level >= 2**32 or combinational_depth >= 2**32:
+                raise ValidationError(
+                    "native Static Exact dependency depth is out of range"
+                )
+            self._dependency_levels[index] = dependency_level
+            self._combinational_depths[index] = combinational_depth
+            self.maximum_dependency_level = max(
+                self.maximum_dependency_level, dependency_level
+            )
+            self.maximum_combinational_depth = max(
+                self.maximum_combinational_depth, combinational_depth
+            )
+            visited += 1
+            start = successor_offsets[index]
+            end = successor_offsets[index + 1]
+            for ordinal in range(start, end):
+                sink = successors[ordinal]
+                if indegree[sink] == 0:
+                    raise ValidationError(
+                        "native Static Exact dependency is invalid"
+                    )
+                indegree[sink] -= 1
+                if indegree[sink] == 0:
+                    queue.append(sink)
+        if visited != self._count:
+            raise ValidationError("exact cut dependency graph contains a cycle")
+
+
 def _analyze_static_exact_dependencies_native(
     ir: EmuIR,
     instance_assignment: Mapping[str, str],
@@ -1035,28 +1175,31 @@ def _analyze_static_exact_dependencies_native(
                     raise ValidationError(
                         "native Static Exact output header is invalid"
                     )
-                dependencies: Dict[str, Set[str]] = {}
-                local_launches: Dict[str, bool] = {}
-                for net_id in ordered_cut_ids:
+                analysis_records = _NativeStaticExactAnalysisRecords(
+                    len(ordered_cut_ids)
+                )
+                for _net_id in ordered_cut_ids:
                     local_launch, dependency_count = take("<BI")
                     if local_launch not in {0, 1}:
                         raise ValidationError(
                             "native Static Exact local-launch flag is invalid"
                         )
-                    dependency_ids = []
+                    dependency_indices = []
+                    previous_dependency = -1
                     for _ in range(dependency_count):
                         (dependency_index,) = take("<I")
-                        if dependency_index >= len(ordered_cut_ids):
+                        if (
+                            dependency_index >= len(ordered_cut_ids)
+                            or dependency_index <= previous_dependency
+                        ):
                             raise ValidationError(
                                 "native Static Exact dependency is invalid"
                             )
-                        dependency_ids.append(ordered_cut_ids[dependency_index])
-                    if len(set(dependency_ids)) != len(dependency_ids):
-                        raise ValidationError(
-                            "native Static Exact dependencies are not unique"
-                        )
-                    dependencies[net_id] = set(dependency_ids)
-                    local_launches[net_id] = bool(local_launch)
+                        dependency_indices.append(dependency_index)
+                        previous_dependency = dependency_index
+                    analysis_records.append(
+                        bool(local_launch), dependency_indices
+                    )
                 capture_requests: List[Tuple[int, int, int]] = []
                 for _ in range(capture_count):
                     cut_index, sink_part_index, endpoint_token = take("<III")
@@ -1085,41 +1228,18 @@ def _analyze_static_exact_dependencies_native(
         del ordered_nets
         del capture_requests
 
-    successors: Dict[str, Set[str]] = defaultdict(set)
-    indegree = {net_id: len(items) for net_id, items in dependencies.items()}
-    for sink, sources in dependencies.items():
-        for source in sources:
-            successors[source].add(sink)
-    queue = deque(sorted(net_id for net_id, degree in indegree.items() if degree == 0))
-    dependency_level: Dict[str, int] = {}
-    combinational_depth: Dict[str, int] = {}
-    while queue:
-        net_id = queue.popleft()
-        dependency_level[net_id] = 1 + max(
-            (dependency_level[source] for source in dependencies[net_id]),
-            default=0,
+    analysis_records.finalize(
+        bytearray(
+            cut_by_net[net_id]["cut_class"] == "combinational"
+            for net_id in ordered_cut_ids
         )
-        prior_depth = max(
-            (combinational_depth[source] for source in dependencies[net_id]),
-            default=0,
-        )
-        combinational_depth[net_id] = prior_depth + (
-            1
-            if cut_by_net[net_id]["cut_class"] == "combinational"
-            else 0
-        )
-        for sink in sorted(successors.get(net_id, set())):
-            indegree[sink] -= 1
-            if indegree[sink] == 0:
-                queue.append(sink)
-    if len(dependency_level) != len(cut_by_net):
-        raise ValidationError("exact cut dependency graph contains a cycle")
-    maximum_depth = max(combinational_depth.values(), default=0)
+    )
+    maximum_depth = analysis_records.maximum_combinational_depth
     if max_dependency_depth and maximum_depth > max_dependency_depth:
         critical = min(
-            net_id
-            for net_id, depth in combinational_depth.items()
-            if depth == maximum_depth
+            ordered_cut_ids[index]
+            for index in range(len(analysis_records))
+            if analysis_records.combinational_depth(index) == maximum_depth
         )
         raise ValidationError(
             "exact combinational-cut dependency depth exceeds the configured "
@@ -1128,10 +1248,7 @@ def _analyze_static_exact_dependencies_native(
         )
     return {
         "cut_by_net": cut_by_net,
-        "dependencies": dependencies,
-        "local_launches": local_launches,
-        "dependency_level": dependency_level,
-        "combinational_depth": combinational_depth,
+        "analysis_records": analysis_records,
         "maximum_depth": maximum_depth,
         "capture_stream": capture_stream,
         "analysis_engine": "native-cpp-v1",
@@ -1366,12 +1483,26 @@ def build_static_exact_semantic_contract(
     nets = analysis.get("nets")
     outgoing_by_instance = analysis.get("outgoing_by_instance")
     cut_by_net = analysis["cut_by_net"]
-    dependencies = analysis["dependencies"]
-    local_launches = analysis["local_launches"]
-    dependency_level = analysis["dependency_level"]
-    combinational_depth = analysis["combinational_depth"]
+    analysis_records = analysis.get("analysis_records")
+    dependencies = analysis.get("dependencies")
+    local_launches = analysis.get("local_launches")
+    dependency_level = analysis.get("dependency_level")
+    combinational_depth = analysis.get("combinational_depth")
     maximum_depth = analysis["maximum_depth"]
     captures_are_normalized = analysis.get("analysis_engine") == "native-cpp-v1"
+    if captures_are_normalized:
+        if not isinstance(analysis_records, _NativeStaticExactAnalysisRecords):
+            raise ValidationError("native Static Exact analysis is incomplete")
+    elif not all(
+        isinstance(value, Mapping)
+        for value in (
+            dependencies,
+            local_launches,
+            dependency_level,
+            combinational_depth,
+        )
+    ):
+        raise ValidationError("Static Exact reference analysis is incomplete")
 
     capture_records: List[Dict[str, Any]] = analysis.get("capture_records", [])
     capture_stream = analysis.get("capture_stream")
@@ -1507,21 +1638,27 @@ def build_static_exact_semantic_contract(
         del unique_capture_records
 
     ordered_cut_ids = sorted(cut_by_net)
-    dependency_edge_count = sum(
-        len(items) for items in dependencies.values()
-    )
-    maximum_dependency_level = max(dependency_level.values(), default=0)
-    # Each predecessor set is already final after the analyzer's cycle and
-    # depth checks.  Convert it in place to the ordered list owned by the
-    # corresponding cut-node record instead of retaining a set while a second
-    # graph-sized list population is built.
-    for net_id in ordered_cut_ids:
-        dependencies[net_id] = sorted(dependencies[net_id])
+    if analysis_records is not None:
+        if len(analysis_records) != len(ordered_cut_ids):
+            raise ValidationError("native Static Exact analysis is incomplete")
+        dependency_edge_count = analysis_records.dependency_edge_count
+        maximum_dependency_level = analysis_records.maximum_dependency_level
+    else:
+        dependency_edge_count = sum(
+            len(items) for items in dependencies.values()
+        )
+        maximum_dependency_level = max(dependency_level.values(), default=0)
+        # Each predecessor set is already final after the analyzer's cycle and
+        # depth checks.  Convert it in place to the ordered list owned by the
+        # corresponding cut-node record instead of retaining a set while a
+        # second graph-sized list population is built.
+        for net_id in ordered_cut_ids:
+            dependencies[net_id] = sorted(dependencies[net_id])
 
     launch_flags = bytearray()
     launch_segment_count = 0
     logic_segments: List[Dict[str, Any]] = []
-    for net_id in ordered_cut_ids:
+    for cut_index, net_id in enumerate(ordered_cut_ids):
         # A reconvergent source cone can be fed both by predecessor cuts and
         # by a local architectural launch (register/memory/top input).  Those
         # are distinct timing branches whose readiness must all be covered;
@@ -1532,8 +1669,13 @@ def build_static_exact_semantic_contract(
         # downstream physical qualification does not demand a fictitious
         # launch endpoint.  It is ready at slot zero and therefore consumes
         # no dynamic settle budget.
-        local_launch = local_launches[net_id]
-        has_launch = local_launch or not dependencies[net_id]
+        if analysis_records is None:
+            local_launch = local_launches[net_id]
+            predecessor_count = len(dependencies[net_id])
+        else:
+            local_launch = analysis_records.local_launch(cut_index)
+            predecessor_count = analysis_records.dependency_count(cut_index)
+        has_launch = local_launch or predecessor_count == 0
         launch_flag = 1 if local_launch else (2 if has_launch else 0)
         launch_flags.append(launch_flag)
         if launch_flag:
@@ -1565,10 +1707,25 @@ def build_static_exact_semantic_contract(
         capture_index = 0
         capture_iterator = iter(capture_records)
         next_capture = next(capture_iterator, None)
-        for sink in ordered_cut_ids:
+        for cut_index, sink in enumerate(ordered_cut_ids):
             cut = cut_by_net.pop(sink)
-            predecessor_cut_nets = dependencies.pop(sink)
-            local_launch = local_launches.pop(sink)
+            if analysis_records is None:
+                predecessor_cut_nets = dependencies.pop(sink)
+                local_launch = local_launches.pop(sink)
+                cut_dependency_level = dependency_level.pop(sink)
+                cut_combinational_depth = combinational_depth.pop(sink)
+            else:
+                predecessor_cut_nets = [
+                    ordered_cut_ids[source]
+                    for source in analysis_records.dependency_indices(cut_index)
+                ]
+                local_launch = analysis_records.local_launch(cut_index)
+                cut_dependency_level = analysis_records.dependency_level(
+                    cut_index
+                )
+                cut_combinational_depth = analysis_records.combinational_depth(
+                    cut_index
+                )
             source_segments = []
             if local_launch or not predecessor_cut_nets:
                 source_segments.append(
@@ -1612,8 +1769,8 @@ def build_static_exact_semantic_contract(
                 "cut_class": cut["cut_class"],
                 "source_fpgas": list(cut["source_fpgas"]),
                 "sink_fpgas": list(cut["sink_fpgas"]),
-                "dependency_level": dependency_level.pop(sink),
-                "combinational_dependency_depth": combinational_depth.pop(sink),
+                "dependency_level": cut_dependency_level,
+                "combinational_dependency_depth": cut_combinational_depth,
                 "predecessor_cut_nets": predecessor_cut_nets,
                 "source_segment_ids": source_segments,
                 "capture_segment_ids": capture_segments,

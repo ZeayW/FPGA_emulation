@@ -34,7 +34,11 @@ from .tdm_ratio import (
     validate_tdm_ratio_plan,
 )
 from .tdm_slot import refine_tdm_schedule_native
-from .tdm_schedule_storage import read_tdm_schedule, write_tdm_schedule_storage
+from .tdm_schedule_storage import (
+    TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    read_tdm_schedule,
+    write_tdm_schedule_storage,
+)
 from .tdm_timing_dag import build_timing_dag_ratio_plan
 from .tdm_feedback import build_tdm_feedback, validate_tdm_feedback
 
@@ -418,7 +422,6 @@ def run_phase5(
         ),
         "artifacts": {
             "schedule": "schedule.json",
-            "schedule_store": "schedule.sqlite",
             "cross_layer_timing": "cross_layer_timing.json",
             "report": "phase5_report.json",
         },
@@ -457,9 +460,15 @@ def run_phase5(
     schedule_storage = write_tdm_schedule_storage(
         output_dir / "schedule.json", schedule
     )
+    report["artifacts"]["schedule_store"] = schedule_storage["artifact"]
     report["schedule_storage"] = {
         "schema": schedule_storage["schema"],
-        "dataflow": "indexed-sqlite-ordered-records-v1",
+        "dataflow": (
+            "typed-sqlite-entry-relation-v1"
+            if schedule_storage["schema"]
+            == TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+            else "indexed-sqlite-ordered-records-v1"
+        ),
         "wall_seconds": time.monotonic() - schedule_storage_started,
         "bytes": schedule_storage["store_bytes"],
         "logical_sha256": schedule_storage["logical_sha256"],

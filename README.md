@@ -73,8 +73,12 @@ reconstructs and hashes its input independently. A same-input NVDLA Phase 3
 replay reduced index publication from 1,086.81 to 361.53 seconds (-66.73%) and
 total Phase 3 wall time from 5,719.81 to 4,999.22 seconds (-12.60%), with the
 same semantic/binary digests, row counts, validation results and report hashes.
-Peak process-tree RSS remained 42.70 GiB, confirming that direct native
-semantic emission is still required for the memory target.
+Peak process-tree RSS remained 42.70 GiB in that earlier replay. Since then,
+the native analyzer result has stopped rebuilding dependency, launch, level,
+and depth dictionaries in Python: those relations now remain in fixed-width
+integer arrays/CSR and expand only the current cut while byte-backed semantic
+records are emitted. A fresh NVDLA replay is still required to measure the new
+peak and attribute the remaining clustering, input, cut-name, and capture cost.
 `assignment.json` contains only the contract schema and SHA-256 identity;
 explicit legacy-style reads reconstruct and verify the same logical contract.
 Completed assignment-index v1/v2 artifacts remain readable.
@@ -84,11 +88,13 @@ a versioned integer-only binary graph, and Python reconstructs the same v3
 semantic contract after validating all returned indices and graph coverage.
 Capture endpoints are now resolved by replaying only the native analyzer's
 requested endpoint ordinals, so Phase 3 no longer retains a Python tuple for
-every sink. Contract construction also derives stable segment identities from
-ordered counters instead of keeping duplicate source, dependency and capture
-lookup maps. It transfers predecessor lists into a byte-backed cut-node
-sequence and releases the analyzer's cut, dependency, launch and depth maps as
-each cut is encoded. Production publication derives cut nodes, dependency
+every sink. Native dependencies use predecessor CSR plus fixed-width launch,
+level, and depth arrays; a transient successor CSR performs independent
+topological validation and is released before contract publication. Contract
+construction derives stable segment identities from ordered counters and
+expands predecessor names for only the current cut. It transfers each result
+into a byte-backed cut-node sequence instead of retaining dependency, launch,
+level, and depth dictionaries. Production publication derives cut nodes, dependency
 edges, logic segments and capture requirements through repeatable typed record
 streams. Those four graph-scale relations feed the canonical digest and
 `assignment.exact.bin` writer without becoming retained Python dictionary
@@ -96,7 +102,7 @@ lists. Native capture analysis still returns a transient token vector, but
 Python now replays it into a scratch ordered relation and encodes the canonical
 byte-backed stream in one cursor pass, without raw, set, and sorted capture
 populations coexisting. Direct native binary emission, the analyzer's initial
-cut maps and the native capture vector remain migration work.
+cut-name map and native input/capture vectors remain migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
@@ -108,17 +114,20 @@ now runs dependency ordering, conservative source readiness, earliest legal
 lane/slot assignment, and sink-completion propagation in
 `emuflow_tdm_exact_scheduler`. Small cases continue to execute the Python
 reference for differential coverage. Phase 5 now publishes the logical
-schedule as a compact `schedule.json` manifest plus the versioned,
-content-sealed `schedule.sqlite` ScheduleStore. Ordered routes, hops, demand
+schedule as a compact `schedule.json` manifest plus a versioned,
+content-addressed `schedule.<sha256>.sqlite` ScheduleStore. The SQLite object
+is published first and the manifest switches generations last, so an
+interrupted overwrite leaves the previous schedule readable. Ordered routes, hops, demand
 completions and domain records are stored once; `read_json` remains the
 explicit compatibility materializer. Native hop output remains in a fixed
 record file and is exposed through a lazy, memory-mapped list-compatible view;
 Phase 5 validates every record but no longer creates one resident Python
 dictionary per hop before ScheduleStore publication. A versioned canonical
-cursor maps fixed records directly to rows, and the writer validates identity
-and schema while computing both logical seals, each section seal and the
-SQLite rows in one bounded pass. Native hops therefore reach ScheduleStore
-without first becoming Python dictionaries. Phase 6 now reads the ScheduleStore
+typed cursor maps fixed records directly to the v3 entry relation, and the
+writer derives canonical records while computing both logical seals and
+each section seal in one bounded pass. Static Exact entries are not also kept
+as JSON rows. Native hops therefore reach ScheduleStore without first becoming
+Python dictionaries. Phase 6 now reads the ScheduleStore
 through a typed SQL projection which validates and joins routes without
 per-hop `json.loads` or Python entry/route dictionaries. When a typed pin plan
 is present, both streams use the same natural identity order, including IDs
@@ -151,20 +160,23 @@ electrical-binding input is still a full JSON list and remains Phase 6
 migration work.
 Transport RTL is written atomically from slot-ordered cursors. Python still
 decodes records into the stores and emits adapter text, so native producer
-migration remains. ScheduleStore v2 also seals the historical
-indented logical digest, allowing physical orchestration, logic-segment query
-preparation and Phase 7C to keep a lazy view while preserving existing timing
-and qualification identities; v1 stores remain readable. Cross-layer timing
+migration remains. ScheduleStore v3 keeps Static Exact hop columns and its
+capacity/collision/identity indexes in the producer-owned store while sealing
+both historical logical digests. Physical orchestration, logic-segment query
+preparation and Phase 7C keep lazy views with unchanged timing and
+qualification identities; fixed-name v1/v2 stores remain readable, while new
+v2 and v3 writers use selector-last content-addressed publication. Cross-layer timing
 certificate construction now merges a typed, ordered ScheduleStore hop cursor
 with routed-hop identities, avoiding per-hop JSON decoding and the former
 entry map plus duplicate coverage set/map.
-Static Exact validation now keeps ScheduleStore lazy and builds its typed hop
-relation in a file-backed temporary SQLite index. It checks route and hop
+Static Exact validation now keeps ScheduleStore lazy and queries its persisted
+typed hop relation directly. It checks route and hop
 coverage, ordering, readiness, arrival, collisions, bank allocation, baseline
 ratio/lane assignment, completions, domains, certificates, metrics and both
 logical seals without an H-sized Python hop or occupancy map. This is a memory
-fix; the temporary H-row copy and indexes remain an explicit NVDLA wall-time
-and I/O measurement target. Phase 6B also consumes the lazy ScheduleStore
+and I/O fix: validation no longer extracts H JSON records into a temporary
+table or rebuilds its indexes. Producer publication and direct-index scans
+remain explicit NVDLA wall-time and I/O measurement targets. Phase 6B also consumes the lazy ScheduleStore
 directly instead of expanding it through `read_json`.
 
 Phase 7 transport synthesis no longer writes `transport-synthesized.json` or

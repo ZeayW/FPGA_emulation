@@ -68,6 +68,9 @@ class _NativeExactEntryRecords(list):
     canonical_record_cursor_schema = (
         "emuflow.native-exact-schedule-entry-cursor/v1"
     )
+    typed_record_cursor_schema = (
+        "emuflow.native-exact-schedule-typed-entry-cursor/v1"
+    )
 
     def __init__(
         self,
@@ -141,11 +144,52 @@ class _NativeExactEntryRecords(list):
                     )
 
     def iter_canonical_records(self) -> Iterator[Tuple[str, str]]:
-        """Stream canonical logical rows without constructing hop dictionaries."""
+        """Stream canonical logical rows without retaining hop dictionaries."""
 
-        encode_string = json.JSONEncoder(
-            ensure_ascii=True, separators=(",", ":")
-        ).encode
+        for identity, values in self.iter_typed_records():
+            (
+                _entry_id,
+                demand,
+                net,
+                depth,
+                link,
+                source,
+                target,
+                capacity,
+                slot,
+                lane,
+                ready_slot,
+                arrival_slot,
+                ratio,
+            ) = values
+            entry = {
+                "id": identity,
+                "demand": demand,
+                "net": net,
+                "hop": depth,
+                "link": link,
+                "from": source,
+                "to": target,
+                "capacity_key": capacity,
+                "slot": slot,
+                "lane": lane,
+                "ready_slot": ready_slot,
+                "arrival_slot": arrival_slot,
+            }
+            if ratio is not None:
+                entry["tdm_ratio"] = ratio
+            yield identity, json.dumps(
+                entry,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+
+    def iter_typed_records(
+        self,
+    ) -> Iterator[Tuple[str, Tuple[Any, ...]]]:
+        """Stream the typed ScheduleStore row from native fixed records."""
+
         with self._path.open("rb") as stream:
             with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
                 for index in range(self._count):
@@ -169,27 +213,28 @@ class _NativeExactEntryRecords(list):
                     )
                     route = self._routes[native_route]
                     identity = f"s{sequence:06d}"
-                    capacity = encode_string(
-                        self._capacity_keys[native_capacity]
+                    capacity_value = self._capacity_keys[native_capacity]
+                    link_value = self._link_ids[native_link]
+                    source_value = self._fpga_ids[native_from]
+                    target_value = self._fpga_ids[native_to]
+                    yield (
+                        identity,
+                        (
+                            identity,
+                            route["id"],
+                            route["net"],
+                            depth,
+                            link_value,
+                            source_value,
+                            target_value,
+                            capacity_value,
+                            slot,
+                            lane,
+                            ready_slot,
+                            arrival_slot,
+                            ratio or None,
+                        ),
                     )
-                    demand = encode_string(route["id"])
-                    source = encode_string(self._fpga_ids[native_from])
-                    link = encode_string(self._link_ids[native_link])
-                    net = encode_string(route["net"])
-                    target = encode_string(self._fpga_ids[native_to])
-                    ratio_field = (
-                        f',"tdm_ratio":{ratio}' if ratio else ""
-                    )
-                    encoded = (
-                        f'{{"arrival_slot":{arrival_slot},'
-                        f'"capacity_key":{capacity},'
-                        f'"demand":{demand},"from":{source},'
-                        f'"hop":{depth},"id":{encode_string(identity)},'
-                        f'"lane":{lane},"link":{link},"net":{net},'
-                        f'"ready_slot":{ready_slot},"slot":{slot}'
-                        f'{ratio_field},"to":{target}}}'
-                    )
-                    yield identity, encoded
 
     def __getitem__(self, index: int | slice) -> Any:
         if isinstance(index, slice):

@@ -25,6 +25,8 @@ from emuflow.pin_planning import (
 from emuflow.platform import Platform
 from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
+    TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    TypedScheduleEntrySequence,
     read_tdm_schedule,
     write_tdm_schedule_storage,
 )
@@ -375,6 +377,67 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
                     self.positions,
                     indexed_plan,
                 )
+
+    def test_static_exact_v3_validation_reads_typed_entry_relation(self) -> None:
+        plan = build_pin_plan(
+            self.schedule,
+            self.platform,
+            self.positions,
+            executable=str(self.executable),
+        )
+        entries = [
+            {
+                **entry,
+                "demand": f"demand{index}",
+                "net": f"net{index}",
+                "hop": 0,
+                "capacity_key": "link0:fpga0:fpga1",
+                "ready_slot": entry["slot"],
+                "arrival_slot": entry["slot"] + 1,
+            }
+            for index, entry in enumerate(self.schedule["entries"])
+        ]
+        schedule_document = {
+            "schema": "emuflow.tdm-schedule/v1",
+            "provider": "deterministic-dependency-earliest-slot-v1",
+            "design": self.schedule["design"],
+            "platform": self.schedule["platform"],
+            "routes": [{"id": entry["demand"]} for entry in entries],
+            "entries": entries,
+            "demand_completions": [],
+            "domain_schedules": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            schedule_path = root / "schedule.json"
+            manifest = write_tdm_schedule_storage(
+                schedule_path, schedule_document
+            )
+            self.assertEqual(
+                manifest["schema"], TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+            )
+            indexed_schedule = read_tdm_schedule(schedule_path)
+            indexed_plan = write_pin_plan_storage(
+                root / "pin_plan.json", plan
+            )
+            indexed_positions = write_position_hints_storage(
+                root / "positions.json", self.positions
+            )
+            with mock.patch.object(
+                TypedScheduleEntrySequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "v3 pin validation expanded typed schedule entries"
+                ),
+            ):
+                validation = validate_pin_plan(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_positions,
+                    indexed_plan,
+                )
+            self.assertEqual(validation["status"], "pass")
+            self.assertEqual(validation["signals"], len(entries))
 
     def test_minimum_legal_group_count_exceeding_lanes_is_rejected(
         self,

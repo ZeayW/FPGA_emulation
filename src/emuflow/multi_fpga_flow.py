@@ -64,6 +64,7 @@ from .ppro_calibrated_platform import validate_transport_cost_database
 from .runtime import validate_virtual_runtime
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
 from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
+from .tdm_schedule_storage import tdm_schedule_store_path
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     NATIVE_ROUTER_PROVIDER,
@@ -2645,6 +2646,10 @@ def run_multi_fpga_flow(
             phase6_comparison,
         )
 
+    resolved_schedule_store = tdm_schedule_store_path(schedule_path)
+    if resolved_schedule_store is None:
+        raise ValidationError("Phase 5 schedule has no indexed store")
+
     report = {
         "schema": MULTI_FPGA_FLOW_SCHEMA,
         "status": "pass",
@@ -2724,8 +2729,10 @@ def run_multi_fpga_flow(
                 "sha256": _sha256(schedule_path),
             },
             "schedule_store": {
-                "path": "tdm/schedule.sqlite",
-                "sha256": _sha256(phase5_root / "schedule.sqlite"),
+                "path": (
+                    Path("tdm") / resolved_schedule_store.name
+                ).as_posix(),
+                "sha256": _sha256(resolved_schedule_store),
             },
             "split_manifest": {
                 "path": "split/manifest.json",

@@ -29,6 +29,7 @@ from .pin_planning import (
     SIGNAL_POSITION_HINTS_SCHEMA,
     _assignment_metrics,
     _baseline_assignment,
+    _install_indexed_schedule_entry_relation,
     _validate_bank_pin_rows,
     validate_bank_pin_assignment,
     validate_pin_plan,
@@ -89,20 +90,16 @@ def _open_indexed_chimew_validation(
                 "?mode=ro&immutable=1",
             ),
         )
-        schedule_count = connection.execute(
-            "SELECT count(*) FROM schedule_store.records "
-            "WHERE section='entries'"
-        ).fetchone()[0]
+        schedule_count = _install_indexed_schedule_entry_relation(connection)
         plan_count = connection.execute(
             "SELECT count(*) FROM pin_store.entries"
         ).fetchone()[0]
         joined_count = connection.execute(
             """
             SELECT count(*)
-            FROM schedule_store.records AS schedule
+            FROM indexed_schedule_entries AS schedule
             JOIN pin_store.entries AS pin
               ON pin.schedule_entry=schedule.identity
-            WHERE schedule.section='entries'
             """
         ).fetchone()[0]
         if schedule_count != plan_count or joined_count != schedule_count:
@@ -112,11 +109,10 @@ def _open_indexed_chimew_validation(
         mismatch = connection.execute(
             """
             SELECT schedule.identity
-            FROM schedule_store.records AS schedule
+            FROM indexed_schedule_entries AS schedule
             JOIN pin_store.entries AS pin
               ON pin.schedule_entry=schedule.identity
-            WHERE schedule.section='entries'
-              AND (
+            WHERE (
                 pin.schedule_entry IS NOT json_extract(
                   pin.record_json,'$.schedule_entry'
                 )
@@ -136,15 +132,14 @@ def _open_indexed_chimew_validation(
             platform,
             connection.execute(
                 """
-                SELECT json_extract(schedule.record_json,'$.link'),
-                       json_extract(schedule.record_json,'$.from'),
-                       json_extract(schedule.record_json,'$.to'),
-                       json_extract(schedule.record_json,'$.lane'),
+                SELECT schedule.link_id,
+                       schedule.source_fpga,
+                       schedule.sink_fpga,
+                       schedule.lane,
                        pin.physical_lane
-                FROM schedule_store.records AS schedule
+                FROM indexed_schedule_entries AS schedule
                 JOIN pin_store.entries AS pin
                   ON pin.schedule_entry=schedule.identity
-                WHERE schedule.section='entries'
                 ORDER BY schedule.identity
                 """
             ),
@@ -213,9 +208,8 @@ def _validate_indexed_chimew_members(
         """
         SELECT member.member
         FROM binding_members AS member
-        LEFT JOIN schedule_store.records AS schedule
-          ON schedule.section='entries'
-         AND schedule.identity=member.member
+        LEFT JOIN indexed_schedule_entries AS schedule
+          ON schedule.identity=member.member
         LEFT JOIN pin_store.entries AS pin
           ON pin.schedule_entry=member.member
         WHERE schedule.identity IS NULL OR pin.schedule_entry IS NULL
@@ -232,18 +226,17 @@ def _validate_indexed_chimew_members(
         """
         SELECT member.member
         FROM binding_members AS member
-        JOIN schedule_store.records AS schedule
-          ON schedule.section='entries'
-         AND schedule.identity=member.member
+        JOIN indexed_schedule_entries AS schedule
+          ON schedule.identity=member.member
         JOIN pin_store.entries AS pin
           ON pin.schedule_entry=member.member
         WHERE NOT (
              (
-               json_extract(schedule.record_json,'$.from')=member.fpga_a
-               AND json_extract(schedule.record_json,'$.to')=member.fpga_b
+               schedule.source_fpga=member.fpga_a
+               AND schedule.sink_fpga=member.fpga_b
              ) OR (
-               json_extract(schedule.record_json,'$.from')=member.fpga_b
-               AND json_extract(schedule.record_json,'$.to')=member.fpga_a
+               schedule.source_fpga=member.fpga_b
+               AND schedule.sink_fpga=member.fpga_a
              )
            )
         LIMIT 1
@@ -257,15 +250,13 @@ def _validate_indexed_chimew_members(
         """
         SELECT member.member
         FROM binding_members AS member
-        JOIN schedule_store.records AS schedule
-          ON schedule.section='entries'
-         AND schedule.identity=member.member
+        JOIN indexed_schedule_entries AS schedule
+          ON schedule.identity=member.member
         JOIN pin_store.entries AS pin
           ON pin.schedule_entry=member.member
-        WHERE json_extract(schedule.record_json,'$.link') != member.link_id
+        WHERE schedule.link_id != member.link_id
            OR pin.physical_lane != member.physical_lane
-           OR json_type(schedule.record_json,'$.slot') != 'integer'
-           OR json_extract(schedule.record_json,'$.slot') < 0
+           OR schedule.well_typed != 1
         LIMIT 1
         """
     ).fetchone()
@@ -277,11 +268,10 @@ def _validate_indexed_chimew_members(
         """
         SELECT member.group_index
         FROM binding_members AS member
-        JOIN schedule_store.records AS schedule
-          ON schedule.section='entries'
-         AND schedule.identity=member.member
+        JOIN indexed_schedule_entries AS schedule
+          ON schedule.identity=member.member
         GROUP BY member.group_index,
-                 json_extract(schedule.record_json,'$.slot')
+                 schedule.slot
         HAVING count(*) > 1 LIMIT 1
         """
     ).fetchone()
@@ -293,26 +283,17 @@ def _validate_indexed_chimew_members(
         """
         SELECT member.group_index
         FROM binding_members AS member
-        JOIN schedule_store.records AS schedule
-          ON schedule.section='entries'
-         AND schedule.identity=member.member
+        JOIN indexed_schedule_entries AS schedule
+          ON schedule.identity=member.member
         GROUP BY member.group_index,
           CASE
-            WHEN json_extract(schedule.record_json,'$.from')=member.fpga_a
-             AND json_extract(schedule.record_json,'$.to')=member.fpga_b
+            WHEN schedule.source_fpga=member.fpga_a
+             AND schedule.sink_fpga=member.fpga_b
             THEN 'a_to_b' ELSE 'b_to_a'
           END
-        HAVING min(coalesce(
-                 json_extract(schedule.record_json,'$.tdm_ratio'),1
-               )) != max(coalesce(
-                 json_extract(schedule.record_json,'$.tdm_ratio'),1
-               ))
-            OR min(coalesce(
-                 json_extract(schedule.record_json,'$.tdm_ratio'),1
-               )) < 1
-            OR count(*) > min(coalesce(
-                 json_extract(schedule.record_json,'$.tdm_ratio'),1
-               ))
+        HAVING min(schedule.tdm_ratio) != max(schedule.tdm_ratio)
+            OR min(schedule.tdm_ratio) < 1
+            OR count(*) > min(schedule.tdm_ratio)
         LIMIT 1
         """
     ).fetchone()
@@ -322,16 +303,15 @@ def _validate_indexed_chimew_members(
         """
         SELECT member.group_index
         FROM binding_members AS member
-        JOIN schedule_store.records AS schedule
-          ON schedule.section='entries'
-         AND schedule.identity=member.member
+        JOIN indexed_schedule_entries AS schedule
+          ON schedule.identity=member.member
         GROUP BY member.group_index,member.declared_direction
         HAVING (
           member.declared_direction='bidirectional'
           AND (
             count(DISTINCT CASE
-              WHEN json_extract(schedule.record_json,'$.from')=member.fpga_a
-               AND json_extract(schedule.record_json,'$.to')=member.fpga_b
+              WHEN schedule.source_fpga=member.fpga_a
+               AND schedule.sink_fpga=member.fpga_b
               THEN 'a_to_b' ELSE 'b_to_a' END
             ) != 2
           )
@@ -339,13 +319,13 @@ def _validate_indexed_chimew_members(
           member.declared_direction!='bidirectional'
           AND (
             count(DISTINCT CASE
-              WHEN json_extract(schedule.record_json,'$.from')=member.fpga_a
-               AND json_extract(schedule.record_json,'$.to')=member.fpga_b
+              WHEN schedule.source_fpga=member.fpga_a
+               AND schedule.sink_fpga=member.fpga_b
               THEN 'a_to_b' ELSE 'b_to_a' END
             ) != 1
             OR min(CASE
-              WHEN json_extract(schedule.record_json,'$.from')=member.fpga_a
-               AND json_extract(schedule.record_json,'$.to')=member.fpga_b
+              WHEN schedule.source_fpga=member.fpga_a
+               AND schedule.sink_fpga=member.fpga_b
               THEN 'a_to_b' ELSE 'b_to_a' END
             ) != member.declared_direction
           )

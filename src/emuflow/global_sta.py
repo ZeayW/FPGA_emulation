@@ -32,22 +32,28 @@ class EventCheck:
     required_ns: float
 
 
-def validate_checks(checks: Iterable[EventCheck]) -> list[EventCheck]:
-    rows = list(checks)
+def _validate_check_values(row: EventCheck) -> None:
+    if not row.path or not row.event:
+        raise ValidationError("global STA has duplicate/empty check identity")
+    if row.role not in {"target", "runtime", "tx", "commit"}:
+        raise ValidationError("global STA has an unsupported check role")
+    for value in (row.launch_ns, row.required_ns, *row.arcs_ns):
+        if isinstance(value, bool) or not math.isfinite(value):
+            raise ValidationError("global STA times must be finite numbers")
+    if row.launch_ns < 0 or any(x < 0 for x in row.arcs_ns):
+        raise ValidationError("global STA launch/arc delay must be nonnegative")
+
+
+def _validate_interleaved_checks(rows: list[EventCheck]) -> None:
+    """Compatibility validator for callers that interleave path bundles."""
     seen = set()
     observations: dict[str, list[EventCheck | None]] = {}
     for row in rows:
+        _validate_check_values(row)
         key = (row.path, row.role, row.event)
-        if key in seen or not row.path or not row.event:
+        if key in seen:
             raise ValidationError("global STA has duplicate/empty check identity")
         seen.add(key)
-        if row.role not in {"target", "runtime", "tx", "commit"}:
-            raise ValidationError("global STA has an unsupported check role")
-        for value in (row.launch_ns, row.required_ns, *row.arcs_ns):
-            if isinstance(value, bool) or not math.isfinite(value):
-                raise ValidationError("global STA times must be finite numbers")
-        if row.launch_ns < 0 or any(x < 0 for x in row.arcs_ns):
-            raise ValidationError("global STA launch/arc delay must be nonnegative")
         if row.role in {"target", "runtime"}:
             pair = observations.setdefault(row.path, [None, None])
             position = 0 if row.role == "target" else 1
@@ -56,8 +62,6 @@ def validate_checks(checks: Iterable[EventCheck]) -> list[EventCheck]:
                     "global STA must observe each original path once"
                 )
             pair[position] = row
-    if not rows:
-        raise ValidationError("global STA has no timing checks")
     if not observations or any(
         target is None or runtime is None
         for target, runtime in observations.values()
@@ -73,6 +77,69 @@ def validate_checks(checks: Iterable[EventCheck]) -> list[EventCheck]:
             runtime.arcs_ns,
         ):
             raise ValidationError("global STA target/runtime physical chains disagree")
+
+
+def validate_checks(checks: Iterable[EventCheck]) -> list[EventCheck]:
+    rows = list(checks)
+    if not rows:
+        raise ValidationError("global STA has no timing checks")
+
+    # bind_physical_checks emits one contiguous bundle per original path.
+    # Validate that order while retaining only the live bundle's event
+    # identities and observation pair.  This removes the check-sized identity
+    # set and path-sized observation table from the production data plane.
+    # External callers that interleave bundles retain the original behavior
+    # through the compatibility validator below.
+    completed_paths = set()
+    current_path = None
+    current_identities = set()
+    target = None
+    runtime = None
+    interleaved = False
+
+    def finish_bundle() -> bool:
+        if current_path is None:
+            return True
+        if target is None or runtime is None:
+            return False
+        if (target.launch_ns, target.arcs_ns) != (
+            runtime.launch_ns,
+            runtime.arcs_ns,
+        ):
+            raise ValidationError("global STA target/runtime physical chains disagree")
+        completed_paths.add(current_path)
+        return True
+
+    for row in rows:
+        _validate_check_values(row)
+        if row.path != current_path:
+            if not finish_bundle() or row.path in completed_paths:
+                interleaved = True
+                break
+            current_path = row.path
+            current_identities = set()
+            target = None
+            runtime = None
+        identity = (row.role, row.event)
+        if identity in current_identities:
+            raise ValidationError("global STA has duplicate/empty check identity")
+        current_identities.add(identity)
+        if row.role == "target":
+            if target is not None:
+                raise ValidationError(
+                    "global STA must observe each original path once"
+                )
+            target = row
+        elif row.role == "runtime":
+            if runtime is not None:
+                raise ValidationError(
+                    "global STA must observe each original path once"
+                )
+            runtime = row
+    if not interleaved and not finish_bundle():
+        interleaved = True
+    if interleaved:
+        _validate_interleaved_checks(rows)
     return rows
 
 

@@ -578,6 +578,81 @@ def _indexed_pin_plan_validation_available(
     )
 
 
+def _install_indexed_schedule_entry_relation(
+    connection: sqlite3.Connection,
+) -> int:
+    """Expose v1/v2 JSON rows and v3 typed rows through one SQL view."""
+
+    typed = connection.execute(
+        "SELECT 1 FROM schedule_store.sqlite_master "
+        "WHERE type='table' AND name='schedule_entries'"
+    ).fetchone()
+    if typed is not None:
+        connection.execute(
+            """
+            CREATE TEMP VIEW indexed_schedule_entries AS
+            SELECT entry_id AS identity,
+                   link_id,source_fpga,sink_fpga,slot,lane,
+                   coalesce(tdm_ratio,1) AS tdm_ratio,
+                   CASE WHEN
+                     typeof(entry_id)='text' AND length(entry_id)>0 AND
+                     typeof(link_id)='text' AND length(link_id)>0 AND
+                     typeof(source_fpga)='text' AND length(source_fpga)>0 AND
+                     typeof(sink_fpga)='text' AND length(sink_fpga)>0 AND
+                     typeof(slot)='integer' AND slot>=0 AND
+                     typeof(lane)='integer' AND lane>=0 AND
+                     (tdm_ratio IS NULL OR
+                      (typeof(tdm_ratio)='integer' AND tdm_ratio>=1))
+                   THEN 1 ELSE 0 END AS well_typed
+            FROM schedule_store.schedule_entries
+            """
+        )
+    else:
+        connection.execute(
+            """
+            CREATE TEMP VIEW indexed_schedule_entries AS
+            SELECT identity,
+                   json_extract(record_json,'$.link') AS link_id,
+                   json_extract(record_json,'$.from') AS source_fpga,
+                   json_extract(record_json,'$.to') AS sink_fpga,
+                   json_extract(record_json,'$.slot') AS slot,
+                   json_extract(record_json,'$.lane') AS lane,
+                   coalesce(json_extract(record_json,'$.tdm_ratio'),1)
+                     AS tdm_ratio,
+                   CASE WHEN
+                     json_type(record_json,'$.id')='text' AND
+                     json_extract(record_json,'$.id')=identity AND
+                     json_type(record_json,'$.link')='text' AND
+                     json_type(record_json,'$.from')='text' AND
+                     json_type(record_json,'$.to')='text' AND
+                     json_type(record_json,'$.slot')='integer' AND
+                     json_extract(record_json,'$.slot')>=0 AND
+                     json_type(record_json,'$.lane')='integer' AND
+                     json_extract(record_json,'$.lane')>=0 AND
+                     (json_type(record_json,'$.tdm_ratio') IS NULL OR (
+                       json_type(record_json,'$.tdm_ratio')='integer' AND
+                       json_extract(record_json,'$.tdm_ratio')>=1
+                     ))
+                   THEN 1 ELSE 0 END AS well_typed
+            FROM schedule_store.records
+            WHERE section='entries'
+            """
+        )
+    malformed = connection.execute(
+        "SELECT identity FROM indexed_schedule_entries "
+        "WHERE well_typed!=1 LIMIT 1"
+    ).fetchone()
+    if malformed is not None:
+        raise ValidationError(
+            f"schedule entry {malformed[0]!r} is malformed"
+        )
+    return int(
+        connection.execute(
+            "SELECT count(*) FROM indexed_schedule_entries"
+        ).fetchone()[0]
+    )
+
+
 def _open_indexed_pin_plan_validation(
     schedule: Mapping[str, Any],
     plan: Mapping[str, Any],
@@ -603,29 +678,7 @@ def _open_indexed_pin_plan_validation(
                 "?mode=ro&immutable=1",
             ),
         )
-        malformed = connection.execute(
-            """
-            SELECT identity
-            FROM schedule_store.records
-            WHERE section='entries'
-              AND (
-                json_type(record_json,'$.link') IS NOT 'text'
-                OR json_type(record_json,'$.from') IS NOT 'text'
-                OR json_type(record_json,'$.to') IS NOT 'text'
-                OR json_type(record_json,'$.slot') IS NOT 'integer'
-                OR json_type(record_json,'$.lane') IS NOT 'integer'
-                OR (
-                  json_type(record_json,'$.tdm_ratio') IS NOT NULL
-                  AND json_type(record_json,'$.tdm_ratio') IS NOT 'integer'
-                )
-              )
-            LIMIT 1
-            """
-        ).fetchone()
-        if malformed is not None:
-            raise ValidationError(
-                f"schedule entry {malformed[0]!r} is malformed"
-            )
+        schedule_count = _install_indexed_schedule_entry_relation(connection)
         pin_mismatch = connection.execute(
             """
             SELECT schedule_entry
@@ -647,20 +700,15 @@ def _open_indexed_pin_plan_validation(
             raise ValidationError(
                 f"pin-plan indexed record {pin_mismatch[0]!r} disagrees"
             )
-        schedule_count = connection.execute(
-            "SELECT count(*) FROM schedule_store.records "
-            "WHERE section='entries'"
-        ).fetchone()[0]
         plan_count = connection.execute(
             "SELECT count(*) FROM pin_store.entries"
         ).fetchone()[0]
         joined_count = connection.execute(
             """
             SELECT count(*)
-            FROM schedule_store.records AS schedule
+            FROM indexed_schedule_entries AS schedule
             JOIN pin_store.entries AS pin
               ON pin.schedule_entry=schedule.identity
-            WHERE schedule.section='entries'
             """
         ).fetchone()[0]
         if schedule_count != plan_count or joined_count != schedule_count:
@@ -698,18 +746,15 @@ def _open_indexed_pin_plan_validation(
                        pin.group_id,
                        pin.physical_lane,
                        pin.logical_lane,
-                       json_extract(schedule.record_json,'$.link'),
-                       json_extract(schedule.record_json,'$.from'),
-                       json_extract(schedule.record_json,'$.to'),
-                       json_extract(schedule.record_json,'$.slot'),
-                       json_extract(schedule.record_json,'$.lane'),
-                       coalesce(
-                         json_extract(schedule.record_json,'$.tdm_ratio'),1
-                       )
-                FROM schedule_store.records AS schedule
+                       schedule.link_id,
+                       schedule.source_fpga,
+                       schedule.sink_fpga,
+                       schedule.slot,
+                       schedule.lane,
+                       schedule.tdm_ratio
+                FROM indexed_schedule_entries AS schedule
                 JOIN pin_store.entries AS pin
                   ON pin.schedule_entry=schedule.identity
-                WHERE schedule.section='entries'
                 """
             )
         except sqlite3.IntegrityError as error:

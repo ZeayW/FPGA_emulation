@@ -15,7 +15,9 @@ from emuflow.cli import main
 from emuflow.combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
+    _NativeStaticExactAnalysisRecords,
     _analyze_static_exact_dependencies,
+    _analyze_static_exact_dependencies_native,
     _build_combinational_cut_candidate_index,
     _resolve_native_capture_stream,
     _resolve_native_capture_requests,
@@ -897,6 +899,79 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.assertEqual(
                 semantic_contract_sha256(streamed),
                 semantic_contract_sha256(expected),
+            )
+
+    def test_native_analysis_retains_compact_integer_dependency_relation(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        expected_nodes = assignment["semantic_contract"]["cut_nodes"]
+        ordered_cut_ids = [node["net"] for node in expected_nodes]
+        executable = static_exact_analyzer()
+        with patch.dict(
+            os.environ,
+            {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+        ):
+            analysis = _analyze_static_exact_dependencies_native(
+                self.ir,
+                assignment["instance_assignment"],
+                assignment["cut_nets"],
+                max_dependency_depth=assignment["semantic_contract"][
+                    "max_cross_fpga_dependency_depth"
+                ],
+                candidate_selection_policy=(
+                    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+                ),
+            )
+
+        self.assertNotIn("dependencies", analysis)
+        self.assertNotIn("local_launches", analysis)
+        self.assertNotIn("dependency_level", analysis)
+        self.assertNotIn("combinational_depth", analysis)
+        records = analysis["analysis_records"]
+        self.assertEqual(len(records), len(expected_nodes))
+        self.assertEqual(
+            records.dependency_edge_count,
+            assignment["semantic_contract"]["metrics"]["dependency_edges"],
+        )
+        for index, expected in enumerate(expected_nodes):
+            self.assertEqual(
+                [
+                    ordered_cut_ids[source]
+                    for source in records.dependency_indices(index)
+                ],
+                expected["predecessor_cut_nets"],
+            )
+            self.assertEqual(
+                records.dependency_level(index), expected["dependency_level"]
+            )
+            self.assertEqual(
+                records.combinational_depth(index),
+                expected["combinational_dependency_depth"],
+            )
+
+    def test_compact_native_dependency_relation_independently_rejects_cycle(self):
+        records = _NativeStaticExactAnalysisRecords(2)
+        records.append(False, [1])
+        records.append(False, [0])
+        with self.assertRaisesRegex(ValidationError, "contains a cycle"):
+            records.finalize(bytearray([1, 1]))
+
+    def test_compact_native_analysis_enforces_dependency_depth_limit(self):
+        _, assignment = self._exact_artifacts(dependency_depth=2)
+        executable = static_exact_analyzer()
+        with patch.dict(
+            os.environ,
+            {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+        ), self.assertRaisesRegex(
+            ValidationError, "dependency depth exceeds the configured limit"
+        ):
+            _analyze_static_exact_dependencies_native(
+                self.ir,
+                assignment["instance_assignment"],
+                assignment["cut_nets"],
+                max_dependency_depth=1,
+                candidate_selection_policy=(
+                    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+                ),
             )
 
     def test_native_capture_resolution_only_materializes_requested_sinks(self):
@@ -2735,6 +2810,20 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 "dependency-schedule-readiness-pass",
             )
             self.assertEqual(report["cut_mode"], "static-exact-combinational")
+            schedule_manifest = json.loads(
+                (output / "schedule.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                report["artifacts"]["schedule_store"],
+                schedule_manifest["artifact"],
+            )
+            self.assertRegex(
+                schedule_manifest["artifact"],
+                r"^schedule\.[0-9a-f]{64}\.sqlite$",
+            )
+            self.assertTrue(
+                (output / schedule_manifest["artifact"]).is_file()
+            )
 
     def test_phase4_rejects_exact_contract_digest_tamper(self):
         _, assignment = self._exact_artifacts()

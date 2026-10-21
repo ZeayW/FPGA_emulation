@@ -47,6 +47,11 @@ def test_reject_incomplete_duplicate_and_nan():
         with pytest.raises(ValidationError):
             validate_checks(bad)
 
+    with pytest.raises(ValidationError, match="observe each original path once"):
+        validate_checks(example() + [
+            EventCheck("p", "target", "second-capture", 16, (8, .5, 7), 18)
+        ])
+
 
 def test_measurement_requires_exact_endpoint_coverage(tmp_path):
     path = tmp_path / "out"
@@ -125,6 +130,40 @@ def test_check_population_validation_is_linear():
     rows = [EventCheck(str(i), role, "end", 0, (1,), 2)
             for i in range(20000) for role in ("target", "runtime")]
     assert len(validate_checks(rows)) == 40000
+
+
+def test_canonical_check_validation_does_not_build_interleaved_population(monkeypatch):
+    import emuflow.global_sta as sta
+
+    def forbidden(rows):
+        raise AssertionError("canonical checks used the interleaved compatibility path")
+
+    monkeypatch.setattr(sta, "_validate_interleaved_checks", forbidden)
+    rows = [EventCheck(f"p{i}", role, "capture", 0, (1,), deadline)
+            for i in range(20000)
+            for role, deadline in (("target", 2), ("runtime", 20))]
+    assert sta.validate_checks(rows) == rows
+
+
+def test_interleaved_check_validation_retains_legacy_compatibility(monkeypatch):
+    import emuflow.global_sta as sta
+
+    original = sta._validate_interleaved_checks
+    calls = []
+
+    def recording(rows):
+        calls.append(len(rows))
+        return original(rows)
+
+    monkeypatch.setattr(sta, "_validate_interleaved_checks", recording)
+    rows = [
+        EventCheck("p", "target", "capture", 0, (1,), 2),
+        EventCheck("q", "target", "capture", 0, (1,), 2),
+        EventCheck("p", "runtime", "capture", 0, (1,), 20),
+        EventCheck("q", "runtime", "capture", 0, (1,), 20),
+    ]
+    assert sta.validate_checks(rows) == rows
+    assert calls == [4]
 
 
 def test_exact_compression_uses_complete_path_bundles(tmp_path):

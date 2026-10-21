@@ -345,6 +345,17 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 ],
                 "sampled-virtual-wire",
             )
+            schedule_manifest = json.loads(
+                (root / "tdm/schedule.json").read_text(encoding="utf-8")
+            )
+            self.assertRegex(
+                schedule_manifest["artifact"],
+                r"^schedule\.[0-9a-f]{64}\.sqlite$",
+            )
+            self.assertEqual(
+                report["artifacts"]["schedule_store"]["path"],
+                (Path("tdm") / schedule_manifest["artifact"]).as_posix(),
+            )
             self.assertEqual(
                 report["stages"]["split"]["equivalence"]["qualification"],
                 "exhaustive-small-model-proof-plus-random-traces",

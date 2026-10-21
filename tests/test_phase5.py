@@ -2312,8 +2312,21 @@ class Phase5Test(unittest.TestCase):
                     "report",
                 },
             )
+            schedule_manifest = json.loads(
+                (root / "phase5-managed" / "schedule.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                managed_report["artifacts"]["schedule_store"],
+                schedule_manifest["artifact"],
+            )
             self.assertTrue(
-                (root / "phase5-managed" / "schedule.sqlite").is_file()
+                (
+                    root
+                    / "phase5-managed"
+                    / managed_report["artifacts"]["schedule_store"]
+                ).is_file()
             )
             for filename in (
                 "schedule.tsv",

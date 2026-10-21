@@ -40,6 +40,8 @@ from emuflow.pin_plan_storage import (
 from emuflow.platform import Platform
 from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
+    TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    TypedScheduleEntrySequence,
     canonical_tdm_schedule_sha256,
     read_tdm_schedule,
     write_tdm_schedule_storage,
@@ -520,6 +522,71 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                     )
             self.assertEqual(len(observed_connections), 1)
             self.assertEqual(observed_connections[0].close_calls, 1)
+
+    def test_static_exact_v3_binding_validation_uses_typed_relation(self) -> None:
+        result = build_chimew_phase6_pin_plan(
+            self.schedule,
+            self.platform,
+            self.assignment_input,
+            self.electrical_map,
+            executable=str(self.executable),
+            region_count=4,
+        )
+        entries = [
+            {
+                **entry,
+                "demand": f"demand{index}",
+                "net": f"net{index}",
+                "hop": 0,
+                "capacity_key": f"AB_link:{entry['from']}:{entry['to']}",
+                "ready_slot": entry["slot"],
+                "arrival_slot": entry["slot"] + 1,
+            }
+            for index, entry in enumerate(self.schedule["entries"])
+        ]
+        schedule_document = {
+            **self.schedule,
+            "provider": "deterministic-dependency-earliest-slot-v1",
+            "routes": [{"id": entry["demand"]} for entry in entries],
+            "entries": entries,
+            "demand_completions": [],
+            "domain_schedules": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            schedule_path = root / "schedule.json"
+            manifest = write_tdm_schedule_storage(
+                schedule_path, schedule_document
+            )
+            self.assertEqual(
+                manifest["schema"], TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+            )
+            indexed_schedule = read_tdm_schedule(schedule_path)
+            schedule_sha256 = canonical_tdm_schedule_sha256(indexed_schedule)
+            plan_document = copy.deepcopy(result["pin_plan"])
+            plan_document["configuration"]["schedule_sha256"] = (
+                schedule_sha256
+            )
+            indexed_plan = write_pin_plan_storage(
+                root / "pin_plan.json", plan_document
+            )
+            binding = copy.deepcopy(result["electrical_binding"])
+            binding["provenance"]["schedule_sha256"] = schedule_sha256
+            with mock.patch.object(
+                TypedScheduleEntrySequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "Chimew v3 validation expanded typed schedule entries"
+                ),
+            ):
+                validation = validate_chimew_phase6_binding(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_plan,
+                    binding,
+                )
+            self.assertEqual(validation["status"], "pass")
+            self.assertEqual(validation["signals"], len(entries))
 
     def test_duplicate_concrete_lane_is_rejected(self) -> None:
         electrical_map = copy.deepcopy(self.electrical_map)

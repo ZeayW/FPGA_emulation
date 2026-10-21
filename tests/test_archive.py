@@ -41,6 +41,55 @@ def _run_small_flow(output: Path) -> None:
 
 
 class ValidationArchiveTest(unittest.TestCase):
+    def test_archive_follows_schedule_manifest_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            flow = root / "flow"
+            archive = root / "archive"
+            _run_small_flow(flow)
+
+            schedule_path = flow / "tdm/schedule.json"
+            schedule_manifest = json.loads(schedule_path.read_text())
+            original_store = schedule_path.with_name(
+                schedule_manifest["artifact"]
+            )
+            relocated_store = schedule_path.with_name(
+                f"schedule.{schedule_manifest['store_sha256']}.sqlite"
+            )
+            original_store.rename(relocated_store)
+            schedule_manifest["artifact"] = relocated_store.name
+            write_json(schedule_path, schedule_manifest, compact=True)
+
+            flow_report_path = flow / "multi-fpga-flow-report.json"
+            flow_report = read_json(flow_report_path)
+            flow_report["artifacts"]["schedule"]["sha256"] = hashlib.sha256(
+                schedule_path.read_bytes()
+            ).hexdigest()
+            flow_report["artifacts"]["schedule_store"] = {
+                "path": f"tdm/{relocated_store.name}",
+                "sha256": hashlib.sha256(
+                    relocated_store.read_bytes()
+                ).hexdigest(),
+            }
+            write_json(flow_report_path, flow_report)
+
+            create_validation_archive(
+                flow, archive, run_id="content-addressed-schedule"
+            )
+            archived = read_json(archive / "archive-manifest.json")
+            schedule_store = next(
+                item
+                for item in archived["files"]
+                if "schedule_store" in item["roles"]
+            )
+            self.assertEqual(
+                schedule_store["source_path"],
+                f"tdm/{relocated_store.name}",
+            )
+            self.assertEqual(
+                validate_validation_archive(archive)["status"], "pass"
+            )
+
     def test_create_validate_and_guarded_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

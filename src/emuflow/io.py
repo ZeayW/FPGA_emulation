@@ -49,6 +49,7 @@ def read_json(path: Path) -> Dict[str, Any]:
     if schema in {
         "emuflow.tdm-schedule-storage/v1",
         "emuflow.tdm-schedule-storage/v2",
+        "emuflow.tdm-schedule-storage/v3",
     }:
         from .tdm_schedule_storage import expand_tdm_schedule_storage
 
