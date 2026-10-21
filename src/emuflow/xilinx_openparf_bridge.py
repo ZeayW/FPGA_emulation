@@ -700,6 +700,7 @@ def materialize_xilinx_openparf_atomic_contract(
     local_summary = _local_utilization_summary(architecture, occupied_local)
 
     publication_started = time.perf_counter()
+    publication_steps: Dict[str, float] = {}
     placement = {
             "schema": XILINX_PLACEMENT_SCHEMA, "status": "pass",
             "part": architecture.part,
@@ -747,20 +748,37 @@ def materialize_xilinx_openparf_atomic_contract(
         })
 
     if physical_handoff_path is not None:
+        step_started = time.perf_counter()
         write_xilinx_physical_handoff(physical_handoff_path, packed, placement)
+        publication_steps["physical_handoff_write_seconds"] = (
+            time.perf_counter() - step_started
+        )
+        step_started = time.perf_counter()
         handoff_validation = validate_xilinx_physical_handoff(
             physical_handoff_path
         )
+        publication_steps["physical_handoff_validation_seconds"] = (
+            time.perf_counter() - step_started
+        )
+        step_started = time.perf_counter()
         published_packed, published_placement = open_xilinx_physical_handoff(
             physical_handoff_path,
             validated_sha256=handoff_validation["physical_handoff_sha256"],
         )
+        publication_steps["physical_handoff_open_seconds"] = (
+            time.perf_counter() - step_started
+        )
+        step_started = time.perf_counter()
         packing_validation = validate_xilinx_packing(
             mapped_path, physical_handoff_path, top=selected_top,
             architecture_path=architecture_path,
             mapped_value=mapped, mapped_sha256=mapped_sha,
             packed_value=published_packed, architecture=architecture.value,
         )
+        publication_steps["packing_validation_seconds"] = (
+            time.perf_counter() - step_started
+        )
+        step_started = time.perf_counter()
         placement_validation = validate_xilinx_placement(
             physical_handoff_path, architecture_path, physical_handoff_path,
             constraints_path=constraints_path,
@@ -768,6 +786,9 @@ def materialize_xilinx_openparf_atomic_contract(
             provider_manifest_path=provider_manifest_path,
             architecture=architecture, packed_value=published_packed,
             placement_value=published_placement,
+        )
+        publication_steps["placement_validation_seconds"] = (
+            time.perf_counter() - step_started
         )
         published_digest = handoff_validation["physical_handoff_sha256"]
     else:
@@ -786,15 +807,24 @@ def materialize_xilinx_openparf_atomic_contract(
         packed_temp = Path(packed_name)
         placement_temp = Path(placement_name)
         try:
+            step_started = time.perf_counter()
             write_json(packed_temp, packed, compact=True)
             placement["source"]["packed_sha256"] = _sha256(packed_temp)
             write_json(placement_temp, placement, compact=True)
+            publication_steps["compatibility_json_write_seconds"] = (
+                time.perf_counter() - step_started
+            )
+            step_started = time.perf_counter()
             packing_validation = validate_xilinx_packing(
                 mapped_path, packed_temp, top=selected_top,
                 architecture_path=architecture_path,
                 mapped_value=mapped, mapped_sha256=mapped_sha,
                 packed_value=packed, architecture=architecture.value,
             )
+            publication_steps["packing_validation_seconds"] = (
+                time.perf_counter() - step_started
+            )
+            step_started = time.perf_counter()
             placement_validation = validate_xilinx_placement(
                 packed_temp, architecture_path, placement_temp,
                 constraints_path=constraints_path,
@@ -803,8 +833,15 @@ def materialize_xilinx_openparf_atomic_contract(
                 architecture=architecture, packed_value=packed,
                 placement_value=placement,
             )
+            publication_steps["placement_validation_seconds"] = (
+                time.perf_counter() - step_started
+            )
+            step_started = time.perf_counter()
             os.replace(packed_temp, packed_output_path)
             os.replace(placement_temp, placement_output_path)
+            publication_steps["atomic_publish_seconds"] = (
+                time.perf_counter() - step_started
+            )
         finally:
             packed_temp.unlink(missing_ok=True)
             placement_temp.unlink(missing_ok=True)
@@ -866,6 +903,7 @@ def materialize_xilinx_openparf_atomic_contract(
             "publication_and_validation_seconds": (
                 publication_validation_seconds
             ),
+            "publication_steps": publication_steps,
             "total_seconds": time.perf_counter() - bridge_started,
             "rows": {
                 "mapped_cells": len(cells),

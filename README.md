@@ -140,7 +140,10 @@ bytes, dataflow mode, and time spent in certificate validation versus
 publication. Publication reuses the SHA-256 produced by that validation when
 opening the immutable lazy views, avoiding a second complete database read;
 the deterministically ordered production rows also stream without constructing
-a duplicate cluster-to-placement dictionary.
+a duplicate cluster-to-placement dictionary. The publication timing is split
+into database write, handoff validation/hash, lazy-view open, packing
+validation, and placement validation so large NVDLA runs identify the actual
+handoff bottleneck.
 
 ## Flow
 

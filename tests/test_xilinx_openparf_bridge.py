@@ -383,6 +383,22 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             self.assertEqual(report["physical_handoff_sha256"], file_sha256(handoff))
             self.assertEqual(report["packed_sha256"], report["placement_sha256"])
             self.assertEqual(report["runtime_breakdown"]["bytes"]["packed_output"], 0)
+            self.assertEqual(
+                set(report["runtime_breakdown"]["publication_steps"]),
+                {
+                    "physical_handoff_write_seconds",
+                    "physical_handoff_validation_seconds",
+                    "physical_handoff_open_seconds",
+                    "packing_validation_seconds",
+                    "placement_validation_seconds",
+                },
+            )
+            self.assertTrue(all(
+                value >= 0.0
+                for value in report["runtime_breakdown"][
+                    "publication_steps"
+                ].values()
+            ))
             self.assertEqual(len(packed["clusters"]), len(placement["clusters"]))
             rwroute = root / "rwroute.tsv"
             export = export_rwroute_input(
