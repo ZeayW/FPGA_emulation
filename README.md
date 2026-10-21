@@ -158,11 +158,13 @@ lookahead path currently requires the explicit VTR backend/profile combination.
 For very large PATRON v14 designs, Phase 3 performs one local-move seed sweep
 over the configured critical-cluster budget before the existing ejection/comove
 and frontier-flow passes. Candidates are ordered by maximum path hops, maximum
-path TDM-ratio sum, and timing exposure. This avoids a full
-cluster-by-partition scan consuming the native timeout before the two primary
-objectives are reached. Small qualification models and older PATRON versions
-retain the configured multi-sweep behavior; all capacity and lexicographic
-acceptance checks remain unchanged.
+path TDM-ratio sum, and timing exposure. The same order and the configured
+legal-candidate budget bound frontier tail repair when high-fanout nets expose
+very large endpoint sets. These limits prevent whole-design candidate scans
+from consuming the native timeout before the two primary objectives are
+reached. Small qualification models and older PATRON versions retain the
+configured exhaustive behavior; all capacity and lexicographic acceptance
+checks remain unchanged.
 
 - State the period of every analyzed clock explicitly.
 - Mapping profiles must match the physical device model; generic soft mapping

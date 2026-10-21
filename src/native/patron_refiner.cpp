@@ -3815,14 +3815,13 @@ void run_scalable(const Model& model,
   // budget policy only: capacity checks and the lexicographic acceptance
   // predicate are unchanged.
   constexpr int large_v14_cluster_threshold = 500000;
+  const bool bounded_large_flow =
+      model.flow_version >= 8
+      && model.clusters >= large_v14_cluster_threshold;
   const int local_sweep_limit =
-      model.flow_version >= 8
-          && model.clusters >= large_v14_cluster_threshold
-      ? 1
-      : model.max_sweeps;
+      bounded_large_flow ? 1 : model.max_sweeps;
   const int local_cluster_limit =
-      model.flow_version >= 8
-          && model.clusters >= large_v14_cluster_threshold
+      bounded_large_flow
       ? std::min(model.ejection_critical_limit, model.clusters)
       : model.clusters;
   for (int sweep = 0; sweep < local_sweep_limit; ++sweep) {
@@ -4330,6 +4329,8 @@ void run_scalable(const Model& model,
         ProxyState refined = build_proxy_state(model, &flow_assignment);
         long long evaluated_tail_moves = 0;
         long long feasible_tail_moves = 0;
+        long long enumerated_tail_clusters = 0;
+        long long selected_tail_clusters = 0;
         int accepted_tail_moves = 0;
         for (int iteration = 0;
              model.flow_version >= 8
@@ -4384,7 +4385,33 @@ void run_scalable(const Model& model,
           bool found = false;
           ProxyDelta best;
           const auto evaluate_candidates = [&]() {
-            for (int cluster : candidate_clusters) {
+            enumerated_tail_clusters += candidate_clusters.size();
+            std::vector<int> evaluation_candidates;
+            if (bounded_large_flow) {
+              evaluation_candidates.reserve(
+                  std::min(model.flow_max_legal_candidates,
+                           static_cast<int>(candidate_clusters.size())));
+              // `order` is ranked by the two path objectives and timing
+              // exposure. Select from that order so high-fanout frontier nets
+              // cannot turn a bounded tail repair into another whole-design
+              // sweep.
+              for (int cluster : order) {
+                if (candidate_clusters.count(cluster) == 0
+                    || model.cluster[cluster].fixed >= 0) {
+                  continue;
+                }
+                evaluation_candidates.push_back(cluster);
+                if (static_cast<int>(evaluation_candidates.size())
+                    >= model.flow_max_legal_candidates) {
+                  break;
+                }
+              }
+            } else {
+              evaluation_candidates.assign(candidate_clusters.begin(),
+                                             candidate_clusters.end());
+            }
+            selected_tail_clusters += evaluation_candidates.size();
+            for (int cluster : evaluation_candidates) {
               if (model.cluster[cluster].fixed >= 0) {
                 continue;
               }
@@ -4447,6 +4474,8 @@ void run_scalable(const Model& model,
         }
         std::cerr << "PATRON_FLOW_TAIL_REPAIR evaluated="
                   << evaluated_tail_moves
+                  << " enumerated_clusters=" << enumerated_tail_clusters
+                  << " selected_clusters=" << selected_tail_clusters
                   << " feasible=" << feasible_tail_moves
                   << " accepted=" << accepted_tail_moves
                   << " rank=";
