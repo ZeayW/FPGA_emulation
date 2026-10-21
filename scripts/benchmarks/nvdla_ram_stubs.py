@@ -146,6 +146,17 @@ def _emit_synthesizable_model(
             "    if (re) extra_read_address <= ra;",
             "  end",
         ])
+    if macro_kind == "RAMPDP":
+        # Keep the memory read register directly on mem[ra]. Register the
+        # forwarding decision separately so FPGA tools can absorb the read
+        # register into BRAM rather than infer an unsupported asynchronous port.
+        blocks.extend([
+            "  reg forwarded_read;",
+            f"  reg [{ram_width - 1}:0] forwarded_data;",
+            f"  wire [{ram_width - 1}:0] read_value = forwarded_read ? forwarded_data : read_data;",
+        ])
+    else:
+        blocks.append(f"  wire [{ram_width - 1}:0] read_value = read_data;")
     # Match the pinned macros' SYNTHESIS behavior. RAMDP clamps in
     # retention; RAMPDP retains its output. Sleep bit 7 clamps both classes.
     blocked = "pwrbus_ram_pd[8] | pwrbus_ram_pd[7]" if macro_kind == "RAMDP" else "pwrbus_ram_pd[8]"
@@ -153,8 +164,8 @@ def _emit_synthesizable_model(
     blocks.extend([
         f"  wire ram_access_blocked = {blocked};",
         f"  wire [{ram_width - 1}:0] ram_output = {clamp} ? {ram_width}'b0 : "
-        + (f"((|pwrbus_ram_pd[6:0]) ? {ram_width}'bx : read_data);"
-           if macro_kind == "RAMDP" else "read_data;"),
+        + (f"((|pwrbus_ram_pd[6:0]) ? {ram_width}'bx : read_value);"
+           if macro_kind == "RAMDP" else "read_value;"),
     ])
     if kind in {"rwst", "rwsthp"}:
         blocks.extend([
@@ -189,8 +200,11 @@ def _emit_synthesizable_model(
             "      mem[pending_address] <= pending_data;",
             "  end",
             "  always @(posedge clk) begin",
-            "    if (re && !ram_access_blocked)",
-            "      read_data <= (pending_write && pending_address == ra) ? pending_data : mem[ra];",
+            "    if (re && !ram_access_blocked) begin",
+            "      read_data <= mem[ra];",
+            "      forwarded_read <= pending_write && pending_address == ra;",
+            "      forwarded_data <= pending_data;",
+            "    end",
         ])
     else:
         blocks.extend([

@@ -145,6 +145,7 @@ class NvdlaMemorySemanticsTest(unittest.TestCase):
             result = self.compile_and_simulate(root, out, "nv_ram_rwsp_20x289", models)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("bit=288", result.stdout)
+            print("EXPECTED_NEGATIVE_CONTROL " + result.stdout.splitlines()[0])
 
     def test_all_original_wrappers_against_physical_models(self):
         root = Path(AUDIT_ROOT).resolve()
