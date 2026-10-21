@@ -1068,12 +1068,10 @@ def validate_physical_lookahead(
         if _physical_report is not None
         else read_json(physical_path)
     )
-    session.validate_physical(
-        physical_report,
-        read_physical_summary(
-            _require_file(root, "physical/physical-summary.json")
-        ),
-    )
+    with read_physical_summary(
+        _require_file(root, "physical/physical-summary.json")
+    ) as physical_summary:
+        session.validate_physical(physical_report, physical_summary)
     expected = {
         "seed": expected_seed,
         "workers": expected_workers,
@@ -1713,50 +1711,54 @@ def validate_phase7_checkpoint(
     physical_report = read_json(
         _require_file(root, "physical/multi-fpga-physical-flow-report.json")
     )
-    physical_summary = read_physical_summary(
+    physical_summary_owner = read_physical_summary(
         _require_file(root, "physical/physical-summary.json")
     )
-    session.validate_physical(
-        physical_report,
-        physical_summary,
-    )
-    routes = read_json(paths["routes"])
-    schedule = read_json(phase6_schedule_path)
-    cross_layer_timing = read_json(paths["cross_layer_timing"])
-    semantic_contract = (
-        semantic_contract_for_routes(
-            read_phase3_assignment_view(
-                paths["assignment"], include_semantic_contract=False
-            ),
+    physical_summary = physical_summary_owner
+    try:
+        session.validate_physical(
+            physical_report,
+            physical_summary,
+        )
+        routes = read_json(paths["routes"])
+        schedule = read_json(phase6_schedule_path)
+        cross_layer_timing = read_json(paths["cross_layer_timing"])
+        semantic_contract = (
+            semantic_contract_for_routes(
+                read_phase3_assignment_view(
+                    paths["assignment"], include_semantic_contract=False
+                ),
+                routes,
+            )
+            if routes.get("semantic_contract_schema") is not None
+            else None
+        )
+        validate_cross_layer_timing_contract(
             routes,
+            cross_layer_timing,
+            schedule,
+            semantic_contract,
         )
-        if routes.get("semantic_contract_schema") is not None
-        else None
-    )
-    validate_cross_layer_timing_contract(
-        routes,
-        cross_layer_timing,
-        schedule,
-        semantic_contract,
-    )
-    board_link_timing_path = _board_link_timing(shared_root)
-    if board_link_timing_path is not None:
-        physical_summary = dict(physical_summary)
-        physical_summary["board_link_timing"] = read_json(
-            board_link_timing_path
+        board_link_timing_path = _board_link_timing(shared_root)
+        if board_link_timing_path is not None:
+            physical_summary = dict(physical_summary)
+            physical_summary["board_link_timing"] = read_json(
+                board_link_timing_path
+            )
+        physical_binding_path = _require_file(
+            root, "runtime/cross_layer_physical_binding.json"
         )
-    physical_binding_path = _require_file(
-        root, "runtime/cross_layer_physical_binding.json"
-    )
-    physical_binding = read_json(physical_binding_path)
-    physical_binding_validation = validate_cross_layer_physical_binding(
-        cross_layer_timing,
-        schedule,
-        physical_summary,
-        Platform.load(platform_path),
-        physical_binding,
-        paths["assignment"].with_name("assignment.sqlite"),
-    )
+        physical_binding = read_json(physical_binding_path)
+        physical_binding_validation = validate_cross_layer_physical_binding(
+            cross_layer_timing,
+            schedule,
+            physical_summary,
+            Platform.load(platform_path),
+            physical_binding,
+            paths["assignment"].with_name("assignment.sqlite"),
+        )
+    finally:
+        physical_summary_owner.close()
     if physical_binding_validation.get("status") != "pass":
         raise ValidationError(
             "experiment Phase 7 physical timing evidence is incomplete"

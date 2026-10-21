@@ -26,6 +26,7 @@ from emuflow.partition import (
 from emuflow.phase3 import run_phase3
 from emuflow.platform import Platform
 from emuflow.routing import load_route_constraints
+from emuflow.system_route_storage import read_system_routes
 from emuflow.tdm import build_tdm_schedule
 from emuflow.tdm_ratio import build_tdm_ratio_plan
 from emuflow.yosys import import_yosys_json
@@ -548,11 +549,8 @@ class CrossStageCandidateTest(unittest.TestCase):
                     ],
                     2,
                 )
-                routes = json.loads(
-                    (
-                        output
-                        / report["candidates"][0]["routes"]
-                    ).read_text()
+                routes = read_system_routes(
+                    output / report["candidates"][0]["routes"]
                 )
                 self.assertEqual(
                     routes["constraints"]["directed_link_delay_ns"],

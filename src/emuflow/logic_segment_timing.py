@@ -25,7 +25,7 @@ from .phase3_storage import read_phase3_assignment_view
 from .placement import _vivado_mapped_name
 from .platform import Platform
 from .routing import static_exact_contract_from_assignment, system_route_timing_paths
-from .system_route_storage import read_system_routes
+from .system_route_storage import pretty_system_routes_sha256, read_system_routes
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
     STA_PATH_DATABASE_INDEX_SCHEMA,
@@ -35,7 +35,10 @@ from .sta import (
     sta_path_endpoints,
 )
 from .tdm import reconstruct_tdm_schedule_timing_paths
-from .tdm_schedule_storage import read_tdm_schedule
+from .tdm_schedule_storage import (
+    canonical_tdm_schedule_sha256,
+    read_tdm_schedule,
+)
 
 
 LOGIC_SEGMENT_IDENTITY_SCHEMA = "emuflow.logic-segment-identity/v1"
@@ -1618,6 +1621,8 @@ def _write_logic_segment_query(
             for member, reason in sorted(unsupported.items())
         ],
         "segments": segments,
+        "system_routes_sha256": pretty_system_routes_sha256(routes),
+        "tdm_schedule_sha256": canonical_tdm_schedule_sha256(schedule),
         **(
             {"semantic_contract_sha256": exact_contract_sha256}
             if exact_contract_sha256 is not None
@@ -1776,6 +1781,8 @@ def write_xilinx_logic_segment_query(
 
 def validate_logic_segment_identity(
     database: Mapping[str, Any],
+    *,
+    require_source_seals: bool = True,
 ) -> Dict[str, Any]:
     if database.get("schema") != LOGIC_SEGMENT_IDENTITY_SCHEMA:
         raise ValidationError("logic segment identity schema is invalid")
@@ -1791,6 +1798,16 @@ def validate_logic_segment_identity(
         or any(character not in "0123456789abcdef" for character in exact_digest)
     ):
         raise ValidationError("logic segment exact contract digest is invalid")
+    for field in ("system_routes_sha256", "tdm_schedule_sha256"):
+        digest = database.get(field)
+        if digest is None and not require_source_seals:
+            continue
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValidationError(f"logic segment {field} seal is invalid")
     ids = set()
     members = set()
     paths = set()
@@ -1899,14 +1916,7 @@ def import_vpr_logic_segment_timing(
         raise ValidationError(
             f"VPR logic segment timing coverage is incomplete: {missing[:10]}"
         )
-    records = [
-        {
-            **segment,
-            "delay_ns": measurements[segment["id"]],
-        }
-        for segment in identity["segments"]
-    ]
-    database = {
+    header = {
         "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
         "status": "pass",
         "design": identity["design"],
@@ -1915,8 +1925,8 @@ def import_vpr_logic_segment_timing(
         "provider": "vpr-tatum-logic-segment-longest-path-v1",
         "qualification": "routed-academic-architecture-endpoint-chain",
         "coverage": identity["coverage"],
-        "unsupported_member_paths": identity["unsupported_member_paths"],
-        "segments": records,
+        "system_routes_sha256": identity["system_routes_sha256"],
+        "tdm_schedule_sha256": identity["tdm_schedule_sha256"],
         **(
             {
                 "semantic_contract_sha256": identity[
@@ -1927,8 +1937,21 @@ def import_vpr_logic_segment_timing(
             else {}
         ),
     }
-    validation = validate_logic_segment_timing(database)
-    write_json(output_path, database)
+    from .logic_segment_timing_storage import write_logic_segment_timing_storage
+
+    view = write_logic_segment_timing_storage(
+        output_path,
+        header=header,
+        segments=(
+            {**segment, "delay_ns": measurements[segment["id"]]}
+            for segment in identity["segments"]
+        ),
+        unsupported_member_paths=identity["unsupported_member_paths"],
+    )
+    try:
+        validation = view.validate_timing()
+    finally:
+        view.close()
     return {**validation, "output": str(output_path)}
 
 
@@ -2019,11 +2042,6 @@ def import_vivado_logic_segment_timing(
             "Vivado logic segment timing coverage is incomplete: "
             f"{missing[:10]}"
         )
-    measured_segments = [
-        segment
-        for segment in identity["segments"]
-        if segment["id"] in measurements
-    ]
     unsupported = {
         item["path"]: item["reason"]
         for item in identity["unsupported_member_paths"]
@@ -2033,26 +2051,7 @@ def import_vivado_logic_segment_timing(
         unsupported[segment["member_path"]] = (
             "no-routed-vivado-board-path"
         )
-    coverage = {
-        "segments": len(measured_segments),
-        "system_paths": len(
-            {item["system_path"] for item in measured_segments}
-        ),
-        "member_paths": len(
-            {item["member_path"] for item in measured_segments}
-        ),
-        "unsupported_member_paths": len(unsupported),
-        "endpoint_exact_segments": sum(
-            measurements[item["id"]]["measurement"] == "endpoint-exact"
-            for item in measured_segments
-        ),
-        "cone_bound_segments": sum(
-            measurements[item["id"]]["measurement"]
-            == "cut-net-cone-upper-bound"
-            for item in measured_segments
-        ),
-    }
-    database = {
+    header = {
         "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
         "status": "pass",
         "design": identity["design"],
@@ -2060,25 +2059,9 @@ def import_vivado_logic_segment_timing(
         "fpga": identity["fpga"],
         "provider": provider,
         "qualification": qualification,
-        "coverage": coverage,
-        "unsupported_member_paths": [
-            {"path": path, "reason": reason}
-            for path, reason in sorted(unsupported.items())
-        ],
-        "unmeasured_segments": [
-            {
-                "id": segment_id,
-                "kind": expected[segment_id]["kind"],
-                "system_path": expected[segment_id]["system_path"],
-                "member_path": expected[segment_id]["member_path"],
-                "reason": "no-routed-vivado-board-path",
-            }
-            for segment_id in missing
-        ],
-        "segments": [
-            {**segment, **measurements[segment["id"]]}
-            for segment in measured_segments
-        ],
+        "coverage": identity["coverage"],
+        "system_routes_sha256": identity["system_routes_sha256"],
+        "tdm_schedule_sha256": identity["tdm_schedule_sha256"],
         **(
             {
                 "semantic_contract_sha256": identity[
@@ -2089,8 +2072,35 @@ def import_vivado_logic_segment_timing(
             else {}
         ),
     }
-    validation = validate_logic_segment_timing(database)
-    write_json(output_path, database)
+    from .logic_segment_timing_storage import write_logic_segment_timing_storage
+
+    view = write_logic_segment_timing_storage(
+        output_path,
+        header=header,
+        segments=(
+            {**segment, **measurements[segment["id"]]}
+            for segment in identity["segments"]
+            if segment["id"] in measurements
+        ),
+        unsupported_member_paths=(
+            {"path": path, "reason": reason}
+            for path, reason in sorted(unsupported.items())
+        ),
+        unmeasured_segments=(
+            {
+                "id": segment_id,
+                "kind": expected[segment_id]["kind"],
+                "system_path": expected[segment_id]["system_path"],
+                "member_path": expected[segment_id]["member_path"],
+                "reason": "no-routed-vivado-board-path",
+            }
+            for segment_id in missing
+        ),
+    )
+    try:
+        validation = view.validate_timing()
+    finally:
+        view.close()
     return {
         **validation,
         "missing_segments": len(missing),
@@ -2101,6 +2111,9 @@ def import_vivado_logic_segment_timing(
 def validate_logic_segment_timing(
     database: Mapping[str, Any],
 ) -> Dict[str, Any]:
+    indexed_validator = getattr(database, "validate_timing", None)
+    if callable(indexed_validator):
+        return indexed_validator()
     if database.get("schema") != LOGIC_SEGMENT_TIMING_SCHEMA:
         raise ValidationError("logic segment timing schema is invalid")
     if database.get("status") != "pass":
@@ -2117,13 +2130,16 @@ def validate_logic_segment_timing(
             "segments",
         )
     }
+    for key in ("system_routes_sha256", "tdm_schedule_sha256"):
+        if key in database:
+            identity[key] = database[key]
     if "semantic_contract_sha256" in database:
         identity["semantic_contract_sha256"] = database[
             "semantic_contract_sha256"
         ]
     identity["schema"] = LOGIC_SEGMENT_IDENTITY_SCHEMA
     identity["provider"] = "timing-validation"
-    validate_logic_segment_identity(identity)
+    validate_logic_segment_identity(identity, require_source_seals=False)
     maximum = 0.0
     endpoint_exact = 0
     cone_bound = 0

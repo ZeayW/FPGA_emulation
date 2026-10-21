@@ -17,7 +17,7 @@ from .physical_summary_storage import read_physical_summary
 from .phase3_storage import read_phase3_assignment_view
 from .phase5 import validate_phase5_generation
 from .routing import semantic_contract_for_routes
-from .system_route_storage import read_system_routes
+from .system_route_storage import pretty_system_routes_sha256, read_system_routes
 from .runtime import (
     aggregate_qor,
     build_virtual_runtime,
@@ -26,7 +26,10 @@ from .runtime import (
     validate_virtual_runtime,
     virtual_runtime_controller_to_systemverilog,
 )
-from .tdm_schedule_storage import read_tdm_schedule
+from .tdm_schedule_storage import (
+    canonical_tdm_schedule_sha256,
+    read_tdm_schedule,
+)
 
 
 PHASE7C_REPORT_SCHEMA = "emuflow.phase7c-report/v3"
@@ -116,245 +119,280 @@ def run_phase7c(
         if physical_summary_path is not None
         else None
     )
-    if physical_summary is not None and routes_path is None:
-        raise ValidationError(
-            "physical Phase 7C closure requires the Phase 4 routes artifact"
-        )
-    if board_link_timing_path is not None:
-        if physical_summary is None:
+    try:
+        if physical_summary is not None and routes_path is None:
             raise ValidationError(
-                "BoardLinkTimingDB requires a physical summary for Phase 7C"
+                "physical Phase 7C closure requires the Phase 4 routes artifact"
             )
-        board_link_timing = read_json(board_link_timing_path)
-        physical_summary = dict(physical_summary)
-        physical_summary["board_link_timing"] = board_link_timing
-    routes = (
-        read_system_routes(routes_path) if routes_path is not None else None
-    )
-    semantic_contract = None
-    if routes is not None and (
-        routes.get("semantic_contract_schema") is not None
-        or routes.get("semantic_contract_sha256") is not None
-    ):
-        if assignment_path is None:
-            raise ValidationError(
-                "sampled virtual-wire Phase 7C requires the Phase 3 assignment"
-            )
-        semantic_contract = semantic_contract_for_routes(
-            read_phase3_assignment_view(
-                assignment_path,
-                include_semantic_contract=False,
-            ),
-            routes,
-        )
-    routes_artifact_sha256 = (
-        _sha256(routes_path) if routes_path is not None else None
-    )
-    phase5_report = read_json(phase5_report_path)
-    cross_layer_contract = None
-    physical_binding = None
-    physical_binding_validation = None
-    if routes is not None:
-        phase5_contract_path = phase5_report_path.parent / "cross_layer_timing.json"
-        if physical_summary is not None and not phase5_contract_path.is_file():
-            raise ValidationError(
-                "physical Phase 7C closure requires the sealed Phase 5 "
-                "cross-layer timing contract"
-            )
-        if phase5_contract_path.is_file():
-            cross_layer_contract = read_json(phase5_contract_path)
-            validate_cross_layer_timing_contract(
-                routes,
-                cross_layer_contract,
-                schedule,
-                semantic_contract,
-            )
-        else:
-            cross_layer_contract = build_cross_layer_timing_contract(
-                routes, schedule, semantic_contract
-            )
-    if physical_summary is not None:
-        assert cross_layer_contract is not None
-        physical_binding = build_cross_layer_physical_binding(
-            cross_layer_contract,
-            schedule,
-            physical_summary,
-            platform,
-            (
-                assignment_path.with_name("assignment.sqlite")
-                if assignment_path is not None
-                and semantic_contract is not None
-                and semantic_contract.get("indexed") is True
-                else None
-            ),
-        )
-        physical_binding_validation = {
-            "status": physical_binding["status"],
-            **physical_binding["metrics"],
-        }
-    sta_timing = None
-    if ((global_timing_engine == "opensta" and physical_summary is not None)
-            or global_sta_executable is not None or global_sta_results_dir is not None):
-        if global_sta_executable is not None and global_sta_results_dir is not None:
-            raise ValidationError("choose live OpenSTA or explicit saved-result validation")
-        if physical_summary is None or routes is None:
-            raise ValidationError("global OpenSTA requires physical Phase 7 inputs")
-        from .global_sta import (
-            bind_physical_checks, build_opensta_timing, read_engine_identity,
-            read_measurements, run_event_checks,
-        )
-        metadata = {}
-        checks = bind_physical_checks(runtime, routes, schedule, physical_summary, platform,
-                                      metadata=metadata, routes_artifact_sha256=routes_artifact_sha256)
-        if global_sta_results_dir is None:
-            sta_dir = output_dir / "global-opensta"
-            measurements = run_event_checks(checks, sta_dir, global_sta_executable, verify_arcs=False)
-        else:
-            sta_dir = global_sta_results_dir
-            # Explicit terminal artifact validation checks raw arcs, not the
-            # former system-timing composer, and never launches STA again.
-            measurements = read_measurements(sta_dir / "measurements.tsv", checks)
-        sta_timing = build_opensta_timing(runtime, metadata, measurements)
-        sta_timing["global_opensta"]["engine"] = read_engine_identity(sta_dir / "opensta.log")
-    qor = aggregate_qor(
-        runtime,
-        read_json(phase3_report_path),
-        read_json(phase4_report_path),
-        phase5_report,
-        phase6_report,
-        physical_summary,
-        platform,
-        routes=routes,
-        schedule=schedule,
-        routes_artifact_sha256=routes_artifact_sha256,
-        semantic_contract=semantic_contract,
-        system_timing_result=sta_timing,
-    )
-    if physical_binding_validation is not None:
-        qor["physical_evidence_completeness"] = physical_binding_validation
-        qor["timing"]["physical_evidence_completeness"] = (
-            physical_binding_validation
+        if board_link_timing_path is not None:
+            if physical_summary is None:
+                raise ValidationError(
+                    "BoardLinkTimingDB requires a physical summary for Phase 7C"
+                )
+            board_link_timing = read_json(board_link_timing_path)
+            physical_summary["board_link_timing"] = board_link_timing
+        routes = (
+            read_system_routes(routes_path) if routes_path is not None else None
         )
         if (
-            physical_binding_validation["status"] == "incomplete"
-            and qor["status"] == "pass"
+            physical_summary is not None
+            and physical_summary.get("logic_segment_timing") is not None
         ):
-            qor["status"] = "incomplete"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    write_json(output_dir / "runtime_contract.json", runtime)
-    write_json(output_dir / "qor_report.json", qor)
-    if physical_summary is not None:
-        write_json(
-            output_dir / "cross_layer_physical_binding.json",
-            physical_binding,
+            if routes is None:
+                raise ValidationError(
+                    "physical Phase 7C closure requires system routes"
+                )
+            if (
+                physical_summary.get("logic_segment_system_routes_sha256")
+                != pretty_system_routes_sha256(routes)
+                or physical_summary.get("logic_segment_tdm_schedule_sha256")
+                != canonical_tdm_schedule_sha256(schedule)
+            ):
+                raise ValidationError(
+                    "physical logic timing route/schedule seal disagrees"
+                )
+        semantic_contract = None
+        if routes is not None and (
+            routes.get("semantic_contract_schema") is not None
+            or routes.get("semantic_contract_sha256") is not None
+        ):
+            if assignment_path is None:
+                raise ValidationError(
+                    "sampled virtual-wire Phase 7C requires the Phase 3 assignment"
+                )
+            semantic_contract = semantic_contract_for_routes(
+                read_phase3_assignment_view(
+                    assignment_path,
+                    include_semantic_contract=False,
+                ),
+                routes,
+            )
+            from .combinational_cut import semantic_contract_sha256
+
+            if (
+                physical_summary is not None
+                and physical_summary.get("logic_segment_timing") is not None
+            ):
+                physical_semantic = physical_summary.get(
+                    "logic_segment_semantic_contract_sha256"
+                )
+                if physical_semantic != semantic_contract_sha256(
+                    semantic_contract
+                ):
+                    raise ValidationError(
+                        "physical logic timing semantic seal disagrees with Phase 3"
+                    )
+        routes_artifact_sha256 = (
+            _sha256(routes_path) if routes_path is not None else None
         )
-    (output_dir / "virtual_runtime_controller.sv").write_text(
-        virtual_runtime_controller_to_systemverilog(runtime),
-        encoding="utf-8",
-    )
-    (output_dir / "virtual_runtime_controller_tb.sv").write_text(
-        runtime_controller_testbench(
+        phase5_report = read_json(phase5_report_path)
+        cross_layer_contract = None
+        physical_binding = None
+        physical_binding_validation = None
+        if routes is not None:
+            phase5_contract_path = phase5_report_path.parent / "cross_layer_timing.json"
+            if physical_summary is not None and not phase5_contract_path.is_file():
+                raise ValidationError(
+                    "physical Phase 7C closure requires the sealed Phase 5 "
+                    "cross-layer timing contract"
+                )
+            if phase5_contract_path.is_file():
+                cross_layer_contract = read_json(phase5_contract_path)
+                validate_cross_layer_timing_contract(
+                    routes,
+                    cross_layer_contract,
+                    schedule,
+                    semantic_contract,
+                )
+            else:
+                cross_layer_contract = build_cross_layer_timing_contract(
+                    routes, schedule, semantic_contract
+                )
+        if physical_summary is not None:
+            assert cross_layer_contract is not None
+            physical_binding = build_cross_layer_physical_binding(
+                cross_layer_contract,
+                schedule,
+                physical_summary,
+                platform,
+                (
+                    assignment_path.with_name("assignment.sqlite")
+                    if assignment_path is not None
+                    and semantic_contract is not None
+                    and semantic_contract.get("indexed") is True
+                    else None
+                ),
+            )
+            physical_binding_validation = {
+                "status": physical_binding["status"],
+                **physical_binding["metrics"],
+            }
+        sta_timing = None
+        if ((global_timing_engine == "opensta" and physical_summary is not None)
+                or global_sta_executable is not None or global_sta_results_dir is not None):
+            if global_sta_executable is not None and global_sta_results_dir is not None:
+                raise ValidationError("choose live OpenSTA or explicit saved-result validation")
+            if physical_summary is None or routes is None:
+                raise ValidationError("global OpenSTA requires physical Phase 7 inputs")
+            from .global_sta import (
+                bind_physical_checks, build_opensta_timing, read_engine_identity,
+                read_measurements, run_event_checks,
+            )
+            metadata = {}
+            checks = bind_physical_checks(runtime, routes, schedule, physical_summary, platform,
+                                          metadata=metadata, routes_artifact_sha256=routes_artifact_sha256)
+            if global_sta_results_dir is None:
+                sta_dir = output_dir / "global-opensta"
+                measurements = run_event_checks(checks, sta_dir, global_sta_executable, verify_arcs=False)
+            else:
+                sta_dir = global_sta_results_dir
+                # Explicit terminal artifact validation checks raw arcs, not the
+                # former system-timing composer, and never launches STA again.
+                measurements = read_measurements(sta_dir / "measurements.tsv", checks)
+            sta_timing = build_opensta_timing(runtime, metadata, measurements)
+            sta_timing["global_opensta"]["engine"] = read_engine_identity(sta_dir / "opensta.log")
+        qor = aggregate_qor(
             runtime,
-            [fpga.id for fpga in platform.fpgas],
-            frames=simulation_frames,
-        ),
-        encoding="utf-8",
-    )
-    (output_dir / "runtime_timing.xdc").write_text(
-        runtime_timing_xdc(runtime),
-        encoding="utf-8",
-    )
-    report = {
-        "schema": PHASE7C_REPORT_SCHEMA,
-        "phase": "7C",
-        "increment": "unified-physical-link-tdm-system-timing",
-        "status": (
-            "pass"
-            if qor["status"] == "pass"
-            and (
-                physical_binding_validation is None
-                or physical_binding_validation["status"] == "pass"
+            read_json(phase3_report_path),
+            read_json(phase4_report_path),
+            phase5_report,
+            phase6_report,
+            physical_summary,
+            platform,
+            routes=routes,
+            schedule=schedule,
+            routes_artifact_sha256=routes_artifact_sha256,
+            semantic_contract=semantic_contract,
+            system_timing_result=sta_timing,
+        )
+        if physical_binding_validation is not None:
+            qor["physical_evidence_completeness"] = physical_binding_validation
+            qor["timing"]["physical_evidence_completeness"] = (
+                physical_binding_validation
             )
-            else "incomplete"
-            if qor["status"] == "incomplete"
-            or (
-                physical_binding_validation is not None
-                and physical_binding_validation["status"] == "incomplete"
+            if (
+                physical_binding_validation["status"] == "incomplete"
+                and qor["status"] == "pass"
+            ):
+                qor["status"] = "incomplete"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        write_json(output_dir / "runtime_contract.json", runtime)
+        write_json(output_dir / "qor_report.json", qor)
+        if physical_summary is not None:
+            write_json(
+                output_dir / "cross_layer_physical_binding.json",
+                physical_binding,
             )
-            else "generated"
-            if qor["status"] == "pending"
-            else "fail"
-        ),
-        "design": runtime["design"],
-        "platform": platform.name,
-        "provider": runtime["provider"],
-        "validation": validation,
-        "functional_equivalence": {
+        (output_dir / "virtual_runtime_controller.sv").write_text(
+            virtual_runtime_controller_to_systemverilog(runtime),
+            encoding="utf-8",
+        )
+        (output_dir / "virtual_runtime_controller_tb.sv").write_text(
+            runtime_controller_testbench(
+                runtime,
+                [fpga.id for fpga in platform.fpgas],
+                frames=simulation_frames,
+            ),
+            encoding="utf-8",
+        )
+        (output_dir / "runtime_timing.xdc").write_text(
+            runtime_timing_xdc(runtime),
+            encoding="utf-8",
+        )
+        report = {
+            "schema": PHASE7C_REPORT_SCHEMA,
+            "phase": "7C",
+            "increment": "unified-physical-link-tdm-system-timing",
             "status": (
                 "pass"
-                if phase6_report["equivalence"].get("mismatches") == 0
+                if qor["status"] == "pass"
+                and (
+                    physical_binding_validation is None
+                    or physical_binding_validation["status"] == "pass"
+                )
+                else "incomplete"
+                if qor["status"] == "incomplete"
+                or (
+                    physical_binding_validation is not None
+                    and physical_binding_validation["status"] == "incomplete"
+                )
+                else "generated"
+                if qor["status"] == "pending"
                 else "fail"
             ),
-            "cycles": phase6_report["equivalence"].get("cycles"),
-            "trace_sha256": phase6_report["equivalence"].get(
-                "trace_sha256"
-            ),
-        },
-        "schedule_legality": {
-            "status": (
-                "pass"
-                if phase5_report.get("status") == "pass"
-                and phase5_report.get("validation", {}).get("collisions") == 0
-                else "fail"
-            ),
-            "collisions": phase5_report.get("validation", {}).get(
-                "collisions"
-            ),
-            "cross_layer_timing": phase5_report.get(
-                "cross_layer_timing_validation"
-            ),
-        },
-        "physical": qor["physical"],
-        "artifacts": {
-            "runtime_contract": "runtime_contract.json",
-            "runtime_controller_rtl": "virtual_runtime_controller.sv",
-            "runtime_controller_testbench": (
-                "virtual_runtime_controller_tb.sv"
-            ),
-            "runtime_timing_xdc": "runtime_timing.xdc",
-            "qor_report": "qor_report.json",
-            "report": "phase7c_report.json",
-        },
-    }
-    if physical_summary is not None:
-        report["system_timing_summary"] = system_timing_summary(qor["timing"])
-        report["system_timing_ref"] = {
-            "artifact": "qor_report",
-            "json_pointer": "/timing",
+            "design": runtime["design"],
+            "platform": platform.name,
+            "provider": runtime["provider"],
+            "validation": validation,
+            "functional_equivalence": {
+                "status": (
+                    "pass"
+                    if phase6_report["equivalence"].get("mismatches") == 0
+                    else "fail"
+                ),
+                "cycles": phase6_report["equivalence"].get("cycles"),
+                "trace_sha256": phase6_report["equivalence"].get(
+                    "trace_sha256"
+                ),
+            },
+            "schedule_legality": {
+                "status": (
+                    "pass"
+                    if phase5_report.get("status") == "pass"
+                    and phase5_report.get("validation", {}).get("collisions") == 0
+                    else "fail"
+                ),
+                "collisions": phase5_report.get("validation", {}).get(
+                    "collisions"
+                ),
+                "cross_layer_timing": phase5_report.get(
+                    "cross_layer_timing_validation"
+                ),
+            },
+            "physical": qor["physical"],
+            "artifacts": {
+                "runtime_contract": "runtime_contract.json",
+                "runtime_controller_rtl": "virtual_runtime_controller.sv",
+                "runtime_controller_testbench": (
+                    "virtual_runtime_controller_tb.sv"
+                ),
+                "runtime_timing_xdc": "runtime_timing.xdc",
+                "qor_report": "qor_report.json",
+                "report": "phase7c_report.json",
+            },
         }
-        report["physical_evidence_completeness"] = (
-            physical_binding_validation
-        )
-        report["target_clock_wns_ns"] = qor["timing"]["target_clock"][
-            "worst_slack_bound_ns"
-        ]
-        report["target_clock_tns_ns"] = qor["timing"]["target_clock"][
-            "total_negative_slack_bound_ns"
-        ]
-        report["virtual_runtime_wns_ns"] = qor["timing"]["runtime_clock"][
-            "worst_slack_bound_ns"
-        ]
-        report["virtual_runtime_tns_ns"] = qor["timing"]["runtime_clock"][
-            "total_negative_slack_bound_ns"
-        ]
-        report["artifacts"]["cross_layer_physical_binding"] = (
-            "cross_layer_physical_binding.json"
-        )
-    else:
-        report["runtime_timing_summary"] = system_timing_summary(qor["timing"])
-        report["system_timing_ref"] = {
-            "artifact": "qor_report",
-            "json_pointer": "/timing",
-        }
-    write_json(output_dir / "phase7c_report.json", report)
-    return report
+        if physical_summary is not None:
+            report["system_timing_summary"] = system_timing_summary(qor["timing"])
+            report["system_timing_ref"] = {
+                "artifact": "qor_report",
+                "json_pointer": "/timing",
+            }
+            report["physical_evidence_completeness"] = (
+                physical_binding_validation
+            )
+            report["target_clock_wns_ns"] = qor["timing"]["target_clock"][
+                "worst_slack_bound_ns"
+            ]
+            report["target_clock_tns_ns"] = qor["timing"]["target_clock"][
+                "total_negative_slack_bound_ns"
+            ]
+            report["virtual_runtime_wns_ns"] = qor["timing"]["runtime_clock"][
+                "worst_slack_bound_ns"
+            ]
+            report["virtual_runtime_tns_ns"] = qor["timing"]["runtime_clock"][
+                "total_negative_slack_bound_ns"
+            ]
+            report["artifacts"]["cross_layer_physical_binding"] = (
+                "cross_layer_physical_binding.json"
+            )
+        else:
+            report["runtime_timing_summary"] = system_timing_summary(qor["timing"])
+            report["system_timing_ref"] = {
+                "artifact": "qor_report",
+                "json_pointer": "/timing",
+            }
+        write_json(output_dir / "phase7c_report.json", report)
+        return report
+    finally:
+        if physical_summary is not None:
+            physical_summary.close()

@@ -737,6 +737,205 @@ def test_physical_binding_uses_raw_measurements():
                                 routes, fixture.schedule, physical, fixture.platform) == checks
 
 
+def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path):
+    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
+    from emuflow.board_link_timing import build_board_link_timing_model
+    from emuflow.io import write_json
+    from emuflow.logic_segment_timing_storage import (
+        logic_segment_timing_reference,
+        write_logic_segment_timing_storage,
+    )
+    from emuflow.physical_summary_storage import (
+        publish_logic_segment_timing_store,
+        read_physical_summary,
+    )
+    from emuflow.runtime import build_virtual_runtime
+    from emuflow.system_timing import build_system_timing
+
+    fixture = StaticExactSystemTimingTest()
+    fixture.setUp()
+    runtime, routes, phase5 = fixture._system_inputs()
+    physical = fixture._system_physical()
+    physical["board_link_timing"] = build_board_link_timing_model(
+        fixture.platform
+    )
+    inline_metadata = {}
+    inline_checks = bind_physical_checks(
+        build_virtual_runtime(fixture.schedule, fixture.platform),
+        routes,
+        fixture.schedule,
+        physical,
+        fixture.platform,
+        metadata=inline_metadata,
+    )
+    inline_timing = build_system_timing(
+        runtime,
+        routes,
+        fixture.schedule,
+        phase5,
+        physical,
+        fixture.platform,
+        semantic_contract=fixture.assignment["semantic_contract"],
+    )
+
+    references = {}
+    for fpga, database in physical["logic_segment_timing"].items():
+        database["system_routes_sha256"] = "a" * 64
+        database["tdm_schedule_sha256"] = "b" * 64
+        source = tmp_path / fpga / "logic-segment-timing.json"
+        header = {
+            key: value for key, value in database.items()
+            if key not in {"segments", "unsupported_member_paths", "unmeasured_segments"}
+        }
+        view = write_logic_segment_timing_storage(
+            source,
+            header=header,
+            segments=database["segments"],
+            unsupported_member_paths=database.get("unsupported_member_paths", ()),
+            unmeasured_segments=database.get("unmeasured_segments", ()),
+        )
+        view.close()
+        references[fpga] = logic_segment_timing_reference(
+            source, relative_to=tmp_path
+        )
+    stored_physical = dict(physical)
+    stored_physical["logic_segment_timing"] = references
+    first_database = next(iter(physical["logic_segment_timing"].values()))
+    stored_physical.setdefault("design", first_database["design"])
+    stored_physical.setdefault("platform", first_database["platform"])
+    stored_physical["logic_segment_system_routes_sha256"] = "a" * 64
+    stored_physical["logic_segment_tdm_schedule_sha256"] = "b" * 64
+    semantic = next(iter(physical["logic_segment_timing"].values())).get(
+        "semantic_contract_sha256"
+    )
+    if semantic is not None:
+        stored_physical["logic_segment_semantic_contract_sha256"] = semantic
+    write_json(tmp_path / "physical-summary.json", stored_physical)
+    indexed_physical = read_physical_summary(tmp_path / "physical-summary.json")
+    indexed_metadata = {}
+    indexed_checks = bind_physical_checks(
+        build_virtual_runtime(fixture.schedule, fixture.platform),
+        routes,
+        fixture.schedule,
+        indexed_physical,
+        fixture.platform,
+        metadata=indexed_metadata,
+    )
+    indexed_timing = build_system_timing(
+        runtime,
+        routes,
+        fixture.schedule,
+        phase5,
+        indexed_physical,
+        fixture.platform,
+        semantic_contract=fixture.assignment["semantic_contract"],
+    )
+
+    assert indexed_checks == inline_checks
+    assert dict(indexed_metadata["paths"]) == dict(inline_metadata["paths"])
+    assert indexed_timing == inline_timing
+    roles = {row.role for row in indexed_checks}
+    assert {"tx", "target", "runtime", "commit"} <= roles
+    indexed_slacks = [
+        row["runtime_clock_slack_bound_ns"] for row in indexed_timing["paths"]
+    ]
+    inline_slacks = [
+        row["runtime_clock_slack_bound_ns"] for row in inline_timing["paths"]
+    ]
+    assert min(indexed_slacks) == min(inline_slacks)
+    assert sum(min(0.0, value) for value in indexed_slacks) == sum(
+        min(0.0, value) for value in inline_slacks
+    )
+
+
+def test_indexed_logic_segments_expand_compressed_members_exactly(tmp_path):
+    import copy
+    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
+    from emuflow.board_link_timing import build_board_link_timing_model
+    from emuflow.io import write_json
+    from emuflow.logic_segment_timing_storage import (
+        logic_segment_timing_reference,
+        write_logic_segment_timing_storage,
+    )
+    from emuflow.physical_summary_storage import read_physical_summary
+    from emuflow.runtime import build_virtual_runtime
+
+    fixture = StaticExactSystemTimingTest()
+    fixture.setUp()
+    _, routes, _ = fixture._system_inputs()
+    routes = copy.deepcopy(routes)
+    routes["timing"]["paths"][0]["compressed_path_ids"] = [
+        "path0", "path0-member",
+    ]
+    physical = fixture._system_physical()
+    physical["board_link_timing"] = build_board_link_timing_model(
+        fixture.platform
+    )
+    for database in physical["logic_segment_timing"].values():
+        additions = []
+        for segment in database["segments"]:
+            additions.append({
+                **segment,
+                "id": f"{segment['id']}-member",
+                "member_path": "path0-member",
+                "static_exact_segment_id": (
+                    f"{segment['static_exact_segment_id']}-member"
+                ),
+            })
+        database["segments"].extend(additions)
+        database["coverage"].update({
+            "segments": len(database["segments"]), "member_paths": 2,
+        })
+    runtime = build_virtual_runtime(fixture.schedule, fixture.platform)
+    inline_metadata = {}
+    inline_checks = bind_physical_checks(
+        runtime, routes, fixture.schedule, physical, fixture.platform,
+        metadata=inline_metadata,
+    )
+
+    references = {}
+    for fpga, database in physical["logic_segment_timing"].items():
+        database["system_routes_sha256"] = "a" * 64
+        database["tdm_schedule_sha256"] = "b" * 64
+        selector = tmp_path / fpga / "logic-segment-timing.json"
+        header = {
+            key: value for key, value in database.items()
+            if key not in {"segments", "unsupported_member_paths"}
+        }
+        view = write_logic_segment_timing_storage(
+            selector,
+            header=header,
+            segments=database["segments"],
+            unsupported_member_paths=database["unsupported_member_paths"],
+        )
+        view.close()
+        references[fpga] = logic_segment_timing_reference(
+            selector, relative_to=tmp_path
+        )
+    stored = dict(physical)
+    stored["logic_segment_timing"] = references
+    first_database = next(iter(physical["logic_segment_timing"].values()))
+    stored.setdefault("design", first_database["design"])
+    stored.setdefault("platform", first_database["platform"])
+    stored["logic_segment_system_routes_sha256"] = "a" * 64
+    stored["logic_segment_tdm_schedule_sha256"] = "b" * 64
+    stored["logic_segment_semantic_contract_sha256"] = next(
+        iter(physical["logic_segment_timing"].values())
+    )["semantic_contract_sha256"]
+    write_json(tmp_path / "physical-summary.json", stored)
+    with read_physical_summary(tmp_path / "physical-summary.json") as indexed:
+        indexed_metadata = {}
+        indexed_checks = bind_physical_checks(
+            runtime, routes, fixture.schedule, indexed, fixture.platform,
+            metadata=indexed_metadata,
+        )
+    assert indexed_checks == inline_checks
+    assert set(indexed_metadata["paths"]) == {"path0", "path0-member"}
+    assert {row.role for row in indexed_checks} >= {
+        "tx", "target", "runtime", "commit",
+    }
+
+
 def test_physical_binding_does_not_reindex_schedule_entries():
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow.board_link_timing import build_board_link_timing_model

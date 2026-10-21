@@ -23,6 +23,9 @@ from .io import file_sha256, read_json
 PHYSICAL_EVIDENCE_REFERENCE_SCHEMA = (
     "emuflow.physical-evidence-reference/v1"
 )
+PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA = (
+    "emuflow.physical-evidence-reference/v2"
+)
 _EVIDENCE_FIELDS = {
     "boundary_identities",
     "boundary_timing",
@@ -155,12 +158,36 @@ def publish_physical_evidence(
     return document, reference
 
 
+def publish_logic_segment_timing_store(
+    source: Path,
+    output_directory: Path,
+    relative_path: Path,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Publish an existing typed selector and its immutable generation.
+
+    Production producers write the typed owner directly.  This assembly step
+    only relocates the bounded selector plus the content-addressed generation;
+    it never decodes or retains a graph-sized JSON payload.
+    """
+
+    from .logic_segment_timing_storage import (
+        publish_logic_segment_timing_selector,
+    )
+
+    return publish_logic_segment_timing_selector(
+        source, output_directory, relative_path
+    )
+
 def _validate_reference(value: Any) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or value.get("schema") != (
-        PHYSICAL_EVIDENCE_REFERENCE_SCHEMA
-    ):
+    if not isinstance(value, Mapping) or value.get("schema") not in {
+        PHYSICAL_EVIDENCE_REFERENCE_SCHEMA,
+        PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA,
+    }:
         raise ValidationError("physical evidence reference is invalid")
+    expected_keys = {"schema", "logical_schema", "path", "bytes", "sha256"}
     if (
+        set(value) != expected_keys
+        or
         not isinstance(value.get("logical_schema"), str)
         or not value["logical_schema"]
         or not isinstance(value.get("path"), str)
@@ -179,12 +206,24 @@ def _validate_reference(value: Any) -> Mapping[str, Any]:
     stored_path = Path(value["path"])
     if stored_path.is_absolute() or ".." in stored_path.parts:
         raise ValidationError("physical evidence reference path is unsafe")
+    if value["schema"] == PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA:
+        if (
+            value.get("logical_schema") != "emuflow.logic-segment-timing/v1"
+        ):
+            raise ValidationError(
+                "physical indexed evidence reference is malformed"
+            )
     return value
 
 
 def _read_reference(
-    value: Mapping[str, Any], base_directory: Path
-) -> Dict[str, Any]:
+    value: Mapping[str, Any], base_directory: Path, *,
+    expected_design: Any = None, expected_platform: Any = None,
+    expected_fpga: Any = None,
+    expected_system_routes_sha256: Any = None,
+    expected_tdm_schedule_sha256: Any = None,
+    expected_semantic_contract_sha256: Any = None,
+) -> Mapping[str, Any]:
     reference = _validate_reference(value)
     stored_path = Path(reference["path"])
     path = base_directory / stored_path
@@ -198,6 +237,27 @@ def _read_reference(
         ) from error
     if path.is_symlink() or not resolved_path.is_file():
         raise ValidationError("physical evidence referenced file is missing")
+    stat = resolved_path.stat()
+    if stat.st_size != reference["bytes"]:
+        raise ValidationError("physical evidence byte count disagrees")
+    if reference["schema"] == PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA:
+        from .logic_segment_timing_storage import (
+            read_logic_segment_timing_storage,
+        )
+
+        return read_logic_segment_timing_storage(
+            resolved_path,
+            expected_design=expected_design,
+            expected_platform=expected_platform,
+            expected_fpga=expected_fpga,
+            expected_system_routes_sha256=expected_system_routes_sha256,
+            expected_tdm_schedule_sha256=expected_tdm_schedule_sha256,
+            expected_semantic_contract_sha256=(
+                expected_semantic_contract_sha256
+            ),
+            expected_selector_bytes=reference["bytes"],
+            expected_selector_sha256=reference["sha256"],
+        )
     document, byte_count, digest = _read_sealed_json(resolved_path)
     if byte_count != reference["bytes"]:
         raise ValidationError("physical evidence byte count disagrees")
@@ -212,7 +272,11 @@ class LazyPhysicalEvidenceMap(dict[str, Mapping[str, Any]]):
     """Dictionary-compatible per-FPGA map that resolves one file at a time."""
 
     def __init__(
-        self, references: Mapping[str, Any], base_directory: Path
+        self, references: Mapping[str, Any], base_directory: Path, *,
+        expected_design: Any = None, expected_platform: Any = None,
+        expected_system_routes_sha256: Any = None,
+        expected_tdm_schedule_sha256: Any = None,
+        expected_semantic_contract_sha256: Any = None,
     ):
         if not references or any(
             not isinstance(fpga, str) or not fpga for fpga in references
@@ -222,22 +286,92 @@ class LazyPhysicalEvidenceMap(dict[str, Mapping[str, Any]]):
             _validate_reference(value)
         super().__init__(references)
         self.base_directory = base_directory
-
-    def __getitem__(self, key: str) -> Dict[str, Any]:
-        return _read_reference(
-            super().__getitem__(key), self.base_directory
+        self._indexed_cache: Dict[str, Mapping[str, Any]] = {}
+        self.expected_design = expected_design
+        self.expected_platform = expected_platform
+        self.expected_system_routes_sha256 = expected_system_routes_sha256
+        self.expected_tdm_schedule_sha256 = expected_tdm_schedule_sha256
+        self.expected_semantic_contract_sha256 = (
+            expected_semantic_contract_sha256
         )
+        self._closed = False
+
+    def __getitem__(self, key: str) -> Mapping[str, Any]:
+        if self._closed:
+            raise ValidationError("physical evidence map is closed")
+        reference = super().__getitem__(key)
+        if reference.get("schema") == PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA:
+            cached = self._indexed_cache.get(key)
+            if cached is None:
+                cached = _read_reference(
+                    reference,
+                    self.base_directory,
+                    expected_design=self.expected_design,
+                    expected_platform=self.expected_platform,
+                    expected_fpga=key,
+                    expected_system_routes_sha256=(
+                        self.expected_system_routes_sha256
+                    ),
+                    expected_tdm_schedule_sha256=(
+                        self.expected_tdm_schedule_sha256
+                    ),
+                    expected_semantic_contract_sha256=(
+                        self.expected_semantic_contract_sha256
+                    ),
+                )
+                source = getattr(cached, "selector", {}).get("source", {})
+                if (
+                    source.get("semantic_contract_sha256") is not None
+                    and self.expected_semantic_contract_sha256 is None
+                ):
+                    cached.close()  # type: ignore[attr-defined]
+                    raise ValidationError(
+                        "physical summary lacks the authoritative semantic seal"
+                    )
+                self._indexed_cache[key] = cached
+            return cached
+        return _read_reference(reference, self.base_directory)
 
     def get(self, key: str, default: Any = None) -> Any:
         return default if key not in self else self[key]
 
-    def items(self) -> Iterator[tuple[str, Dict[str, Any]]]:
+    def items(self) -> Iterator[tuple[str, Mapping[str, Any]]]:
         for key in super().keys():
             yield key, self[key]
 
-    def values(self) -> Iterator[Dict[str, Any]]:
+    def values(self) -> Iterator[Mapping[str, Any]]:
         for key in super().keys():
             yield self[key]
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        collection = getattr(self, "_logic_collection_cache", None)
+        collection_view_ids = {
+            id(value) for value in getattr(collection, "views", ())
+        }
+        if collection is not None:
+            collection.close()
+        for value in self._indexed_cache.values():
+            if id(value) in collection_view_ids:
+                continue
+            close = getattr(value, "close", None)
+            if callable(close):
+                close()
+        self._indexed_cache.clear()
+        self._logic_collection_cache = None
+
+    def __enter__(self) -> "LazyPhysicalEvidenceMap":
+        if self._closed:
+            raise ValidationError("physical evidence map is closed")
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
 
 
 def canonical_physical_summary_sha256(summary: Mapping[str, Any]) -> str:
@@ -289,38 +423,113 @@ def canonical_physical_summary_sha256(summary: Mapping[str, Any]) -> str:
     return digest.hexdigest()
 
 
-def read_physical_summary(path: Path) -> Dict[str, Any]:
+class PhysicalSummaryView(dict[str, Any]):
+    """Summary owner that deterministically releases all evidence leases."""
+
+    def close(self) -> None:
+        for value in self.values():
+            close = getattr(value, "close", None)
+            if callable(close):
+                close()
+
+    def __enter__(self) -> "PhysicalSummaryView":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
+def read_physical_summary(
+    path: Path, *, allow_legacy_logic_segment_json: bool = False
+) -> PhysicalSummaryView:
     """Read a physical summary while keeping large evidence maps lazy."""
 
-    summary = read_json(path)
-    for field in _EVIDENCE_FIELDS:
-        value = summary.get(field)
-        if value is None:
-            continue
-        if not isinstance(value, dict):
-            raise ValidationError(f"physical summary {field} map is invalid")
-        referenced = [
-            isinstance(item, Mapping)
-            and item.get("schema") == PHYSICAL_EVIDENCE_REFERENCE_SCHEMA
-            for item in value.values()
-        ]
-        unknown_references = [
-            isinstance(item, Mapping)
-            and isinstance(item.get("schema"), str)
-            and item["schema"].startswith(
-                "emuflow.physical-evidence-reference/"
-            )
-            and item["schema"] != PHYSICAL_EVIDENCE_REFERENCE_SCHEMA
-            for item in value.values()
-        ]
-        if any(unknown_references):
-            raise ValidationError(
-                f"physical summary {field} reference schema is unsupported"
-            )
-        if any(referenced):
-            if not all(referenced):
-                raise ValidationError(
-                    f"physical summary {field} mixes inline and referenced evidence"
+    summary = PhysicalSummaryView(read_json(path))
+    try:
+        for field in _EVIDENCE_FIELDS:
+            value = summary.get(field)
+            if value is None:
+                continue
+            if not isinstance(value, dict):
+                raise ValidationError(f"physical summary {field} map is invalid")
+            referenced = [
+                isinstance(item, Mapping)
+                and item.get("schema") in {
+                    PHYSICAL_EVIDENCE_REFERENCE_SCHEMA,
+                    PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA,
+                }
+                for item in value.values()
+            ]
+            unknown_references = [
+                isinstance(item, Mapping)
+                and isinstance(item.get("schema"), str)
+                and item["schema"].startswith(
+                    "emuflow.physical-evidence-reference/"
                 )
-            summary[field] = LazyPhysicalEvidenceMap(value, path.parent)
-    return summary
+                and item["schema"] not in {
+                    PHYSICAL_EVIDENCE_REFERENCE_SCHEMA,
+                    PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA,
+                }
+                for item in value.values()
+            ]
+            if any(unknown_references):
+                raise ValidationError(
+                    f"physical summary {field} reference schema is unsupported"
+                )
+            if any(referenced):
+                if not all(referenced):
+                    raise ValidationError(
+                        f"physical summary {field} mixes inline and referenced evidence"
+                    )
+                for item in value.values():
+                    _validate_reference(item)
+                if field == "logic_segment_timing":
+                    indexed = [
+                        item.get("schema")
+                        == PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA
+                        for item in value.values()
+                    ]
+                    if any(indexed) and not all(indexed):
+                        raise ValidationError(
+                            "physical summary logic segment timing mixes indexed "
+                            "and legacy evidence"
+                        )
+                    if not any(indexed) and not allow_legacy_logic_segment_json:
+                        raise ValidationError(
+                            "legacy logic segment JSON requires explicit compatibility"
+                        )
+                    if any(indexed) and any(
+                        not isinstance(summary.get(key), str) or not summary[key]
+                        for key in (
+                            "design", "platform",
+                            "logic_segment_system_routes_sha256",
+                            "logic_segment_tdm_schedule_sha256",
+                        )
+                    ):
+                        raise ValidationError(
+                            "indexed logic timing requires physical summary identity"
+                        )
+                summary[field] = LazyPhysicalEvidenceMap(
+                    value,
+                    path.parent,
+                    expected_design=summary.get("design"),
+                    expected_platform=summary.get("platform"),
+                    expected_system_routes_sha256=summary.get(
+                        "logic_segment_system_routes_sha256"
+                    ) if field == "logic_segment_timing" else None,
+                    expected_tdm_schedule_sha256=summary.get(
+                        "logic_segment_tdm_schedule_sha256"
+                    ) if field == "logic_segment_timing" else None,
+                    expected_semantic_contract_sha256=summary.get(
+                        "logic_segment_semantic_contract_sha256"
+                    ) if field == "logic_segment_timing" else None,
+                )
+            elif field == "logic_segment_timing" and not (
+                allow_legacy_logic_segment_json
+            ):
+                raise ValidationError(
+                    "inline logic segment JSON requires explicit compatibility"
+                )
+        return summary
+    except BaseException:
+        summary.close()
+        raise

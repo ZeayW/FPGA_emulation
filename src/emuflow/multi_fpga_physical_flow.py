@@ -60,7 +60,10 @@ from .physical_backend import (
     validate_physical_backend_descriptor,
     validate_physical_partition_result,
 )
-from .physical_summary_storage import publish_physical_evidence
+from .physical_summary_storage import (
+    publish_logic_segment_timing_store,
+    publish_physical_evidence,
+)
 from .platform import Platform
 from .position_hints_storage import PositionHintsView, read_position_hints
 from .resource_budget import validate_device_resource_usage
@@ -249,7 +252,7 @@ def _write_inactive_logic_timing(
     identity_path: Path, output_path: Path
 ) -> Dict[str, Any]:
     identity = read_json(identity_path)
-    database = {
+    header = {
         "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
         "status": "pass",
         "design": identity["design"],
@@ -257,22 +260,31 @@ def _write_inactive_logic_timing(
         "fpga": identity["fpga"],
         "provider": _INACTIVE_PARTITION_PROVIDER,
         "qualification": "not-applicable-empty-partition",
+        "system_routes_sha256": identity["system_routes_sha256"],
+        "tdm_schedule_sha256": identity["tdm_schedule_sha256"],
         "coverage": {
             **identity["coverage"],
             "endpoint_exact_segments": 0,
             "cone_bound_segments": 0,
         },
-        "unsupported_member_paths": identity["unsupported_member_paths"],
-        "unmeasured_segments": [],
-        "segments": [],
         **(
             {"semantic_contract_sha256": identity["semantic_contract_sha256"]}
             if "semantic_contract_sha256" in identity
             else {}
         ),
     }
-    validation = validate_logic_segment_timing(database)
-    write_json(output_path, database)
+    from .logic_segment_timing_storage import write_logic_segment_timing_storage
+
+    view = write_logic_segment_timing_storage(
+        output_path,
+        header=header,
+        segments=(),
+        unsupported_member_paths=identity["unsupported_member_paths"],
+    )
+    try:
+        validation = view.validate_timing()
+    finally:
+        view.close()
     return {**validation, "output": str(output_path)}
 
 
@@ -2232,19 +2244,52 @@ def _assemble_multi_fpga_physical_results(
         physical_summary["boundary_timing"][fpga_id] = timing_reference
     if include_logic_timing:
         physical_summary["logic_segment_timing"] = {}
+        logic_semantic_seals = set()
+        logic_route_seals = set()
+        logic_schedule_seals = set()
         for item in records:
             path = Path(
                 _implementation_stage(item, backend, "logic_segment_timing")[
                     "import"
                 ]["output"]
             )
-            database, reference = publish_physical_evidence(
+            selector, reference = publish_logic_segment_timing_store(
                 path,
                 output_dir,
-                Path(item["fpga"]) / path.name,
+                Path(item["fpga"]) / "logic-segment-timing.json",
             )
-            validate_logic_segment_timing(database)
+            source = selector["source"]
+            if (
+                source["design"] != physical_summary["design"]
+                or source["platform"] != physical_summary["platform"]
+                or source["fpga"] != item["fpga"]
+            ):
+                raise ValidationError(
+                    "logic segment timing source disagrees with physical summary"
+                )
+            logic_semantic_seals.add(source["semantic_contract_sha256"])
+            logic_route_seals.add(source["system_routes_sha256"])
+            logic_schedule_seals.add(source["tdm_schedule_sha256"])
             physical_summary["logic_segment_timing"][item["fpga"]] = reference
+        if len(logic_semantic_seals) != 1:
+            raise ValidationError(
+                "logic segment timing semantic seals disagree"
+            )
+        if len(logic_route_seals) != 1 or len(logic_schedule_seals) != 1:
+            raise ValidationError(
+                "logic segment timing route/schedule seals disagree"
+            )
+        physical_summary["logic_segment_system_routes_sha256"] = next(
+            iter(logic_route_seals)
+        )
+        physical_summary["logic_segment_tdm_schedule_sha256"] = next(
+            iter(logic_schedule_seals)
+        )
+        logic_semantic_seal = next(iter(logic_semantic_seals))
+        if logic_semantic_seal is not None:
+            physical_summary[
+                "logic_segment_semantic_contract_sha256"
+            ] = logic_semantic_seal
         if backend in {"open", "rapidwright"}:
             physical_summary["local_path_timing"] = {}
             for item in records:

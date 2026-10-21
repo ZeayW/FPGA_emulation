@@ -1249,6 +1249,57 @@ class Phase7CTest(unittest.TestCase):
             self.assertEqual(generated["status"], "generated")
             self.assertIn("runtime_timing_summary", generated)
             self.assertNotIn("system_timing", generated)
+            semantic_routes = copy.deepcopy(self.routes)
+            semantic_routes.update({
+                "semantic_contract_schema": "emuflow.static-exact/v1",
+                "semantic_contract_sha256": "c" * 64,
+            })
+            semantic_contract = {
+                "schema": "emuflow.static-exact/v1",
+                "mode": "static-exact-combinational",
+            }
+            with mock.patch(
+                "emuflow.phase7c.read_system_routes",
+                return_value=semantic_routes,
+            ), mock.patch(
+                "emuflow.phase7c.read_phase3_assignment_view",
+                return_value={"design": "dut"},
+            ), mock.patch(
+                "emuflow.phase7c.semantic_contract_for_routes",
+                return_value=semantic_contract,
+            ) as bind_semantic, mock.patch(
+                "emuflow.phase7c.validate_cross_layer_timing_contract",
+                side_effect=RuntimeError("after semantic binding"),
+            ), self.assertRaisesRegex(RuntimeError, "after semantic"):
+                run_phase7c(
+                    paths["schedule"], paths["platform"], paths["phase3"],
+                    paths["phase4"], paths["phase5"], paths["phase6"],
+                    root / "generated-static-exact",
+                    assignment_path=root / "assignment.json",
+                    routes_path=paths["routes"],
+                    allow_legacy_phase5_generation=True,
+                )
+            bind_semantic.assert_called_once()
+            from emuflow.physical_summary_storage import PhysicalSummaryView
+            mismatched = PhysicalSummaryView(self._physical_summary())
+            mismatched.update({
+                "logic_segment_timing": {},
+                "logic_segment_system_routes_sha256": "0" * 64,
+                "logic_segment_tdm_schedule_sha256": "0" * 64,
+            })
+            with mock.patch(
+                "emuflow.phase7c.read_physical_summary",
+                return_value=mismatched,
+            ), self.assertRaisesRegex(
+                ValidationError, "route/schedule seal disagrees"
+            ):
+                run_phase7c(
+                    paths["schedule"], paths["platform"], paths["phase3"],
+                    paths["phase4"], paths["phase5"], paths["phase6"],
+                    root / "mismatched", physical_summary_path=paths["physical"],
+                    routes_path=paths["routes"],
+                    allow_legacy_phase5_generation=True,
+                )
             closed = run_phase7c(
                 paths["schedule"],
                 paths["platform"],

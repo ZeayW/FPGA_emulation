@@ -10,6 +10,7 @@ from pathlib import Path
 import struct
 import subprocess
 import tempfile
+from array import array
 from collections import defaultdict, deque
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -894,6 +895,143 @@ def _exact_dependency_order(
     if len(ordered) != len(routes):
         raise ValidationError("cross-layer timing dependency graph is cyclic")
     return ordered
+
+
+def _packed_indexed_exact_dependency_order(
+    routes: Sequence[Mapping[str, Any]],
+) -> Optional[array]:
+    """Return the exact ready-queue order as compact route net ranks.
+
+    Typed RouteStore cursors already own unique net identities and predecessor
+    joins.  Rebuilding ``route_by_net``, ``successors``, ``indegree`` and the
+    ordered route list as Python dictionaries/lists duplicates the R+D graph.
+    This independent validator keeps only 32/64-bit CSR arrays and asks SQLite
+    to replay routes in the resulting rank order.
+    """
+
+    records = getattr(routes, "iter_native_exact_records", None)
+    dependency_ranks = getattr(routes, "iter_exact_dependency_ranks", None)
+    replay = getattr(routes, "iter_routes_by_net_rank_order", None)
+    demand_replay = getattr(routes, "iter_demands_by_net_rank_order", None)
+    if not all(
+        callable(value)
+        for value in (records, dependency_ranks, replay, demand_replay)
+    ):
+        return None
+    route_count = len(routes)
+    if route_count >= _NATIVE_UNASSIGNED_LANE:
+        raise ValidationError(
+            "indexed exact route population exceeds packed rank capacity"
+        )
+    indegree = array("I", [0]) * route_count
+    maximum_hop_depth = array("I", [0]) * route_count
+    predecessor_offsets = array("Q", [0])
+    predecessors = array("I")
+    successor_counts = array("I", [0]) * route_count
+    observed = 0
+    for rank, (route, _demand_rank, predecessor_ranks) in enumerate(records()):
+        if rank >= route_count:
+            raise ValidationError("indexed exact route coverage disagrees")
+        hops = _route_hops(route)
+        maximum_hop_depth[rank] = max(
+            (depth for depth, _edge in hops), default=0
+        )
+        if len(predecessor_ranks) >= _NATIVE_UNASSIGNED_LANE:
+            raise ValidationError(
+                "indexed exact predecessor population exceeds packed capacity"
+            )
+        indegree[rank] = len(predecessor_ranks)
+        for predecessor in predecessor_ranks:
+            if predecessor < 0 or predecessor >= route_count:
+                raise ValidationError(
+                    "indexed exact predecessor rank is invalid"
+                )
+            predecessors.append(predecessor)
+            if successor_counts[predecessor] == _NATIVE_UNASSIGNED_LANE:
+                raise ValidationError(
+                    "indexed exact successor population exceeds packed capacity"
+                )
+            successor_counts[predecessor] += 1
+        predecessor_offsets.append(len(predecessors))
+        observed += 1
+    if observed != route_count or len(predecessor_offsets) != route_count + 1:
+        raise ValidationError("indexed exact route coverage disagrees")
+
+    successor_offsets = array("Q", [0])
+    for count in successor_counts:
+        successor_offsets.append(successor_offsets[-1] + count)
+    successors = array("I", [0]) * len(predecessors)
+    successor_write = array("Q", successor_offsets[:-1])
+    for child in range(route_count):
+        for offset in range(
+            predecessor_offsets[child], predecessor_offsets[child + 1]
+        ):
+            predecessor = predecessors[offset]
+            write = successor_write[predecessor]
+            successors[write] = child
+            successor_write[predecessor] = write + 1
+
+    remaining_depth = array("I", [0]) * route_count
+    seen_dependency_ranks = bytearray(route_count)
+    observed_dependency_ranks = 0
+    for child in dependency_ranks():
+        if (
+            child < 0
+            or child >= route_count
+            or seen_dependency_ranks[child]
+        ):
+            raise ValidationError(
+                "indexed exact dependency rank order is invalid"
+            )
+        seen_dependency_ranks[child] = 1
+        observed_dependency_ranks += 1
+        for offset in range(
+            predecessor_offsets[child], predecessor_offsets[child + 1]
+        ):
+            predecessor = predecessors[offset]
+            candidate = remaining_depth[child] + 1
+            if candidate > remaining_depth[predecessor]:
+                if candidate >= _NATIVE_UNASSIGNED_LANE:
+                    raise ValidationError(
+                        "indexed exact dependency depth exceeds packed capacity"
+                    )
+                remaining_depth[predecessor] = candidate
+    if observed_dependency_ranks != route_count:
+        raise ValidationError(
+            "indexed exact dependency rank coverage disagrees"
+        )
+
+    pending = array("I", indegree)
+    ready: list[tuple[int, int, int]] = []
+    for rank, count in enumerate(pending):
+        if count == 0:
+            heapq.heappush(
+                ready,
+                (-remaining_depth[rank], -maximum_hop_depth[rank], rank),
+            )
+    order = array("I")
+    while ready:
+        _negative_remaining, _negative_hops, rank = heapq.heappop(ready)
+        order.append(rank)
+        for offset in range(successor_offsets[rank], successor_offsets[rank + 1]):
+            successor = successors[offset]
+            if pending[successor] == 0:
+                raise ValidationError(
+                    "indexed exact dependency indegree is inconsistent"
+                )
+            pending[successor] -= 1
+            if pending[successor] == 0:
+                heapq.heappush(
+                    ready,
+                    (
+                        -remaining_depth[successor],
+                        -maximum_hop_depth[successor],
+                        successor,
+                    ),
+                )
+    if len(order) != route_count:
+        raise ValidationError("cross-layer timing dependency graph is cyclic")
+    return order
 
 
 def _round_barrier_realization(
@@ -2557,6 +2695,12 @@ def _validate_indexed_exact_tdm_schedule(
     raw_routes = routes.get("routes")
     if not isinstance(raw_routes, list):
         raise ValidationError("routes.routes: expected an array")
+    route_order = getattr(raw_routes, "ordered", None)
+    metadata_routes = (
+        route_order("demand")
+        if callable(route_order)
+        else sorted(raw_routes, key=lambda item: item["id"])
+    )
     expected_route_metadata = (
         {
             "id": route["id"],
@@ -2565,24 +2709,53 @@ def _validate_indexed_exact_tdm_schedule(
             "sinks": list(route["sinks"]),
             "tree_edges": list(route["tree_edges"]),
         }
-        for route in sorted(raw_routes, key=lambda item: item["id"])
+        for route in metadata_routes
     )
     _validate_indexed_schedule_section(
         schedule, "routes", expected_route_metadata
     )
 
-    exact_nodes = _indexed_exact_nodes(raw_routes)
-    ordered_routes = _exact_dependency_order(
-        exact_nodes, raw_routes, None
-    )
+    packed_order = _packed_indexed_exact_dependency_order(raw_routes)
+    ordered_routes = None
+    if packed_order is None:
+        exact_nodes = _indexed_exact_nodes(raw_routes)
+        ordered_routes = _exact_dependency_order(
+            exact_nodes, raw_routes, None
+        )
     open_index = getattr(schedule, "open_validation_index", None)
     if not callable(open_index):
         raise ValidationError("indexed schedule validation index is unavailable")
     exact_arrivals: Dict[Tuple[str, str], int] = {}
-    completions: List[Dict[str, Any]] = []
     bank_directions: Dict[Tuple[str, int], Tuple[str, str]] = {}
     expected_hop_count = 0
     frame_slots = constraints["frame_slots"]
+    fpga_index = {
+        fpga.id: index for index, fpga in enumerate(platform.fpgas)
+    }
+    packed_arrivals = (
+        array("q", [-1]) * (len(raw_routes) * len(fpga_index))
+        if packed_order is not None
+        else None
+    )
+    order_digest = hashlib.sha256()
+    readiness_digest = hashlib.sha256()
+    sink_digest = hashlib.sha256()
+    dependency_edges = 0
+    readiness_count = 0
+    sink_count = 0
+    minimum_sink_slack: Optional[int] = None
+    completion_max = 0
+    routed_sinks = 0
+    maximum_dependency_depth = 0
+    commit_slot = sampled_timing_constraints.get("commit_slot")
+    settle = sampled_timing_constraints.get("settle_slots")
+    if (
+        isinstance(commit_slot, bool)
+        or not isinstance(commit_slot, int)
+        or isinstance(settle, bool)
+        or not isinstance(settle, int)
+    ):
+        raise ValidationError("indexed exact timing constraints are invalid")
     with open_index() as entry_index:
         collision = entry_index.first_collision()
         if collision is not None:
@@ -2591,166 +2764,345 @@ def _validate_indexed_exact_tdm_schedule(
                 f"schedule collision in {capacity_key!r} at "
                 f"slot={slot}, lane={lane}"
             )
-        entry_index.install_demand_order(
-            iter(route["id"] for route in ordered_routes)
-        )
+        if packed_order is not None:
+            demand_cursor = getattr(
+                raw_routes, "iter_demands_by_net_rank_order", None
+            )
+            if not callable(demand_cursor):
+                raise ValidationError(
+                    "indexed route demand-order cursor is unavailable"
+                )
+            entry_index.install_demand_order(
+                iter(demand_cursor(iter(packed_order)))
+            )
+            route_cursor = getattr(
+                raw_routes, "iter_routes_by_net_rank_order", None
+            )
+            if not callable(route_cursor):
+                raise ValidationError(
+                    "indexed route validation cursor is unavailable"
+                )
+            validation_routes = route_cursor(iter(packed_order))
+        else:
+            assert ordered_routes is not None
+            entry_index.install_demand_order(
+                iter(route["id"] for route in ordered_routes)
+            )
+            validation_routes = (
+                (route_index, route, ())
+                for route_index, route in enumerate(ordered_routes)
+            )
         ordered_entries = iter(entry_index.iter_demand_order())
         current = next(ordered_entries, None)
-        for route_index, route in enumerate(ordered_routes):
-            source_ready_slot, _source_evidence = _indexed_source_readiness(
-                route, exact_arrivals, sampled_timing_constraints
-            )
-            arrival_by_node = {route["source"]: source_ready_slot - 1}
-            route_hops = sorted(
-                _route_hops(route),
-                key=lambda item: (
-                    item[0],
-                    item[1]["link"],
-                    item[1]["from"],
-                    item[1]["to"],
-                ),
-            )
-            expected_hop_count += len(route_hops)
-            for depth, edge in route_hops:
-                if current is None or current[0] != route_index:
+
+        def recomputed_completions() -> Iterator[Mapping[str, Any]]:
+            nonlocal current
+            nonlocal expected_hop_count
+            nonlocal dependency_edges
+            nonlocal readiness_count
+            nonlocal sink_count
+            nonlocal minimum_sink_slack
+            nonlocal completion_max
+            nonlocal routed_sinks
+            nonlocal maximum_dependency_depth
+            observed_routes = 0
+            for route_index, (route_rank, route, predecessor_ranks) in enumerate(
+                validation_routes
+            ):
+                if route_index != observed_routes:
                     raise ValidationError(
-                        "schedule.entries: route-hop coverage is incomplete"
+                        "indexed route validation order is not contiguous"
                     )
-                _sequence, entry = current
-                current = next(ordered_entries, None)
-                expected_key = (
-                    route["id"], edge["link"], edge["from"], edge["to"]
+                observed_routes += 1
+                maximum_dependency_depth = max(
+                    maximum_dependency_depth,
+                    route["combinational_dependency_depth"],
                 )
-                actual_key = (
-                    entry.demand, entry.link, entry.source, entry.sink
-                )
-                if actual_key != expected_key:
-                    raise ValidationError(
-                        f"schedule entry has unexpected route hop {actual_key}"
-                    )
-                if entry.net != route["net"] or entry.hop != depth:
-                    raise ValidationError(
-                        "schedule entry net/hop does not match route"
-                    )
-                try:
-                    arc = arcs[(entry.link, entry.source, entry.sink)]
-                    link = links[entry.link]
-                except KeyError as error:
-                    raise ValidationError(
-                        f"schedule entry uses an unknown routed arc {actual_key}"
-                    ) from error
-                if entry.capacity_key != arc["capacity_key"]:
-                    raise ValidationError(
-                        "schedule entry capacity_key is incorrect"
-                    )
-                if entry.slot < 0 or entry.slot >= frame_slots:
-                    raise ValidationError("schedule entry slot is out of range")
-                if (
-                    entry.lane < 0
-                    or entry.lane
-                    >= link.transport_bits_per_cycle_per_direction
-                ):
-                    raise ValidationError("schedule entry lane is out of range")
-                bank_budget = bank_allocations.get(
-                    (entry.link, entry.source, entry.sink)
-                )
-                if bank_budget is not None:
-                    offset = bank_budget["lane_offset"]
-                    if not offset <= entry.lane < offset + bank_budget["lanes"]:
-                        raise ValidationError(
-                            "schedule entry wire lies outside its allocated "
-                            "direction banks"
+                if packed_arrivals is None:
+                    source_ready_slot, source_evidence = (
+                        _indexed_source_readiness(
+                            route,
+                            exact_arrivals,
+                            sampled_timing_constraints,
                         )
-                    bank_key = (
-                        entry.link,
-                        entry.lane // bank_budget["wires_per_bank"],
                     )
-                    direction = (entry.source, entry.sink)
-                    if bank_directions.setdefault(bank_key, direction) != direction:
-                        raise ValidationError(
-                            "schedule bank is assigned to both directions"
-                        )
-                if link.tdm_delay_model is not None:
-                    quantum = int(constraints["tdm_ratio_quantum"])
-                    minimum = int(constraints.get("tdm_min_ratio", 1))
+                else:
+                    predecessor_names = route.get("predecessor_cut_nets")
+                    source = route.get("source")
                     if (
-                        entry.tdm_ratio is None
-                        or entry.tdm_ratio < minimum
-                        or entry.tdm_ratio > frame_slots
-                        or (
-                            entry.tdm_ratio != 1
-                            and entry.tdm_ratio % quantum
-                        )
+                        not isinstance(predecessor_names, list)
+                        or len(predecessor_names) != len(predecessor_ranks)
+                        or len(predecessor_names)
+                        != len(set(predecessor_names))
+                        or not isinstance(source, str)
+                        or source not in fpga_index
                     ):
                         raise ValidationError(
-                            "schedule entry tdm_ratio is invalid for the net "
-                            "delay model"
+                            "indexed exact readiness metadata is invalid"
                         )
-                base, _slope = route_link_delay_coefficients_ns(
-                    platform,
-                    entry.link,
-                    entry.source,
-                    entry.sink,
-                    constraints,
-                )
-                expected_arrival = entry.slot + tdm_hop_latency_cycles(
-                    link,
-                    entry.tdm_ratio if entry.tdm_ratio is not None else 1,
-                    base_delay_ns=base,
-                )
-                if entry.arrival_slot != expected_arrival:
-                    raise ValidationError(
-                        "schedule entry arrival_slot does not match link delay"
+                    source_fpga = fpga_index[source]
+                    source_evidence = []
+                    for predecessor, predecessor_rank in sorted(
+                        zip(predecessor_names, predecessor_ranks)
+                    ):
+                        arrival = packed_arrivals[
+                            predecessor_rank * len(fpga_index) + source_fpga
+                        ]
+                        if arrival < 0:
+                            raise ValidationError(
+                                f"indexed exact predecessor {predecessor!r} "
+                                f"has not arrived at {source!r}"
+                            )
+                        source_evidence.append((predecessor, arrival))
+                    source_ready_slot = max(
+                        (
+                            arrival + settle
+                            for _predecessor, arrival in source_evidence
+                        ),
+                        default=settle,
                     )
-                if expected_arrival >= frame_slots - RUNTIME_BARRIER_SLOTS:
-                    raise ValidationError(
-                        "schedule entry arrival reaches reserved runtime "
-                        "barrier slot"
+                    _digest_record(order_digest, route["net"])
+                    dependency_edges += len(source_evidence)
+                    readiness_count += 1
+                    _digest_record(
+                        readiness_digest,
+                        {
+                            "net": route["net"],
+                            "source": route["source"],
+                            "source_ready_slot": source_ready_slot,
+                            "predecessor_arrivals": source_evidence,
+                        },
                     )
-                ready = (
-                    source_ready_slot
-                    if edge["from"] == route["source"]
-                    else arrival_by_node[edge["from"]] + 1
+                arrival_by_node = {
+                    route["source"]: source_ready_slot - 1
+                }
+                route_hops = sorted(
+                    _route_hops(route),
+                    key=lambda item: (
+                        item[0],
+                        item[1]["link"],
+                        item[1]["from"],
+                        item[1]["to"],
+                    ),
                 )
-                if entry.ready_slot != ready:
-                    raise ValidationError(
-                        f"schedule demand {route['id']!r}: ready-slot mismatch"
+                expected_hop_count += len(route_hops)
+                for depth, edge in route_hops:
+                    if current is None or current[0] != route_index:
+                        raise ValidationError(
+                            "schedule.entries: route-hop coverage is incomplete"
+                        )
+                    _sequence, entry = current
+                    current = next(ordered_entries, None)
+                    expected_key = (
+                        route["id"],
+                        edge["link"],
+                        edge["from"],
+                        edge["to"],
                     )
-                if entry.slot < ready:
-                    raise ValidationError(
-                        f"schedule demand {route['id']!r}: precedence violation"
+                    actual_key = (
+                        entry.demand,
+                        entry.link,
+                        entry.source,
+                        entry.sink,
                     )
-                arrival_by_node[edge["to"]] = entry.arrival_slot
-            if current is not None and current[0] == route_index:
-                raise ValidationError(
-                    "schedule entry has an unexpected route hop"
+                    if actual_key != expected_key:
+                        raise ValidationError(
+                            "schedule entry has unexpected route hop "
+                            f"{actual_key}"
+                        )
+                    if entry.net != route["net"] or entry.hop != depth:
+                        raise ValidationError(
+                            "schedule entry net/hop does not match route"
+                        )
+                    try:
+                        arc = arcs[(entry.link, entry.source, entry.sink)]
+                        link = links[entry.link]
+                    except KeyError as error:
+                        raise ValidationError(
+                            "schedule entry uses an unknown routed arc "
+                            f"{actual_key}"
+                        ) from error
+                    if entry.capacity_key != arc["capacity_key"]:
+                        raise ValidationError(
+                            "schedule entry capacity_key is incorrect"
+                        )
+                    if entry.slot < 0 or entry.slot >= frame_slots:
+                        raise ValidationError(
+                            "schedule entry slot is out of range"
+                        )
+                    if (
+                        entry.lane < 0
+                        or entry.lane
+                        >= link.transport_bits_per_cycle_per_direction
+                    ):
+                        raise ValidationError(
+                            "schedule entry lane is out of range"
+                        )
+                    bank_budget = bank_allocations.get(
+                        (entry.link, entry.source, entry.sink)
+                    )
+                    if bank_budget is not None:
+                        offset = bank_budget["lane_offset"]
+                        if not (
+                            offset
+                            <= entry.lane
+                            < offset + bank_budget["lanes"]
+                        ):
+                            raise ValidationError(
+                                "schedule entry wire lies outside its allocated "
+                                "direction banks"
+                            )
+                        bank_key = (
+                            entry.link,
+                            entry.lane // bank_budget["wires_per_bank"],
+                        )
+                        direction = (entry.source, entry.sink)
+                        if (
+                            bank_directions.setdefault(bank_key, direction)
+                            != direction
+                        ):
+                            raise ValidationError(
+                                "schedule bank is assigned to both directions"
+                            )
+                    if link.tdm_delay_model is not None:
+                        quantum = int(constraints["tdm_ratio_quantum"])
+                        minimum = int(constraints.get("tdm_min_ratio", 1))
+                        if (
+                            entry.tdm_ratio is None
+                            or entry.tdm_ratio < minimum
+                            or entry.tdm_ratio > frame_slots
+                            or (
+                                entry.tdm_ratio != 1
+                                and entry.tdm_ratio % quantum
+                            )
+                        ):
+                            raise ValidationError(
+                                "schedule entry tdm_ratio is invalid for the "
+                                "net delay model"
+                            )
+                    base, _slope = route_link_delay_coefficients_ns(
+                        platform,
+                        entry.link,
+                        entry.source,
+                        entry.sink,
+                        constraints,
+                    )
+                    expected_arrival = entry.slot + tdm_hop_latency_cycles(
+                        link,
+                        (
+                            entry.tdm_ratio
+                            if entry.tdm_ratio is not None
+                            else 1
+                        ),
+                        base_delay_ns=base,
+                    )
+                    if entry.arrival_slot != expected_arrival:
+                        raise ValidationError(
+                            "schedule entry arrival_slot does not match link "
+                            "delay"
+                        )
+                    if expected_arrival >= frame_slots - RUNTIME_BARRIER_SLOTS:
+                        raise ValidationError(
+                            "schedule entry arrival reaches reserved runtime "
+                            "barrier slot"
+                        )
+                    ready = (
+                        source_ready_slot
+                        if edge["from"] == route["source"]
+                        else arrival_by_node[edge["from"]] + 1
+                    )
+                    if entry.ready_slot != ready:
+                        raise ValidationError(
+                            f"schedule demand {route['id']!r}: ready-slot "
+                            "mismatch"
+                        )
+                    if entry.slot < ready:
+                        raise ValidationError(
+                            f"schedule demand {route['id']!r}: precedence "
+                            "violation"
+                        )
+                    arrival_by_node[edge["to"]] = entry.arrival_slot
+                if current is not None and current[0] == route_index:
+                    raise ValidationError(
+                        "schedule entry has an unexpected route hop"
+                    )
+                missing_sinks = sorted(
+                    set(route["sinks"]) - set(arrival_by_node)
                 )
-            missing_sinks = sorted(set(route["sinks"]) - set(arrival_by_node))
-            if missing_sinks:
-                raise ValidationError(
-                    f"schedule demand {route['id']!r}: missing sinks "
-                    f"{missing_sinks}"
+                if missing_sinks:
+                    raise ValidationError(
+                        f"schedule demand {route['id']!r}: missing sinks "
+                        f"{missing_sinks}"
+                    )
+                completion_slot = max(
+                    arrival_by_node[sink] for sink in route["sinks"]
                 )
-            completion_slot = max(
-                arrival_by_node[sink] for sink in route["sinks"]
-            )
-            sink_arrivals = {
-                sink: arrival_by_node[sink] for sink in sorted(route["sinks"])
-            }
-            completions.append(
-                {
+                completion_max = max(completion_max, completion_slot)
+                routed_sinks += len(route["sinks"])
+                sink_arrivals = {
+                    sink: arrival_by_node[sink]
+                    for sink in sorted(route["sinks"])
+                }
+                for sink, arrival in sink_arrivals.items():
+                    if packed_arrivals is None:
+                        exact_arrivals[(route["net"], sink)] = arrival
+                    else:
+                        try:
+                            sink_fpga = fpga_index[sink]
+                        except KeyError as error:
+                            raise ValidationError(
+                                f"indexed exact sink FPGA {sink!r} is unknown"
+                            ) from error
+                        packed_arrivals[
+                            route_rank * len(fpga_index) + sink_fpga
+                        ] = arrival
+                        ready_slot = arrival + settle
+                        slack = commit_slot - ready_slot
+                        if slack < 0:
+                            raise ValidationError(
+                                f"indexed exact sink {route['net']!r}@"
+                                f"{sink!r} misses the commit deadline"
+                            )
+                        sink_count += 1
+                        minimum_sink_slack = (
+                            slack
+                            if minimum_sink_slack is None
+                            else min(minimum_sink_slack, slack)
+                        )
+                        _digest_record(
+                            sink_digest,
+                            {
+                                "net": route["net"],
+                                "fpga": sink,
+                                "arrival_slot": arrival,
+                                "budget_slots": settle,
+                                "ready_slot": ready_slot,
+                                "commit_slot": commit_slot,
+                                "slack_slots": slack,
+                            },
+                        )
+                yield {
                     "demand": route["id"],
                     "net": route["net"],
                     "completion_slot": completion_slot,
                     "source_ready_slot": source_ready_slot,
                     "sink_arrival_slots": sink_arrivals,
                 }
-            )
-            for sink, arrival in sink_arrivals.items():
-                exact_arrivals[(route["net"], sink)] = arrival
-        if current is not None or expected_hop_count != len(entry_index):
+            if observed_routes != len(raw_routes):
+                raise ValidationError(
+                    "indexed route validation coverage disagrees"
+                )
+            if current is not None or expected_hop_count != len(entry_index):
+                raise ValidationError(
+                    "schedule.entries: route-hop coverage is incomplete"
+                )
+
+        validated_completions = entry_index.validate_expected_completions(
+            recomputed_completions()
+        )
+        if validated_completions != len(raw_routes):
             raise ValidationError(
-                "schedule.entries: route-hop coverage is incomplete"
+                "schedule.demand_completions record coverage disagrees"
             )
 
         counts = entry_index.domain_counts()
@@ -2809,22 +3161,44 @@ def _validate_indexed_exact_tdm_schedule(
                 )
             capacity_index += 1
 
-    completions.sort(key=lambda item: item["demand"])
-    _validate_indexed_schedule_section(
-        schedule, "demand_completions", completions
-    )
     expected_domains = _domain_schedule_records_from_counts(
         platform, constraints, counts
     )
     _validate_indexed_schedule_section(
         schedule, "domain_schedules", expected_domains
     )
-    expected_certificate = _indexed_certificate(
-        ordered_routes, exact_arrivals, sampled_timing_constraints
-    )
-    minimum_capture_slack = expected_certificate[
-        "minimum_sink_slack_slots"
-    ]
+    if packed_order is None:
+        assert ordered_routes is not None
+        expected_certificate = _indexed_certificate(
+            ordered_routes, exact_arrivals, sampled_timing_constraints
+        )
+        minimum_capture_slack = expected_certificate[
+            "minimum_sink_slack_slots"
+        ]
+        maximum_dependency_depth = max(
+            (
+                route["combinational_dependency_depth"]
+                for route in ordered_routes
+            ),
+            default=0,
+        )
+        routed_sinks = sum(len(route["sinks"]) for route in ordered_routes)
+    else:
+        minimum_capture_slack = minimum_sink_slack
+        expected_certificate = {
+            "schema": INDEXED_SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
+            "provider": "indexed-conservative-readiness-certificate-v2",
+            "launch_readiness_policy": "one-settle-slot-conservative-v1",
+            "capture_coverage": "all-routed-sinks-conservative-v1",
+            "topological_cut_count": len(packed_order),
+            "topological_cut_order_sha256": order_digest.hexdigest(),
+            "dependency_edges": dependency_edges,
+            "readiness_records": readiness_count,
+            "readiness_sha256": readiness_digest.hexdigest(),
+            "sink_readiness_checks": sink_count,
+            "sink_readiness_sha256": sink_digest.hexdigest(),
+            "minimum_sink_slack_slots": minimum_capture_slack,
+        }
     if (
         schedule.get("qualification")
         != "dependency-schedule-readiness-pass"
@@ -2844,9 +3218,7 @@ def _validate_indexed_exact_tdm_schedule(
         "demands": len(raw_routes),
         "scheduled_bit_hops": expected_hop_count,
         "frame_slots": frame_slots,
-        "completion_slot": max(
-            (item["completion_slot"] for item in completions), default=0
-        ),
+        "completion_slot": completion_max,
         "max_domain_utilization": max(
             (domain["utilization"] for domain in expected_domains),
             default=0.0,
@@ -2855,13 +3227,7 @@ def _validate_indexed_exact_tdm_schedule(
         "transport_ordering_policy": "path-local-dependency-dag-v1",
         "commit_slot": sampled_timing_constraints["commit_slot"],
         "dependency_edges": expected_certificate["dependency_edges"],
-        "maximum_combinational_dependency_depth": max(
-            (
-                route["combinational_dependency_depth"]
-                for route in ordered_routes
-            ),
-            default=0,
-        ),
+        "maximum_combinational_dependency_depth": maximum_dependency_depth,
         "conservative_sink_readiness_checks": expected_certificate[
             "sink_readiness_checks"
         ],
@@ -2875,7 +3241,7 @@ def _validate_indexed_exact_tdm_schedule(
         "status": "pass",
         "qualification": "dependency-schedule-readiness-pass",
         **expected_metrics,
-        "routed_sinks": sum(len(route["sinks"]) for route in raw_routes),
+        "routed_sinks": routed_sinks,
     }
 
 

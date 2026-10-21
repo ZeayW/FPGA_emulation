@@ -65,6 +65,16 @@ cluster IDs, member order, resource totals, groups, fixed placement and policy.
 On a synthetic 300,000-cell singleton input, loading plus clustering reduced
 traced peak allocation from 436.58 MiB to 212.52 MiB and wall time from 9.94 to
 5.70 seconds. This is isolated construction evidence, not NVDLA qualification.
+Combinational-cut characterization now uses the same compact source. Ordered
+endpoint cursors feed a file-backed arc deduplicator and fixed-width CSR/SCC
+arrays; each net retains at most one driver plus a multi-driver flag, and
+eligible arcs are inserted in batches of at most 8,192. Clock/reset,
+multi-driver and state-source nets do not accumulate sink populations. A
+1,000,000-endpoint high-fanout regression stays below 16 MiB of traced Python
+allocation. A separate 100,001-instance chain used 11.38 MB peak versus 90.99
+MB for the reference path while preserving the same 100,000 eligible cuts.
+The final eligible-name set remains graph-sized migration debt, and direct
+bare-database callers still rely on their managed source seal.
 New Phase 3 publications use assignment-index schema v3. SQLite is the bounded
 control plane for instance ownership, partitions and cut sinks. Static Exact
 nodes, segments and captures are integer-coded in the versioned,
@@ -224,9 +234,16 @@ peak allocation from 346.1 MB to 108.2 MB, retained allocation from 332.9 MB
 to 83.5 MB, and route artifact bytes from 46.60 MB to 32.19 MB; two repeated
 runs measured the typed build at 8.16--8.32 seconds versus 8.92--9.59 seconds
 for whole-JSON loading. This is adapter evidence rather than NVDLA
-qualification, and the standalone independent validator still constructs
-route-level dependency maps. The native adapter also retains route-scale
-compact columns, and the ratio-delay baseline branch still performs hop-scale
+qualification. The independent typed validator now reconstructs the exact
+ready order with packed CSR arrays and net ranks, stores arrivals in a compact
+integer matrix, streams certificate digests and compares recomputed completion
+rows through a bounded temporary SQLite relation. It no longer retains the
+route-level exact-node, successor, indegree, order, completion or tuple-keyed
+arrival Python maps. At 100,000 routes, an independent-root fixture used 13.88
+MiB peak versus 316.65 MiB for the reference validator (4.55 versus 6.94
+seconds); a 99,999-edge chain used 5.51 MiB versus 338.55 MiB (5.25 versus
+6.33 seconds). The native adapter still retains route-scale compact columns,
+and the ratio-delay baseline branch still performs hop-scale
 work when a platform declares a TDM delay model. Production Phase 6 dispatch reads only the lazy
 schedule entry count, and Phase 7C plus physical/local timing consumers open
 RouteStore lazily. Terminal full-bundle validation still uses compatibility
@@ -452,8 +469,15 @@ in one read pass, then validates one FPGA at a time;
 Phase 4 feedback, Phase 7C, global timing, Vivado timing import and experiment
 validation resolve those files lazily. Logical canonical hashing streams one
 referenced database at a time and remains equal to the previous inline JSON
-hash. The per-FPGA evidence databases are still JSON and their producers remain
-Python migration work.
+hash. Logic-segment timing is the first per-FPGA evidence population moved to
+a direct typed owner: each producer writes a content-addressed SQLite generation
+and commits a small selector last, without retaining a production JSON copy.
+The selector and physical summary bind the route, schedule and Phase 3 logical
+seals. Exact schema/count/key validation, owner-scoped generation leases and
+garbage collection, and a bounded multi-FPGA ordered merge preserve global
+segment and path-key uniqueness beyond ten FPGAs. Archive retention follows and
+validates the complete summary-selector-store group. Boundary, local-path and
+other per-FPGA evidence databases remain JSON migration work.
 
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
 from their sealed SQLite sidecar. Production placement validation writes each
@@ -913,6 +937,17 @@ allocation from 56,886,856 to 7,908,412 bytes (-86.1%) and peak allocation from
 56,887,132 to 37,454,410 bytes (-34.2%). These boundary measurements do not
 replace NVDLA Global STA qualification. See
 [timing scope and metric definitions](docs/global-opensta-qualification.md).
+
+Global timing now queries the typed logic-segment population through one
+validated multi-FPGA ordered cursor rather than decoding per-FPGA JSON and
+building a global `path -> member -> segments` tree or issuing one query per
+member and FPGA. Cursors own their shared leases and close deterministically;
+measured/unmeasured IDs, segment IDs and `(system_path, member_path, cut_index)`
+keys are globally disjoint. On 50,000 records, typed read plus validation took
+0.919 seconds with 2.13 MB traced peak allocation and a 9.82 MB store, compared
+with 0.334 seconds, 53.75 MB and a 14.43 MB legacy JSON file. The memory and
+size reduction is established; the higher isolated validation time and full
+NVDLA Phase 7C result remain qualification targets.
 
 ### Selected research references
 

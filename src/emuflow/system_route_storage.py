@@ -557,6 +557,237 @@ class SystemRouteSequence(list):
         finally:
             connection.close()
 
+    def iter_exact_dependency_ranks(self) -> Iterator[int]:
+        """Yield net ranks in the reverse level order used by Phase 5.
+
+        The cursor keeps the graph ordering in SQLite.  Consumers can update
+        compact packed arrays without sorting or retaining one Python route
+        object per cut.
+        """
+
+        connection = _connect(self.store_path)
+        try:
+            observed = 0
+            for row in connection.execute(
+                "WITH ranked AS ("
+                " SELECT seq,net_id,dependency_level,"
+                " row_number() OVER (ORDER BY net_id,seq)-1 AS net_rank"
+                " FROM routes) SELECT net_rank FROM ranked "
+                "ORDER BY dependency_level DESC,net_id DESC"
+            ):
+                observed += 1
+                yield int(row[0])
+            if observed != self._count:
+                raise ValidationError(
+                    "system-route dependency-rank coverage disagrees"
+                )
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "system-route dependency ranks are unreadable"
+            ) from error
+        finally:
+            connection.close()
+
+    def iter_demands_by_net_rank_order(
+        self, net_ranks: Iterator[int]
+    ) -> Iterator[str]:
+        """Yield demand identities for an externally computed net-rank order."""
+
+        connection = _connect(self.store_path)
+        try:
+            connection.execute("PRAGMA temp_store=FILE")
+            connection.execute(
+                "CREATE TEMP TABLE validation_route_order("
+                "position INTEGER PRIMARY KEY,net_rank INTEGER NOT NULL UNIQUE)"
+            )
+            connection.executemany(
+                "INSERT INTO validation_route_order(position,net_rank) "
+                "VALUES(?,?)",
+                enumerate(net_ranks),
+            )
+            rows = connection.execute(
+                "WITH ranked AS ("
+                " SELECT demand_id,row_number() OVER "
+                " (ORDER BY net_id,seq)-1 AS net_rank FROM routes) "
+                "SELECT r.demand_id FROM validation_route_order o "
+                "JOIN ranked r USING(net_rank) ORDER BY o.position"
+            )
+            observed = 0
+            for row in rows:
+                observed += 1
+                yield str(row[0])
+            if observed != self._count:
+                raise ValidationError(
+                    "system-route validation order coverage disagrees"
+                )
+        except (sqlite3.DatabaseError, sqlite3.IntegrityError) as error:
+            raise ValidationError(
+                "system-route validation order is malformed"
+            ) from error
+        finally:
+            connection.close()
+
+    def iter_routes_by_net_rank_order(
+        self, net_ranks: Iterator[int]
+    ) -> Iterator[tuple[int, dict[str, Any], tuple[int, ...]]]:
+        """Yield exact routes and predecessor ranks in a packed order.
+
+        ``net_ranks`` is normally the compact topological order calculated by
+        the independent Phase 5 validator.  The temporary order relation lets
+        SQLite merge all route children in one pass, avoiding random OFFSET
+        reads and an R-sized Python route dictionary/list.
+        """
+
+        connection = _connect(self.store_path)
+        try:
+            connection.execute("PRAGMA temp_store=FILE")
+            connection.execute(
+                "CREATE TEMP TABLE validation_route_ranks("
+                "route_seq INTEGER PRIMARY KEY,net_rank INTEGER NOT NULL UNIQUE)"
+            )
+            connection.execute(
+                "INSERT INTO validation_route_ranks(route_seq,net_rank) "
+                "SELECT seq,row_number() OVER (ORDER BY net_id,seq)-1 "
+                "FROM routes"
+            )
+            connection.execute(
+                "CREATE TEMP TABLE validation_route_order("
+                "position INTEGER PRIMARY KEY,net_rank INTEGER NOT NULL UNIQUE)"
+            )
+            connection.executemany(
+                "INSERT INTO validation_route_order(position,net_rank) "
+                "VALUES(?,?)",
+                enumerate(net_ranks),
+            )
+            route_cursor = connection.execute(
+                "SELECT o.position,o.net_rank,r.* "
+                "FROM validation_route_order o "
+                "JOIN validation_route_ranks k USING(net_rank) "
+                "JOIN routes r ON r.seq=k.route_seq ORDER BY o.position"
+            )
+            sink_cursor = iter(connection.execute(
+                "SELECT o.position,r.seq,s.seq,s.sink_fpga "
+                "FROM validation_route_order o "
+                "JOIN validation_route_ranks k USING(net_rank) "
+                "JOIN routes r ON r.seq=k.route_seq "
+                "JOIN route_sinks s ON s.route_seq=r.seq "
+                "ORDER BY o.position,s.seq"
+            ))
+            edge_cursor = iter(connection.execute(
+                "SELECT o.position,r.seq,e.seq,e.link_id,e.source_fpga,"
+                "e.sink_fpga FROM validation_route_order o "
+                "JOIN validation_route_ranks k USING(net_rank) "
+                "JOIN routes r ON r.seq=k.route_seq "
+                "JOIN route_edges e ON e.route_seq=r.seq "
+                "ORDER BY o.position,e.seq"
+            ))
+            predecessor_cursor = iter(connection.execute(
+                "SELECT o.position,r.seq,p.seq,p.predecessor_net,pk.net_rank "
+                "FROM validation_route_order o "
+                "JOIN validation_route_ranks k USING(net_rank) "
+                "JOIN routes r ON r.seq=k.route_seq "
+                "JOIN route_predecessors p ON p.route_seq=r.seq "
+                "LEFT JOIN routes pr ON pr.net_id=p.predecessor_net "
+                "LEFT JOIN validation_route_ranks pk ON pk.route_seq=pr.seq "
+                "ORDER BY o.position,p.seq"
+            ))
+            sink_row = next(sink_cursor, None)
+            edge_row = next(edge_cursor, None)
+            predecessor_row = next(predecessor_cursor, None)
+            observed = 0
+            for row in route_cursor:
+                position = int(row[0])
+                net_rank = int(row[1])
+                route_seq = int(row[2])
+                route = _decode_json(row[8], "system route")
+                if any(
+                    key in route
+                    for key in (
+                        "id",
+                        "net",
+                        "source",
+                        "sinks",
+                        "tree_edges",
+                        "predecessor_cut_nets",
+                        "dependency_level",
+                        "combinational_dependency_depth",
+                    )
+                ):
+                    raise ValidationError(
+                        "system route scalar payload is malformed"
+                    )
+                route.update(
+                    {
+                        "id": str(row[3]),
+                        "net": str(row[4]),
+                        "source": str(row[5]),
+                    }
+                )
+                sinks: list[str] = []
+                while sink_row is not None and int(sink_row[0]) == position:
+                    if int(sink_row[1]) != route_seq:
+                        raise ValidationError(
+                            "system-route sink order disagrees"
+                        )
+                    sinks.append(str(sink_row[3]))
+                    sink_row = next(sink_cursor, None)
+                edges: list[dict[str, str]] = []
+                while edge_row is not None and int(edge_row[0]) == position:
+                    if int(edge_row[1]) != route_seq:
+                        raise ValidationError(
+                            "system-route edge order disagrees"
+                        )
+                    edges.append(
+                        {
+                            "link": str(edge_row[3]),
+                            "from": str(edge_row[4]),
+                            "to": str(edge_row[5]),
+                        }
+                    )
+                    edge_row = next(edge_cursor, None)
+                predecessors: list[str] = []
+                predecessor_ranks: list[int] = []
+                while (
+                    predecessor_row is not None
+                    and int(predecessor_row[0]) == position
+                ):
+                    if (
+                        int(predecessor_row[1]) != route_seq
+                        or predecessor_row[4] is None
+                    ):
+                        raise ValidationError(
+                            "system route has an unknown predecessor net"
+                        )
+                    predecessors.append(str(predecessor_row[3]))
+                    predecessor_ranks.append(int(predecessor_row[4]))
+                    predecessor_row = next(predecessor_cursor, None)
+                route["sinks"] = sinks
+                route["tree_edges"] = edges
+                if row[6] is None or row[7] is None:
+                    raise ValidationError(
+                        "indexed exact route dependency metadata is invalid"
+                    )
+                route["predecessor_cut_nets"] = predecessors
+                route["dependency_level"] = int(row[6])
+                route["combinational_dependency_depth"] = int(row[7])
+                observed += 1
+                yield net_rank, route, tuple(predecessor_ranks)
+            if (
+                observed != self._count
+                or sink_row is not None
+                or edge_row is not None
+                or predecessor_row is not None
+            ):
+                raise ValidationError(
+                    "system-route validation order coverage disagrees"
+                )
+        except (sqlite3.DatabaseError, sqlite3.IntegrityError) as error:
+            raise ValidationError(
+                "system-route validation order is malformed"
+            ) from error
+        finally:
+            connection.close()
+
     def iter_cross_layer_route_metadata(
         self,
     ) -> Iterator[tuple[str, str, str, tuple[str, ...]]]:

@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import emuflow.archive as archive_module
 from emuflow.archive import (
@@ -45,6 +46,227 @@ def _run_small_flow(output: Path) -> None:
 
 
 class ValidationArchiveTest(unittest.TestCase):
+    def test_archive_rollback_accepts_already_absent_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing = Path(temporary_directory) / "missing"
+            archive_module._rollback_published_directory(missing, (1, 1))
+            self.assertFalse(missing.exists())
+
+    def test_archive_rollback_never_removes_foreign_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            archive = Path(temporary_directory) / "archive"
+            archive.mkdir()
+            (archive / "foreign").write_text("keep", encoding="utf-8")
+            with self.assertRaisesRegex(EmuFlowError, "restored a foreign"):
+                archive_module._rollback_published_directory(archive, (0, 0))
+            self.assertEqual(
+                (archive / "foreign").read_text(encoding="utf-8"), "keep"
+            )
+
+    def test_archive_rollback_isolates_before_identity_check(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive = root / "archive"
+            archive.mkdir()
+            (archive / "owned").write_text("owned", encoding="utf-8")
+            stat = archive.stat()
+            identity = (stat.st_dev, stat.st_ino)
+            foreign = root / "foreign"
+            foreign.mkdir()
+            (foreign / "value").write_text("foreign", encoding="utf-8")
+            owned_recovery = root / "owned-recovery"
+            original_replace = archive_module.os.replace
+            attacked = False
+
+            def swap_before_isolation(source: Path, target: Path) -> None:
+                nonlocal attacked
+                if not attacked and Path(source) == archive:
+                    attacked = True
+                    original_replace(archive, owned_recovery)
+                    original_replace(foreign, archive)
+                original_replace(source, target)
+
+            with patch.object(
+                archive_module.os,
+                "replace",
+                side_effect=swap_before_isolation,
+            ), self.assertRaisesRegex(EmuFlowError, "restored a foreign"):
+                archive_module._rollback_published_directory(archive, identity)
+            self.assertTrue(attacked)
+            self.assertEqual(
+                (archive / "value").read_text(encoding="utf-8"), "foreign"
+            )
+            self.assertEqual(
+                (owned_recovery / "owned").read_text(encoding="utf-8"),
+                "owned",
+            )
+
+    def test_archive_rollback_preserves_two_foreign_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            archive = root / "archive"
+            archive.mkdir()
+            (archive / "owned").write_text("owned", encoding="utf-8")
+            stat = archive.stat()
+            identity = (stat.st_dev, stat.st_ino)
+            isolated_foreign = root / "isolated-foreign"
+            isolated_foreign.mkdir()
+            (isolated_foreign / "value").write_text(
+                "isolated", encoding="utf-8"
+            )
+            new_target = root / "new-target"
+            new_target.mkdir()
+            (new_target / "value").write_text("target", encoding="utf-8")
+            owned_recovery = root / "owned-recovery"
+            original_replace = archive_module.os.replace
+            attacked = False
+
+            def occupy_after_isolation(source: Path, target: Path) -> None:
+                nonlocal attacked
+                if not attacked and Path(source) == archive:
+                    attacked = True
+                    original_replace(archive, owned_recovery)
+                    original_replace(isolated_foreign, archive)
+                    original_replace(archive, target)
+                    original_replace(new_target, archive)
+                    return
+                original_replace(source, target)
+
+            with patch.object(
+                archive_module.os,
+                "replace",
+                side_effect=occupy_after_isolation,
+            ), self.assertRaisesRegex(
+                EmuFlowError, "foreign isolated output"
+            ) as raised:
+                archive_module._rollback_published_directory(archive, identity)
+            self.assertTrue(attacked)
+            self.assertEqual(
+                (archive / "value").read_text(encoding="utf-8"), "target"
+            )
+            quarantines = list(root.glob(".archive.rollback-*"))
+            self.assertEqual(len(quarantines), 1)
+            self.assertIn(str(quarantines[0]), str(raised.exception))
+            self.assertEqual(
+                (quarantines[0] / "value").read_text(encoding="utf-8"),
+                "isolated",
+            )
+            self.assertEqual(
+                (owned_recovery / "owned").read_text(encoding="utf-8"),
+                "owned",
+            )
+
+    def test_archive_fsync_failure_keeps_old_namespace_unpublished(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            flow = root / "flow"
+            archive = root / "archive"
+            _run_small_flow(flow)
+            with patch.object(
+                archive_module,
+                "_fsync_tree_directories",
+                side_effect=OSError("injected fsync failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "injected"):
+                    create_validation_archive(
+                        flow, archive, run_id="fsync-failure"
+                    )
+            self.assertFalse(archive.exists())
+            self.assertFalse(
+                archive.with_name(
+                    f".{archive.name}.creating-{archive_module.os.getpid()}"
+                ).exists()
+            )
+
+    def test_archive_parent_fsync_failure_rolls_back_and_can_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            flow = root / "flow"
+            archive = root / "archive"
+            _run_small_flow(flow)
+            original_fsync = archive_module._fsync_directory
+            injected = False
+
+            def fail_after_rename(path: Path) -> None:
+                nonlocal injected
+                if (
+                    not injected
+                    and path.resolve() == archive.parent.resolve()
+                    and archive.is_dir()
+                ):
+                    injected = True
+                    raise OSError("injected post-rename parent fsync failure")
+                original_fsync(path)
+
+            with patch.object(
+                archive_module, "_fsync_directory", side_effect=fail_after_rename
+            ):
+                with self.assertRaisesRegex(OSError, "post-rename"):
+                    create_validation_archive(
+                        flow, archive, run_id="post-rename-failure"
+                    )
+            self.assertTrue(injected)
+            self.assertFalse(archive.exists())
+            self.assertFalse(any(root.glob(".archive.rollback-*")))
+            result = create_validation_archive(
+                flow, archive, run_id="post-rename-retry"
+            )
+            self.assertEqual(result["status"], "pass")
+
+    def test_physical_summary_and_typed_logic_generation_are_one_group(
+        self,
+    ) -> None:
+        from emuflow.logic_segment_timing_storage import (
+            logic_segment_timing_reference,
+            write_logic_segment_timing_storage,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            flow = Path(temporary_directory).resolve()
+            selector = flow / "physical/fpga0/logic-segment-timing.json"
+            header = {
+                "schema": "emuflow.logic-segment-timing/v1",
+                "status": "pass", "design": "dut", "platform": "board",
+                "fpga": "fpga0", "provider": "test",
+                "qualification": "endpoint-chain", "coverage": {},
+                "system_routes_sha256": "a" * 64,
+                "tdm_schedule_sha256": "b" * 64,
+            }
+            record = {
+                "id": "segment0", "kind": "capture",
+                "system_path": "path0", "member_path": "path0",
+                "cut_index": 0, "fpga": "fpga0",
+                "replace_tx_endpoint": None, "start_pin": "a",
+                "end_pin": "b", "delay_ns": 1.0,
+            }
+            view = write_logic_segment_timing_storage(
+                selector, header=header, segments=(record,)
+            )
+            generation = view.store_path
+            view.close()
+            summary = flow / "physical/physical-summary.json"
+            write_json(summary, {
+                "schema": "emuflow.phase7b-physical-summary/v1",
+                "design": "dut", "platform": "board",
+                "logic_segment_system_routes_sha256": "a" * 64,
+                "logic_segment_tdm_schedule_sha256": "b" * 64,
+                "logic_segment_timing": {
+                    "fpga0": logic_segment_timing_reference(
+                        selector, relative_to=summary.parent
+                    )
+                },
+            })
+            candidates = {
+                path.relative_to(flow): {"test"}
+                for path in (summary, selector, generation)
+            }
+            groups = archive_module._atomic_retention_groups(flow, candidates)
+            self.assertEqual(groups[summary.relative_to(flow)], frozenset(candidates))
+            archive_module._validate_json(summary)
+            generation.write_bytes(generation.read_bytes() + b"tamper")
+            with self.assertRaisesRegex(ValidationError, "seal"):
+                archive_module._validate_json(summary)
+
     def test_archive_rejects_ambiguous_sidecar_declarations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             flow = Path(temporary_directory).resolve()

@@ -18,6 +18,9 @@ from emuflow.logic_segment_timing import (
     import_vpr_logic_segment_timing,
     prepare_logic_segment_query_inputs,
 )
+from emuflow.logic_segment_timing_storage import (
+    read_logic_segment_timing_storage,
+)
 from emuflow.local_path_timing import (
     _explicit_vpr_path_pins,
     _resolve_local_path_fpga,
@@ -1046,6 +1049,8 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 identity_path,
                 {
                     "schema": "emuflow.logic-segment-identity/v1",
+                    "system_routes_sha256": "a" * 64,
+                    "tdm_schedule_sha256": "b" * 64,
                     "status": "pass",
                     "design": "dut",
                     "platform": "board",
@@ -1107,6 +1112,8 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 identity_path,
                 {
                     "schema": "emuflow.logic-segment-identity/v1",
+                    "system_routes_sha256": "a" * 64,
+                    "tdm_schedule_sha256": "b" * 64,
                     "status": "pass",
                     "design": "dut",
                     "platform": "board",
@@ -1159,11 +1166,13 @@ class LogicSegmentTimingTest(unittest.TestCase):
             )
             self.assertEqual(partial["segments"], 0)
             self.assertEqual(partial["missing_segments"], 1)
-            partial_database = read_json(root / "partial.json")
-            self.assertEqual(
-                partial_database["unmeasured_segments"][0]["id"],
-                segment["id"],
-            )
+            with read_logic_segment_timing_storage(
+                root / "partial.json"
+            ) as partial_database:
+                self.assertEqual(
+                    partial_database["unmeasured_segments"][0]["id"],
+                    segment["id"],
+                )
 
     def test_vivado_import_preserves_cone_bound_measurement_trace(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1188,6 +1197,8 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 identity_path,
                 {
                     "schema": "emuflow.logic-segment-identity/v1",
+                    "system_routes_sha256": "a" * 64,
+                    "tdm_schedule_sha256": "b" * 64,
                     "status": "pass",
                     "design": "dut",
                     "platform": "board",
@@ -1227,15 +1238,15 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 raw, identity_path, output
             )
             self.assertEqual(report["cone_bound_segments"], 1)
-            database = read_json(output)
-            self.assertEqual(
-                database["segments"][0]["measurement"],
-                "cut-net-cone-upper-bound",
-            )
-            self.assertEqual(
-                database["segments"][0]["actual_start_object"],
-                "real_ff/C",
-            )
+            with read_logic_segment_timing_storage(output) as database:
+                self.assertEqual(
+                    database["segments"][0]["measurement"],
+                    "cut-net-cone-upper-bound",
+                )
+                self.assertEqual(
+                    database["segments"][0]["actual_start_object"],
+                    "real_ff/C",
+                )
 
 
 if __name__ == "__main__":

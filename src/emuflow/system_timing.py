@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Mapping, Optional
+import heapq
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from .board_link_timing import validate_board_link_timing
 from .boundary_timing import validate_boundary_timing_database
@@ -190,22 +191,99 @@ def _endpoint_delay_database(
     return result
 
 
+class _IndexedLogicSegmentMembers:
+    def __init__(self, owner: "_IndexedLogicSegmentLookup", system_path: str):
+        self.owner = owner
+        self.system_path = system_path
+
+    def get(self, member_path: str, default: Any = None) -> Any:
+        records = self.owner.segments_for(self.system_path, member_path)
+        return records if records else default
+
+    def __getitem__(self, member_path: str) -> List[Mapping[str, Any]]:
+        records = self.owner.segments_for(self.system_path, member_path)
+        if not records:
+            raise KeyError(member_path)
+        return records
+
+
+class _IndexedLogicSegmentLookup:
+    """Small store set with indexed path/member lookup and no graph mirror."""
+
+    def __init__(self, stores: Sequence[Mapping[str, Any]]):
+        self.stores = stores
+
+    def get(self, system_path: str, default: Any = None) -> Any:
+        if not any(
+            store.contains_system_path(system_path)  # type: ignore[attr-defined]
+            for store in self.stores
+        ):
+            return default
+        return _IndexedLogicSegmentMembers(self, system_path)
+
+    def segments_for(
+        self, system_path: str, member_path: str
+    ) -> List[Mapping[str, Any]]:
+        records = [
+            segment
+            for store in self.stores
+            for segment in store.iter_segments_for(  # type: ignore[attr-defined]
+                system_path, member_path
+            )
+        ]
+        records.sort(key=lambda item: (item["cut_index"], item["id"]))
+        return records
+
+
 def _logic_segment_database(
     physical_summary: Mapping[str, Any],
-) -> Optional[Dict[str, Dict[str, List[Mapping[str, Any]]]]]:
+) -> Optional[Any]:
     raw = physical_summary.get("logic_segment_timing")
     if raw is None:
         return None
     if not isinstance(raw, dict):
         raise ValidationError("physical logic segment timing map is invalid")
+    cached = getattr(raw, "_logic_collection_cache", None)
+    if cached is not None:
+        return cached
+    from .logic_segment_timing_storage import (
+        LogicSegmentTimingCollection,
+        LogicSegmentTimingView,
+    )
+
     result: Dict[str, Dict[str, List[Mapping[str, Any]]]] = {}
     segment_ids = set()
+    stores = []
+    representations = set()
+    source_identity = None
     for fpga, database in raw.items():
-        validation = validate_logic_segment_timing(database)
-        if validation["fpga"] != fpga:
+        indexed_view = isinstance(database, LogicSegmentTimingView)
+        if indexed_view:
+            validation_fpga = database.selector["source"]["fpga"]
+        else:
+            validation_fpga = validate_logic_segment_timing(database)["fpga"]
+        if validation_fpga != fpga:
             raise ValidationError(
                 "physical logic segment timing FPGA identity disagrees"
             )
+        identity = (
+            database.get("design"),
+            database.get("platform"),
+            database.get("semantic_contract_sha256"),
+        )
+        if source_identity is None:
+            source_identity = identity
+        elif identity != source_identity:
+            raise ValidationError(
+                "physical logic segment timing source seals disagree"
+            )
+        indexed = indexed_view or callable(
+            getattr(database, "iter_segments_for", None)
+        )
+        representations.add(indexed)
+        if indexed:
+            stores.append(database)
+            continue
         for segment in database["segments"]:
             segment_id = segment["id"]
             if segment_id in segment_ids:
@@ -216,6 +294,28 @@ def _logic_segment_database(
             result.setdefault(segment["system_path"], {}).setdefault(
                 segment["member_path"], []
             ).append(segment)
+    if len(representations) > 1:
+        raise ValidationError(
+            "physical logic segment timing mixes indexed and legacy evidence"
+        )
+    if stores:
+        if all(isinstance(store, LogicSegmentTimingView) for store in stores):
+            collection = LogicSegmentTimingCollection(stores)
+            try:
+                raw._logic_collection_cache = collection
+            except AttributeError:
+                pass
+            return collection
+        previous = None
+        for segment_id in heapq.merge(
+            *(store.iter_segment_ids() for store in stores)  # type: ignore[attr-defined]
+        ):
+            if segment_id == previous:
+                raise ValidationError(
+                    f"duplicate physical logic segment {segment_id!r}"
+                )
+            previous = segment_id
+        return _IndexedLogicSegmentLookup(stores)
     return result
 
 
@@ -623,433 +723,452 @@ def build_system_timing(
     sampled_event_failures = 0
     fixed_slot_event_paths = 0
     fixed_slot_event_failures = 0
-    for record in records:
-        transitions = record["cut_transitions"]
-        partitions, discontinuities = _logic_partition_sequence(transitions)
-        unknown = sorted(set(partitions) - set(delays))
-        if unknown:
-            raise ValidationError(
-                f"system timing path {record['path']} uses unknown FPGAs "
-                f"{unknown}"
-            )
-        inactive = sorted(
-            {fpga for fpga in partitions if not delays[fpga]["active"]}
-        )
-        if inactive:
-            raise ValidationError(
-                f"system timing path {record['path']} crosses inactive FPGAs "
-                f"{inactive}"
-            )
-        local_delay = sum(delays[fpga]["dut"] for fpga in partitions)
-        scheduled_hops = record["scheduled_hops"]
-        if endpoint_delays is None:
-            interface_delay = sum(
-                delays[hop["from"]]["cross"]
-                + delays[hop["to"]]["cross"]
-                for hop in scheduled_hops
-            )
-            interface_model = "per-partition-interface-maxima-upper-bound"
-        else:
-            endpoint_ids = [
-                endpoint_id
-                for hop in scheduled_hops
-                for endpoint_id in (
-                    hop["tx_endpoint"],
-                    hop["rx_endpoint"],
-                )
-            ]
-            missing = sorted(set(endpoint_ids) - set(endpoint_delays))
-            if missing:
+    segment_cursor = (
+        logic_segments.ordered_cursor()
+        if endpoint_delays is not None
+        and callable(getattr(logic_segments, "ordered_cursor", None))
+        else None
+    )
+    try:
+        for record in sorted(records, key=lambda item: item["path"]):
+            transitions = record["cut_transitions"]
+            partitions, discontinuities = _logic_partition_sequence(transitions)
+            unknown = sorted(set(partitions) - set(delays))
+            if unknown:
                 raise ValidationError(
-                    f"system timing path {record['path']} lacks endpoint "
-                    f"timing for {missing[:10]}"
+                    f"system timing path {record['path']} uses unknown FPGAs "
+                    f"{unknown}"
                 )
-            interface_delay = sum(
-                endpoint_delays[endpoint_id] for endpoint_id in endpoint_ids
+            inactive = sorted(
+                {fpga for fpga in partitions if not delays[fpga]["active"]}
             )
-            interface_model = "routed-endpoint-exact"
-        member_ids = record.get(
-            "compressed_path_ids", [record["path"]]
-        )
-        logic_model = "per-partition-maximum-upper-bound"
-        member_physical = None
-        if logic_segments is not None and endpoint_delays is not None:
-            member_segments = logic_segments.get(record["path"], {})
-            candidates = []
-            for member in member_ids:
-                segments = member_segments.get(member, [])
-                roles = [segment["kind"] for segment in segments]
-                cut_indices = [segment["cut_index"] for segment in segments]
-                if (
-                    len(segments) != len(record["cut_nets"]) + 1
-                    or roles.count("launch") != 1
-                    or roles.count("capture") != 1
-                    or roles.count("transition")
-                    != len(record["cut_nets"]) - 1
-                    or sorted(cut_indices)
-                    != list(range(len(record["cut_nets"]) + 1))
-                ):
-                    candidates = []
-                    break
-                replacements = [
-                    segment["replace_tx_endpoint"]
-                    for segment in segments
-                    if segment["replace_tx_endpoint"] is not None
+            if inactive:
+                raise ValidationError(
+                    f"system timing path {record['path']} crosses inactive FPGAs "
+                    f"{inactive}"
+                )
+            local_delay = sum(delays[fpga]["dut"] for fpga in partitions)
+            scheduled_hops = record["scheduled_hops"]
+            if endpoint_delays is None:
+                interface_delay = sum(
+                    delays[hop["from"]]["cross"]
+                    + delays[hop["to"]]["cross"]
+                    for hop in scheduled_hops
+                )
+                interface_model = "per-partition-interface-maxima-upper-bound"
+            else:
+                endpoint_ids = [
+                    endpoint_id
+                    for hop in scheduled_hops
+                    for endpoint_id in (
+                        hop["tx_endpoint"],
+                        hop["rx_endpoint"],
+                    )
                 ]
-                if (
-                    len(replacements) != len(record["cut_nets"])
-                    or len(replacements) != len(set(replacements))
-                    or any(item not in endpoint_delays for item in replacements)
-                ):
+                missing = sorted(set(endpoint_ids) - set(endpoint_delays))
+                if missing:
                     raise ValidationError(
-                        f"system timing path {record['path']} logic segment "
-                        "replacement coverage is invalid"
+                        f"system timing path {record['path']} lacks endpoint "
+                        f"timing for {missing[:10]}"
                     )
-                replaced_interface = sum(
-                    endpoint_delays[item] for item in replacements
+                interface_delay = sum(
+                    endpoint_delays[endpoint_id] for endpoint_id in endpoint_ids
                 )
-                unreplaced_interface = interface_delay - replaced_interface
-                if unreplaced_interface < -1.0e-8:
-                    raise ValidationError(
-                        f"system timing path {record['path']} has invalid "
-                        "endpoint replacement accounting"
-                    )
-                unreplaced_interface = max(0.0, unreplaced_interface)
-                segment_delay = sum(
-                    float(segment["delay_ns"]) for segment in segments
-                )
-                cone_bound_segments = sum(
-                    segment.get("measurement", "endpoint-exact")
-                    == "cut-net-cone-upper-bound"
-                    for segment in segments
-                )
-                composite = unreplaced_interface + segment_delay
-                candidates.append(
-                    (
-                        composite,
-                        member,
-                        segment_delay,
-                        unreplaced_interface,
-                        cone_bound_segments,
-                    )
-                )
-            if candidates and len(candidates) == len(member_ids):
-                member_physical = {
-                    member: {
-                        "physical_delay": composite,
-                        "local_delay": segment_delay,
-                        "interface_delay": unreplaced_interface,
-                        "cone_bound_segments": cone_bound_segments,
-                        "segments": sorted(
-                            member_segments[member],
-                            key=lambda item: item["cut_index"],
-                        ),
+                interface_model = "routed-endpoint-exact"
+            member_ids = sorted(record.get(
+                "compressed_path_ids", [record["path"]]
+            ))
+            logic_model = "per-partition-maximum-upper-bound"
+            member_physical = None
+            if logic_segments is not None and endpoint_delays is not None:
+                member_segments = (
+                    {
+                        member: list(segment_cursor.take(record["path"], member))
+                        for member in member_ids
                     }
-                    for (
-                        composite,
-                        member,
-                        segment_delay,
-                        unreplaced_interface,
-                        cone_bound_segments,
-                    ) in candidates
-                }
-        if member_physical is None:
-            clockless = [
-                fpga for fpga in partitions if not delays[fpga]["dut_present"]
-            ]
-            if clockless:
-                raise ValidationError(
-                    f"system timing path {record['path']} crosses DUT-clockless "
-                    f"partitions without complete routed logic segments: {clockless}"
+                    if segment_cursor is not None
+                    else logic_segments.get(record["path"], {})
                 )
-        transport_delay = record["transport_delay_ns"]
-        transport_model = "phase5-boarddb-model"
-        if board_link_delays is not None:
-            board_links = {link.id: link for link in platform.links}
-            transport_delay = 0.0
-            for hop in scheduled_hops:
-                key = (hop["link"], hop["from"], hop["to"])
-                model = board_links[hop["link"]].tdm_delay_model
-                if model is not None:
-                    transport_delay += model.delay_ns(
-                        schedule_entries[hop["schedule_entry"]].get("tdm_ratio"))
-                else:
-                    transport_delay += (board_link_delays[key]
-                        + hop["tdm_wait_slots"] * hop["tdm_slot_ns"])
-            transport_model = "board-link-timing-db"
-        target_period = record["clock_period_ns"]
-        virtual_period = _runtime_clock_period_ns(
-            runtime, record.get("clock_domain")
-        )
-        target_required_time = record.get("required_time_ns", target_period)
-        required_time_adjustment = target_period - target_required_time
-        runtime_required_time = virtual_period - required_time_adjustment
-        for member in member_ids:
-            member_local_delay = local_delay
-            member_interface_delay = interface_delay
-            member_physical_delay = local_delay + interface_delay
-            member_logic_model = logic_model
-            member_interface_model = interface_model
-            logic_exact = False
-            cone_bound = False
-            if member_physical is not None:
-                measurement = member_physical[member]
-                member_local_delay = measurement["local_delay"]
-                member_interface_delay = measurement["interface_delay"]
-                member_physical_delay = measurement["physical_delay"]
-                cone_bound = measurement["cone_bound_segments"] > 0
-                member_interface_model = (
-                    "routed-endpoint-exact-unreplaced-stages"
-                )
-                measured_logic_paths += 1
-                if cone_bound:
-                    member_logic_model = (
-                        "routed-staging-chain-cone-upper-bound"
+                candidates = []
+                for member in member_ids:
+                    segments = member_segments.get(member, [])
+                    roles = [segment["kind"] for segment in segments]
+                    cut_indices = [segment["cut_index"] for segment in segments]
+                    if (
+                        len(segments) != len(record["cut_nets"]) + 1
+                        or roles.count("launch") != 1
+                        or roles.count("capture") != 1
+                        or roles.count("transition")
+                        != len(record["cut_nets"]) - 1
+                        or sorted(cut_indices)
+                        != list(range(len(record["cut_nets"]) + 1))
+                    ):
+                        candidates = []
+                        break
+                    replacements = [
+                        segment["replace_tx_endpoint"]
+                        for segment in segments
+                        if segment["replace_tx_endpoint"] is not None
+                    ]
+                    if (
+                        len(replacements) != len(record["cut_nets"])
+                        or len(replacements) != len(set(replacements))
+                        or any(item not in endpoint_delays for item in replacements)
+                    ):
+                        raise ValidationError(
+                            f"system timing path {record['path']} logic segment "
+                            "replacement coverage is invalid"
+                        )
+                    replaced_interface = sum(
+                        endpoint_delays[item] for item in replacements
                     )
-                    cone_bound_logic_paths += 1
-                else:
-                    member_logic_model = "routed-staging-chain-exact"
-                    logic_exact = True
-                    exact_logic_paths += 1
-            fixed_slot_event = None
-            if fixed_slot_schedule and member_physical is not None:
-                assert endpoint_delays is not None
-                assert commit_slot is not None
-                fixed_slot_event = _fixed_slot_transport_path_delay(
-                    record,
-                    member,
-                    measurement["segments"],
-                    endpoint_delays,
-                    board_link_delays,
-                    schedule_entries,
-                    routes_by_net,
-                    commit_slot=commit_slot,
-                    uncertainty_ns=sampled_uncertainty_ns,
-                    transport_semantics=str(transport_semantics),
-                    platform=platform,
-                )
-                member_local_delay = fixed_slot_event[
-                    "physical_logic_delay_bound_ns"
+                    unreplaced_interface = interface_delay - replaced_interface
+                    if unreplaced_interface < -1.0e-8:
+                        raise ValidationError(
+                            f"system timing path {record['path']} has invalid "
+                            "endpoint replacement accounting"
+                        )
+                    unreplaced_interface = max(0.0, unreplaced_interface)
+                    segment_delay = sum(
+                        float(segment["delay_ns"]) for segment in segments
+                    )
+                    cone_bound_segments = sum(
+                        segment.get("measurement", "endpoint-exact")
+                        == "cut-net-cone-upper-bound"
+                        for segment in segments
+                    )
+                    composite = unreplaced_interface + segment_delay
+                    candidates.append(
+                        (
+                            composite,
+                            member,
+                            segment_delay,
+                            unreplaced_interface,
+                            cone_bound_segments,
+                        )
+                    )
+                if candidates and len(candidates) == len(member_ids):
+                    member_physical = {
+                        member: {
+                            "physical_delay": composite,
+                            "local_delay": segment_delay,
+                            "interface_delay": unreplaced_interface,
+                            "cone_bound_segments": cone_bound_segments,
+                            "segments": sorted(
+                                member_segments[member],
+                                key=lambda item: item["cut_index"],
+                            ),
+                        }
+                        for (
+                            composite,
+                            member,
+                            segment_delay,
+                            unreplaced_interface,
+                            cone_bound_segments,
+                        ) in candidates
+                    }
+            if member_physical is None:
+                clockless = [
+                    fpga for fpga in partitions if not delays[fpga]["dut_present"]
                 ]
-                member_interface_delay = fixed_slot_event[
-                    "physical_interface_delay_bound_ns"
-                ]
-                member_physical_delay = fixed_slot_event[
-                    "physical_routed_stage_delay_bound_ns"
-                ]
-                transport_delay = fixed_slot_event[
-                    "scheduled_link_tdm_delay_ns"
-                ]
-                transport_model = (
-                    "sampled-virtual-wire-event-propagation"
-                    if sampled_schedule
-                    else "registered-boundary-fixed-slot-event-propagation"
-                )
-                if any(link.tdm_delay_model is not None for link in platform.links):
-                    transport_model = "linear-ratio-v1"
-                total_delay = fixed_slot_event["system_delay_bound_ns"]
-                fixed_slot_event_paths += 1
-                fixed_slot_event_failures += int(
-                    fixed_slot_event["fixed_slot_event_timing_status"] == "fail"
-                )
-                if sampled_schedule:
-                    sampled_event_paths += 1
-                    sampled_event_failures += int(
+                if clockless:
+                    raise ValidationError(
+                        f"system timing path {record['path']} crosses DUT-clockless "
+                        f"partitions without complete routed logic segments: {clockless}"
+                    )
+            transport_delay = record["transport_delay_ns"]
+            transport_model = "phase5-boarddb-model"
+            if board_link_delays is not None:
+                board_links = {link.id: link for link in platform.links}
+                transport_delay = 0.0
+                for hop in scheduled_hops:
+                    key = (hop["link"], hop["from"], hop["to"])
+                    model = board_links[hop["link"]].tdm_delay_model
+                    if model is not None:
+                        transport_delay += model.delay_ns(
+                            schedule_entries[hop["schedule_entry"]].get("tdm_ratio"))
+                    else:
+                        transport_delay += (board_link_delays[key]
+                            + hop["tdm_wait_slots"] * hop["tdm_slot_ns"])
+                transport_model = "board-link-timing-db"
+            target_period = record["clock_period_ns"]
+            virtual_period = _runtime_clock_period_ns(
+                runtime, record.get("clock_domain")
+            )
+            target_required_time = record.get("required_time_ns", target_period)
+            required_time_adjustment = target_period - target_required_time
+            runtime_required_time = virtual_period - required_time_adjustment
+            for member in member_ids:
+                member_local_delay = local_delay
+                member_interface_delay = interface_delay
+                member_physical_delay = local_delay + interface_delay
+                member_logic_model = logic_model
+                member_interface_model = interface_model
+                logic_exact = False
+                cone_bound = False
+                if member_physical is not None:
+                    measurement = member_physical[member]
+                    member_local_delay = measurement["local_delay"]
+                    member_interface_delay = measurement["interface_delay"]
+                    member_physical_delay = measurement["physical_delay"]
+                    cone_bound = measurement["cone_bound_segments"] > 0
+                    member_interface_model = (
+                        "routed-endpoint-exact-unreplaced-stages"
+                    )
+                    measured_logic_paths += 1
+                    if cone_bound:
+                        member_logic_model = (
+                            "routed-staging-chain-cone-upper-bound"
+                        )
+                        cone_bound_logic_paths += 1
+                    else:
+                        member_logic_model = "routed-staging-chain-exact"
+                        logic_exact = True
+                        exact_logic_paths += 1
+                fixed_slot_event = None
+                if fixed_slot_schedule and member_physical is not None:
+                    assert endpoint_delays is not None
+                    assert commit_slot is not None
+                    fixed_slot_event = _fixed_slot_transport_path_delay(
+                        record,
+                        member,
+                        measurement["segments"],
+                        endpoint_delays,
+                        board_link_delays,
+                        schedule_entries,
+                        routes_by_net,
+                        commit_slot=commit_slot,
+                        uncertainty_ns=sampled_uncertainty_ns,
+                        transport_semantics=str(transport_semantics),
+                        platform=platform,
+                    )
+                    member_local_delay = fixed_slot_event[
+                        "physical_logic_delay_bound_ns"
+                    ]
+                    member_interface_delay = fixed_slot_event[
+                        "physical_interface_delay_bound_ns"
+                    ]
+                    member_physical_delay = fixed_slot_event[
+                        "physical_routed_stage_delay_bound_ns"
+                    ]
+                    transport_delay = fixed_slot_event[
+                        "scheduled_link_tdm_delay_ns"
+                    ]
+                    transport_model = (
+                        "sampled-virtual-wire-event-propagation"
+                        if sampled_schedule
+                        else "registered-boundary-fixed-slot-event-propagation"
+                    )
+                    if any(link.tdm_delay_model is not None for link in platform.links):
+                        transport_model = "linear-ratio-v1"
+                    total_delay = fixed_slot_event["system_delay_bound_ns"]
+                    fixed_slot_event_paths += 1
+                    fixed_slot_event_failures += int(
                         fixed_slot_event["fixed_slot_event_timing_status"] == "fail"
                     )
-            else:
-                total_delay = member_physical_delay + transport_delay
-            path_record = {
-                "path": member,
-                "representative_path": record["path"],
-                "path_scope": "cross-fpga",
-                "clock_domain": record["clock_domain"],
-                "target_period_ns": target_period,
-                "target_required_time_ns": target_required_time,
-                "source_required_time_adjustment_ns": required_time_adjustment,
-                "virtual_period_ns": virtual_period,
-                "runtime_required_time_ns": runtime_required_time,
-                "logical_fpga_sequence": partitions,
-                "logical_cut_transitions": transitions,
-                "routed_hops": record["routed_hops"],
-                "preplacement_fixed_delay_ns": record[
-                    "preplacement_fixed_delay_ns"
-                ],
-                "physical_logic_delay_bound_ns": member_local_delay,
-                "physical_interface_delay_bound_ns": member_interface_delay,
-                "physical_interface_model": member_interface_model,
-                "physical_logic_model": member_logic_model,
-                "physical_logic_member_path": (
-                    member if member_physical is not None else None
-                ),
-                "physical_routed_stage_delay_bound_ns": member_physical_delay,
-                "scheduled_link_tdm_delay_ns": transport_delay,
-                "scheduled_link_tdm_model_delay_ns": record[
-                    "transport_delay_ns"
-                ],
-                "scheduled_link_tdm_model": transport_model,
-                "system_delay_bound_ns": total_delay,
-                "target_clock_slack_bound_ns": (
-                    target_required_time - total_delay
-                ),
-                "runtime_clock_slack_bound_ns": (
-                    runtime_required_time - total_delay
-                ),
-                "partition_chain_exact": discontinuities == 0,
-                "physical_logic_segments_exact": logic_exact,
-                "physical_logic_segments_cone_bound": cone_bound,
-            }
-            if fixed_slot_event is not None:
-                path_record.update(
-                    {
-                        "fixed_slot_event_timing_status": fixed_slot_event[
-                            "fixed_slot_event_timing_status"
-                        ],
-                        "minimum_tx_readiness_slack_ns": fixed_slot_event[
-                            "minimum_tx_readiness_slack_ns"
-                        ],
-                        "capture_commit_slack_ns": fixed_slot_event[
-                            "capture_commit_slack_ns"
-                        ],
-                        "clock_uncertainty_ns": fixed_slot_event[
-                            "clock_uncertainty_ns"
-                        ],
-                        "board_delay_bound_ns": fixed_slot_event[
-                            "board_delay_bound_ns"
-                        ],
-                    }
-                )
-                if sampled_schedule:
-                    path_record["sampled_event_timing_status"] = (
-                        fixed_slot_event["fixed_slot_event_timing_status"]
+                    if sampled_schedule:
+                        sampled_event_paths += 1
+                        sampled_event_failures += int(
+                            fixed_slot_event["fixed_slot_event_timing_status"] == "fail"
+                        )
+                else:
+                    total_delay = member_physical_delay + transport_delay
+                path_record = {
+                    "path": member,
+                    "representative_path": record["path"],
+                    "path_scope": "cross-fpga",
+                    "clock_domain": record["clock_domain"],
+                    "target_period_ns": target_period,
+                    "target_required_time_ns": target_required_time,
+                    "source_required_time_adjustment_ns": required_time_adjustment,
+                    "virtual_period_ns": virtual_period,
+                    "runtime_required_time_ns": runtime_required_time,
+                    "logical_fpga_sequence": partitions,
+                    "logical_cut_transitions": transitions,
+                    "routed_hops": record["routed_hops"],
+                    "preplacement_fixed_delay_ns": record[
+                        "preplacement_fixed_delay_ns"
+                    ],
+                    "physical_logic_delay_bound_ns": member_local_delay,
+                    "physical_interface_delay_bound_ns": member_interface_delay,
+                    "physical_interface_model": member_interface_model,
+                    "physical_logic_model": member_logic_model,
+                    "physical_logic_member_path": (
+                        member if member_physical is not None else None
+                    ),
+                    "physical_routed_stage_delay_bound_ns": member_physical_delay,
+                    "scheduled_link_tdm_delay_ns": transport_delay,
+                    "scheduled_link_tdm_model_delay_ns": record[
+                        "transport_delay_ns"
+                    ],
+                    "scheduled_link_tdm_model": transport_model,
+                    "system_delay_bound_ns": total_delay,
+                    "target_clock_slack_bound_ns": (
+                        target_required_time - total_delay
+                    ),
+                    "runtime_clock_slack_bound_ns": (
+                        runtime_required_time - total_delay
+                    ),
+                    "partition_chain_exact": discontinuities == 0,
+                    "physical_logic_segments_exact": logic_exact,
+                    "physical_logic_segments_cone_bound": cone_bound,
+                }
+                if fixed_slot_event is not None:
+                    path_record.update(
+                        {
+                            "fixed_slot_event_timing_status": fixed_slot_event[
+                                "fixed_slot_event_timing_status"
+                            ],
+                            "minimum_tx_readiness_slack_ns": fixed_slot_event[
+                                "minimum_tx_readiness_slack_ns"
+                            ],
+                            "capture_commit_slack_ns": fixed_slot_event[
+                                "capture_commit_slack_ns"
+                            ],
+                            "clock_uncertainty_ns": fixed_slot_event[
+                                "clock_uncertainty_ns"
+                            ],
+                            "board_delay_bound_ns": fixed_slot_event[
+                                "board_delay_bound_ns"
+                            ],
+                        }
                     )
-            cross_paths.append(path_record)
-        discontinuous_paths += (discontinuities > 0) * len(member_ids)
+                    if sampled_schedule:
+                        path_record["sampled_event_timing_status"] = (
+                            fixed_slot_event["fixed_slot_event_timing_status"]
+                        )
+                cross_paths.append(path_record)
+            discontinuous_paths += (discontinuities > 0) * len(member_ids)
 
-    local_paths, original_source = _local_path_database(
-        physical_summary, runtime, routes_artifact_sha256
-    )
-    system_paths = sorted(
-        [*local_paths, *cross_paths], key=lambda item: item["path"]
-    )
-    local_exact_logic_paths = sum(
-        bool(path["physical_logic_segments_exact"]) for path in local_paths
-    )
-    local_cone_bound_logic_paths = sum(
-        bool(path["physical_logic_segments_cone_bound"])
-        for path in local_paths
-    )
-    whole_exact_logic_paths = exact_logic_paths + local_exact_logic_paths
-    whole_measured_logic_paths = measured_logic_paths + len(local_paths)
-    whole_cone_bound_logic_paths = (
-        cone_bound_logic_paths + local_cone_bound_logic_paths
-    )
-    whole_logic_paths = len(system_paths)
-    system_ids = [path["path"] for path in system_paths]
-    if len(system_ids) != len(set(system_ids)):
-        raise ValidationError(
-            "same-FPGA and cross-FPGA timing path populations overlap"
+        local_paths, original_source = _local_path_database(
+            physical_summary, runtime, routes_artifact_sha256
         )
-    if original_source is not None:
-        if (
-            len(system_ids) != original_source["original_paths"]
-            or path_id_set_sha256(system_ids)
-            != original_source["original_path_ids_sha256"]
-        ):
+        system_paths = sorted(
+            [*local_paths, *cross_paths], key=lambda item: item["path"]
+        )
+        local_exact_logic_paths = sum(
+            bool(path["physical_logic_segments_exact"]) for path in local_paths
+        )
+        local_cone_bound_logic_paths = sum(
+            bool(path["physical_logic_segments_cone_bound"])
+            for path in local_paths
+        )
+        whole_exact_logic_paths = exact_logic_paths + local_exact_logic_paths
+        whole_measured_logic_paths = measured_logic_paths + len(local_paths)
+        whole_cone_bound_logic_paths = (
+            cone_bound_logic_paths + local_cone_bound_logic_paths
+        )
+        whole_logic_paths = len(system_paths)
+        system_ids = [path["path"] for path in system_paths]
+        if len(system_ids) != len(set(system_ids)):
             raise ValidationError(
-                "whole-design timing does not exactly cover the original "
-                "TimingPathDB path population"
+                "same-FPGA and cross-FPGA timing path populations overlap"
             )
-        timing_scope = "whole-original-design"
-        coverage = 1.0
-    else:
-        timing_scope = "cross-fpga-path-subset"
-        coverage = None
+        if original_source is not None:
+            if (
+                len(system_ids) != original_source["original_paths"]
+                or path_id_set_sha256(system_ids)
+                != original_source["original_path_ids_sha256"]
+            ):
+                raise ValidationError(
+                    "whole-design timing does not exactly cover the original "
+                    "TimingPathDB path population"
+                )
+            timing_scope = "whole-original-design"
+            coverage = 1.0
+        else:
+            timing_scope = "cross-fpga-path-subset"
+            coverage = None
 
-    target_worst = min(
-        system_paths,
-        key=lambda path: (path["target_clock_slack_bound_ns"], path["path"]),
-    )
-    runtime_worst = min(
-        system_paths,
-        key=lambda path: (path["runtime_clock_slack_bound_ns"], path["path"]),
-    )
-    target_tns = sum(
-        min(0.0, path["target_clock_slack_bound_ns"])
-        for path in system_paths
-    )
-    runtime_tns = sum(
-        min(0.0, path["runtime_clock_slack_bound_ns"])
-        for path in system_paths
-    )
-    maximum_delay = max(
-        path["system_delay_bound_ns"] for path in system_paths
-    )
-    runtime_wns = runtime_worst["runtime_clock_slack_bound_ns"]
-    status = "pass" if runtime_wns >= 0.0 else "fail"
-    if fixed_slot_schedule:
-        if fixed_slot_event_paths != len(cross_paths):
-            status = "incomplete"
-        elif fixed_slot_event_failures:
-            status = "fail"
-    if exact_deadlines is not None:
-        if exact_deadlines["status"] == "incomplete":
-            status = "incomplete"
-        elif exact_deadlines["status"] == "fail":
-            status = "fail"
-        elif sampled_event_paths != len(cross_paths):
-            status = "incomplete"
-        elif sampled_event_failures:
-            status = "fail"
-    if (
-        sampled_schedule
-        and sampled_event_paths == len(cross_paths)
-        and whole_exact_logic_paths == whole_logic_paths
-    ):
-        qualification = "sampled-virtual-wire-event-propagated-physical"
-    elif (
-        fixed_slot_schedule
-        and not sampled_schedule
-        and fixed_slot_event_paths == len(cross_paths)
-        and whole_exact_logic_paths == whole_logic_paths
-    ):
-        qualification = "registered-boundary-event-propagated-physical"
-    elif (
-        fixed_slot_schedule
-        and not sampled_schedule
-        and fixed_slot_event_paths == len(cross_paths)
-        and whole_measured_logic_paths == whole_logic_paths
-    ):
-        qualification = (
-            "registered-boundary-event-propagated-physical-bounds"
+        target_worst = min(
+            system_paths,
+            key=lambda path: (path["target_clock_slack_bound_ns"], path["path"]),
         )
-    elif (
-        sampled_schedule
-        and sampled_event_paths == len(cross_paths)
-        and whole_measured_logic_paths == whole_logic_paths
-    ):
-        qualification = (
-            "sampled-virtual-wire-event-propagated-physical-bounds"
+        runtime_worst = min(
+            system_paths,
+            key=lambda path: (path["runtime_clock_slack_bound_ns"], path["path"]),
         )
-    elif whole_exact_logic_paths == whole_logic_paths:
-        qualification = "staging-aware-physical-plus-concrete-link-tdm"
-    elif whole_measured_logic_paths == whole_logic_paths:
-        qualification = (
-            "staging-aware-routed-physical-bounds-plus-concrete-link-tdm"
+        target_tns = sum(
+            min(0.0, path["target_clock_slack_bound_ns"])
+            for path in system_paths
         )
-    elif whole_measured_logic_paths > 0:
-        qualification = (
-            "hybrid-staging-aware-and-partition-maxima-plus-concrete-link-tdm"
+        runtime_tns = sum(
+            min(0.0, path["runtime_clock_slack_bound_ns"])
+            for path in system_paths
         )
-    elif endpoint_delays is not None:
-        qualification = (
-            "partition-logic-maxima-plus-endpoint-exact-interface-plus-"
-            "concrete-link-tdm"
+        maximum_delay = max(
+            path["system_delay_bound_ns"] for path in system_paths
         )
-    else:
-        qualification = (
-            "conservative-partition-physical-maxima-plus-concrete-link-tdm"
-        )
+        runtime_wns = runtime_worst["runtime_clock_slack_bound_ns"]
+        status = "pass" if runtime_wns >= 0.0 else "fail"
+        if fixed_slot_schedule:
+            if fixed_slot_event_paths != len(cross_paths):
+                status = "incomplete"
+            elif fixed_slot_event_failures:
+                status = "fail"
+        if exact_deadlines is not None:
+            if exact_deadlines["status"] == "incomplete":
+                status = "incomplete"
+            elif exact_deadlines["status"] == "fail":
+                status = "fail"
+            elif sampled_event_paths != len(cross_paths):
+                status = "incomplete"
+            elif sampled_event_failures:
+                status = "fail"
+        if (
+            sampled_schedule
+            and sampled_event_paths == len(cross_paths)
+            and whole_exact_logic_paths == whole_logic_paths
+        ):
+            qualification = "sampled-virtual-wire-event-propagated-physical"
+        elif (
+            fixed_slot_schedule
+            and not sampled_schedule
+            and fixed_slot_event_paths == len(cross_paths)
+            and whole_exact_logic_paths == whole_logic_paths
+        ):
+            qualification = "registered-boundary-event-propagated-physical"
+        elif (
+            fixed_slot_schedule
+            and not sampled_schedule
+            and fixed_slot_event_paths == len(cross_paths)
+            and whole_measured_logic_paths == whole_logic_paths
+        ):
+            qualification = (
+                "registered-boundary-event-propagated-physical-bounds"
+            )
+        elif (
+            sampled_schedule
+            and sampled_event_paths == len(cross_paths)
+            and whole_measured_logic_paths == whole_logic_paths
+        ):
+            qualification = (
+                "sampled-virtual-wire-event-propagated-physical-bounds"
+            )
+        elif whole_exact_logic_paths == whole_logic_paths:
+            qualification = "staging-aware-physical-plus-concrete-link-tdm"
+        elif whole_measured_logic_paths == whole_logic_paths:
+            qualification = (
+                "staging-aware-routed-physical-bounds-plus-concrete-link-tdm"
+            )
+        elif whole_measured_logic_paths > 0:
+            qualification = (
+                "hybrid-staging-aware-and-partition-maxima-plus-concrete-link-tdm"
+            )
+        elif endpoint_delays is not None:
+            qualification = (
+                "partition-logic-maxima-plus-endpoint-exact-interface-plus-"
+                "concrete-link-tdm"
+            )
+        else:
+            qualification = (
+                "conservative-partition-physical-maxima-plus-concrete-link-tdm"
+            )
+        if segment_cursor is not None:
+            segment_cursor.finish()
+    finally:
+        if segment_cursor is not None:
+            segment_cursor.close()
     return {
         "schema": SYSTEM_TIMING_SCHEMA,
         "status": status,

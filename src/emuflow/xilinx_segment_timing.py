@@ -411,19 +411,7 @@ def build_xilinx_logic_segment_timing(
         if _timing_graph is not None
         else _graph(mapped_path, timing_path)
     )
-    records = []
-    for segment in identity["segments"]:
-        delay, actual_start = graph.longest(
-            [segment["start_pin"]], segment["end_pin"]
-        )
-        records.append({
-            **segment,
-            "delay_ns": delay,
-            "measurement": "endpoint-exact",
-            "actual_start_object": actual_start,
-            "actual_end_object": segment["end_pin"],
-        })
-    database = {
+    header = {
         "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
         "status": "pass",
         "design": identity["design"],
@@ -431,21 +419,43 @@ def build_xilinx_logic_segment_timing(
         "fpga": identity["fpga"],
         "provider": "rapidwright-lightweight-logic-segment-graph-v1",
         "qualification": XILINX_SEGMENT_QUALIFICATION,
+        "system_routes_sha256": identity["system_routes_sha256"],
+        "tdm_schedule_sha256": identity["tdm_schedule_sha256"],
         "coverage": {
             **identity["coverage"],
-            "endpoint_exact_segments": len(records),
+            "endpoint_exact_segments": len(identity["segments"]),
             "cone_bound_segments": 0,
         },
-        "unsupported_member_paths": identity["unsupported_member_paths"],
-        "unmeasured_segments": [],
-        "segments": records,
         **(
             {"semantic_contract_sha256": identity["semantic_contract_sha256"]}
             if "semantic_contract_sha256" in identity else {}
         ),
     }
-    validation = validate_logic_segment_timing(database)
-    write_json(output_path, database)
+    def records():
+        for segment in identity["segments"]:
+            delay, actual_start = graph.longest(
+                [segment["start_pin"]], segment["end_pin"]
+            )
+            yield {
+                **segment,
+                "delay_ns": delay,
+                "measurement": "endpoint-exact",
+                "actual_start_object": actual_start,
+                "actual_end_object": segment["end_pin"],
+            }
+
+    from .logic_segment_timing_storage import write_logic_segment_timing_storage
+
+    view = write_logic_segment_timing_storage(
+        output_path,
+        header=header,
+        segments=records(),
+        unsupported_member_paths=identity["unsupported_member_paths"],
+    )
+    try:
+        validation = view.validate_timing()
+    finally:
+        view.close()
     return {**validation, "output": str(output_path)}
 
 

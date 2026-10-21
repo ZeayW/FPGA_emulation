@@ -210,345 +210,356 @@ def run_vivado_board_timing(
     if not physical_summary_path.is_file():
         raise ValidationError("Vivado board timing physical summary is missing")
     source_physical = read_physical_summary(physical_summary_path)
-    platform = Platform.load(platform_path)
-    if link_timing_path is None:
-        link_timing = build_board_link_timing_model(platform)
-    else:
-        link_timing_path = link_timing_path.resolve()
-        link_timing = read_json(link_timing_path)
-    link_timing_validation = validate_board_link_timing(
-        link_timing, platform
-    )
-    if source_physical.get("platform") != platform.name or not isinstance(
-        source_physical.get("design"), str
-    ):
-        raise ValidationError("Vivado board timing source identities disagree")
-    board_by_fpga = {item["fpga"]: item for item in board_report["fpgas"]}
-    expected_fpgas = {fpga.id for fpga in platform.fpgas}
-    if set(board_by_fpga) != expected_fpgas:
-        raise ValidationError("Vivado board timing does not cover BoardDB")
-
-    required_flow_paths = {
-        "original_ir": flow_root / "frontend/phase1/design.emuir.sqlite",
-        "assignment": flow_root / "partition/assignment.json",
-        "path_database": flow_root / "timing/path-database.json",
-        "routes": flow_root / "system-route/routes.json",
-        "schedule": flow_root / "tdm/schedule.json",
-    }
-    missing = [name for name, path in required_flow_paths.items() if not path.is_file()]
-    if missing:
-        raise ValidationError(
-            f"Vivado board timing source artifacts are missing: {missing}"
+    try:
+        platform = Platform.load(platform_path)
+        if link_timing_path is None:
+            link_timing = build_board_link_timing_model(platform)
+        else:
+            link_timing_path = link_timing_path.resolve()
+            link_timing = read_json(link_timing_path)
+        link_timing_validation = validate_board_link_timing(
+            link_timing, platform
         )
-
-    output_dir.mkdir(parents=True, exist_ok=resume)
-    def measure_fpga(fpga: Any) -> tuple[Dict[str, Any], Any, Any]:
-        fpga_id = fpga.id
-        source_root = flow_root / "physical" / fpga_id
-        fpga_out = output_dir / fpga_id
-        fpga_out.mkdir(exist_ok=resume)
-        merged_ir = source_root / "placement.emuir.sqlite"
-        identities = source_physical.get("boundary_identities", {}).get(fpga_id)
-        if not isinstance(identities, dict) or not merged_ir.is_file():
-            raise ValidationError(f"{fpga_id}: physical timing identity is missing")
-        identity_path = fpga_out / "boundary-identities.json"
-        write_json(identity_path, identities)
-
-        board_dcp_info = board_by_fpga[fpga_id].get("artifacts", {}).get(
-            "routed.dcp"
-        )
-        if not isinstance(board_dcp_info, dict):
-            raise ValidationError(f"{fpga_id}: routed board DCP is missing")
-        dcp = Path(board_dcp_info.get("path", ""))
-        if not dcp.is_absolute():
-            dcp = board_root / dcp
-        dcp = dcp.resolve()
-        if (
-            not dcp.is_file()
-            or _sha256(dcp) != board_dcp_info.get("sha256")
+        if source_physical.get("platform") != platform.name or not isinstance(
+            source_physical.get("design"), str
         ):
-            raise ValidationError(f"{fpga_id}: routed board DCP hash disagrees")
+            raise ValidationError("Vivado board timing source identities disagree")
+        board_by_fpga = {item["fpga"]: item for item in board_report["fpgas"]}
+        expected_fpgas = {fpga.id for fpga in platform.fpgas}
+        if set(board_by_fpga) != expected_fpgas:
+            raise ValidationError("Vivado board timing does not cover BoardDB")
 
-        boundary_database = fpga_out / "boundary-timing.json"
-        logic_database = fpga_out / "logic-segment-timing.json"
-        if resume and boundary_database.is_file() and logic_database.is_file():
+        required_flow_paths = {
+            "original_ir": flow_root / "frontend/phase1/design.emuir.sqlite",
+            "assignment": flow_root / "partition/assignment.json",
+            "path_database": flow_root / "timing/path-database.json",
+            "routes": flow_root / "system-route/routes.json",
+            "schedule": flow_root / "tdm/schedule.json",
+        }
+        missing = [name for name, path in required_flow_paths.items() if not path.is_file()]
+        if missing:
+            raise ValidationError(
+                f"Vivado board timing source artifacts are missing: {missing}"
+            )
+
+        output_dir.mkdir(parents=True, exist_ok=resume)
+        def measure_fpga(fpga: Any) -> tuple[Dict[str, Any], Any, Any]:
+            fpga_id = fpga.id
+            source_root = flow_root / "physical" / fpga_id
+            fpga_out = output_dir / fpga_id
+            fpga_out.mkdir(exist_ok=resume)
+            merged_ir = source_root / "placement.emuir.sqlite"
+            identities = source_physical.get("boundary_identities", {}).get(fpga_id)
+            if not isinstance(identities, dict) or not merged_ir.is_file():
+                raise ValidationError(f"{fpga_id}: physical timing identity is missing")
+            identity_path = fpga_out / "boundary-identities.json"
+            write_json(identity_path, identities)
+
+            board_dcp_info = board_by_fpga[fpga_id].get("artifacts", {}).get(
+                "routed.dcp"
+            )
+            if not isinstance(board_dcp_info, dict):
+                raise ValidationError(f"{fpga_id}: routed board DCP is missing")
+            dcp = Path(board_dcp_info.get("path", ""))
+            if not dcp.is_absolute():
+                dcp = board_root / dcp
+            dcp = dcp.resolve()
+            if (
+                not dcp.is_file()
+                or _sha256(dcp) != board_dcp_info.get("sha256")
+            ):
+                raise ValidationError(f"{fpga_id}: routed board DCP hash disagrees")
+
+            boundary_database = fpga_out / "boundary-timing.json"
+            logic_database = fpga_out / "logic-segment-timing.json"
+            if resume and boundary_database.is_file() and logic_database.is_file():
+                boundary_database_value = read_json(boundary_database)
+                boundary_validation = validate_boundary_timing_database(
+                    boundary_database_value, identities
+                )
+                from .logic_segment_timing_storage import (
+                    logic_segment_timing_reference,
+                    read_logic_segment_timing_storage,
+                )
+                logic_view = read_logic_segment_timing_storage(logic_database)
+                logic_validation = validate_logic_segment_timing(logic_view)
+                counts = logic_view.selector["counts"]
+                missing_segments = counts["unmeasured_segments"]
+                logic_reference = logic_segment_timing_reference(
+                    logic_database, relative_to=output_dir
+                )
+                logic_view.close()
+                record = {
+                    "fpga": fpga_id,
+                    "status": "pass",
+                    "hierarchy_prefix": hierarchy_prefix,
+                    "boundary_endpoints": boundary_validation["endpoints"],
+                    "logic_segments": logic_validation["segments"],
+                    "endpoint_exact_logic_segments": logic_validation[
+                        "endpoint_exact_segments"
+                    ],
+                    "cone_bound_logic_segments": logic_validation[
+                        "cone_bound_segments"
+                    ],
+                    "missing_logic_segments": missing_segments,
+                    "unsupported_logic_member_paths": counts[
+                        "unsupported_member_paths"
+                    ],
+                    "maximum_boundary_delay_ns": boundary_validation[
+                        "maximum_delay_ns"
+                    ],
+                    "maximum_logic_segment_delay_ns": logic_validation[
+                        "maximum_delay_ns"
+                    ],
+                    "queries": {"status": "reused-hash-validated"},
+                    "exports": {"status": "reused-hash-validated"},
+                    "artifacts": {
+                        "boundary_timing": _artifact(boundary_database),
+                        "logic_segment_timing": _artifact(logic_database),
+                    },
+                }
+                return record, boundary_database_value, logic_reference
+
+            boundary_query = fpga_out / "boundary-timing-query.tsv"
+            boundary_query_report = write_vivado_boundary_timing_query(
+                merged_ir, identity_path, boundary_query
+            )
+            boundary_tsv = fpga_out / "boundary-timing.tsv"
+            boundary_export = _run_vivado(
+                vivado_executable,
+                _BOUNDARY_TIMING_SCRIPT,
+                [str(dcp), str(boundary_query), str(boundary_tsv), hierarchy_prefix],
+                fpga_out,
+                "vivado-boundary-timing-export.log",
+            )
+            boundary_import = import_vivado_boundary_timing(
+                boundary_tsv,
+                identity_path,
+                boundary_database,
+                provider="vivado-board-integrated-interface-path-v1",
+                qualification="routed-board-integrated-interface-path",
+                measurement_scope="board-integrated-interface",
+            )
             boundary_database_value = read_json(boundary_database)
-            boundary_validation = validate_boundary_timing_database(
-                boundary_database_value, identities
+
+            logic_query = fpga_out / "logic-segment-timing-query.tsv"
+            logic_identity = fpga_out / "logic-segment-identities.json"
+            logic_query_report = write_vivado_logic_segment_query(
+                required_flow_paths["original_ir"],
+                required_flow_paths["assignment"],
+                required_flow_paths["path_database"],
+                required_flow_paths["routes"],
+                required_flow_paths["schedule"],
+                platform,
+                merged_ir,
+                identity_path,
+                fpga_id,
+                logic_query,
+                logic_identity,
             )
-            logic_database_value = read_json(logic_database)
-            logic_validation = validate_logic_segment_timing(
-                logic_database_value
+            logic_tsv = fpga_out / "logic-segment-timing.tsv"
+            logic_export = _run_vivado(
+                vivado_executable,
+                _LOGIC_TIMING_SCRIPT,
+                [
+                    str(dcp),
+                    str(logic_query),
+                    str(logic_tsv),
+                    hierarchy_prefix,
+                    "allow-missing",
+                ],
+                fpga_out,
+                "vivado-logic-segment-timing-export.log",
             )
-            missing_segments = len(
-                logic_database_value.get("unmeasured_segments", [])
+            logic_import = import_vivado_logic_segment_timing(
+                logic_tsv,
+                logic_identity,
+                logic_database,
+                provider="vivado-board-integrated-logic-to-interface-path-v1",
+                qualification="routed-board-integrated-endpoint-chain",
+                allow_missing=True,
+            )
+            from .logic_segment_timing_storage import logic_segment_timing_reference
+            logic_reference = logic_segment_timing_reference(
+                logic_database, relative_to=output_dir
             )
             record = {
                 "fpga": fpga_id,
                 "status": "pass",
                 "hierarchy_prefix": hierarchy_prefix,
-                "boundary_endpoints": boundary_validation["endpoints"],
-                "logic_segments": logic_validation["segments"],
-                "endpoint_exact_logic_segments": logic_validation[
+                "boundary_endpoints": boundary_import["endpoints"],
+                "logic_segments": logic_import["segments"],
+                "endpoint_exact_logic_segments": logic_import[
                     "endpoint_exact_segments"
                 ],
-                "cone_bound_logic_segments": logic_validation[
+                "cone_bound_logic_segments": logic_import[
                     "cone_bound_segments"
                 ],
-                "missing_logic_segments": missing_segments,
-                "unsupported_logic_member_paths": len(
-                    logic_database_value.get("unsupported_member_paths", [])
-                ),
-                "maximum_boundary_delay_ns": boundary_validation[
-                    "maximum_delay_ns"
+                "missing_logic_segments": logic_import["missing_segments"],
+                "unsupported_logic_member_paths": logic_query_report[
+                    "unsupported_member_paths"
                 ],
-                "maximum_logic_segment_delay_ns": logic_validation[
-                    "maximum_delay_ns"
-                ],
-                "queries": {"status": "reused-hash-validated"},
-                "exports": {"status": "reused-hash-validated"},
+                "maximum_boundary_delay_ns": boundary_import["maximum_delay_ns"],
+                "maximum_logic_segment_delay_ns": logic_import["maximum_delay_ns"],
+                "queries": {
+                    "boundary": boundary_query_report,
+                    "logic": logic_query_report,
+                },
+                "exports": {
+                    "boundary": boundary_export,
+                    "logic": logic_export,
+                },
                 "artifacts": {
                     "boundary_timing": _artifact(boundary_database),
                     "logic_segment_timing": _artifact(logic_database),
                 },
             }
-            return record, boundary_database_value, logic_database_value
+            return record, boundary_database_value, logic_reference
 
-        boundary_query = fpga_out / "boundary-timing-query.tsv"
-        boundary_query_report = write_vivado_boundary_timing_query(
-            merged_ir, identity_path, boundary_query
-        )
-        boundary_tsv = fpga_out / "boundary-timing.tsv"
-        boundary_export = _run_vivado(
-            vivado_executable,
-            _BOUNDARY_TIMING_SCRIPT,
-            [str(dcp), str(boundary_query), str(boundary_tsv), hierarchy_prefix],
-            fpga_out,
-            "vivado-boundary-timing-export.log",
-        )
-        boundary_import = import_vivado_boundary_timing(
-            boundary_tsv,
-            identity_path,
-            boundary_database,
-            provider="vivado-board-integrated-interface-path-v1",
-            qualification="routed-board-integrated-interface-path",
-            measurement_scope="board-integrated-interface",
-        )
-        boundary_database_value = read_json(boundary_database)
-
-        logic_query = fpga_out / "logic-segment-timing-query.tsv"
-        logic_identity = fpga_out / "logic-segment-identities.json"
-        logic_query_report = write_vivado_logic_segment_query(
-            required_flow_paths["original_ir"],
-            required_flow_paths["assignment"],
-            required_flow_paths["path_database"],
-            required_flow_paths["routes"],
-            required_flow_paths["schedule"],
-            platform,
-            merged_ir,
-            identity_path,
-            fpga_id,
-            logic_query,
-            logic_identity,
-        )
-        logic_tsv = fpga_out / "logic-segment-timing.tsv"
-        logic_export = _run_vivado(
-            vivado_executable,
-            _LOGIC_TIMING_SCRIPT,
-            [
-                str(dcp),
-                str(logic_query),
-                str(logic_tsv),
-                hierarchy_prefix,
-                "allow-missing",
-            ],
-            fpga_out,
-            "vivado-logic-segment-timing-export.log",
-        )
-        logic_import = import_vivado_logic_segment_timing(
-            logic_tsv,
-            logic_identity,
-            logic_database,
-            provider="vivado-board-integrated-logic-to-interface-path-v1",
-            qualification="routed-board-integrated-endpoint-chain",
-            allow_missing=True,
-        )
-        logic_database_value = read_json(logic_database)
-        record = {
-            "fpga": fpga_id,
-            "status": "pass",
-            "hierarchy_prefix": hierarchy_prefix,
-            "boundary_endpoints": boundary_import["endpoints"],
-            "logic_segments": logic_import["segments"],
-            "endpoint_exact_logic_segments": logic_import[
-                "endpoint_exact_segments"
-            ],
-            "cone_bound_logic_segments": logic_import[
-                "cone_bound_segments"
-            ],
-            "missing_logic_segments": logic_import["missing_segments"],
-            "unsupported_logic_member_paths": logic_query_report[
-                "unsupported_member_paths"
-            ],
-            "maximum_boundary_delay_ns": boundary_import["maximum_delay_ns"],
-            "maximum_logic_segment_delay_ns": logic_import["maximum_delay_ns"],
-            "queries": {
-                "boundary": boundary_query_report,
-                "logic": logic_query_report,
-            },
-            "exports": {
-                "boundary": boundary_export,
-                "logic": logic_export,
-            },
-            "artifacts": {
-                "boundary_timing": _artifact(boundary_database),
-                "logic_segment_timing": _artifact(logic_database),
-            },
+        ordered_fpgas = sorted(platform.fpgas, key=lambda item: item.id)
+        with ThreadPoolExecutor(max_workers=min(workers, len(ordered_fpgas))) as pool:
+            measurements = list(pool.map(measure_fpga, ordered_fpgas))
+        records = [item[0] for item in measurements]
+        boundary_timing = {
+            record["fpga"]: measurement[1]
+            for record, measurement in zip(records, measurements)
         }
-        return record, boundary_database_value, logic_database_value
+        logic_timing = {
+            record["fpga"]: measurement[2]
+            for record, measurement in zip(records, measurements)
+        }
 
-    ordered_fpgas = sorted(platform.fpgas, key=lambda item: item.id)
-    with ThreadPoolExecutor(max_workers=min(workers, len(ordered_fpgas))) as pool:
-        measurements = list(pool.map(measure_fpga, ordered_fpgas))
-    records = [item[0] for item in measurements]
-    boundary_timing = {
-        record["fpga"]: measurement[1]
-        for record, measurement in zip(records, measurements)
-    }
-    logic_timing = {
-        record["fpga"]: measurement[2]
-        for record, measurement in zip(records, measurements)
-    }
-
-    board_physical_fpgas = []
-    for source_item in source_physical["fpgas"]:
-        fpga_id = source_item["fpga"]
-        raw_delay = board_by_fpga[fpga_id]["closure"].get("critical_path_ns")
-        try:
-            board_delay = float(raw_delay)
-        except (TypeError, ValueError) as error:
-            raise ValidationError(
-                f"{fpga_id}: board critical-path delay is invalid"
-            ) from error
-        if board_delay < 0.0:
-            raise ValidationError(
-                f"{fpga_id}: board critical-path delay is negative"
+        board_physical_fpgas = []
+        for source_item in source_physical["fpgas"]:
+            fpga_id = source_item["fpga"]
+            raw_delay = board_by_fpga[fpga_id]["closure"].get("critical_path_ns")
+            try:
+                board_delay = float(raw_delay)
+            except (TypeError, ValueError) as error:
+                raise ValidationError(
+                    f"{fpga_id}: board critical-path delay is invalid"
+                ) from error
+            if board_delay < 0.0:
+                raise ValidationError(
+                    f"{fpga_id}: board critical-path delay is negative"
+                )
+            board_physical_fpgas.append(
+                {
+                    **source_item,
+                    "critical_path_ns": board_delay,
+                    "clock_domain_delays_ns": {
+                        "dut": board_delay,
+                        "cross": board_delay,
+                    },
+                    "system_timing_bound_source": (
+                        "vivado-board-routed-checkpoint-worst-datapath"
+                    ),
+                }
             )
-        board_physical_fpgas.append(
+        feedback_summary = dict(source_physical)
+        feedback_summary.update(
             {
-                **source_item,
-                "critical_path_ns": board_delay,
-                "clock_domain_delays_ns": {
-                    "dut": board_delay,
-                    "cross": board_delay,
+                "provider": "vivado-board-integrated-timing-feedback-v1",
+                "qualification": "routed-board-stage-timing-link-model-only",
+                "fpgas": board_physical_fpgas,
+                "boundary_timing": boundary_timing,
+                "logic_segment_timing": logic_timing,
+                "board_link_timing": link_timing,
+                "timing_component_provenance": {
+                    "fpga_logic_bound": (
+                        "vivado-board-routed-checkpoint-worst-datapath"
+                    ),
+                    "logic_segment_diagnostics": (
+                        "vivado-board-routed-dcp-staging-aware-exact-"
+                        "when-complete"
+                    ),
+                    "partition_boundary_endpoints": "vivado-board-routed-dcp",
+                    "board_link_propagation": "platform-model-not-measured",
+                    "tdm_schedule": "phase5-concrete-schedule",
                 },
-                "system_timing_bound_source": (
-                    "vivado-board-routed-checkpoint-worst-datapath"
-                ),
             }
         )
-    feedback_summary = dict(source_physical)
-    feedback_summary.update(
-        {
-            "provider": "vivado-board-integrated-timing-feedback-v1",
-            "qualification": "routed-board-stage-timing-link-model-only",
-            "fpgas": board_physical_fpgas,
-            "boundary_timing": boundary_timing,
-            "logic_segment_timing": logic_timing,
-            "board_link_timing": link_timing,
-            "timing_component_provenance": {
-                "fpga_logic_bound": (
-                    "vivado-board-routed-checkpoint-worst-datapath"
+        feedback_summary_path = output_dir / "physical-summary.json"
+        write_json(feedback_summary_path, feedback_summary)
+
+        phase7c_root = output_dir / "runtime"
+        phase7c = run_phase7c(
+            required_flow_paths["schedule"],
+            platform_path,
+            flow_root / "partition/phase3_report.json",
+            flow_root / "system-route/phase4_report.json",
+            flow_root / "tdm/phase5_report.json",
+            flow_root / "split/phase6_report.json",
+            phase7c_root,
+            assignment_path=flow_root / "partition/assignment.json",
+            physical_summary_path=feedback_summary_path,
+            routes_path=required_flow_paths["routes"],
+        )
+        system = read_json(phase7c_root / "qor_report.json")["timing"]
+        system_summary = {
+            "status": system["status"],
+            "qualification": system["qualification"],
+            "timing_paths": system["summary"]["timing_paths"],
+            "maximum_system_delay_bound_ns": system["summary"][
+                "maximum_system_delay_bound_ns"
+            ],
+            "runtime_period_ns": system["runtime_clock"]["period_ns"],
+            "runtime_wns_ns": system["runtime_clock"]["worst_slack_bound_ns"],
+            "path_exactness": system["path_exactness"],
+        }
+        report = {
+            "schema": VIVADO_BOARD_TIMING_SCHEMA,
+            "status": "pass",
+            "qualification": "routed-board-stage-timing-plus-link-model-only",
+            "design": source_physical["design"],
+            "platform": platform.name,
+            "source_bindings": {
+                "flow_report_sha256": _sha256(flow_report_path),
+                "board_flow_report_sha256": _sha256(board_report_path),
+            },
+            "fpgas": records,
+            "parallel_workers": min(workers, len(ordered_fpgas)),
+            "board_link_timing": {
+                "status": (
+                    "measured-upper-bound"
+                    if link_timing_validation["final_link_timing_signoff"]
+                    else "modeled-or-characterized-upper-bound"
                 ),
-                "logic_segment_diagnostics": (
-                    "vivado-board-routed-dcp-staging-aware-exact-"
-                    "when-complete"
+                "source": "BoardLinkTimingDB and Phase-5 TDM schedule",
+                "validation": link_timing_validation,
+                "known": [
+                    "routed FPGA logic segment delay for path-continuous segments",
+                    "routed mapped-partition boundary delay",
+                    "TDM slot precedence and serialization delay",
+                    *(
+                        ["measured TX-stage-to-RX-stage board-link upper bounds"]
+                        if link_timing_validation["final_link_timing_signoff"]
+                        else []
+                    ),
+                ],
+                "unknown": (
+                    []
+                    if link_timing_validation["final_link_timing_signoff"]
+                    else [
+                        "PCB trace and connector propagation",
+                        "GT/PCS elastic-buffer and clock-domain latency",
+                        "board-to-board skew under hardware operating conditions",
+                    ]
                 ),
-                "partition_boundary_endpoints": "vivado-board-routed-dcp",
-                "board_link_propagation": "platform-model-not-measured",
-                "tdm_schedule": "phase5-concrete-schedule",
+                "final_link_timing_signoff": link_timing_validation[
+                    "final_link_timing_signoff"
+                ],
+                "final_system_signoff": False,
+            },
+            "system_timing": system_summary,
+            "artifacts": {
+                "physical_summary": _artifact(feedback_summary_path),
+                "phase7c_report": _artifact(phase7c_root / "phase7c_report.json"),
+                "qor_report": _artifact(phase7c_root / "qor_report.json"),
             },
         }
-    )
-    feedback_summary_path = output_dir / "physical-summary.json"
-    write_json(feedback_summary_path, feedback_summary)
-
-    phase7c_root = output_dir / "runtime"
-    phase7c = run_phase7c(
-        required_flow_paths["schedule"],
-        platform_path,
-        flow_root / "partition/phase3_report.json",
-        flow_root / "system-route/phase4_report.json",
-        flow_root / "tdm/phase5_report.json",
-        flow_root / "split/phase6_report.json",
-        phase7c_root,
-        assignment_path=flow_root / "partition/assignment.json",
-        physical_summary_path=feedback_summary_path,
-        routes_path=required_flow_paths["routes"],
-    )
-    system = read_json(phase7c_root / "qor_report.json")["timing"]
-    system_summary = {
-        "status": system["status"],
-        "qualification": system["qualification"],
-        "timing_paths": system["summary"]["timing_paths"],
-        "maximum_system_delay_bound_ns": system["summary"][
-            "maximum_system_delay_bound_ns"
-        ],
-        "runtime_period_ns": system["runtime_clock"]["period_ns"],
-        "runtime_wns_ns": system["runtime_clock"]["worst_slack_bound_ns"],
-        "path_exactness": system["path_exactness"],
-    }
-    report = {
-        "schema": VIVADO_BOARD_TIMING_SCHEMA,
-        "status": "pass",
-        "qualification": "routed-board-stage-timing-plus-link-model-only",
-        "design": source_physical["design"],
-        "platform": platform.name,
-        "source_bindings": {
-            "flow_report_sha256": _sha256(flow_report_path),
-            "board_flow_report_sha256": _sha256(board_report_path),
-        },
-        "fpgas": records,
-        "parallel_workers": min(workers, len(ordered_fpgas)),
-        "board_link_timing": {
-            "status": (
-                "measured-upper-bound"
-                if link_timing_validation["final_link_timing_signoff"]
-                else "modeled-or-characterized-upper-bound"
-            ),
-            "source": "BoardLinkTimingDB and Phase-5 TDM schedule",
-            "validation": link_timing_validation,
-            "known": [
-                "routed FPGA logic segment delay for path-continuous segments",
-                "routed mapped-partition boundary delay",
-                "TDM slot precedence and serialization delay",
-                *(
-                    ["measured TX-stage-to-RX-stage board-link upper bounds"]
-                    if link_timing_validation["final_link_timing_signoff"]
-                    else []
-                ),
-            ],
-            "unknown": (
-                []
-                if link_timing_validation["final_link_timing_signoff"]
-                else [
-                    "PCB trace and connector propagation",
-                    "GT/PCS elastic-buffer and clock-domain latency",
-                    "board-to-board skew under hardware operating conditions",
-                ]
-            ),
-            "final_link_timing_signoff": link_timing_validation[
-                "final_link_timing_signoff"
-            ],
-            "final_system_signoff": False,
-        },
-        "system_timing": system_summary,
-        "artifacts": {
-            "physical_summary": _artifact(feedback_summary_path),
-            "phase7c_report": _artifact(phase7c_root / "phase7c_report.json"),
-            "qor_report": _artifact(phase7c_root / "qor_report.json"),
-        },
-    }
-    report["summary"] = validate_vivado_board_timing_report(report)
-    write_json(output_dir / "vivado-board-timing-report.json", report)
-    return report
+        report["summary"] = validate_vivado_board_timing_report(report)
+        write_json(output_dir / "vivado-board-timing-report.json", report)
+        return report
+    finally:
+        source_physical.close()

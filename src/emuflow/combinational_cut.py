@@ -23,7 +23,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, Set, 
 
 from .errors import ValidationError
 from .emuir_storage import open_emuir_sqlite_read_only
-from .ir import EmuIR
+from .ir import EMUIR_SCHEMA, EmuIR, VALID_CUT_CLASSES
 from .native_tools import resolve_native_executable
 from .phase3_exact_records import (
     StaticExactRecordSequence,
@@ -33,7 +33,7 @@ from .phase3_exact_records import (
     direct_static_exact_semantic_contract_sha256,
     validate_static_exact_capture_bit,
 )
-from .resources import RESOURCE_FIELDS
+from .resources import RESOURCE_FIELDS, ResourceVector
 
 
 COMBINATIONAL_CUT_CHARACTERIZATION_SCHEMA = (
@@ -58,6 +58,7 @@ STATIC_EXACT_NATIVE_MIN_INSTANCES = 100_000
 _STATIC_EXACT_NATIVE_INPUT_MAGIC = 0x31584553464D5545
 _STATIC_EXACT_NATIVE_OUTPUT_MAGIC = 0x315845534F4D5545
 _STATIC_EXACT_NATIVE_PROTOCOL_VERSION = 3
+_COMPACT_CANDIDATE_ARC_BATCH = 8192
 SEQUENTIAL_TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
 SEQUENTIAL_LEGAL_CUT_CLASSES = {
     *SEQUENTIAL_TRANSPORTED_CUT_CLASSES,
@@ -315,6 +316,498 @@ def _splittable_instances(
     )
 
 
+def _packed_csr(
+    rows: Iterable[sqlite3.Row],
+    node_count: int,
+) -> Tuple[array, array, bytearray]:
+    """Materialize one ordered integer edge cursor as packed CSR arrays."""
+
+    offsets = array("I", [0]) * (node_count + 1)
+    neighbors = array("I")
+    active = bytearray(node_count)
+    current_source = 0
+    previous: Tuple[int, int] | None = None
+    for row in rows:
+        source = row["source"]
+        sink = row["sink"]
+        if (
+            isinstance(source, bool)
+            or not isinstance(source, int)
+            or source < 0
+            or source >= node_count
+            or isinstance(sink, bool)
+            or not isinstance(sink, int)
+            or sink < 0
+            or sink >= node_count
+            or (previous is not None and (source, sink) <= previous)
+        ):
+            raise ValidationError("compact candidate adjacency is invalid")
+        while current_source < source:
+            offsets[current_source + 1] = len(neighbors)
+            current_source += 1
+        if len(neighbors) >= 2**32 - 1:
+            raise ValidationError(
+                "compact candidate adjacency exceeds the uint32 identity domain"
+            )
+        neighbors.append(sink)
+        active[source] = 1
+        active[sink] = 1
+        previous = (source, sink)
+    while current_source < node_count:
+        offsets[current_source + 1] = len(neighbors)
+        current_source += 1
+    return offsets, neighbors, active
+
+
+def _packed_cyclic_nodes(
+    connection: sqlite3.Connection,
+    classes: bytearray,
+) -> bytearray:
+    """Return SCC-cycle membership without graph-sized Python containers."""
+
+    node_count = len(classes)
+    edge_count = connection.execute(
+        "SELECT COUNT(*) FROM temp.combinational_candidate_arcs"
+    ).fetchone()[0]
+    if (
+        isinstance(edge_count, bool)
+        or not isinstance(edge_count, int)
+        or edge_count < 0
+        or edge_count >= 2**32
+    ):
+        raise ValidationError("compact candidate adjacency count is invalid")
+    cyclic = bytearray(node_count)
+    if edge_count == 0:
+        return cyclic
+
+    offsets, neighbors, active = _packed_csr(
+        connection.execute(
+            "SELECT source,sink FROM temp.combinational_candidate_arcs "
+            "ORDER BY source,sink"
+        ),
+        node_count,
+    )
+    visited = bytearray(node_count)
+    finish_order = array("I")
+    stack_nodes = array("I")
+    stack_edges = array("I")
+    for start in range(node_count):
+        # Class zero is architectural state and is intentionally absent from
+        # the combinational graph.  The remaining byte values are validated by
+        # the caller before SCC traversal begins.
+        if not active[start] or visited[start]:
+            continue
+        visited[start] = 1
+        stack_nodes.append(start)
+        stack_edges.append(offsets[start])
+        while stack_nodes:
+            node = stack_nodes[-1]
+            position = stack_edges[-1]
+            end = offsets[node + 1]
+            while position < end and visited[neighbors[position]]:
+                position += 1
+            if position < end:
+                sink = neighbors[position]
+                stack_edges[-1] = position + 1
+                if not visited[sink]:
+                    visited[sink] = 1
+                    stack_nodes.append(sink)
+                    stack_edges.append(offsets[sink])
+            else:
+                finish_order.append(node)
+                stack_nodes.pop()
+                stack_edges.pop()
+
+    del offsets, neighbors, visited, stack_edges
+    connection.execute(
+        "CREATE INDEX temp.combinational_candidate_arcs_reverse "
+        "ON combinational_candidate_arcs(sink,source)"
+    )
+    reverse_offsets, reverse_neighbors, reverse_active = _packed_csr(
+        connection.execute(
+            "SELECT sink AS source,source AS sink "
+            "FROM temp.combinational_candidate_arcs ORDER BY 1,2"
+        ),
+        node_count,
+    )
+    if reverse_active != active:
+        raise ValidationError("compact candidate reverse adjacency is invalid")
+    del active, reverse_active
+    self_loops = bytearray(node_count)
+    for row in connection.execute(
+        "SELECT source FROM temp.combinational_candidate_arcs WHERE source=sink"
+    ):
+        self_loops[row["source"]] = 1
+
+    assigned = bytearray(node_count)
+    component = array("I")
+    for start in reversed(finish_order):
+        if assigned[start]:
+            continue
+        del component[:]
+        stack_nodes.append(start)
+        assigned[start] = 1
+        while stack_nodes:
+            node = stack_nodes.pop()
+            component.append(node)
+            for position in range(
+                reverse_offsets[node], reverse_offsets[node + 1]
+            ):
+                source = reverse_neighbors[position]
+                if not assigned[source]:
+                    assigned[source] = 1
+                    stack_nodes.append(source)
+        if len(component) > 1 or self_loops[component[0]]:
+            for node in component:
+                cyclic[node] = 1
+    return cyclic
+
+
+def _compact_combinational_cut_candidate_ids(ir: Any, path: Path) -> Set[str]:
+    """Compute production candidate identities from compact integer records.
+
+    The reference analyzer deliberately retains its rich string-keyed graph for
+    characterization reports.  Phase 3 only needs the final eligible IDs.  Its
+    compact store already owns dense cell ordinals, so keep cell classes in one
+    byte each, deduplicate arcs in disk-backed SQLite scratch, and traverse
+    packed uint32 CSR arrays.  A second ordered endpoint cursor independently
+    applies the exact per-net eligibility rules.  The returned ``Set[str]`` is
+    still graph-sized because the current cluster artifact embeds every
+    eligible name; replacing that output with an ordinal bitmap/typed store is
+    a separate contract migration.
+
+    This function validates the bare compact store's candidate-relevant
+    structure, but it cannot authenticate its content: the direct Phase 3 API
+    supplies no expected artifact digest. Managed experiment checkpoints
+    validate the EmuIR SHA-256 before reuse; direct ``run_phase3`` remains a
+    source-seal contract debt. Do not add a second whole-file hash to this hot
+    path without first carrying the already-computed producer seal into it.
+    """
+
+    try:
+        instance_count = len(ir.value["instances"])
+        net_count = len(ir.value["nets"])
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValidationError("compact EmuIR record counts are invalid") from error
+    if instance_count >= 2**32 or net_count >= 2**32:
+        raise ValidationError(
+            "compact candidate graph exceeds the uint32 identity domain"
+        )
+    try:
+        connection = open_emuir_sqlite_read_only(path)
+    except (ValueError, sqlite3.DatabaseError) as error:
+        raise ValidationError("compact EmuIR candidate store is invalid") from error
+    try:
+        metadata = {
+            row["key"]: row["value"]
+            for row in connection.execute(
+                "SELECT key,value FROM metadata WHERE key IN "
+                "('logical_schema','record_counts_json')"
+            )
+        }
+        if (
+            metadata.get("logical_schema") != EMUIR_SCHEMA
+            or ir.value.get("schema") != EMUIR_SCHEMA
+        ):
+            raise ValidationError("compact EmuIR logical schema is invalid")
+        raw_counts = metadata.get("record_counts_json")
+        if raw_counts is None:
+            raise ValidationError("compact EmuIR record counts are missing")
+        try:
+            counts = json.loads(raw_counts)
+            if (
+                not isinstance(counts, Mapping)
+                or set(counts)
+                != {"cell_records", "net_records", "endpoint_records"}
+            ):
+                raise TypeError("unexpected compact EmuIR record-count keys")
+            expected_instances = counts["cell_records"]
+            expected_nets = counts["net_records"]
+            expected_endpoints = counts["endpoint_records"]
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ValidationError(
+                "compact EmuIR record counts are invalid"
+            ) from error
+        if (
+            any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                for value in (
+                    expected_instances,
+                    expected_nets,
+                    expected_endpoints,
+                )
+            )
+            or expected_instances != instance_count
+            or expected_nets != net_count
+        ):
+            raise ValidationError("compact EmuIR record counts disagree")
+
+        top_ports: Set[str] = set()
+        port_count = 0
+        for row in connection.execute(
+            "SELECT seq,record_json FROM port_records ORDER BY seq"
+        ):
+            if row["seq"] != port_count:
+                raise ValidationError("compact EmuIR port sequence is invalid")
+            try:
+                port = json.loads(row["record_json"])
+            except (TypeError, json.JSONDecodeError) as error:
+                raise ValidationError("compact EmuIR port record is invalid") from error
+            port_id = port.get("id") if isinstance(port, Mapping) else None
+            if (
+                not isinstance(port_id, str)
+                or not port_id
+                or port_id in top_ports
+            ):
+                raise ValidationError("compact EmuIR port record is invalid")
+            top_ports.add(port_id)
+            port_count += 1
+
+        unknown_class = 0xFF
+        class_codes = {
+            "architectural-state-or-memory": 0,
+            "supported-soft-combinational": 1,
+            "hard-combinational-macro": 2,
+            "unsupported-or-opaque": 3,
+        }
+        classes = bytearray([unknown_class]) * instance_count
+        cell_count = 0
+        for row in connection.execute(
+            """SELECT c.seq,c.id,c.type,r.seq AS resources_payload_seq,
+                      r.value AS resources_json
+                 FROM cell_records c
+                 LEFT JOIN payloads r ON r.seq=c.resources_seq
+                ORDER BY c.seq"""
+        ):
+            sequence = row["seq"]
+            if sequence != cell_count or sequence >= instance_count:
+                raise ValidationError("compact EmuIR cell sequence is invalid")
+            if not isinstance(row["id"], str) or not row["id"]:
+                raise ValidationError("compact EmuIR cell identity is invalid")
+            if not isinstance(row["type"], str) or not row["type"]:
+                raise ValidationError("compact EmuIR cell type is invalid")
+            if (
+                row["resources_payload_seq"] is None
+                or row["resources_json"] is None
+            ):
+                raise ValidationError("compact EmuIR resource payload is missing")
+            try:
+                resources = json.loads(row["resources_json"])
+            except (TypeError, json.JSONDecodeError) as error:
+                raise ValidationError(
+                    "compact EmuIR instance resources are invalid"
+                ) from error
+            if not isinstance(resources, Mapping):
+                raise ValidationError(
+                    "compact EmuIR instance resources are invalid"
+                )
+            try:
+                ResourceVector.from_mapping(
+                    resources, "compact EmuIR instance resources"
+                )
+                classification = _instance_class({"resources": resources})
+            except (TypeError, ValueError) as error:
+                raise ValidationError(
+                    "compact EmuIR instance resources are invalid"
+                ) from error
+            classes[sequence] = class_codes[classification]
+            cell_count += 1
+        if cell_count != instance_count or unknown_class in classes:
+            raise ValidationError("compact EmuIR cell sequence is incomplete")
+        if connection.execute(
+            """SELECT 1 FROM cell_records GROUP BY id
+                 HAVING COUNT(*) != 1 LIMIT 1"""
+        ).fetchone() is not None:
+            raise ValidationError("compact EmuIR cell identity is duplicated")
+
+        # TEMP storage is explicitly file-backed.  The primary key both
+        # deduplicates parallel logical arcs and provides the forward CSR order.
+        connection.execute("PRAGMA temp_store=FILE")
+        connection.execute(
+            """CREATE TEMP TABLE combinational_candidate_arcs(
+                   source INTEGER NOT NULL,
+                   sink INTEGER NOT NULL,
+                   PRIMARY KEY(source,sink)
+               ) WITHOUT ROWID"""
+        )
+        endpoint_rows = iter(
+            connection.execute(
+                """SELECT e.net_seq,e.role,e.ordinal,e.instance_seq,e.bit,
+                          p.seq AS pin_name_seq,p.name AS port
+                     FROM endpoint_records e
+                     LEFT JOIN pin_names p ON p.seq=e.port_seq
+                    ORDER BY e.net_seq,e.role,e.ordinal"""
+            )
+        )
+        endpoint = next(endpoint_rows, None)
+        endpoint_count = 0
+        observed_nets = 0
+        pending_arcs: List[Tuple[int, int]] = []
+
+        def append_arc(source: int, sink: int) -> None:
+            pending_arcs.append((source, sink))
+            if len(pending_arcs) == _COMPACT_CANDIDATE_ARC_BATCH:
+                connection.executemany(
+                    "INSERT OR IGNORE INTO temp."
+                    "combinational_candidate_arcs VALUES (?,?)",
+                    pending_arcs,
+                )
+                pending_arcs.clear()
+
+        for net in connection.execute(
+            "SELECT seq,id,cut_class FROM net_records ORDER BY seq"
+        ):
+            net_seq = net["seq"]
+            if net_seq != observed_nets:
+                raise ValidationError("compact EmuIR net sequence is invalid")
+            if not isinstance(net["id"], str) or not net["id"]:
+                raise ValidationError("compact EmuIR net identity is invalid")
+            if net["cut_class"] not in VALID_CUT_CLASSES:
+                raise ValidationError("compact EmuIR net cut class is invalid")
+            if endpoint is not None and endpoint["net_seq"] < net_seq:
+                raise ValidationError("compact EmuIR has orphaned endpoints")
+            driver: int | None = None
+            multiple_instance_drivers = False
+            endpoint_ordinals = [0, 0]
+            while endpoint is not None and endpoint["net_seq"] == net_seq:
+                role = endpoint["role"]
+                owner = endpoint["instance_seq"]
+                if role not in (0, 1):
+                    raise ValidationError("compact EmuIR endpoint role is invalid")
+                if endpoint["ordinal"] != endpoint_ordinals[role]:
+                    raise ValidationError(
+                        "compact EmuIR endpoint sequence is invalid"
+                    )
+                endpoint_ordinals[role] += 1
+                if (
+                    endpoint["pin_name_seq"] is None
+                    or not isinstance(endpoint["port"], str)
+                    or not endpoint["port"]
+                ):
+                    raise ValidationError("compact EmuIR endpoint port is invalid")
+                bit = endpoint["bit"]
+                if isinstance(bit, bool) or not isinstance(bit, int) or bit < 0:
+                    raise ValidationError("compact EmuIR endpoint bit is invalid")
+                if owner is not None:
+                    if (
+                        isinstance(owner, bool)
+                        or not isinstance(owner, int)
+                        or owner < 0
+                        or owner >= instance_count
+                    ):
+                        raise ValidationError(
+                            "compact EmuIR endpoint owner is invalid"
+                        )
+                elif endpoint["port"] not in top_ports:
+                    raise ValidationError(
+                        "compact EmuIR top-level endpoint is invalid"
+                    )
+                if role == 0 and owner is not None:
+                    if driver is None:
+                        driver = owner
+                    elif driver != owner:
+                        multiple_instance_drivers = True
+                elif (
+                    role == 1
+                    and owner is not None
+                    and net["cut_class"] not in {"clock", "reset"}
+                    and driver is not None
+                    and not multiple_instance_drivers
+                    and classes[driver] != 0
+                    and classes[owner] != 0
+                ):
+                    append_arc(driver, owner)
+                endpoint_count += 1
+                endpoint = next(endpoint_rows, None)
+            observed_nets += 1
+        if pending_arcs:
+            connection.executemany(
+                "INSERT OR IGNORE INTO temp.combinational_candidate_arcs "
+                "VALUES (?,?)",
+                pending_arcs,
+            )
+        if endpoint is not None:
+            raise ValidationError("compact EmuIR has orphaned endpoints")
+        if observed_nets != net_count:
+            raise ValidationError("compact EmuIR net sequence is incomplete")
+        if endpoint_count != expected_endpoints:
+            raise ValidationError("compact EmuIR record counts disagree")
+        if connection.execute(
+            """SELECT 1 FROM net_records GROUP BY id
+                 HAVING COUNT(*) != 1 LIMIT 1"""
+        ).fetchone() is not None:
+            raise ValidationError("compact EmuIR net identity is duplicated")
+
+        cyclic = _packed_cyclic_nodes(connection, classes)
+
+        eligible: Set[str] = set()
+        endpoint_rows = iter(
+            connection.execute(
+                """SELECT e.net_seq,e.role,e.instance_seq,c.type,
+                          p.name AS port
+                     FROM endpoint_records e
+                     JOIN net_records n ON n.seq=e.net_seq
+                     LEFT JOIN cell_records c ON c.seq=e.instance_seq
+                     JOIN pin_names p ON p.seq=e.port_seq
+                    WHERE n.cut_class='combinational'
+                    ORDER BY e.net_seq,e.role,e.ordinal"""
+            )
+        )
+        endpoint = next(endpoint_rows, None)
+        for net in connection.execute(
+            """SELECT seq,id FROM net_records
+                WHERE cut_class='combinational' ORDER BY seq"""
+        ):
+            net_seq = net["seq"]
+            if endpoint is not None and endpoint["net_seq"] < net_seq:
+                raise ValidationError("compact EmuIR has orphaned endpoints")
+            driver_count = 0
+            instance_driver_count = 0
+            source: int | None = None
+            sink_count = 0
+            reasons = False
+            while endpoint is not None and endpoint["net_seq"] == net_seq:
+                role = endpoint["role"]
+                owner = endpoint["instance_seq"]
+                if role not in (0, 1):
+                    raise ValidationError("compact EmuIR endpoint role is invalid")
+                if role == 0:
+                    driver_count += 1
+                    if owner is not None:
+                        instance_driver_count += 1
+                        source = owner
+                else:
+                    sink_count += 1
+                    if owner is not None:
+                        classification = classes[owner]
+                        if classification == 1:
+                            reasons = reasons or bool(cyclic[owner])
+                        elif classification == 0:
+                            reasons = reasons or not _safe_sequential_input(
+                                endpoint["type"], endpoint["port"]
+                            )
+                        else:
+                            reasons = True
+                endpoint = next(endpoint_rows, None)
+            if driver_count != 1 or instance_driver_count != 1:
+                reasons = True
+            elif classes[source] != 1 or cyclic[source]:
+                reasons = True
+            if sink_count == 0:
+                reasons = True
+            if not reasons:
+                eligible.add(net["id"])
+        if endpoint is not None:
+            raise ValidationError("compact EmuIR has orphaned endpoints")
+        return eligible
+    except sqlite3.DatabaseError as error:
+        raise ValidationError("compact EmuIR candidate store is invalid") from error
+    finally:
+        connection.close()
+
+
 def _build_combinational_cut_candidate_index(
     ir: EmuIR,
     *,
@@ -331,6 +824,19 @@ def _build_combinational_cut_candidate_index(
     report for a real synthesized design while preserving the explicit
     characterization command unchanged.
     """
+
+    compact_path = _compact_partition_ir_path(ir)
+    if (
+        compact_path is not None
+        and not include_dependency_levels
+        and not include_source_identity
+    ):
+        return {
+            "eligible_ids": _compact_combinational_cut_candidate_ids(
+                ir, compact_path
+            ),
+            "dependency_levels": {},
+        }
 
     instances = {item["id"]: item for item in ir.value["instances"]}
     classes = {

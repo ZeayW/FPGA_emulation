@@ -9,6 +9,7 @@ import sqlite3
 import struct
 import subprocess
 import tempfile
+import tracemalloc
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -753,6 +754,466 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
         self.assertEqual(compact["eligible_ids"], {"n0", "n1"})
         self.assertEqual(compact["dependency_levels"], {})
         self.assertNotIn("canonical_emuir_sha256", compact)
+
+    def test_compact_v2_candidate_index_streams_packed_graph_and_matches_reference(
+        self,
+    ):
+        values = []
+        values.append(_chain_ir().to_dict())
+        cyclic = _chain_ir().to_dict()
+        cyclic["nets"][2]["sinks"].append(_endpoint("l0", "I1"))
+        values.append(cyclic)
+        irregular = _chain_ir().to_dict()
+        irregular["nets"][1]["drivers"].append(_endpoint("l1", "O"))
+        irregular["nets"][2]["sinks"] = [_endpoint("q1", "CLR")]
+        values.append(irregular)
+
+        for index, value in enumerate(values):
+            with self.subTest(index=index), tempfile.TemporaryDirectory() as temporary:
+                reference = EmuIR(value)
+                expected = _build_combinational_cut_candidate_index(
+                    reference,
+                    include_dependency_levels=False,
+                    include_source_identity=False,
+                )
+                path = Path(temporary) / "design.emuir.sqlite"
+                write_compact_emuir(path, value)
+                compact_ir = load_partition_ir(path)
+                with patch(
+                    "emuflow.partition_ir._CompactPartitionInstances.__iter__",
+                    side_effect=AssertionError("cell dictionaries were decoded"),
+                ), patch(
+                    "emuflow.partition_ir._CompactPartitionNets.__iter__",
+                    side_effect=AssertionError("net dictionaries were decoded"),
+                ), patch(
+                    "emuflow.combinational_cut._strongly_connected_components",
+                    side_effect=AssertionError("string-keyed SCC was rebuilt"),
+                ):
+                    actual = _build_combinational_cut_candidate_index(
+                        compact_ir,
+                        include_dependency_levels=False,
+                        include_source_identity=False,
+                    )
+                self.assertEqual(actual, expected)
+
+    def test_compact_v2_candidate_index_randomized_differential(self):
+        resource_kinds = (
+            ("LUT1", {"lut": 1}),
+            ("FDRE", {"ff": 1}),
+            ("DSP48E2", {"dsp48": 1}),
+            ("OPAQUE", {"other": 1}),
+        )
+        cut_classes = (
+            "combinational",
+            "combinational",
+            "combinational",
+            "clock",
+            "reset",
+            "multi_driver",
+            "undriven",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for seed in range(64):
+                generator = random.Random(seed)
+                instances = []
+                for index in range(12):
+                    instance_type, resources = generator.choice(resource_kinds)
+                    instances.append(
+                        {
+                            "id": f"u{index}",
+                            "type": instance_type,
+                            "resources": resources,
+                        }
+                    )
+                nets = []
+                for index in range(24):
+                    cut_class = generator.choice(cut_classes)
+                    driver_count = generator.randrange(3)
+                    sink_count = generator.randrange(7)
+                    drivers = []
+                    sinks = []
+                    for _ in range(driver_count):
+                        owner = generator.choice(
+                            [None, *[item["id"] for item in instances]]
+                        )
+                        drivers.append(
+                            _endpoint(owner, "top_in" if owner is None else "O")
+                        )
+                    for _ in range(sink_count):
+                        owner = generator.choice(
+                            [None, *[item["id"] for item in instances]]
+                        )
+                        if owner is None:
+                            port = "top_out"
+                        else:
+                            instance_type = instances[int(owner[1:])]["type"]
+                            port = (
+                                generator.choice(("D", "CE", "R", "BAD"))
+                                if instance_type == "FDRE"
+                                else "I"
+                            )
+                        sinks.append(_endpoint(owner, port))
+                    nets.append(
+                        {
+                            "id": f"n{index}",
+                            "cut_class": cut_class,
+                            "drivers": drivers,
+                            "sinks": sinks,
+                        }
+                    )
+                value = {
+                    "schema": "emuflow.emuir/v1",
+                    "design": {
+                        "name": f"random_{seed}",
+                        "top": "random",
+                        "source_format": "test",
+                    },
+                    "ports": [
+                        {"id": "top_in", "direction": "input", "width": 1},
+                        {"id": "top_out", "direction": "output", "width": 1},
+                    ],
+                    "instances": instances,
+                    "nets": nets,
+                    "clocks": [],
+                    "warnings": [],
+                }
+                expected = _build_combinational_cut_candidate_index(
+                    EmuIR(value),
+                    include_dependency_levels=False,
+                    include_source_identity=False,
+                )
+                path = root / f"random-{seed}.emuir.sqlite"
+                write_compact_emuir(path, value)
+                actual = _build_combinational_cut_candidate_index(
+                    load_partition_ir(path),
+                    include_dependency_levels=False,
+                    include_source_identity=False,
+                )
+                self.assertEqual(actual, expected, f"seed={seed}")
+
+    def test_compact_v2_candidate_index_rejects_corrupt_store(self):
+        mutations = {
+            "endpoint owner is invalid": lambda connection: connection.execute(
+                "UPDATE endpoint_records SET instance_seq=? "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0",
+                (2**31,),
+            ),
+            "endpoint role is invalid": lambda connection: connection.execute(
+                "UPDATE endpoint_records SET role=2 "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0"
+            ),
+            "record counts disagree": lambda connection: connection.execute(
+                "DELETE FROM endpoint_records "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0"
+            ),
+        }
+        for message, mutate in mutations.items():
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "design.emuir.sqlite"
+                write_compact_emuir(path, _chain_ir().to_dict())
+                compact_ir = load_partition_ir(path)
+                with sqlite3.connect(path) as connection:
+                    mutate(connection)
+                with self.assertRaisesRegex(ValidationError, message):
+                    _build_combinational_cut_candidate_index(
+                        compact_ir,
+                        include_dependency_levels=False,
+                        include_source_identity=False,
+                    )
+
+    def test_compact_v2_candidate_index_rejects_invalid_resource_payload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, _chain_ir().to_dict())
+            compact_ir = load_partition_ir(path)
+            with sqlite3.connect(path) as connection:
+                resources_seq = connection.execute(
+                    "SELECT resources_seq FROM cell_records WHERE seq=0"
+                ).fetchone()[0]
+                connection.execute(
+                    "UPDATE payloads SET value='[1,2,3]' WHERE seq=?",
+                    (resources_seq,),
+                )
+            with self.assertRaisesRegex(
+                ValidationError, "instance resources are invalid"
+            ):
+                _build_combinational_cut_candidate_index(
+                    compact_ir,
+                    include_dependency_levels=False,
+                    include_source_identity=False,
+                )
+
+    def test_compact_v2_candidate_index_rejects_validation_bypasses(self):
+        def negative_count(connection):
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key='record_counts_json'"
+            ).fetchone()
+            counts = json.loads(row[0])
+            counts["endpoint_records"] = -1
+            connection.execute(
+                "UPDATE metadata SET value=? WHERE key='record_counts_json'",
+                (json.dumps(counts, sort_keys=True),),
+            )
+
+        def duplicate_cell_identity(connection):
+            connection.execute(
+                "ALTER TABLE cell_records RENAME TO original_cell_records"
+            )
+            connection.execute(
+                """CREATE TABLE cell_records(
+                       seq INTEGER, id TEXT, name TEXT, flags INTEGER,
+                       type TEXT, resources_seq INTEGER, parameters_seq INTEGER,
+                       attributes_seq INTEGER, constants_seq INTEGER,
+                       extras_seq INTEGER)"""
+            )
+            connection.execute(
+                "INSERT INTO cell_records SELECT * FROM original_cell_records"
+            )
+            duplicate = connection.execute(
+                "SELECT id FROM cell_records WHERE seq=0"
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE cell_records SET id=? WHERE seq=1", (duplicate,)
+            )
+
+        mutations = (
+            (
+                "logical schema is invalid",
+                lambda connection: connection.execute(
+                    "UPDATE metadata SET value='emuflow.emuir/v999' "
+                    "WHERE key='logical_schema'"
+                ),
+            ),
+            (
+                "cell type is invalid",
+                lambda connection: connection.execute(
+                    "UPDATE cell_records SET type='' WHERE seq=0"
+                ),
+            ),
+            (
+                "net identity is invalid",
+                lambda connection: connection.execute(
+                    "UPDATE net_records SET id='' WHERE seq=0"
+                ),
+            ),
+            (
+                "endpoint port is invalid",
+                lambda connection: connection.execute(
+                    "UPDATE pin_names SET name='' WHERE name='O'"
+                ),
+            ),
+            (
+                "endpoint bit is invalid",
+                lambda connection: connection.execute(
+                    "UPDATE endpoint_records SET bit=-1 "
+                    "WHERE net_seq=0 AND role=0 AND ordinal=0"
+                ),
+            ),
+            (
+                "top-level endpoint is invalid",
+                lambda connection: connection.execute(
+                    "UPDATE pin_names SET name='missing_top' WHERE name='clk'"
+                ),
+            ),
+            ("record counts disagree", negative_count),
+            (
+                "net cut class is invalid",
+                lambda connection: connection.execute(
+                    "UPDATE net_records SET cut_class='wrong-kind' WHERE seq=0"
+                ),
+            ),
+            (
+                "net sequence is invalid",
+                lambda connection: connection.execute(
+                    "UPDATE net_records SET seq=99 WHERE seq=0"
+                ),
+            ),
+            (
+                "endpoint sequence is invalid",
+                lambda connection: connection.execute(
+                    "UPDATE endpoint_records SET ordinal=99 "
+                    "WHERE net_seq=0 AND role=0 AND ordinal=0"
+                ),
+            ),
+            ("cell identity is duplicated", duplicate_cell_identity),
+            (
+                "candidate store is invalid",
+                lambda connection: connection.execute("DROP TABLE pin_names"),
+            ),
+        )
+        for message, mutate in mutations:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "design.emuir.sqlite"
+                write_compact_emuir(path, _chain_ir().to_dict())
+                compact_ir = load_partition_ir(path)
+                with sqlite3.connect(path) as connection:
+                    mutate(connection)
+                with self.assertRaisesRegex(ValidationError, message):
+                    _build_combinational_cut_candidate_index(
+                        compact_ir,
+                        include_dependency_levels=False,
+                        include_source_identity=False,
+                    )
+
+    def test_compact_v2_empty_connectivity_net_is_not_eligible(self):
+        value = _chain_ir().to_dict()
+        value["nets"].append(
+            {
+                "id": "empty_connectivity",
+                "cut_class": "combinational",
+                "drivers": [],
+                "sinks": [],
+            }
+        )
+        reference = EmuIR(value)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, value)
+            compact = _build_combinational_cut_candidate_index(
+                load_partition_ir(path),
+                include_dependency_levels=False,
+                include_source_identity=False,
+            )
+        expected = _build_combinational_cut_candidate_index(
+            reference,
+            include_dependency_levels=False,
+            include_source_identity=False,
+        )
+        self.assertEqual(compact, expected)
+        self.assertNotIn("empty_connectivity", compact["eligible_ids"])
+
+    def test_compact_v2_million_fanout_endpoints_have_bounded_python_peak(self):
+        sink_count = 250_000
+        value = {
+            "schema": "emuflow.emuir/v1",
+            "design": {
+                "name": "million_fanout",
+                "top": "million_fanout",
+                "source_format": "test",
+            },
+            "ports": [
+                {"id": "clk", "direction": "input", "width": 1},
+                {"id": "rst", "direction": "input", "width": 1},
+            ],
+            "instances": [
+                {"id": "source", "type": "LUT1", "resources": {"lut": 1}},
+                {
+                    "id": "sink_000001",
+                    "type": "LUT1",
+                    "resources": {"lut": 1},
+                },
+            ],
+            "nets": [
+                {
+                    "id": "clock_a",
+                    "cut_class": "clock",
+                    "drivers": [_endpoint(None, "clk")],
+                    "sinks": [_endpoint("sink_000001", "C")],
+                },
+                {
+                    "id": "reset_a",
+                    "cut_class": "reset",
+                    "drivers": [_endpoint(None, "rst")],
+                    "sinks": [_endpoint("sink_000001", "R")],
+                },
+                {
+                    "id": "clock_b",
+                    "cut_class": "clock",
+                    "drivers": [_endpoint(None, "clk")],
+                    "sinks": [_endpoint("sink_000001", "CE")],
+                },
+                {
+                    "id": "eligible_fanout",
+                    "cut_class": "combinational",
+                    "drivers": [_endpoint("source", "O")],
+                    "sinks": [_endpoint("sink_000001", "I0")],
+                },
+            ],
+            "clocks": [],
+            "warnings": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "million.emuir.sqlite"
+            write_compact_emuir(path, value)
+            with sqlite3.connect(path) as connection:
+                connection.execute("PRAGMA synchronous=OFF")
+                template = connection.execute(
+                    """SELECT resources_seq,constants_seq,extras_seq
+                         FROM cell_records WHERE seq=1"""
+                ).fetchone()
+                connection.executemany(
+                    """INSERT INTO cell_records
+                       (seq,id,name,flags,type,resources_seq,parameters_seq,
+                        attributes_seq,constants_seq,extras_seq)
+                       VALUES (?,?,NULL,0,'LUT1',?,NULL,NULL,?,?)""",
+                    (
+                        (
+                            sequence,
+                            f"sink_{sequence:06d}",
+                            template[0],
+                            template[1],
+                            template[2],
+                        )
+                        for sequence in range(2, sink_count + 1)
+                    ),
+                )
+                net_rows = list(
+                    connection.execute(
+                        "SELECT seq,id FROM net_records ORDER BY seq"
+                    )
+                )
+                pin_by_name = dict(
+                    connection.execute("SELECT name,seq FROM pin_names")
+                )
+                empty_payload = connection.execute(
+                    "SELECT seq FROM payloads WHERE value='{}'"
+                ).fetchone()[0]
+                sink_port = {
+                    "clock_a": "C",
+                    "reset_a": "R",
+                    "clock_b": "CE",
+                    "eligible_fanout": "I0",
+                }
+                for net_seq, net_id in net_rows:
+                    port_seq = pin_by_name[sink_port[net_id]]
+                    connection.executemany(
+                        "INSERT INTO endpoint_records VALUES (?,?,?,?,?,?,?)",
+                        (
+                            (
+                                net_seq,
+                                1,
+                                ordinal - 1,
+                                ordinal,
+                                port_seq,
+                                0,
+                                empty_payload,
+                            )
+                            for ordinal in range(2, sink_count + 1)
+                        ),
+                    )
+                counts_row = connection.execute(
+                    "SELECT value FROM metadata WHERE key='record_counts_json'"
+                ).fetchone()
+                counts = json.loads(counts_row[0])
+                counts["cell_records"] = sink_count + 1
+                counts["endpoint_records"] += 4 * (sink_count - 1)
+                connection.execute(
+                    "UPDATE metadata SET value=? WHERE key='record_counts_json'",
+                    (json.dumps(counts, separators=(",", ":"), sort_keys=True),),
+                )
+
+            compact_ir = load_partition_ir(path)
+            tracemalloc.start()
+            result = _build_combinational_cut_candidate_index(
+                compact_ir,
+                include_dependency_levels=False,
+                include_source_identity=False,
+            )
+            _, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+        self.assertEqual(result["eligible_ids"], {"eligible_fanout"})
+        self.assertLess(peak, 16 * 1024 * 1024)
 
     def test_cycle_is_fail_closed_and_stays_atomic(self):
         value = _chain_ir().to_dict()
@@ -2280,6 +2741,39 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 self.assertEqual(
                     read_tdm_schedule(path, materialize=True), reference
                 )
+                indexed_schedule = read_tdm_schedule(path)
+                if isinstance(candidate, SystemRoutesView):
+                    with (
+                        patch(
+                            "emuflow.tdm._indexed_exact_nodes",
+                            side_effect=AssertionError(
+                                "typed validation rebuilt an R-sized node map"
+                            ),
+                        ),
+                        patch(
+                            "emuflow.tdm._exact_dependency_order",
+                            side_effect=AssertionError(
+                                "typed validation rebuilt an R-sized order"
+                            ),
+                        ),
+                    ):
+                        self.assertEqual(
+                            validate_tdm_schedule(
+                                candidate,
+                                self.platform,
+                                indexed_schedule,
+                            )["status"],
+                            "pass",
+                        )
+                else:
+                    self.assertEqual(
+                        validate_tdm_schedule(
+                            candidate,
+                            self.platform,
+                            indexed_schedule,
+                        )["status"],
+                        "pass",
+                    )
 
         compare(routes)
         template = next(

@@ -958,6 +958,52 @@ def test_v2_validation_index_remains_a_compatible_fallback(tmp_path):
                 "SELECT count(*) FROM sqlite_temp_master "
                 "WHERE name='validation_entries'"
             ).fetchone()[0] == 1
+            assert index.validate_expected_completions(
+                iter(expected["demand_completions"])
+            ) == len(expected["demand_completions"])
+
+
+def test_validation_index_spools_and_compares_complete_completion_relation(
+    tmp_path,
+):
+    expected = _typed_exact_schedule(5)
+    path = tmp_path / "schedule.json"
+    manifest = write_tdm_schedule_storage(path, expected)
+    assert manifest["schema"] == FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+
+    with open_tdm_schedule_view(path) as view:
+        with view.open_validation_index() as index:
+            assert index.validate_expected_completions(
+                iter(expected["demand_completions"])
+            ) == len(expected["demand_completions"])
+
+    wrong = [dict(record) for record in expected["demand_completions"]]
+    wrong[2] = {
+        **wrong[2],
+        "sink_arrival_slots": {"b": wrong[2]["completion_slot"] + 1},
+    }
+    with open_tdm_schedule_view(path) as view:
+        with view.open_validation_index() as index:
+            with pytest.raises(
+                ValidationError, match="does not match recomputed"
+            ):
+                index.validate_expected_completions(iter(wrong))
+
+    mixed_run = [dict(record) for record in expected["demand_completions"]]
+    mixed_run[-1] = {**mixed_run[-1], "demand": "foreign-demand"}
+    with open_tdm_schedule_view(path) as view:
+        with view.open_validation_index() as index:
+            with pytest.raises(
+                ValidationError, match="does not match recomputed"
+            ):
+                index.validate_expected_completions(iter(mixed_run))
+
+    malformed = [dict(record) for record in expected["demand_completions"]]
+    malformed[0] = {**malformed[0], "completion_slot": True}
+    with open_tdm_schedule_view(path) as view:
+        with view.open_validation_index() as index:
+            with pytest.raises(ValidationError, match="malformed"):
+                index.validate_expected_completions(iter(malformed))
 
 
 @pytest.mark.parametrize("mutation", ["truncate", "replace", "manifest", "row"])

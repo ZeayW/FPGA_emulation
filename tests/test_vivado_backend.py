@@ -307,6 +307,8 @@ class VivadoBackendTest(unittest.TestCase):
                 logic_identity,
                 {
                     "schema": "emuflow.logic-segment-identity/v1",
+                    "system_routes_sha256": "a" * 64,
+                    "tdm_schedule_sha256": "b" * 64,
                     "status": "pass",
                     "design": "partition",
                     "platform": "board",
