@@ -74,6 +74,43 @@ def run(values):
 
 
 class FullOriginalTimingTest(unittest.TestCase):
+    def test_managed_arm_artifacts_match_inline_and_preserve_sealed_bytes(self):
+        import hashlib
+        from emuflow.managed_json_storage import pack_managed_json
+        values = fixture(remote_output=True, include_local=True)
+        originals, assignment, projected, routes, schedule, board, nets, _ = values
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for managed in (False, True):
+                with self.subTest(managed=managed):
+                    paths = [root / "routes.json", root / "schedule.json"]
+                    for path, value in zip(paths, (routes, schedule)):
+                        path.write_text(json.dumps(pack_managed_json(value) if managed else value))
+                    seals = [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths]
+                    observed = evaluate.summarize_population_artifacts(
+                        iter(originals), assignment, projected, *paths, board,
+                        original_nets=nets,
+                    )
+                    self.assertEqual(observed, run(values))
+                    self.assertEqual(seals, [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths])
+                    if managed:
+                        self.assertNotIn("routes", json.loads(paths[0].read_text()))
+
+    def test_corrupt_managed_arm_is_rejected_before_timing(self):
+        from emuflow.managed_json_storage import pack_managed_json
+        values = fixture()
+        originals, assignment, projected, routes, schedule, board, nets, _ = values
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            route_path, schedule_path = root / "routes.json", root / "schedule.json"
+            envelope = pack_managed_json(routes)
+            envelope["uncompressed_bytes"] += 1
+            route_path.write_text(json.dumps(envelope))
+            schedule_path.write_text(json.dumps(pack_managed_json(schedule)))
+            with self.assertRaisesRegex(ValueError, "managed JSON storage is corrupt"):
+                evaluate.summarize_population_artifacts(iter(originals), assignment,
+                    projected, route_path, schedule_path, board, original_nets=nets)
+
     def test_exact_reproducer_replaces_representative_slack(self):
         values = fixture()
         old = reconstruct_tdm_schedule_timing(values[3], values[7], values[4])

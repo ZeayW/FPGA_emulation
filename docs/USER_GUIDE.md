@@ -74,7 +74,9 @@ aggregation. For whole-original-population estimates, use
 `scripts/phase4_nvdla_timing.py --producer-root ... --contract ...
 --comparison-root ... --output ...`. It restores each original path’s own logic
 delay, checks population coverage, and counts the worst output copy once.
-These estimates do not establish physical timing closure. Successful preparation
+The evaluator accepts ordinary and managed route/schedule artifacts while
+sealing the original stored files. These estimates do not establish physical
+timing closure. Successful preparation
 alone is not qualification evidence.
 
 The contest comparison tool separately reuses a baseline only when its Python

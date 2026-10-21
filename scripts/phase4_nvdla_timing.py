@@ -228,6 +228,17 @@ def summarize_population(originals, assignment, projected, routes, schedule, boa
                             for s,p,c,o,t in sorted(worst)[:100]]}
 
 
+def summarize_population_artifacts(originals, assignment, projected, routes_path,
+                                   schedule_path, board, *, original_nets):
+    # Import only after main selects the immutable producer's source root.
+    # Managed producers store envelopes; consumers must decode their logical
+    # schemas while input seals continue hashing the original file bytes.
+    from emuflow.io import read_json
+    return summarize_population(originals, assignment, projected,
+        read_json(routes_path), read_json(schedule_path), board,
+        original_nets=original_nets)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--producer-root", type=Path, required=True)
@@ -239,6 +250,7 @@ def main():
     producer = args.producer_root.resolve()
     sys.path[:0] = [str(producer / "src"), str(producer / "scripts")]
     from phase4_nvdla_compare import read, write, digest, verify_contract, stat_identity, runtime_identity
+    from emuflow.io import read_json
     from emuflow.phase4 import validate_phase4
     from emuflow.phase5 import validate_phase5
     from emuflow.phase3_storage import read_phase3_cut_timing_view
@@ -257,9 +269,9 @@ def main():
                 "replicated cell ownership requires a separate qualified evaluator")
     assignment = read_phase3_cut_timing_view(assignment_path, include_instance_assignment=True)
     original_path = common / artifacts["timing_path_database"]
-    original = read(original_path)
+    original = read_json(original_path)
     projected_path = common / artifacts["timing_paths"]
-    projected, board = read(projected_path), read(platform)
+    projected, board = read_json(projected_path), read_json(platform)
     output = {"schema": "emuflow.phase4-full-original-timing/v1", "status": "running",
               "producer_source_sha256": contract["provenance"]["source_sha256"],
               "producer_pair_sha256": digest(args.comparison_root / "comparison.json"),
@@ -289,8 +301,8 @@ def main():
                 schedule_check = validate_phase5(route_path, platform, schedule_path,
                     ratio_plan_path=ratio if ratio.is_file() else None, assignment_path=assignment_path)
                 require(route_check["status"] == schedule_check["status"] == "pass", "independent legality failed")
-                summary = summarize_population(iter_sta_path_database_paths(original_path, original, verify_payload=False),
-                    assignment, projected, read(route_path), read(schedule_path), board, original_nets=ir.nets)
+                summary = summarize_population_artifacts(iter_sta_path_database_paths(original_path, original, verify_payload=False),
+                    assignment, projected, route_path, schedule_path, board, original_nets=ir.nets)
                 require(summary["original_paths"] == contract["coverage"]["original_paths"], "original report count differs")
                 require(set(summary["per_clock"]) == {"dla_core_clk", "dla_csb_clk"},
                         "full-original clock-domain coverage differs")
