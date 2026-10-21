@@ -393,6 +393,7 @@ def run_phase3(
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     timing_database_path: Optional[Path] = None,
     patron_refiner: Optional[str] = None,
+    patron_completed_result: Optional[Path] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
     patron_algorithm_version: int = 6,
@@ -403,9 +404,12 @@ def run_phase3(
     retain_diagnostics: bool = False,
     retain_patron_baseline: bool = False,
 ) -> Dict[str, Any]:
+    if patron_completed_result is not None and (provider != "patron"
+            or patron_initial_assignment_path is not None):
+        raise ValidationError("completed PATRON result requires patron and its original initializer")
     if patron_initial_clusters_path is not None and (
         provider != "patron"
-        or patron_initial_assignment_path is None
+        or (patron_initial_assignment_path is None and patron_completed_result is None)
     ):
         raise ValidationError(
             "PATRON initial clusters require provider='patron' and a frozen "
@@ -616,7 +620,22 @@ def run_phase3(
             raise ValueError(
                 "PATRON Phase 3 requires a complete TimingPathDB"
             )
-        if patron_initial_assignment_path is None:
+        if patron_completed_result is not None:
+            from .patron_result import recover_initial_mapping, validate_context
+            completed = read_json(patron_completed_result)
+            validate_context(completed, ir=ir_path, platform=platform_path,
+                             timing=timing_database_path,
+                             **({"clusters": patron_initial_clusters_path}
+                                if patron_initial_clusters_path is not None else {}))
+            initial_map = recover_initial_mapping(completed,
+                (cluster["id"] for cluster in clusters["clusters"]),
+                (fpga.id for fpga in platform.fpgas))
+            initial = build_partition_assignment(ir, platform, clusters, constraints,
+                initial_map, provider="sealed-patron-initializer", seed=seed,
+                provider_metadata={"native_result_manifest": str(patron_completed_result)},
+                _include_semantic_contract=(patron_algorithm_version != 14))
+            patron_initialization = "completed-native-frozen-initializer-v1"
+        elif patron_initial_assignment_path is None:
             # Start PATRON from an ordinary balanced TritonPart solution on
             # the same generalized clusters and legal net-cut hypergraph.
             # Transport and timing are PATRON objectives; duplicating every
@@ -667,7 +686,7 @@ def run_phase3(
                 include_semantic_contract=(patron_algorithm_version != 14),
             )
         patron_feedback_source_assignment = initial
-        if patron_initial_assignment_path is not None:
+        if patron_initial_assignment_path is not None or patron_completed_result is not None:
             # A frozen assignment is an exact PATRON input, not a request to
             # silently optimize it again. Fail closed if it is not already
             # hop-feasible. Every arm can therefore reuse the one validated
@@ -727,6 +746,7 @@ def run_phase3(
             model,
             initial,
             executable=patron_refiner,
+            completed_result_path=patron_completed_result,
             max_moves=patron_max_moves,
             flow_refinement=patron_flow_refinement,
             algorithm_version=patron_algorithm_version,
@@ -824,6 +844,8 @@ def run_phase3(
                 "batch_changes": change_count,
                 "native_output_bytes": native_output_bytes,
             }
+        if patron_completed_result is not None:
+            patron_validation["native_result_provenance"] = patron_trace["native_result_provenance"]
         if patron_physical_feedback_validation is not None:
             patron_validation["physical_feedback"] = (
                 patron_physical_feedback_validation

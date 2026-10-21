@@ -2096,6 +2096,7 @@ def run_partition_pressure_native(
     initial_assignment: Mapping[str, Any],
     *,
     executable: Optional[str] = None,
+    completed_result_path: Optional[Path] = None,
     max_moves: Optional[int] = None,
     flow_refinement: bool = False,
     algorithm_version: Optional[int] = None,
@@ -2164,7 +2165,11 @@ def run_partition_pressure_native(
                 "native PATRON physical feedback scale has no artifact"
             )
         feedback_sha256 = None
-    resolved = resolve_native_executable("emuflow_patron_refiner", executable)
+    from .patron_result import validate_completed_result, verify_native_input, result_provenance
+    completed_result = (validate_completed_result(completed_result_path)
+                        if completed_result_path is not None else None)
+    resolved = (completed_result["binary"]["path"] if completed_result is not None
+                else resolve_native_executable("emuflow_patron_refiner", executable))
     with tempfile.TemporaryDirectory(prefix="emuflow-patron-") as temporary:
         root = Path(temporary)
         native_input = root / "patron.in"
@@ -2199,33 +2204,37 @@ def run_partition_pressure_native(
             stderr_path = Path(stderr_path)
             stderr_path.parent.mkdir(parents=True, exist_ok=True)
             command.insert(1, "--progress")
-        try:
-            if stderr_path is None:
-                completed = subprocess.run(
-                    command, capture_output=True, text=True, check=False,
-                    env=environment, timeout=timeout_seconds,
-                )
-            else:
-                # The child writes directly to the durable file, including
-                # while a long candidate is being evaluated. No pipe buffering.
-                with stderr_path.open("w", encoding="utf-8") as stderr:
+        if completed_result is not None:
+            verify_native_input(completed_result, native_input, indexes)
+            native_output = Path(completed_result["output"]["path"])
+        else:
+            try:
+                if stderr_path is None:
                     completed = subprocess.run(
-                        command, stdout=subprocess.PIPE, stderr=stderr,
-                        text=True, check=False, env=environment,
-                        timeout=timeout_seconds,
+                        command, capture_output=True, text=True, check=False,
+                        env=environment, timeout=timeout_seconds,
                     )
-        except subprocess.TimeoutExpired as error:
-            raise ValidationError(
-                f"native PATRON exceeded timeout of {timeout_seconds} seconds"
-            ) from error
-        if completed.returncode != 0:
-            diagnostic = (stderr_path.read_text(encoding="utf-8", errors="replace")
-                          if stderr_path is not None else completed.stderr)
-            detail = diagnostic.strip() or completed.stdout.strip()
-            raise ValidationError(
-                "native PATRON failed with exit code "
-                f"{completed.returncode}: {detail}"
-            )
+                else:
+                    # The child writes directly to the durable file, including
+                    # while a long candidate is being evaluated. No pipe buffering.
+                    with stderr_path.open("w", encoding="utf-8") as stderr:
+                        completed = subprocess.run(
+                            command, stdout=subprocess.PIPE, stderr=stderr,
+                            text=True, check=False, env=environment,
+                            timeout=timeout_seconds,
+                        )
+            except subprocess.TimeoutExpired as error:
+                raise ValidationError(
+                    f"native PATRON exceeded timeout of {timeout_seconds} seconds"
+                ) from error
+            if completed.returncode != 0:
+                diagnostic = (stderr_path.read_text(encoding="utf-8", errors="replace")
+                              if stderr_path is not None else completed.stderr)
+                detail = diagnostic.strip() or completed.stdout.strip()
+                raise ValidationError(
+                    "native PATRON failed with exit code "
+                    f"{completed.returncode}: {detail}"
+                )
         (
             cluster_assignment,
             moves,
@@ -2237,6 +2246,8 @@ def run_partition_pressure_native(
         ) = (
             _parse_patron_native_output(native_output, indexes)
         )
+    if completed_result is not None:
+        verify_native_input(completed_result, Path(completed_result["input"]["path"]), indexes)
     provider_metadata = {
         "initial_provider": initial_assignment.get("provider"),
     }
@@ -2347,6 +2358,8 @@ def run_partition_pressure_native(
         ),
         "final_metrics": final_metrics,
     }
+    if completed_result is not None:
+        trace["native_result_provenance"] = result_provenance(completed_result_path, completed_result)
     if retain_trace_seals:
         trace.update(
             {

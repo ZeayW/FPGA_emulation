@@ -249,3 +249,15 @@ Store run directories, temporary tool products, local assistant configuration,
 logs, and experiment records outside the public source tree. Consult CLI help
 for specialized diagnostics; do not treat an old run directory or a partial
 stage as a newly validated full flow.
+
+### Completed native partition results
+
+`phase4_nvdla_native_result.py` seals a successful native PATRON result and its
+original input, tool and ordered cluster mapping. Pass the resulting manifest
+and recovered clusters to `phase4_nvdla_prefix.py --completed-native-result
+<manifest> --recovered-clusters <clusters>` with the original prefix options.
+The consumer requires byte-identical regenerated native input and retains
+separate native and continuation producer identities. It still executes normal
+Phase3 validation, Static Exact construction and original timing-path projection.
+Stopped or partial native results cannot be continued; native completion alone
+is not a Phase3 pass. Use each script’s `--help` for required sealing inputs.

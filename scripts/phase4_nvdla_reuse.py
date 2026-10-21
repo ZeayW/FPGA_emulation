@@ -29,8 +29,52 @@ _FRAME_BLOCK = '''if frame_slots is not None:
 '''
 
 
+def _strip_native_continuation(tree):
+    """Ignore only the two explicit downstream forwarding arguments."""
+    names = {"patron_completed_result", "patron_recovered_clusters"}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "run_multi_fpga_flow":
+            prefix = len(node.args.args) - len(node.args.defaults)
+            positional = list(zip(node.args.args[prefix:], node.args.defaults))
+            retained = []
+            for arg, default in positional:
+                if arg.arg in names:
+                    require(isinstance(default, ast.Constant) and default.value is None,
+                            "native continuation has a nonempty default")
+                else:
+                    retained.append((arg, default))
+            node.args.args = node.args.args[:prefix] + [x[0] for x in retained]
+            node.args.defaults = [x[1] for x in retained]
+            pairs = list(zip(node.args.kwonlyargs, node.args.kw_defaults))
+            kept = []
+            for arg, default in pairs:
+                if arg.arg in names:
+                    require(isinstance(default, ast.Constant) and default.value is None,
+                            "native continuation has a nonempty default")
+                else:
+                    kept.append((arg, default))
+            node.args.kwonlyargs = [x[0] for x in kept]
+            node.args.kw_defaults = [x[1] for x in kept]
+            for call in ast.walk(node):
+                if (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                        and (call.func.id == "run_phase3" or (call.func.id == "measured"
+                             and len(call.args) >= 2 and isinstance(call.args[0], ast.Constant)
+                             and call.args[0].value == "phase3" and isinstance(call.args[1], ast.Name)
+                             and call.args[1].id == "run_phase3"))):
+                    retained = []
+                    for keyword in call.keywords:
+                        expected = {"patron_completed_result": "patron_completed_result",
+                                    "patron_initial_clusters_path": "patron_recovered_clusters"}.get(keyword.arg)
+                        if expected and isinstance(keyword.value, ast.Name) and keyword.value.id == expected:
+                            continue
+                        retained.append(keyword)
+                    call.keywords = retained
+
+
 def check_frame_only_change(old, new):
     old_tree, new_tree = ast.parse(old), ast.parse(new)
+    _strip_native_continuation(new_tree)
+    _strip_native_continuation(old_tree)
     block = ast.dump(ast.parse(_FRAME_BLOCK).body[0], include_attributes=False)
     removed = 0
     for node in new_tree.body:
@@ -52,6 +96,8 @@ def check_frame_only_change(old, new):
 # the unpartitioned STA publication. Keep module-level execution unchanged.
 _DOWNSTREAM_FUNCTIONS = {
     "src/emuflow/phase5.py": {"run_phase5"},
+    "src/emuflow/phase3.py": {"run_phase3"},
+    "src/emuflow/partition_pressure.py": {"run_partition_pressure_native"},
     "src/emuflow/tdm.py": {"reconstruct_tdm_schedule_timing"},
     "src/emuflow/timing_routing.py": {
         "compress_sta_paths", "validate_member_constraints", "validate_native_system_routes",
@@ -96,14 +142,22 @@ def commit_sources(commit, names):
 def check_source_scope(old_provenance, current_provenance, producer_commit):
     old = old_provenance["source_sha256"]
     new = current_provenance["source_sha256"]
-    require(set(old) == set(new), "producer source inventory changed")
+    added = set(new) - set(old)
+    require(set(old) <= set(new) and added <= {"src/emuflow/patron_result.py"},
+            "producer source inventory changed")
+    for name in added:
+        tree = ast.parse((ROOT / name).read_text())
+        require(all(isinstance(n, (ast.Import, ast.ImportFrom, ast.FunctionDef))
+                    or (isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant))
+                    or (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))
+                    for n in tree.body), "new native handoff module has module-level execution")
     originals = commit_sources(producer_commit, list(old))
     require(all(hashlib.sha256(originals[name]).hexdigest() == value for name, value in old.items()),
             "recorded original producer does not match its Git commit")
     changed = sorted(name for name in old if old[name] != new[name])
     permitted = {"src/emuflow/multi_fpga_flow.py", "src/emuflow/prepared_inputs.py",
                  "scripts/phase4_nvdla_prefix.py", "scripts/phase4_nvdla_compare.py",
-                 *_DOWNSTREAM_FUNCTIONS}
+                 "src/native/patron_refiner.cpp", *_DOWNSTREAM_FUNCTIONS}
     require(set(changed) <= permitted, "frontend/STA producer dependency changed: " + ", ".join(set(changed) - permitted))
     if "src/emuflow/multi_fpga_flow.py" in changed:
         check_frame_only_change(originals["src/emuflow/multi_fpga_flow.py"],

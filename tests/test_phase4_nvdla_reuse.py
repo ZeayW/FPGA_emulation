@@ -173,3 +173,19 @@ def test_reused_worker_does_not_request_fresh_synthesis_profiling(tmp_path):
          patch('emuflow.multi_fpga_flow.run_multi_fpga_flow', side_effect=consume):
         with pytest.raises(RuntimeError, match='validated prepared invocation'):
             prefix.worker(args)
+
+
+def test_continuation_forwarding_does_not_relax_shared_upstream_gate():
+    old = ('def run_multi_fpga_flow(frame_slots=None):\n'
+           '    synthesize()\n'
+           '    measured("phase3", run_phase3, source)\n')
+    block = '\n'.join('    '+line for line in reuse._FRAME_BLOCK.splitlines())+'\n'
+    new = old.replace('frame_slots=None','frame_slots=None, patron_completed_result=None, patron_recovered_clusters=None')
+    new = new.replace('    measured(',block+'    measured(').replace('run_phase3, source)',
+        'run_phase3, source, patron_completed_result=patron_completed_result, patron_initial_clusters_path=patron_recovered_clusters)')
+    reuse.check_frame_only_change(old,new)
+    for changed in (new.replace('synthesize()', 'altered_synthesis()'),
+                    new.replace('patron_completed_result=None','patron_completed_result="implicit"'),
+                    new.replace('patron_completed_result=patron_completed_result,','patron_completed_result="wrong",')):
+        with pytest.raises(ValueError):
+            reuse.check_frame_only_change(old,changed)

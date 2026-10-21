@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 from pathlib import Path
 import signal
 import subprocess
@@ -48,7 +49,7 @@ def flow_options(args, benchmark, constraints):
 def worker(args):
     from emuflow.multi_fpga_flow import run_multi_fpga_flow
     os.environ["EMUFLOW_NATIVE_ROOT"] = str(args.native_root)
-    os.environ["EMUFLOW_PATRON_INPUT_COPY"] = str(args.output / "common/partition/patron/patron.in")
+    os.environ["EMUFLOW_PATRON_INPUT_COPY"] = str(args.output / "actual-patron.in")
     provenance = args.output / "provenance.json"
     verify_provenance(read(provenance))
     benchmark = BenchmarkRun.load(args.benchmark)
@@ -56,6 +57,9 @@ def worker(args):
     write(constraints, {"schema": "emuflow.partition-constraints/v1",
                         "min_used_fpgas": 4, "balance_dimensions": []})
     options = flow_options(args, benchmark, constraints)
+    if getattr(args, "completed_native_result", None):
+        options.update(patron_completed_result=args.completed_native_result,
+                       patron_recovered_clusters=args.recovered_clusters)
     if args.reuse_prefix:
         from phase4_nvdla_reuse import verify_reuse_binding
         reuse = read(args.output / "prepared-prefix.json")
@@ -65,6 +69,11 @@ def worker(args):
                        prepared_frontend=Path(reuse["prepared_frontend"]),
                        prepared_timing=Path(reuse["prepared_timing"]))
     report = run_multi_fpga_flow(**options)
+    actual_input = args.output / "actual-patron.in"
+    evidence_input = args.output / "common/partition/patron/patron.in"
+    if actual_input.is_file():
+        evidence_input.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(actual_input, evidence_input)
     if args.reuse_prefix:
         verify_reuse_binding(reuse)
         report["reused_boundaries"] = {
@@ -92,6 +101,12 @@ def supervise(args, argv):
         require(path.is_file() and os.access(path, os.X_OK), f"not executable: {path}")
     bins = args.native_root / "bin"
     tools = [args.yosys, args.sta, args.architecture_timing_db]
+    if getattr(args, "completed_native_result", None):
+        from emuflow.patron_result import validate_completed_result
+        validate_completed_result(args.completed_native_result)
+        tools.extend([args.completed_native_result, ROOT / "scripts/phase4_nvdla_native_result.py"])
+        if args.recovered_clusters:
+            tools.append(args.recovered_clusters)
     if args.reuse_prefix:
         tools.append(ROOT / "scripts/phase4_nvdla_reuse.py")
     for name in ("openroad", "emuflow_patron_refiner", "emuflow_tritonpart_balance_legalizer"):
@@ -165,6 +180,10 @@ def parser():
                    help="prior stopped run with completed, unchanged Phase1 and STA publications")
     p.add_argument("--reuse-producer-commit",
                    help="exact original Git commit; only audited Phase3 frame repair may affect shared flow")
+    p.add_argument("--completed-native-result", type=Path,
+                   help="sealed successful native result; still runs Phase3 validation and timing projection")
+    p.add_argument("--recovered-clusters", type=Path,
+                   help="same-producer generalized clusters used to seal the native index mapping")
     p.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     return p
 

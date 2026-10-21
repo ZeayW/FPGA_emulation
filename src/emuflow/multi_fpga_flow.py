@@ -1309,6 +1309,8 @@ def run_multi_fpga_flow(
     tritonpart_solution: Optional[Path] = None,
     repart: Optional[str] = None,
     patron_refiner: Optional[str] = None,
+    patron_completed_result: Optional[Path] = None,
+    patron_recovered_clusters: Optional[Path] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
     patron_algorithm_version: int = 6,
@@ -2067,6 +2069,8 @@ def run_multi_fpga_flow(
             path_database_path if partition_provider == "patron" else None
         ),
         patron_refiner=patron_refiner,
+        patron_completed_result=patron_completed_result,
+        patron_initial_clusters_path=patron_recovered_clusters,
         patron_max_moves=patron_max_moves,
         patron_flow_refinement=patron_flow_refinement,
         patron_algorithm_version=patron_algorithm_version,
