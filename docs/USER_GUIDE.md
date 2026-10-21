@@ -57,7 +57,9 @@ combined with these intermediate boundaries.
 
 For a paired full NV_nvdla routing study, prepare the pinned design using
 `scripts/benchmarks/prepare_nvdla_holdout.py` with the explicit
-`physically-implementable-shared-memory-model-v2` policy. The portable
+`physically-implementable-shared-memory-model-v2` policy. SRAM preparation
+preserves wrapper enable, retention and sleep controls, including opposite-edge
+write capture where required by the original macro. The portable
 `scripts/phase4_nvdla_prefix.py` command captures provenance and produces one
 PATRON v14 Static Exact prefix on the four-XCVU19P mesh, preserving both 10 ns
 clocks and the fixed 1024-slot frame. Inspect its `--help` for tool/input paths.

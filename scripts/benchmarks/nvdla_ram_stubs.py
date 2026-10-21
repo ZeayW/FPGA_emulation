@@ -167,13 +167,39 @@ def _emit_synthesizable_model(
             "    if (write_through) write_through_data <= di;",
             "  end",
         ])
-    blocks.extend([
-        "  always @(posedge clk) begin",
-        "    if (we && !ram_access_blocked)",
-        f"      mem[wa] <= di{data_slice};",
-        "    if (re && !ram_access_blocked)",
-        "      read_data <= mem[ra];",
-    ])
+    if macro_kind == "RAMPDP":
+        # The original pseudo-dual-port macro captures write requests on the
+        # rising edge and writes on the falling edge. Its gated core clock
+        # preserves the last request while both enables are low, including
+        # across retention. Forward that pending write into the first resumed
+        # read rather than dropping a request captured during retention.
+        blocks.extend([
+            "  reg pending_write;",
+            f"  reg [{address_width - 1}:0] pending_address;",
+            f"  reg [{ram_width - 1}:0] pending_data;",
+            "  always @(posedge clk) begin",
+            "    if (re || we) pending_write <= we;",
+            "    if (we) begin",
+            "      pending_address <= wa;",
+            f"      pending_data <= di{data_slice};",
+            "    end",
+            "  end",
+            "  always @(negedge clk) begin",
+            "    if (pending_write && !ram_access_blocked)",
+            "      mem[pending_address] <= pending_data;",
+            "  end",
+            "  always @(posedge clk) begin",
+            "    if (re && !ram_access_blocked)",
+            "      read_data <= (pending_write && pending_address == ra) ? pending_data : mem[ra];",
+        ])
+    else:
+        blocks.extend([
+            "  always @(posedge clk) begin",
+            "    if (we && !ram_access_blocked)",
+            f"      mem[wa] <= di{data_slice};",
+            "    if (re && !ram_access_blocked)",
+            "      read_data <= mem[ra];",
+        ])
     if kind == "rwsp":
         output_value = "{extra_bit[extra_read_address], ram_output}" if has_flop_bit else "ram_output"
         blocks.extend(["    if (ore)", f"      output_data <= {output_value};"])
