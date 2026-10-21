@@ -227,6 +227,7 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
             "netnames": self.netnames,
         }
         self.modules: Mapping[str, Any] = {self.top: self.module}
+        self._validated_physical_paths: set[Tuple[Path, int, int]] = set()
 
     def __getitem__(self, key: str) -> Any:
         if key == "creator":
@@ -267,6 +268,103 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
                 int(row["net_bit"]), str(row["cell_id"]), str(row["port"]),
                 int(row["port_bit"]), int(row["port_width"]), direction,
             )
+
+    def _physical_connection(self, handoff_path: Path) -> sqlite3.Connection:
+        if self.schema != XILINX_MAPPED_INDEX_SCHEMA:
+            raise ValidationError(
+                "legacy Xilinx mapped index has no typed pin relation"
+            )
+        connection = sqlite3.connect(
+            f"file:{self.path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            handoff_stat = handoff_path.stat()
+            handoff_key = (
+                handoff_path.resolve(), handoff_stat.st_size,
+                handoff_stat.st_mtime_ns,
+            )
+            connection.execute(
+                "ATTACH DATABASE ? AS physical",
+                (
+                    f"file:{handoff_path.resolve()}?mode=ro&immutable=1",
+                ),
+            )
+            if handoff_key not in self._validated_physical_paths:
+                assignments = int(connection.execute(
+                    "SELECT count(*) FROM physical.assignment"
+                ).fetchone()[0])
+                joined, mismatched = connection.execute(
+                    """
+                    SELECT count(*),
+                           COALESCE(sum(c.type != a.cell_type),0)
+                      FROM physical.assignment AS a
+                      JOIN cells AS c ON c.id=a.instance
+                    """
+                ).fetchone()
+                if int(joined) != assignments or int(mismatched) != 0:
+                    raise ValidationError(
+                        "mapped index and physical handoff cell ownership disagree"
+                    )
+                self._validated_physical_paths.add(handoff_key)
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
+    def iter_physical_cells(
+        self, handoff_path: Path,
+    ) -> Iterator[Tuple[str, str, str, str]]:
+        """Stream mapped cell type plus exact site/BEL from one handoff."""
+
+        connection = self._physical_connection(handoff_path)
+        try:
+            for row in connection.execute(
+                """
+                SELECT a.instance,c.type,a.physical_site,a.bel
+                  FROM physical.assignment AS a
+                  JOIN cells AS c ON c.id=a.instance
+                 ORDER BY a.instance
+                """
+            ):
+                yield (
+                    str(row["instance"]), str(row["type"]),
+                    str(row["physical_site"]), str(row["bel"]),
+                )
+        finally:
+            connection.close()
+
+    def iter_physical_pins_by_net(
+        self, handoff_path: Path,
+    ) -> Iterator[Tuple[int, str, str, int, int, str, str]]:
+        """Stream placed typed pins by routed net without Python ownership."""
+
+        connection = self._physical_connection(handoff_path)
+        direction_names = {0: "input", 1: "output", 2: "inout"}
+        try:
+            for row in connection.execute(
+                """
+                SELECT p.net_bit,p.cell_id,p.port,p.port_bit,p.port_width,
+                       p.direction,a.physical_site
+                  FROM cell_pins AS p
+                  JOIN physical.assignment AS a ON a.instance=p.cell_id
+                 WHERE p.value_kind=0
+                 ORDER BY p.net_bit,p.cell_id,p.port,p.port_bit
+                """
+            ):
+                direction = direction_names.get(int(row["direction"]))
+                if direction is None:
+                    raise ValidationError(
+                        "indexed mapped pin direction is invalid"
+                    )
+                yield (
+                    int(row["net_bit"]), str(row["cell_id"]),
+                    str(row["port"]), int(row["port_bit"]),
+                    int(row["port_width"]), direction,
+                    str(row["physical_site"]),
+                )
+        finally:
+            connection.close()
 
     def close(self) -> None:
         connection = getattr(self, "connection", None)

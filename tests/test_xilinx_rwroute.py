@@ -116,6 +116,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             report["runtime_breakdown"]["dataflow"],
             {
                 "route_cells": "generated-from-physical-binding",
+                "physical_bindings": "compatibility-python-map",
                 "safe_names": "ordered-merge-index",
                 "endpoints": "compatibility-python-index",
                 "tsv": "streamed-atomic-spool",

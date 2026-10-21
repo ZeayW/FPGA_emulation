@@ -8,6 +8,10 @@ from pathlib import Path
 from emuflow.errors import ValidationError
 from emuflow.architecture import ArchitectureDB
 from emuflow.io import file_sha256
+from emuflow.xilinx_netlist import (
+    emit_xilinx_mapped_index,
+    open_xilinx_mapped_index,
+)
 from emuflow.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_PROVIDER,
@@ -23,6 +27,7 @@ from emuflow.xilinx_openparf_bridge import (
 from emuflow.xilinx_packing import validate_xilinx_packing
 from emuflow.xilinx_placement import validate_xilinx_placement
 from emuflow.xilinx_rwroute import export_rwroute_input
+from emuflow.yosys import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
 
@@ -410,6 +415,37 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                 packed_value=packed, placement_value=placement,
             )
             self.assertEqual(export["logical_cells"], report["placed_cells"])
+
+            mapped_ir = root / "mapped.emuir.sqlite"
+            mapped_index = root / "mapped.sqlite"
+            import_yosys_json(mapped).save(mapped_ir)
+            emit_xilinx_mapped_index(mapped_ir, mapped_index)
+            with open_xilinx_mapped_index(mapped_index) as indexed:
+                indexed_export = export_rwroute_input(
+                    mapped_index, handoff, handoff,
+                    root / "rwroute-indexed.tsv",
+                    mapped_value=indexed,
+                    packed_value=packed,
+                    placement_value=placement,
+                    source_sha256={
+                        "mapped_sha256": "0" * 64,
+                        "packed_sha256": report["physical_handoff_sha256"],
+                        "placement_sha256": report["physical_handoff_sha256"],
+                    },
+                )
+            self.assertEqual(
+                indexed_export["logical_cells"], report["placed_cells"]
+            )
+            self.assertEqual(
+                indexed_export["runtime_breakdown"]["dataflow"],
+                {
+                    "route_cells": "generated-from-physical-binding",
+                    "physical_bindings": "typed-mapped-physical-join",
+                    "safe_names": "ordered-merge-index",
+                    "endpoints": "typed-mapped-physical-join",
+                    "tsv": "streamed-atomic-spool",
+                },
+            )
 
             repeated = root / "physical-handoff-repeat.sqlite"
             repeated_report = materialize_xilinx_openparf_atomic_contract(

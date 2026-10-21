@@ -161,7 +161,10 @@ pin relation by net, retaining only the clock-gate qualification subset rather
 than a whole-design Python endpoint dictionary. Mapped-index v1 remains
 readable. Because packing and placement share one immutable handoff path, the
 physical backend also computes its source digest once and reuses it for both
-historical contract identities.
+historical contract identities. In the indexed production path, mapped-index
+v2 attaches the typed physical handoff read-only and streams cells and pins
+from ordered joins; RWRoute therefore no longer retains an
+`instance → (site, BEL)` dictionary either.
 
 ## Flow
 
