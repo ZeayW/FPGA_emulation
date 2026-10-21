@@ -30,6 +30,7 @@ from emuflow.phase1 import run_phase1
 from emuflow.phase3 import run_phase3
 from emuflow.phase4 import run_phase4
 from emuflow.phase5 import run_phase5
+from emuflow.pin_plan_storage import read_pin_plan
 from tests.native_build import tlr_router
 
 
@@ -850,10 +851,11 @@ class AcademicChimewTest(unittest.TestCase):
             qualification = read_json(
                 root / "timing-chimew" / report["artifacts"]["qualification"]["path"]
             )
-            pin_plan = read_json(
+            pin_plan = read_pin_plan(
                 root
                 / "timing-chimew"
-                / report["artifacts"]["adapter_pin_plan"]["path"]
+                / report["artifacts"]["adapter_pin_plan"]["path"],
+                materialize=True,
             )
             planned = {
                 entry["schedule_entry"]: entry for entry in pin_plan["entries"]

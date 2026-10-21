@@ -16,7 +16,10 @@ from .board_link_timing import (
     validate_board_link_timing,
 )
 from .academic_chimew import materialize_academic_chimew_inputs
-from .chimew_pipeline import run_chimew_phase6_pipeline
+from .chimew_pipeline import (
+    read_chimew_phase6_pipeline,
+    run_chimew_phase6_pipeline,
+)
 from .cross_stage import run_cross_stage_optimization
 from .cut_segment_qualification import build_cut_segment_qualification
 from .default_platform import DEFAULT_PLATFORM_PATH
@@ -51,6 +54,7 @@ from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
+from .pin_plan_storage import read_pin_plan
 from .physical_summary_storage import read_physical_summary
 from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
 from .combinational_cut import (
@@ -64,7 +68,8 @@ from .ppro_calibrated_platform import validate_transport_cost_database
 from .runtime import validate_virtual_runtime
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
 from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
-from .tdm_schedule_storage import tdm_schedule_store_path
+from .tdm_schedule_storage import read_tdm_schedule, tdm_schedule_store_path
+from .system_route_storage import system_route_store_path
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     NATIVE_ROUTER_PROVIDER,
@@ -106,6 +111,17 @@ MULTI_FPGA_MAPPING_PROFILES = (
 MULTI_FPGA_PHASE6_PROVIDERS = ("auto", "chimew", "baseline")
 PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v2"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
+
+
+def _schedule_has_entries(schedule_path: Path) -> bool:
+    """Answer the Phase 6 dispatch question without decoding hop records."""
+
+    schedule = read_tdm_schedule(schedule_path)
+    entries = schedule.get("entries", ())
+    try:
+        return len(entries) > 0
+    except TypeError as error:
+        raise ValidationError("TDM schedule entries are not sized") from error
 
 
 def _validate_mapping_timing_contract(
@@ -2307,9 +2323,8 @@ def run_multi_fpga_flow(
     schedule_path = phase5_root / "schedule.json"
 
     phase6_root = output_dir / "split"
-    schedule_document = read_json(schedule_path)
-    scheduled_signals = schedule_document.get("entries", [])
-    if phase6_provider == "chimew" and not scheduled_signals:
+    has_scheduled_signals = _schedule_has_entries(schedule_path)
+    if phase6_provider == "chimew" and not has_scheduled_signals:
         raise EmuFlowError(
             "--phase6-provider chimew requires at least one scheduled "
             "inter-FPGA signal"
@@ -2320,7 +2335,7 @@ def run_multi_fpga_flow(
             phase6_provider == "auto"
             and physical
             and physical_backend == "open"
-            and bool(scheduled_signals)
+            and has_scheduled_signals
         )
     )
     baseline_physical_report = None
@@ -2434,22 +2449,40 @@ def run_multi_fpga_flow(
             assigner=phase6_chimew_assigner,
             region_count=phase6_chimew_region_count,
         )
-        adapter_root = chimew_pipeline_root / "phase6-adapter"
-        chimew_phase6_started = time.monotonic()
-        phase6_report = measured("phase6", run_phase6,
-            ir_path,
-            assignment_path,
-            chimew_schedule_path,
-            platform_path,
-            phase6_root,
-            equivalence_cycles=equivalence_cycles,
-            equivalence_seed=equivalence_seed,
-            pin_plan_path=adapter_root / "pin_plan.json",
-            position_hints_path=adapter_root / "position_hints.json",
-            electrical_binding_path=adapter_root / "electrical_binding.json",
-            transport_cost_path=transport_cost_db,
-            clock_periods=clock_periods,
-        )
+        with read_chimew_phase6_pipeline(chimew_pipeline_root) as (
+            leased_pipeline,
+            _pipeline_validation,
+        ):
+            pipeline = dict(leased_pipeline)
+            adapter_artifacts = pipeline["artifacts"]
+            chimew_phase6_started = time.monotonic()
+            phase6_report = measured("phase6", run_phase6,
+                ir_path,
+                assignment_path,
+                chimew_schedule_path,
+                platform_path,
+                phase6_root,
+                equivalence_cycles=equivalence_cycles,
+                equivalence_seed=equivalence_seed,
+                pin_plan_path=(
+                    chimew_pipeline_root
+                    / adapter_artifacts["adapter_pin_plan"]["path"]
+                ),
+                position_hints_path=(
+                    chimew_pipeline_root
+                    / adapter_artifacts["adapter_position_hints"]["path"]
+                ),
+                electrical_binding_path=(
+                    chimew_pipeline_root
+                    / adapter_artifacts["adapter_electrical_binding"]["path"]
+                ),
+                transport_cost_path=transport_cost_db,
+                clock_periods=clock_periods,
+            )
+            chimew_pin_metrics = read_pin_plan(
+                chimew_pipeline_root
+                / adapter_artifacts["adapter_pin_plan"]["path"]
+            )["metrics"]
         chimew_phase6_seconds = time.monotonic() - chimew_phase6_started
         phase6_comparison = {
             "schema": PHASE6_AB_COMPARISON_SCHEMA,
@@ -2550,10 +2583,7 @@ def run_multi_fpga_flow(
                 baseline_physical_report
             )
             chimew_metrics = _phase6_physical_metrics(physical_report)
-            pin_metrics = read_json(
-                output_dir
-                / "phase6-comparison/chimew/phase6-adapter/pin_plan.json"
-            )["metrics"]
+            pin_metrics = chimew_pin_metrics
             phase6_comparison.update(
                 {
                     "status": "pass",
@@ -2649,6 +2679,9 @@ def run_multi_fpga_flow(
     resolved_schedule_store = tdm_schedule_store_path(schedule_path)
     if resolved_schedule_store is None:
         raise ValidationError("Phase 5 schedule has no indexed store")
+    resolved_route_store = system_route_store_path(routes_path)
+    if resolved_route_store is None:
+        raise ValidationError("Phase 4 routes have no indexed store")
 
     report = {
         "schema": MULTI_FPGA_FLOW_SCHEMA,
@@ -2723,6 +2756,12 @@ def run_multi_fpga_flow(
             "routes": {
                 "path": "system-route/routes.json",
                 "sha256": _sha256(routes_path),
+            },
+            "route_store": {
+                "path": (
+                    Path("system-route") / resolved_route_store.name
+                ).as_posix(),
+                "sha256": _sha256(resolved_route_store),
             },
             "schedule": {
                 "path": "tdm/schedule.json",

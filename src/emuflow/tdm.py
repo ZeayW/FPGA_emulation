@@ -97,6 +97,14 @@ class _NativeExactEntryRecords(list):
     def __len__(self) -> int:
         return self._count
 
+    def _route_identity(self, native_route: int) -> Tuple[str, str]:
+        route_ids = getattr(self._routes, "route_ids", None)
+        nets = getattr(self._routes, "nets", None)
+        if route_ids is not None and nets is not None:
+            return route_ids[native_route], nets[native_route]
+        route = self._routes[native_route]
+        return route["id"], route["net"]
+
     def _decode(self, values: Tuple[int, ...]) -> Dict[str, Any]:
         (
             native_route,
@@ -112,11 +120,11 @@ class _NativeExactEntryRecords(list):
             arrival_slot,
             ratio,
         ) = values
-        route = self._routes[native_route]
+        route_id, net_id = self._route_identity(native_route)
         entry = {
             "id": f"s{sequence:06d}",
-            "demand": route["id"],
-            "net": route["net"],
+            "demand": route_id,
+            "net": net_id,
             "hop": depth,
             "link": self._link_ids[native_link],
             "from": self._fpga_ids[native_from],
@@ -211,7 +219,7 @@ class _NativeExactEntryRecords(list):
                         data,
                         self._offset + index * self._RECORD_SIZE,
                     )
-                    route = self._routes[native_route]
+                    route_id, net_id = self._route_identity(native_route)
                     identity = f"s{sequence:06d}"
                     capacity_value = self._capacity_keys[native_capacity]
                     link_value = self._link_ids[native_link]
@@ -221,8 +229,8 @@ class _NativeExactEntryRecords(list):
                         identity,
                         (
                             identity,
-                            route["id"],
-                            route["net"],
+                            route_id,
+                            net_id,
                             depth,
                             link_value,
                             source_value,
@@ -259,6 +267,101 @@ class _NativeExactEntryRecords(list):
                 left == right for left, right in zip(self, other)
             )
         return False
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+
+class _CompactExactRouteOrder(list):
+    """Topological route view retaining columns instead of route dictionaries."""
+
+    def __init__(
+        self,
+        route_ids: Sequence[str],
+        nets: Sequence[str],
+        sources: Sequence[str],
+        sinks: Sequence[Sequence[str]],
+        predecessors: Sequence[Sequence[str]],
+        dependency_levels: Sequence[int],
+        dependency_depths: Sequence[int],
+        order: Sequence[int],
+    ) -> None:
+        super().__init__()
+        self.route_ids = route_ids
+        self.nets = nets
+        self.sources = sources
+        self.sinks = sinks
+        self.predecessors = predecessors
+        self.dependency_levels = dependency_levels
+        self.dependency_depths = dependency_depths
+        self.order = order
+
+    def __len__(self) -> int:
+        return len(self.order)
+
+    def __iter__(self) -> Iterator[Mapping[str, Any]]:
+        for index in self.order:
+            yield self._decode(index)
+
+    def _decode(self, index: int) -> Mapping[str, Any]:
+        return {
+            "id": self.route_ids[index],
+            "net": self.nets[index],
+            "source": self.sources[index],
+            "sinks": list(self.sinks[index]),
+            "predecessor_cut_nets": list(self.predecessors[index]),
+            "dependency_level": self.dependency_levels[index],
+            "combinational_dependency_depth": self.dependency_depths[index],
+        }
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return self._decode(self.order[index])
+
+
+class _ScheduleRouteProjection(list):
+    """Lazy Phase-5 route metadata projected from a typed Phase-4 store."""
+
+    def __init__(self, routes: Sequence[Mapping[str, Any]]) -> None:
+        super().__init__()
+        self.routes = routes
+
+    def __len__(self) -> int:
+        return len(self.routes)
+
+    @staticmethod
+    def _project(route: Mapping[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": route["id"],
+            "net": route["net"],
+            "source": route["source"],
+            "sinks": list(route["sinks"]),
+            "tree_edges": list(route["tree_edges"]),
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for route in self.routes:
+            yield self._project(route)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(len(self)))]
+        return self._project(self.routes[index])
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Sequence) and not isinstance(other, (str, bytes)):
+            return len(self) == len(other) and all(
+                left == right for left, right in zip(self, other)
+            )
+        return False
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
 
 
 def sampled_virtual_wire_timing_constraints(
@@ -356,35 +459,41 @@ def _static_exact_contract_from_routes(
         raw_routes = routes.get("routes")
         if not isinstance(raw_routes, list):
             raise ValidationError("indexed exact routes must be an array")
-        for route in raw_routes:
-            if (
-                not isinstance(route, dict)
-                or not isinstance(route.get("net"), str)
-                or route.get("cut_class")
-                not in {
-                    "combinational",
-                    "register_input",
-                    "register_output",
-                }
-                or isinstance(route.get("dependency_level"), bool)
-                or not isinstance(route.get("dependency_level"), int)
-                or route["dependency_level"] < 0
-                or isinstance(
-                    route.get("combinational_dependency_depth"), bool
-                )
-                or not isinstance(
-                    route.get("combinational_dependency_depth"), int
-                )
-                or route["combinational_dependency_depth"] < 0
-                or not isinstance(route.get("predecessor_cut_nets"), list)
-                or not all(
-                    isinstance(item, str) and item
-                    for item in route["predecessor_cut_nets"]
-                )
-            ):
-                raise ValidationError(
-                    "indexed exact route dependency metadata is invalid"
-                )
+        indexed_validator = getattr(
+            raw_routes, "validate_indexed_exact_metadata", None
+        )
+        if callable(indexed_validator):
+            indexed_validator()
+        else:
+            for route in raw_routes:
+                if (
+                    not isinstance(route, dict)
+                    or not isinstance(route.get("net"), str)
+                    or route.get("cut_class")
+                    not in {
+                        "combinational",
+                        "register_input",
+                        "register_output",
+                    }
+                    or isinstance(route.get("dependency_level"), bool)
+                    or not isinstance(route.get("dependency_level"), int)
+                    or route["dependency_level"] < 0
+                    or isinstance(
+                        route.get("combinational_dependency_depth"), bool
+                    )
+                    or not isinstance(
+                        route.get("combinational_dependency_depth"), int
+                    )
+                    or route["combinational_dependency_depth"] < 0
+                    or not isinstance(route.get("predecessor_cut_nets"), list)
+                    or not all(
+                        isinstance(item, str) and item
+                        for item in route["predecessor_cut_nets"]
+                    )
+                ):
+                    raise ValidationError(
+                        "indexed exact route dependency metadata is invalid"
+                    )
         return contract
     if (
         contract.get("schema") not in STATIC_EXACT_COMBINATIONAL_CUT_SCHEMAS
@@ -1045,9 +1154,14 @@ def _bank_direction_allocations(
     from .bank_allocation import allocate_shared_banks
 
     counts: Dict[Tuple[str, str, str], int] = defaultdict(int)
-    for route in routes["routes"]:
-        for edge in route["tree_edges"]:
-            counts[(edge["link"], edge["from"], edge["to"])] += 1
+    arc_counts = getattr(routes["routes"], "iter_arc_counts", None)
+    if callable(arc_counts):
+        for link, source, sink, count in arc_counts():
+            counts[(link, source, sink)] = count
+    else:
+        for route in routes["routes"]:
+            for edge in route["tree_edges"]:
+                counts[(edge["link"], edge["from"], edge["to"])] += 1
     result = {}
     for link in platform.links:
         if link.bank_count is None:
@@ -1115,6 +1229,8 @@ def _baseline_ratio_hops(
     available before causality/arrival times are scheduled.
     """
     links = _link_by_id(platform)
+    if not any(link.tdm_delay_model is not None for link in links.values()):
+        return {}
     grouped: Dict[str, List[HopKey]] = defaultdict(list)
     for route in routes["routes"]:
         for edge in route["tree_edges"]:
@@ -1153,7 +1269,7 @@ def _schedule_indexed_exact_native(
     *,
     executable: Optional[str] = None,
 ) -> Tuple[
-    List[Mapping[str, Any]],
+    Sequence[Mapping[str, Any]],
     List[Dict[str, Any]],
     List[Dict[str, Any]],
     Dict[Tuple[str, str], int],
@@ -1167,36 +1283,48 @@ def _schedule_indexed_exact_native(
 
     from .native_tools import resolve_native_executable
 
-    ordered_by_net = sorted(raw_routes, key=lambda route: route["net"])
-    route_index = {
-        route["net"]: index for index, route in enumerate(ordered_by_net)
-    }
-    if len(route_index) != len(ordered_by_net):
-        raise ValidationError("indexed exact route identities are not unique")
-    known_route_nets = set(route_index)
-    demand_rank = {
-        route["id"]: index
-        for index, route in enumerate(
-            sorted(raw_routes, key=lambda route: route["id"])
-        )
-    }
-    if len(demand_rank) != len(ordered_by_net):
-        raise ValidationError("indexed exact demand identities are not unique")
-    fpga_ids = sorted(
-        {
-            node
-            for route in raw_routes
-            for node in (
-                [route["source"]]
-                + list(route["sinks"])
-                + [
-                    endpoint
-                    for edge in route["tree_edges"]
-                    for endpoint in (edge["from"], edge["to"])
-                ]
+    typed_record_cursor = getattr(
+        raw_routes, "iter_native_exact_records", None
+    )
+    typed_routes = callable(typed_record_cursor)
+    route_count = len(raw_routes)
+    ordered_by_net: Sequence[Mapping[str, Any]]
+    if typed_routes:
+        route_index = None
+        known_route_nets = None
+        demand_rank = None
+        fpga_ids = sorted(fpga.id for fpga in platform.fpgas)
+    else:
+        ordered_by_net = sorted(raw_routes, key=lambda route: route["net"])
+        route_index = {
+            route["net"]: index for index, route in enumerate(ordered_by_net)
+        }
+        if len(route_index) != len(ordered_by_net):
+            raise ValidationError("indexed exact route identities are not unique")
+        known_route_nets = set(route_index)
+        demand_rank = {
+            route["id"]: index
+            for index, route in enumerate(
+                sorted(raw_routes, key=lambda route: route["id"])
             )
         }
-    )
+        if len(demand_rank) != len(ordered_by_net):
+            raise ValidationError("indexed exact demand identities are not unique")
+        fpga_ids = sorted(
+            {
+                node
+                for route in raw_routes
+                for node in (
+                    [route["source"]]
+                    + list(route["sinks"])
+                    + [
+                        endpoint
+                        for edge in route["tree_edges"]
+                        for endpoint in (edge["from"], edge["to"])
+                    ]
+                )
+            }
+        )
     fpga_index = {identity: index for index, identity in enumerate(fpga_ids)}
     capacity_keys = sorted(capacity_records)
     capacity_index = {
@@ -1206,29 +1334,33 @@ def _schedule_indexed_exact_native(
     link_ids = sorted(links)
     link_index = {identity: index for index, identity in enumerate(link_ids)}
     capacity_lanes: Dict[str, int] = {}
-    for route in ordered_by_net:
-        for edge in route["tree_edges"]:
-            arc_key = (edge["link"], edge["from"], edge["to"])
-            if arc_key not in arcs:
-                raise ValidationError(
-                    f"TDM route {route['id']!r} uses illegal edge {arc_key}"
-                )
-            arc = arcs[arc_key]
-            link = links[edge["link"]]
-            budget = bank_allocations.get(arc_key)
-            lane_budget = (
-                budget["lanes"]
-                if budget
-                else link.transport_bits_per_cycle_per_direction
+    def register_capacity(arc_key: Tuple[str, str, str], context: str) -> None:
+        if arc_key not in arcs:
+            raise ValidationError(f"TDM route {context} uses illegal edge {arc_key}")
+        arc = arcs[arc_key]
+        link = links[arc_key[0]]
+        budget = bank_allocations.get(arc_key)
+        lane_budget = (
+            budget["lanes"]
+            if budget
+            else link.transport_bits_per_cycle_per_direction
+        )
+        capacity_key = arc["capacity_key"]
+        prior_lanes = capacity_lanes.setdefault(capacity_key, lane_budget)
+        if prior_lanes != lane_budget:
+            raise ValidationError(
+                f"capacity {capacity_key!r} has inconsistent lane budgets"
             )
-            capacity_key = arc["capacity_key"]
-            prior_lanes = capacity_lanes.setdefault(
-                capacity_key, lane_budget
-            )
-            if prior_lanes != lane_budget:
-                raise ValidationError(
-                    f"capacity {capacity_key!r} has inconsistent lane budgets"
-                )
+
+    arc_count_cursor = getattr(raw_routes, "iter_arc_counts", None)
+    if typed_routes and callable(arc_count_cursor):
+        for link, source, sink, _count in arc_count_cursor():
+            register_capacity((link, source, sink), "store")
+    else:
+        for route in ordered_by_net:
+            for edge in route["tree_edges"]:
+                arc_key = (edge["link"], edge["from"], edge["to"])
+                register_capacity(arc_key, repr(route["id"]))
 
     resolved = resolve_native_executable(
         "emuflow_tdm_exact_scheduler", executable
@@ -1255,19 +1387,53 @@ def _schedule_indexed_exact_native(
                 COMBINATIONAL_SETTLE_SLOTS,
                 len(fpga_ids),
                 len(capacity_keys),
-                len(ordered_by_net),
+                route_count,
             )
             for capacity_key in capacity_keys:
                 emit("<I", capacity_lanes.get(capacity_key, 1))
-            for route in ordered_by_net:
+            compact_route_ids: List[str] = []
+            compact_nets: List[str] = []
+            compact_sources: List[str] = []
+            compact_sinks: List[Sequence[str]] = []
+            compact_predecessors: List[Sequence[str]] = []
+            compact_dependency_levels: List[int] = []
+            compact_dependency_depths: List[int] = []
+            if typed_routes:
+                route_records = typed_record_cursor()
+            else:
+                assert route_index is not None
+                assert known_route_nets is not None
+                assert demand_rank is not None
+                route_records = (
+                    (
+                        route,
+                        demand_rank[route["id"]],
+                        [route_index[item] for item in route["predecessor_cut_nets"]],
+                    )
+                    for route in ordered_by_net
+                )
+            observed_routes = 0
+            for route, route_demand_rank, predecessor_indices in route_records:
+                observed_routes += 1
                 hops = _route_hops(route)
                 predecessors = route["predecessor_cut_nets"]
-                unknown = sorted(set(predecessors) - known_route_nets)
-                if unknown:
-                    raise ValidationError(
-                        f"cross-layer timing cut {route['net']!r} has "
-                        f"unknown predecessors {unknown}"
-                    )
+                if not typed_routes:
+                    assert known_route_nets is not None
+                    unknown = sorted(set(predecessors) - known_route_nets)
+                    if unknown:
+                        raise ValidationError(
+                            f"cross-layer timing cut {route['net']!r} has "
+                            f"unknown predecessors {unknown}"
+                        )
+                compact_route_ids.append(route["id"])
+                compact_nets.append(route["net"])
+                compact_sources.append(route["source"])
+                compact_sinks.append(tuple(route["sinks"]))
+                compact_predecessors.append(tuple(predecessors))
+                compact_dependency_levels.append(route["dependency_level"])
+                compact_dependency_depths.append(
+                    route["combinational_dependency_depth"]
+                )
                 emit(
                     "<7I",
                     fpga_index[route["source"]],
@@ -1276,12 +1442,12 @@ def _schedule_indexed_exact_native(
                     len(hops),
                     route["dependency_level"],
                     max((hop[0] for hop in hops), default=0),
-                    demand_rank[route["id"]],
+                    route_demand_rank,
                 )
                 for sink in route["sinks"]:
                     emit("<I", fpga_index[sink])
-                for predecessor in predecessors:
-                    emit("<I", route_index[predecessor])
+                for predecessor_index in predecessor_indices:
+                    emit("<I", predecessor_index)
                 for depth, edge in hops:
                     arc_key = (edge["link"], edge["from"], edge["to"])
                     arc = arcs[arc_key]
@@ -1330,6 +1496,8 @@ def _schedule_indexed_exact_native(
                     )
             if pending:
                 stream.write(pending)
+            if observed_routes != len(raw_routes):
+                raise ValidationError("indexed exact route cursor is incomplete")
         completed = subprocess.run(
             [resolved, str(input_path), str(output_path)],
             capture_output=True,
@@ -1365,19 +1533,33 @@ def _schedule_indexed_exact_native(
                 if (
                     magic != _NATIVE_EXACT_SCHEDULE_OUTPUT_MAGIC
                     or version != _NATIVE_EXACT_SCHEDULE_OUTPUT_VERSION
-                    or output_route_count != len(ordered_by_net)
+                    or output_route_count != route_count
                 ):
                     raise ValidationError(
                         "native Static Exact schedule output header is invalid"
                     )
-                order_indices = [take("<I")[0] for _ in ordered_by_net]
-                if len(set(order_indices)) != len(ordered_by_net) or any(
-                    index >= len(ordered_by_net) for index in order_indices
+                order_indices = [take("<I")[0] for _ in range(route_count)]
+                if len(set(order_indices)) != route_count or any(
+                    index >= route_count for index in order_indices
                 ):
                     raise ValidationError(
                         "native Static Exact schedule route order is invalid"
                     )
-                ordered_routes = [ordered_by_net[index] for index in order_indices]
+                if typed_routes:
+                    ordered_routes = _CompactExactRouteOrder(
+                        compact_route_ids,
+                        compact_nets,
+                        compact_sources,
+                        compact_sinks,
+                        compact_predecessors,
+                        compact_dependency_levels,
+                        compact_dependency_depths,
+                        order_indices,
+                    )
+                else:
+                    ordered_routes = [
+                        ordered_by_net[index] for index in order_indices
+                    ]
                 entries_offset = offset
                 seen_sequences = bytearray(entry_count)
                 for _ in range(entry_count):
@@ -1396,7 +1578,7 @@ def _schedule_indexed_exact_native(
                         ratio,
                     ) = take(_NativeExactEntryRecords._FORMAT)
                     if (
-                        native_route >= len(ordered_by_net)
+                        native_route >= route_count
                         or sequence >= entry_count
                         or seen_sequences[sequence]
                         or native_capacity >= len(capacity_keys)
@@ -1408,7 +1590,7 @@ def _schedule_indexed_exact_native(
                             "native Static Exact schedule entry is invalid"
                         )
                     seen_sequences[sequence] = 1
-                    route = ordered_by_net[native_route]
+                    route_id = compact_route_ids[native_route]
                     edge = {
                         "link": link_ids[native_link],
                         "from": fpga_ids[native_from],
@@ -1427,7 +1609,7 @@ def _schedule_indexed_exact_native(
                         )
                     assigned = baseline_hops.get(
                         _hop_key(
-                            route["id"],
+                            route_id,
                             edge["link"],
                             edge["from"],
                             edge["to"],
@@ -1446,19 +1628,20 @@ def _schedule_indexed_exact_native(
                 completions: List[Dict[str, Any]] = []
                 exact_arrivals: Dict[Tuple[str, str], int] = {}
                 seen_completions = set()
-                for _ in ordered_by_net:
+                for _ in range(route_count):
                     native_route, source_ready, completion, sink_count = take(
                         "<4I"
                     )
                     if (
-                        native_route >= len(ordered_by_net)
+                        native_route >= route_count
                         or native_route in seen_completions
                     ):
                         raise ValidationError(
                             "native Static Exact schedule completion is invalid"
                         )
                     seen_completions.add(native_route)
-                    route = ordered_by_net[native_route]
+                    route_id = compact_route_ids[native_route]
+                    route_net = compact_nets[native_route]
                     sink_arrivals = {}
                     for _sink in range(sink_count):
                         sink_index, arrival = take("<2I")
@@ -1472,15 +1655,17 @@ def _schedule_indexed_exact_native(
                                 "native Static Exact sink arrival is duplicated"
                             )
                         sink_arrivals[sink] = arrival
-                        exact_arrivals[(route["net"], sink)] = arrival
-                    if sorted(sink_arrivals) != sorted(route["sinks"]):
+                        exact_arrivals[(route_net, sink)] = arrival
+                    if sorted(sink_arrivals) != sorted(
+                        compact_sinks[native_route]
+                    ):
                         raise ValidationError(
                             "native Static Exact sink coverage is incomplete"
                         )
                     completions.append(
                         {
-                            "demand": route["id"],
-                            "net": route["net"],
+                            "demand": route_id,
+                            "net": route_net,
                             "source_ready_slot": source_ready,
                             "completion_slot": completion,
                             "sink_arrival_slots": dict(
@@ -1502,7 +1687,16 @@ def _schedule_indexed_exact_native(
             path=retained_output,
             offset=entries_offset,
             count=entry_count,
-            routes=ordered_by_net,
+            routes=_CompactExactRouteOrder(
+                compact_route_ids,
+                compact_nets,
+                compact_sources,
+                compact_sinks,
+                compact_predecessors,
+                compact_dependency_levels,
+                compact_dependency_depths,
+                list(range(len(compact_route_ids))),
+            ),
             capacity_keys=capacity_keys,
             link_ids=link_ids,
             fpga_ids=fpga_ids,
@@ -1610,22 +1804,24 @@ def build_tdm_schedule(
         exact_contract is not None and exact_contract.get("indexed") is True
     )
     native_exact_schedule = False
+    use_native_exact_schedule = bool(
+        indexed_exact
+        and ratio_plan is None
+        and len(raw_routes) >= NATIVE_EXACT_SCHEDULE_MIN_ROUTES
+    )
     if exact_contract is None:
         ordered_routes, active_rounds = _round_order(
             raw_routes, planned_hops
         )
     else:
         if indexed_exact:
-            exact_nodes = _indexed_exact_nodes(raw_routes)
+            if not use_native_exact_schedule:
+                exact_nodes = _indexed_exact_nodes(raw_routes)
         else:
             exact_nodes, exact_segments, exact_captures = (
                 _exact_contract_indexes(exact_contract)
             )
-        if (
-            indexed_exact
-            and ratio_plan is None
-            and len(raw_routes) >= NATIVE_EXACT_SCHEDULE_MIN_ROUTES
-        ):
+        if use_native_exact_schedule:
             (
                 ordered_routes,
                 entries,
@@ -2000,21 +2196,26 @@ def build_tdm_schedule(
         ),
         "route_constraints": constraints,
         **({"bank_allocations": _bank_allocation_records(bank_allocations)} if bank_allocations else {}),
-        "routes": [
-            {
-                "id": route["id"],
-                "net": route["net"],
-                "source": route["source"],
-                "sinks": list(route["sinks"]),
-                "tree_edges": list(route["tree_edges"]),
-                **(
-                    {"transport_round": route.get("transport_round", 0)}
-                    if exact_contract is None
-                    else {}
-                ),
-            }
-            for route in sorted(raw_routes, key=lambda item: item["id"])
-        ],
+        "routes": (
+            _ScheduleRouteProjection(raw_routes.ordered("demand"))
+            if exact_contract is not None
+            and callable(getattr(raw_routes, "ordered", None))
+            else [
+                {
+                    "id": route["id"],
+                    "net": route["net"],
+                    "source": route["source"],
+                    "sinks": list(route["sinks"]),
+                    "tree_edges": list(route["tree_edges"]),
+                    **(
+                        {"transport_round": route.get("transport_round", 0)}
+                        if exact_contract is None
+                        else {}
+                    ),
+                }
+                for route in sorted(raw_routes, key=lambda item: item["id"])
+            ]
+        ),
         "entries": entries,
         "demand_completions": sorted(
             demand_completions, key=lambda item: item["demand"]

@@ -10,7 +10,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 from .chimew_pipeline import (
     CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER,
-    validate_chimew_phase6_pipeline,
+    read_chimew_phase6_pipeline,
 )
 from .chimew_qualification import canonical_sha256
 from .errors import ValidationError
@@ -145,22 +145,34 @@ def _safe_artifact(root: Path, record: Mapping[str, Any], label: str) -> Path:
     return path
 
 
-def _chimew_metrics(bundle: Path) -> Dict[str, float]:
-    validation = validate_chimew_phase6_pipeline(bundle)
-    report = read_json(bundle / "pipeline_report.json")
+def _chimew_metrics_from_snapshot(
+    bundle: Path,
+    report: Mapping[str, Any],
+    validation: Mapping[str, Any],
+) -> Dict[str, float]:
     if (
         report.get("provider") != CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER
         or validation.get("qualification_scope") != "byte-bound-source-artifacts"
     ):
         raise ValidationError("Chimew correlation requires byte-bound source bundles")
-    adapter = read_json(bundle / "phase6-adapter" / "adapter_report.json")
+    artifacts = report.get("artifacts")
+    adapter_record = (
+        artifacts.get("adapter_report") if isinstance(artifacts, dict) else None
+    )
+    adapter_path = (
+        _safe_artifact(bundle, adapter_record, "Chimew adapter report")
+        if isinstance(adapter_record, dict)
+        else bundle / "phase6-adapter" / "adapter_report.json"
+    )
+    adapter = read_json(adapter_path)
     metrics = report.get("metrics")
     pin = adapter.get("validation")
     if not isinstance(metrics, dict) or not isinstance(pin, dict):
         raise ValidationError("Chimew correlation metrics are missing")
     return {
         "rudy_peak_utilization": _finite_number(
-            metrics.get("rudy_peak_utilization"), "Chimew RUDY peak utilization"
+            metrics.get("rudy_peak_utilization"),
+            "Chimew RUDY peak utilization",
         ),
         "crossing_bits": _finite_number(
             pin.get("crossing_bits"), "Chimew crossing bits"
@@ -169,6 +181,11 @@ def _chimew_metrics(bundle: Path) -> Dict[str, float]:
             pin.get("pin_distance"), "Chimew pin distance"
         ),
     }
+
+
+def _chimew_metrics(bundle: Path) -> Dict[str, float]:
+    with read_chimew_phase6_pipeline(bundle) as (report, validation):
+        return _chimew_metrics_from_snapshot(bundle, report, validation)
 
 
 def _optional_closure_number(value: Any, label: str) -> Optional[float]:
@@ -288,43 +305,58 @@ def _build_correlation_report(document: Mapping[str, Any]) -> Dict[str, Any]:
         vivado = vivado.resolve()
         chimew_report = chimew / "pipeline_report.json"
         vivado_report = vivado / "vivado-board-flow-report.json"
-        for label, path, expected in (
-            ("Chimew", chimew_report, candidate["chimew_report_sha256"]),
-            ("Vivado", vivado_report, candidate["vivado_report_sha256"]),
+        with read_chimew_phase6_pipeline(
+            chimew,
+            expected_report_sha256=candidate["chimew_report_sha256"],
+        ) as (
+            chimew_document,
+            chimew_validation,
         ):
-            if (
-                not path.is_file()
-                or path.is_symlink()
-                or _SHA256.fullmatch(str(expected)) is None
-                or _sha256(path) != expected
+            for label, path, expected in (
+                ("Chimew", chimew_report, candidate["chimew_report_sha256"]),
+                ("Vivado", vivado_report, candidate["vivado_report_sha256"]),
             ):
-                raise ValidationError(f"{label} correlation report hash differs")
-        chimew_document = read_json(chimew_report)
-        vivado_document = read_json(vivado_report)
-        current_design = chimew_document.get("design")
-        current_platform = chimew_document.get("platform")
-        if (
-            current_design != vivado_document.get("design")
-            or current_platform != vivado_document.get("platform")
-        ):
-            raise ValidationError("Chimew and Vivado candidate identities disagree")
-        if design is None:
-            design, platform = current_design, current_platform
-        elif design != current_design or platform != current_platform:
-            raise ValidationError("correlation candidates do not share design/platform")
-        records.append(
-            {
-                "id": candidate_id,
-                "chimew_report_sha256": candidate["chimew_report_sha256"],
-                "vivado_report_sha256": candidate["vivado_report_sha256"],
-                "predicted": _chimew_metrics(chimew),
-                "actual": _vivado_metrics(vivado),
-            }
-        )
-        if _sha256(chimew_report) != candidate["chimew_report_sha256"] or _sha256(
-            vivado_report
-        ) != candidate["vivado_report_sha256"]:
-            raise ValidationError("correlation source changed during validation")
+                if (
+                    not path.is_file()
+                    or path.is_symlink()
+                    or _SHA256.fullmatch(str(expected)) is None
+                    or _sha256(path) != expected
+                ):
+                    raise ValidationError(f"{label} correlation report hash differs")
+            vivado_document = read_json(vivado_report)
+            current_design = chimew_document.get("design")
+            current_platform = chimew_document.get("platform")
+            if (
+                current_design != vivado_document.get("design")
+                or current_platform != vivado_document.get("platform")
+            ):
+                raise ValidationError(
+                    "Chimew and Vivado candidate identities disagree"
+                )
+            if design is None:
+                design, platform = current_design, current_platform
+            elif design != current_design or platform != current_platform:
+                raise ValidationError(
+                    "correlation candidates do not share design/platform"
+                )
+            records.append(
+                {
+                    "id": candidate_id,
+                    "chimew_report_sha256": candidate["chimew_report_sha256"],
+                    "vivado_report_sha256": candidate["vivado_report_sha256"],
+                    "predicted": _chimew_metrics_from_snapshot(
+                        chimew, chimew_document, chimew_validation
+                    ),
+                    "actual": _vivado_metrics(vivado),
+                }
+            )
+            if (
+                _sha256(chimew_report)
+                != candidate["chimew_report_sha256"]
+                or _sha256(vivado_report)
+                != candidate["vivado_report_sha256"]
+            ):
+                raise ValidationError("correlation source changed during validation")
     records.sort(key=lambda record: record["id"])
     correlations = {
         "rudy_to_congestion": _correlation_record(

@@ -15,6 +15,7 @@ from .platform import Platform
 from .physical_summary_storage import read_physical_summary
 from .phase3_storage import read_phase3_assignment_view
 from .routing import semantic_contract_for_routes
+from .system_route_storage import read_system_routes
 from .runtime import (
     aggregate_qor,
     build_virtual_runtime,
@@ -114,7 +115,9 @@ def run_phase7c(
         board_link_timing = read_json(board_link_timing_path)
         physical_summary = dict(physical_summary)
         physical_summary["board_link_timing"] = board_link_timing
-    routes = read_json(routes_path) if routes_path is not None else None
+    routes = (
+        read_system_routes(routes_path) if routes_path is not None else None
+    )
     semantic_contract = None
     if routes is not None and (
         routes.get("semantic_contract_schema") is not None

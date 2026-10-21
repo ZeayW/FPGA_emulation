@@ -8,6 +8,7 @@ import pytest
 from emuflow.errors import ValidationError
 from emuflow.global_sta import (
     EventCheck, _EventCheckBuilder, _IndexedEventChecks,
+    _IndexedPathMetadata, _PathMetadataBuilder,
     _compress_path_equivalent_checks, _write_expanded_measurements,
     adopt_opensta_results, bind_physical_checks, build_opensta_timing,
     compare_system_timing, export_event_checks, read_engine_identity,
@@ -238,6 +239,74 @@ def test_indexed_check_view_rejects_corrupt_identity():
     compact._original_to_representative[0] = (1 << 32) - 1
     with pytest.raises(ValidationError, match="lost a timing check"):
         _compress_path_equivalent_checks(compact)
+
+
+def test_indexed_path_metadata_is_sorted_compact_mapping():
+    from emuflow.local_path_timing import path_id_set_sha256
+
+    builder = _PathMetadataBuilder()
+    builder.append(
+        "path-z",
+        representative_path="representative",
+        path_scope="cross-fpga",
+        clock_domain="clk",
+        target_period_ns=10.0,
+        physical_logic_segments_cone_bound=True,
+        interconnect_delay_model="linear-ratio-v1",
+    )
+    builder.append(
+        "path-a",
+        representative_path="path-a",
+        path_scope="same-fpga-local",
+        clock_domain=None,
+        target_period_ns=20.0,
+        physical_logic_segments_cone_bound=False,
+    )
+    metadata = builder.finish()
+
+    assert isinstance(metadata, _IndexedPathMetadata)
+    assert list(metadata) == ["path-a", "path-z"]
+    assert metadata["path-a"] == {
+        "representative_path": "path-a",
+        "path_scope": "same-fpga-local",
+        "clock_domain": None,
+        "target_period_ns": 20.0,
+        "physical_logic_segments_cone_bound": False,
+    }
+    assert metadata["path-z"]["interconnect_delay_model"] == "linear-ratio-v1"
+    assert metadata.typed_payload_bytes == 44
+    assert len(metadata._strings) == 4
+    assert metadata.path_id_set_sha256() == path_id_set_sha256(
+        ["path-z", "path-a"]
+    )
+    with pytest.raises(KeyError):
+        metadata["missing"]
+    with pytest.raises(ValidationError, match="sealed"):
+        builder.finish()
+
+    invalid = _PathMetadataBuilder()
+    with pytest.raises(ValidationError, match="representative"):
+        invalid.append(
+            "path",
+            representative_path=None,
+            path_scope="cross-fpga",
+            clock_domain="clk",
+            target_period_ns=10.0,
+            physical_logic_segments_cone_bound=False,
+        )
+
+    duplicate = _PathMetadataBuilder()
+    for _ in range(2):
+        duplicate.append(
+            "same",
+            representative_path="same",
+            path_scope="cross-fpga",
+            clock_domain="clk",
+            target_period_ns=10.0,
+            physical_logic_segments_cone_bound=False,
+        )
+    with pytest.raises(ValidationError, match="overlap"):
+        duplicate.finish()
 
 
 def test_canonical_check_validation_does_not_build_interleaved_population(monkeypatch):
@@ -651,9 +720,14 @@ def test_physical_binding_uses_raw_measurements():
     _, routes, _ = fixture._system_inputs()
     physical = fixture._system_physical()
     physical["board_link_timing"] = build_board_link_timing_model(fixture.platform)
+    metadata = {}
     checks = bind_physical_checks(build_virtual_runtime(fixture.schedule, fixture.platform),
-                                  routes, fixture.schedule, physical, fixture.platform)
+                                  routes, fixture.schedule, physical, fixture.platform,
+                                  metadata=metadata)
     assert isinstance(checks, _IndexedEventChecks)
+    assert isinstance(metadata["paths"], _IndexedPathMetadata)
+    assert list(metadata["paths"]) == sorted(metadata["paths"])
+    assert metadata["paths"][next(iter(metadata["paths"]))]["path_scope"] == "cross-fpga"
     assert sum(c.role == "target" for c in checks) == 1
     assert sum(c.role == "tx" for c in checks) == len(fixture.schedule["entries"])
     assert next(c for c in checks if c.role == "target").arcs_ns[-2:] == (7.0, 0.0)

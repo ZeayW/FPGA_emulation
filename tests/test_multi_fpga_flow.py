@@ -13,12 +13,14 @@ from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.multi_fpga_flow import (
     _resolve_partition_openroad,
+    _schedule_has_entries,
     _validate_mapping_timing_contract,
     finalize_multi_fpga_physical_checkpoint,
     run_multi_fpga_flow,
     validate_multi_fpga_flow_bundle,
     validate_multi_fpga_flow_report,
 )
+from emuflow.tdm_schedule_storage import TypedScheduleEntrySequence
 from emuflow.open_transport_characterization import (
     BASE_FEATURE_NAMES,
     FRAME_SLOTS,
@@ -57,6 +59,22 @@ FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
+    def test_phase6_dispatch_does_not_iterate_typed_schedule_entries(self):
+        entries = object.__new__(TypedScheduleEntrySequence)
+        entries._count = 3
+        with (
+            patch(
+                "emuflow.multi_fpga_flow.read_tdm_schedule",
+                return_value={"entries": entries},
+            ),
+            patch.object(
+                TypedScheduleEntrySequence,
+                "__iter__",
+                side_effect=AssertionError("entries were materialized"),
+            ),
+        ):
+            self.assertTrue(_schedule_has_entries(Path("schedule.json")))
+
     def test_multiple_static_exact_clocks_reach_streaming_frontend(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -355,6 +373,21 @@ class MultiFpgaFlowTest(unittest.TestCase):
             self.assertEqual(
                 report["artifacts"]["schedule_store"]["path"],
                 (Path("tdm") / schedule_manifest["artifact"]).as_posix(),
+            )
+            route_manifest = json.loads(
+                (root / "system-route/routes.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertRegex(
+                route_manifest["artifact"],
+                r"^routes\.[0-9a-f]{64}\.sqlite$",
+            )
+            self.assertEqual(
+                report["artifacts"]["route_store"]["path"],
+                (
+                    Path("system-route") / route_manifest["artifact"]
+                ).as_posix(),
             )
             self.assertEqual(
                 report["stages"]["split"]["equivalence"]["qualification"],

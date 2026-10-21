@@ -95,6 +95,11 @@ from emuflow.tdm_ratio import build_tdm_ratio_plan
 from emuflow.tdm_slot import refine_tdm_schedule_native
 from emuflow.timing_routing import route_system_native
 from emuflow.transport_storage import write_transport_storage
+from emuflow.system_route_storage import (
+    SystemRoutesView,
+    read_system_routes,
+    write_system_route_storage,
+)
 from tests.native_build import (
     static_exact_analyzer,
     tdm_exact_scheduler,
@@ -985,6 +990,60 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             )
 
         self.assertEqual(actual, assignment["semantic_contract"])
+
+    def test_partition_build_carries_cut_ordinals_without_name_lookup(self):
+        executable = static_exact_analyzer()
+        with patch.dict(
+            os.environ,
+            {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+        ), patch(
+            "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+            0,
+        ), patch(
+            "emuflow.combinational_cut."
+            "_resolve_legacy_static_exact_cut_net_ordinals",
+            side_effect=AssertionError(
+                "new Phase 3 construction must carry authoritative ordinals"
+            ),
+        ):
+            clusters, assignment = self._exact_artifacts(dependent_return=True)
+            validation = validate_partition_artifacts(
+                self.ir, self.platform, clusters, assignment
+            )
+
+        self.assertEqual(validation["status"], "pass")
+        self.assertEqual(
+            assignment["semantic_contract"]["metrics"]["transported_cut_nets"],
+            len(assignment["cut_nets"]),
+        )
+
+    def test_native_semantic_analysis_rejects_forged_cut_ordinal(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        net_ordinal = {
+            net["id"]: index for index, net in enumerate(self.ir.value["nets"])
+        }
+        ordinals = [net_ordinal[cut["net"]] for cut in assignment["cut_nets"]]
+        ordinals[0] = (ordinals[0] + 1) % len(self.ir.value["nets"])
+        executable = static_exact_analyzer()
+        with patch.dict(
+            os.environ,
+            {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+        ), patch(
+            "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+            0,
+        ), self.assertRaisesRegex(
+            ValidationError, "net ordinals are invalid"
+        ):
+            build_static_exact_semantic_contract(
+                self.ir,
+                self.platform.to_dict(),
+                assignment["instance_assignment"],
+                assignment["cut_nets"],
+                max_dependency_depth=assignment["semantic_contract"][
+                    "max_cross_fpga_dependency_depth"
+                ],
+                cut_net_ordinals=ordinals,
+            )
 
     def test_native_semantic_analysis_rejects_forged_capture_coordinate(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
@@ -2088,7 +2147,31 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             route["predecessor_cut_nets"] = []
             route["dependency_level"] = 0
             repeated["routes"].append(route)
+        repeated["demands"] = [
+            {
+                key: copy.deepcopy(route[key])
+                for key in (
+                    "id",
+                    "net",
+                    "source",
+                    "sinks",
+                    "width_bits",
+                    "cut_class",
+                    "dependency_level",
+                    "combinational_dependency_depth",
+                    "predecessor_cut_nets",
+                )
+            }
+            for route in repeated["routes"]
+        ]
         compare(repeated)
+        with tempfile.TemporaryDirectory() as temporary:
+            route_path = Path(temporary) / "routes.json"
+            write_system_route_storage(route_path, repeated)
+            indexed_routes = read_system_routes(route_path)
+            self.assertIsInstance(indexed_routes, SystemRoutesView)
+            self.assertEqual(list.__len__(indexed_routes["routes"]), 0)
+            compare(indexed_routes)
 
     @staticmethod
     def _persisted_routes(routes):

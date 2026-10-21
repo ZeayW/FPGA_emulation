@@ -1,10 +1,13 @@
 import copy
 import hashlib
 import shutil
+import sqlite3
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
@@ -34,6 +37,8 @@ from emuflow.chimew_phase6 import (
 from emuflow.chimew_pipeline import (
     CHIMEW_PIPELINE_PROVIDER,
     CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER,
+    read_chimew_phase6_pipeline,
+    run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
 )
 from emuflow.chimew_refinement import (
@@ -48,7 +53,9 @@ from emuflow.chimew_rudy import (
 )
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
+from emuflow.pin_plan_storage import read_pin_plan
 from emuflow.platform import Platform
+from emuflow.position_hints_storage import read_position_hints
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -549,19 +556,404 @@ class ChimewQualificationTest(unittest.TestCase):
             self.assertEqual(report["status"], "pass")
             self.assertEqual(report["metrics"]["artifact_chain_disagreements"], 0)
             self.assertTrue(
-                (output / "phase6-adapter" / "qualification_certificate.json").is_file()
+                (
+                    output
+                    / report["artifacts"][
+                        "adapter_qualification_certificate"
+                    ]["path"]
+                ).is_file()
             )
             self.assertEqual(main(["pin-plan", "chimew-validate", str(output)]), 0)
             validation = validate_chimew_phase6_pipeline(output)
-            self.assertEqual(validation["artifact_hashes_verified"], 24)
+            self.assertEqual(validation["artifact_hashes_verified"], 27)
             self.assertEqual(
                 validation["qualification_scope"], "byte-bound-source-artifacts"
             )
-            bound_plan = read_json(
-                output / "phase6-adapter" / "pin_plan.json"
+
+            committed_before = (output / "pipeline_report.json").read_bytes()
+            committed_report = read_json(output / "pipeline_report.json")
+            committed_generation = (
+                output
+                / committed_report["artifacts"]["generation_manifest"]["path"]
+            ).parent
+            adapter_dir = (
+                output
+                / committed_report["artifacts"]["adapter_report"]["path"]
+            ).parent
+            committed_files = {
+                path.relative_to(committed_generation): path.read_bytes()
+                for path in committed_generation.rglob("*")
+                if path.is_file()
+            }
+
+            # Bare files are not generations, even when their names and bytes
+            # look superficially plausible.
+            real_pin_store = (
+                output
+                / committed_report["artifacts"]["adapter_pin_plan_store"]["path"]
+            )
+            with sqlite3.connect(real_pin_store) as connection:
+                application_id = connection.execute(
+                    "PRAGMA application_id"
+                ).fetchone()[0]
+                user_version = connection.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0]
+            fake_sqlite_temporary = adapter_dir / "pin_plan.incomplete.sqlite"
+            with sqlite3.connect(fake_sqlite_temporary) as connection:
+                connection.execute(f"PRAGMA application_id={application_id}")
+                connection.execute(f"PRAGMA user_version={user_version}")
+            fake_sqlite_digest = hashlib.sha256(
+                fake_sqlite_temporary.read_bytes()
+            ).hexdigest()
+            fake_sqlite = adapter_dir / f"pin_plan.{fake_sqlite_digest}.sqlite"
+            fake_sqlite_temporary.replace(fake_sqlite)
+            with self.assertRaisesRegex(ValidationError, "coverage is not exact"):
+                validate_chimew_phase6_pipeline(output)
+            fake_sqlite.unlink()
+            real_bank = read_json(
+                output
+                / committed_report["artifacts"]["adapter_bank_channel_report"][
+                    "path"
+                ]
+            )
+            fake_json_temporary = (
+                adapter_dir / "bank_channel_report.incomplete.json"
+            )
+            write_json(
+                fake_json_temporary,
+                {
+                    "schema": real_bank["schema"],
+                    "provider": real_bank["provider"],
+                },
+            )
+            fake_json_digest = hashlib.sha256(
+                fake_json_temporary.read_bytes()
+            ).hexdigest()
+            fake_json = (
+                adapter_dir / f"bank_channel_report.{fake_json_digest}.json"
+            )
+            fake_json_temporary.replace(fake_json)
+            with self.assertRaisesRegex(ValidationError, "coverage is not exact"):
+                validate_chimew_phase6_pipeline(output)
+            fake_json.unlink()
+
+            # A fully resealed inventory is still not a legal orphan when a
+            # logical artifact is malformed.  The writer must not collect it
+            # merely because every filename and SHA-256 agrees.
+            malformed_staging = root / "malformed-generation"
+            shutil.copytree(committed_generation, malformed_staging)
+            malformed_manifest_path = (
+                malformed_staging / "generation_manifest.json"
+            )
+            malformed_manifest = read_json(malformed_manifest_path)
+            malformed_schedule = (
+                malformed_staging
+                / malformed_manifest["artifacts"]["schedule"]["path"]
+            )
+            write_json(malformed_schedule, {})
+            malformed_manifest["artifacts"]["schedule"]["sha256"] = (
+                hashlib.sha256(malformed_schedule.read_bytes()).hexdigest()
+            )
+            write_json(malformed_manifest_path, malformed_manifest)
+            malformed_digest = hashlib.sha256(
+                malformed_manifest_path.read_bytes()
+            ).hexdigest()
+            malformed_generation = output / "generations" / malformed_digest
+            malformed_staging.replace(malformed_generation)
+            with self.assertRaisesRegex(ValidationError, "coverage is not exact"):
+                validate_chimew_phase6_pipeline(output)
+            run_chimew_phase6_pipeline(
+                paths["schedule"],
+                paths["platform"],
+                paths["crossings"],
+                paths["positions"],
+                paths["rudy-input"],
+                paths["assignment-input"],
+                paths["electrical-map"],
+                output,
+                source_paths=source_paths,
+                grouper=self.executables["grouper"],
+                refiner=self.executables["refiner"],
+                rudy=self.executables["rudy"],
+                assigner=self.executables["assigner"],
+                region_count=31,
+            )
+            self.assertTrue(malformed_generation.is_dir())
+            shutil.rmtree(malformed_generation)
+            self.assertEqual(
+                validate_chimew_phase6_pipeline(output)["status"], "pass"
+            )
+
+            import emuflow.chimew_pipeline as chimew_pipeline_module
+
+            for identity_field, wrong_value in (
+                ("design", "wrong-design"),
+                ("platform", "wrong-platform"),
+            ):
+                identity_staging = root / f"mismatched-{identity_field}"
+                shutil.copytree(committed_generation, identity_staging)
+                identity_manifest_path = (
+                    identity_staging / "generation_manifest.json"
+                )
+                identity_manifest = read_json(identity_manifest_path)
+                identity_manifest[identity_field] = wrong_value
+                write_json(identity_manifest_path, identity_manifest)
+                identity_digest = hashlib.sha256(
+                    identity_manifest_path.read_bytes()
+                ).hexdigest()
+                identity_generation = output / "generations" / identity_digest
+                identity_staging.replace(identity_generation)
+                with self.subTest(identity_field=identity_field):
+                    with self.assertRaisesRegex(
+                        ValidationError, "generation identity differs"
+                    ):
+                        chimew_pipeline_module._validate_pipeline_generation_directory(
+                            identity_generation
+                        )
+                    with self.assertRaisesRegex(
+                        ValidationError, "coverage is not exact"
+                    ):
+                        validate_chimew_phase6_pipeline(output)
+                shutil.rmtree(identity_generation)
+            self.assertEqual(
+                validate_chimew_phase6_pipeline(output)["status"], "pass"
+            )
+
+            # Change two real inputs, then fail exactly at the outer commit.
+            # Every file named by the preceding report must remain byte-identical.
+            changed_platform = read_json(paths["platform"])
+            changed_platform["platform"]["description"] = "changed generation"
+            write_json(paths["platform"], changed_platform)
+            changed_electrical = read_json(paths["electrical-map"])
+            changed_electrical["provenance"]["boarddb_sha256"] = hashlib.sha256(
+                paths["platform"].read_bytes()
+            ).hexdigest()
+            write_json(paths["electrical-map"], changed_electrical)
+
+            real_pipeline_write_json = chimew_pipeline_module.write_json
+
+            def fail_outer_commit(path, value, **kwargs):
+                if Path(path).name == "pipeline_report.json":
+                    raise OSError("injected outer pipeline commit failure")
+                return real_pipeline_write_json(path, value, **kwargs)
+
+            with mock.patch(
+                "emuflow.chimew_pipeline.write_json",
+                side_effect=fail_outer_commit,
+            ):
+                with self.assertRaisesRegex(OSError, "outer pipeline commit"):
+                    run_chimew_phase6_pipeline(
+                        paths["schedule"],
+                        paths["platform"],
+                        paths["crossings"],
+                        paths["positions"],
+                        paths["rudy-input"],
+                        paths["assignment-input"],
+                        paths["electrical-map"],
+                        output,
+                        source_paths=source_paths,
+                        grouper=self.executables["grouper"],
+                        refiner=self.executables["refiner"],
+                        rudy=self.executables["rudy"],
+                        assigner=self.executables["assigner"],
+                        region_count=7,
+                    )
+            self.assertEqual(
+                (output / "pipeline_report.json").read_bytes(), committed_before
+            )
+            self.assertEqual(
+                {
+                    path.relative_to(committed_generation): path.read_bytes()
+                    for path in committed_generation.rglob("*")
+                    if path.is_file()
+                },
+                committed_files,
+            )
+            self.assertEqual(
+                validate_chimew_phase6_pipeline(output)["status"], "pass"
+            )
+            generations_after_failure = {
+                path.name
+                for path in (output / "generations").iterdir()
+                if path.is_dir()
+            }
+            self.assertGreater(len(generations_after_failure), 1)
+
+            run_chimew_phase6_pipeline(
+                paths["schedule"],
+                paths["platform"],
+                paths["crossings"],
+                paths["positions"],
+                paths["rudy-input"],
+                paths["assignment-input"],
+                paths["electrical-map"],
+                output,
+                source_paths=source_paths,
+                grouper=self.executables["grouper"],
+                refiner=self.executables["refiner"],
+                rudy=self.executables["rudy"],
+                assigner=self.executables["assigner"],
+                region_count=7,
+            )
+            refreshed_report = read_json(output / "pipeline_report.json")
+            refreshed_generation = (
+                output
+                / refreshed_report["artifacts"]["generation_manifest"]["path"]
+            ).parent
+            self.assertEqual(
+                {
+                    path.resolve()
+                    for path in (output / "generations").iterdir()
+                    if path.is_dir()
+                },
+                {refreshed_generation.resolve()},
+            )
+            self.assertEqual(
+                validate_chimew_phase6_pipeline(output)["status"], "pass"
+            )
+            report = refreshed_report
+
+            # A shared reader lease keeps its report generation alive while a
+            # later writer waits for the exclusive lock.  Two writers also
+            # enter the underlying producer one at a time.
+            reader_entered = threading.Event()
+            release_reader = threading.Event()
+            reader_errors = []
+            leased_generation = refreshed_generation
+
+            def hold_reader():
+                try:
+                    with read_chimew_phase6_pipeline(output) as (
+                        leased_report,
+                        leased_validation,
+                    ):
+                        self.assertEqual(leased_validation["status"], "pass")
+                        self.assertEqual(leased_report, refreshed_report)
+                        reader_entered.set()
+                        self.assertTrue(release_reader.wait(10.0))
+                        self.assertTrue(leased_generation.is_dir())
+                except BaseException as error:
+                    reader_errors.append(error)
+
+            writer_errors = []
+
+            def run_locked_writer(region_count):
+                try:
+                    run_chimew_phase6_pipeline(
+                        paths["schedule"],
+                        paths["platform"],
+                        paths["crossings"],
+                        paths["positions"],
+                        paths["rudy-input"],
+                        paths["assignment-input"],
+                        paths["electrical-map"],
+                        output,
+                        source_paths=source_paths,
+                        grouper=self.executables["grouper"],
+                        refiner=self.executables["refiner"],
+                        rudy=self.executables["rudy"],
+                        assigner=self.executables["assigner"],
+                        region_count=region_count,
+                    )
+                except BaseException as error:
+                    writer_errors.append(error)
+
+            reader_thread = threading.Thread(target=hold_reader)
+            writer_thread = threading.Thread(
+                target=run_locked_writer, args=(8,)
+            )
+            reader_thread.start()
+            self.assertTrue(reader_entered.wait(10.0))
+            writer_thread.start()
+            writer_thread.join(0.2)
+            self.assertTrue(writer_thread.is_alive())
+            self.assertTrue(leased_generation.is_dir())
+            release_reader.set()
+            reader_thread.join(10.0)
+            writer_thread.join(30.0)
+            self.assertFalse(reader_thread.is_alive())
+            self.assertFalse(writer_thread.is_alive())
+            self.assertEqual(reader_errors, [])
+            self.assertEqual(writer_errors, [])
+            self.assertFalse(leased_generation.exists())
+
+            import emuflow.chimew_pipeline as chimew_pipeline_module
+
+            real_locked_writer = (
+                chimew_pipeline_module._run_chimew_phase6_pipeline_locked
+            )
+            producer_entered = threading.Event()
+            release_first_writer = threading.Event()
+            producer_guard = threading.Lock()
+            active_producers = 0
+            maximum_active_producers = 0
+            producer_calls = 0
+
+            def observe_locked_writer(*args, **kwargs):
+                nonlocal active_producers, maximum_active_producers, producer_calls
+                with producer_guard:
+                    active_producers += 1
+                    producer_calls += 1
+                    call_number = producer_calls
+                    maximum_active_producers = max(
+                        maximum_active_producers, active_producers
+                    )
+                try:
+                    if call_number == 1:
+                        producer_entered.set()
+                        self.assertTrue(release_first_writer.wait(10.0))
+                    return real_locked_writer(*args, **kwargs)
+                finally:
+                    with producer_guard:
+                        active_producers -= 1
+
+            writer_errors.clear()
+            with mock.patch(
+                "emuflow.chimew_pipeline._run_chimew_phase6_pipeline_locked",
+                side_effect=observe_locked_writer,
+            ):
+                first_writer = threading.Thread(
+                    target=run_locked_writer, args=(9,)
+                )
+                second_writer = threading.Thread(
+                    target=run_locked_writer, args=(10,)
+                )
+                first_writer.start()
+                self.assertTrue(producer_entered.wait(10.0))
+                second_writer.start()
+                second_writer.join(0.2)
+                self.assertTrue(second_writer.is_alive())
+                self.assertEqual(maximum_active_producers, 1)
+                release_first_writer.set()
+                first_writer.join(30.0)
+                second_writer.join(30.0)
+            self.assertFalse(first_writer.is_alive())
+            self.assertFalse(second_writer.is_alive())
+            self.assertEqual(writer_errors, [])
+            self.assertEqual(maximum_active_producers, 1)
+            self.assertEqual(producer_calls, 2)
+            self.assertEqual(
+                validate_chimew_phase6_pipeline(output)["status"], "pass"
+            )
+            self.assertEqual(
+                len(
+                    [
+                        path
+                        for path in (output / "generations").iterdir()
+                        if path.is_dir()
+                    ]
+                ),
+                1,
+            )
+            report = read_json(output / "pipeline_report.json")
+            bound_plan = read_pin_plan(
+                output / report["artifacts"]["adapter_pin_plan"]["path"],
+                materialize=True,
             )
             bound_binding = read_chimew_binding(
-                output / "phase6-adapter" / "electrical_binding.json",
+                output
+                / report["artifacts"]["adapter_electrical_binding"]["path"],
                 materialize=True,
             )
             self.assertEqual(
@@ -603,7 +995,7 @@ class ChimewQualificationTest(unittest.TestCase):
                     mixed_embedded_binding,
                 )
             qualification_document = read_json(
-                output / "kernels" / "qualification.json"
+                output / report["artifacts"]["qualification"]["path"]
             )
             inconsistent_source = copy.deepcopy(qualification_document)
             inconsistent_source["source_binding"]["digests"]["routing"] = (
@@ -644,7 +1036,8 @@ class ChimewQualificationTest(unittest.TestCase):
                     electrical,
                     qualification_document=mixed_package_pins,
                     bank_channel_report_document=read_json(
-                        output / "kernels" / "bank_channel_report.json"
+                        output
+                        / report["artifacts"]["bank_channel_report"]["path"]
                     ),
                     executable=self.executables["assigner"],
                 )
@@ -671,14 +1064,22 @@ class ChimewQualificationTest(unittest.TestCase):
             downgraded_report["qualification_scope"] = (
                 "declared-digest-artifact-chain"
             )
+            downgraded_source_root = (
+                downgraded_output
+                / next(
+                    record["path"]
+                    for label, record in downgraded_report["artifacts"].items()
+                    if label.startswith("source_")
+                )
+            ).parent
             for label in tuple(downgraded_report["artifacts"]):
                 if label.startswith("source_"):
                     downgraded_report["artifacts"].pop(label)
-            shutil.rmtree(downgraded_output / "sources")
+            shutil.rmtree(downgraded_source_root)
             write_json(
                 downgraded_output / "pipeline_report.json", downgraded_report
             )
-            with self.assertRaisesRegex(ValidationError, "certificate does not agree"):
+            with self.assertRaises(ValidationError):
                 validate_chimew_phase6_pipeline(downgraded_output)
 
             legacy_output = root / "legacy-pipeline"
@@ -704,15 +1105,47 @@ class ChimewQualificationTest(unittest.TestCase):
                 ],
                 "declared-digest-artifact-chain",
             )
+            legacy_generation = (
+                legacy_output
+                / legacy_report["artifacts"]["generation_manifest"]["path"]
+            ).parent
+            for child in legacy_generation.iterdir():
+                if child.name != "generation_manifest.json":
+                    shutil.move(str(child), legacy_output / child.name)
+            shutil.rmtree(legacy_output / "generations")
+            legacy_report["artifacts"].pop("generation_manifest")
+            for record in legacy_report["artifacts"].values():
+                relative = Path(record["path"])
+                record["path"] = Path(*relative.parts[2:]).as_posix()
             legacy_report.pop("qualification_scope")
-            legacy_pin_path = legacy_output / "phase6-adapter" / "pin_plan.json"
+            legacy_pin_path = (
+                legacy_output
+                / legacy_report["artifacts"]["adapter_pin_plan"]["path"]
+            )
             legacy_binding_path = (
-                legacy_output / "phase6-adapter" / "electrical_binding.json"
+                legacy_output
+                / legacy_report["artifacts"]["adapter_electrical_binding"]["path"]
             )
             legacy_adapter_path = (
-                legacy_output / "phase6-adapter" / "adapter_report.json"
+                legacy_output
+                / legacy_report["artifacts"]["adapter_report"]["path"]
             )
-            legacy_pin = read_json(legacy_pin_path)
+            legacy_pin_selector = read_json(legacy_pin_path)
+            legacy_pin_store = legacy_pin_path.with_name(
+                legacy_pin_selector["artifact"]
+            )
+            legacy_pin = read_pin_plan(legacy_pin_path, materialize=True)
+            legacy_position_path = (
+                legacy_output
+                / legacy_report["artifacts"]["adapter_position_hints"]["path"]
+            )
+            legacy_position_selector = read_json(legacy_position_path)
+            legacy_position_store = legacy_position_path.with_name(
+                legacy_position_selector["artifact"]
+            )
+            legacy_position = read_position_hints(
+                legacy_position_path, materialize=True
+            )
             legacy_binding_selector = read_json(legacy_binding_path)
             legacy_binding_store = legacy_binding_path.with_name(
                 legacy_binding_selector["artifact"]
@@ -721,21 +1154,32 @@ class ChimewQualificationTest(unittest.TestCase):
                 legacy_binding_path, materialize=True
             )
             legacy_adapter = read_json(legacy_adapter_path)
+            legacy_adapter["schema"] = (
+                "emuflow.chimew-phase6-adapter-report/v1"
+            )
             legacy_pin["configuration"].pop("qualification_scope")
             legacy_binding["provenance"].pop("qualification_scope")
             legacy_adapter["qualification_validation"].pop(
                 "qualification_scope"
             )
             legacy_adapter["artifacts"].pop("electrical_binding_store")
+            legacy_adapter["artifacts"].pop("pin_plan_store")
+            legacy_adapter["artifacts"].pop("position_hints_store")
             legacy_report["artifacts"].pop(
                 "adapter_electrical_binding_store"
             )
+            legacy_report["artifacts"].pop("adapter_pin_plan_store")
+            legacy_report["artifacts"].pop("adapter_position_hints_store")
             legacy_binding_store.unlink()
+            legacy_pin_store.unlink()
+            legacy_position_store.unlink()
             write_json(legacy_pin_path, legacy_pin)
+            write_json(legacy_position_path, legacy_position)
             write_json(legacy_binding_path, legacy_binding)
             write_json(legacy_adapter_path, legacy_adapter)
             for label, path in {
                 "adapter_pin_plan": legacy_pin_path,
+                "adapter_position_hints": legacy_position_path,
                 "adapter_electrical_binding": legacy_binding_path,
                 "adapter_report": legacy_adapter_path,
             }.items():
@@ -758,7 +1202,12 @@ class ChimewQualificationTest(unittest.TestCase):
 
             adapter_tamper = root / "adapter-tamper"
             shutil.copytree(output, adapter_tamper)
-            adapter_path = adapter_tamper / "phase6-adapter" / "adapter_report.json"
+            adapter_path = (
+                adapter_tamper
+                / read_json(adapter_tamper / "pipeline_report.json")["artifacts"][
+                    "adapter_report"
+                ]["path"]
+            )
             adapter_document = read_json(adapter_path)
             adapter_document["provider"] = "tampered-provider"
             write_json(adapter_path, adapter_document)
@@ -767,11 +1216,17 @@ class ChimewQualificationTest(unittest.TestCase):
                 adapter_path.read_bytes()
             ).hexdigest()
             write_json(adapter_tamper / "pipeline_report.json", tamper_report)
-            with self.assertRaisesRegex(ValidationError, "adapter report"):
+            with self.assertRaisesRegex(
+                ValidationError, "generation artifact seal|adapter report"
+            ):
                 validate_chimew_phase6_pipeline(adapter_tamper)
 
-            (output / "sources" / "routing.source").write_bytes(b"tampered\n")
-            with self.assertRaisesRegex(ValidationError, "hash differs"):
+            (
+                output / report["artifacts"]["source_routing"]["path"]
+            ).write_bytes(b"tampered\n")
+            with self.assertRaisesRegex(
+                ValidationError, "generation artifact seal differs|hash differs"
+            ):
                 validate_chimew_phase6_pipeline(output)
 
 

@@ -14,6 +14,7 @@ from typing import Any, Dict, Mapping, Sequence
 
 from .academic_chimew import materialize_academic_chimew_inputs
 from .chimew_pipeline import (
+    read_chimew_phase6_pipeline,
     run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
 )
@@ -1270,10 +1271,6 @@ def run_phase6_checkpoint(
             ),
         )
         schedule_path = inputs / "schedule.json"
-        adapter = pipeline_root / "phase6-adapter"
-        pin_plan_path = adapter / "pin_plan.json"
-        position_hints_path = adapter / "position_hints.json"
-        electrical_binding_path = adapter / "electrical_binding.json"
         if pipeline.get("status") != "pass":
             raise ValidationError("experiment Chimew pipeline did not pass")
     if managed_dag_node:
@@ -1290,20 +1287,43 @@ def run_phase6_checkpoint(
             schedule_path, output_dir / "schedule.json"
         )
         phase6_schedule_path = output_dir / "schedule.json"
-    phase6 = run_phase6(
-        paths["ir"],
-        paths["assignment"],
-        phase6_schedule_path,
-        platform_path,
-        output_dir / "split",
-        equivalence_cycles=equivalence_cycles,
-        equivalence_seed=equivalence_seed,
-        pin_plan_path=pin_plan_path,
-        position_hints_path=position_hints_path,
-        electrical_binding_path=electrical_binding_path,
-        managed_storage=managed_storage,
-        clock_periods=clock_periods,
-    )
+    def execute_phase6() -> Dict[str, Any]:
+        return run_phase6(
+            paths["ir"],
+            paths["assignment"],
+            phase6_schedule_path,
+            platform_path,
+            output_dir / "split",
+            equivalence_cycles=equivalence_cycles,
+            equivalence_seed=equivalence_seed,
+            pin_plan_path=pin_plan_path,
+            position_hints_path=position_hints_path,
+            electrical_binding_path=electrical_binding_path,
+            managed_storage=managed_storage,
+            clock_periods=clock_periods,
+        )
+
+    if provider == "chimew":
+        with read_chimew_phase6_pipeline(pipeline_root) as (
+            leased_pipeline,
+            _pipeline_validation,
+        ):
+            pipeline = dict(leased_pipeline)
+            pipeline_artifacts = pipeline["artifacts"]
+            pin_plan_path = (
+                pipeline_root / pipeline_artifacts["adapter_pin_plan"]["path"]
+            )
+            position_hints_path = (
+                pipeline_root
+                / pipeline_artifacts["adapter_position_hints"]["path"]
+            )
+            electrical_binding_path = (
+                pipeline_root
+                / pipeline_artifacts["adapter_electrical_binding"]["path"]
+            )
+            phase6 = execute_phase6()
+    else:
+        phase6 = execute_phase6()
     report = {
         "schema": EXPERIMENT_PHASE6_SCHEMA,
         "status": "pass",

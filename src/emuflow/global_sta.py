@@ -10,11 +10,14 @@ No Python-computed arrival, slack, or TDM wait enters the exported circuit.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 import subprocess
 from array import array
-from collections.abc import Sequence
+from bisect import bisect_left
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -40,6 +43,233 @@ _EVENT_CHECK_ROLE_INDEX = {
 }
 _UINT32_MAX = (1 << 32) - 1
 _UINT64_MASK = (1 << 64) - 1
+
+
+class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
+    """Sorted, fixed-width metadata for every original timing path.
+
+    The production binding used to retain one Python dictionary for every
+    original path in addition to the indexed event/check relation.  This view
+    owns path IDs once, interns repeated metadata strings, and resolves a path
+    with binary search.  Materialized dictionaries exist only for the current
+    report row.
+    """
+
+    def __init__(
+        self,
+        paths: list[str],
+        strings: list[str],
+        representative_indices: array,
+        scopes: array,
+        clock_indices: array,
+        target_periods: array,
+        cone_bounds: array,
+        model_indices: array,
+    ):
+        count = len(paths)
+        if (
+            len(representative_indices) != count
+            or len(scopes) != count
+            or len(clock_indices) != count
+            or len(target_periods) != count
+            or len(cone_bounds) != count
+            or len(model_indices) != count
+            or any(not path for path in paths)
+            or any(paths[index - 1] >= paths[index] for index in range(1, count))
+        ):
+            raise ValidationError("global STA indexed path metadata is malformed")
+        self._paths = paths
+        self._strings = strings
+        self._representative_indices = representative_indices
+        self._scopes = scopes
+        self._clock_indices = clock_indices
+        self._target_periods = target_periods
+        self._cone_bounds = cone_bounds
+        self._model_indices = model_indices
+
+    def __len__(self) -> int:
+        return len(self._paths)
+
+    def __iter__(self):
+        return iter(self._paths)
+
+    def __getitem__(self, path: str) -> Mapping[str, object]:
+        if not isinstance(path, str):
+            raise KeyError(path)
+        index = bisect_left(self._paths, path)
+        if index >= len(self._paths) or self._paths[index] != path:
+            raise KeyError(path)
+        representative_index = self._representative_indices[index]
+        clock_index = self._clock_indices[index]
+        model_index = self._model_indices[index]
+        if (
+            representative_index >= len(self._strings)
+            or self._scopes[index] > 1
+            or (
+                clock_index != _UINT32_MAX
+                and clock_index >= len(self._strings)
+            )
+            or self._cone_bounds[index] > 1
+            or (
+                model_index != _UINT32_MAX
+                and model_index >= len(self._strings)
+            )
+        ):
+            raise ValidationError(
+                "global STA indexed path metadata identity is malformed"
+            )
+        target_period = self._target_periods[index]
+        if not math.isfinite(target_period) or target_period <= 0.0:
+            raise ValidationError(
+                "global STA indexed path metadata period is malformed"
+            )
+        return {
+            "representative_path": self._strings[representative_index],
+            "path_scope": (
+                "same-fpga-local" if self._scopes[index] else "cross-fpga"
+            ),
+            "clock_domain": (
+                None
+                if clock_index == _UINT32_MAX
+                else self._strings[clock_index]
+            ),
+            "target_period_ns": target_period,
+            "physical_logic_segments_cone_bound": bool(
+                self._cone_bounds[index]
+            ),
+            **(
+                {}
+                if model_index == _UINT32_MAX
+                else {
+                    "interconnect_delay_model": self._strings[model_index]
+                }
+            ),
+        }
+
+    @property
+    def typed_payload_bytes(self) -> int:
+        """Bytes in fixed-width columns, excluding shared string objects."""
+
+        return sum(
+            values.itemsize * len(values)
+            for values in (
+                self._representative_indices,
+                self._scopes,
+                self._clock_indices,
+                self._target_periods,
+                self._cone_bounds,
+                self._model_indices,
+            )
+        )
+
+    def path_id_set_sha256(self) -> str:
+        """Hash the already sorted unique path IDs without another copy/sort."""
+
+        encoded = json.dumps(
+            self._paths,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+
+class _PathMetadataBuilder:
+    """Append path metadata, then seal it into sorted indexed columns."""
+
+    def __init__(self):
+        self._finished = False
+        self._paths: list[str] = []
+        self._strings: list[str] = []
+        self._string_indices: dict[str, int] = {}
+        self._representative_indices = array("I")
+        self._scopes = array("B")
+        self._clock_indices = array("I")
+        self._target_periods = array("d")
+        self._cone_bounds = array("B")
+        self._model_indices = array("I")
+
+    def _intern(self, value: str | None) -> int:
+        if value is None:
+            return _UINT32_MAX
+        if not isinstance(value, str) or not value:
+            raise ValidationError("global STA path metadata string is invalid")
+        index = self._string_indices.get(value)
+        if index is None:
+            index = len(self._strings)
+            if index >= _UINT32_MAX:
+                raise ValidationError(
+                    "global STA path metadata string population is too large"
+                )
+            self._string_indices[value] = index
+            self._strings.append(value)
+        return index
+
+    def append(
+        self,
+        path: str,
+        *,
+        representative_path: str,
+        path_scope: str,
+        clock_domain: str | None,
+        target_period_ns: float,
+        physical_logic_segments_cone_bound: bool,
+        interconnect_delay_model: str | None = None,
+    ) -> None:
+        if self._finished:
+            raise ValidationError("global STA path metadata builder is sealed")
+        if not isinstance(path, str) or not path:
+            raise ValidationError("global STA path metadata identity is invalid")
+        if (
+            not isinstance(representative_path, str)
+            or not representative_path
+        ):
+            raise ValidationError(
+                "global STA path metadata representative is invalid"
+            )
+        if path_scope not in {"cross-fpga", "same-fpga-local"}:
+            raise ValidationError("global STA path metadata scope is invalid")
+        if (
+            isinstance(target_period_ns, bool)
+            or not isinstance(target_period_ns, (int, float))
+            or not math.isfinite(float(target_period_ns))
+            or float(target_period_ns) <= 0.0
+            or not isinstance(physical_logic_segments_cone_bound, bool)
+        ):
+            raise ValidationError("global STA path metadata values are invalid")
+        self._paths.append(path)
+        self._representative_indices.append(self._intern(representative_path))
+        self._scopes.append(path_scope == "same-fpga-local")
+        self._clock_indices.append(self._intern(clock_domain))
+        self._target_periods.append(float(target_period_ns))
+        self._cone_bounds.append(physical_logic_segments_cone_bound)
+        self._model_indices.append(self._intern(interconnect_delay_model))
+
+    def finish(self) -> _IndexedPathMetadata:
+        if self._finished:
+            raise ValidationError("global STA path metadata builder is sealed")
+        self._finished = True
+        order = sorted(range(len(self._paths)), key=self._paths.__getitem__)
+        paths = [self._paths[index] for index in order]
+        if any(paths[index - 1] == paths[index] for index in range(1, len(paths))):
+            raise ValidationError("global STA local/crossing path overlap")
+
+        def reordered(values: array) -> array:
+            return array(values.typecode, (values[index] for index in order))
+
+        result = _IndexedPathMetadata(
+            paths,
+            self._strings,
+            reordered(self._representative_indices),
+            reordered(self._scopes),
+            reordered(self._clock_indices),
+            reordered(self._target_periods),
+            reordered(self._cone_bounds),
+            reordered(self._model_indices),
+        )
+        self._paths = []
+        self._strings = []
+        self._string_indices = {}
+        return result
 
 
 def _event_check_values_hash(
@@ -1231,7 +1461,7 @@ the Python event propagator or consume its per-path numerical results.
         raise ValidationError("invalid global STA uncertainty")
     from .runtime import runtime_clock_period_ns
     result = _EventCheckBuilder()
-    path_metadata = {}
+    path_metadata = _PathMetadataBuilder()
     representatives = 0
     for record in reconstruct_tdm_schedule_timing_paths(routes, platform, schedule):
         virtual = runtime_clock_period_ns(runtime, record.get("clock_domain"))
@@ -1245,12 +1475,6 @@ the Python event propagator or consume its per-path numerical results.
                            key=lambda s: s["cut_index"])
             if [s["cut_index"] for s in chain] != list(range(len(record["cut_nets"])+1)):
                 raise ValidationError("global STA missing original-member logic segments")
-            path_metadata[member] = {
-                "representative_path": record["path"], "path_scope": "cross-fpga",
-                "clock_domain": record.get("clock_domain"), "target_period_ns": record["clock_period_ns"],
-                "physical_logic_segments_cone_bound": any(
-                    s.get("measurement") == "cut-net-cone-upper-bound" for s in chain),
-            }
             origin = 0.0
             trailing = ()
             ratio_mode = any(board_links[h["link"]].tdm_delay_model is not None
@@ -1259,8 +1483,20 @@ the Python event propagator or consume its per-path numerical results.
                                       for h in record["scheduled_hops"]):
                 raise ValidationError("one path cannot mix total net-ratio and fixed-slot delay models")
             model_arcs = []
-            if ratio_mode:
-                path_metadata[member]["interconnect_delay_model"] = "linear-ratio-v1"
+            path_metadata.append(
+                member,
+                representative_path=record["path"],
+                path_scope="cross-fpga",
+                clock_domain=record.get("clock_domain"),
+                target_period_ns=record["clock_period_ns"],
+                physical_logic_segments_cone_bound=any(
+                    s.get("measurement") == "cut-net-cone-upper-bound"
+                    for s in chain
+                ),
+                interconnect_delay_model=(
+                    "linear-ratio-v1" if ratio_mode else None
+                ),
+            )
             periods = set()
             seen_entries = set()
             for k, net in enumerate(record["cut_nets"]):
@@ -1342,13 +1578,16 @@ the Python event propagator or consume its per-path numerical results.
                 raise ValidationError("global STA local source seals disagree")
             source = database["source"]
         for path in database["paths"]:
-            if path["id"] in path_metadata:
-                raise ValidationError("global STA local/crossing path overlap")
-            path_metadata[path["id"]] = {
-                "representative_path": path["id"], "path_scope": "same-fpga-local",
-                "clock_domain": path.get("clock_domain"), "target_period_ns": path["clock_period_ns"],
-                "physical_logic_segments_cone_bound": path.get("measurement") != "explicit-routed-path-chain",
-            }
+            path_metadata.append(
+                path["id"],
+                representative_path=path["id"],
+                path_scope="same-fpga-local",
+                clock_domain=path.get("clock_domain"),
+                target_period_ns=path["clock_period_ns"],
+                physical_logic_segments_cone_bound=(
+                    path.get("measurement") != "explicit-routed-path-chain"
+                ),
+            )
             required = float(path.get("required_time_ns", path["clock_period_ns"]))
             virtual = runtime_clock_period_ns(
                 runtime, path.get("clock_domain")
@@ -1364,14 +1603,16 @@ the Python event propagator or consume its per-path numerical results.
                     deadline,
                 )
     rows = validate_checks(result.finish())
+    indexed_path_metadata = path_metadata.finish()
     if metadata is not None:
         if source is not None and (
             source["routes_sha256"] != routes_artifact_sha256
-            or source["original_paths"] != len(path_metadata)
-            or source["original_path_ids_sha256"] != path_id_set_sha256(list(path_metadata))
+            or source["original_paths"] != len(indexed_path_metadata)
+            or source["original_path_ids_sha256"]
+            != indexed_path_metadata.path_id_set_sha256()
         ):
             raise ValidationError("global STA original population/source binding disagrees")
-        metadata.update(paths=path_metadata, source_binding=source,
+        metadata.update(paths=indexed_path_metadata, source_binding=source,
                         compressed_representative_paths=representatives)
     return rows
 

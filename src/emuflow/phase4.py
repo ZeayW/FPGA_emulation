@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .io import read_json, write_json
-from .managed_json_storage import pack_managed_json
 from .phase3_storage import read_phase3_assignment_view
 from .platform import Platform
 from .routing import (
@@ -30,6 +29,10 @@ from .physical_route_feedback import (
     validate_physical_route_feedback,
 )
 from .physical_summary_storage import read_physical_summary
+from .system_route_storage import (
+    read_system_routes,
+    write_system_route_storage,
+)
 
 
 PHASE4_REPORT_SCHEMA = "emuflow.phase4-report/v1"
@@ -102,7 +105,7 @@ def run_phase4(
                 "reconstruct the concrete prices"
             )
         tdm_feedback = read_json(tdm_feedback_path)
-        feedback_routes = read_json(tdm_feedback_routes_path)
+        feedback_routes = read_system_routes(tdm_feedback_routes_path)
         feedback_schedule = read_json(tdm_feedback_schedule_path)
         feedback_ratio_plan = (
             read_json(tdm_feedback_ratio_plan_path)
@@ -303,11 +306,20 @@ def run_phase4(
                 output_dir / "physical_feedback.normalized.json",
                 read_json(physical_feedback_path),
             )
-    write_json(
-        output_dir / "routes.json",
-        pack_managed_json(routes) if managed_storage else routes,
-        compact=managed_storage,
+    route_storage = write_system_route_storage(
+        output_dir / "routes.json", routes
     )
+    report["artifacts"]["route_store"] = route_storage["artifact"]
+    report["route_storage"] = {
+        "schema": route_storage["schema"],
+        "dataflow": "typed-sqlite-demand-route-tree-timing-relations-v1",
+        "bytes": route_storage["store_bytes"],
+        "logical_sha256": route_storage["logical_sha256"],
+        "records": {
+            section: seal["records"]
+            for section, seal in route_storage["sections"].items()
+        },
+    }
     write_json(output_dir / "phase4_report.json", report)
     return report
 
@@ -322,7 +334,7 @@ def validate_phase4(
         assignment_path, include_semantic_contract=False
     )
     platform = Platform.load(platform_path)
-    routes = read_json(routes_path)
+    routes = read_system_routes(routes_path)
     provider = routes.get("provider")
     if provider == NATIVE_ROUTER_PROVIDER:
         if timing_paths_path is not None:

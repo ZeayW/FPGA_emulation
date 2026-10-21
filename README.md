@@ -113,8 +113,23 @@ Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
 publication. This is the W0 foundation rather than a claim that the full
-native production entry exists; Phase 5 validation I/O, remaining Phase 6/7
-data-plane loops, and global timing stitching are still migration work.
+native production entry exists; the remaining Phase 5 independent validation
+maps, Phase 6/7 data-plane loops, and global timing evidence decoding are still
+migration work.
+Phase 4 now publishes `routes.json` as a small selector plus a
+content-addressed `routes.<sha256>.sqlite` RouteStore. Demand identities are
+projected from their authoritative routed records; route sinks, tree edges,
+exact predecessors and timing paths are normalized relations instead of one
+graph-sized JSON tree. `read_system_routes` exposes ordered lazy cursors to
+Phase 5, while `read_json` remains the explicit legacy materializer. The final
+multi-FPGA report inventories and seals both selector and sidecar. RouteStore
+publication validates the previous selector before writing, restores it on a
+selector or post-publication validation failure, and removes an obsolete
+sidecar only after the new view passes. The selector binds the sidecar filename
+to its store digest. Normal publication does not run `VACUUM`, because the
+append-only build has no delete fragmentation to recover. Validation archives
+apply one retention decision to every generic selector/sidecar dependency
+group, so a copied selector cannot lose a large hash-only sidecar.
 For indexed Static Exact workloads with at least 100,000 routed cuts, Phase 5
 now runs dependency ordering, conservative source readiness, earliest legal
 lane/slot assignment, and sink-completion propagation in
@@ -142,7 +157,20 @@ uses ScheduleStore v4: routes, route sinks/edges, completions and sink arrivals
 are typed relations, while only link-domain-scale records remain JSON.
 Cross-layer timing and the baseline splitter consume these relations directly;
 entry-route reconstruction uses one set query rather than two sink/edge queries
-per hop. Older v1--v3 stores remain readable. Phase 6
+per hop. A synthetic 100,000-route one-hop Static Exact build reduced Python
+peak allocation from 346.1 MB to 108.2 MB, retained allocation from 332.9 MB
+to 83.5 MB, and route artifact bytes from 46.60 MB to 32.19 MB; two repeated
+runs measured the typed build at 8.16--8.32 seconds versus 8.92--9.59 seconds
+for whole-JSON loading. This is adapter evidence rather than NVDLA
+qualification, and the standalone independent validator still constructs
+route-level dependency maps. The native adapter also retains route-scale
+compact columns, cross-layer timing still builds hop-scale `hop_bindings`, and
+the ratio-delay baseline branch still performs hop-scale work when a platform
+declares a TDM delay model. Production Phase 6 dispatch reads only the lazy
+schedule entry count, and Phase 7C plus physical/local timing consumers open
+RouteStore lazily. Terminal full-bundle validation still uses compatibility
+materialization in some replay paths and remains migration work. Older v1--v3
+stores remain readable. Phase 6
 batch-streams endpoint, lane, anchor and fixed-board binding records into one
 content-sealed TransportStore. Validation and RTL/XDC consumers iterate its
 selectors without rebuilding global hop dictionaries. Unique differential
@@ -176,15 +204,47 @@ selector plus indexed-SQLite pattern, and generic production and validation
 ordered-merge typed schedule, position and plan relations without a hop-sized
 hint dictionary. Pin-plan and position selectors publish content-addressed
 generations last, so an interrupted overwrite leaves the previous generation
-readable; record seals are also bound inside SQLite metadata. Chimew
-electrical binding now uses a small `emuflow.chimew-binding-storage/v1`
+readable; record seals are also bound inside SQLite metadata. The production
+Chimew adapter opens ScheduleStore directly, stages member coverage in a
+file-backed indexed join, and streams position hints and pin-plan rows into
+their typed stores. It no longer constructs hop-sized `schedule_by_id`,
+`used_schedule_entries`, `hint_entries`, or `plan_assignment` containers.
+Chimew electrical binding uses a small `emuflow.chimew-binding-storage/v1`
 selector plus a sealed SQLite store of normalized group and member relations.
 The Phase 7 physical consumer performs indexed per-schedule-entry lookups
 without constructing another hop-sized binding map, and Phase 6 reports carry
-the selector and sidecar as an explicit artifact inventory so relocation does
-not strand the store. Legacy logical JSON remains readable. Chimew plan
-assignment, entry production and some validator coverage sets still scale with
-the hop population and remain Phase 6 migration work.
+all three selectors and sidecars as an explicit artifact inventory so
+relocation does not strand a store. The adapter builds and validates all three
+stores in a sibling staging directory, publishes immutable content-addressed
+sidecars and selectors, and publishes the adapter report last as the bundle
+commit point. Standalone use atomically replaces `adapter_report.json`; the
+pipeline uses an immutable content-addressed report generation and defers all
+adapter garbage collection until `pipeline_report.json` commits. The pipeline
+also stages and validates its inputs, source seals, kernel results and complete
+adapter group outside the published output before atomically installing one
+content-addressed generation directory; `pipeline_report.json` is the sole
+outer commit point. A changed-input failure before that commit therefore leaves
+every byte named by the preceding report intact. Adapter report
+v2 binds every artifact through its content digest in the file name, while v1
+remains readable. A failed publication therefore leaves the previous report and
+its complete generation readable. A strict generation recognizer accepts an
+unreferenced crash orphan only when its complete report-rooted group, selectors,
+SQLite structures and seals validate. Bare content-addressed files, minimal
+SQLite headers and partial JSON documents remain invalid; the next successful
+outer commit safely collects only complete unreferenced generations.
+Generation recognition runs the same complete semantic checks as the committed
+bundle, including the ScheduleStore selector/sidecar, BoardDB, grouping/RUDY/
+bank kernels, qualification, source provenance, adapter pairing and path/alias
+rules. The manifest design/platform identity must equal the sealed schedule and
+BoardDB identity; a resealed malformed or relabelled payload is neither readable
+nor collectible.
+Writers for one pipeline output serialize under an exclusive POSIX lock.
+Validators and production consumers hold a shared lease from reading
+`pipeline_report.json` through their last referenced-generation read, so GC
+cannot remove a generation beneath an older reader.
+Legacy logical JSON remains readable. The
+validated Chimew bank/group input itself is still a graph-sized Python
+document, and native input production remains Phase 6 migration work.
 Transport RTL is written atomically from slot-ordered cursors. Python still
 decodes records into the stores and emits adapter text, so native producer
 migration remains. ScheduleStore v4 keeps Static Exact hop, route and
@@ -591,8 +651,12 @@ event/check construction stores interned strings, fixed-width columns and
 representative indices in `_IndexedEventChecks`; it validates target/runtime
 coverage and TX/commit semantics while appending instead of retaining an
 `EventCheck` object and arc tuple per check or scanning the complete set again
-for compression. Hashes only select collision candidates and full values are
-compared before sharing an identity. Canonical
+for compression. Original-path metadata uses sorted path IDs, interned strings
+and fixed-width columns instead of one nested dictionary per path; stitching
+materializes metadata only for the current bundle while retaining the required
+final report row for every path. The already sorted IDs also feed the source
+seal without another path list and sort. Hashes only select collision candidates
+and full values are compared before sharing an identity. Canonical
 report stitching consumes one contiguous path bundle at a time, retaining
 only the active identities and target/runtime rows; the expanded TSV writer
 returns final path records in the same pass instead of rereading the file.
@@ -604,7 +668,10 @@ overlay with a 592-byte lazy object; full original-check order and WNS/TNS
 accounting are unchanged. Interleaved legacy input uses an explicit checked
 compatibility fallback. Separate 200,000-check and 100,000-unique-check
 synthetic measurements reduced traced peak allocation by 52.8% and 49.4%,
-respectively. They do not replace NVDLA Global STA qualification. See
+respectively. A separate 200,000-path metadata fixture reduced retained traced
+allocation from 56,886,856 to 7,908,412 bytes (-86.1%) and peak allocation from
+56,887,132 to 37,454,410 bytes (-34.2%). These boundary measurements do not
+replace NVDLA Global STA qualification. See
 [timing scope and metric definitions](docs/global-opensta-qualification.md).
 
 ### Selected research references

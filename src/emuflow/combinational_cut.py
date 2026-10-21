@@ -1024,6 +1024,29 @@ class _NativeStaticExactCaptureRequests:
         self._previous = None
 
 
+def _resolve_legacy_static_exact_cut_net_ordinals(
+    nets: Sequence[Mapping[str, Any]], ordered_cut_ids: Sequence[str]
+) -> array:
+    """Resolve name-only historical callers without changing their contract."""
+
+    cut_position_by_name = {
+        net_id: index for index, net_id in enumerate(ordered_cut_ids)
+    }
+    resolved = array("I", [0]) * len(ordered_cut_ids)
+    matched = bytearray(len(ordered_cut_ids))
+    for net_ordinal, net in enumerate(nets):
+        cut_index = cut_position_by_name.get(net["id"])
+        if cut_index is not None:
+            resolved[cut_index] = net_ordinal
+            matched[cut_index] = 1
+    if 0 in matched:
+        unknown = ordered_cut_ids[matched.index(0)]
+        raise ValidationError(
+            f"exact semantic contract has unknown net {unknown!r}"
+        )
+    return resolved
+
+
 def _analyze_static_exact_dependencies_native(
     ir: EmuIR,
     instance_assignment: Mapping[str, str],
@@ -1031,6 +1054,7 @@ def _analyze_static_exact_dependencies_native(
     *,
     max_dependency_depth: int,
     candidate_selection_policy: str,
+    cut_net_ordinals: Sequence[int] | None = None,
 ) -> Dict[str, Any]:
     """Run graph-sized exact-cut traversal in the first-party C++ analyzer."""
 
@@ -1058,24 +1082,77 @@ def _analyze_static_exact_dependencies_native(
         for index, instance in enumerate(instances)
     }
     nets = ir.value["nets"]
-    cut_by_net = {item["net"]: item for item in cut_nets}
-    if len(cut_by_net) != len(cut_nets):
+    already_ordered = all(
+        cut_nets[index - 1]["net"] < cut_nets[index]["net"]
+        for index in range(1, len(cut_nets))
+    )
+    if already_ordered:
+        ordered_positions = None
+        ordered_cuts: Sequence[Mapping[str, Any]] = cut_nets
+    else:
+        ordered_positions = sorted(
+            range(len(cut_nets)), key=lambda index: cut_nets[index]["net"]
+        )
+        ordered_cuts = [cut_nets[index] for index in ordered_positions]
+    ordered_cut_ids = [cut["net"] for cut in ordered_cuts]
+    if any(
+        ordered_cut_ids[index - 1] == ordered_cut_ids[index]
+        for index in range(1, len(ordered_cut_ids))
+    ):
         raise ValidationError("exact semantic contract cut nets are not unique")
-    ordered_cut_ids = sorted(cut_by_net)
-    matched_cut_ids: Set[str] = set()
-    cut_net_index: Dict[str, int] = {}
-    for net_ordinal, net in enumerate(nets):
-        net_id = net["id"]
-        cut = cut_by_net.get(net_id)
-        if cut is None:
-            continue
-        matched_cut_ids.add(net_id)
-        cut_net_index[net_id] = net_ordinal
+
+    # New Phase 3 construction carries the authoritative net ordinal beside
+    # each transient cut record. This avoids three cut-name hash containers
+    # (lookup, matched identities, and net coordinates) in native input
+    # construction. Name-only callers remain readable through the bounded
+    # compatibility lookup below; every coordinate is checked back against
+    # authoritative EmuIR before it reaches C++.
+    if cut_net_ordinals is not None:
+        if len(cut_net_ordinals) != len(cut_nets):
+            raise ValidationError("exact semantic contract net ordinals are invalid")
+        positions: Iterable[int] = (
+            range(len(cut_nets))
+            if ordered_positions is None
+            else ordered_positions
+        )
+        reordered_cut_ordinals = (
+            None if ordered_positions is None else array("I")
+        )
+        for position in positions:
+            net_ordinal = cut_net_ordinals[position]
+            if (
+                isinstance(net_ordinal, bool)
+                or not isinstance(net_ordinal, int)
+                or net_ordinal < 0
+                or net_ordinal >= len(nets)
+                or nets[net_ordinal]["id"] != cut_nets[position]["net"]
+            ):
+                raise ValidationError(
+                    "exact semantic contract net ordinals are invalid"
+                )
+            if reordered_cut_ordinals is not None:
+                reordered_cut_ordinals.append(net_ordinal)
+        resolved_cut_ordinals = (
+            cut_net_ordinals
+            if reordered_cut_ordinals is None
+            else reordered_cut_ordinals
+        )
+    else:
+        resolved_cut_ordinals = _resolve_legacy_static_exact_cut_net_ordinals(
+            nets, ordered_cut_ids
+        )
+
+    normalized_cuts: List[Mapping[str, Any]] | None = None
+    for cut_index, cut in enumerate(ordered_cuts):
+        net_id = ordered_cut_ids[cut_index]
+        net = nets[resolved_cut_ordinals[cut_index]]
         if len(cut.get("source_fpgas", [])) != 1:
             raise ValidationError(f"exact cut {net_id!r} must have one source FPGA")
         if cut.get("cut_class") is None:
             cut = {**cut, "cut_class": net["cut_class"]}
-            cut_by_net[net_id] = cut
+            if normalized_cuts is None:
+                normalized_cuts = list(ordered_cuts)
+            normalized_cuts[cut_index] = cut
         elif cut.get("cut_class") != net.get("cut_class"):
             raise ValidationError(
                 f"exact cut {net_id!r} class disagrees with EmuIR"
@@ -1085,19 +1162,16 @@ def _analyze_static_exact_dependencies_native(
                 f"combinational cut {net_id!r} is not in the independently "
                 "reconstructed eligible set"
             )
-    if len(matched_cut_ids) != len(ordered_cut_ids):
-        unknown = min(set(ordered_cut_ids) - matched_cut_ids)
-        raise ValidationError(
-            f"exact semantic contract has unknown net {unknown!r}"
-        )
-    del matched_cut_ids
+    if normalized_cuts is not None:
+        ordered_cuts = normalized_cuts
+    del ordered_positions
     del eligible
 
     part_ids = sorted(
         set(instance_assignment.values())
         | {
             fpga
-            for cut in cut_by_net.values()
+            for cut in ordered_cuts
             for fpga in (
                 list(cut.get("source_fpgas", []))
                 + list(cut.get("sink_fpgas", []))
@@ -1167,8 +1241,8 @@ def _analyze_static_exact_dependencies_native(
                         else instance_index[raw_instance]
                     )
                     emit("<i", sink_instance)
-            for net_id in ordered_cut_ids:
-                cut = cut_by_net[net_id]
+            for cut_index, net_id in enumerate(ordered_cut_ids):
+                cut = ordered_cuts[cut_index]
                 sources = cut["source_fpgas"]
                 sinks = cut.get("sink_fpgas")
                 if (
@@ -1182,7 +1256,7 @@ def _analyze_static_exact_dependencies_native(
                 ordered_sinks = sorted(set(sinks))
                 emit(
                     "<III",
-                    cut_net_index[net_id],
+                    resolved_cut_ordinals[cut_index],
                     part_index[sources[0]],
                     len(ordered_sinks),
                 )
@@ -1195,7 +1269,7 @@ def _analyze_static_exact_dependencies_native(
         # scanning those arrays, and returns only capture coordinates. Python
         # binds C returned records back to authoritative EmuIR; native code
         # never receives names, ports, or potentially unbounded Python bits.
-        del cut_net_index
+        del resolved_cut_ordinals
         completed = subprocess.run(
             [resolved, str(native_input), str(native_output)],
             capture_output=True,
@@ -1280,7 +1354,7 @@ def _analyze_static_exact_dependencies_native(
                     capture_coordinates(),
                     ordered_cut_ids,
                     part_ids,
-                    cut_by_net,
+                    ordered_cuts,
                     instance_assignment,
                     root / "capture-relation.sqlite3",
                 )
@@ -1292,8 +1366,7 @@ def _analyze_static_exact_dependencies_native(
 
     analysis_records.finalize(
         bytearray(
-            cut_by_net[net_id]["cut_class"] == "combinational"
-            for net_id in ordered_cut_ids
+            cut["cut_class"] == "combinational" for cut in ordered_cuts
         )
     )
     maximum_depth = analysis_records.maximum_combinational_depth
@@ -1309,7 +1382,7 @@ def _analyze_static_exact_dependencies_native(
             f"{max_dependency_depth}"
         )
     return {
-        "cut_by_net": cut_by_net,
+        "ordered_cuts": ordered_cuts,
         "analysis_records": analysis_records,
         "maximum_depth": maximum_depth,
         "capture_stream": capture_stream,
@@ -1524,7 +1597,7 @@ def _resolve_native_coordinate_capture_stream(
     capture_coordinates: Iterable[Tuple[int, int, int, int]],
     ordered_cut_ids: Sequence[str],
     part_ids: Sequence[str],
-    cut_by_net: Mapping[str, Mapping[str, Any]],
+    ordered_cuts: Sequence[Mapping[str, Any]],
     instance_assignment: Mapping[str, str],
     sorter_path: Path,
 ) -> StaticExactRecordSequence:
@@ -1548,7 +1621,7 @@ def _resolve_native_coordinate_capture_stream(
                 raise ValidationError("native Static Exact capture is invalid")
             cut_net = ordered_cut_ids[cut_index]
             fpga = part_ids[part_index]
-            if fpga not in cut_by_net[cut_net].get("sink_fpgas", []):
+            if fpga not in ordered_cuts[cut_index].get("sink_fpgas", []):
                 raise ValidationError("native Static Exact capture is invalid")
             endpoint = nets[net_index]["sinks"][sink_index]
             raw_instance = endpoint["instance"]
@@ -1613,6 +1686,7 @@ def build_static_exact_semantic_contract(
     max_dependency_depth: int,
     candidate_selection_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     stream_records: bool = False,
+    cut_net_ordinals: Sequence[int] | None = None,
 ) -> Dict[str, Any]:
     """Build the provisional Phase-3 exact-cut semantic contract.
 
@@ -1621,10 +1695,13 @@ def build_static_exact_semantic_contract(
     gates and are intentionally named as pending in the returned contract.
     """
 
+    use_native_analyzer = (
+        static_exact_analysis_engine(len(ir.value["instances"]))
+        == "native-cpp-v1"
+    )
     analyzer = (
         _analyze_static_exact_dependencies_native
-        if static_exact_analysis_engine(len(ir.value["instances"]))
-        == "native-cpp-v1"
+        if use_native_analyzer
         else _analyze_static_exact_dependencies
     )
     analysis = analyzer(
@@ -1633,11 +1710,17 @@ def build_static_exact_semantic_contract(
         cut_nets,
         max_dependency_depth=max_dependency_depth,
         candidate_selection_policy=candidate_selection_policy,
+        **(
+            {"cut_net_ordinals": cut_net_ordinals}
+            if use_native_analyzer
+            else {}
+        ),
     )
     classes = analysis.get("classes")
     nets = analysis.get("nets")
     outgoing_by_instance = analysis.get("outgoing_by_instance")
-    cut_by_net = analysis["cut_by_net"]
+    cut_by_net = analysis.get("cut_by_net")
+    ordered_cuts = analysis.get("ordered_cuts")
     analysis_records = analysis.get("analysis_records")
     dependencies = analysis.get("dependencies")
     local_launches = analysis.get("local_launches")
@@ -1646,7 +1729,10 @@ def build_static_exact_semantic_contract(
     maximum_depth = analysis["maximum_depth"]
     captures_are_normalized = analysis.get("analysis_engine") == "native-cpp-v1"
     if captures_are_normalized:
-        if not isinstance(analysis_records, _NativeStaticExactAnalysisRecords):
+        if (
+            not isinstance(analysis_records, _NativeStaticExactAnalysisRecords)
+            or not isinstance(ordered_cuts, Sequence)
+        ):
             raise ValidationError("native Static Exact analysis is incomplete")
     elif not all(
         isinstance(value, Mapping)
@@ -1663,7 +1749,11 @@ def build_static_exact_semantic_contract(
     capture_stream = analysis.get("capture_stream")
     del analysis
     if outgoing_by_instance is not None:
-        if not isinstance(classes, Mapping) or not isinstance(nets, Mapping):
+        if (
+            not isinstance(classes, Mapping)
+            or not isinstance(nets, Mapping)
+            or not isinstance(cut_by_net, Mapping)
+        ):
             raise ValidationError("Static Exact reference analysis is incomplete")
         for net_id, cut in sorted(cut_by_net.items()):
             net = nets[net_id]
@@ -1801,7 +1891,14 @@ def build_static_exact_semantic_contract(
             ]
         del unique_capture_records
 
-    ordered_cut_ids = sorted(cut_by_net)
+    if ordered_cuts is None:
+        if not isinstance(cut_by_net, Mapping):
+            raise ValidationError("Static Exact reference analysis is incomplete")
+        ordered_cut_ids = sorted(cut_by_net)
+        ordered_cuts = [cut_by_net.pop(net_id) for net_id in ordered_cut_ids]
+    else:
+        ordered_cut_ids = [cut["net"] for cut in ordered_cuts]
+    del cut_by_net
     if analysis_records is not None:
         if len(analysis_records) != len(ordered_cut_ids):
             raise ValidationError("native Static Exact analysis is incomplete")
@@ -1850,7 +1947,7 @@ def build_static_exact_semantic_contract(
                     {
                         "id": segment_id,
                         "kind": "launch_to_tx",
-                        "fpga": cut_by_net[net_id]["source_fpgas"][0],
+                        "fpga": ordered_cuts[cut_index]["source_fpgas"][0],
                         "sink_cut_net": net_id,
                         **(
                             {
@@ -1872,7 +1969,7 @@ def build_static_exact_semantic_contract(
         capture_iterator = iter(capture_records)
         next_capture = next(capture_iterator, None)
         for cut_index, sink in enumerate(ordered_cut_ids):
-            cut = cut_by_net.pop(sink)
+            cut = ordered_cuts[cut_index]
             if analysis_records is None:
                 predecessor_cut_nets = dependencies.pop(sink)
                 local_launch = local_launches.pop(sink)

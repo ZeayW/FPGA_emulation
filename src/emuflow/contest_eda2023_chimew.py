@@ -28,8 +28,8 @@ from .chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_SCHEMA,
 )
 from .chimew_pipeline import (
+    read_chimew_phase6_pipeline,
     run_chimew_phase6_pipeline,
-    validate_chimew_phase6_pipeline,
 )
 from .chimew_qualification import canonical_sha256
 from .chimew_refinement import (
@@ -40,8 +40,10 @@ from .chimew_refinement import (
 from .chimew_rudy import CHIMEW_RUDY_INPUT_PROVIDER, CHIMEW_RUDY_INPUT_SCHEMA
 from .errors import ValidationError
 from .io import read_json, write_json
+from .pin_plan_storage import read_pin_plan
 from .pin_planning import build_pin_plan
 from .platform import Platform
+from .position_hints_storage import read_position_hints
 from .routing import SYSTEM_ROUTES_SCHEMA
 from .tdm import TDM_SCHEDULE_SCHEMA
 
@@ -843,19 +845,29 @@ def run_eda2023_contest_chimew_ab(
         assigner=assigner,
         region_count=4,
     )
-    validate_chimew_phase6_pipeline(pipeline_root)
     schedule = read_json(Path(artifacts["schedule"]["path"]))
     platform = Platform.load(Path(sources["platform"]))
-    position_hints = read_json(pipeline_root / "phase6-adapter" / "position_hints.json")
-    baseline = build_pin_plan(
-        schedule,
-        platform,
-        position_hints,
-        executable=pin_planner,
-    )
+    with read_chimew_phase6_pipeline(pipeline_root) as (
+        leased_pipeline,
+        _pipeline_validation,
+    ):
+        pipeline = dict(leased_pipeline)
+        position_hints = read_position_hints(
+            pipeline_root
+            / pipeline["artifacts"]["adapter_position_hints"]["path"]
+        )
+        baseline = build_pin_plan(
+            schedule,
+            platform,
+            position_hints,
+            executable=pin_planner,
+        )
+        chimew_plan = read_pin_plan(
+            pipeline_root / pipeline["artifacts"]["adapter_pin_plan"]["path"],
+            materialize=True,
+        )
     baseline_path = output_dir / "baseline_pin_plan.json"
     write_json(baseline_path, baseline)
-    chimew_plan = read_json(pipeline_root / "phase6-adapter" / "pin_plan.json")
     crossings = read_json(Path(artifacts["crossings"]["path"]))
     positions = read_json(Path(artifacts["positions"]["path"]))
     metric_fields = ("objective", "crossing_bits", "position_sse", "pin_distance")
@@ -896,7 +908,10 @@ def run_eda2023_contest_chimew_ab(
             ),
             "pipeline_report": str(pipeline_root / "pipeline_report.json"),
             "baseline_pin_plan": str(baseline_path),
-            "chimew_pin_plan": str(pipeline_root / "phase6-adapter" / "pin_plan.json"),
+            "chimew_pin_plan": str(
+                pipeline_root
+                / pipeline["artifacts"]["adapter_pin_plan"]["path"]
+            ),
         },
         "pipeline_qualification_sha256": pipeline["qualification_sha256"],
     }

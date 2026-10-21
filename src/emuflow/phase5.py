@@ -42,6 +42,7 @@ from .tdm_schedule_storage import (
 )
 from .tdm_timing_dag import build_timing_dag_ratio_plan
 from .tdm_feedback import build_tdm_feedback, validate_tdm_feedback
+from .system_route_storage import read_system_routes
 
 
 PHASE5_REPORT_SCHEMA = "emuflow.phase5-report/v1"
@@ -106,7 +107,7 @@ def run_phase5(
         raise ValueError(
             "slot_refinement_iterations must be a non-negative integer"
         )
-    persisted_routes = read_json(routes_path)
+    persisted_routes = read_system_routes(routes_path)
     routes, semantic_contract = _load_phase3_semantics(
         persisted_routes, assignment_path
     )
@@ -521,7 +522,7 @@ def validate_phase5(
     ratio_plan_path: Optional[Path] = None,
     assignment_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    persisted_routes = read_json(routes_path)
+    persisted_routes = read_system_routes(routes_path)
     routes, semantic_contract = _load_phase3_semantics(
         persisted_routes, assignment_path
     )

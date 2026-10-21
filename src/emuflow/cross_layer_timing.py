@@ -32,6 +32,10 @@ from .tdm_schedule_storage import (
     TDMScheduleView,
     pretty_tdm_schedule_sha256,
 )
+from .system_route_storage import (
+    SystemRoutesView,
+    pretty_system_routes_sha256,
+)
 
 
 CROSS_LAYER_TIMING_CONTRACT_SCHEMA = "emuflow.cross-layer-timing/v1"
@@ -49,6 +53,8 @@ SAMPLED_VIRTUAL_WIRE = "sampled-virtual-wire"
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
     if isinstance(value, TDMScheduleView):
         return pretty_tdm_schedule_sha256(value)
+    if isinstance(value, SystemRoutesView):
+        return pretty_system_routes_sha256(value)
     digest = hashlib.sha256()
     encoder = json.JSONEncoder(indent=2, sort_keys=True)
     for chunk in encoder.iterencode(value):
@@ -137,17 +143,34 @@ def _build_contract(
         raise ValidationError("cross-layer routes must be an array")
     route_by_net: Dict[str, Mapping[str, Any]] = {}
     route_by_demand: Dict[str, Mapping[str, Any]] = {}
-    for route in raw_routes:
-        if (
-            not isinstance(route, dict)
-            or not isinstance(route.get("id"), str)
-            or not isinstance(route.get("net"), str)
-            or route["id"] in route_by_demand
-            or route["net"] in route_by_net
-        ):
-            raise ValidationError("cross-layer route identities are invalid")
-        route_by_demand[route["id"]] = route
-        route_by_net[route["net"]] = route
+    compact_metadata = getattr(
+        raw_routes, "iter_cross_layer_route_metadata", None
+    )
+    indexed_hop_keys = getattr(raw_routes, "iter_cross_layer_hop_keys", None)
+    if callable(compact_metadata) and callable(indexed_hop_keys):
+        for net, demand, source, sinks in compact_metadata():
+            if net in route_by_net:
+                raise ValidationError("cross-layer route identities are invalid")
+            route_by_net[net] = {
+                "id": demand,
+                "net": net,
+                "source": source,
+                "sinks": list(sinks),
+            }
+        if len(route_by_net) != len(raw_routes):
+            raise ValidationError("cross-layer route coverage is incomplete")
+    else:
+        for route in raw_routes:
+            if (
+                not isinstance(route, dict)
+                or not isinstance(route.get("id"), str)
+                or not isinstance(route.get("net"), str)
+                or route["id"] in route_by_demand
+                or route["net"] in route_by_net
+            ):
+                raise ValidationError("cross-layer route identities are invalid")
+            route_by_demand[route["id"]] = route
+            route_by_net[route["net"]] = route
 
     semantic_sha = routes.get("semantic_contract_sha256")
     semantic_schema = routes.get("semantic_contract_schema")
@@ -351,8 +374,13 @@ def _build_contract(
         indexed_hops = getattr(schedule, "iter_hop_identity_records", None)
         if callable(indexed_hops):
             missing = object()
+            route_hop_keys = (
+                indexed_hop_keys()
+                if callable(indexed_hop_keys)
+                else _ordered_route_hop_keys(route_by_demand)
+            )
             for expected, actual in itertools.zip_longest(
-                _ordered_route_hop_keys(route_by_demand),
+                route_hop_keys,
                 indexed_hops(),
                 fillvalue=missing,
             ):
@@ -396,7 +424,12 @@ def _build_contract(
                         "cross-layer schedule hop is duplicated"
                     )
                 entry_by_hop[key] = entry["id"]
-            for key in _ordered_route_hop_keys(route_by_demand):
+            route_hop_keys = (
+                indexed_hop_keys()
+                if callable(indexed_hop_keys)
+                else _ordered_route_hop_keys(route_by_demand)
+            )
+            for key in route_hop_keys:
                 entry_id = entry_by_hop.get(key)
                 if entry_id is None:
                     raise ValidationError(
