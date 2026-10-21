@@ -27,20 +27,23 @@ selected BoardDB for Phases 3–7. See the
 
 | Phase | Responsibility | Algorithms and tools |
 | --- | --- | --- |
-| 1 | Synthesize and map RTL; preserve connectivity, primitive parameters, and resource demand in EmuIR | Yosys; mapping profiles for VTR hard blocks, generic soft logic, and Xilinx UltraScale+ |
-| 2 | Extract timing paths and derive optimization weights | OpenSTA; optional Vivado timing provider |
-| 3 | Cluster and partition against resource and topology constraints | TritonPart initial partitioning → PATRON post-processing; standalone TritonPart, RePart, MFSPart, and greedy alternatives |
-| 4 | Route cross-FPGA multicast communication | Native C++ system router with topology, congestion, and timing costs |
-| 5 | Assign TDM ratios, lanes, and slots to routed communication | Lagrangian ratio optimization, discrete legalization, and slot refinement; concrete event binding for supported combinational cuts |
-| 6 | Plan pins/lanes, split the netlist, and generate transport RTL | Baseline pin planning; optional Chimew provider; static transport, shadow registers, and frame-barrier synchronization |
-| 7 | Implement each FPGA and analyze whole-design timing | RapidWright/OpenPARF/RWRoute research route; alternative VPR/OpenPARF or Vivado backends; OpenSTA global timing |
+| 1 | Synthesize and map RTL; preserve connectivity, primitive parameters, and resource demand in EmuIR | [Yosys/ABC](https://github.com/YosysHQ/yosys); EmuFlow mapping profiles for VTR hard blocks, generic soft logic, and Xilinx UltraScale+ |
+| 2 | Extract timing paths and derive optimization weights | [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA); optional Vivado timing provider; EmuFlow TimingPathDB export |
+| 3 | Cluster and partition against resource and topology constraints | [TritonPart](https://github.com/ABKGroup/TritonPart) initialization → [PATRON](docs/ALGORITHMS.md#phase-3-initial-partitioning-and-post-processing) post-processing; [RePart](https://github.com/Welement-zyf/RePart), [MFSPart](https://zhiyaoxie.com/files/TCAD26_MFSPart.pdf), and greedy alternatives |
+| 4 | Route cross-FPGA multicast communication | EmuFlow native C++ router, informed by the [DAC 2025 synergistic router](https://yibolin.com/publications/papers/ROUTE_DAC2025_Wang.pdf) and [ASP-DAC 2026 timing-aware routing](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf) |
+| 5 | Assign TDM ratios, lanes, and slots to routed communication | Lagrangian/KKT optimization from [Pui and Young, TODAES 2020](https://doi.org/10.1145/3377551) and the [ASP-DAC 2026 timing-DAG method](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf), followed by EmuFlow legalization and event binding |
+| 6 | Plan pins/lanes, split the netlist, and generate transport RTL | EmuFlow baseline pin/transport flow; optional [Chimew, FPGA 2026](https://doi.org/10.1145/3748173.3779199) provider; static transport, shadow registers, and frame-barrier synchronization |
+| 7 | Implement each FPGA and analyze whole-design timing | [RapidWright](https://github.com/Xilinx/RapidWright), [OpenPARF](https://github.com/PKU-IDEA/OpenPARF), and [RWRoute](https://www.rapidwright.io/docs/RWRoute_timing_driven_routing.html); alternative [VTR/VPR](https://github.com/verilog-to-routing/vtr-verilog-to-routing) or Vivado backends; [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) global timing |
 
 Each stage has versioned artifacts and independent structural, legality,
 coverage, or equivalence checks. Passing an intermediate stage does not
 establish physical timing closure.
 
-See [architecture and phase contracts](docs/FLOW_PLAN.md) and
-[algorithm/provider overview](docs/ALGORITHMS.md).
+The table names the principal upstream tools and method sources; EmuFlow's
+integration and extensions are mapped to implementation entry points in the
+[algorithm/provider overview](docs/ALGORITHMS.md). See also the
+[architecture and phase contracts](docs/FLOW_PLAN.md) and complete
+[source/license inventory](OPEN_SOURCE_COMPONENTS.md).
 
 ## Design documentation
 
