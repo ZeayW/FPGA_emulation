@@ -14,6 +14,7 @@ from typing import Any, Dict, Mapping, Sequence
 
 from .academic_chimew import materialize_academic_chimew_inputs
 from .chimew_pipeline import (
+    read_chimew_phase6_pipeline,
     run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
 )
@@ -35,10 +36,11 @@ from .native_tools import resolve_native_executable
 from .phase3 import validate_phase3_indexed
 from .phase3_storage import read_phase3_assignment_view
 from .phase4 import validate_phase4
-from .phase5 import validate_phase5
+from .phase5 import validate_phase5, validate_phase5_generation
 from .phase6 import run_phase6, validate_phase6
 from .phase1 import indexed_phase1_identity
 from .phase7c import run_phase7c
+from .physical_summary_storage import read_physical_summary
 from .pin_planning import (
     SIGNAL_POSITION_HINTS_SCHEMA,
     build_pin_plan,
@@ -47,6 +49,7 @@ from .pin_planning import (
 from .platform import Platform
 from .runtime import QOR_REPORT_SCHEMA
 from .routing import semantic_contract_for_routes
+from .tdm_schedule_storage import copy_tdm_schedule_storage
 from .vpr import VTR_HARD_BLOCK_PROFILE
 
 
@@ -564,6 +567,10 @@ def validate_shared_phase1_5(
     if reuse_managed_checkpoint:
         checkpoint = _managed_checkpoint(root, expected_stage="shared")
         if checkpoint is not None:
+            validate_phase5_generation(
+                root / "tdm/phase5_report.json",
+                managed_root_sealed=True,
+            )
             report = read_json(_require_file(root, "experiment-shared-report.json"))
             if (
                 report.get("schema") != "emuflow.experiment-shared-phase1-5/v1"
@@ -1062,7 +1069,9 @@ def validate_physical_lookahead(
     )
     session.validate_physical(
         physical_report,
-        read_json(_require_file(root, "physical/physical-summary.json")),
+        read_physical_summary(
+            _require_file(root, "physical/physical-summary.json")
+        ),
     )
     expected = {
         "seed": expected_seed,
@@ -1266,10 +1275,6 @@ def run_phase6_checkpoint(
             ),
         )
         schedule_path = inputs / "schedule.json"
-        adapter = pipeline_root / "phase6-adapter"
-        pin_plan_path = adapter / "pin_plan.json"
-        position_hints_path = adapter / "position_hints.json"
-        electrical_binding_path = adapter / "electrical_binding.json"
         if pipeline.get("status") != "pass":
             raise ValidationError("experiment Chimew pipeline did not pass")
     if managed_dag_node:
@@ -1282,22 +1287,47 @@ def run_phase6_checkpoint(
             )
         phase6_schedule_path = paths["schedule"]
     else:
-        shutil.copy2(schedule_path, output_dir / "schedule.json")
+        copy_tdm_schedule_storage(
+            schedule_path, output_dir / "schedule.json"
+        )
         phase6_schedule_path = output_dir / "schedule.json"
-    phase6 = run_phase6(
-        paths["ir"],
-        paths["assignment"],
-        phase6_schedule_path,
-        platform_path,
-        output_dir / "split",
-        equivalence_cycles=equivalence_cycles,
-        equivalence_seed=equivalence_seed,
-        pin_plan_path=pin_plan_path,
-        position_hints_path=position_hints_path,
-        electrical_binding_path=electrical_binding_path,
-        managed_storage=managed_storage,
-        clock_periods=clock_periods,
-    )
+    def execute_phase6() -> Dict[str, Any]:
+        return run_phase6(
+            paths["ir"],
+            paths["assignment"],
+            phase6_schedule_path,
+            platform_path,
+            output_dir / "split",
+            equivalence_cycles=equivalence_cycles,
+            equivalence_seed=equivalence_seed,
+            pin_plan_path=pin_plan_path,
+            position_hints_path=position_hints_path,
+            electrical_binding_path=electrical_binding_path,
+            managed_storage=managed_storage,
+            clock_periods=clock_periods,
+        )
+
+    if provider == "chimew":
+        with read_chimew_phase6_pipeline(pipeline_root) as (
+            leased_pipeline,
+            _pipeline_validation,
+        ):
+            pipeline = dict(leased_pipeline)
+            pipeline_artifacts = pipeline["artifacts"]
+            pin_plan_path = (
+                pipeline_root / pipeline_artifacts["adapter_pin_plan"]["path"]
+            )
+            position_hints_path = (
+                pipeline_root
+                / pipeline_artifacts["adapter_position_hints"]["path"]
+            )
+            electrical_binding_path = (
+                pipeline_root
+                / pipeline_artifacts["adapter_electrical_binding"]["path"]
+            )
+            phase6 = execute_phase6()
+    else:
+        phase6 = execute_phase6()
     report = {
         "schema": EXPERIMENT_PHASE6_SCHEMA,
         "status": "pass",
@@ -1663,7 +1693,7 @@ def validate_phase7_checkpoint(
     physical_report = read_json(
         _require_file(root, "physical/multi-fpga-physical-flow-report.json")
     )
-    physical_summary = read_json(
+    physical_summary = read_physical_summary(
         _require_file(root, "physical/physical-summary.json")
     )
     session.validate_physical(

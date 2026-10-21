@@ -9,9 +9,11 @@ identities without copying either large artifact into another hot-path JSON.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 from collections import defaultdict, deque
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -26,10 +28,23 @@ from .phase3_assignment_index import read_phase3_exact_semantic_partition
 from .platform import Platform
 from .routing import SYSTEM_ROUTES_SCHEMA
 from .tdm import TDM_SCHEDULE_SCHEMA
+from .tdm_schedule_storage import (
+    TDMScheduleView,
+    pretty_tdm_schedule_sha256,
+)
+from .system_route_storage import (
+    SystemRoutesView,
+    pretty_system_routes_sha256,
+)
 
 
-CROSS_LAYER_TIMING_CONTRACT_SCHEMA = "emuflow.cross-layer-timing/v1"
-CROSS_LAYER_TIMING_PROVIDER = "provider-neutral-route-schedule-binding-v1"
+LEGACY_CROSS_LAYER_TIMING_CONTRACT_SCHEMA = "emuflow.cross-layer-timing/v1"
+LEGACY_CROSS_LAYER_TIMING_PROVIDER = (
+    "provider-neutral-route-schedule-binding-v1"
+)
+CROSS_LAYER_TIMING_CONTRACT_SCHEMA = "emuflow.cross-layer-timing/v2"
+CROSS_LAYER_TIMING_PROVIDER = "provider-neutral-route-schedule-binding-v2"
+CROSS_LAYER_HOP_BINDING_MODE = "canonical-route-schedule-merge-v1"
 CROSS_LAYER_PHYSICAL_BINDING_SCHEMA = (
     "emuflow.cross-layer-physical-binding/v1"
 )
@@ -41,6 +56,10 @@ SAMPLED_VIRTUAL_WIRE = "sampled-virtual-wire"
 
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
+    if isinstance(value, TDMScheduleView):
+        return pretty_tdm_schedule_sha256(value)
+    if isinstance(value, SystemRoutesView):
+        return pretty_system_routes_sha256(value)
     digest = hashlib.sha256()
     encoder = json.JSONEncoder(indent=2, sort_keys=True)
     for chunk in encoder.iterencode(value):
@@ -100,10 +119,106 @@ def _route_path_to_sink(
     return list(reversed(reversed_hops))
 
 
+def _ordered_route_hop_keys(
+    route_by_demand: Mapping[str, Mapping[str, Any]],
+):
+    """Yield unique routed hops in cross-layer contract order."""
+
+    for demand_id, route in sorted(route_by_demand.items()):
+        route_hops = set()
+        sinks = route.get("sinks")
+        if not isinstance(sinks, list):
+            raise ValidationError("cross-layer route metadata is malformed")
+        for sink in sorted(sinks):
+            for link, source, target in _route_path_to_sink(route, sink):
+                route_hops.add((link, source, target))
+        for link, source, target in sorted(route_hops):
+            yield demand_id, link, source, target
+
+
+def _ordered_schedule_hop_records(schedule: Mapping[str, Any]):
+    """Yield canonical hop keys plus entry IDs without decoding v4 entries.
+
+    The set used by the compatibility branch is intentionally limited to
+    legacy in-memory schedules. Production ScheduleStore readers expose a
+    typed, ordered cursor whose uniqueness and coverage are validated by the
+    store itself.
+    """
+
+    indexed_hops = getattr(schedule, "iter_hop_identity_records", None)
+    if callable(indexed_hops):
+        yield from indexed_hops()
+        return
+    entries = schedule.get("entries")
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise ValidationError("cross-layer schedule entries must be an array")
+    entry_by_hop = {}
+    entry_ids = set()
+    for entry in entries:
+        entry_id = entry.get("id") if isinstance(entry, Mapping) else None
+        if (
+            not isinstance(entry, Mapping)
+            or not isinstance(entry_id, str)
+            or not entry_id
+            or entry_id in entry_ids
+        ):
+            raise ValidationError("cross-layer schedule entry is malformed")
+        key = (
+            entry.get("demand"),
+            entry.get("link"),
+            entry.get("from"),
+            entry.get("to"),
+        )
+        if not all(isinstance(item, str) and item for item in key):
+            raise ValidationError("cross-layer schedule entry is malformed")
+        if key in entry_by_hop:
+            raise ValidationError("cross-layer schedule hop is duplicated")
+        entry_ids.add(entry_id)
+        entry_by_hop[key] = entry_id
+    for key in sorted(entry_by_hop):
+        yield *key, entry_by_hop[key]
+
+
+def _match_route_schedule_hops(route_hops, schedule_hops, *, materialize: bool):
+    """Validate the exact ordered relation and optionally build legacy rows."""
+
+    bindings = [] if materialize else None
+    count = 0
+    missing = object()
+    for expected, actual in itertools.zip_longest(
+        route_hops,
+        schedule_hops,
+        fillvalue=missing,
+    ):
+        if actual is missing or (
+            expected is not missing and expected < actual[:4]
+        ):
+            raise ValidationError(
+                "cross-layer schedule does not cover routed hop"
+            )
+        if expected is missing or actual[:4] != expected:
+            raise ValidationError("cross-layer schedule coverage is not exact")
+        count += 1
+        if bindings is not None:
+            demand_id, link, source, target = expected
+            bindings.append(
+                {
+                    "demand": demand_id,
+                    "link": link,
+                    "from": source,
+                    "to": target,
+                    "entry": actual[4],
+                }
+            )
+    return count, bindings
+
+
 def _build_contract(
     routes: Mapping[str, Any],
     schedule: Optional[Mapping[str, Any]],
     semantic_contract: Optional[Mapping[str, Any]],
+    *,
+    legacy_v1: bool = False,
 ) -> Dict[str, Any]:
     if routes.get("schema") != SYSTEM_ROUTES_SCHEMA:
         raise ValidationError("cross-layer contract requires system routes")
@@ -112,17 +227,34 @@ def _build_contract(
         raise ValidationError("cross-layer routes must be an array")
     route_by_net: Dict[str, Mapping[str, Any]] = {}
     route_by_demand: Dict[str, Mapping[str, Any]] = {}
-    for route in raw_routes:
-        if (
-            not isinstance(route, dict)
-            or not isinstance(route.get("id"), str)
-            or not isinstance(route.get("net"), str)
-            or route["id"] in route_by_demand
-            or route["net"] in route_by_net
-        ):
-            raise ValidationError("cross-layer route identities are invalid")
-        route_by_demand[route["id"]] = route
-        route_by_net[route["net"]] = route
+    compact_metadata = getattr(
+        raw_routes, "iter_cross_layer_route_metadata", None
+    )
+    indexed_hop_keys = getattr(raw_routes, "iter_cross_layer_hop_keys", None)
+    if callable(compact_metadata) and callable(indexed_hop_keys):
+        for net, demand, source, sinks in compact_metadata():
+            if net in route_by_net:
+                raise ValidationError("cross-layer route identities are invalid")
+            route_by_net[net] = {
+                "id": demand,
+                "net": net,
+                "source": source,
+                "sinks": list(sinks),
+            }
+        if len(route_by_net) != len(raw_routes):
+            raise ValidationError("cross-layer route coverage is incomplete")
+    else:
+        for route in raw_routes:
+            if (
+                not isinstance(route, dict)
+                or not isinstance(route.get("id"), str)
+                or not isinstance(route.get("net"), str)
+                or route["id"] in route_by_demand
+                or route["net"] in route_by_net
+            ):
+                raise ValidationError("cross-layer route identities are invalid")
+            route_by_demand[route["id"]] = route
+            route_by_net[route["net"]] = route
 
     semantic_sha = routes.get("semantic_contract_sha256")
     semantic_schema = routes.get("semantic_contract_schema")
@@ -304,7 +436,8 @@ def _build_contract(
                 }
             )
 
-    hop_bindings = []
+    hop_bindings = [] if legacy_v1 else None
+    scheduled_hops = 0
     schedule_binding = None
     if schedule is not None:
         if (
@@ -318,59 +451,32 @@ def _build_contract(
                 "cross-layer schedule transport semantics disagree with "
                 "the Phase 3 contract"
             )
-        entries = schedule.get("entries")
-        if not isinstance(entries, list):
-            raise ValidationError("cross-layer schedule entries must be an array")
-        entry_by_hop = {}
-        for entry in entries:
-            if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
-                raise ValidationError("cross-layer schedule entry is malformed")
-            key = (
-                entry.get("demand"),
-                entry.get("link"),
-                entry.get("from"),
-                entry.get("to"),
-            )
-            if key in entry_by_hop:
-                raise ValidationError("cross-layer schedule hop is duplicated")
-            entry_by_hop[key] = entry["id"]
-        for demand_id, route in sorted(route_by_demand.items()):
-            for sink in sorted(route.get("sinks", [])):
-                for link, source, target in _route_path_to_sink(route, sink):
-                    key = (demand_id, link, source, target)
-                    entry_id = entry_by_hop.get(key)
-                    if entry_id is None:
-                        raise ValidationError(
-                            "cross-layer schedule does not cover routed hop"
-                        )
-                    hop_bindings.append(
-                        {
-                            "demand": demand_id,
-                            "link": link,
-                            "from": source,
-                            "to": target,
-                            "entry": entry_id,
-                        }
-                    )
-        unique_hops = {
-            (item["demand"], item["link"], item["from"], item["to"])
-            for item in hop_bindings
-        }
-        if unique_hops != set(entry_by_hop):
-            raise ValidationError("cross-layer schedule coverage is not exact")
-        unique_hops = {
-            (item["demand"], item["link"], item["from"], item["to"]): item
-            for item in hop_bindings
-        }
-        hop_bindings = [unique_hops[key] for key in sorted(unique_hops)]
+        route_hop_keys = (
+            indexed_hop_keys()
+            if callable(indexed_hop_keys)
+            else _ordered_route_hop_keys(route_by_demand)
+        )
+        scheduled_hops, hop_bindings = _match_route_schedule_hops(
+            route_hop_keys,
+            _ordered_schedule_hop_records(schedule),
+            materialize=legacy_v1,
+        )
         schedule_binding = {
             "provider": schedule.get("provider"),
             "sha256": _canonical_sha256(schedule),
         }
 
     result: Dict[str, Any] = {
-        "schema": CROSS_LAYER_TIMING_CONTRACT_SCHEMA,
-        "provider": CROSS_LAYER_TIMING_PROVIDER,
+        "schema": (
+            LEGACY_CROSS_LAYER_TIMING_CONTRACT_SCHEMA
+            if legacy_v1
+            else CROSS_LAYER_TIMING_CONTRACT_SCHEMA
+        ),
+        "provider": (
+            LEGACY_CROSS_LAYER_TIMING_PROVIDER
+            if legacy_v1
+            else CROSS_LAYER_TIMING_PROVIDER
+        ),
         "design": routes.get("design"),
         "platform": routes.get("platform"),
         "transport_semantics": transport_semantics,
@@ -382,16 +488,22 @@ def _build_contract(
         "logic_segment_bindings": sorted(
             logic_segment_bindings, key=lambda item: item["segment"]
         ),
-        "hop_bindings": hop_bindings,
         "metrics": {
             "paths": len(path_bindings),
             "path_cut_bindings": sum(
                 len(item["cuts"]) for item in path_bindings
             ),
             "logic_segments": len(logic_segment_bindings),
-            "scheduled_hops": len(hop_bindings),
+            "scheduled_hops": scheduled_hops,
         },
     }
+    if legacy_v1:
+        result["hop_bindings"] = hop_bindings
+    elif schedule is not None:
+        result["hop_binding"] = {
+            "mode": CROSS_LAYER_HOP_BINDING_MODE,
+            "scheduled_hops": scheduled_hops,
+        }
     if semantic_binding is not None:
         result["semantic_binding"] = semantic_binding
     if indexed_logic_segments:
@@ -422,7 +534,18 @@ def validate_cross_layer_timing_contract(
 ) -> Dict[str, Any]:
     """Independently rebuild and exactly compare a cross-layer contract."""
 
-    expected = _build_contract(routes, schedule, semantic_contract)
+    schema = contract.get("schema")
+    if schema not in {
+        CROSS_LAYER_TIMING_CONTRACT_SCHEMA,
+        LEGACY_CROSS_LAYER_TIMING_CONTRACT_SCHEMA,
+    }:
+        raise ValidationError("cross-layer timing contract schema is invalid")
+    expected = _build_contract(
+        routes,
+        schedule,
+        semantic_contract,
+        legacy_v1=schema == LEGACY_CROSS_LAYER_TIMING_CONTRACT_SCHEMA,
+    )
     if contract != expected:
         raise ValidationError(
             "cross-layer timing contract does not match canonical inputs"
@@ -448,9 +571,22 @@ def _build_physical_binding(
     platform: Platform,
     assignment_index_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    contract_identity = (
+        contract.get("schema"),
+        contract.get("provider"),
+    )
     if (
-        contract.get("schema") != CROSS_LAYER_TIMING_CONTRACT_SCHEMA
-        or contract.get("provider") != CROSS_LAYER_TIMING_PROVIDER
+        contract_identity
+        not in {
+            (
+                CROSS_LAYER_TIMING_CONTRACT_SCHEMA,
+                CROSS_LAYER_TIMING_PROVIDER,
+            ),
+            (
+                LEGACY_CROSS_LAYER_TIMING_CONTRACT_SCHEMA,
+                LEGACY_CROSS_LAYER_TIMING_PROVIDER,
+            ),
+        }
         or schedule.get("schema") != TDM_SCHEDULE_SCHEMA
         or contract.get("design") != schedule.get("design")
         or contract.get("platform") != platform.name
@@ -461,7 +597,9 @@ def _build_physical_binding(
         raise ValidationError("cross-layer physical binding identity is invalid")
 
     entries = schedule.get("entries")
-    if not isinstance(entries, list):
+    if not isinstance(entries, Sequence) or isinstance(
+        entries, (str, bytes)
+    ):
         raise ValidationError("cross-layer physical schedule entries are invalid")
     expected_endpoints = {
         f"__emuflow_{kind}_{entry['id']}": {
@@ -481,7 +619,8 @@ def _build_physical_binding(
             raise ValidationError("physical boundary evidence maps are invalid")
         if set(raw_boundary) != set(identities):
             raise ValidationError("physical boundary evidence coverage disagrees")
-        for fpga, database in sorted(raw_boundary.items()):
+        for fpga in sorted(raw_boundary):
+            database = raw_boundary[fpga]
             validate_boundary_timing_database(database, identities[fpga])
             for item in database["endpoints"]:
                 endpoint = item["id"]
@@ -566,7 +705,8 @@ def _build_physical_binding(
     if raw_logic is not None:
         if not isinstance(raw_logic, dict):
             raise ValidationError("physical logic-segment evidence is invalid")
-        for fpga, database in sorted(raw_logic.items()):
+        for fpga in sorted(raw_logic):
+            database = raw_logic[fpga]
             validation = validate_logic_segment_timing(database)
             if validation["fpga"] != fpga:
                 raise ValidationError("physical logic-segment FPGA disagrees")
@@ -633,8 +773,34 @@ def _build_physical_binding(
         }
         for item in board_database["links"]
     }
+    if contract.get("schema") == LEGACY_CROSS_LAYER_TIMING_CONTRACT_SCHEMA:
+        contract_hops = contract.get("hop_bindings")
+        if not isinstance(contract_hops, list):
+            raise ValidationError("legacy cross-layer hop bindings are invalid")
+    else:
+        hop_binding = contract.get("hop_binding")
+        scheduled_hops = contract.get("metrics", {}).get("scheduled_hops")
+        if hop_binding != {
+            "mode": CROSS_LAYER_HOP_BINDING_MODE,
+            "scheduled_hops": scheduled_hops,
+        } or not isinstance(scheduled_hops, int) or isinstance(
+            scheduled_hops, bool
+        ) or scheduled_hops < 0:
+            raise ValidationError("cross-layer hop binding summary is invalid")
+        contract_hops = (
+            {
+                "demand": demand,
+                "link": link,
+                "from": source,
+                "to": target,
+                "entry": entry,
+            }
+            for demand, link, source, target, entry in (
+                _ordered_schedule_hop_records(schedule)
+            )
+        )
     board_records = []
-    for hop in contract["hop_bindings"]:
+    for hop in contract_hops:
         key = (hop["link"], hop["from"], hop["to"])
         board_records.append(
             {
@@ -646,6 +812,8 @@ def _build_physical_binding(
                 "measurement": board_by_hop[key]["qualification"],
             }
         )
+    if len(board_records) != contract.get("metrics", {}).get("scheduled_hops"):
+        raise ValidationError("cross-layer hop binding coverage disagrees")
 
     missing_endpoints = sorted(set(expected_endpoints) - set(endpoint_records))
     missing_logic = sorted(set(expected_logic) - set(logic_records))

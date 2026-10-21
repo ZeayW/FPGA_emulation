@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+import shutil
 from pathlib import Path
 from unittest import mock
 
@@ -12,6 +13,10 @@ from emuflow.equivalence import _MappedModel, simulate_partition_equivalence
 from emuflow.chimew_phase6 import (
     CHIMEW_PHASE6_BINDING_PROVIDER,
     CHIMEW_PHASE6_BINDING_SCHEMA_V1,
+)
+from emuflow.chimew_binding_storage import (
+    CHIMEW_BINDING_STORAGE_SCHEMA,
+    read_chimew_binding,
 )
 from emuflow.errors import ValidationError
 from emuflow.emuir_compact import write_compact_emuir
@@ -24,6 +29,7 @@ from emuflow.lowering import (
 from emuflow.netlist import (
     build_split_artifacts,
     transport_endpoint_port,
+    transport_to_systemverilog,
     validate_split_artifacts,
 )
 from emuflow.partition import (
@@ -39,6 +45,7 @@ from emuflow.phase3_assignment_index import (
 )
 from emuflow.split_netlist_storage import (
     SplitNetlistView,
+    _schedule_incoming_rows,
     build_streaming_split_metadata,
     read_split_netlist_sqlite,
     write_split_netlists_sqlite,
@@ -49,6 +56,15 @@ from emuflow.pin_planning import (
     _assignment_metrics,
     build_pin_plan,
 )
+from emuflow.pin_plan_storage import (
+    PIN_PLAN_STORAGE_SCHEMA,
+    read_pin_plan,
+    write_pin_plan_storage,
+)
+from emuflow.position_hints_storage import (
+    POSITION_HINTS_STORAGE_SCHEMA,
+    read_position_hints,
+)
 from emuflow.platform import Platform
 from emuflow.open_transport_characterization import (
     BASE_FEATURE_NAMES,
@@ -58,6 +74,17 @@ from emuflow.open_transport_characterization import (
 )
 from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import build_tdm_schedule
+from emuflow.tdm_schedule_storage import (
+    open_tdm_schedule_view,
+    write_tdm_schedule_storage,
+)
+from emuflow.transport_storage import (
+    LANE_MAP_STORAGE_SCHEMA,
+    TRANSPORT_STORAGE_SCHEMA,
+    LaneMapView,
+    TransportView,
+    write_transport_storage,
+)
 from emuflow.timing_routing import route_system_native
 from emuflow.yosys import import_yosys_json
 from tests.native_build import tlr_router
@@ -133,6 +160,7 @@ class Phase6Test(unittest.TestCase):
                 float(chimew_plan["weights"]["position"]),
             )
         )
+
         binding_entries = []
         for index, (group, members) in enumerate(sorted(plan_groups.items())):
             first = schedule_by_id[members[0]["schedule_entry"]]
@@ -195,6 +223,278 @@ class Phase6Test(unittest.TestCase):
             "entries": binding_entries,
         }
         return chimew_plan, binding
+
+    def test_transport_store_is_deterministic_and_batched(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            assignment_path = root / "assignment.sqlite"
+            write_phase3_assignment_index(
+                assignment_path, self.ir, self.assignment
+            )
+            link = self.platform.links[0]
+            source, sink = link.endpoints
+            count = 5_000
+            schedule = {
+                "schema": "emuflow.tdm-schedule/v1",
+                "design": self.ir.value["design"]["name"],
+                "platform": self.platform.name,
+                "provider": "transport-store-test",
+                "transport_semantics": "registered-boundary",
+                "metrics": {"frame_slots": 8_192},
+                "routes": [
+                    {
+                        "id": f"demand_{index:06d}",
+                        "net": f"net_{index:06d}",
+                        "source": source,
+                    }
+                    for index in range(count)
+                ],
+                "entries": [
+                    {
+                        "id": f"entry_{index:06d}",
+                        "demand": f"demand_{index:06d}",
+                        "net": f"net_{index:06d}",
+                        "link": link.id,
+                        "from": source,
+                        "to": sink,
+                        "slot": index,
+                        "arrival_slot": index + 1,
+                        "lane": 0,
+                    }
+                    for index in range(count)
+                ],
+            }
+            summaries = []
+            writer_uri_modes = []
+            original_connect = sqlite3.connect
+
+            def recording_connect(database, *args, **kwargs):
+                if Path(database).name.startswith(".transport.sqlite."):
+                    writer_uri_modes.append(kwargs.get("uri", False))
+                return original_connect(database, *args, **kwargs)
+
+            with mock.patch(
+                "emuflow.transport_storage.sqlite3.connect",
+                side_effect=recording_connect,
+            ):
+                for run in range(2):
+                    output = root / f"run-{run}"
+                    artifacts = write_transport_storage(
+                        output,
+                        assignment_path,
+                        schedule,
+                        self.platform,
+                        design=self.ir.value["design"],
+                        clocks=self.ir.value["clocks"],
+                    )
+                    summaries.append(artifacts["summary"])
+                    self.assertEqual(
+                        len(artifacts["lane_map"]["entries"]), count
+                    )
+                    self.assertEqual(
+                        sum(
+                            len(transport["endpoints"])
+                            for transport in artifacts["transports"].values()
+                        ),
+                        2 * count,
+                    )
+                    self.assertLess(
+                        (output / "fpga0/transport.json").stat().st_size,
+                        4096,
+                    )
+            self.assertEqual(writer_uri_modes, [True, True])
+            self.assertEqual(summaries[0]["sha256"], summaries[1]["sha256"])
+
+    def test_transport_store_consumes_typed_schedule_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            assignment_path = root / "assignment.sqlite"
+            schedule_path = root / "schedule.json"
+            write_phase3_assignment_index(
+                assignment_path, self.ir, self.assignment
+            )
+            write_tdm_schedule_storage(schedule_path, self.schedule)
+
+            legacy = write_transport_storage(
+                root / "legacy",
+                assignment_path,
+                self.schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+            )
+            with open_tdm_schedule_view(schedule_path) as indexed:
+                with mock.patch.object(
+                    type(indexed),
+                    "iter_entry_route_records",
+                    side_effect=AssertionError(
+                        "legacy schedule dictionaries were materialized"
+                    ),
+                ), mock.patch(
+                    "emuflow.tdm_schedule_storage.ScheduleRecordSequence.__iter__",
+                    side_effect=AssertionError(
+                        "schedule sections were decoded in Python"
+                    ),
+                ):
+                    typed = write_transport_storage(
+                        root / "typed",
+                        assignment_path,
+                        indexed,
+                        self.platform,
+                        design=self.ir.value["design"],
+                        clocks=self.ir.value["clocks"],
+                    )
+
+            self.assertEqual(
+                typed["lane_map"].materialize(),
+                legacy["lane_map"].materialize(),
+            )
+            self.assertEqual(
+                {
+                    fpga: value.materialize()
+                    for fpga, value in typed["transports"].items()
+                },
+                {
+                    fpga: value.materialize()
+                    for fpga, value in legacy["transports"].items()
+                },
+            )
+            self.assertEqual(
+                {
+                    fpga: value.materialize()
+                    for fpga, value in typed["anchors"].items()
+                },
+                {
+                    fpga: value.materialize()
+                    for fpga, value in legacy["anchors"].items()
+                },
+            )
+
+    def test_phase6_incoming_join_consumes_persisted_v4_static_exact(self) -> None:
+        schedule = {
+            "schema": "emuflow.tdm-schedule/v1",
+            "design": "phase6-v4-incoming",
+            "platform": "three",
+            "provider": "deterministic-dependency-earliest-slot-v1",
+            "qualification": "dependency-schedule-readiness-pass",
+            "transport_semantics": "registered-boundary",
+            "route_constraints": {"frame_slots": 8},
+            "routes": [
+                {
+                    "id": "d0",
+                    "net": "n0",
+                    "source": "a",
+                    "sinks": ["c"],
+                    "tree_edges": [
+                        {"link": "ab", "from": "a", "to": "b"},
+                        {"link": "bc", "from": "b", "to": "c"},
+                    ],
+                }
+            ],
+            "entries": [
+                {
+                    "id": f"s{index:06d}",
+                    "demand": "d0",
+                    "net": "n0",
+                    "hop": index,
+                    "link": link,
+                    "from": source,
+                    "to": sink,
+                    "capacity_key": f"{link}:{source}:{sink}",
+                    "slot": index,
+                    "lane": 0,
+                    "ready_slot": index,
+                    "arrival_slot": index + 1,
+                }
+                for index, (link, source, sink) in enumerate(
+                    (("ab", "a", "b"), ("bc", "b", "c"))
+                )
+            ],
+            "demand_completions": [
+                {
+                    "demand": "d0",
+                    "net": "n0",
+                    "source_ready_slot": 0,
+                    "completion_slot": 2,
+                    "sink_arrival_slots": {"c": 2},
+                }
+            ],
+            "domain_schedules": [],
+            "metrics": {"scheduled_bit_hops": 2},
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "schedule.json"
+            manifest = write_tdm_schedule_storage(path, schedule)
+            self.assertEqual(
+                manifest["schema"], "emuflow.tdm-schedule-storage/v4"
+            )
+            with open_tdm_schedule_view(path) as indexed:
+                rows = list(
+                    _schedule_incoming_rows(
+                        indexed, {"a": 0, "b": 1, "c": 2}
+                    )
+                )
+        self.assertEqual(
+            rows, [("n0", 1, "s000000"), ("n0", 2, "s000001")]
+        )
+
+    def test_transport_store_joins_indexed_pin_plan_by_entry_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            assignment_path = root / "assignment.sqlite"
+            schedule_path = root / "schedule.json"
+            write_phase3_assignment_index(
+                assignment_path, self.ir, self.assignment
+            )
+            schedule = copy.deepcopy(self.schedule)
+            for index, entry in enumerate(schedule["entries"]):
+                entry["id"] = (
+                    "s999999" if index == 0 else f"s{999999 + index}"
+                )
+            write_tdm_schedule_storage(schedule_path, schedule)
+            pin_plan = write_pin_plan_storage(
+                root / "pin-plan.json",
+                {
+                    "schema": "emuflow.placement-aware-pin-plan/v1",
+                    "design": self.ir.value["design"],
+                    "platform": self.platform.name,
+                    "entries": [
+                        {
+                            "schedule_entry": entry["id"],
+                            "group": index,
+                            "physical_lane": entry["lane"],
+                            "logical_lane": entry["lane"],
+                        }
+                        for index, entry in enumerate(schedule["entries"])
+                    ],
+                },
+            )
+
+            legacy = write_transport_storage(
+                root / "legacy-pin",
+                assignment_path,
+                schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+                pin_plan=pin_plan,
+            )
+            with open_tdm_schedule_view(schedule_path) as indexed:
+                typed = write_transport_storage(
+                    root / "typed-pin",
+                    assignment_path,
+                    indexed,
+                    self.platform,
+                    design=self.ir.value["design"],
+                    clocks=self.ir.value["clocks"],
+                    pin_plan=pin_plan,
+                )
+            self.assertEqual(
+                typed["lane_map"].materialize(),
+                legacy["lane_map"].materialize(),
+            )
 
     def test_split_exact_coverage_lane_agreement_and_equivalence(self) -> None:
         artifacts = build_split_artifacts(
@@ -471,6 +771,11 @@ class Phase6Test(unittest.TestCase):
                 side_effect=AssertionError(
                     "production lowering must not iterate DUT nets"
                 ),
+            ), mock.patch(
+                "emuflow.lowering.EmuIR.load",
+                side_effect=AssertionError(
+                    "production lowering must not reconstruct transport EmuIR"
+                ),
             ):
                 run_placement_ir_lowering_from_split(
                     split_path,
@@ -630,9 +935,7 @@ class Phase6Test(unittest.TestCase):
             write_phase3_assignment_index(
                 root / "assignment.sqlite", self.ir, self.assignment
             )
-            schedule_path.write_text(
-                json.dumps(self.schedule), encoding="utf-8"
-            )
+            write_tdm_schedule_storage(schedule_path, self.schedule)
             output = root / "phase6"
             report = run_phase6(
                 ir_path,
@@ -669,12 +972,70 @@ class Phase6Test(unittest.TestCase):
                 )
             self.assertEqual(reused, validation)
 
+            legacy_control = build_streaming_split_metadata(
+                root / "assignment.sqlite",
+                self.schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+            )
+            raw_lane_manifest = json.loads(
+                (output / "lane_map.json").read_text(encoding="utf-8")
+            )
+            raw_transport_manifest = json.loads(
+                (output / "fpga0/transport.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                raw_lane_manifest["schema"], LANE_MAP_STORAGE_SCHEMA
+            )
+            self.assertEqual(
+                raw_transport_manifest["schema"], TRANSPORT_STORAGE_SCHEMA
+            )
+            self.assertLess((output / "lane_map.json").stat().st_size, 4096)
+            self.assertLess(
+                (output / "fpga0/transport.json").stat().st_size, 4096
+            )
+            self.assertEqual(
+                read_json(output / "lane_map.json"),
+                legacy_control["lane_map"],
+            )
+            self.assertEqual(
+                read_json(output / "fpga0/transport.json"),
+                legacy_control["transports"]["fpga0"],
+            )
+            self.assertEqual(
+                (output / "fpga0/transport_schedule.sv").read_text(),
+                transport_to_systemverilog(
+                    legacy_control["transports"]["fpga0"], self.platform
+                ),
+            )
+            self.assertEqual(
+                len(LaneMapView(output / "lane_map.json")["entries"]),
+                len(self.schedule["entries"]),
+            )
+            self.assertEqual(
+                len(TransportView(output / "fpga0/transport.json")["endpoints"]),
+                len(legacy_control["transports"]["fpga0"]["endpoints"]),
+            )
+
+            relocated = root / "phase6-relocated"
+            shutil.copytree(output, relocated)
+            self.assertEqual(
+                read_json(relocated / "fpga0/transport.json"),
+                legacy_control["transports"]["fpga0"],
+            )
+            store = relocated / "transport.sqlite"
+            store.write_bytes(store.read_bytes()[:-31])
+            with self.assertRaises(ValidationError):
+                TransportView(relocated / "fpga0/transport.json")
+
             for filename in (
                 "manifest.json",
                 "lane_map.json",
                 "phase6_report.json",
                 "virtual_runtime_controller.sv",
                 "split-netlists.sqlite",
+                "transport.sqlite",
                 "fpga0/transport.json",
                 "fpga0/transport_schedule.sv",
                 "fpga0/virtual_anchors.json",
@@ -843,7 +1204,39 @@ class Phase6Test(unittest.TestCase):
             )
             self.assertEqual(report["artifacts"]["pin_plan"], "pin_plan.json")
             self.assertTrue((output / "pin_plan.json").is_file())
+            pin_selector = read_json(output / "pin_plan.json")
+            self.assertTrue((output / pin_selector["artifact"]).is_file())
+            self.assertEqual(pin_selector["schema"], PIN_PLAN_STORAGE_SCHEMA)
+            self.assertEqual(
+                report["artifacts"]["pin_plan_store"],
+                pin_selector["artifact"],
+            )
+            self.assertLess((output / "pin_plan.json").stat().st_size, 4096)
+            self.assertEqual(
+                read_pin_plan(output / "pin_plan.json", materialize=True),
+                plan,
+            )
             self.assertTrue((output / "position_hints.json").is_file())
+            position_selector = read_json(output / "position_hints.json")
+            self.assertTrue(
+                (output / position_selector["artifact"]).is_file()
+            )
+            self.assertEqual(
+                position_selector["schema"], POSITION_HINTS_STORAGE_SCHEMA
+            )
+            self.assertEqual(
+                report["artifacts"]["position_hints_store"],
+                position_selector["artifact"],
+            )
+            self.assertLess(
+                (output / "position_hints.json").stat().st_size, 4096
+            )
+            self.assertEqual(
+                read_position_hints(
+                    output / "position_hints.json", materialize=True
+                ),
+                positions,
+            )
             chimew_plan, binding = self._chimew_certificate(
                 schedule, positions, plan
             )
@@ -852,17 +1245,20 @@ class Phase6Test(unittest.TestCase):
             write_json(chimew_plan_path, chimew_plan)
             write_json(binding_path, binding)
             chimew_output = root / "phase6-chimew"
+            invalid_output = root / "phase6-chimew-without-binding"
             with self.assertRaisesRegex(ValueError, "electrical_binding_path"):
                 run_phase6(
                     paths["ir"],
                     paths["assignment"],
                     paths["schedule"],
                     PLATFORM_PATH,
-                    root / "phase6-chimew-without-binding",
+                    invalid_output,
                     equivalence_cycles=4,
                     pin_plan_path=chimew_plan_path,
                     position_hints_path=paths["positions"],
                 )
+            self.assertFalse((invalid_output / "pin_plan.json").exists())
+            self.assertFalse(list(invalid_output.glob("pin_plan.*.sqlite")))
             chimew_report = run_phase6(
                 paths["ir"],
                 paths["assignment"],
@@ -880,6 +1276,28 @@ class Phase6Test(unittest.TestCase):
             self.assertEqual(
                 read_json(chimew_output / "manifest.json")["electrical_binding"],
                 "electrical_binding.json",
+            )
+            binding_selector = read_json(
+                chimew_output / chimew_report["artifacts"]["electrical_binding"]
+            )
+            self.assertEqual(
+                binding_selector["schema"], CHIMEW_BINDING_STORAGE_SCHEMA
+            )
+            self.assertEqual(
+                chimew_report["artifacts"]["electrical_binding_store"],
+                binding_selector["artifact"],
+            )
+            relocated_binding = root / "relocated-binding"
+            relocated_binding.mkdir()
+            for role in ("electrical_binding", "electrical_binding_store"):
+                source = chimew_output / chimew_report["artifacts"][role]
+                shutil.copy2(source, relocated_binding / source.name)
+            self.assertEqual(
+                read_chimew_binding(
+                    relocated_binding / "electrical_binding.json",
+                    materialize=True,
+                ),
+                binding,
             )
             self.assertEqual(
                 validate_phase6(

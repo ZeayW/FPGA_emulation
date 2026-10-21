@@ -38,6 +38,7 @@ from .partition_physical_feedback import (
     PARTITION_PHYSICAL_FEEDBACK_SCHEMA,
     validate_partition_physical_feedback_seal,
 )
+from .phase3_runtime import phase3_runtime_call
 from .resources import RESOURCE_FIELDS
 from .routing import (
     build_directed_graph,
@@ -2103,6 +2104,7 @@ def run_partition_pressure_native(
     physical_feedback_scale: float = 0.0,
     output_validation: str = "full",
     retain_trace_seals: bool = True,
+    stream_semantic_records: bool = False,
     timeout_seconds: int = 3600,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     limit = len(model["clusters"]) if max_moves is None else max_moves
@@ -2114,6 +2116,8 @@ def run_partition_pressure_native(
         raise ValidationError("native PATRON output validation mode is invalid")
     if not isinstance(retain_trace_seals, bool):
         raise ValidationError("native PATRON trace-seal flag is invalid")
+    if not isinstance(stream_semantic_records, bool):
+        raise ValidationError("native PATRON record-stream flag is invalid")
     if (
         isinstance(timeout_seconds, bool)
         or not isinstance(timeout_seconds, int)
@@ -2168,7 +2172,9 @@ def run_partition_pressure_native(
         root = Path(temporary)
         native_input = root / "patron.in"
         native_output = root / "patron.out"
-        indexes = _write_patron_native_input(
+        indexes = phase3_runtime_call(
+            "patron.export_native_input",
+            _write_patron_native_input,
             native_input,
             platform,
             clusters_artifact,
@@ -2195,7 +2201,9 @@ def run_partition_pressure_native(
             command.append("--summary-output")
         command.extend((str(native_input), str(native_output)))
         try:
-            completed = subprocess.run(
+            completed = phase3_runtime_call(
+                "patron.execute_native",
+                subprocess.run,
                 command,
                 capture_output=True,
                 text=True,
@@ -2221,8 +2229,11 @@ def run_partition_pressure_native(
             final_metrics,
             mode,
             output_summary,
-        ) = (
-            _parse_patron_native_output(native_output, indexes)
+        ) = phase3_runtime_call(
+            "patron.parse_native_output",
+            _parse_patron_native_output,
+            native_output,
+            indexes,
         )
     provider_metadata = {
         "initial_provider": initial_assignment.get("provider"),
@@ -2242,7 +2253,9 @@ def run_partition_pressure_native(
     if retain_trace_seals:
         model_sha256 = _canonical_digest(model)
         provider_metadata["model_sha256"] = model_sha256
-    final = build_partition_assignment(
+    final = phase3_runtime_call(
+        "patron.build_candidate_assignment",
+        build_partition_assignment,
         ir,
         platform,
         clusters_artifact,
@@ -2259,6 +2272,7 @@ def run_partition_pressure_native(
         ),
         seed=initial_assignment.get("seed", 0),
         provider_metadata=provider_metadata,
+        _stream_semantic_records=stream_semantic_records,
     )
     if output_validation == "full":
         validate_partition_artifacts(ir, platform, clusters_artifact, final)

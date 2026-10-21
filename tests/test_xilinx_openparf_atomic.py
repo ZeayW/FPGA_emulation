@@ -26,10 +26,15 @@ from emuflow.xilinx_openparf_atomic import (
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
     legalize_xilinx_openparf_ff_control_sets,
+    iter_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_sites,
     run_xilinx_openparf_atomic_qualification,
     validate_xilinx_openparf_atomic_placement,
+    materialize_xilinx_openparf_atomic_source,
+)
+from emuflow.xilinx_openparf_source_storage import (
+    OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
 )
 from emuflow.xilinx_openparf_bridge import (
     materialize_xilinx_openparf_atomic_contract,
@@ -481,11 +486,20 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             serialized_source = json.loads(
                 atomic_source.read_text(encoding="utf-8")
             )
+            compatibility_source = root / "atomic-source-compatibility.json"
+            materialized_source = materialize_xilinx_openparf_atomic_source(
+                atomic_source, compatibility_source
+            )
+            lazy_clusters = list(source["clusters"])
             imported_clocks = import_yosys_json(mapped).value["clocks"]
         self.assertEqual(source["schema"], OPENPARF_ATOMIC_SOURCE_SCHEMA)
         self.assertNotIsInstance(source["clusters"], list)
         self.assertEqual(
-            serialized_source["clusters"], list(source["clusters"])
+            serialized_source["schema"], OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA
+        )
+        self.assertNotIn("clusters", serialized_source)
+        self.assertEqual(
+            materialized_source["clusters"], lazy_clusters
         )
         self.assertEqual(imported_clocks, [{
             "id": "clk", "name": "clk", "source_port": "clk",
@@ -1320,13 +1334,19 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 ),
                 returned["clusters"],
             )
+            self.assertEqual(
+                list(iter_xilinx_openparf_atomic_placement_clusters(
+                    certificate_path, persisted
+                )),
+                returned["clusters"],
+            )
             database_path = output / persisted["cluster_storage"]["file"]
             with database_path.open("ab") as stream:
                 stream.write(b"tamper")
             with self.assertRaisesRegex(ValidationError, "database seal"):
-                load_xilinx_openparf_atomic_placement_clusters(
+                list(iter_xilinx_openparf_atomic_placement_clusters(
                     certificate_path, persisted
-                )
+                ))
 
     def test_compact_certificate_serializes_bram_tile_group(self):
         with tempfile.TemporaryDirectory() as temporary:

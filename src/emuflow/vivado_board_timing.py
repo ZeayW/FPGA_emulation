@@ -21,6 +21,7 @@ from .logic_segment_timing import (
 )
 from .phase7c import run_phase7c
 from .platform import Platform
+from .physical_summary_storage import read_physical_summary
 from .vivado_backend import (
     _BOUNDARY_TIMING_SCRIPT,
     _LOGIC_TIMING_SCRIPT,
@@ -208,7 +209,7 @@ def run_vivado_board_timing(
     physical_summary_path = flow_root / "physical/physical-summary.json"
     if not physical_summary_path.is_file():
         raise ValidationError("Vivado board timing physical summary is missing")
-    source_physical = read_json(physical_summary_path)
+    source_physical = read_physical_summary(physical_summary_path)
     platform = Platform.load(platform_path)
     if link_timing_path is None:
         link_timing = build_board_link_timing_model(platform)

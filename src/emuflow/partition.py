@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import math
+from array import array
 from collections import defaultdict, deque
 from itertools import combinations
 from pathlib import Path
@@ -26,8 +27,8 @@ from .combinational_cut import (
 CLUSTERS_SCHEMA = "emuflow.clusters/v1"
 PARTITION_ASSIGNMENT_SCHEMA = "emuflow.partition-assignment/v1"
 PARTITION_CONSTRAINTS_SCHEMA = "emuflow.partition-constraints/v1"
-# Design-share limits are opt-in; device capacities remain mandatory.
-DEFAULT_BALANCE_DIMENSIONS: Tuple[str, ...] = ()
+# Balance overall logic while dedicated resources remain capacity-constrained.
+DEFAULT_BALANCE_DIMENSIONS: Tuple[str, ...] = ("cells", "lut", "ff")
 TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
 LEGAL_CUT_CLASSES = {*TRANSPORTED_CUT_CLASSES, "primary_input"}
 REPLICATED_NET_CLASSES = {"clock", "reset", "primary_input"}
@@ -971,6 +972,8 @@ def assign_clusters(
     constraints: Mapping[str, Any],
     seed: int = 0,
     route_constraints: Optional[Mapping[str, Any]] = None,
+    *,
+    _include_semantic_contract: bool = True,
 ) -> Dict[str, Any]:
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValidationError("partition seed: expected a non-negative integer")
@@ -1219,6 +1222,7 @@ def assign_clusters(
         assignment,
         provider="deterministic-multiresource-greedy-v1",
         seed=seed,
+        _include_semantic_contract=_include_semantic_contract,
     )
 
 
@@ -1233,6 +1237,7 @@ def build_partition_assignment(
     provider_metadata: Optional[Mapping[str, Any]] = None,
     *,
     _include_semantic_contract: bool = True,
+    _stream_semantic_records: bool = False,
 ) -> Dict[str, Any]:
     """Build the common Phase 3 assignment artifact for any provider."""
 
@@ -1260,13 +1265,20 @@ def build_partition_assignment(
         for cluster_id, cluster in clusters.items()
         for instance_id in cluster["instances"]
     }
-    cut_nets, cut_metrics = compute_cut_nets(ir, instance_assignment)
-    semantic_contract = None
     cut_policy = clusters_artifact.get("policy", {})
-    if (
+    build_exact_contract = (
         cut_policy.get("cut_mode") == CUT_MODE_STATIC_EXACT
         and _include_semantic_contract
-    ):
+    )
+    if build_exact_contract:
+        cut_nets, cut_metrics, cut_net_ordinals = (
+            _compute_cut_nets_with_ordinals(ir, instance_assignment)
+        )
+    else:
+        cut_nets, cut_metrics = compute_cut_nets(ir, instance_assignment)
+        cut_net_ordinals = None
+    semantic_contract = None
+    if build_exact_contract:
         from .combinational_cut import (
             build_static_exact_semantic_contract,
             semantic_contract_sha256,
@@ -1284,12 +1296,19 @@ def build_partition_assignment(
                 "candidate_selection_policy",
                 STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
             ),
+            stream_records=_stream_semantic_records,
+            cut_net_ordinals=cut_net_ordinals,
         )
-        contract_nodes = {
-            item["net"]: item for item in semantic_contract["cut_nodes"]
-        }
-        for cut in cut_nets:
-            node = contract_nodes[cut["net"]]
+        contract_nodes = semantic_contract["cut_nodes"]
+        if len(contract_nodes) != len(cut_nets):
+            raise ValidationError(
+                "Static Exact contract cut coverage disagrees"
+            )
+        for cut, node in zip(cut_nets, contract_nodes):
+            if cut["net"] != node["net"]:
+                raise ValidationError(
+                    "Static Exact contract cut order disagrees"
+                )
             cut.update(
                 {
                     "dependency_level": node["dependency_level"],
@@ -1535,11 +1554,32 @@ def compute_cut_nets(
     ir: EmuIR,
     instance_assignment: Mapping[str, str],
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    cut_nets, metrics, _ = _compute_cut_nets_with_ordinals(
+        ir, instance_assignment, retain_ordinals=False
+    )
+    return cut_nets, metrics
+
+
+def _compute_cut_nets_with_ordinals(
+    ir: EmuIR,
+    instance_assignment: Mapping[str, str],
+    *,
+    retain_ordinals: bool = True,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], array | None]:
+    """Compute cuts and retain their authoritative EmuIR net coordinates.
+
+    The public artifact deliberately continues to contain names only. The
+    private ordinal column lives just long enough for Static Exact native input
+    construction, where it avoids rebuilding a cut-name hash table to recover
+    coordinates that this traversal already knew.
+    """
+
     cut_nets: List[Dict[str, Any]] = []
+    cut_net_ordinals = array("I") if retain_ordinals else None
     replicated_primary_inputs = 0
     global_nets = 0
     cut_sink_endpoints = 0
-    for net in ir.value["nets"]:
+    for net_ordinal, net in enumerate(ir.value["nets"]):
         driver_fpgas = sorted(
             {
                 instance_assignment[endpoint["instance"]]
@@ -1595,6 +1635,8 @@ def compute_cut_nets(
             # an enormous per-net transitive dependency list.
             cut["transport_round"] = 1
         cut_nets.append(cut)
+        if cut_net_ordinals is not None:
+            cut_net_ordinals.append(net_ordinal)
 
     metrics = {
         "cut_nets": len(cut_nets),
@@ -1613,7 +1655,19 @@ def compute_cut_nets(
                 "round_barriers": 1,
             }
         )
-    return sorted(cut_nets, key=lambda item: item["net"]), metrics
+    if any(
+        cut_nets[index - 1]["net"] >= cut_nets[index]["net"]
+        for index in range(1, len(cut_nets))
+    ):
+        order = sorted(
+            range(len(cut_nets)), key=lambda index: cut_nets[index]["net"]
+        )
+        cut_nets = [cut_nets[index] for index in order]
+        if cut_net_ordinals is not None:
+            cut_net_ordinals = array(
+                "I", (cut_net_ordinals[index] for index in order)
+            )
+    return cut_nets, metrics, cut_net_ordinals
 
 
 def _remove_static_exact_global_rounds(
@@ -2093,13 +2147,17 @@ def validate_partition_artifacts(
             f"{illegal_cuts[:8]}"
         )
 
-    if replication_validation is None:
-        expected_cuts, expected_metrics = compute_cut_nets(
-            ir, raw_assignment
+    if replication_validation is None and cut_mode == CUT_MODE_STATIC_EXACT:
+        expected_cuts, expected_metrics, expected_cut_net_ordinals = (
+            _compute_cut_nets_with_ordinals(ir, raw_assignment)
         )
+    elif replication_validation is None:
+        expected_cuts, expected_metrics = compute_cut_nets(ir, raw_assignment)
+        expected_cut_net_ordinals = None
     else:
         expected_cuts = replication_validation["cut_nets"]
         expected_metrics = replication_validation["metrics"]
+        expected_cut_net_ordinals = None
     expected_contract = None
     if cut_mode == CUT_MODE_STATIC_EXACT:
         from .combinational_cut import (
@@ -2119,12 +2177,18 @@ def validate_partition_artifacts(
                 "candidate_selection_policy",
                 STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
             ),
+            cut_net_ordinals=expected_cut_net_ordinals,
         )
-        contract_nodes = {
-            item["net"]: item for item in expected_contract["cut_nodes"]
-        }
-        for cut in expected_cuts:
-            node = contract_nodes[cut["net"]]
+        contract_nodes = expected_contract["cut_nodes"]
+        if len(contract_nodes) != len(expected_cuts):
+            raise ValidationError(
+                "Static Exact contract cut coverage disagrees"
+            )
+        for cut, node in zip(expected_cuts, contract_nodes):
+            if cut["net"] != node["net"]:
+                raise ValidationError(
+                    "Static Exact contract cut order disagrees"
+                )
             cut.update(
                 {
                     "dependency_level": node["dependency_level"],

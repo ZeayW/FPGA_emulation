@@ -185,8 +185,12 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             physical = root / "physical"
-            packed_path = physical / "packed-sites.json"
-            placement_path = physical / "placement.json"
+            physical_handoff_path = physical / "physical-handoff.sqlite"
+            packed_path = physical_handoff_path
+            placement_path = physical_handoff_path
+            physical.mkdir(parents=True)
+            (physical / "packed-sites.json").write_text("stale\n")
+            (physical / "placement.json").write_text("stale\n")
             native_constraints = root / "native-constraints.json"
             provider_manifest = root / "provider-manifest.json"
             mapped_value = {"modules": {}}
@@ -194,35 +198,46 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             architecture_object = SimpleNamespace(
                 part="xcvu19p-test", value=architecture_value
             )
+            atomic_source = {"summary": {"physical_atoms": 2}}
+
+            def publish_atomic_source(_mapped, output, **_kwargs):
+                output.write_text("{}\n", encoding="utf-8")
+                return atomic_source
 
             def materialize(
                 mapped, architecture_path, certificate, packed, placement, **kwargs
             ):
+                self.assertFalse((physical / "packed-sites.json").exists())
+                self.assertFalse((physical / "placement.json").exists())
                 self.assertEqual(mapped, physical / "partition.mapped.sqlite")
                 self.assertEqual(architecture_path, root / "architecture.json")
                 self.assertEqual(
                     certificate,
                     physical / "openparf-native/placement-certificate.json",
                 )
+                packed_value_sink = kwargs.pop("packed_value_sink")
+                placement_value_sink = kwargs.pop("placement_value_sink")
                 self.assertEqual(kwargs, {
                     "top": "top",
                     "source_packed_path": physical / "openparf-atomic-source.json",
+                    "source_packed_value": atomic_source,
                     "constraints_path": physical / "placement-region.json",
                     "native_constraints_path": native_constraints,
                     "provider_manifest_path": provider_manifest,
                     "mapped_value": mapped_value,
                     "mapped_sha256": "0" * 64,
                     "architecture": architecture_object,
+                    "physical_handoff_path": physical_handoff_path,
                 })
-                packed.write_text(
-                    __import__("json").dumps({"summary": {"clusters": 2}}),
-                    encoding="utf-8",
-                )
-                placement.write_text(
-                    __import__("json").dumps({"summary": {"clusters": 1}}),
-                    encoding="utf-8",
-                )
-                return {"status": "pass"}
+                packed_value_sink.update({"summary": {"clusters": 2}})
+                placement_value_sink.update({"summary": {"clusters": 1}})
+                return {
+                    "status": "pass",
+                    "validation": {
+                        "packing": {"status": "pass"},
+                        "placement": {"status": "pass"},
+                    },
+                }
 
             def stop_at_export(mapped, packed, placement, output, **kwargs):
                 self.assertEqual(mapped, physical / "partition.mapped.sqlite")
@@ -277,16 +292,10 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     "emuflow.xilinx_physical_backend.open_xilinx_mapped_index",
                     return_value=mapped_value,
                 ),
-                mock.patch(
-                    "emuflow.xilinx_physical_backend.read_json",
-                    side_effect=[
-                        {"summary": {"clusters": 2}},
-                        {"summary": {"clusters": 1}},
-                    ],
-                ) as read,
+                mock.patch("emuflow.xilinx_physical_backend.read_json") as read,
                 mock.patch(
                     "emuflow.xilinx_physical_backend.build_xilinx_openparf_atomic_source",
-                    return_value={"summary": {"physical_atoms": 2}},
+                    side_effect=publish_atomic_source,
                 ) as build_source,
                 mock.patch(
                     "emuflow.xilinx_physical_backend._select_xilinx_slr_window",
@@ -303,7 +312,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 mock.patch(
                     "emuflow.xilinx_physical_backend.validate_xilinx_packing",
                     return_value={"status": "pass"},
-                ),
+                ) as validate_packing,
                 mock.patch(
                     "emuflow.xilinx_physical_backend.validate_xilinx_placement",
                     return_value={"status": "pass"},
@@ -315,7 +324,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 mock.patch(
                     "emuflow.xilinx_physical_backend._sha256",
                     return_value="0" * 64,
-                ),
+                ) as digest,
                 mock.patch(
                     "emuflow.xilinx_physical_backend.pack_xilinx_sites",
                     side_effect=forbidden,
@@ -355,18 +364,13 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             qualify.assert_called_once()
             bridge.assert_called_once()
             export.assert_called_once()
-            validate_placement.assert_called_once_with(
-                packed_path,
-                root / "architecture.json",
-                placement_path,
-                constraints_path=physical / "placement-region.json",
-                native_constraints_path=native_constraints,
-                provider_manifest_path=provider_manifest,
-                architecture=architecture_object,
-                packed_value={"summary": {"clusters": 2}},
-                placement_value={"summary": {"clusters": 1}},
+            self.assertEqual(
+                digest.call_args_list.count(mock.call(physical_handoff_path)),
+                1,
             )
-            self.assertEqual(read.call_count, 2)
+            validate_packing.assert_not_called()
+            validate_placement.assert_not_called()
+            read.assert_not_called()
             self.assertIs(
                 build_source.call_args.kwargs["mapped_value"], mapped_value
             )

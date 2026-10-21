@@ -2,7 +2,11 @@ import copy
 import hashlib
 import io
 import json
+import os
+import random
 import shutil
+import sqlite3
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -14,7 +18,13 @@ from emuflow.cli import main
 from emuflow.combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
+    _NativeStaticExactCaptureRequests,
+    _NativeStaticExactAnalysisRecords,
+    _analyze_static_exact_dependencies,
+    _analyze_static_exact_dependencies_native,
     _build_combinational_cut_candidate_index,
+    _resolve_native_capture_stream,
+    _resolve_native_capture_requests,
     build_static_exact_semantic_contract,
     characterize_combinational_cuts,
     semantic_contract_sha256,
@@ -26,7 +36,10 @@ from emuflow.equivalence import (
     exhaustively_verify_static_exact_partition_equivalence,
     simulate_static_exact_partition_equivalence,
 )
+from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
+from emuflow.io import read_json, write_json
+from emuflow.partition_ir import load_partition_ir
 from emuflow.netlist import (
     build_split_artifacts,
     transport_to_systemverilog,
@@ -42,9 +55,24 @@ from emuflow.partition import (
 )
 from emuflow.platform import Platform
 from emuflow.phase6 import run_phase6, validate_phase6
+from emuflow.split_netlist_storage import SplitNetlistView
 from emuflow.phase3_assignment_index import (
+    ASSIGNMENT_INDEX_APPLICATION_ID,
+    migrate_phase3_assignment_index,
+    read_phase3_exact_semantic_contract,
     read_phase3_exact_semantic_partition,
+    validate_phase3_assignment_index,
     write_phase3_assignment_index,
+)
+from emuflow.phase3_exact_records import (
+    StaticExactCutNodeSequence,
+    StaticExactRecordSequence,
+    build_static_exact_capture_stream,
+)
+from emuflow.phase3_storage import (
+    pack_phase3_assignment,
+    pack_phase3_clusters,
+    read_phase3_assignment_view,
 )
 from emuflow.routing import (
     build_directed_graph,
@@ -60,10 +88,22 @@ from emuflow.tdm import (
     build_tdm_schedule,
     validate_tdm_schedule,
 )
+from emuflow.tdm_schedule_storage import (
+    read_tdm_schedule,
+    write_tdm_schedule_storage,
+)
 from emuflow.tdm_ratio import build_tdm_ratio_plan
 from emuflow.tdm_slot import refine_tdm_schedule_native
 from emuflow.timing_routing import route_system_native
+from emuflow.transport_storage import write_transport_storage
+from emuflow.system_route_storage import (
+    SystemRoutesView,
+    read_system_routes,
+    write_system_route_storage,
+)
 from tests.native_build import (
+    static_exact_analyzer,
+    tdm_exact_scheduler,
     tdm_ratio_optimizer,
     tdm_slot_optimizer,
     tlr_router,
@@ -833,6 +873,1105 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             None, self.ir, self.platform
         )
 
+    def test_native_semantic_analysis_matches_reference(self):
+        for dependent_return in (False, True):
+            _, assignment = self._exact_artifacts(
+                dependent_return=dependent_return
+            )
+            expected = assignment["semantic_contract"]
+            executable = static_exact_analyzer()
+            with patch.dict(
+                os.environ,
+                {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+            ), patch(
+                "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+                0,
+            ):
+                actual = build_static_exact_semantic_contract(
+                    self.ir,
+                    self.platform.to_dict(),
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=expected[
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                )
+                streamed = build_static_exact_semantic_contract(
+                    self.ir,
+                    self.platform.to_dict(),
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=expected[
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                    stream_records=True,
+                )
+            self.assertEqual(actual, expected)
+            self.assertIsInstance(
+                streamed["cut_nodes"], StaticExactCutNodeSequence
+            )
+            self.assertEqual(list(streamed["cut_nodes"]), expected["cut_nodes"])
+            self.assertEqual(
+                semantic_contract_sha256(streamed),
+                semantic_contract_sha256(expected),
+            )
+
+    def test_native_semantic_analysis_accepts_noncanonical_emuir_order(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        executable = static_exact_analyzer()
+        for seed in range(5):
+            shuffled_value = copy.deepcopy(self.ir.value)
+            generator = random.Random(seed)
+            generator.shuffle(shuffled_value["instances"])
+            generator.shuffle(shuffled_value["nets"])
+            for net in shuffled_value["nets"]:
+                generator.shuffle(net["drivers"])
+                generator.shuffle(net["sinks"])
+            shuffled = EmuIR(shuffled_value)
+
+            with patch(
+                "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+                2**63,
+            ):
+                expected = build_static_exact_semantic_contract(
+                    shuffled,
+                    self.platform.to_dict(),
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=assignment["semantic_contract"][
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                )
+            with patch.dict(
+                os.environ,
+                {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+            ), patch(
+                "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+                0,
+            ):
+                actual = build_static_exact_semantic_contract(
+                    shuffled,
+                    self.platform.to_dict(),
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=assignment["semantic_contract"][
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                )
+
+            self.assertEqual(actual, expected)
+            self.assertEqual(
+                semantic_contract_sha256(actual),
+                semantic_contract_sha256(expected),
+            )
+
+    def test_native_v3_capture_coordinates_do_not_use_legacy_full_replay(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        executable = static_exact_analyzer()
+        with patch.dict(
+            os.environ,
+            {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+        ), patch(
+            "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+            0,
+        ), patch(
+            "emuflow.combinational_cut._resolve_native_capture_stream",
+            side_effect=AssertionError(
+                "protocol v3 must not invoke the legacy endpoint replay"
+            ),
+        ):
+            actual = build_static_exact_semantic_contract(
+                self.ir,
+                self.platform.to_dict(),
+                assignment["instance_assignment"],
+                assignment["cut_nets"],
+                max_dependency_depth=assignment["semantic_contract"][
+                    "max_cross_fpga_dependency_depth"
+                ],
+            )
+
+        self.assertEqual(actual, assignment["semantic_contract"])
+
+    def test_compact_native_path_uses_integer_store_without_net_random_access(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        expected = assignment["semantic_contract"]
+        ordinal_by_net = {
+            net["id"]: index for index, net in enumerate(self.ir.value["nets"])
+        }
+        ordinals = [
+            ordinal_by_net[cut["net"]] for cut in assignment["cut_nets"]
+        ]
+        executable = static_exact_analyzer()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, self.ir.to_dict())
+            compact_ir = load_partition_ir(path)
+            with patch.dict(
+                os.environ,
+                {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+            ), patch(
+                "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+                0,
+            ), patch(
+                "emuflow.partition_ir._CompactPartitionNets.__getitem__",
+                side_effect=AssertionError(
+                    "compact native bridge must not randomly decode nets"
+                ),
+            ), patch(
+                "emuflow.combinational_cut."
+                "_resolve_native_coordinate_capture_stream",
+                side_effect=AssertionError(
+                    "compact captures must use the indexed ordered merge"
+                ),
+            ):
+                actual = build_static_exact_semantic_contract(
+                    compact_ir,
+                    self.platform.to_dict(),
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=expected[
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                    cut_net_ordinals=ordinals,
+                )
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(
+            semantic_contract_sha256(actual),
+            semantic_contract_sha256(expected),
+        )
+
+    def test_compact_native_path_rejects_forged_cut_ordinal(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        ordinal_by_net = {
+            net["id"]: index for index, net in enumerate(self.ir.value["nets"])
+        }
+        ordinals = [
+            ordinal_by_net[cut["net"]] for cut in assignment["cut_nets"]
+        ]
+        ordinals[0] = (ordinals[0] + 1) % len(self.ir.value["nets"])
+        executable = static_exact_analyzer()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, self.ir.to_dict())
+            compact_ir = load_partition_ir(path)
+            with patch.dict(
+                os.environ,
+                {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+            ), patch(
+                "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+                0,
+            ), self.assertRaisesRegex(
+                ValidationError, "net ordinals are invalid"
+            ):
+                build_static_exact_semantic_contract(
+                    compact_ir,
+                    self.platform.to_dict(),
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=assignment["semantic_contract"][
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                    cut_net_ordinals=ordinals,
+                )
+
+    def test_compact_native_path_rejects_incomplete_assignment(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        ordinal_by_net = {
+            net["id"]: index for index, net in enumerate(self.ir.value["nets"])
+        }
+        ordinals = [
+            ordinal_by_net[cut["net"]] for cut in assignment["cut_nets"]
+        ]
+        incomplete = dict(assignment["instance_assignment"])
+        incomplete.pop(next(iter(incomplete)))
+        executable = static_exact_analyzer()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, self.ir.to_dict())
+            compact_ir = load_partition_ir(path)
+            with patch.dict(
+                os.environ,
+                {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+            ), patch(
+                "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+                0,
+            ), self.assertRaisesRegex(
+                ValidationError, "assignment is incomplete"
+            ):
+                build_static_exact_semantic_contract(
+                    compact_ir,
+                    self.platform.to_dict(),
+                    incomplete,
+                    assignment["cut_nets"],
+                    max_dependency_depth=assignment["semantic_contract"][
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                    cut_net_ordinals=ordinals,
+                )
+
+    def test_partition_build_carries_cut_ordinals_without_name_lookup(self):
+        executable = static_exact_analyzer()
+        with patch.dict(
+            os.environ,
+            {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+        ), patch(
+            "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+            0,
+        ), patch(
+            "emuflow.combinational_cut."
+            "_resolve_legacy_static_exact_cut_net_ordinals",
+            side_effect=AssertionError(
+                "new Phase 3 construction must carry authoritative ordinals"
+            ),
+        ):
+            clusters, assignment = self._exact_artifacts(dependent_return=True)
+            validation = validate_partition_artifacts(
+                self.ir, self.platform, clusters, assignment
+            )
+
+        self.assertEqual(validation["status"], "pass")
+        self.assertEqual(
+            assignment["semantic_contract"]["metrics"]["transported_cut_nets"],
+            len(assignment["cut_nets"]),
+        )
+
+    def test_native_semantic_analysis_rejects_forged_cut_ordinal(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        net_ordinal = {
+            net["id"]: index for index, net in enumerate(self.ir.value["nets"])
+        }
+        ordinals = [net_ordinal[cut["net"]] for cut in assignment["cut_nets"]]
+        ordinals[0] = (ordinals[0] + 1) % len(self.ir.value["nets"])
+        executable = static_exact_analyzer()
+        with patch.dict(
+            os.environ,
+            {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+        ), patch(
+            "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+            0,
+        ), self.assertRaisesRegex(
+            ValidationError, "net ordinals are invalid"
+        ):
+            build_static_exact_semantic_contract(
+                self.ir,
+                self.platform.to_dict(),
+                assignment["instance_assignment"],
+                assignment["cut_nets"],
+                max_dependency_depth=assignment["semantic_contract"][
+                    "max_cross_fpga_dependency_depth"
+                ],
+                cut_net_ordinals=ordinals,
+            )
+
+    def test_native_semantic_analysis_rejects_forged_capture_coordinate(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        cut_count = len(assignment["cut_nets"])
+        payload = bytearray(
+            struct.pack(
+                "<QIIQ",
+                0x315845534F4D5545,
+                3,
+                cut_count,
+                1,
+            )
+        )
+        for _ in range(cut_count):
+            payload.extend(struct.pack("<BI", 0, 0))
+        # Net 0 sink 0 is combinational logic, not architectural state. The
+        # native protocol cannot assert an identity; Python resolves this
+        # coordinate against EmuIR and rejects the forged capture.
+        payload.extend(struct.pack("<IIII", 0, 0, 0, 0))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "invalid-static-exact"
+            executable.write_text(
+                "#!/usr/bin/env python3\n"
+                "import pathlib, sys\n"
+                f"pathlib.Path(sys.argv[2]).write_bytes(bytes.fromhex({payload.hex()!r}))\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            with patch(
+                "emuflow.combinational_cut.resolve_native_executable",
+                return_value=executable,
+            ), self.assertRaisesRegex(
+                ValidationError, "capture is invalid"
+            ):
+                _analyze_static_exact_dependencies_native(
+                    self.ir,
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=assignment["semantic_contract"][
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                    candidate_selection_policy=(
+                        STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+                    ),
+                )
+
+    def test_native_protocol_rejects_huge_header_count_before_allocation(self):
+        executable = static_exact_analyzer()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            magic = 0x31584553464D5545
+            maximum = 2**32 - 1
+            malformed = {
+                "instance": struct.pack(
+                    "<Q6I", magic, 3, maximum, 0, 0, 1, 0
+                ),
+                "net": struct.pack(
+                    "<Q6I", magic, 3, 0, maximum, 0, 1, 0
+                ),
+                "cut": struct.pack(
+                    "<Q6I", magic, 3, 0, 0, maximum, 1, 0
+                ),
+                "driver": (
+                    struct.pack("<Q6I", magic, 3, 0, 1, 0, 1, 0)
+                    + struct.pack("<II", maximum, 0)
+                ),
+                "endpoint": (
+                    struct.pack("<Q6I", magic, 3, 0, 1, 0, 1, 1)
+                    + struct.pack("<II", 0, maximum)
+                ),
+                "cut-sink": (
+                    struct.pack("<Q6I", magic, 3, 0, 1, 1, 1, 0)
+                    + struct.pack("<II", 0, 0)
+                    + struct.pack("<III", 0, 0, maximum)
+                ),
+            }
+            for label, payload in malformed.items():
+                with self.subTest(label=label):
+                    native_input = root / f"huge-{label}.in"
+                    native_output = root / f"huge-{label}.out"
+                    native_input.write_bytes(payload)
+                    completed = subprocess.run(
+                        [executable, native_input, native_output],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn("count is invalid", completed.stderr)
+                    self.assertFalse(native_output.exists())
+
+    def test_native_protocol_rejects_huge_output_capture_count(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        cut_count = len(assignment["cut_nets"])
+        payload = bytearray(
+            struct.pack(
+                "<QIIQ",
+                0x315845534F4D5545,
+                3,
+                cut_count,
+                2**64 - 1,
+            )
+        )
+        for _ in range(cut_count):
+            payload.extend(struct.pack("<BI", 0, 0))
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "huge-static-exact-output"
+            executable.write_text(
+                "#!/usr/bin/env python3\n"
+                "import pathlib, sys\n"
+                f"pathlib.Path(sys.argv[2]).write_bytes(bytes.fromhex({payload.hex()!r}))\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            with patch(
+                "emuflow.combinational_cut.resolve_native_executable",
+                return_value=executable,
+            ), self.assertRaisesRegex(
+                ValidationError, "capture count is invalid"
+            ):
+                _analyze_static_exact_dependencies_native(
+                    self.ir,
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=assignment["semantic_contract"][
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                    candidate_selection_policy=(
+                        STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+                    ),
+                )
+
+    def test_native_protocol_preserves_unicode_identity_and_8192_bit_capture(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        value = copy.deepcopy(self.ir.value)
+        instance_names = {
+            item["id"]: f"实例/{item['id']}🙂" for item in value["instances"]
+        }
+        net_names = {item["id"]: f"网络/{item['id']}λ" for item in value["nets"]}
+        for instance in value["instances"]:
+            instance["id"] = instance_names[instance["id"]]
+        for net in value["nets"]:
+            old_net = net["id"]
+            net["id"] = net_names[old_net]
+            net["name"] = net_names[old_net]
+            for endpoint in [*net["drivers"], *net["sinks"]]:
+                if endpoint["instance"] is not None:
+                    endpoint["instance"] = instance_names[endpoint["instance"]]
+            if old_net == "d":
+                net["sinks"][0]["bit"] = 1 << 8191
+        unicode_ir = EmuIR(value)
+        unicode_assignment = {
+            instance_names[name]: fpga
+            for name, fpga in assignment["instance_assignment"].items()
+        }
+        unicode_cuts = [
+            {**cut, "net": net_names[cut["net"]]}
+            for cut in assignment["cut_nets"]
+        ]
+        arguments = (
+            unicode_ir,
+            self.platform.to_dict(),
+            unicode_assignment,
+            unicode_cuts,
+        )
+        keywords = {
+            "max_dependency_depth": assignment["semantic_contract"][
+                "max_cross_fpga_dependency_depth"
+            ]
+        }
+        with patch(
+            "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+            2**63,
+        ):
+            expected = build_static_exact_semantic_contract(
+                *arguments, **keywords
+            )
+        executable = static_exact_analyzer()
+        with patch.dict(
+            os.environ,
+            {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+        ), patch(
+            "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+            0,
+        ):
+            actual = build_static_exact_semantic_contract(*arguments, **keywords)
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(
+            semantic_contract_sha256(actual),
+            semantic_contract_sha256(expected),
+        )
+        self.assertIn(
+            1 << 8191,
+            [
+                record["bit"]
+                for record in actual["capture_requirements"]
+                if record["kind"] == "architectural-state"
+            ],
+        )
+
+    def test_reference_and_native_reject_capture_over_8192_bits(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        value = copy.deepcopy(self.ir.value)
+        for net in value["nets"]:
+            if net["id"] == "d":
+                net["sinks"][0]["bit"] = 1 << 8192
+        invalid_ir = EmuIR(value)
+        arguments = (
+            invalid_ir,
+            self.platform.to_dict(),
+            assignment["instance_assignment"],
+            assignment["cut_nets"],
+        )
+        keywords = {
+            "max_dependency_depth": assignment["semantic_contract"][
+                "max_cross_fpga_dependency_depth"
+            ]
+        }
+        with patch(
+            "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+            2**63,
+        ), self.assertRaisesRegex(ValidationError, "at most 8192 bits"):
+            build_static_exact_semantic_contract(*arguments, **keywords)
+
+        executable = static_exact_analyzer()
+        with patch.dict(
+            os.environ,
+            {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+        ), patch(
+            "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+            0,
+        ), self.assertRaisesRegex(ValidationError, "at most 8192 bits"):
+            build_static_exact_semantic_contract(*arguments, **keywords)
+
+    def test_native_analysis_retains_compact_integer_dependency_relation(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        expected_nodes = assignment["semantic_contract"]["cut_nodes"]
+        ordered_cut_ids = [node["net"] for node in expected_nodes]
+        executable = static_exact_analyzer()
+        with patch.dict(
+            os.environ,
+            {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+        ):
+            analysis = _analyze_static_exact_dependencies_native(
+                self.ir,
+                assignment["instance_assignment"],
+                assignment["cut_nets"],
+                max_dependency_depth=assignment["semantic_contract"][
+                    "max_cross_fpga_dependency_depth"
+                ],
+                candidate_selection_policy=(
+                    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+                ),
+            )
+
+        self.assertNotIn("dependencies", analysis)
+        self.assertNotIn("local_launches", analysis)
+        self.assertNotIn("dependency_level", analysis)
+        self.assertNotIn("combinational_depth", analysis)
+        records = analysis["analysis_records"]
+        self.assertEqual(len(records), len(expected_nodes))
+        self.assertEqual(
+            records.dependency_edge_count,
+            assignment["semantic_contract"]["metrics"]["dependency_edges"],
+        )
+        for index, expected in enumerate(expected_nodes):
+            self.assertEqual(
+                [
+                    ordered_cut_ids[source]
+                    for source in records.dependency_indices(index)
+                ],
+                expected["predecessor_cut_nets"],
+            )
+            self.assertEqual(
+                records.dependency_level(index), expected["dependency_level"]
+            )
+            self.assertEqual(
+                records.combinational_depth(index),
+                expected["combinational_dependency_depth"],
+            )
+
+    def test_compact_native_dependency_relation_independently_rejects_cycle(self):
+        records = _NativeStaticExactAnalysisRecords(2)
+        records.append(False, [1])
+        records.append(False, [0])
+        with self.assertRaisesRegex(ValidationError, "contains a cycle"):
+            records.finalize(bytearray([1, 1]))
+
+    def test_compact_native_analysis_enforces_dependency_depth_limit(self):
+        _, assignment = self._exact_artifacts(dependency_depth=2)
+        executable = static_exact_analyzer()
+        with patch.dict(
+            os.environ,
+            {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+        ), self.assertRaisesRegex(
+            ValidationError, "dependency depth exceeds the configured limit"
+        ):
+            _analyze_static_exact_dependencies_native(
+                self.ir,
+                assignment["instance_assignment"],
+                assignment["cut_nets"],
+                max_dependency_depth=1,
+                candidate_selection_policy=(
+                    STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+                ),
+            )
+
+    def test_native_capture_resolution_only_materializes_requested_sinks(self):
+        class UnrequestedEndpoint(dict):
+            def __getitem__(self, key):
+                raise AssertionError("unrequested endpoint was expanded")
+
+        nets = [
+            {
+                "sinks": [UnrequestedEndpoint() for _ in range(128)]
+                + [
+                    {
+                        "instance": "state0",
+                        "port": "D",
+                        "bit": 3,
+                    }
+                ]
+            }
+        ]
+        self.assertEqual(
+            _resolve_native_capture_requests(
+                nets,
+                [(128, 1, 0), (128, 0, 1)],
+                ["net0", "net1"],
+                ["fpga0", "fpga1"],
+            ),
+            [
+                (
+                    "net1",
+                    "fpga0",
+                    "architectural-state",
+                    "state0",
+                    "D",
+                    3,
+                ),
+                (
+                    "net0",
+                    "fpga1",
+                    "architectural-state",
+                    "state0",
+                    "D",
+                    3,
+                ),
+            ],
+        )
+        with self.assertRaisesRegex(ValidationError, "capture is invalid"):
+            _resolve_native_capture_requests(
+                nets,
+                [(129, 0, 0)],
+                ["net0"],
+                ["fpga0"],
+            )
+
+    def test_native_capture_requests_are_fixed_width_and_canonical(self):
+        requests = _NativeStaticExactCaptureRequests()
+        requests.append(2, 0, 1)
+        requests.append(2, 1, 0)
+        requests.append(9, 0, 0)
+        self.assertEqual(requests.payload_bytes, 3 * 3 * 4)
+        self.assertEqual(
+            list(requests),
+            [(2, 0, 1), (2, 1, 0), (9, 0, 0)],
+        )
+        with self.assertRaisesRegex(ValidationError, "capture is invalid"):
+            requests.append(9, 0, 0)
+        out_of_order = _NativeStaticExactCaptureRequests()
+        out_of_order.append(4, 0, 0)
+        with self.assertRaisesRegex(ValidationError, "capture is invalid"):
+            out_of_order.append(3, 1, 0)
+        requests.clear()
+        self.assertEqual(len(requests), 0)
+        self.assertEqual(requests.payload_bytes, 0)
+
+    def test_native_capture_stream_canonicalizes_without_tuple_population(self):
+        nets = [
+            {
+                "sinks": [
+                    {"instance": "state_z", "port": "D", "bit": 3},
+                    {"instance": None, "port": "out", "bit": 0},
+                ]
+            }
+        ]
+        requests = [(0, 1, 0), (1, 0, 1), (0, 1, 0)]
+        materialized_relation = sorted(
+            set(
+                _resolve_native_capture_requests(
+                    nets,
+                    requests,
+                    ["net_a", "net_z"],
+                    ["fpga_a", "fpga_z"],
+                )
+            )
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            streamed = _resolve_native_capture_stream(
+                nets,
+                requests,
+                ["net_a", "net_z"],
+                ["fpga_a", "fpga_z"],
+                Path(temporary) / "captures.sqlite3",
+            )
+
+        self.assertIsInstance(streamed, StaticExactRecordSequence)
+        self.assertEqual(
+            list(streamed),
+            list(build_static_exact_capture_stream(materialized_relation)),
+        )
+        self.assertEqual(len(streamed), len(materialized_relation))
+        self.assertEqual(requests, [])
+
+    def test_native_capture_stream_rejects_invalid_architectural_bit(self):
+        for bit in (True, 1 << 8192):
+            nets = [
+                {
+                    "sinks": [
+                        {"instance": "state0", "port": "D", "bit": bit}
+                    ]
+                }
+            ]
+            with self.subTest(bit=bit), tempfile.TemporaryDirectory() as temporary:
+                with self.assertRaisesRegex(
+                    ValidationError, "at most 8192 bits"
+                ):
+                    _resolve_native_capture_stream(
+                        nets,
+                        [(0, 0, 0)],
+                        ["net0"],
+                        ["fpga0"],
+                        Path(temporary) / "captures.sqlite3",
+                    )
+
+    def test_native_capture_stream_rejects_non_utf8_before_sqlite(self):
+        nets = [
+            {
+                "sinks": [
+                    {"instance": "state\ud800", "port": "D", "bit": 0}
+                ]
+            }
+        ]
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
+            ValidationError, "capture identity is invalid"
+        ):
+            _resolve_native_capture_stream(
+                nets,
+                [(0, 0, 0)],
+                ["net0"],
+                ["fpga0"],
+                Path(temporary) / "captures.sqlite3",
+            )
+
+    def test_semantic_builder_transfers_owned_analysis_maps(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        owned = {}
+
+        def analyze(*args, **kwargs):
+            result = _analyze_static_exact_dependencies(*args, **kwargs)
+            for name in (
+                "cut_by_net",
+                "dependencies",
+                "local_launches",
+                "dependency_level",
+                "combinational_depth",
+            ):
+                owned[name] = result[name]
+            return result
+
+        with patch(
+            "emuflow.combinational_cut._analyze_static_exact_dependencies",
+            side_effect=analyze,
+        ):
+            actual = build_static_exact_semantic_contract(
+                self.ir,
+                self.platform.to_dict(),
+                assignment["instance_assignment"],
+                assignment["cut_nets"],
+                max_dependency_depth=assignment["semantic_contract"][
+                    "max_cross_fpga_dependency_depth"
+                ],
+            )
+
+        self.assertEqual(actual, assignment["semantic_contract"])
+        for name, mapping in owned.items():
+            self.assertEqual(mapping, {}, name)
+
+    def test_semantic_builder_can_stream_derived_records(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        expected = assignment["semantic_contract"]
+
+        actual = build_static_exact_semantic_contract(
+            self.ir,
+            self.platform.to_dict(),
+            assignment["instance_assignment"],
+            assignment["cut_nets"],
+            max_dependency_depth=expected[
+                "max_cross_fpga_dependency_depth"
+            ],
+            stream_records=True,
+        )
+
+        self.assertIsInstance(
+            actual["dependency_edges"], StaticExactRecordSequence
+        )
+        self.assertIsInstance(actual["cut_nodes"], StaticExactCutNodeSequence)
+        self.assertIsInstance(
+            actual["logic_segments"], StaticExactRecordSequence
+        )
+        self.assertIsInstance(
+            actual["capture_requirements"], StaticExactRecordSequence
+        )
+        self.assertEqual(
+            list(actual["dependency_edges"]), expected["dependency_edges"]
+        )
+        self.assertEqual(
+            list(actual["logic_segments"]), expected["logic_segments"]
+        )
+        self.assertEqual(
+            list(actual["capture_requirements"]),
+            expected["capture_requirements"],
+        )
+        self.assertEqual(
+            semantic_contract_sha256(actual),
+            assignment["semantic_contract_sha256"],
+        )
+
+    def test_indexed_assignment_storage_reconstructs_exact_contract(self):
+        clusters, assignment = self._exact_artifacts(dependent_return=True)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            write_phase3_assignment_index(
+                root / "assignment.sqlite", self.ir, assignment
+            )
+            packed = pack_phase3_assignment(assignment, clusters)
+            self.assertIsNone(packed["semantic_contract"])
+            self.assertEqual(
+                packed["semantic_contract_index"],
+                {
+                    "artifact": "assignment.sqlite",
+                    "schema": STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
+                    "sha256": assignment["semantic_contract_sha256"],
+                },
+            )
+            write_json(
+                root / "clusters.json",
+                pack_phase3_clusters(clusters),
+                compact=True,
+            )
+            write_json(root / "assignment.json", packed, compact=True)
+            self.assertEqual(read_json(root / "assignment.json"), assignment)
+
+            route_view = read_phase3_assignment_view(
+                root / "assignment.json",
+                include_semantic_contract=False,
+            )
+            self.assertTrue(route_view["semantic_contract_indexed"])
+            self.assertNotIn("semantic_contract", route_view)
+            self.assertEqual(
+                route_view["semantic_contract_schema"],
+                STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
+            )
+
+            packed["semantic_contract_index"]["sha256"] = "0" * 64
+            write_json(root / "assignment.json", packed, compact=True)
+            with self.assertRaisesRegex(ValueError, "index is malformed"):
+                read_json(root / "assignment.json")
+
+    def _legacy_exact_assignment_with_bit(self, bit):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        assignment = copy.deepcopy(assignment)
+        capture = next(
+            item
+            for item in assignment["semantic_contract"][
+                "capture_requirements"
+            ]
+            if item["kind"] == "architectural-state"
+        )
+        capture["bit"] = bit
+        assignment["semantic_contract_sha256"] = semantic_contract_sha256(
+            assignment["semantic_contract"]
+        )
+        return assignment, capture["id"], capture["fpga"]
+
+    def test_legacy_migration_uses_canonical_v2_bit_storage_boundaries(self):
+        cases = (
+            ((1 << 63) - 1, "integer", None),
+            (1 << 63, "blob", 8),
+            (1 << 8191, "blob", 1024),
+        )
+        for bit, storage_type, storage_bytes in cases:
+            with self.subTest(bit_length=bit.bit_length()):
+                assignment, capture_id, fpga = (
+                    self._legacy_exact_assignment_with_bit(bit)
+                )
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    ir_path = root / "design.emuir.sqlite"
+                    assignment_path = root / "assignment.json"
+                    index_path = root / "assignment.sqlite"
+                    write_compact_emuir(ir_path, self.ir.to_dict())
+                    write_json(assignment_path, assignment)
+
+                    summary = migrate_phase3_assignment_index(
+                        index_path, ir_path, assignment_path
+                    )
+                    self.assertEqual(summary["status"], "pass")
+                    with sqlite3.connect(index_path) as connection:
+                        stored = connection.execute(
+                            "SELECT typeof(bit),CASE WHEN typeof(bit)='blob' "
+                            "THEN length(bit) END "
+                            "FROM exact_capture_requirements "
+                            "WHERE capture_id=?",
+                            (capture_id,),
+                        ).fetchone()
+                    self.assertEqual(stored, (storage_type, storage_bytes))
+
+                    partition = read_phase3_exact_semantic_partition(
+                        index_path, fpga
+                    )
+                    observed = next(
+                        item
+                        for item in partition["capture_requirements"]
+                        if item["id"] == capture_id
+                    )
+                    self.assertEqual(observed["bit"], bit)
+                    reconstructed = read_phase3_exact_semantic_contract(
+                        index_path, assignment
+                    )
+                    self.assertEqual(
+                        reconstructed["capture_requirements"],
+                        assignment["semantic_contract"][
+                            "capture_requirements"
+                        ],
+                    )
+                    self.assertEqual(
+                        validate_phase3_assignment_index(index_path)["status"],
+                        "pass",
+                    )
+
+    def test_legacy_json_migration_rejects_8193_bit_capture_before_digest(self):
+        assignment, _, _ = self._legacy_exact_assignment_with_bit(0)
+        capture = next(
+            item
+            for item in assignment["semantic_contract"][
+                "capture_requirements"
+            ]
+            if item["kind"] == "architectural-state"
+        )
+        capture["bit"] = 1 << 8192
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.sqlite"
+            assignment_path = root / "assignment.json"
+            index_path = root / "assignment.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            write_json(assignment_path, assignment)
+            with patch(
+                "emuflow.phase3_assignment_index.semantic_contract_sha256",
+                side_effect=AssertionError("digest must follow capture validation"),
+            ), self.assertRaisesRegex(ValidationError, "at most 8192 bits"):
+                migrate_phase3_assignment_index(
+                    index_path, ir_path, assignment_path
+                )
+            self.assertFalse(index_path.exists())
+
+    def test_legacy_v1_and_v2_reads_reject_oversized_capture_bits(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            v1_path = root / "assignment-v1.sqlite"
+            for bit, accepted in ((1 << 8191, True), (1 << 8192, False)):
+                if v1_path.exists():
+                    v1_path.unlink()
+                capture = {
+                    "id": "capture000000",
+                    "cut_net": "net0",
+                    "fpga": "fpga0",
+                    "kind": "architectural-state",
+                    "endpoint": "state/D",
+                    "port": "D",
+                    "bit": bit,
+                }
+                with sqlite3.connect(v1_path) as connection:
+                    connection.executescript(
+                        f"""
+                        PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
+                        PRAGMA user_version=1;
+                        CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);
+                        CREATE TABLE parts(
+                          part_index INTEGER PRIMARY KEY,fpga TEXT
+                        );
+                        CREATE TABLE copies(
+                          source_instance_seq INTEGER,part_index INTEGER,
+                          copy_id TEXT,is_replica INTEGER
+                        );
+                        CREATE TABLE cut_sinks(
+                          net_id TEXT,source_part_index INTEGER,
+                          sink_part_index INTEGER
+                        );
+                        CREATE TABLE exact_segment_bindings(
+                          segment_id TEXT,part_index INTEGER,payload_json TEXT
+                        );
+                        CREATE TABLE exact_capture_requirements(
+                          capture_id TEXT,part_index INTEGER,payload_json TEXT
+                        );
+                        """
+                    )
+                    connection.executemany(
+                        "INSERT INTO metadata VALUES (?,?)",
+                        [
+                            (
+                                "schema",
+                                json.dumps(
+                                    "emuflow.phase3-assignment-sqlite/v1"
+                                ),
+                            ),
+                            ("design", json.dumps("legacy")),
+                            ("platform", json.dumps("test")),
+                            ("source_instance_count", json.dumps(0)),
+                            ("semantic_contract_schema", json.dumps("schema")),
+                            ("semantic_contract_sha256", json.dumps("0" * 64)),
+                        ],
+                    )
+                    connection.execute(
+                        "INSERT INTO parts VALUES (0,'fpga0')"
+                    )
+                    connection.execute(
+                        "INSERT INTO exact_capture_requirements VALUES (?,?,?)",
+                        ("capture000000", 0, json.dumps(capture)),
+                    )
+                if accepted:
+                    partition = read_phase3_exact_semantic_partition(
+                        v1_path, "fpga0"
+                    )
+                    self.assertEqual(
+                        partition["capture_requirements"][0]["bit"], bit
+                    )
+                    self.assertEqual(
+                        validate_phase3_assignment_index(v1_path)["status"],
+                        "pass",
+                    )
+                else:
+                    for reader in (
+                        lambda: read_phase3_exact_semantic_partition(
+                            v1_path, "fpga0"
+                        ),
+                        lambda: validate_phase3_assignment_index(v1_path),
+                    ):
+                        with self.assertRaisesRegex(
+                            ValidationError, "at most 8192 bits"
+                        ):
+                            reader()
+
+            assignment, capture_id, fpga = (
+                self._legacy_exact_assignment_with_bit(0)
+            )
+            ir_path = root / "design.emuir.sqlite"
+            assignment_path = root / "assignment.json"
+            v2_path = root / "assignment-v2.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            write_json(assignment_path, assignment)
+            migrate_phase3_assignment_index(
+                v2_path, ir_path, assignment_path
+            )
+            invalid_blobs = (
+                (b"\x00", "encoding is invalid"),
+                (b"\x01", "encoding is invalid"),
+                (((1 << 63) - 1).to_bytes(8, "big"), "encoding is invalid"),
+                (b"\x01" + b"\x00" * 1024, "at most 8192 bits"),
+            )
+            for encoded, message in invalid_blobs:
+                with self.subTest(encoded_bytes=len(encoded), message=message):
+                    with sqlite3.connect(v2_path) as connection:
+                        connection.execute(
+                            "UPDATE exact_capture_requirements SET bit=? "
+                            "WHERE capture_id=?",
+                            (sqlite3.Binary(encoded), capture_id),
+                        )
+                    readers = (
+                        lambda: read_phase3_exact_semantic_partition(
+                            v2_path, fpga
+                        ),
+                        lambda: read_phase3_exact_semantic_contract(
+                            v2_path, assignment
+                        ),
+                        lambda: validate_phase3_assignment_index(v2_path),
+                    )
+                    for reader in readers:
+                        with self.assertRaisesRegex(ValidationError, message):
+                            reader()
+
+    def test_indexed_assignment_publish_reuses_owned_exact_digest(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        with tempfile.TemporaryDirectory() as temporary_directory, patch(
+            "emuflow.phase3_assignment_index.semantic_contract_sha256",
+            side_effect=AssertionError(
+                "production publication must not rehash the resident contract"
+            ),
+        ):
+            write_phase3_assignment_index(
+                Path(temporary_directory) / "assignment.sqlite",
+                self.ir,
+                assignment,
+            )
+
     def _exact_artifacts(
         self, frame_slots=16, dependent_return=False, dependency_depth=1
     ):
@@ -1070,6 +2209,88 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             validate_tdm_schedule(routes, self.platform, schedule)["status"],
             "pass",
         )
+
+    def test_native_indexed_exact_schedule_matches_python_reference(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        routes = self._exact_routes(assignment)
+        schema = routes["semantic_contract"]["schema"]
+        routes["semantic_contract"] = {
+            "schema": schema,
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
+        executable = tdm_exact_scheduler()
+
+        def compare(candidate):
+            reference = build_tdm_schedule(candidate, self.platform)
+            with (
+                patch.dict(
+                    os.environ,
+                    {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+                ),
+                patch("emuflow.tdm.NATIVE_EXACT_SCHEDULE_MIN_ROUTES", 0),
+            ):
+                native = build_tdm_schedule(candidate, self.platform)
+            self.assertIsInstance(native["entries"], list)
+            self.assertIsNot(type(native["entries"]), list)
+            self.assertGreater(len(native["entries"]), 0)
+            self.assertEqual(list.__len__(native["entries"]), 0)
+            self.assertEqual(native, reference)
+            self.assertEqual(json.loads(json.dumps(native)), reference)
+            self.assertEqual(
+                validate_tdm_schedule(
+                    candidate, self.platform, native
+                )["status"],
+                "pass",
+            )
+            with tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "schedule.json"
+                write_tdm_schedule_storage(path, native)
+                self.assertEqual(
+                    read_tdm_schedule(path, materialize=True), reference
+                )
+
+        compare(routes)
+        template = next(
+            route
+            for route in routes["routes"]
+            if not route["predecessor_cut_nets"]
+        )
+        repeated = copy.deepcopy(routes)
+        repeated["routes"] = []
+        for index in range(300):
+            route = copy.deepcopy(template)
+            route["id"] = f"repeated-demand-{index:04d}"
+            route["net"] = f"repeated-net-{index:04d}"
+            route["predecessor_cut_nets"] = []
+            route["dependency_level"] = 0
+            repeated["routes"].append(route)
+        repeated["demands"] = [
+            {
+                key: copy.deepcopy(route[key])
+                for key in (
+                    "id",
+                    "net",
+                    "source",
+                    "sinks",
+                    "width_bits",
+                    "cut_class",
+                    "dependency_level",
+                    "combinational_dependency_depth",
+                    "predecessor_cut_nets",
+                )
+            }
+            for route in repeated["routes"]
+        ]
+        compare(repeated)
+        with tempfile.TemporaryDirectory() as temporary:
+            route_path = Path(temporary) / "routes.json"
+            write_system_route_storage(route_path, repeated)
+            indexed_routes = read_system_routes(route_path)
+            self.assertIsInstance(indexed_routes, SystemRoutesView)
+            self.assertEqual(list.__len__(indexed_routes["routes"]), 0)
+            compare(indexed_routes)
 
     @staticmethod
     def _persisted_routes(routes):
@@ -2360,6 +3581,20 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 "dependency-schedule-readiness-pass",
             )
             self.assertEqual(report["cut_mode"], "static-exact-combinational")
+            schedule_manifest = json.loads(
+                (output / "schedule.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                report["artifacts"]["schedule_store"],
+                schedule_manifest["artifact"],
+            )
+            self.assertRegex(
+                schedule_manifest["artifact"],
+                r"^schedule\.[0-9a-f]{64}\.sqlite$",
+            )
+            self.assertTrue(
+                (output / schedule_manifest["artifact"]).is_file()
+            )
 
     def test_phase4_rejects_exact_contract_digest_tamper(self):
         _, assignment = self._exact_artifacts()
@@ -2519,7 +3754,48 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 sorted(indexed_captures, key=lambda item: item["id"]),
                 assignment["semantic_contract"]["capture_requirements"],
             )
-            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            legacy_transport = write_transport_storage(
+                root / "legacy-transport",
+                root / "assignment.sqlite",
+                schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+            )
+            write_tdm_schedule_storage(schedule_path, schedule)
+            indexed_schedule = read_tdm_schedule(schedule_path)
+            typed_transport = write_transport_storage(
+                root / "typed-transport",
+                root / "assignment.sqlite",
+                indexed_schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+            )
+            self.assertEqual(
+                typed_transport["lane_map"].materialize(),
+                legacy_transport["lane_map"].materialize(),
+            )
+            self.assertEqual(
+                {
+                    fpga: value.materialize()
+                    for fpga, value in typed_transport["transports"].items()
+                },
+                {
+                    fpga: value.materialize()
+                    for fpga, value in legacy_transport["transports"].items()
+                },
+            )
+            self.assertEqual(
+                {
+                    fpga: value.materialize()
+                    for fpga, value in typed_transport["anchors"].items()
+                },
+                {
+                    fpga: value.materialize()
+                    for fpga, value in legacy_transport["anchors"].items()
+                },
+            )
             report = run_phase6(
                 ir_path,
                 assignment_path,
@@ -2529,6 +3805,30 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 equivalence_cycles=4,
                 equivalence_seed=31,
             )
+            manifest = read_json(output / "manifest.json")
+            self.assertEqual(
+                manifest["semantic_contract_storage"]["artifact"],
+                "assignment.exact.bin",
+            )
+            for fpga in ("fpga0", "fpga1"):
+                transport = read_json(output / fpga / "transport.json")
+                self.assertEqual(
+                    transport["semantic_contract_storage"],
+                    manifest["semantic_contract_storage"],
+                )
+                for endpoint in transport["endpoints"]:
+                    self.assertNotIn("source_logic_segment_ids", endpoint)
+                    self.assertNotIn("consumer_logic_segment_ids", endpoint)
+            with patch(
+                "emuflow.split_netlist_storage._exact_relation_maps",
+                side_effect=AssertionError(
+                    "bounded split metadata must not expand exact relations"
+                ),
+            ):
+                with SplitNetlistView(
+                    output / "split-netlists.sqlite", "fpga0"
+                ) as split_view:
+                    self.assertGreater(split_view.counts()["nets"], 0)
             evidence = report["equivalence"]
             self.assertEqual(evidence["status"], "pass")
             self.assertEqual(evidence["random_trace_count"], 3)

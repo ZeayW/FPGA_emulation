@@ -23,34 +23,8 @@ from .emuir_storage import (
     _json,
 )
 from .errors import ValidationError
-
-
 def _sqlite_uri(path: Path) -> str:
     return f"file:{path.resolve()}?mode=ro&immutable=1"
-
-
-def _cell_row(record: Mapping[str, Any]) -> tuple[Any, ...]:
-    return (
-        record["id"],
-        record.get("name"),
-        record["type"],
-        _json(record["resources"]),
-        _json(record["parameters"]) if "parameters" in record else None,
-        _json(record["attributes"]) if "attributes" in record else None,
-        _json(record.get("constant_connections", [])),
-        _extras(
-            record,
-            {
-                "id",
-                "name",
-                "type",
-                "resources",
-                "parameters",
-                "attributes",
-                "constant_connections",
-            },
-        ),
-    )
 
 
 def _endpoint_row(
@@ -85,8 +59,8 @@ def write_placement_emuir_from_split(
     ports: Sequence[Mapping[str, Any]],
     clocks: Sequence[Mapping[str, Any]],
     warnings: Sequence[Any],
-    transport_instances: Sequence[Mapping[str, Any]],
-    transport_nets: Sequence[Mapping[str, Any]],
+    transport_ir_path: Path,
+    consumed_transport_nets: Iterable[str],
     added_endpoints: Sequence[tuple[str, int, int, Mapping[str, Any]]],
     port_added_endpoints: Sequence[
         tuple[str, int, int, Mapping[str, Any]]
@@ -187,6 +161,17 @@ def write_placement_emuir_from_split(
         connection.execute(
             "ATTACH DATABASE ? AS split", (_sqlite_uri(split_path),)
         )
+        connection.execute(
+            "ATTACH DATABASE ? AS transport_ir",
+            (_sqlite_uri(transport_ir_path),),
+        )
+        transport_version = connection.execute(
+            "PRAGMA transport_ir.user_version"
+        ).fetchone()[0]
+        if transport_version != 2:
+            raise ValidationError(
+                "transport lowering requires compact EmuIR v2"
+            )
         part = connection.execute(
             "SELECT part_index FROM split.parts WHERE fpga=?", (fpga,)
         ).fetchone()
@@ -214,9 +199,19 @@ def write_placement_emuir_from_split(
             WHERE c.part_index=?""",
             (fpga, part_index),
         )
-        connection.executemany(
-            "INSERT INTO stage_cells VALUES (?,?,?,?,?,?,?,?)",
-            (_cell_row(record) for record in transport_instances),
+        namespace = "__emuflow_transport__/"
+        connection.execute(
+            """INSERT INTO stage_cells
+            SELECT ? || c.id,? || c.id,c.type,r.value,p.value,a.value,
+                   k.value,x.value
+            FROM transport_ir.cell_records c
+            JOIN transport_ir.payloads r ON r.seq=c.resources_seq
+            LEFT JOIN transport_ir.payloads p ON p.seq=c.parameters_seq
+            LEFT JOIN transport_ir.payloads a ON a.seq=c.attributes_seq
+            JOIN transport_ir.payloads k ON k.seq=c.constants_seq
+            JOIN transport_ir.payloads x ON x.seq=c.extras_seq
+            ORDER BY c.seq""",
+            (namespace, namespace),
         )
 
         connection.execute(
@@ -234,49 +229,32 @@ def write_placement_emuir_from_split(
         connection.execute(
             """CREATE TEMP TABLE exact_info(
               net_id TEXT PRIMARY KEY,
-              role TEXT NOT NULL,
-              segment_ids_json TEXT NOT NULL
+              role TEXT NOT NULL
             ) WITHOUT ROWID"""
         )
-        digest_row = connection.execute(
-            "SELECT value FROM split.metadata "
-            "WHERE key='semantic_contract_sha256'"
-        ).fetchone()
-        digest = json.loads(digest_row[0]) if digest_row is not None else None
+        exact_metadata = {
+            row[0]: json.loads(row[1])
+            for row in connection.execute(
+                "SELECT key,value FROM split.metadata "
+                "WHERE key='semantic_contract_sha256'"
+            )
+        }
+        digest = exact_metadata.get("semantic_contract_sha256")
         if digest is not None:
             connection.execute(
-                """INSERT INTO exact_info(net_id,role,segment_ids_json)
+                """INSERT INTO exact_info(net_id,role)
                 SELECT DISTINCT cs.net_id,
                   CASE
                     WHEN s.source_kind='transport_shadow'
                       THEN 'transport_shadow_sink'
                     WHEN cs.source_part_index=? THEN 'cut_source'
                     ELSE 'local_logic'
-                  END,
-                  '[]'
+                  END
                 FROM split.cut_sinks cs
                 JOIN split.source_nets n ON n.original_net=cs.net_id
                 JOIN split.net_segments s
                   ON s.source_net_seq=n.source_net_seq AND s.part_index=?""",
                 (part_index, part_index),
-            )
-            connection.execute(
-                """UPDATE exact_info SET segment_ids_json=COALESCE((
-                  SELECT json_group_array(segment_id) FROM (
-                    SELECT segment_id FROM split.exact_cut_sources x
-                    WHERE x.net_id=exact_info.net_id ORDER BY ordinal
-                  )
-                ),'[]') WHERE role='cut_source'"""
-            )
-            connection.execute(
-                """UPDATE exact_info SET segment_ids_json=COALESCE((
-                  SELECT json_group_array(segment_id) FROM (
-                    SELECT segment_id FROM split.exact_logic_segments x
-                    WHERE x.source_cut_net=exact_info.net_id
-                      AND x.part_index=? ORDER BY segment_id
-                  )
-                ),'[]') WHERE role='transport_shadow_sink'""",
-                (part_index,),
             )
 
         connection.execute(
@@ -294,8 +272,7 @@ def write_placement_emuir_from_split(
                        '$.static_exact_boundary',
                        json_object(
                          'semantic_contract_sha256',?,
-                         'role',e.role,
-                         'logic_segment_ids',json(e.segment_ids_json)
+                         'role',e.role
                        )
                      )
                    END
@@ -343,19 +320,16 @@ def write_placement_emuir_from_split(
         )
 
         connection.executemany(
-            "INSERT OR IGNORE INTO requested_nets VALUES (?,?)",
-            (
-                [(0, net_id) for net_id in sorted(set(expected_source_nets))]
-                + [
-                    (1, net_id)
-                    for net_id, _instance_id
-                    in sorted(set(expected_rx_bindings))
-                ]
-            ),
+            "INSERT OR IGNORE INTO expected_rx VALUES (?,?)",
+            expected_rx_bindings,
         )
         connection.executemany(
-            "INSERT OR IGNORE INTO expected_rx VALUES (?,?)",
-            sorted(set(expected_rx_bindings)),
+            "INSERT OR IGNORE INTO requested_nets VALUES (0,?)",
+            ((net_id,) for net_id in expected_source_nets),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO requested_nets "
+            "SELECT 1,net_id FROM expected_rx"
         )
         missing = connection.execute(
             """SELECT r.kind,r.net_id FROM requested_nets r
@@ -463,48 +437,60 @@ def write_placement_emuir_from_split(
             "INSERT OR IGNORE INTO fanout_recompute VALUES (?)",
             ((net_id,) for net_id in sorted(set(recompute_fanout))),
         )
-
-        for net in transport_nets:
-            connection.execute(
-                "INSERT INTO stage_nets VALUES (?,?,?,?,?,?,?)",
-                (
-                    net["id"],
-                    net.get("name"),
-                    net.get("yosys_bit"),
-                    net.get("bus_index"),
-                    int(net.get("fanout", len(net["sinks"]))),
-                    net["cut_class"],
-                    _extras(
-                        net,
-                        {
-                            "id",
-                            "name",
-                            "yosys_bit",
-                            "bus_index",
-                            "fanout",
-                            "cut_class",
-                            "aliases",
-                            "drivers",
-                            "sinks",
-                        },
-                    ),
-                ),
-            )
-            for ordinal, alias in enumerate(net.get("aliases", [])):
-                connection.execute(
-                    "INSERT INTO stage_aliases VALUES (?,?,?)",
-                    (net["id"], ordinal, alias),
-                )
-            for role, collection in enumerate(("drivers", "sinks")):
-                connection.executemany(
-                    "INSERT INTO stage_endpoints VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        _endpoint_row(
-                            net["id"], role, 0, 0, 0, ordinal, endpoint
-                        )
-                        for ordinal, endpoint in enumerate(net[collection])
-                    ),
-                )
+        connection.execute(
+            "CREATE TEMP TABLE consumed_transport_nets(id TEXT PRIMARY KEY) "
+            "WITHOUT ROWID"
+        )
+        connection.executemany(
+            "INSERT OR IGNORE INTO consumed_transport_nets VALUES (?)",
+            ((net_id,) for net_id in consumed_transport_nets),
+        )
+        # Copy the synthesized transport graph set-wise.  The two observation
+        # ports are internal lowering scaffolding and are omitted from every
+        # surviving net, matching the historical logical merge exactly.
+        connection.execute(
+            """INSERT INTO stage_nets
+            SELECT ? || n.id,
+                   ? || CASE WHEN n.flags & 1 THEN n.id ELSE n.name END,
+                   n.yosys_bit,n.bus_index,
+                   (SELECT count(*) FROM transport_ir.endpoint_records e
+                    JOIN transport_ir.pin_names p ON p.seq=e.port_seq
+                    WHERE e.net_seq=n.seq AND e.role=1
+                      AND NOT (e.instance_seq IS NULL AND
+                               p.name IN ('source_values','shadow_values'))),
+                   n.cut_class,x.value
+            FROM transport_ir.net_records n
+            JOIN transport_ir.payloads x ON x.seq=n.extras_seq
+            LEFT JOIN consumed_transport_nets c ON c.id=n.id
+            WHERE c.id IS NULL ORDER BY n.seq""",
+            (namespace, namespace),
+        )
+        connection.execute(
+            """INSERT INTO stage_aliases
+            SELECT ? || n.id,a.ordinal,a.alias
+            FROM transport_ir.alias_records a
+            JOIN transport_ir.net_records n ON n.seq=a.net_seq
+            LEFT JOIN consumed_transport_nets c ON c.id=n.id
+            WHERE c.id IS NULL ORDER BY n.seq,a.ordinal""",
+            (namespace,),
+        )
+        connection.execute(
+            """INSERT INTO stage_endpoints
+            SELECT ? || n.id,e.role,0,0,0,e.ordinal,
+                   CASE WHEN cell.id IS NULL THEN NULL ELSE ? || cell.id END,
+                   pin.name,e.bit,x.value
+            FROM transport_ir.endpoint_records e
+            JOIN transport_ir.net_records n ON n.seq=e.net_seq
+            LEFT JOIN transport_ir.cell_records cell ON cell.seq=e.instance_seq
+            JOIN transport_ir.pin_names pin ON pin.seq=e.port_seq
+            JOIN transport_ir.payloads x ON x.seq=e.extras_seq
+            LEFT JOIN consumed_transport_nets c ON c.id=n.id
+            WHERE c.id IS NULL
+              AND NOT (e.instance_seq IS NULL AND
+                       pin.name IN ('source_values','shadow_values'))
+            ORDER BY n.seq,e.role,e.ordinal""",
+            (namespace, namespace),
+        )
 
         connection.execute(
             """UPDATE stage_nets SET fanout=(

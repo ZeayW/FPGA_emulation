@@ -16,7 +16,8 @@ from typing import Any, Callable, Dict, List, Mapping
 PACKED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v1"
 COMPRESSED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v2"
 LEGACY_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v1"
-PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v2"
+PREVIOUS_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v2"
+PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v3"
 _COMPRESSED_JSON_CODEC = "zlib-level-1-base64-canonical-json"
 _COMPRESSED_INDEX_CODEC = "zlib-level-1-base64-unsigned-index"
 
@@ -442,8 +443,28 @@ def pack_phase3_assignment(
         )
     semantic_contract = value.get("semantic_contract")
     compressed_semantic_contract = None
+    indexed_semantic_contract = None
     if semantic_contract is not None:
-        compressed_semantic_contract = _compress_json(semantic_contract)
+        digest = value.get("semantic_contract_sha256")
+        if (
+            semantic_contract.get("schema")
+            == "emuflow.static-exact-combinational-cut/v3"
+            and isinstance(digest, str)
+            and len(digest) == 64
+        ):
+            # The v2 assignment index already contains the complete semantic
+            # relation.  Keep only its stable identity in JSON so publication
+            # does not serialize, compress, base64-encode and then write the
+            # same multi-gigabyte graph a second time.
+            indexed_semantic_contract = {
+                "artifact": "assignment.sqlite",
+                "schema": semantic_contract["schema"],
+                "sha256": digest,
+            }
+        else:
+            # Compatibility for non-structural test/legacy contracts that the
+            # assignment index does not know how to reconstruct.
+            compressed_semantic_contract = _compress_json(semantic_contract)
     document = {
         key: item
         for key, item in value.items()
@@ -464,6 +485,7 @@ def pack_phase3_assignment(
         "cluster_parts": cluster_parts,
         "partitions": packed_partitions,
         "semantic_contract": compressed_semantic_contract,
+        "semantic_contract_index": indexed_semantic_contract,
     }
 
 
@@ -475,6 +497,7 @@ def expand_phase3_assignment(
     schema = value.get("schema")
     if schema not in {
         LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+        PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
         PACKED_ASSIGNMENT_SCHEMA,
     }:
         raise ValueError("not a packed Phase 3 assignment document")
@@ -484,6 +507,12 @@ def expand_phase3_assignment(
     raw_cluster_parts = value.get("cluster_parts")
     partitions = value.get("partitions")
     compressed_semantic_contract = value.get("semantic_contract")
+    indexed_semantic_contract = value.get("semantic_contract_index")
+    if (
+        compressed_semantic_contract is not None
+        and indexed_semantic_contract is not None
+    ):
+        raise ValueError("packed assignment semantic storage is ambiguous")
     if (
         not isinstance(document, dict)
         or isinstance(count, bool)
@@ -567,6 +596,32 @@ def expand_phase3_assignment(
     }
     if semantic_contract is not None:
         result["semantic_contract"] = semantic_contract
+    if indexed_semantic_contract is not None:
+        if (
+            not isinstance(indexed_semantic_contract, dict)
+            or indexed_semantic_contract.get("artifact")
+            != "assignment.sqlite"
+            or indexed_semantic_contract.get("schema")
+            != "emuflow.static-exact-combinational-cut/v3"
+            or not isinstance(indexed_semantic_contract.get("sha256"), str)
+            or len(indexed_semantic_contract["sha256"]) != 64
+            or indexed_semantic_contract["sha256"]
+            != result.get("semantic_contract_sha256")
+        ):
+            raise ValueError("packed assignment semantic index is malformed")
+        index_path = path.with_name(indexed_semantic_contract["artifact"])
+        if not index_path.is_file():
+            raise ValueError(
+                f"{path}: indexed semantic contract requires sibling "
+                f"{indexed_semantic_contract['artifact']}"
+            )
+        from .phase3_assignment_index import (
+            read_phase3_exact_semantic_contract,
+        )
+
+        result["semantic_contract"] = read_phase3_exact_semantic_contract(
+            index_path, result
+        )
     return result
 
 
@@ -781,6 +836,7 @@ def read_phase3_assignment_view(
         raise ValueError(f"{path}: expected a JSON object")
     if value.get("schema") not in {
         LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+        PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
         PACKED_ASSIGNMENT_SCHEMA,
     }:
         if (
@@ -799,6 +855,9 @@ def read_phase3_assignment_view(
         raise ValueError("packed assignment downstream view is malformed")
     result = {**document, "partitions": partitions}
     compressed = value.get("semantic_contract")
+    indexed = value.get("semantic_contract_index")
+    if compressed is not None and indexed is not None:
+        raise ValueError("packed assignment semantic storage is ambiguous")
     enrich_indexed_contract = False
     if compressed is not None and include_semantic_contract:
         result["semantic_contract"] = _decompress_json(
@@ -815,6 +874,35 @@ def read_phase3_assignment_view(
             "emuflow.static-exact-combinational-cut/v3"
         )
         enrich_indexed_contract = True
+    elif indexed is not None:
+        if (
+            not isinstance(indexed, dict)
+            or indexed.get("artifact") != "assignment.sqlite"
+            or indexed.get("schema")
+            != "emuflow.static-exact-combinational-cut/v3"
+            or not isinstance(indexed.get("sha256"), str)
+            or len(indexed["sha256"]) != 64
+            or indexed["sha256"] != result.get("semantic_contract_sha256")
+        ):
+            raise ValueError("packed assignment semantic index is malformed")
+        index_path = path.with_name(indexed["artifact"])
+        if not index_path.is_file():
+            raise ValueError(
+                f"{path}: indexed semantic contract requires sibling "
+                f"{indexed['artifact']}"
+            )
+        if include_semantic_contract:
+            from .phase3_assignment_index import (
+                read_phase3_exact_semantic_contract,
+            )
+
+            result["semantic_contract"] = read_phase3_exact_semantic_contract(
+                index_path, result
+            )
+        else:
+            result["semantic_contract_indexed"] = True
+            result["semantic_contract_schema"] = indexed["schema"]
+            enrich_indexed_contract = True
     if include_cluster_assignment:
         result["cluster_assignment"] = PackedClusterAssignment(value)
     if include_instance_assignment:
@@ -846,7 +934,11 @@ def read_phase3_assignment_view(
         value = None
         index_path = path.with_name("assignment.sqlite")
         if index_path.is_file():
-            _enrich_indexed_cut_dependencies(result, index_path)
+            _enrich_indexed_cut_dependencies(
+                result,
+                index_path,
+                require_identity=indexed is not None,
+            )
     return result
 
 
@@ -860,7 +952,10 @@ def _segment_number(segment_id: Any) -> int:
 
 
 def _enrich_indexed_cut_dependencies(
-    assignment: Dict[str, Any], index_path: Path
+    assignment: Dict[str, Any],
+    index_path: Path,
+    *,
+    require_identity: bool = False,
 ) -> None:
     """Reconstruct route-level dependency fields without semantic JSON.
 
@@ -893,33 +988,79 @@ def _enrich_indexed_cut_dependencies(
         uri=True,
     )
     try:
-        exact_nodes = {
-            str(row[0])
-            for row in connection.execute("SELECT net_id FROM exact_cut_nodes")
+        metadata = {
+            str(row[0]): json.loads(row[1])
+            for row in connection.execute(
+                "SELECT key,value FROM metadata WHERE key IN "
+                "('semantic_contract_schema','semantic_contract_sha256',"
+                "'semantic_contract_binary')"
+            )
         }
+        if require_identity:
+            if (
+                metadata.get("semantic_contract_schema")
+                != assignment.get("semantic_contract_schema")
+                or metadata.get("semantic_contract_sha256")
+                != assignment.get("semantic_contract_sha256")
+            ):
+                raise ValueError(
+                    "assignment index semantic contract identity disagrees"
+                )
+        binary = metadata.get("semantic_contract_binary")
+        if isinstance(binary, Mapping):
+            from .phase3_exact_binary import (
+                iter_phase3_exact_node_sources,
+                iter_phase3_exact_segments,
+            )
+
+            artifact = binary.get("artifact")
+            if not isinstance(artifact, str) or Path(artifact).name != artifact:
+                raise ValueError("assignment Static Exact binary path is invalid")
+            binary_path = index_path.with_name(artifact)
+            node_rows = iter_phase3_exact_node_sources(binary_path, binary)
+            segment_rows = (
+                (segment.get("source_cut_net"), segment["id"])
+                for segment in iter_phase3_exact_segments(binary_path, binary)
+                if isinstance(segment.get("source_cut_net"), str)
+            )
+        else:
+            node_rows = (
+                (str(row[0]), [
+                    _segment_number(item[0])
+                    for item in connection.execute(
+                        "SELECT segment_id FROM exact_cut_sources "
+                        "WHERE net_id=? ORDER BY ordinal", (row[0],)
+                    )
+                ])
+                for row in connection.execute(
+                    "SELECT net_id FROM exact_cut_nodes ORDER BY net_id"
+                )
+            )
+            segment_rows = connection.execute(
+                "SELECT source_cut_net,segment_id FROM exact_logic_segments"
+            )
+
+        exact_nodes = set()
+        for net_id, segment_numbers in node_rows:
+            exact_nodes.add(str(net_id))
+            sink = net_index.get(str(net_id))
+            if sink is None:
+                raise ValueError("assignment index cut source is unknown")
+            for number in segment_numbers:
+                if number >= len(segment_sinks):
+                    segment_sinks.extend(
+                        array("i", [-1]) * (number + 1 - len(segment_sinks))
+                    )
+                if segment_sinks[number] != -1:
+                    raise ValueError(
+                        "assignment index source segment is not unique"
+                    )
+                segment_sinks[number] = sink
         if exact_nodes != set(net_ids):
             raise ValueError(
                 "assignment index exact-cut coverage is inconsistent"
             )
-        for net_id, segment_id in connection.execute(
-            "SELECT net_id,segment_id FROM exact_cut_sources"
-        ):
-            sink = net_index.get(str(net_id))
-            if sink is None:
-                raise ValueError("assignment index cut source is unknown")
-            number = _segment_number(segment_id)
-            if number >= len(segment_sinks):
-                segment_sinks.extend(
-                    array("i", [-1]) * (number + 1 - len(segment_sinks))
-                )
-            if segment_sinks[number] != -1:
-                raise ValueError(
-                    "assignment index source segment is not unique"
-                )
-            segment_sinks[number] = sink
-        for source_net, segment_id in connection.execute(
-            "SELECT source_cut_net,segment_id FROM exact_logic_segments"
-        ):
+        for source_net, segment_id in segment_rows:
             number = _segment_number(segment_id)
             if number >= len(segment_sinks):
                 continue
@@ -1005,7 +1146,11 @@ def read_phase3_cut_timing_view(
             str(row["key"]): json.loads(row["value"])
             for row in connection.execute("SELECT key,value FROM metadata")
         }
-        if metadata.get("schema") != "emuflow.phase3-assignment-sqlite/v1":
+        if metadata.get("schema") not in {
+            "emuflow.phase3-assignment-sqlite/v1",
+            "emuflow.phase3-assignment-sqlite/v2",
+            "emuflow.phase3-assignment-sqlite/v3",
+        }:
             raise ValueError("assignment index schema is invalid")
         parts = {
             int(row["part_index"]): str(row["fpga"])
@@ -1046,12 +1191,26 @@ def read_phase3_cut_timing_view(
         }
         exact_digest = metadata.get("semantic_contract_sha256")
         if exact_digest is not None:
-            exact_nets = [
-                str(row["net_id"])
-                for row in connection.execute(
-                    "SELECT net_id FROM exact_cut_nodes ORDER BY net_id"
-                )
-            ]
+            binary = metadata.get("semantic_contract_binary")
+            if isinstance(binary, Mapping):
+                from .phase3_exact_binary import iter_phase3_exact_node_sources
+
+                artifact = binary.get("artifact")
+                if not isinstance(artifact, str) or Path(artifact).name != artifact:
+                    raise ValueError("assignment Static Exact binary path is invalid")
+                exact_nets = [
+                    net
+                    for net, _segments in iter_phase3_exact_node_sources(
+                        path.with_name(artifact), binary
+                    )
+                ]
+            else:
+                exact_nets = [
+                    str(row["net_id"])
+                    for row in connection.execute(
+                        "SELECT net_id FROM exact_cut_nodes ORDER BY net_id"
+                    )
+                ]
             if exact_nets != sorted(cut_records):
                 raise ValueError(
                     "assignment index exact-cut coverage is inconsistent"

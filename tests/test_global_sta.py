@@ -1,13 +1,18 @@
 import os
 import subprocess
+from array import array
+from collections.abc import Sequence
 
 import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.global_sta import (
-    EventCheck, _compress_path_equivalent_checks, _write_expanded_measurements,
-    adopt_opensta_results, bind_physical_checks, compare_system_timing, export_event_checks,
-    read_engine_identity, read_measurements, run_event_checks, validate_checks,
+    EventCheck, _EventCheckBuilder, _IndexedEventChecks,
+    _IndexedPathMetadata, _PathMetadataBuilder,
+    _compress_path_equivalent_checks, _write_expanded_measurements,
+    adopt_opensta_results, bind_physical_checks, build_opensta_timing,
+    compare_system_timing, export_event_checks, read_engine_identity,
+    read_measurements, run_event_checks, validate_checks,
 )
 
 
@@ -47,12 +52,29 @@ def test_reject_incomplete_duplicate_and_nan():
         with pytest.raises(ValidationError):
             validate_checks(bad)
 
+    with pytest.raises(ValidationError, match="observe each original path once"):
+        validate_checks(example() + [
+            EventCheck("p", "target", "second-capture", 16, (8, .5, 7), 18)
+        ])
+
 
 def test_measurement_requires_exact_endpoint_coverage(tmp_path):
     path = tmp_path / "out"
     path.write_text("endpoint\tarrival_ns\trequired_ns\tslack_ns\no0\t3\t4\t1\n")
     with pytest.raises(ValidationError, match="endpoints"):
         read_measurements(path, example())
+
+
+def test_measurement_requires_canonical_endpoint_order(tmp_path):
+    rows = example()[:2]
+    path = tmp_path / "out"
+    path.write_text(
+        "endpoint\tarrival_ns\trequired_ns\tslack_ns\n"
+        "o1\t11\t12\t1\n"
+        "o0\t3\t4\t1\n"
+    )
+    with pytest.raises(ValidationError, match="endpoint"):
+        read_measurements(path, rows, verify_arcs=False)
 
 
 def test_engine_identity_from_existing_banner(tmp_path):
@@ -115,6 +137,212 @@ def test_check_population_validation_is_linear():
     assert len(validate_checks(rows)) == 40000
 
 
+def test_public_check_validation_preserves_list_snapshot_contract(tmp_path):
+    class MutableChecks(Sequence):
+        def __init__(self, rows):
+            self.rows = rows
+
+        def __len__(self):
+            return len(self.rows)
+
+        def __getitem__(self, index):
+            return self.rows[index]
+
+    expected = example()
+    for source in (expected, tuple(expected), MutableChecks(expected)):
+        validated = validate_checks(source)
+        assert isinstance(validated, list)
+        assert validated == expected
+        assert validated is not source
+
+    mutable = MutableChecks(list(expected))
+    snapshot = validate_checks(mutable)
+    mutable.rows.clear()
+    assert snapshot == expected
+
+    exported = export_event_checks(tuple(expected), tmp_path)
+    assert isinstance(exported, list)
+    assert exported == expected
+
+
+def test_indexed_check_builder_is_exact_compact_and_sealed(tmp_path):
+    rows = [
+        EventCheck(
+            f"p{path}", role, event, 0.0, (1.0, 2.0, 3.0), deadline
+        )
+        for path in range(20000)
+        for role, event, deadline in (
+            ("tx", "shared-tx", 4.0),
+            ("target", "capture", 20.0),
+            ("runtime", "capture", 100.0),
+            ("commit", "capture", 96.0),
+        )
+    ]
+    builder = _EventCheckBuilder()
+    for row in rows:
+        builder.append(row)
+    compact = builder.finish()
+
+    assert isinstance(compact, _IndexedEventChecks)
+    assert compact == rows
+    assert len(compact._paths) == 20000
+    assert compact._events == ["shared-tx", "capture"]
+    # 4-byte path ID, 1-byte role, 4-byte event ID, two 8-byte scalars,
+    # one 8-byte arc end offset, three 8-byte arcs, one 8-byte numerical hash,
+    # and one 4-byte representative ID per check; plus the initial arc offset
+    # and four representative row IDs. This is fixed-width storage rather than
+    # one Python dataclass and arc tuple per check.
+    assert compact.typed_payload_bytes == len(rows) * 69 + 24
+    assert compact.typed_payload_bytes < len(rows) * 76
+    assert compact[-1] == rows[-1]
+    assert compact[3:7] == rows[3:7]
+    representatives, mapping = _compress_path_equivalent_checks(compact)
+    assert len(representatives) == 4
+    assert list(mapping[:8]) == list(range(4)) * 2
+    assert validate_checks(compact) is compact
+    assert validate_checks(representatives) is representatives
+    with pytest.raises(ValidationError, match="sealed"):
+        builder.append(rows[0])
+    with pytest.raises(ValidationError, match="sealed"):
+        builder.finish()
+
+    list_dir = tmp_path / "list"
+    compact_dir = tmp_path / "compact"
+    small_builder = _EventCheckBuilder()
+    for row in rows[:8]:
+        small_builder.append(row)
+    small_compact = small_builder.finish()
+    export_event_checks(rows[:8], list_dir)
+    assert export_event_checks(small_compact, compact_dir) is small_compact
+    for name in (
+        "global_timing.lib",
+        "global_timing.v",
+        "global_timing.sdc",
+        "analyze.tcl",
+    ):
+        assert (compact_dir / name).read_bytes() == (list_dir / name).read_bytes()
+
+
+def test_indexed_check_view_rejects_corrupt_identity():
+    builder = _EventCheckBuilder()
+    for row in example():
+        builder.append(row)
+    compact = builder.finish()
+    compact._roles[0] = 255
+    with pytest.raises(ValidationError, match="identity"):
+        compact[0]
+
+    builder = _EventCheckBuilder()
+    for row in example():
+        builder.append(row)
+    compact = builder.finish()
+    compact._original_to_representative[0] = (1 << 32) - 1
+    with pytest.raises(ValidationError, match="lost a timing check"):
+        _compress_path_equivalent_checks(compact)
+
+
+def test_indexed_path_metadata_is_sorted_compact_mapping():
+    from emuflow.local_path_timing import path_id_set_sha256
+
+    builder = _PathMetadataBuilder()
+    builder.append(
+        "path-z",
+        representative_path="representative",
+        path_scope="cross-fpga",
+        clock_domain="clk",
+        target_period_ns=10.0,
+        physical_logic_segments_cone_bound=True,
+        interconnect_delay_model="linear-ratio-v1",
+    )
+    builder.append(
+        "path-a",
+        representative_path="path-a",
+        path_scope="same-fpga-local",
+        clock_domain=None,
+        target_period_ns=20.0,
+        physical_logic_segments_cone_bound=False,
+    )
+    metadata = builder.finish()
+
+    assert isinstance(metadata, _IndexedPathMetadata)
+    assert list(metadata) == ["path-a", "path-z"]
+    assert metadata["path-a"] == {
+        "representative_path": "path-a",
+        "path_scope": "same-fpga-local",
+        "clock_domain": None,
+        "target_period_ns": 20.0,
+        "physical_logic_segments_cone_bound": False,
+    }
+    assert metadata["path-z"]["interconnect_delay_model"] == "linear-ratio-v1"
+    assert metadata.typed_payload_bytes == 44
+    assert len(metadata._strings) == 4
+    assert metadata.path_id_set_sha256() == path_id_set_sha256(
+        ["path-z", "path-a"]
+    )
+    with pytest.raises(KeyError):
+        metadata["missing"]
+    with pytest.raises(ValidationError, match="sealed"):
+        builder.finish()
+
+    invalid = _PathMetadataBuilder()
+    with pytest.raises(ValidationError, match="representative"):
+        invalid.append(
+            "path",
+            representative_path=None,
+            path_scope="cross-fpga",
+            clock_domain="clk",
+            target_period_ns=10.0,
+            physical_logic_segments_cone_bound=False,
+        )
+
+    duplicate = _PathMetadataBuilder()
+    for _ in range(2):
+        duplicate.append(
+            "same",
+            representative_path="same",
+            path_scope="cross-fpga",
+            clock_domain="clk",
+            target_period_ns=10.0,
+            physical_logic_segments_cone_bound=False,
+        )
+    with pytest.raises(ValidationError, match="overlap"):
+        duplicate.finish()
+
+
+def test_canonical_check_validation_does_not_build_interleaved_population(monkeypatch):
+    import emuflow.global_sta as sta
+
+    def forbidden(rows):
+        raise AssertionError("canonical checks used the interleaved compatibility path")
+
+    monkeypatch.setattr(sta, "_validate_interleaved_checks", forbidden)
+    rows = [EventCheck(f"p{i}", role, "capture", 0, (1,), deadline)
+            for i in range(20000)
+            for role, deadline in (("target", 2), ("runtime", 20))]
+    assert sta.validate_checks(rows) == rows
+
+
+def test_interleaved_check_validation_retains_legacy_compatibility(monkeypatch):
+    import emuflow.global_sta as sta
+
+    original = sta._validate_interleaved_checks
+    calls = []
+
+    def recording(rows):
+        calls.append(len(rows))
+        return original(rows)
+
+    monkeypatch.setattr(sta, "_validate_interleaved_checks", recording)
+    rows = [
+        EventCheck("p", "target", "capture", 0, (1,), 2),
+        EventCheck("q", "target", "capture", 0, (1,), 2),
+        EventCheck("p", "runtime", "capture", 0, (1,), 20),
+        EventCheck("q", "runtime", "capture", 0, (1,), 20),
+    ]
+    assert sta.validate_checks(rows) == rows
+    assert calls == [4]
+
+
 def test_exact_compression_uses_complete_path_bundles(tmp_path):
     first = example()
     second = [EventCheck("q", row.role, f"q-{row.event}", row.launch_ns,
@@ -125,7 +353,8 @@ def test_exact_compression_uses_complete_path_bundles(tmp_path):
     rows = validate_checks(first + second + changed)
     representatives, mapping = _compress_path_equivalent_checks(rows)
     assert representatives == first + changed
-    assert mapping == list(range(5)) + list(range(5)) + list(range(5, 10))
+    assert isinstance(mapping, array)
+    assert list(mapping) == list(range(5)) + list(range(5)) + list(range(5, 10))
 
     values = [{"path": row.path, "role": row.role, "event": row.event,
                "arrival_ns": row.launch_ns + sum(row.arcs_ns),
@@ -133,12 +362,43 @@ def test_exact_compression_uses_complete_path_bundles(tmp_path):
                "slack_ns": row.required_ns-row.launch_ns-sum(row.arcs_ns)}
               for row in representatives]
     output = tmp_path / "measurements.tsv"
-    _write_expanded_measurements(output, rows, values, mapping)
+    emitted = _write_expanded_measurements(output, rows, values, mapping)
     expanded = read_measurements(output, rows)
+    assert not isinstance(emitted, list)
+    assert emitted == expanded
     assert len(expanded) == len(rows)
     assert expanded[5]["path"] == "q"
     assert expanded[5]["event"] == "q-first"
     assert expanded[5]["slack_ns"] == expanded[0]["slack_ns"]
+
+    damaged = array("I", mapping)
+    damaged[10] = 0
+    with pytest.raises(ValidationError, match="mapping disagrees"):
+        _write_expanded_measurements(
+            tmp_path / "damaged-mapping.tsv",
+            rows,
+            values,
+            damaged,
+            representatives,
+        )
+
+
+def test_exact_compression_does_not_trust_bundle_hash(monkeypatch):
+    import emuflow.global_sta as sta
+
+    rows = [
+        EventCheck(path, role, f"{path}-{role}", 0, (delay,), deadline)
+        for path, delay in (("p", 1.0), ("q", 2.0))
+        for role, deadline in (("target", 4.0), ("runtime", 40.0))
+    ]
+    monkeypatch.setattr(sta, "_event_check_values_hash", lambda *args: 0)
+    builder = _EventCheckBuilder()
+    for row in rows:
+        builder.append(row)
+    compact = validate_checks(builder.finish())
+    representatives, mapping = _compress_path_equivalent_checks(compact)
+    assert representatives == rows
+    assert list(mapping) == [0, 1, 2, 3]
 
 
 def test_exact_compression_scales_for_repeated_path_classes():
@@ -150,6 +410,66 @@ def test_exact_compression_scales_for_repeated_path_classes():
     assert len(representatives) == 2
     assert len(mapping) == len(rows)
     assert set(mapping) == {0, 1}
+
+
+def test_exact_compression_preserves_interleaved_compatibility():
+    rows = validate_checks([
+        EventCheck("p", "target", "p-target", 0, (1,), 4),
+        EventCheck("q", "target", "q-target", 0, (1,), 4),
+        EventCheck("p", "runtime", "p-runtime", 0, (1,), 40),
+        EventCheck("q", "runtime", "q-runtime", 0, (1,), 40),
+    ])
+    representatives, mapping = _compress_path_equivalent_checks(rows)
+    assert representatives == rows[:1] + rows[2:3]
+    assert list(mapping) == [0, 0, 1, 1]
+
+
+def test_lazy_expansion_is_reiterable_sliceable_and_fail_closed(tmp_path):
+    rows = validate_checks(example())
+    representatives, mapping = _compress_path_equivalent_checks(rows)
+    values = [
+        {
+            "path": row.path,
+            "role": row.role,
+            "event": row.event,
+            "arrival_ns": row.launch_ns + sum(row.arcs_ns),
+            "required_ns": row.required_ns,
+            "slack_ns": row.required_ns - row.launch_ns - sum(row.arcs_ns),
+        }
+        for row in representatives
+    ]
+    expanded = _write_expanded_measurements(
+        tmp_path / "measurements.tsv", rows, values, mapping
+    )
+    assert list(expanded) == list(expanded)
+    assert expanded[-1] == list(expanded)[-1]
+    assert expanded[1:3] == list(expanded)[1:3]
+    timing = build_opensta_timing(
+        {
+            "virtual_dut_clocks": {"clk": {"nominal_period_ns": 100}},
+            "virtual_dut_clock": {"nominal_period_ns": 100},
+        },
+        {
+            "paths": {
+                "p": {
+                    "path_scope": "cross-fpga",
+                    "physical_logic_segments_cone_bound": False,
+                }
+            },
+            "source_binding": None,
+            "compressed_representative_paths": 1,
+        },
+        expanded,
+    )
+    assert timing["summary"]["timing_paths"] == 1
+    assert timing["summary"]["maximum_system_delay_bound_ns"] == 31.5
+
+    damaged = array("q", mapping)
+    damaged[-1] = len(values)
+    with pytest.raises(ValidationError, match="missing representative"):
+        _write_expanded_measurements(
+            tmp_path / "damaged.tsv", rows, values, damaged
+        )
 
 
 def test_run_event_checks_expands_engine_representatives(tmp_path, monkeypatch):
@@ -294,7 +614,8 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch):
     run_phase7c(*(tmp_path / f"{n}.json" for n in
                  ("schedule", "platform", "phase3", "phase4", "phase5", "phase6")),
                 tmp_path / "out", physical_summary_path=tmp_path / "physical.json",
-                routes_path=tmp_path / "routes.json")
+                routes_path=tmp_path / "routes.json",
+                allow_legacy_phase5_generation=True)
     timing = read_json(tmp_path / "out/qor_report.json")["timing"]
     assert timing["global_opensta"]["execution"] == "standalone"
     assert "cross_checker" not in timing["global_opensta"]
@@ -338,6 +659,43 @@ def test_standalone_report_preserves_event_gate_without_comparison(late, monkeyp
         )
 
 
+def test_standalone_report_preserves_interleaved_measurement_compatibility():
+    import emuflow.global_sta as sta
+
+    rows = [
+        {"path": "p", "role": "target", "event": "capture",
+         "arrival_ns": 3.0, "required_ns": 10.0, "slack_ns": 7.0},
+        {"path": "q", "role": "target", "event": "capture",
+         "arrival_ns": 4.0, "required_ns": 10.0, "slack_ns": 6.0},
+        {"path": "p", "role": "runtime", "event": "capture",
+         "arrival_ns": 3.0, "required_ns": 100.0, "slack_ns": 97.0},
+        {"path": "q", "role": "runtime", "event": "capture",
+         "arrival_ns": 4.0, "required_ns": 100.0, "slack_ns": 96.0},
+    ]
+    metadata = {
+        "paths": {
+            path: {
+                "path_scope": "cross-fpga",
+                "physical_logic_segments_cone_bound": False,
+            }
+            for path in ("p", "q")
+        },
+        "source_binding": None,
+        "compressed_representative_paths": 2,
+    }
+    report = sta.build_opensta_timing(
+        {
+            "virtual_dut_clocks": {
+                "clk": {"nominal_period_ns": 100}
+            },
+            "virtual_dut_clock": {"nominal_period_ns": 100},
+        },
+        metadata,
+        rows,
+    )
+    assert [path["path"] for path in report["paths"]] == ["p", "q"]
+
+
 def test_engine_defaults_are_uniform_and_python_is_explicit():
     import inspect
     from emuflow.cli import _build_parser
@@ -363,14 +721,57 @@ def test_physical_binding_uses_raw_measurements():
     _, routes, _ = fixture._system_inputs()
     physical = fixture._system_physical()
     physical["board_link_timing"] = build_board_link_timing_model(fixture.platform)
+    metadata = {}
     checks = bind_physical_checks(build_virtual_runtime(fixture.schedule, fixture.platform),
-                                  routes, fixture.schedule, physical, fixture.platform)
+                                  routes, fixture.schedule, physical, fixture.platform,
+                                  metadata=metadata)
+    assert isinstance(checks, _IndexedEventChecks)
+    assert isinstance(metadata["paths"], _IndexedPathMetadata)
+    assert list(metadata["paths"]) == sorted(metadata["paths"])
+    assert metadata["paths"][next(iter(metadata["paths"]))]["path_scope"] == "cross-fpga"
     assert sum(c.role == "target" for c in checks) == 1
     assert sum(c.role == "tx" for c in checks) == len(fixture.schedule["entries"])
     assert next(c for c in checks if c.role == "target").arcs_ns[-2:] == (7.0, 0.0)
     del physical["board_link_timing"]
     assert bind_physical_checks(build_virtual_runtime(fixture.schedule, fixture.platform),
                                 routes, fixture.schedule, physical, fixture.platform) == checks
+
+
+def test_physical_binding_does_not_reindex_schedule_entries():
+    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
+    from emuflow.board_link_timing import build_board_link_timing_model
+    from emuflow.runtime import build_virtual_runtime
+
+    class SinglePassEntries(list):
+        iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            if self.iterations > 1:
+                raise AssertionError("global STA rebuilt the schedule entry map")
+            return super().__iter__()
+
+    fixture = StaticExactSystemTimingTest()
+    fixture.setUp()
+    _, routes, _ = fixture._system_inputs()
+    runtime = build_virtual_runtime(fixture.schedule, fixture.platform)
+    schedule = dict(fixture.schedule)
+    schedule["entries"] = SinglePassEntries(fixture.schedule["entries"])
+    physical = fixture._system_physical()
+    physical["board_link_timing"] = build_board_link_timing_model(
+        fixture.platform
+    )
+
+    checks = bind_physical_checks(
+        runtime,
+        routes,
+        schedule,
+        physical,
+        fixture.platform,
+    )
+
+    assert checks
+    assert schedule["entries"].iterations == 1
 
 
 @pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENSTA"), reason="real OpenSTA not configured")

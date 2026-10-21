@@ -1,6 +1,7 @@
 import hashlib
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,13 @@ from emuflow.vivado_board_flow import VIVADO_BOARD_FLOW_SCHEMA
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@contextmanager
+def _validated_chimew_snapshot(bundle: Path, **_kwargs):
+    yield read_json(Path(bundle) / "pipeline_report.json"), {
+        "qualification_scope": "byte-bound-source-artifacts"
+    }
 
 
 class ChimewVivadoCorrelationTest(unittest.TestCase):
@@ -114,10 +122,8 @@ class ChimewVivadoCorrelationTest(unittest.TestCase):
             output = root / "correlation.json"
             with (
                 patch(
-                    "emuflow.chimew_correlation.validate_chimew_phase6_pipeline",
-                    return_value={
-                        "qualification_scope": "byte-bound-source-artifacts"
-                    },
+                    "emuflow.chimew_correlation.read_chimew_phase6_pipeline",
+                    side_effect=_validated_chimew_snapshot,
                 ),
                 patch(
                     "emuflow.chimew_correlation.validate_vivado_board_flow_bundle",
@@ -195,10 +201,8 @@ class ChimewVivadoCorrelationTest(unittest.TestCase):
             )
             with (
                 patch(
-                    "emuflow.chimew_correlation.validate_chimew_phase6_pipeline",
-                    return_value={
-                        "qualification_scope": "byte-bound-source-artifacts"
-                    },
+                    "emuflow.chimew_correlation.read_chimew_phase6_pipeline",
+                    side_effect=_validated_chimew_snapshot,
                 ),
                 patch(
                     "emuflow.chimew_correlation.validate_vivado_board_flow_bundle",
@@ -230,10 +234,8 @@ class ChimewVivadoCorrelationTest(unittest.TestCase):
             )
             with (
                 patch(
-                    "emuflow.chimew_correlation.validate_chimew_phase6_pipeline",
-                    return_value={
-                        "qualification_scope": "byte-bound-source-artifacts"
-                    },
+                    "emuflow.chimew_correlation.read_chimew_phase6_pipeline",
+                    side_effect=_validated_chimew_snapshot,
                 ),
                 patch(
                     "emuflow.chimew_correlation.validate_vivado_board_flow_bundle",

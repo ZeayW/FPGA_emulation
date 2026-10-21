@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform as host_platform
 import shutil
@@ -37,6 +38,7 @@ _IMPORTANT_JSON_NAMES = {
     "assignment.json",
     "routes.json",
     "schedule.json",
+    "schedule.sqlite",
     "ratio_plan.json",
     "platform.normalized.json",
     "synthesized.json",
@@ -256,6 +258,135 @@ def _candidate_files(
     return result
 
 
+def _might_declare_sidecar(path: Path) -> bool:
+    """Find selector keys without loading an unrelated graph-sized JSON."""
+
+    found_artifact = False
+    found_digest = False
+    overlap = b""
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(64 * 1024), b""):
+            window = overlap + chunk
+            found_artifact = found_artifact or b'"artifact"' in window
+            found_digest = found_digest or b'"store_sha256"' in window
+            if found_artifact and found_digest:
+                return True
+            overlap = window[-64:]
+    return False
+
+
+def _selector_sidecar(flow_root: Path, relative: Path) -> Path | None:
+    """Resolve and seal one generic root-level selector dependency."""
+
+    source = _source_file(flow_root, relative)
+    if source.suffix != ".json" or not _might_declare_sidecar(source):
+        return None
+    try:
+        with source.open("r", encoding="utf-8") as stream:
+            selector = json.load(stream)
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValidationError(
+            f"archive selector is unreadable: {relative.as_posix()}"
+        ) from error
+    if not isinstance(selector, dict):
+        return None
+    artifact = selector.get("artifact")
+    digest = selector.get("store_sha256")
+    if artifact is None and digest is None:
+        return None
+    if (
+        not isinstance(artifact, str)
+        or not artifact
+        or Path(artifact).is_absolute()
+        or not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValidationError(
+            f"archive selector dependency is malformed: {relative.as_posix()}"
+        )
+    declared = source.parent
+    for component in Path(artifact).parts:
+        if component in {"", "."}:
+            continue
+        declared = (
+            declared.parent if component == ".." else declared / component
+        )
+        if declared.is_symlink():
+            raise ValidationError(
+                "archive refuses symbolic-link selector dependency: "
+                f"{relative.as_posix()}"
+            )
+    resolved = declared.resolve()
+    if not _is_relative_to(resolved, flow_root):
+        raise ValidationError(
+            "archive selector dependency escapes the flow root: "
+            f"{relative.as_posix()}"
+        )
+    dependency = resolved.relative_to(flow_root)
+    sidecar = _source_file(flow_root, dependency)
+    if _sha256(sidecar) != digest:
+        raise ValidationError(
+            "archive selector dependency SHA-256 disagrees: "
+            f"{relative.as_posix()}"
+        )
+    expected_bytes = selector.get("store_bytes")
+    if expected_bytes is not None and (
+        isinstance(expected_bytes, bool)
+        or not isinstance(expected_bytes, int)
+        or expected_bytes < 0
+        or sidecar.stat().st_size != expected_bytes
+    ):
+        raise ValidationError(
+            "archive selector dependency size disagrees: "
+            f"{relative.as_posix()}"
+        )
+    return dependency
+
+
+def _atomic_retention_groups(
+    flow_root: Path, candidates: Mapping[Path, set[str]]
+) -> Dict[Path, frozenset[Path]]:
+    """Join every selector and sealed sidecar into one retention component."""
+
+    parents = {relative: relative for relative in candidates}
+
+    def find(item: Path) -> Path:
+        root = item
+        while parents[root] != root:
+            root = parents[root]
+        while parents[item] != item:
+            next_item = parents[item]
+            parents[item] = root
+            item = next_item
+        return root
+
+    def union(left: Path, right: Path) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    for relative in sorted(candidates, key=lambda item: item.as_posix()):
+        dependency = _selector_sidecar(flow_root, relative)
+        if dependency is None:
+            continue
+        if dependency not in parents:
+            raise ValidationError(
+                "archive selector dependency was not discovered: "
+                f"{dependency.as_posix()}"
+            )
+        union(relative, dependency)
+
+    components: Dict[Path, set[Path]] = {}
+    for relative in parents:
+        components.setdefault(find(relative), set()).add(relative)
+    return {
+        relative: frozenset(components[find(relative)])
+        for relative in parents
+    }
+
+
 def _external_inputs(report: Mapping[str, Any]) -> list[Dict[str, Any]]:
     frontend = report.get("stages", {}).get("frontend", {})
     synthesis = frontend.get("synthesis", {}) if isinstance(frontend, dict) else {}
@@ -332,6 +463,11 @@ def create_validation_archive(
         report, flow_root
     )
     candidates = _candidate_files(flow_root, reported)
+    retention_groups = _atomic_retention_groups(flow_root, candidates)
+    candidate_sizes = {
+        relative: _source_file(flow_root, relative).stat().st_size
+        for relative in candidates
+    }
 
     temporary = archive_dir.with_name(
         f".{archive_dir.name}.creating-{os.getpid()}"
@@ -354,10 +490,13 @@ def create_validation_archive(
                         f"{relative.as_posix()}"
                     )
             verified_declared += len(artifact_roles)
-            size = source.stat().st_size
+            size = candidate_sizes[relative]
             retained = (
                 relative == Path("multi-fpga-flow-report.json")
-                or size <= max_copy_bytes
+                or all(
+                    candidate_sizes[member] <= max_copy_bytes
+                    for member in retention_groups[relative]
+                )
             )
             archive_path = None
             if retained:
@@ -421,6 +560,7 @@ def create_validation_archive(
             "retention_policy": {
                 "max_copy_bytes": max_copy_bytes,
                 "large_artifacts": "sha256-and-size-only",
+                "selector_sidecars": "atomic-retention-groups",
                 "symbolic_links": "rejected",
                 "source_cleanup_requires_zero_hash_only_files": True,
             },

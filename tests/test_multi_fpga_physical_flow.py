@@ -1,5 +1,7 @@
 import copy
 import hashlib
+import io
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -7,12 +9,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
+from emuflow.chimew_binding_storage import (
+    ChimewBindingEntrySequence,
+    write_chimew_binding_storage,
+)
 from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.multi_fpga_physical_flow import (
     MULTI_FPGA_PHYSICAL_SCHEMA,
     _assemble_multi_fpga_physical_results,
     _implementation_stage,
+    _open_position_hint_lookup,
     _partition_has_physical_work,
     _partition_declares_dut_clock,
     _physical_clock_delays,
@@ -21,8 +28,13 @@ from emuflow.multi_fpga_physical_flow import (
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
 )
+from emuflow.physical_summary_storage import (
+    PHYSICAL_EVIDENCE_REFERENCE_SCHEMA,
+    read_physical_summary,
+)
 from emuflow.physical_backend import physical_backend_descriptor
 from emuflow.platform import Platform
+from emuflow.position_hints_storage import write_position_hints_storage
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +88,46 @@ def _merged_ir(fpga):
 
 
 class MultiFpgaPhysicalFlowTest(unittest.TestCase):
+    def test_indexed_position_hint_lookup_does_not_expand_entries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "position-hints.json"
+            positions = write_position_hints_storage(
+                path,
+                {
+                    "schema": "emuflow.signal-position-hints/v1",
+                    "design": "design",
+                    "platform": "platform",
+                    "provider": "test",
+                    "region_count": 3,
+                    "metrics": {
+                        "signals": 2,
+                        "endpoint_centroid_fallbacks": 0,
+                    },
+                    "entries": [
+                        {
+                            "schedule_entry": entry_id,
+                            "source_y": 0.25,
+                            "sink_y": 0.75,
+                            "source_region": 0,
+                            "sink_region": 2,
+                            "source_fallback": False,
+                            "sink_fallback": False,
+                        }
+                        for entry_id in ("entry-a", "entry-b")
+                    ],
+                },
+            )
+
+            class EntriesMustStayLazy:
+                def __iter__(self):
+                    raise AssertionError("indexed entries were expanded")
+
+            positions._entries = EntriesMustStayLazy()
+            with _open_position_hint_lookup(positions) as has_hint:
+                self.assertTrue(has_hint("entry-b"))
+                self.assertTrue(has_hint("entry-a"))
+                self.assertFalse(has_hint("entry-missing"))
+
     def test_only_exactly_empty_partitions_skip_physical_work(self):
         netlist = {"instances": [], "nets": [], "ports": []}
         transport = {
@@ -518,9 +570,12 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
 
             worker_barrier = threading.Barrier(2, timeout=5.0)
 
-            def fake_yosys(_sources, _top, output, **_kwargs):
+            def fake_yosys(_sources, _top, consumer, **_kwargs):
                 worker_barrier.wait()
-                write_json(output, {"modules": {}})
+                return consumer(io.StringIO(""))
+
+            def fake_indexed_import(_source, output, **_kwargs):
+                _merged_ir("transport").save(output)
 
             def fake_lower(netlist, _transport, _transport_ir, output, report):
                 fpga = netlist["instances"][0]["id"].removesuffix("_original")
@@ -658,12 +713,14 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     return_value=runtime,
                 ),
                 patch(
-                    "emuflow.multi_fpga_physical_flow.run_generic_yosys",
+                    "emuflow.multi_fpga_physical_flow."
+                    "run_generic_yosys_stream",
                     side_effect=fake_yosys,
                 ),
                 patch(
-                    "emuflow.multi_fpga_physical_flow.import_yosys_json",
-                    return_value=_merged_ir("transport"),
+                    "emuflow.multi_fpga_physical_flow."
+                    "import_yosys_json_indexed",
+                    side_effect=fake_indexed_import,
                 ),
                 patch(
                     "emuflow.multi_fpga_physical_flow."
@@ -711,6 +768,21 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 physical_summary = read_json(
                     root / "physical/physical-summary.json"
                 )
+                for field in ("boundary_identities", "boundary_timing"):
+                    self.assertTrue(
+                        all(
+                            item["schema"]
+                            == PHYSICAL_EVIDENCE_REFERENCE_SCHEMA
+                            for item in physical_summary[field].values()
+                        )
+                    )
+                lazy_summary = read_physical_summary(
+                    root / "physical/physical-summary.json"
+                )
+                self.assertEqual(
+                    lazy_summary["boundary_identities"]["fpga0"]["schema"],
+                    "emuflow.boundary-identity/v1",
+                )
                 self.assertEqual(
                     (root / "physical/architecture/vtr-flagship.xml").read_bytes(),
                     architecture.read_bytes(),
@@ -737,7 +809,8 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     execution=report["execution"], include_logic_timing=False,
                 )
                 with patch(
-                    "emuflow.multi_fpga_physical_flow.run_generic_yosys",
+                    "emuflow.multi_fpga_physical_flow."
+                    "run_generic_yosys_stream",
                     side_effect=AssertionError("synthesis rerun forbidden"),
                 ), patch(
                     "emuflow.multi_fpga_physical_flow.run_vpr_route_packed",
@@ -972,6 +1045,72 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     PLATFORM,
                     root / "schedule.json",
                     root / "physical",
+                    backend="open",
+                )
+
+    def test_indexed_chimew_selector_is_read_lazily_and_tamper_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            split = root / "split"
+            split.mkdir()
+            write_json(
+                split / "manifest.json",
+                {
+                    "schema": "emuflow.split-manifest/v1",
+                    "electrical_binding": "electrical_binding.json",
+                },
+            )
+            indexed = write_chimew_binding_storage(
+                split / "electrical_binding.json",
+                {
+                    "schema": "emuflow.chimew-phase6-electrical-binding/v2",
+                    "design": "design",
+                    "platform": "academic_vtr_2fpga_p2p",
+                    "fpga_y_bounds": [
+                        {"fpga": "fpga0", "y_min": 0.0, "y_max": 1.0},
+                        {"fpga": "fpga1", "y_min": 0.0, "y_max": 1.0},
+                    ],
+                    "entries": [
+                        {
+                            "group": "group0",
+                            "link": "link0",
+                            "fpga_a": "fpga0",
+                            "fpga_b": "fpga1",
+                            "physical_lane": 0,
+                            "direction": "a_to_b",
+                            "package_pin_a": "A1",
+                            "package_pin_b": "B1",
+                            "pin_a_point": {"x": 0.0, "y": 0.25},
+                            "pin_b_point": {"x": 1.0, "y": 0.75},
+                            "schedule_entries": ["entry0"],
+                        }
+                    ],
+                },
+            )
+            write_json(root / "schedule.json", {})
+            with patch.object(
+                ChimewBindingEntrySequence,
+                "__iter__",
+                side_effect=AssertionError("physical flow expanded typed binding"),
+            ), self.assertRaisesRegex(ValidationError, "position hints"):
+                run_multi_fpga_physical_flow(
+                    split,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical",
+                    backend="open",
+                )
+
+            with sqlite3.connect(indexed.store_path) as connection:
+                connection.execute(
+                    "UPDATE members SET member='tampered' WHERE member='entry0'"
+                )
+            with self.assertRaisesRegex(ValidationError, "store seal"):
+                run_multi_fpga_physical_flow(
+                    split,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical-tampered",
                     backend="open",
                 )
 

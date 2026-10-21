@@ -398,6 +398,7 @@ def build_generic_yosys_script(
     output: Path,
     include_dirs: Iterable[Path] = (),
     defines: Iterable[str] = (),
+    stream_json: bool = False,
 ) -> str:
     """Build an architecture-neutral LUT6/FF synthesis script for EmuIR."""
 
@@ -429,7 +430,7 @@ def build_generic_yosys_script(
         "delete t:$scopeinfo",
         "clean",
         "check",
-        f"write_json {_yosys_quote(str(output))}",
+        "write_json" if stream_json else f"write_json {_yosys_quote(str(output))}",
     ]
     return "; ".join(commands)
 
@@ -479,6 +480,101 @@ def run_generic_yosys(
         raise EmuFlowError(
             f"Yosys reported success but did not create expected output: {output}"
         )
+
+
+def _run_yosys_json_consumer(
+    command: list[str],
+    consumer: Callable[[TextIO], _T],
+    diagnostic_parent: Path,
+    log_path: Optional[Path],
+    failure_label: str,
+) -> _T:
+    """Run one JSON-producing Yosys process with bounded diagnostics."""
+
+    diagnostic_parent.mkdir(parents=True, exist_ok=True)
+    diagnostic = diagnostic_parent / f".yosys-stderr-{uuid.uuid4().hex}.tmp"
+    process: Optional[subprocess.Popen[bytes]] = None
+    try:
+        with diagnostic.open("wb") as errors:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=errors,
+            )
+            if process.stdout is None:  # pragma: no cover
+                raise AssertionError("Yosys stdout pipe was not created")
+            consumer_error: Optional[Exception] = None
+            unset = object()
+            result: Any = unset
+            with io.TextIOWrapper(process.stdout, encoding="utf-8") as stream:
+                try:
+                    result = consumer(stream)
+                except Exception as error:
+                    consumer_error = error
+            return_code = process.wait()
+        diagnostic_text = diagnostic.read_bytes()[-2 * 1024 * 1024 :].decode(
+            "utf-8", errors="replace"
+        )
+        if log_path is not None:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(diagnostic_text, encoding="utf-8")
+        if return_code != 0:
+            if consumer_error is not None and return_code == -signal.SIGPIPE:
+                raise consumer_error
+            tail = "\n".join(diagnostic_text.splitlines()[-20:])
+            raise EmuFlowError(
+                f"{failure_label} failed with exit code {return_code}\n{tail}"
+            ) from consumer_error
+        if consumer_error is not None:
+            raise consumer_error
+        if result is unset:  # pragma: no cover
+            raise AssertionError("Yosys consumer returned no result")
+        return result
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        diagnostic.unlink(missing_ok=True)
+
+
+def run_generic_yosys_stream(
+    sources: Iterable[Path],
+    top: str,
+    consumer: Callable[[TextIO], _T],
+    *,
+    executable: Optional[str] = None,
+    log_path: Optional[Path] = None,
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
+) -> _T:
+    """Pipe generic LUT6/FF JSON to a bounded indexed consumer."""
+
+    source_list = list(sources)
+    for source in source_list:
+        if not source.is_file():
+            raise EmuFlowError(f"RTL source does not exist: {source}")
+    include_list = list(include_dirs)
+    for include_dir in include_list:
+        if not include_dir.is_dir():
+            raise EmuFlowError(
+                f"Verilog include directory does not exist: {include_dir}"
+            )
+    command = resolve_native_executable("yosys", executable)
+    script = build_generic_yosys_script(
+        source_list,
+        top,
+        Path("<stdout>"),
+        include_dirs=include_list,
+        defines=list(defines),
+        stream_json=True,
+    )
+    return _run_yosys_json_consumer(
+        [command, "-q", "-p", script],
+        consumer,
+        log_path.parent if log_path is not None else source_list[0].parent,
+        log_path,
+        "generic Yosys synthesis",
+    )
 
 
 def run_yosys(
@@ -588,76 +684,25 @@ def run_xilinx_ultrascaleplus_yosys_stream(
         stream_json=True,
         hierarchical_interchange=True,
     )
-    diagnostic_parent = (
-        log_path.parent if log_path is not None else source_list[0].parent
+    result = _run_yosys_json_consumer(
+        [command, "-q", "-p", script],
+        consumer,
+        log_path.parent if log_path is not None else source_list[0].parent,
+        log_path,
+        "Xilinx Yosys synthesis",
     )
-    diagnostic_parent.mkdir(parents=True, exist_ok=True)
-    diagnostic = diagnostic_parent / f".yosys-stderr-{uuid.uuid4().hex}.tmp"
-    process: Optional[subprocess.Popen[bytes]] = None
-    try:
-        with diagnostic.open("wb") as errors:
-            process = subprocess.Popen(
-                [command, "-q", "-p", script],
-                stdout=subprocess.PIPE,
-                stderr=errors,
-            )
-            if process.stdout is None:  # pragma: no cover - guaranteed by PIPE
-                raise AssertionError("Yosys stdout pipe was not created")
-            consumer_error: Optional[Exception] = None
-            unset = object()
-            result: Any = unset
-            with io.TextIOWrapper(process.stdout, encoding="utf-8") as stream:
-                try:
-                    result = consumer(stream)
-                except Exception as error:
-                    # Always reap Yosys and retain its diagnostic before
-                    # propagating a consumer failure.  In particular, an
-                    # empty/truncated JSON stream is frequently the symptom
-                    # of a producer crash; deleting stderr here used to hide
-                    # the actual exit code and make a large remote run
-                    # impossible to diagnose.
-                    consumer_error = error
-            return_code = process.wait()
-        diagnostic_bytes = diagnostic.read_bytes()
-        diagnostic_text = diagnostic_bytes[-2 * 1024 * 1024 :].decode(
-            "utf-8", errors="replace"
-        )
-        if log_path is not None:
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text(diagnostic_text, encoding="utf-8")
-        if return_code != 0:
-            # A consumer is allowed to reject a valid stream before reading
-            # it completely. Closing the pipe can then terminate Yosys with
-            # SIGPIPE; that is a consequence of the consumer failure rather
-            # than an independent synthesis error.
-            if consumer_error is not None and return_code == -signal.SIGPIPE:
-                raise consumer_error
-            tail = "\n".join(diagnostic_text.splitlines()[-20:])
-            raise EmuFlowError(
-                "Xilinx Yosys synthesis failed with exit code "
-                f"{return_code}\n{tail}"
-            ) from consumer_error
-        if consumer_error is not None:
-            raise consumer_error
-        if result is unset:  # pragma: no cover - consumer always returns/raises
-            raise AssertionError("Xilinx Yosys consumer returned no result")
-        return (
-            {
-                "status": "pass",
-                "provider": "yosys-synth-xilinx",
-                "family": "xcup",
-                "policy": "native",
-                "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
-                "mapping_strategy": mapping_strategy,
-                "interchange": "stdout-hierarchical-to-indexed-phase1",
-            },
-            result,
-        )
-    finally:
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait()
-        diagnostic.unlink(missing_ok=True)
+    return (
+        {
+            "status": "pass",
+            "provider": "yosys-synth-xilinx",
+            "family": "xcup",
+            "policy": "native",
+            "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+            "mapping_strategy": mapping_strategy,
+            "interchange": "stdout-hierarchical-to-indexed-phase1",
+        },
+        result,
+    )
 
 
 def run_xilinx_ultrascaleplus_yosys(

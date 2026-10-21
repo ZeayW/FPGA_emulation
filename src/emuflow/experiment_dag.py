@@ -102,6 +102,8 @@ def _identifier(value: Any, label: str) -> str:
 
 def _safe_relative(value: Any, label: str) -> str:
     result = _string(value, label)
+    if result == ".":
+        return result
     path = Path(result)
     if path.is_absolute() or not path.parts or ".." in path.parts:
         raise ValidationError(f"experiment {label} must be a safe relative path")

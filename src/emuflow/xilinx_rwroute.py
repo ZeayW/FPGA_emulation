@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import math
 import os
@@ -11,6 +12,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import time
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Set, Tuple
@@ -18,6 +20,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Set, 
 from .errors import ValidationError
 from .io import file_sha256, read_json
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
+from .xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
 from .xilinx_placement import XILINX_PLACEMENT_SCHEMA
 
 
@@ -410,14 +413,13 @@ def _primitive_parameter(parameters: Mapping[str, Any], name: str) -> Optional[s
     return value
 
 
-def _qualified_lut_clock_gates(
-    cells: Mapping[str, Any],
-    endpoints: Mapping[int, List[Tuple[str, str, str]]],
-) -> Set[str]:
-    """Recognize the canonical, already-latched NVDLA clock-gate pattern."""
-    candidates: Set[str] = set()
+def _lut_clock_candidate_pins(
+    cells: Iterable[Tuple[str, Mapping[str, Any]]],
+) -> Dict[str, Tuple[int, int, int]]:
+    """Return the three routed bits of each canonical LUT2 candidate."""
+
     pins: Dict[str, Tuple[int, int, int]] = {}
-    for name, cell in cells.items():
+    for name, cell in cells:
         if cell.get("type") != "LUT2":
             continue
         parameters = cell.get("parameters", {})
@@ -436,6 +438,24 @@ def _qualified_lut_clock_gates(
             values.append(bits[0])
         if len(values) != 3:
             continue
+        pins[name] = (values[0], values[1], values[2])
+    return pins
+
+
+def _qualified_lut_clock_gates(
+    cells: Mapping[str, Any],
+    endpoints: Mapping[int, List[Tuple[str, str, str]]],
+    candidate_pins: Optional[Mapping[str, Tuple[int, int, int]]] = None,
+) -> Set[str]:
+    """Recognize the canonical, already-latched NVDLA clock-gate pattern."""
+
+    raw_pins = (
+        _lut_clock_candidate_pins(cells.items())
+        if candidate_pins is None else candidate_pins
+    )
+    candidates: Set[str] = set()
+    pins: Dict[str, Tuple[int, int, int]] = {}
+    for name, values in raw_pins.items():
         enable_drivers = [
             (instance, pin)
             for instance, pin, role in endpoints.get(values[1], [])
@@ -448,7 +468,7 @@ def _qualified_lut_clock_gates(
         ):
             continue
         candidates.add(name)
-        pins[name] = (values[0], values[1], values[2])
+        pins[name] = values
 
     qualified: Set[str] = set()
     for name in sorted(candidates):
@@ -501,6 +521,16 @@ def _qualified_lut_clock_gates(
     return qualified
 
 
+def _candidate_lut_clock_bits(
+    candidate_pins: Mapping[str, Tuple[int, int, int]],
+) -> Set[int]:
+    """Return only nets needed to qualify canonical LUT clock gates."""
+
+    return {
+        bit for values in candidate_pins.values() for bit in values
+    }
+
+
 def export_rwroute_input(
     mapped_path: Path,
     packed_path: Path,
@@ -514,12 +544,14 @@ def export_rwroute_input(
     virtual_io_contract: Optional[Mapping[str, Any]] = None,
     resource_limits: Optional[Mapping[str, int]] = None,
 ) -> Dict[str, Any]:
+    export_started = time.perf_counter()
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     packed = read_json(packed_path) if packed_value is None else packed_value
     placement = (
         read_json(placement_path)
         if placement_value is None else placement_value
     )
+    validate_xilinx_physical_handoff_pair(packed, placement)
     digests = {
         "mapped_sha256": _sha256(mapped_path),
         "packed_sha256": _sha256(packed_path),
@@ -542,57 +574,66 @@ def export_rwroute_input(
         raise ValidationError("PackedSiteNetlist top is invalid")
     module = _select_module(mapped, top)
     cells = module["cells"]
-    physical = {
-        assignment["instance"]: (
-            assignment.get("site", entry["site"]), assignment["bel"]
-        )
-        for entry in placement["clusters"]
-        for assignment in entry["assignments"]
-    }
-    if set(physical) != {
-        assignment["instance"]
-        for cluster in packed["clusters"]
-        for assignment in cluster["assignments"]
-    }:
-        raise ValidationError("placement and packing cell ownership disagree")
+    binding_started = time.perf_counter()
+    indexed_physical_cells = getattr(mapped, "iter_physical_cells", None)
+    indexed_physical_pins = getattr(mapped, "iter_physical_pins_by_net", None)
+    indexed_physical_route_pins = getattr(
+        mapped, "iter_physical_route_pins_by_net", None
+    )
+    indexed_cells_by_type = getattr(mapped, "iter_cells_by_type", None)
+    use_typed_physical = (
+        packed_path == placement_path
+        and callable(indexed_physical_cells)
+        and callable(indexed_physical_pins)
+    )
+    use_typed_route_ordinals = (
+        use_typed_physical and callable(indexed_physical_route_pins)
+    )
+    physical: Optional[Dict[str, Tuple[str, str]]] = None
+    if not use_typed_physical:
+        physical = {
+            assignment["instance"]: (
+                assignment.get("site", entry["site"]), assignment["bel"]
+            )
+            for entry in placement["clusters"]
+            for assignment in entry["assignments"]
+        }
+        if set(physical) != {
+            assignment["instance"]
+            for cluster in packed["clusters"]
+            for assignment in cluster["assignments"]
+        }:
+            raise ValidationError(
+                "placement and packing cell ownership disagree"
+            )
+
+    def physical_rows() -> Iterator[Tuple[str, str, str, str]]:
+        if use_typed_physical:
+            assert callable(indexed_physical_cells)
+            yield from indexed_physical_cells(packed_path)
+            return
+        assert physical is not None
+        for name in sorted(physical):
+            site, bel = physical[name]
+            yield name, str(cells[name]["type"]), site, bel
     # RapidWright models LUT6_2 as a transformed primitive and deliberately
     # rejects direct createAndPlaceCell(LUT6_2).  Preserve one logical/resource
     # cell in EmuFlow, but lower it at this provider boundary to the documented
     # shared A5LUT/A6LUT physical pair.  Only the four functional route-through
     # pins may carry non-constant nets.
-    route_cells: Dict[str, Tuple[str, str, str, str]] = {}
     pin_bindings: Dict[Tuple[str, str], Tuple[str, str]] = {}
     expanded_lut6_2 = 0
     transformed_dsp48e2 = 0
-    for name in sorted(physical):
-        site, bel = physical[name]
-        cell_type = cells[name]["type"]
-        if cell_type != "LUT6_2":
-            route_cells[name] = (name, cell_type, site, bel)
-            if cell_type == "DSP48E2":
-                transformed_dsp48e2 += 1
-            continue
-        match = re.fullmatch(r"([A-H])6LUT", bel)
-        if match is None:
-            raise ValidationError(
-                f"LUT6_2 cell {name!r} is not assigned to a 6LUT BEL"
-            )
-        letter = match.group(1)
-        o5_key = f"{name}\0O5"
-        o6_key = f"{name}\0O6"
-        route_cells[o5_key] = (f"{name}$physical_o5", "LUT5", site, f"{letter}5LUT")
-        route_cells[o6_key] = (f"{name}$physical_o6", "LUT6", site, f"{letter}6LUT")
-        pin_bindings[(name, "I0")] = (o5_key, "I0")
-        pin_bindings[(name, "O5")] = (o5_key, "O")
-        pin_bindings[(name, "I1")] = (o6_key, "I1")
-        pin_bindings[(name, "O6")] = (o6_key, "O")
-        expanded_lut6_2 += 1
+    logical_cell_count = 0
     io_rows: Dict[str, Mapping[str, Any]] = {}
     io_by_bit: Dict[int, Tuple[str, str, str]] = {}
     if virtual_io_contract is not None:
         if (
             virtual_io_contract.get("schema")
-            != "emuflow.virtual-io-physical-contract/v1"
+            not in {
+                "emuflow.virtual-io-physical-contract/v1",
+                "emuflow.virtual-io-physical-contract/v2",
+            }
             or virtual_io_contract.get("status") != "pass"
         ):
             raise ValidationError("RWRoute virtual I/O contract is invalid")
@@ -631,10 +672,41 @@ def export_rwroute_input(
                 key, "I" if direction == "tx" else "O", role
             )
             io_rows[key] = entry
-    safe = {
-        name: f"c{index}"
-        for index, name in enumerate(sorted([*route_cells, *io_rows]))
+    def route_keys() -> Iterator[str]:
+        for name, cell_type, _site, _bel in physical_rows():
+            if cell_type == "LUT6_2":
+                yield f"{name}\0O5"
+                yield f"{name}\0O6"
+            else:
+                yield name
+
+    io_ordinals = {
+        name: index for index, name in enumerate(sorted(io_rows))
     }
+    # Compatibility inputs have no typed pin relation carrying the route-cell
+    # ordinal, so retain the historical name lookup for that explicit path.
+    # Production physical handoff inputs derive ordinals from ordered cursors
+    # and never allocate this graph-sized dictionary.
+    safe = None if use_typed_route_ordinals else {
+        name: index
+        for index, name in enumerate(heapq.merge(
+            sorted(io_rows), route_keys()
+        ))
+    }
+
+    def safe_name(name: str, ordinal: Optional[int] = None) -> str:
+        if ordinal is None:
+            if safe is None:
+                ordinal = io_ordinals.get(name)
+                if ordinal is None:
+                    raise ValidationError(
+                        f"cell {name!r} has no RWRoute route ordinal"
+                    )
+            else:
+                ordinal = safe[name]
+        return f"c{ordinal}"
+    binding_seconds = time.perf_counter() - binding_started
+    cell_rows_started = time.perf_counter()
     lines = _TsvSpool(output_path)
     for field, count in sorted((resource_limits or {}).items()):
         if field not in {"lut", "ff", "bram18k", "dsp48", "carry8", "uram288"} or isinstance(count, bool) or not isinstance(count, int) or count < 0:
@@ -656,18 +728,62 @@ def export_rwroute_input(
                 ).encode("utf-8")
             ).hexdigest()
         )
-    for route_name in sorted(route_cells):
-        display_name, cell_type, site, bel = route_cells[route_name]
-        if any(character in display_name for character in "\t\r\n"):
-            raise ValidationError(f"cell name {display_name!r} is not TSV-safe")
-        lines.append(
-            f"CELL\t{safe[route_name]}\t{display_name}\t{cell_type}\t{site}\t{bel}"
-        )
+    next_route_ordinal = len(io_ordinals)
+    for name, cell_type, site, bel in physical_rows():
+        logical_cell_count += 1
+        if "\0" in name:
+            raise ValidationError(
+                f"cell name {name!r} contains the reserved NUL separator"
+            )
+        cell_ordinal = next_route_ordinal
+        if cell_type == "LUT6_2":
+            match = re.fullmatch(r"([A-H])6LUT", bel)
+            if match is None:
+                raise ValidationError(
+                    f"LUT6_2 cell {name!r} is not assigned to a 6LUT BEL"
+                )
+            letter = match.group(1)
+            o5_key = f"{name}\0O5"
+            o6_key = f"{name}\0O6"
+            if not use_typed_route_ordinals:
+                pin_bindings[(name, "I0")] = (o5_key, "I0")
+                pin_bindings[(name, "O5")] = (o5_key, "O")
+                pin_bindings[(name, "I1")] = (o6_key, "I1")
+                pin_bindings[(name, "O6")] = (o6_key, "O")
+            expanded_lut6_2 += 1
+            route_rows = (
+                (
+                    o5_key, f"{name}$physical_o5", "LUT5",
+                    f"{letter}5LUT", cell_ordinal,
+                ),
+                (
+                    o6_key, f"{name}$physical_o6", "LUT6",
+                    f"{letter}6LUT", cell_ordinal + 1,
+                ),
+            )
+            next_route_ordinal += 2
+        else:
+            if cell_type == "DSP48E2":
+                transformed_dsp48e2 += 1
+            route_rows = ((name, name, cell_type, bel, cell_ordinal),)
+            next_route_ordinal += 1
+        for (
+            route_name, display_name, route_type, route_bel, route_ordinal
+        ) in route_rows:
+            if any(character in display_name for character in "\t\r\n"):
+                raise ValidationError(
+                    f"cell name {display_name!r} is not TSV-safe"
+                )
+            lines.append(
+                f"CELL\t{safe_name(route_name, route_ordinal)}\t{display_name}"
+                f"\t{route_type}"
+                f"\t{site}\t{route_bel}"
+            )
         if cell_type in {"RAMB18E2", "RAMB36E2"}:
-            parameters = cells[route_name].get("parameters", {})
+            parameters = cells[name].get("parameters", {})
             if not isinstance(parameters, dict):
                 raise ValidationError(
-                    f"hard primitive {display_name!r} parameters are invalid"
+                    f"hard primitive {name!r} parameters are invalid"
                 )
             for parameter in (
                 "READ_WIDTH_A", "READ_WIDTH_B", "WRITE_WIDTH_A",
@@ -677,11 +793,13 @@ def export_rwroute_input(
                 value = _primitive_parameter(parameters, parameter)
                 if value is not None:
                     lines.append(
-                        f"PARAM\t{safe[route_name]}\t{parameter}\t{value}"
+                        f"PARAM\t{safe_name(name, cell_ordinal)}"
+                        f"\t{parameter}\t{value}"
                     )
     for key, entry in sorted(io_rows.items()):
         fields = [
-            "IOB", safe[key], str(entry["id"]), str(entry["direction"]),
+            "IOB", safe_name(key, io_ordinals[key]), str(entry["id"]),
+            str(entry["direction"]),
             str(entry["p"]["port"]), str(entry["n"]["port"]),
             str(entry["p"]["package_pin"]), str(entry["n"]["package_pin"]),
             str(entry["p"]["site"]), str(entry["n"]["site"]),
@@ -692,32 +810,230 @@ def export_rwroute_input(
             raise ValidationError("RWRoute virtual I/O entry is not TSV-safe")
         lines.append("\t".join(fields))
 
-    endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
-    for name in sorted(physical):
-        cell = cells[name]
-        directions = cell.get("port_directions", {})
-        for port, bits in cell.get("connections", {}).items():
-            if not isinstance(bits, list):
-                raise ValidationError(f"cell {name!r} port {port!r} is invalid")
-            direction = directions.get(port)
-            if direction not in {"input", "output", "inout"}:
-                raise ValidationError(f"cell {name!r} port direction is invalid")
-            role = "driver" if direction in {"output", "inout"} else "sink"
-            for index, bit in enumerate(bits):
-                if isinstance(bit, int):
-                    endpoints[bit].append(
-                        (name, _logical_pin(port, index, len(bits)), role)
-                    )
-    for bit, endpoint in io_by_bit.items():
-        endpoints[bit].append(endpoint)
+    cell_rows_seconds = time.perf_counter() - cell_rows_started
+    endpoint_index_started = time.perf_counter()
+    indexed_pin_source = getattr(mapped, "iter_pins_by_net", None)
 
-    clock_gates = _qualified_lut_clock_gates(cells, endpoints)
-    for bit, values in endpoints.items():
-        sinks = [value for value in values if value[2] == "sink"]
-        if not any(_is_clock_sink_pin(pin) for _name, pin, _role in sinks):
-            continue
+    def physical_pin_rows(
+    ) -> Iterator[Tuple[int, str, str, int, int, str, str]]:
+        if use_typed_physical:
+            assert callable(indexed_physical_pins)
+            yield from indexed_physical_pins(packed_path)
+            return
+        assert callable(indexed_pin_source)
+        assert physical is not None
+        for bit, name, port, port_bit, port_width, direction in (
+            indexed_pin_source()
+        ):
+            binding = physical.get(name)
+            if binding is not None:
+                yield (
+                    bit, name, port, port_bit, port_width, direction,
+                    binding[0],
+                )
+
+    def physical_route_pin_rows(
+    ) -> Iterator[
+        Tuple[int, str, str, int, int, str, str, Optional[int], str]
+    ]:
+        if use_typed_route_ordinals:
+            assert callable(indexed_physical_route_pins)
+            yield from indexed_physical_route_pins(
+                packed_path, ordinal_offset=len(io_ordinals)
+            )
+            return
+        for bit, name, port, port_bit, port_width, direction, site in (
+            physical_pin_rows()
+        ):
+            logical_pin = _logical_pin(port, port_bit, port_width)
+            yield (
+                bit, name, port, port_bit, port_width, direction, site,
+                None, logical_pin,
+            )
+
+    if use_typed_physical or callable(indexed_pin_source):
+        candidate_pins = _lut_clock_candidate_pins(
+            indexed_cells_by_type("LUT2")
+            if callable(indexed_cells_by_type) else cells.items()
+        )
+        candidate_bits = _candidate_lut_clock_bits(candidate_pins)
+        clock_endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
+        clock_route_ordinals: Dict[str, int] = {}
+        if candidate_bits:
+            for (
+                bit, name, port, port_bit, port_width, direction, _site,
+                route_ordinal, _route_pin,
+            ) in physical_route_pin_rows():
+                if bit not in candidate_bits:
+                    continue
+                role = (
+                    "driver" if direction in {"output", "inout"} else "sink"
+                )
+                clock_endpoints[bit].append(
+                    (name, _logical_pin(port, port_bit, port_width), role)
+                )
+                if route_ordinal is not None:
+                    clock_route_ordinals.setdefault(name, route_ordinal)
+            for bit, endpoint in io_by_bit.items():
+                if bit in candidate_bits:
+                    clock_endpoints[bit].append(endpoint)
+        endpoints = None
+        endpoint_dataflow = (
+            "typed-mapped-physical-join"
+            if use_typed_physical else "typed-mapped-pin-stream"
+        )
+    else:
+        endpoints = defaultdict(list)
+        assert physical is not None
+        for name in sorted(physical):
+            cell = cells[name]
+            directions = cell.get("port_directions", {})
+            for port, bits in cell.get("connections", {}).items():
+                if not isinstance(bits, list):
+                    raise ValidationError(
+                        f"cell {name!r} port {port!r} is invalid"
+                    )
+                direction = directions.get(port)
+                if direction not in {"input", "output", "inout"}:
+                    raise ValidationError(
+                        f"cell {name!r} port direction is invalid"
+                    )
+                role = (
+                    "driver" if direction in {"output", "inout"} else "sink"
+                )
+                for index, bit in enumerate(bits):
+                    if isinstance(bit, int):
+                        endpoints[bit].append(
+                            (name, _logical_pin(port, index, len(bits)), role)
+                        )
+        for bit, endpoint in io_by_bit.items():
+            endpoints[bit].append(endpoint)
+        clock_endpoints = endpoints
+        clock_route_ordinals = {}
+        candidate_pins = _lut_clock_candidate_pins(cells.items())
+        endpoint_dataflow = "compatibility-python-index"
+
+    endpoint_index_seconds = time.perf_counter() - endpoint_index_started
+    clock_validation_started = time.perf_counter()
+    clock_gates = _qualified_lut_clock_gates(
+        cells, clock_endpoints, candidate_pins
+    )
+    for name in sorted(clock_gates):
+        lines.append(
+            f"CLOCK_GATE\t{safe_name(name, clock_route_ordinals.get(name))}"
+            "\tI0\tI1\tO\t"
+            "lut2-init-1000-fdre-latched-enable-v1"
+        )
+
+    clock_validation_seconds = time.perf_counter() - clock_validation_started
+    net_rows_started = time.perf_counter()
+    included = 0
+    excluded = 0
+    carry_exit_owners: Dict[Tuple[str, int], Tuple[str, str]] = {}
+
+    def indexed_endpoint_groups(
+    ) -> Iterator[
+        Tuple[
+            int,
+            List[Tuple[str, str, str, str, Optional[int], str]],
+        ]
+    ]:
+        cell_groups: List[
+            Tuple[str, str, str, str, Optional[int], str]
+        ] = []
+        current_bit: Optional[int] = None
+        io_items = iter(sorted(io_by_bit.items()))
+        current_io = next(io_items, None)
+
+        def emit_cell_group(
+            bit: int,
+            values: List[
+                Tuple[str, str, str, str, Optional[int], str]
+            ],
+        ) -> Iterator[
+            Tuple[
+                int,
+                List[Tuple[str, str, str, str, Optional[int], str]],
+            ]
+        ]:
+            nonlocal current_io
+            while current_io is not None and current_io[0] < bit:
+                io_name, io_pin, io_role = current_io[1]
+                yield current_io[0], [(
+                    io_name, io_pin, io_role,
+                    str(io_rows[io_name]["p"]["site"]),
+                    io_ordinals[io_name], io_pin,
+                )]
+                current_io = next(io_items, None)
+            if current_io is not None and current_io[0] == bit:
+                io_name, io_pin, io_role = current_io[1]
+                values.append((
+                    io_name, io_pin, io_role,
+                    str(io_rows[io_name]["p"]["site"]),
+                    io_ordinals[io_name], io_pin,
+                ))
+                current_io = next(io_items, None)
+            yield bit, values
+
+        for (
+            bit, name, port, port_bit, port_width, direction, site,
+            route_ordinal, route_pin,
+        ) in physical_route_pin_rows():
+            if current_bit is not None and bit != current_bit:
+                yield from emit_cell_group(current_bit, cell_groups)
+                cell_groups = []
+            current_bit = bit
+            role = "driver" if direction in {"output", "inout"} else "sink"
+            cell_groups.append(
+                (
+                    name, _logical_pin(port, port_bit, port_width), role,
+                    site, route_ordinal, route_pin,
+                )
+            )
+        if current_bit is not None:
+            yield from emit_cell_group(current_bit, cell_groups)
+        while current_io is not None:
+            io_name, io_pin, io_role = current_io[1]
+            yield current_io[0], [(
+                io_name, io_pin, io_role,
+                str(io_rows[io_name]["p"]["site"]),
+                io_ordinals[io_name], io_pin,
+            )]
+            current_io = next(io_items, None)
+
+    def compatibility_endpoint_groups(
+    ) -> Iterator[
+        Tuple[
+            int,
+            List[Tuple[str, str, str, str, Optional[int], str]],
+        ]
+    ]:
+        assert endpoints is not None
+        assert physical is not None
+        for bit in sorted(endpoints):
+            yield bit, [
+                (
+                    name, pin, role,
+                    physical[name][0]
+                    if name in physical
+                    else str(io_rows[name]["p"]["site"]),
+                    None, pin,
+                )
+                for name, pin, role in endpoints[bit]
+            ]
+
+    endpoint_groups = (
+        indexed_endpoint_groups()
+        if endpoints is None else compatibility_endpoint_groups()
+    )
+    for bit, values in endpoint_groups:
         drivers = [value for value in values if value[2] == "driver"]
-        if drivers and not (
+        sinks = [value for value in values if value[2] == "sink"]
+        net_name = f"n{bit}"
+        boundary_clock = any(
+            _is_clock_sink_pin(value[1]) for value in sinks
+        )
+        if boundary_clock and drivers and not (
             len(drivers) == 1
             and drivers[0][0] in clock_gates
             and drivers[0][1] == "O"
@@ -726,23 +1042,6 @@ def export_rwroute_input(
                 f"routed clock bit {bit} is not driven by a qualified "
                 "LUT2 INIT=1000 gate with an FDRE-latched enable"
             )
-    for name in sorted(clock_gates):
-        lines.append(
-            f"CLOCK_GATE\t{safe[name]}\tI0\tI1\tO\t"
-            "lut2-init-1000-fdre-latched-enable-v1"
-        )
-
-    included = 0
-    excluded = 0
-    carry_exit_owners: Dict[Tuple[str, int], Tuple[str, str]] = {}
-    for bit in sorted(endpoints):
-        values = endpoints[bit]
-        drivers = [value for value in values if value[2] == "driver"]
-        sinks = [value for value in values if value[2] == "sink"]
-        net_name = f"n{bit}"
-        boundary_clock = any(
-            _is_clock_sink_pin(pin) for _cell, pin, _role in sinks
-        )
         if len(drivers) != 1 or not sinks:
             if not drivers and sinks and boundary_clock:
                 lines.append(
@@ -757,23 +1056,18 @@ def export_rwroute_input(
                 lines.append(f"EXCLUDED\t{net_name}\t{reason}")
             excluded += 1
             continue
-        sites = {
-            (
-                physical[name][0]
-                if name in physical
-                else str(io_rows[name]["p"]["site"])
-            )
-            for name, _pin, _role in [drivers[0], *sinks]
-        }
+        sites = {value[3] for value in [drivers[0], *sinks]}
         touches_clock_gate = any(
-            name in clock_gates
-            for name, _pin, _role in [drivers[0], *sinks]
+            value[0] in clock_gates for value in [drivers[0], *sinks]
         )
         if len(sites) == 1 and not touches_clock_gate:
             lines.append(f"EXCLUDED\t{net_name}\tintra_site")
             excluded += 1
             continue
-        driver_cell, driver_pin, _driver_role = drivers[0]
+        (
+            driver_cell, driver_pin, _driver_role, _driver_site,
+            _driver_ordinal, _driver_route_pin,
+        ) = drivers[0]
         if driver_cell in cells and cells[driver_cell].get("type") == "CARRY8":
             match = re.fullmatch(r"(CO|O)\[(\d+)\]", driver_pin)
             if match is not None and int(match.group(2)) < 7:
@@ -791,28 +1085,66 @@ def export_rwroute_input(
                     )
         kind = "clock" if boundary_clock else "signal"
         lines.append(f"NET\t{net_name}\t{kind}")
-        for name, pin, role in [drivers[0], *sinks]:
-            route_name, route_pin = pin_bindings.get(
-                (name, pin), (name, pin)
-            )
-            if route_name not in route_cells and route_name not in io_rows:
+        for (
+            name, pin, role, _site, route_ordinal, typed_route_pin
+        ) in [drivers[0], *sinks]:
+            if use_typed_route_ordinals:
+                route_name = name
+                route_pin = typed_route_pin
+            else:
+                route_name, route_pin = pin_bindings.get(
+                    (name, pin), (name, pin)
+                )
+            if (
+                route_ordinal is None
+                and (safe is None or route_name not in safe)
+            ):
                 raise ValidationError(
                     f"cell {name!r} pin {pin!r} has no RWRoute physical binding"
                 )
             lines.append(
-                f"PIN\t{net_name}\t{safe[route_name]}\t{route_pin}\t{role}"
+                f"PIN\t{net_name}\t{safe_name(route_name, route_ordinal)}"
+                f"\t{route_pin}\t{role}"
             )
         included += 1
+    net_rows_seconds = time.perf_counter() - net_rows_started
+    commit_started = time.perf_counter()
     lines.commit()
+    commit_seconds = time.perf_counter() - commit_started
     return {
-        "status": "pass", "cells": len(safe), "logical_cells": len(physical),
+        "status": "pass", "cells": next_route_ordinal,
+        "logical_cells": logical_cell_count,
         "virtual_io_cells": len(io_rows),
         "expanded_lut6_2_cells": expanded_lut6_2,
         "transformed_dsp48e2_cells": transformed_dsp48e2,
         "qualified_clock_gates": len(clock_gates),
-        "physical_cells": len(safe) + 7 * transformed_dsp48e2,
+        "physical_cells": next_route_ordinal + 7 * transformed_dsp48e2,
         "routable_nets": included,
         "excluded_nets": excluded, "output": str(output_path),
+        "runtime_breakdown": {
+            "schema": "emuflow.rwroute-export-runtime/v1",
+            "binding_seconds": binding_seconds,
+            "cell_and_io_rows_seconds": cell_rows_seconds,
+            "endpoint_index_seconds": endpoint_index_seconds,
+            "clock_validation_seconds": clock_validation_seconds,
+            "net_rows_seconds": net_rows_seconds,
+            "atomic_commit_seconds": commit_seconds,
+            "total_seconds": time.perf_counter() - export_started,
+            "dataflow": {
+                "route_cells": "generated-from-physical-binding",
+                "physical_bindings": (
+                    "typed-mapped-physical-join"
+                    if use_typed_physical else "compatibility-python-map"
+                ),
+                "safe_names": (
+                    "typed-ordinal-cursor"
+                    if use_typed_route_ordinals
+                    else "ordered-merge-integer-index"
+                ),
+                "endpoints": endpoint_dataflow,
+                "tsv": "streamed-atomic-spool",
+            },
+        },
     }
 
 

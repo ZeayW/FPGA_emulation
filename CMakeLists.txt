@@ -66,6 +66,16 @@ option(
   ON
 )
 option(
+  EMUFLOW_BUILD_STATIC_EXACT_ANALYZER
+  "Build the native Static Exact dependency and capture analyzer"
+  ON
+)
+option(
+  EMUFLOW_BUILD_TDM_EXACT_SCHEDULER
+  "Build the native Static Exact dependency scheduler"
+  ON
+)
+option(
   EMUFLOW_BUILD_TRITONPART_BALANCE_LEGALIZER
   "Build the native strict multi-resource TritonPart legalizer"
   ON
@@ -258,6 +268,27 @@ option(
 set(EMUFLOW_INSTALL_ROOT "${CMAKE_BINARY_DIR}/install")
 set(EMUFLOW_INSTALL_BINDIR "${EMUFLOW_INSTALL_ROOT}/${CMAKE_INSTALL_BINDIR}")
 file(MAKE_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
+
+add_library(
+  emuflow_core STATIC
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/artifact_io.cpp"
+)
+target_compile_features(emuflow_core PUBLIC cxx_std_17)
+target_compile_options(emuflow_core PRIVATE -O3)
+target_include_directories(
+  emuflow_core PUBLIC "${CMAKE_SOURCE_DIR}/src/native"
+)
+if(BUILD_TESTING)
+  add_executable(
+    emuflow_core_artifact_io_test
+    "${CMAKE_SOURCE_DIR}/tests/native_core_artifact_io_test.cpp"
+  )
+  target_link_libraries(emuflow_core_artifact_io_test PRIVATE emuflow_core)
+  add_test(
+    NAME emuflow_core_artifact_io
+    COMMAND emuflow_core_artifact_io_test
+  )
+endif()
 
 # Keep root-built products self-consistent without installing libraries into
 # system directories. General-purpose dependency prefixes remain external to
@@ -661,6 +692,45 @@ if(EMUFLOW_BUILD_PATRON_REFINER)
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
+endif()
+
+if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
+  add_executable(
+    emuflow_static_exact_analyzer
+    "${CMAKE_SOURCE_DIR}/src/native/static_exact_analyzer.cpp"
+  )
+  target_compile_features(emuflow_static_exact_analyzer PRIVATE cxx_std_17)
+  target_compile_options(emuflow_static_exact_analyzer PRIVATE -O3)
+  target_link_libraries(emuflow_static_exact_analyzer PRIVATE emuflow_core)
+  set_target_properties(
+    emuflow_static_exact_analyzer
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+endif()
+
+if(EMUFLOW_BUILD_TDM_EXACT_SCHEDULER)
+  add_executable(
+    emuflow_tdm_exact_scheduler
+    "${CMAKE_SOURCE_DIR}/src/native/tdm_exact_scheduler.cpp"
+  )
+  target_compile_features(emuflow_tdm_exact_scheduler PRIVATE cxx_std_17)
+  target_compile_options(emuflow_tdm_exact_scheduler PRIVATE -O3)
+  target_link_libraries(emuflow_tdm_exact_scheduler PRIVATE emuflow_core)
+  set_target_properties(
+    emuflow_tdm_exact_scheduler
+    PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+  )
+  if(BUILD_TESTING)
+    add_test(
+      NAME emuflow_tdm_exact_scheduler_cli
+      COMMAND emuflow_tdm_exact_scheduler
+    )
+    set_tests_properties(
+      emuflow_tdm_exact_scheduler_cli PROPERTIES WILL_FAIL TRUE
+    )
+  endif()
 endif()
 
 if(EMUFLOW_BUILD_TRITONPART_BALANCE_LEGALIZER)
@@ -1322,6 +1392,13 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_patron_refiner_cli
       COMMAND "$<TARGET_FILE:emuflow_patron_refiner>" --help
+    )
+  endif()
+
+  if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
+    add_test(
+      NAME emuflow_static_exact_analyzer_cli
+      COMMAND "$<TARGET_FILE:emuflow_static_exact_analyzer>" --help
     )
   endif()
 

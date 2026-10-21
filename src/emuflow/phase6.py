@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -12,13 +14,22 @@ from .equivalence import (
 )
 from .errors import ValidationError
 from .io import read_json, write_json
+from .chimew_binding_storage import (
+    read_chimew_binding,
+    write_chimew_binding_storage,
+)
 from .managed_json_storage import pack_managed_json
 from .ir import EmuIR
 from .netlist import (
+    SPLIT_MANIFEST_SCHEMA,
     anchors_to_xdc_template,
-    transport_to_systemverilog,
 )
 from .platform import Platform
+from .pin_plan_storage import read_pin_plan, write_pin_plan_storage
+from .position_hints_storage import (
+    read_position_hints,
+    write_position_hints_storage,
+)
 from .pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
 from .ppro_calibrated_platform import (
     predict_transport_resources,
@@ -29,10 +40,17 @@ from .runtime import (
     virtual_runtime_controller_to_systemverilog,
 )
 from .split_netlist_storage import (
-    build_streaming_split_metadata,
     read_compact_emuir_control_metadata,
     validate_split_netlists_sqlite,
     write_split_netlists_sqlite,
+)
+from .tdm_schedule_storage import read_tdm_schedule
+from .transport_storage import (
+    read_lane_map,
+    read_transport,
+    read_virtual_binding,
+    write_transport_systemverilog,
+    write_transport_storage,
 )
 
 
@@ -230,66 +248,208 @@ def run_phase6(
             "Phase 6 requires the Phase 3 assignment.sqlite data-plane "
             "artifact; rerun Phase 3 with this EmuFlow version"
         )
-    schedule = read_json(schedule_path)
+    schedule = read_tdm_schedule(schedule_path)
     platform = Platform.load(platform_path)
-    pin_plan = read_json(pin_plan_path) if pin_plan_path is not None else None
+    pin_plan = read_pin_plan(pin_plan_path) if pin_plan_path is not None else None
     position_hints = (
-        read_json(position_hints_path)
+        read_position_hints(position_hints_path)
         if position_hints_path is not None
         else None
     )
+    output_dir.mkdir(parents=True, exist_ok=True)
     pin_validation = None
     electrical_validation = None
     electrical_binding = None
+    electrical_binding_view = None
+    pin_plan_store_artifact = None
+    position_hints_store_artifact = None
     if pin_plan is not None:
-        if position_hints is None:
-            raise ValueError(
-                "position_hints_path is required with pin_plan_path"
+        # Normalize legacy input into an indexed relation before its first
+        # full validation, but do not publish an invalid plan into the phase
+        # directory. The temporary directory gives the selector and SQLite
+        # sidecar their final relative names while validation is in flight.
+        with tempfile.TemporaryDirectory(
+            prefix=".pin-plan-validation-", dir=output_dir
+        ) as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            staged_pin_plan = write_pin_plan_storage(
+                temporary_root / "pin_plan.json", pin_plan
             )
-        pin_validation = validate_pin_plan(
-            schedule,
-            platform,
-            position_hints,
-            pin_plan,
-        )
-        if pin_plan.get("provider") == CHIMEW_PIN_PLAN_PROVIDER:
-            if electrical_binding_path is None:
+            if position_hints is None:
                 raise ValueError(
-                    "electrical_binding_path is required with a Chimew pin plan"
+                    "position_hints_path is required with pin_plan_path"
                 )
-            from .chimew_phase6 import validate_chimew_phase6_binding
-
-            electrical_binding = read_json(electrical_binding_path)
-            electrical_validation = validate_chimew_phase6_binding(
+            staged_position_hints = write_position_hints_storage(
+                temporary_root / "position_hints.json", position_hints
+            )
+            pin_validation = validate_pin_plan(
                 schedule,
                 platform,
-                pin_plan,
-                electrical_binding,
+                staged_position_hints,
+                staged_pin_plan,
             )
-        elif electrical_binding_path is not None:
-            raise ValueError(
-                "electrical_binding_path is supported only with a Chimew pin plan"
+            if staged_pin_plan.get("provider") == CHIMEW_PIN_PLAN_PROVIDER:
+                if electrical_binding_path is None:
+                    raise ValueError(
+                        "electrical_binding_path is required with a Chimew pin plan"
+                    )
+                from .chimew_phase6 import validate_chimew_phase6_binding
+
+                electrical_binding = read_chimew_binding(
+                    electrical_binding_path
+                )
+                electrical_validation = validate_chimew_phase6_binding(
+                    schedule,
+                    platform,
+                    staged_pin_plan,
+                    electrical_binding,
+                )
+            elif electrical_binding_path is not None:
+                raise ValueError(
+                    "electrical_binding_path is supported only with a Chimew pin plan"
+                )
+            staged_pin_artifact = staged_pin_plan.manifest["artifact"]
+            staged_position_artifact = staged_position_hints.manifest[
+                "artifact"
+            ]
+            pin_plan_store_artifact = staged_pin_artifact
+            position_hints_store_artifact = staged_position_artifact
+            previous_sidecars = []
+            for selector_name in ("pin_plan.json", "position_hints.json"):
+                selector_path = output_dir / selector_name
+                if not selector_path.is_file():
+                    continue
+                try:
+                    previous = read_json(selector_path)
+                except (OSError, ValueError):
+                    continue
+                previous_artifact = previous.get("artifact")
+                if (
+                    isinstance(previous_artifact, str)
+                    and Path(previous_artifact).name == previous_artifact
+                    and Path(previous_artifact).suffix == ".sqlite"
+                ):
+                    previous_sidecars.append(output_dir / previous_artifact)
+            os.replace(
+                temporary_root / staged_pin_artifact,
+                output_dir / staged_pin_artifact,
             )
+            os.replace(
+                temporary_root / staged_position_artifact,
+                output_dir / staged_position_artifact,
+            )
+            os.replace(
+                temporary_root / "pin_plan.json",
+                output_dir / "pin_plan.json",
+            )
+            os.replace(
+                temporary_root / "position_hints.json",
+                output_dir / "position_hints.json",
+            )
+            current_sidecars = {
+                (output_dir / staged_pin_artifact).resolve(),
+                (output_dir / staged_position_artifact).resolve(),
+            }
+            for previous_sidecar in previous_sidecars:
+                if previous_sidecar.resolve() not in current_sidecars:
+                    previous_sidecar.unlink(missing_ok=True)
+        pin_plan = read_pin_plan(output_dir / "pin_plan.json")
+        position_hints = read_position_hints(
+            output_dir / "position_hints.json"
+        )
     elif position_hints is not None:
         raise ValueError(
             "pin_plan_path is required with position_hints_path"
         )
     elif electrical_binding_path is not None:
         raise ValueError("pin_plan_path is required with electrical_binding_path")
-    artifacts = build_streaming_split_metadata(
+    virtual_board = None
+    if platform.virtual_board_model is not None:
+        from .virtual_board import build_virtual_board
+
+        virtual_board = build_virtual_board(platform)
+    transport_artifacts = write_transport_storage(
+        output_dir,
         assignment_index_path,
         schedule,
         platform,
         design=source["design"],
         clocks=source["clocks"],
         pin_plan=pin_plan,
+        virtual_board=virtual_board,
     )
     runtime = build_virtual_runtime(schedule, platform, clock_periods)
+    exact_digest = schedule.get("semantic_contract_sha256")
+    exact_storage = None
+    for transport in transport_artifacts["transports"].values():
+        exact_storage = transport.get("semantic_contract_storage")
+        break
+    manifest = {
+        "schema": SPLIT_MANIFEST_SCHEMA,
+        "design": design_name,
+        "platform": platform.name,
+        "provider": (
+            (
+                "chimew-electrical-pin-split-v1"
+                if pin_plan.get("provider")
+                == "chimew-paper-plus-emuflow-electrical-slot-v1"
+                else "placement-aware-pin-split-v1"
+            )
+            if pin_plan is not None
+            else "sqlite-streaming-cut-shadow-split-v1"
+        ),
+        "board_binding": {
+            "status": "virtual",
+            "requires_hardware_bsp_for_package_pins": True,
+        },
+        "netlist_storage": "split-netlists.sqlite",
+        "transport_storage": "transport.sqlite",
+        "fpgas": [
+            {
+                "fpga": fpga_id,
+                "netlist": "split-netlists.sqlite",
+                "netlist_selector": fpga_id,
+                "transport": f"{fpga_id}/transport.json",
+                "transport_rtl": f"{fpga_id}/transport_schedule.sv",
+                "virtual_anchors": f"{fpga_id}/virtual_anchors.json",
+                "virtual_xdc_template": (
+                    f"{fpga_id}/virtual_anchors.xdc.template"
+                ),
+            }
+            for fpga_id in transport_artifacts["transports"]
+        ],
+        "lane_map": "lane_map.json",
+        "runtime_controller_rtl": "virtual_runtime_controller.sv",
+        **(
+            {
+                "cut_mode": "static-exact-combinational",
+                "qualification": "exact-boundary-materialization-pass",
+                "semantic_contract_sha256": exact_digest,
+                **(
+                    {"semantic_contract_storage": exact_storage}
+                    if isinstance(exact_storage, Mapping) else {}
+                ),
+            }
+            if exact_digest is not None else {}
+        ),
+        **(
+            {
+                "pin_plan": "pin_plan.json",
+                "position_hints": "position_hints.json",
+            }
+            if pin_plan is not None else {}
+        ),
+    }
+    artifacts = {
+        "manifest": manifest,
+        "lane_map": transport_artifacts["lane_map"],
+        "transports": transport_artifacts["transports"],
+        "anchors": transport_artifacts["anchors"],
+    }
     artifacts["manifest"]["clock_periods"] = {
         clock: float(record["target_period_ns"])
         for clock, record in runtime["virtual_dut_clocks"].items()
     }
-    output_dir.mkdir(parents=True, exist_ok=True)
     validation = write_split_netlists_sqlite(
         output_dir / "split-netlists.sqlite",
         ir_path,
@@ -299,12 +459,10 @@ def run_phase6(
         expected_platform=platform.name,
     )
     validation.update({
-        "scheduled_hops": len(schedule["entries"]),
-        "transport_endpoints": sum(
-            len(value["endpoints"])
-            for value in artifacts["transports"].values()
-        ),
-        "lane_entries": len(artifacts["lane_map"]["entries"]),
+        key: transport_artifacts["summary"][key]
+        for key in (
+            "scheduled_hops", "transport_endpoints", "lane_entries"
+        )
     })
     if validation["transport_endpoints"] != 2 * validation["scheduled_hops"]:
         raise ValidationError("transport endpoint coverage disagrees")
@@ -366,14 +524,14 @@ def run_phase6(
         int(record_counts.get("cell_records", 0)) <= 10_000
         and int(record_counts.get("endpoint_records", 0)) <= 100_000
     )
-    virtual_board = None
-    virtual_binding = None
+    virtual_binding = transport_artifacts["binding"]
     virtual_board_validation = None
     if platform.virtual_board_model is not None:
-        from .virtual_board import build_virtual_binding, build_virtual_board
-
-        virtual_board = build_virtual_board(platform)
-        virtual_binding = build_virtual_binding(platform, virtual_board, schedule, artifacts)
+        if virtual_board is None or virtual_binding is None:
+            raise ValidationError(
+                "declared virtual board binding was not published"
+            )
+        virtual_binding.validate_transport_relations()
         # The constructive producer checks schedule/port/wire coverage while
         # binding. Reuse that certificate instead of rebuilding and rehashing
         # the same schedule. Explicit validate_phase6 independently rebuilds it.
@@ -396,6 +554,12 @@ def run_phase6(
     if small_qualification:
         from .tdm import is_sampled_virtual_wire_schedule
 
+        materialize_schedule = getattr(schedule, "materialize", None)
+        qualification_schedule = (
+            materialize_schedule()
+            if materialize_schedule is not None
+            else schedule
+        )
         ir = EmuIR.load(ir_path)
         assignment_json_path = (
             assignment_path.with_name("assignment.json")
@@ -403,11 +567,11 @@ def run_phase6(
             else assignment_path
         )
         assignment = read_json(assignment_json_path)
-        if is_sampled_virtual_wire_schedule(schedule):
+        if is_sampled_virtual_wire_schedule(qualification_schedule):
             equivalence = _static_exact_equivalence_evidence(
                 ir,
                 assignment,
-                schedule,
+                qualification_schedule,
                 cycles=equivalence_cycles,
                 seed=equivalence_seed,
                 clock_periods=artifacts["manifest"]["clock_periods"],
@@ -416,7 +580,7 @@ def run_phase6(
             equivalence = simulate_partition_equivalence(
                 ir,
                 assignment,
-                schedule,
+                qualification_schedule,
                 cycles=equivalence_cycles,
                 seed=equivalence_seed,
             )
@@ -429,7 +593,6 @@ def run_phase6(
     output_dir.mkdir(parents=True, exist_ok=True)
     if virtual_board is not None:
         write_json(output_dir / "virtual_board_wiring.json", virtual_board)
-        write_json(output_dir / "virtual_board_binding.json", virtual_binding)
     write_json(
         output_dir / "manifest.json",
         (
@@ -439,20 +602,9 @@ def run_phase6(
         ),
         compact=managed_storage,
     )
-    write_json(
-        output_dir / "lane_map.json",
-        (
-            pack_managed_json(artifacts["lane_map"])
-            if managed_storage
-            else artifacts["lane_map"]
-        ),
-        compact=managed_storage,
-    )
     if pin_plan is not None:
-        write_json(output_dir / "pin_plan.json", pin_plan)
-        write_json(output_dir / "position_hints.json", position_hints)
         if electrical_binding_path is not None:
-            write_json(
+            electrical_binding_view = write_chimew_binding_storage(
                 output_dir / "electrical_binding.json",
                 electrical_binding,
             )
@@ -465,29 +617,10 @@ def run_phase6(
     for item in artifacts["manifest"]["fpgas"]:
         fpga_id = item["fpga"]
         fpga_root = output_dir / fpga_id
-        write_json(
-            fpga_root / "transport.json",
-            (
-                pack_managed_json(artifacts["transports"][fpga_id])
-                if managed_storage
-                else artifacts["transports"][fpga_id]
-            ),
-            compact=managed_storage,
-        )
-        write_json(
-            fpga_root / "virtual_anchors.json",
-            (
-                pack_managed_json(artifacts["anchors"][fpga_id])
-                if managed_storage
-                else artifacts["anchors"][fpga_id]
-            ),
-            compact=managed_storage,
-        )
-        (fpga_root / "transport_schedule.sv").write_text(
-            transport_to_systemverilog(
-                artifacts["transports"][fpga_id], platform
-            ),
-            encoding="utf-8",
+        write_transport_systemverilog(
+            fpga_root / "transport_schedule.sv",
+            artifacts["transports"][fpga_id],
+            platform,
         )
         (fpga_root / "virtual_anchors.xdc.template").write_text(
             anchors_to_xdc_template(artifacts["anchors"][fpga_id]),
@@ -495,17 +628,17 @@ def run_phase6(
         )
         if virtual_binding is not None:
             from .virtual_board import (
-                virtual_binding_to_systemverilog,
-                virtual_binding_to_xdc,
+                write_virtual_binding_systemverilog,
+                write_virtual_binding_xdc,
             )
 
-            (fpga_root / "virtual_data_pins.xdc").write_text(
-                virtual_binding_to_xdc(virtual_binding, fpga_id),
-                encoding="utf-8",
+            write_virtual_binding_xdc(
+                fpga_root / "virtual_data_pins.xdc", virtual_binding, fpga_id
             )
-            (fpga_root / "virtual_differential_io.sv").write_text(
-                virtual_binding_to_systemverilog(virtual_binding, fpga_id),
-                encoding="utf-8",
+            write_virtual_binding_systemverilog(
+                fpga_root / "virtual_differential_io.sv",
+                virtual_binding,
+                fpga_id,
             )
     report = {
         "schema": PHASE6_REPORT_SCHEMA,
@@ -515,6 +648,18 @@ def run_phase6(
         "design": design_name,
         "platform": platform.name,
         "provider": artifacts["manifest"]["provider"],
+        "schedule_input": (
+            {
+                "dataflow": "indexed-lazy-sqlite-v1",
+                "logical_sha256": schedule.manifest[
+                    "logical_sha256"
+                ],
+                "store_bytes": schedule.manifest["store_bytes"],
+            }
+            if hasattr(schedule, "manifest")
+            else {"dataflow": "legacy-materialized-json-v1"}
+        ),
+        "transport_storage": transport_artifacts["summary"],
         "virtual_runtime_provider": runtime["provider"],
         "virtual_dut_clocks": sorted(runtime["virtual_dut_clocks"]),
         "clock_contract_ref": "manifest.json#/clock_periods",
@@ -540,6 +685,7 @@ def run_phase6(
             "manifest": "manifest.json",
             "lane_map": "lane_map.json",
             "split_netlists": "split-netlists.sqlite",
+            "transport_store": "transport.sqlite",
             "runtime_controller_rtl": "virtual_runtime_controller.sv",
             "report": "phase6_report.json",
             **(
@@ -558,8 +704,27 @@ def run_phase6(
                 else {}
             ),
             **(
+                {"pin_plan_store": pin_plan_store_artifact}
+                if pin_plan_store_artifact is not None
+                else {}
+            ),
+            **(
+                {"position_hints_store": position_hints_store_artifact}
+                if position_hints_store_artifact is not None
+                else {}
+            ),
+            **(
                 {"electrical_binding": "electrical_binding.json"}
                 if electrical_validation is not None
+                else {}
+            ),
+            **(
+                {
+                    "electrical_binding_store": (
+                        electrical_binding_view.manifest["artifact"]
+                    )
+                }
+                if electrical_binding_view is not None
                 else {}
             ),
             **(
@@ -599,21 +764,23 @@ def validate_phase6(
     # validate the cross-layer contract.  Reuse that exact object instead of
     # scanning and decoding the artifact again.
     schedule = (
-        read_json(schedule_path)
+        read_tdm_schedule(schedule_path)
         if schedule_value is None
         else schedule_value
     )
     platform = Platform.load(platform_path)
     manifest = read_json(manifest_path)
     transports = {
-        item["fpga"]: read_json(manifest_path.parent / item["transport"])
+        item["fpga"]: read_transport(
+            manifest_path.parent / item["transport"]
+        )
         for item in manifest["fpgas"]
     }
     pin_plan = (
-        read_json(pin_plan_path)
+        read_pin_plan(pin_plan_path)
         if pin_plan_path is not None
         else (
-            read_json(manifest_path.parent / manifest["pin_plan"])
+            read_pin_plan(manifest_path.parent / manifest["pin_plan"])
             if "pin_plan" in manifest
             else None
         )
@@ -627,7 +794,7 @@ def validate_phase6(
         validate_pin_plan(
             schedule,
             platform,
-            read_json(resolved_positions),
+            read_position_hints(resolved_positions),
             pin_plan,
         )
         if pin_plan.get("provider") == CHIMEW_PIN_PLAN_PROVIDER:
@@ -643,7 +810,10 @@ def validate_phase6(
             from .chimew_phase6 import validate_chimew_phase6_binding
 
             validate_chimew_phase6_binding(
-                schedule, platform, pin_plan, read_json(resolved_binding)
+                schedule,
+                platform,
+                pin_plan,
+                read_chimew_binding(resolved_binding),
             )
         elif electrical_binding_path is not None:
             raise ValueError(
@@ -666,6 +836,12 @@ def validate_phase6(
     split_relative = manifest.get("netlist_storage")
     if split_relative != "split-netlists.sqlite":
         raise ValidationError("Phase 6 manifest lacks split-netlists SQLite")
+    transport_storage = manifest.get("transport_storage")
+    if (
+        transport_storage is not None
+        and transport_storage != "transport.sqlite"
+    ):
+        raise ValidationError("Phase 6 transport SQLite path is invalid")
     validation = validate_split_netlists_sqlite(
         manifest_path.parent / split_relative,
         ir_path,
@@ -679,7 +855,9 @@ def validate_phase6(
             len(value["endpoints"]) for value in transports.values()
         ),
         "lane_entries": len(
-            read_json(manifest_path.parent / manifest["lane_map"])["entries"]
+            read_lane_map(
+                manifest_path.parent / manifest["lane_map"]
+            )["entries"]
         ),
     })
     if validation["transport_endpoints"] != 2 * validation["scheduled_hops"]:
@@ -701,24 +879,29 @@ def validate_phase6(
     if platform.virtual_board_model is not None:
         if virtual_metadata != _virtual_board_artifact_paths(platform):
             raise ValidationError("Phase 6 declared virtual board requires wiring, binding and pin constraints")
-        from .virtual_board import virtual_binding_to_systemverilog, virtual_binding_to_xdc
+        from .virtual_board import (
+            virtual_binding_systemverilog_matches,
+            virtual_binding_xdc_matches,
+        )
         root = manifest_path.parent
         artifacts = {
             "manifest": manifest,
             "transports": transports,
-            "lane_map": read_json(root / manifest["lane_map"]),
+            "lane_map": read_lane_map(root / manifest["lane_map"]),
         }
         try:
             board = read_json(root / virtual_metadata["wiring"])
-            binding = read_json(root / virtual_metadata["binding"])
+            binding = read_virtual_binding(root / virtual_metadata["binding"])
             validation["virtual_board_binding"] = _validate_virtual_board_artifacts(
                 platform, schedule, artifacts, board, binding
             )
             for fpga, relative in virtual_metadata["xdc"].items():
-                if (root / relative).read_text() != virtual_binding_to_xdc(binding, fpga):
+                if not virtual_binding_xdc_matches(root / relative, binding, fpga):
                     raise ValidationError(f"Phase 6 virtual data-pin XDC differs for {fpga}")
             for fpga, relative in virtual_metadata["differential_io"].items():
-                if (root / relative).read_text() != virtual_binding_to_systemverilog(binding, fpga):
+                if not virtual_binding_systemverilog_matches(
+                    root / relative, binding, fpga
+                ):
                     raise ValidationError(f"Phase 6 differential I/O adapter differs for {fpga}")
         except (OSError, ValueError) as error:
             raise ValidationError(f"Phase 6 virtual board artifact is unreadable: {error}") from error
@@ -735,11 +918,17 @@ def validate_phase6(
         )
         ir = EmuIR.load(ir_path)
         assignment = read_json(assignment_json_path)
+        materialize_schedule = getattr(schedule, "materialize", None)
+        qualification_schedule = (
+            materialize_schedule()
+            if materialize_schedule is not None
+            else schedule
+        )
         validation["static_exact_equivalence"] = (
             _static_exact_equivalence_evidence(
                 ir,
                 assignment,
-                schedule,
+                qualification_schedule,
                 cycles=16,
                 seed=20260727,
                 clock_periods=clock_periods,

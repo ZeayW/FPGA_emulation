@@ -25,6 +25,7 @@ from .logic_segment_timing import (
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .phase3_storage import read_phase3_assignment_view
 from .routing import system_route_timing_paths
+from .system_route_storage import read_system_routes
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
     STA_PATH_DATABASE_INDEX_SCHEMA,
@@ -423,7 +424,8 @@ def prepare_vpr_local_path_query_inputs(
             include_instance_assignment=True,
         )
     database = database or read_json(path_database_path)
-    routes = routes or read_json(routes_path)
+    if routes is None:
+        routes = read_system_routes(routes_path)
     if database.get("schema") not in {
         STA_PATH_DATABASE_SCHEMA,
         STA_PATH_DATABASE_STREAM_SCHEMA,

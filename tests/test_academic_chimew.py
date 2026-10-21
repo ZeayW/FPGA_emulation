@@ -17,6 +17,7 @@ from emuflow.chimew_pipeline import (
     run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
 )
+from emuflow.chimew_binding_storage import read_chimew_binding
 from emuflow.cli import _build_parser
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
@@ -29,6 +30,7 @@ from emuflow.phase1 import run_phase1
 from emuflow.phase3 import run_phase3
 from emuflow.phase4 import run_phase4
 from emuflow.phase5 import run_phase5
+from emuflow.pin_plan_storage import read_pin_plan
 from tests.native_build import tlr_router
 
 
@@ -471,7 +473,7 @@ class AcademicChimewTest(unittest.TestCase):
                 assigner=self.executables["assigner"],
                 region_count=4,
             )
-            binding = read_json(
+            binding = read_chimew_binding(
                 root
                 / "chimew"
                 / report["artifacts"]["adapter_electrical_binding"]["path"]
@@ -849,10 +851,11 @@ class AcademicChimewTest(unittest.TestCase):
             qualification = read_json(
                 root / "timing-chimew" / report["artifacts"]["qualification"]["path"]
             )
-            pin_plan = read_json(
+            pin_plan = read_pin_plan(
                 root
                 / "timing-chimew"
-                / report["artifacts"]["adapter_pin_plan"]["path"]
+                / report["artifacts"]["adapter_pin_plan"]["path"],
+                materialize=True,
             )
             planned = {
                 entry["schedule_entry"]: entry for entry in pin_plan["entries"]
@@ -861,7 +864,7 @@ class AcademicChimewTest(unittest.TestCase):
                 planned[critical_entry["id"]]["physical_lane"],
                 critical_entry["lane"],
             )
-            electrical_binding = read_json(
+            electrical_binding = read_chimew_binding(
                 root
                 / "timing-chimew"
                 / report["artifacts"]["adapter_electrical_binding"]["path"]

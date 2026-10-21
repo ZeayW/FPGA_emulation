@@ -187,6 +187,10 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
             )
             self.assertEqual(nodes["route"]["dependencies"], ["partition", "cut-timing"])
+            self.assertEqual(
+                {artifact["path"] for artifact in nodes["route"]["artifacts"]},
+                {"."},
+            )
             self.assertIn(
                 "{dependency:timing}", nodes["cut-timing"]["validator"]
             )
@@ -195,6 +199,11 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertEqual(
                 nodes["tdm"]["dependencies"], ["route", "partition"]
             )
+            tdm_artifact_paths = {
+                artifact["path"] for artifact in nodes["tdm"]["artifacts"]
+            }
+            self.assertEqual(tdm_artifact_paths, {"."})
+            self.assertNotIn("schedule.sqlite", tdm_artifact_paths)
             self.assertIn("--partition", nodes["tdm"]["command"])
             self.assertIn("--route-constraints", nodes["partition"]["command"])
             self.assertEqual(
@@ -1022,9 +1031,9 @@ class CanonicalExperimentTest(unittest.TestCase):
                 TDM_TIMING_DAG_RATIO_PROVIDER,
             )
             self.assertIn("--ratio-optimizer", tdm["command"])
-            self.assertIn(
-                "ratio_plan.json",
+            self.assertEqual(
                 {item["path"] for item in tdm["artifacts"]},
+                {"."},
             )
             terminals = [
                 node for node in nodes.values() if node["stage"] == "phase7"

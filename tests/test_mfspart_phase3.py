@@ -214,6 +214,14 @@ class MFSPartPhase3Test(unittest.TestCase):
             root = Path(temporary_directory)
             ir_path = root / "counter.emuir.json"
             ir_path.write_text(json.dumps(ir.to_dict()), encoding="utf-8")
+            constraints_path = root / "capacity-only-constraints.json"
+            write_json(
+                constraints_path,
+                {
+                    "schema": "emuflow.partition-constraints/v1",
+                    "balance_dimensions": [],
+                },
+            )
             run_phase3(
                 ir_path,
                 PLATFORM,
@@ -221,10 +229,13 @@ class MFSPartPhase3Test(unittest.TestCase):
                 seed=19,
                 provider="greedy",
                 cut_mode="sequential-only",
+                constraints_path=constraints_path,
             )
             clusters = read_json(root / "phase3/clusters.json")
             initial = read_json(root / "phase3/assignment.json")
-            constraints = load_partition_constraints(None, ir, platform)
+            constraints = load_partition_constraints(
+                constraints_path, ir, platform
+            )
             refined, report = refine_mfspart_partition(
                 ir,
                 platform,

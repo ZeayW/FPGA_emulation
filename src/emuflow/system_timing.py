@@ -417,7 +417,8 @@ def _local_path_database(
     records: List[Dict[str, Any]] = []
     source = None
     ids = set()
-    for fpga, database in sorted(raw.items()):
+    for fpga in sorted(raw):
+        database = raw[fpga]
         validation = validate_local_path_timing(database)
         if validation["fpga"] != fpga:
             raise ValidationError("physical local path FPGA identity disagrees")

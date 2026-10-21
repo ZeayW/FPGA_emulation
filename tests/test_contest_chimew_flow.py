@@ -529,10 +529,15 @@ class ContestChimewCrossFlowTest(unittest.TestCase):
             )
             self.assertEqual(pipeline, repeated_pipeline)
             self.assertEqual(
-                read_json(pipeline_root / "phase6-adapter/pin_plan.json"),
-                read_json(repeat_root / "phase6-adapter/pin_plan.json"),
+                read_json(
+                    pipeline_root
+                    / pipeline["artifacts"]["adapter_pin_plan"]["path"]
+                ),
+                read_json(
+                    repeat_root
+                    / repeated_pipeline["artifacts"]["adapter_pin_plan"]["path"]
+                ),
             )
-            adapter_root = pipeline_root / "phase6-adapter"
             phase6 = run_phase6(
                 ir_path,
                 phase3_root / "assignment.json",
@@ -540,9 +545,18 @@ class ContestChimewCrossFlowTest(unittest.TestCase):
                 platform_path,
                 phase6_root,
                 equivalence_cycles=4,
-                pin_plan_path=adapter_root / "pin_plan.json",
-                position_hints_path=adapter_root / "position_hints.json",
-                electrical_binding_path=adapter_root / "electrical_binding.json",
+                pin_plan_path=(
+                    pipeline_root
+                    / pipeline["artifacts"]["adapter_pin_plan"]["path"]
+                ),
+                position_hints_path=(
+                    pipeline_root
+                    / pipeline["artifacts"]["adapter_position_hints"]["path"]
+                ),
+                electrical_binding_path=(
+                    pipeline_root
+                    / pipeline["artifacts"]["adapter_electrical_binding"]["path"]
+                ),
             )
             phase6_validation = validate_phase6(
                 ir_path,

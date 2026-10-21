@@ -11,11 +11,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mmap
+import sqlite3
+import struct
+import subprocess
+import tempfile
+from array import array
 from collections import defaultdict, deque
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set, Tuple
+from pathlib import Path
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, Set, Tuple
 
 from .errors import ValidationError
+from .emuir_storage import open_emuir_sqlite_read_only
 from .ir import EmuIR
+from .native_tools import resolve_native_executable
+from .phase3_exact_records import (
+    StaticExactRecordSequence,
+    build_static_exact_capture_stream,
+    build_static_exact_cut_node_stream,
+    build_static_exact_record_streams,
+    validate_static_exact_capture_bit,
+)
 from .resources import RESOURCE_FIELDS
 
 
@@ -37,6 +53,10 @@ STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH = 0
 STATIC_EXACT_CANDIDATE_POLICIES = {
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
 }
+STATIC_EXACT_NATIVE_MIN_INSTANCES = 100_000
+_STATIC_EXACT_NATIVE_INPUT_MAGIC = 0x31584553464D5545
+_STATIC_EXACT_NATIVE_OUTPUT_MAGIC = 0x315845534F4D5545
+_STATIC_EXACT_NATIVE_PROTOCOL_VERSION = 3
 SEQUENTIAL_TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
 SEQUENTIAL_LEGAL_CUT_CLASSES = {
     *SEQUENTIAL_TRANSPORTED_CUT_CLASSES,
@@ -73,6 +93,20 @@ _TRANSPORT_SAFE_SEQUENTIAL_INPUTS = {
     "FDRE": {"D", "CE", "R"},
     "FDSE": {"D", "CE", "S"},
 }
+
+
+def static_exact_analysis_engine(instance_count: int) -> str:
+    if (
+        isinstance(instance_count, bool)
+        or not isinstance(instance_count, int)
+        or instance_count < 0
+    ):
+        raise ValueError("Static Exact instance count is invalid")
+    return (
+        "native-cpp-v1"
+        if instance_count >= STATIC_EXACT_NATIVE_MIN_INSTANCES
+        else "python-reference-v1"
+    )
 
 
 class _UnionFind:
@@ -660,6 +694,7 @@ def _analyze_static_exact_dependencies(
         include_source_identity=False,
     )
     eligible = set(candidate_index["eligible_ids"])
+    del candidate_index
     instances = {item["id"]: item for item in ir.value["instances"]}
     classes = {
         instance_id: _instance_class(instance)
@@ -683,6 +718,12 @@ def _analyze_static_exact_dependencies(
         net = nets.get(net_id)
         if net is None:
             raise ValidationError(f"exact semantic contract has unknown net {net_id!r}")
+        if cut.get("cut_class") is None:
+            cut["cut_class"] = net["cut_class"]
+        elif cut.get("cut_class") != net.get("cut_class"):
+            raise ValidationError(
+                f"exact cut {net_id!r} class disagrees with EmuIR"
+            )
         if len(cut.get("source_fpgas", [])) != 1:
             raise ValidationError(f"exact cut {net_id!r} must have one source FPGA")
         if net["cut_class"] == "combinational" and net_id not in eligible:
@@ -793,6 +834,1312 @@ def _analyze_static_exact_dependencies(
     }
 
 
+class _NativeStaticExactAnalysisRecords:
+    """Compact integer relation returned by the native dependency analyzer.
+
+    The analyzer already numbers cut nets in canonical order.  Retaining that
+    relation as CSR arrays avoids expanding every edge into Python strings,
+    sets, and dictionaries merely to build the final typed record stream.
+    ``finalize`` independently reconstructs dependency levels and rejects
+    cycles before the compact relation is consumed by contract publication.
+    """
+
+    def __init__(self, count: int) -> None:
+        if count < 0 or count >= 2**32:
+            raise ValidationError("native Static Exact cut count is invalid")
+        self._count = count
+        self._offsets = array("Q", [0])
+        self._dependencies = array("I")
+        self._local_launches = bytearray()
+        self._dependency_levels = array("I")
+        self._combinational_depths = array("I")
+        self.maximum_dependency_level = 0
+        self.maximum_combinational_depth = 0
+
+    def __len__(self) -> int:
+        return self._count
+
+    @property
+    def dependency_edge_count(self) -> int:
+        return len(self._dependencies)
+
+    def append(
+        self, local_launch: bool, dependency_indices: Sequence[int]
+    ) -> None:
+        if len(self._local_launches) >= self._count:
+            raise ValidationError("native Static Exact output has excess cuts")
+        self._local_launches.append(int(local_launch))
+        self._dependencies.extend(dependency_indices)
+        self._offsets.append(len(self._dependencies))
+
+    def dependency_count(self, index: int) -> int:
+        return self._offsets[index + 1] - self._offsets[index]
+
+    def dependency_indices(self, index: int) -> Iterator[int]:
+        start = self._offsets[index]
+        end = self._offsets[index + 1]
+        for ordinal in range(start, end):
+            yield self._dependencies[ordinal]
+
+    def local_launch(self, index: int) -> bool:
+        return bool(self._local_launches[index])
+
+    def dependency_level(self, index: int) -> int:
+        return self._dependency_levels[index]
+
+    def combinational_depth(self, index: int) -> int:
+        return self._combinational_depths[index]
+
+    def finalize(self, combinational: bytearray) -> None:
+        if (
+            len(self._local_launches) != self._count
+            or len(self._offsets) != self._count + 1
+            or len(combinational) != self._count
+            or any(value not in {0, 1} for value in combinational)
+        ):
+            raise ValidationError("native Static Exact output is incomplete")
+
+        # Build a compact transient successor CSR to topologically evaluate
+        # the predecessor relation.  It is released before capture identity or
+        # cut-node records are materialized.  Compared with dict[str, set[str]],
+        # this uses fixed-width integers and no per-edge Python objects.
+        successor_counts = array("I", [0]) * self._count
+        for source in self._dependencies:
+            if successor_counts[source] == 0xFFFFFFFF:
+                raise ValidationError("native Static Exact dependency is invalid")
+            successor_counts[source] += 1
+        successor_offsets = array("Q", [0])
+        for count in successor_counts:
+            successor_offsets.append(successor_offsets[-1] + count)
+        cursors = array("Q", successor_offsets[:-1])
+        successors = array("I", [0]) * len(self._dependencies)
+        for sink in range(self._count):
+            for source in self.dependency_indices(sink):
+                offset = cursors[source]
+                successors[offset] = sink
+                cursors[source] += 1
+        del cursors
+        del successor_counts
+
+        indegree = array(
+            "I", (self.dependency_count(index) for index in range(self._count))
+        )
+        queue = array(
+            "I", (index for index, degree in enumerate(indegree) if degree == 0)
+        )
+        self._dependency_levels = array("I", [0]) * self._count
+        self._combinational_depths = array("I", [0]) * self._count
+        queue_index = 0
+        visited = 0
+        while queue_index < len(queue):
+            index = queue[queue_index]
+            queue_index += 1
+            dependency_level = 1
+            combinational_depth = 0
+            for source in self.dependency_indices(index):
+                dependency_level = max(
+                    dependency_level, self._dependency_levels[source] + 1
+                )
+                combinational_depth = max(
+                    combinational_depth,
+                    self._combinational_depths[source],
+                )
+            combinational_depth += combinational[index]
+            if dependency_level >= 2**32 or combinational_depth >= 2**32:
+                raise ValidationError(
+                    "native Static Exact dependency depth is out of range"
+                )
+            self._dependency_levels[index] = dependency_level
+            self._combinational_depths[index] = combinational_depth
+            self.maximum_dependency_level = max(
+                self.maximum_dependency_level, dependency_level
+            )
+            self.maximum_combinational_depth = max(
+                self.maximum_combinational_depth, combinational_depth
+            )
+            visited += 1
+            start = successor_offsets[index]
+            end = successor_offsets[index + 1]
+            for ordinal in range(start, end):
+                sink = successors[ordinal]
+                if indegree[sink] == 0:
+                    raise ValidationError(
+                        "native Static Exact dependency is invalid"
+                    )
+                indegree[sink] -= 1
+                if indegree[sink] == 0:
+                    queue.append(sink)
+        if visited != self._count:
+            raise ValidationError("exact cut dependency graph contains a cycle")
+
+
+class _NativeStaticExactCaptureRequests:
+    """Endpoint-ordered native capture requests in fixed-width columns.
+
+    Protocol v2 orders capture triples by endpoint token, cut ordinal, and
+    sink-part ordinal. Keeping those fields in three ``uint32`` arrays avoids
+    recreating a Python tuple plus three Python integers for every capture and
+    removes the Python-side whole-population sort before endpoint replay.
+    """
+
+    def __init__(self) -> None:
+        self._endpoint_tokens = array("I")
+        self._cut_indices = array("I")
+        self._sink_part_indices = array("I")
+        self._previous: tuple[int, int, int] | None = None
+
+    def __len__(self) -> int:
+        return len(self._endpoint_tokens)
+
+    @property
+    def payload_bytes(self) -> int:
+        return (
+            self._endpoint_tokens.itemsize * len(self._endpoint_tokens)
+            + self._cut_indices.itemsize * len(self._cut_indices)
+            + self._sink_part_indices.itemsize
+            * len(self._sink_part_indices)
+        )
+
+    def append(
+        self, endpoint_token: int, cut_index: int, sink_part_index: int
+    ) -> None:
+        current = (endpoint_token, cut_index, sink_part_index)
+        if self._previous is not None and current <= self._previous:
+            raise ValidationError("native Static Exact capture is invalid")
+        self._endpoint_tokens.append(endpoint_token)
+        self._cut_indices.append(cut_index)
+        self._sink_part_indices.append(sink_part_index)
+        self._previous = current
+
+    def __iter__(self) -> Iterator[Tuple[int, int, int]]:
+        return zip(
+            self._endpoint_tokens,
+            self._cut_indices,
+            self._sink_part_indices,
+        )
+
+    def clear(self) -> None:
+        self._endpoint_tokens = array("I")
+        self._cut_indices = array("I")
+        self._sink_part_indices = array("I")
+        self._previous = None
+
+
+def _compact_partition_ir_path(ir: Any) -> Path | None:
+    """Return the authoritative compact store behind a production IR view."""
+
+    # Import lazily to keep the reference-only in-memory EmuIR path independent
+    # of the production SQLite view and to avoid treating an unrelated object
+    # with a ``path`` attribute as a trusted compact store.
+    from .partition_ir import CompactPartitionIR
+
+    return ir.path if isinstance(ir, CompactPartitionIR) else None
+
+
+def _validate_compact_native_cuts(
+    path: Path,
+    ordered_cuts: Sequence[Mapping[str, Any]],
+    ordered_cut_ids: Sequence[str],
+    ordered_cut_ordinals: Sequence[int],
+    eligible: Set[str],
+) -> Sequence[Mapping[str, Any]]:
+    """Validate cut names, ordinals and classes with one indexed-store scan.
+
+    Compact production IRs intentionally do not expose an in-memory net-name
+    index.  Looking up every cut through ``Sequence.__getitem__`` used to open
+    and decode one net record at a time.  The cut IDs are already canonical,
+    so an ordered merge proves the same identity relation without retaining a
+    graph-sized dictionary or issuing one SQLite query per cut.
+    """
+
+    if len(ordered_cuts) != len(ordered_cut_ordinals):
+        raise ValidationError("exact semantic contract net ordinals are invalid")
+    normalized: List[Mapping[str, Any]] | None = None
+    cut_index = 0
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        rows = connection.execute(
+            "SELECT seq,id,cut_class FROM net_records ORDER BY id"
+        )
+        for row in rows:
+            if cut_index >= len(ordered_cut_ids):
+                break
+            net_id = ordered_cut_ids[cut_index]
+            if row["id"] < net_id:
+                continue
+            if row["id"] > net_id:
+                raise ValidationError(
+                    f"exact semantic contract has unknown net {net_id!r}"
+                )
+            ordinal = ordered_cut_ordinals[cut_index]
+            if (
+                isinstance(ordinal, bool)
+                or not isinstance(ordinal, int)
+                or ordinal < 0
+                or ordinal >= 2**32
+                or row["seq"] != ordinal
+            ):
+                raise ValidationError(
+                    "exact semantic contract net ordinals are invalid"
+                )
+            cut = ordered_cuts[cut_index]
+            if len(cut.get("source_fpgas", [])) != 1:
+                raise ValidationError(
+                    f"exact cut {net_id!r} must have one source FPGA"
+                )
+            if cut.get("cut_class") is None:
+                cut = {**cut, "cut_class": row["cut_class"]}
+                if normalized is None:
+                    normalized = list(ordered_cuts)
+                normalized[cut_index] = cut
+            elif cut.get("cut_class") != row["cut_class"]:
+                raise ValidationError(
+                    f"exact cut {net_id!r} class disagrees with EmuIR"
+                )
+            if row["cut_class"] == "combinational" and net_id not in eligible:
+                raise ValidationError(
+                    f"combinational cut {net_id!r} is not in the "
+                    "independently reconstructed eligible set"
+                )
+            cut_index += 1
+    finally:
+        connection.close()
+    if cut_index != len(ordered_cut_ids):
+        unknown = ordered_cut_ids[cut_index]
+        raise ValidationError(
+            f"exact semantic contract has unknown net {unknown!r}"
+        )
+    return ordered_cuts if normalized is None else normalized
+
+
+def _write_compact_native_static_exact_graph(
+    path: Path,
+    emit: Any,
+    instance_assignment: Mapping[str, str],
+    part_index: Mapping[str, int],
+) -> tuple[int, int, int]:
+    """Emit the native graph straight from compact integer EmuIR relations.
+
+    The returned counts are independently checked against the IR view before
+    the caller writes the protocol header.  Instance names are used only for
+    the authoritative assignment lookup; endpoints already carry stable cell
+    ordinals and never pass through a second ``name -> ordinal`` dictionary.
+    """
+
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        metadata_row = connection.execute(
+            "SELECT value FROM metadata WHERE key='record_counts_json'"
+        ).fetchone()
+        if metadata_row is None:
+            raise ValidationError("compact EmuIR record counts are missing")
+        try:
+            counts = json.loads(metadata_row[0])
+            instance_count = counts["cell_records"]
+            net_count = counts["net_records"]
+            endpoint_count = counts["endpoint_records"]
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ValidationError("compact EmuIR record counts are invalid") from error
+        sink_count = connection.execute(
+            "SELECT COUNT(*) FROM endpoint_records WHERE role=1"
+        ).fetchone()[0]
+        if (
+            any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                or value >= 2**32
+                for value in (instance_count, net_count, sink_count)
+            )
+            or isinstance(endpoint_count, bool)
+            or not isinstance(endpoint_count, int)
+            or endpoint_count < 0
+            or endpoint_count < sink_count
+        ):
+            raise ValidationError("compact EmuIR record counts are invalid")
+
+        observed_instances = 0
+        for row in connection.execute(
+            """SELECT c.seq,c.id,p.value AS resources_json
+                 FROM cell_records c JOIN payloads p ON p.seq=c.resources_seq
+                ORDER BY c.seq"""
+        ):
+            if row["seq"] != observed_instances:
+                raise ValidationError("compact EmuIR instance sequence is invalid")
+            target = instance_assignment.get(row["id"])
+            if target not in part_index:
+                raise ValidationError(
+                    "exact semantic contract assignment is incomplete"
+                )
+            try:
+                resources = json.loads(row["resources_json"])
+            except (TypeError, json.JSONDecodeError) as error:
+                raise ValidationError(
+                    "compact EmuIR instance resources are invalid"
+                ) from error
+            if not isinstance(resources, Mapping):
+                raise ValidationError(
+                    "compact EmuIR instance resources are invalid"
+                )
+            emit(
+                "<BI",
+                int(
+                    _instance_class({"resources": resources})
+                    == "architectural-state-or-memory"
+                ),
+                part_index[target],
+            )
+            observed_instances += 1
+        if (
+            observed_instances != instance_count
+            or len(instance_assignment) != instance_count
+        ):
+            raise ValidationError(
+                "exact semantic contract assignment is incomplete"
+            )
+
+        endpoint_rows = iter(
+            connection.execute(
+                """SELECT net_seq,role,ordinal,instance_seq
+                     FROM endpoint_records
+                    ORDER BY net_seq,role,ordinal"""
+            )
+        )
+        endpoint = next(endpoint_rows, None)
+        observed_nets = 0
+        observed_endpoints = 0
+        observed_sinks = 0
+        for row in connection.execute(
+            "SELECT seq FROM net_records ORDER BY seq"
+        ):
+            net_seq = row["seq"]
+            if net_seq != observed_nets:
+                raise ValidationError("compact EmuIR net sequence is invalid")
+            groups: list[list[int]] = [[], []]
+            while endpoint is not None and endpoint["net_seq"] == net_seq:
+                role = endpoint["role"]
+                if (
+                    role not in {0, 1}
+                    or endpoint["ordinal"] != len(groups[role])
+                ):
+                    raise ValidationError(
+                        "compact EmuIR endpoint sequence is invalid"
+                    )
+                owner = endpoint["instance_seq"]
+                if owner is None:
+                    groups[role].append(-1)
+                elif (
+                    isinstance(owner, bool)
+                    or not isinstance(owner, int)
+                    or owner < 0
+                    or owner >= instance_count
+                ):
+                    raise ValidationError(
+                        "compact EmuIR endpoint owner is invalid"
+                    )
+                else:
+                    groups[role].append(owner)
+                observed_endpoints += 1
+                observed_sinks += int(role == 1)
+                endpoint = next(endpoint_rows, None)
+            if endpoint is not None and endpoint["net_seq"] < net_seq:
+                raise ValidationError("compact EmuIR has orphaned endpoints")
+            for owners in groups:
+                emit("<I", len(owners))
+                for owner in owners:
+                    emit("<i", owner)
+            observed_nets += 1
+        if endpoint is not None:
+            raise ValidationError("compact EmuIR has orphaned endpoints")
+        if (
+            observed_nets != net_count
+            or observed_endpoints != endpoint_count
+            or observed_sinks != sink_count
+        ):
+            raise ValidationError("compact EmuIR record counts disagree")
+        return instance_count, net_count, sink_count
+    finally:
+        connection.close()
+
+
+def _compact_native_static_exact_counts(path: Path) -> tuple[int, int, int]:
+    """Read the fixed protocol counts without reconstructing graph records."""
+
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key='record_counts_json'"
+        ).fetchone()
+        if row is None:
+            raise ValidationError("compact EmuIR record counts are missing")
+        try:
+            counts = json.loads(row[0])
+            instance_count = counts["cell_records"]
+            net_count = counts["net_records"]
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ValidationError("compact EmuIR record counts are invalid") from error
+        sink_count = connection.execute(
+            "SELECT COUNT(*) FROM endpoint_records WHERE role=1"
+        ).fetchone()[0]
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            or value >= 2**32
+            for value in (instance_count, net_count, sink_count)
+        ):
+            raise ValidationError("compact EmuIR record counts are invalid")
+        return instance_count, net_count, sink_count
+    finally:
+        connection.close()
+
+
+def _resolve_legacy_static_exact_cut_net_ordinals(
+    nets: Sequence[Mapping[str, Any]], ordered_cut_ids: Sequence[str]
+) -> array:
+    """Resolve name-only historical callers without changing their contract."""
+
+    cut_position_by_name = {
+        net_id: index for index, net_id in enumerate(ordered_cut_ids)
+    }
+    resolved = array("I", [0]) * len(ordered_cut_ids)
+    matched = bytearray(len(ordered_cut_ids))
+    for net_ordinal, net in enumerate(nets):
+        cut_index = cut_position_by_name.get(net["id"])
+        if cut_index is not None:
+            resolved[cut_index] = net_ordinal
+            matched[cut_index] = 1
+    if 0 in matched:
+        unknown = ordered_cut_ids[matched.index(0)]
+        raise ValidationError(
+            f"exact semantic contract has unknown net {unknown!r}"
+        )
+    return resolved
+
+
+def _analyze_static_exact_dependencies_native(
+    ir: EmuIR,
+    instance_assignment: Mapping[str, str],
+    cut_nets: Sequence[Mapping[str, Any]],
+    *,
+    max_dependency_depth: int,
+    candidate_selection_policy: str,
+    cut_net_ordinals: Sequence[int] | None = None,
+) -> Dict[str, Any]:
+    """Run graph-sized exact-cut traversal in the first-party C++ analyzer."""
+
+    if candidate_selection_policy not in STATIC_EXACT_CANDIDATE_POLICIES:
+        raise ValidationError("unknown exact combinational-cut candidate policy")
+    if (
+        isinstance(max_dependency_depth, bool)
+        or not isinstance(max_dependency_depth, int)
+        or max_dependency_depth < 0
+    ):
+        raise ValidationError(
+            "exact combinational-cut depth must be non-negative (zero disables "
+            "the policy limit)"
+        )
+    candidate_index = _build_combinational_cut_candidate_index(
+        ir,
+        include_dependency_levels=False,
+        include_source_identity=False,
+    )
+    eligible = set(candidate_index["eligible_ids"])
+    del candidate_index
+    instances = ir.value["instances"]
+    nets = ir.value["nets"]
+    compact_ir_path = _compact_partition_ir_path(ir)
+    instance_index = (
+        None
+        if compact_ir_path is not None
+        else {
+            instance["id"]: index
+            for index, instance in enumerate(instances)
+        }
+    )
+    already_ordered = all(
+        cut_nets[index - 1]["net"] < cut_nets[index]["net"]
+        for index in range(1, len(cut_nets))
+    )
+    if already_ordered:
+        ordered_positions = None
+        ordered_cuts: Sequence[Mapping[str, Any]] = cut_nets
+    else:
+        ordered_positions = sorted(
+            range(len(cut_nets)), key=lambda index: cut_nets[index]["net"]
+        )
+        ordered_cuts = [cut_nets[index] for index in ordered_positions]
+    ordered_cut_ids = [cut["net"] for cut in ordered_cuts]
+    if any(
+        ordered_cut_ids[index - 1] == ordered_cut_ids[index]
+        for index in range(1, len(ordered_cut_ids))
+    ):
+        raise ValidationError("exact semantic contract cut nets are not unique")
+
+    # New Phase 3 construction carries the authoritative net ordinal beside
+    # each transient cut record. This avoids three cut-name hash containers
+    # (lookup, matched identities, and net coordinates) in native input
+    # construction. Name-only callers remain readable through the bounded
+    # compatibility lookup below; every coordinate is checked back against
+    # authoritative EmuIR before it reaches C++.
+    if cut_net_ordinals is not None:
+        if len(cut_net_ordinals) != len(cut_nets):
+            raise ValidationError("exact semantic contract net ordinals are invalid")
+        positions: Iterable[int] = (
+            range(len(cut_nets))
+            if ordered_positions is None
+            else ordered_positions
+        )
+        reordered_cut_ordinals = (
+            None if ordered_positions is None else array("I")
+        )
+        for position in positions:
+            net_ordinal = cut_net_ordinals[position]
+            if (
+                isinstance(net_ordinal, bool)
+                or not isinstance(net_ordinal, int)
+                or net_ordinal < 0
+                or net_ordinal >= len(nets)
+            ):
+                raise ValidationError(
+                    "exact semantic contract net ordinals are invalid"
+                )
+            if (
+                compact_ir_path is None
+                and nets[net_ordinal]["id"] != cut_nets[position]["net"]
+            ):
+                raise ValidationError(
+                    "exact semantic contract net ordinals are invalid"
+                )
+            if reordered_cut_ordinals is not None:
+                reordered_cut_ordinals.append(net_ordinal)
+        resolved_cut_ordinals = (
+            cut_net_ordinals
+            if reordered_cut_ordinals is None
+            else reordered_cut_ordinals
+        )
+    else:
+        resolved_cut_ordinals = _resolve_legacy_static_exact_cut_net_ordinals(
+            nets, ordered_cut_ids
+        )
+
+    if compact_ir_path is not None:
+        ordered_cuts = _validate_compact_native_cuts(
+            compact_ir_path,
+            ordered_cuts,
+            ordered_cut_ids,
+            resolved_cut_ordinals,
+            eligible,
+        )
+    else:
+        normalized_cuts: List[Mapping[str, Any]] | None = None
+        for cut_index, cut in enumerate(ordered_cuts):
+            net_id = ordered_cut_ids[cut_index]
+            net = nets[resolved_cut_ordinals[cut_index]]
+            if len(cut.get("source_fpgas", [])) != 1:
+                raise ValidationError(
+                    f"exact cut {net_id!r} must have one source FPGA"
+                )
+            if cut.get("cut_class") is None:
+                cut = {**cut, "cut_class": net["cut_class"]}
+                if normalized_cuts is None:
+                    normalized_cuts = list(ordered_cuts)
+                normalized_cuts[cut_index] = cut
+            elif cut.get("cut_class") != net.get("cut_class"):
+                raise ValidationError(
+                    f"exact cut {net_id!r} class disagrees with EmuIR"
+                )
+            if net["cut_class"] == "combinational" and net_id not in eligible:
+                raise ValidationError(
+                    f"combinational cut {net_id!r} is not in the independently "
+                    "reconstructed eligible set"
+                )
+        if normalized_cuts is not None:
+            ordered_cuts = normalized_cuts
+    del ordered_positions
+    del eligible
+
+    part_ids = sorted(
+        set(instance_assignment.values())
+        | {
+            fpga
+            for cut in ordered_cuts
+            for fpga in (
+                list(cut.get("source_fpgas", []))
+                + list(cut.get("sink_fpgas", []))
+            )
+            if isinstance(fpga, str)
+        }
+    )
+    if not part_ids:
+        raise ValidationError("exact semantic contract has no FPGA parts")
+    part_index = {part: index for index, part in enumerate(part_ids)}
+    if instance_index is not None and any(
+        identity not in instance_assignment
+        or instance_assignment[identity] not in part_index
+        for identity in instance_index
+    ):
+        raise ValidationError("exact semantic contract assignment is incomplete")
+
+    resolved = resolve_native_executable("emuflow_static_exact_analyzer")
+    with tempfile.TemporaryDirectory(prefix="emuflow-static-exact-") as temporary:
+        root = Path(temporary)
+        native_input = root / "static-exact.in"
+        native_output = root / "static-exact.out"
+        with native_input.open("wb") as stream:
+            pending = bytearray()
+
+            def emit(format_string: str, *values: Any) -> None:
+                pending.extend(struct.pack(format_string, *values))
+                if len(pending) >= 4 * 1024 * 1024:
+                    stream.write(pending)
+                    pending.clear()
+
+            if compact_ir_path is None:
+                instance_count = len(instances)
+                net_count = len(nets)
+                sink_count = sum(len(net["sinks"]) for net in nets)
+            else:
+                instance_count, net_count, sink_count = (
+                    _compact_native_static_exact_counts(compact_ir_path)
+                )
+                if instance_count != len(instances) or net_count != len(nets):
+                    raise ValidationError("compact EmuIR record counts disagree")
+            emit(
+                "<Q6I",
+                _STATIC_EXACT_NATIVE_INPUT_MAGIC,
+                _STATIC_EXACT_NATIVE_PROTOCOL_VERSION,
+                instance_count,
+                net_count,
+                len(ordered_cut_ids),
+                len(part_ids),
+                sink_count,
+            )
+            if compact_ir_path is not None:
+                emitted_counts = _write_compact_native_static_exact_graph(
+                    compact_ir_path,
+                    emit,
+                    instance_assignment,
+                    part_index,
+                )
+                if emitted_counts != (instance_count, net_count, sink_count):
+                    raise ValidationError("compact EmuIR record counts disagree")
+            else:
+                if instance_index is None:
+                    raise ValidationError("native Static Exact input is incomplete")
+                for instance in instances:
+                    emit(
+                        "<BI",
+                        int(
+                            _instance_class(instance)
+                            == "architectural-state-or-memory"
+                        ),
+                        part_index[instance_assignment[instance["id"]]],
+                    )
+                for net in nets:
+                    emit("<I", len(net["drivers"]))
+                    for endpoint in net["drivers"]:
+                        raw_instance = endpoint["instance"]
+                        emit(
+                            "<i",
+                            -1
+                            if raw_instance is None
+                            else instance_index[raw_instance],
+                        )
+                    emit("<I", len(net["sinks"]))
+                    for endpoint in net["sinks"]:
+                        raw_instance = endpoint["instance"]
+                        sink_instance = (
+                            -1
+                            if raw_instance is None
+                            else instance_index[raw_instance]
+                        )
+                        emit("<i", sink_instance)
+            for cut_index, net_id in enumerate(ordered_cut_ids):
+                cut = ordered_cuts[cut_index]
+                sources = cut["source_fpgas"]
+                sinks = cut.get("sink_fpgas")
+                if (
+                    sources[0] not in part_index
+                    or not isinstance(sinks, list)
+                    or any(sink not in part_index for sink in sinks)
+                ):
+                    raise ValidationError(
+                        f"exact cut {net_id!r} has an invalid FPGA endpoint"
+                    )
+                ordered_sinks = sorted(set(sinks))
+                emit(
+                    "<III",
+                    resolved_cut_ordinals[cut_index],
+                    part_index[sources[0]],
+                    len(ordered_sinks),
+                )
+                for sink in ordered_sinks:
+                    emit("<I", part_index[sink])
+            if pending:
+                stream.write(pending)
+        # Protocol v3 contains only fixed-width integer graph coordinates. It
+        # preserves original instance/net order, resolves the cut subset while
+        # scanning those arrays, and returns only capture coordinates. Python
+        # binds C returned records back to authoritative EmuIR; native code
+        # never receives names, ports, or potentially unbounded Python bits.
+        del resolved_cut_ordinals
+        completed = subprocess.run(
+            [resolved, str(native_input), str(native_output)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise ValidationError(
+                "native Static Exact analysis failed with exit code "
+                f"{completed.returncode}: {detail}"
+            )
+        with native_output.open("rb") as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                offset = 0
+
+                def take(format_string: str) -> Tuple[Any, ...]:
+                    nonlocal offset
+                    size = struct.calcsize(format_string)
+                    if offset + size > len(data):
+                        raise ValidationError(
+                            "native Static Exact output is truncated"
+                        )
+                    values = struct.unpack_from(format_string, data, offset)
+                    offset += size
+                    return values
+
+                magic, version, output_cut_count, capture_count = take("<QIIQ")
+                if (
+                    magic != _STATIC_EXACT_NATIVE_OUTPUT_MAGIC
+                    or version != _STATIC_EXACT_NATIVE_PROTOCOL_VERSION
+                    or output_cut_count != len(ordered_cut_ids)
+                ):
+                    raise ValidationError(
+                        "native Static Exact output header is invalid"
+                    )
+                analysis_records = _NativeStaticExactAnalysisRecords(
+                    len(ordered_cut_ids)
+                )
+                for _net_id in ordered_cut_ids:
+                    local_launch, dependency_count = take("<BI")
+                    if local_launch not in {0, 1}:
+                        raise ValidationError(
+                            "native Static Exact local-launch flag is invalid"
+                        )
+                    if dependency_count > min(
+                        len(ordered_cut_ids), (len(data) - offset) // 4
+                    ):
+                        raise ValidationError(
+                            "native Static Exact dependency count is invalid"
+                        )
+                    dependency_indices = []
+                    previous_dependency = -1
+                    for _ in range(dependency_count):
+                        (dependency_index,) = take("<I")
+                        if (
+                            dependency_index >= len(ordered_cut_ids)
+                            or dependency_index <= previous_dependency
+                        ):
+                            raise ValidationError(
+                                "native Static Exact dependency is invalid"
+                            )
+                        dependency_indices.append(dependency_index)
+                        previous_dependency = dependency_index
+                    analysis_records.append(
+                        bool(local_launch), dependency_indices
+                    )
+
+                if capture_count > (len(data) - offset) // 16:
+                    raise ValidationError(
+                        "native Static Exact capture count is invalid"
+                    )
+
+                def capture_coordinates() -> Iterator[Tuple[int, int, int, int]]:
+                    for _ in range(capture_count):
+                        yield take("<IIII")
+
+                if compact_ir_path is not None:
+                    capture_stream = (
+                        _resolve_compact_native_coordinate_capture_stream(
+                            compact_ir_path,
+                            capture_coordinates(),
+                            ordered_cut_ids,
+                            part_ids,
+                            ordered_cuts,
+                            instance_assignment,
+                            root / "capture-relation.sqlite3",
+                        )
+                    )
+                else:
+                    if instance_index is None:
+                        raise ValidationError(
+                            "native Static Exact capture input is incomplete"
+                        )
+                    capture_stream = _resolve_native_coordinate_capture_stream(
+                        instances,
+                        nets,
+                        instance_index,
+                        capture_coordinates(),
+                        ordered_cut_ids,
+                        part_ids,
+                        ordered_cuts,
+                        instance_assignment,
+                        root / "capture-relation.sqlite3",
+                    )
+                if offset != len(data):
+                    raise ValidationError(
+                        "native Static Exact output has trailing bytes"
+                    )
+        del instance_index
+
+    analysis_records.finalize(
+        bytearray(
+            cut["cut_class"] == "combinational" for cut in ordered_cuts
+        )
+    )
+    maximum_depth = analysis_records.maximum_combinational_depth
+    if max_dependency_depth and maximum_depth > max_dependency_depth:
+        critical = min(
+            ordered_cut_ids[index]
+            for index in range(len(analysis_records))
+            if analysis_records.combinational_depth(index) == maximum_depth
+        )
+        raise ValidationError(
+            "exact combinational-cut dependency depth exceeds the configured "
+            f"limit: net {critical!r} has depth {maximum_depth}, limit "
+            f"{max_dependency_depth}"
+        )
+    return {
+        "ordered_cuts": ordered_cuts,
+        "analysis_records": analysis_records,
+        "maximum_depth": maximum_depth,
+        "capture_stream": capture_stream,
+        "analysis_engine": "native-cpp-v1",
+    }
+
+
+def _iter_native_capture_requests(
+    ordered_nets: Sequence[Mapping[str, Any]],
+    capture_requests: Sequence[Tuple[int, int, int]]
+    | _NativeStaticExactCaptureRequests,
+    ordered_cut_ids: Sequence[str],
+    part_ids: Sequence[str],
+) -> Iterator[Tuple[str, str, str, str, Any, Any]]:
+    """Resolve only capture endpoints returned by the native analyzer.
+
+    Native endpoint tokens are ordinals in the ordered net/sink stream. The
+    endpoint replay already avoids an identity tuple for every sink. Protocol
+    v2 also keeps the returned capture subset in endpoint order and fixed-width
+    columns, so replay needs neither per-capture Python tuples nor a second
+    whole-population sort.
+    """
+
+    if not capture_requests:
+        return
+    if isinstance(capture_requests, _NativeStaticExactCaptureRequests):
+        requests = iter(capture_requests)
+    else:
+        # Compatibility and diagnostic callers may still pass an arbitrary
+        # tuple sequence. Production analyzer output is already canonical.
+        requests = iter(sorted(capture_requests, key=lambda item: item[0]))
+    current = next(requests, None)
+    endpoint_token = 0
+    for net in ordered_nets:
+        for endpoint in net["sinks"]:
+            if current is not None and current[0] < endpoint_token:
+                raise ValidationError("native Static Exact capture is invalid")
+            while current is not None and current[0] == endpoint_token:
+                _, cut_index, sink_part_index = current
+                raw_instance = endpoint["instance"]
+                if raw_instance is None:
+                    kind = "top-output"
+                    top_bit = validate_static_exact_capture_bit(
+                        endpoint["bit"]
+                    )
+                    identity = f"top:{endpoint['port']}[{top_bit}]"
+                    port = None
+                    bit = None
+                else:
+                    kind = "architectural-state"
+                    identity = raw_instance
+                    port = endpoint["port"]
+                    bit = endpoint["bit"]
+                yield (
+                    ordered_cut_ids[cut_index],
+                    part_ids[sink_part_index],
+                    kind,
+                    identity,
+                    port,
+                    bit,
+                )
+                current = next(requests, None)
+            endpoint_token += 1
+    if current is not None:
+        raise ValidationError("native Static Exact capture is invalid")
+
+
+def _normalize_native_capture_stream(
+    capture_relation: Iterable[Tuple[str, str, str, str, Any, Any]],
+    sorter_path: Path,
+    *,
+    release: Any = None,
+) -> StaticExactRecordSequence:
+    """Canonicalize a capture subset without a Python tuple population."""
+
+    def normalized_rows() -> Iterator[
+        Tuple[str, str, str, str, str, int, bytes]
+    ]:
+        for cut_net, fpga, kind, endpoint, port, bit in capture_relation:
+            if (
+                not all(
+                    isinstance(value, str) and value
+                    for value in (cut_net, fpga, kind, endpoint)
+                )
+                or kind not in {"top-output", "architectural-state"}
+                or (
+                    kind == "top-output"
+                    and (port is not None or bit is not None)
+                )
+                or (
+                    kind == "architectural-state"
+                    and (
+                        not isinstance(port, str)
+                        or not port
+                    )
+                )
+            ):
+                raise ValidationError("Static Exact capture relation is invalid")
+            if kind == "architectural-state":
+                bit = validate_static_exact_capture_bit(bit)
+            try:
+                encoded_fields = [
+                    value.encode("utf-8")
+                    for value in (cut_net, fpga, endpoint, port or "")
+                ]
+            except UnicodeEncodeError as error:
+                raise ValidationError(
+                    "Static Exact capture identity is invalid"
+                ) from error
+            if any(len(value) >= 2**32 for value in encoded_fields):
+                raise ValidationError("Static Exact capture identity is too large")
+            bit_key = (
+                b""
+                if bit is None
+                else bit.to_bytes(max(1, (bit.bit_length() + 7) // 8), "big")
+            )
+            yield (
+                cut_net,
+                fpga,
+                kind,
+                endpoint,
+                "" if port is None else port,
+                -1 if bit is None else len(bit_key),
+                bit_key,
+            )
+
+    connection = sqlite3.connect(sorter_path)
+    try:
+        connection.execute("PRAGMA journal_mode=OFF")
+        connection.execute("PRAGMA synchronous=OFF")
+        connection.execute("PRAGMA temp_store=FILE")
+        connection.execute(
+            """
+            CREATE TABLE capture_relation (
+                cut_net TEXT NOT NULL,
+                fpga TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                endpoint TEXT NOT NULL,
+                port_key TEXT NOT NULL,
+                bit_length INTEGER NOT NULL,
+                bit_key BLOB NOT NULL,
+                PRIMARY KEY (
+                    cut_net, fpga, kind, endpoint, port_key,
+                    bit_length, bit_key
+                )
+            ) WITHOUT ROWID
+            """
+        )
+        connection.executemany(
+            """
+            INSERT OR IGNORE INTO capture_relation (
+                cut_net, fpga, kind, endpoint, port_key,
+                bit_length, bit_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            normalized_rows(),
+        )
+        if release is not None:
+            release()
+
+        def ordered_relation() -> Iterator[Tuple[str, str, str, str, Any, Any]]:
+            cursor = connection.execute(
+                """
+                SELECT cut_net, fpga, kind, endpoint, port_key, bit_key
+                FROM capture_relation
+                ORDER BY cut_net, fpga, kind, endpoint, port_key,
+                         bit_length, bit_key
+                """
+            )
+            for cut_net, fpga, kind, endpoint, port_key, bit_key in cursor:
+                yield (
+                    cut_net,
+                    fpga,
+                    kind,
+                    endpoint,
+                    None if kind == "top-output" else port_key,
+                    (
+                        None
+                        if kind == "top-output"
+                        else int.from_bytes(bit_key, "big")
+                    ),
+                )
+
+        return build_static_exact_capture_stream(ordered_relation())
+    finally:
+        connection.close()
+
+
+def _resolve_native_capture_stream(
+    ordered_nets: Sequence[Mapping[str, Any]],
+    capture_requests: List[Tuple[int, int, int]]
+    | _NativeStaticExactCaptureRequests,
+    ordered_cut_ids: Sequence[str],
+    part_ids: Sequence[str],
+    sorter_path: Path,
+) -> StaticExactRecordSequence:
+    """Resolve the legacy v2 token stream for focused compatibility tests."""
+
+    return _normalize_native_capture_stream(
+        _iter_native_capture_requests(
+            ordered_nets, capture_requests, ordered_cut_ids, part_ids
+        ),
+        sorter_path,
+        release=capture_requests.clear,
+    )
+
+
+def _resolve_native_coordinate_capture_stream(
+    instances: Sequence[Mapping[str, Any]],
+    nets: Sequence[Mapping[str, Any]],
+    instance_index: Mapping[str, int],
+    capture_coordinates: Iterable[Tuple[int, int, int, int]],
+    ordered_cut_ids: Sequence[str],
+    part_ids: Sequence[str],
+    ordered_cuts: Sequence[Mapping[str, Any]],
+    instance_assignment: Mapping[str, str],
+    sorter_path: Path,
+) -> StaticExactRecordSequence:
+    """Bind native v3 coordinates back to authoritative EmuIR records."""
+
+    def capture_relation() -> Iterator[
+        Tuple[str, str, str, str, Any, Any]
+    ]:
+        previous: Tuple[int, int, int, int] | None = None
+        for cut_index, part_index, net_index, sink_index in capture_coordinates:
+            canonical = (net_index, sink_index, cut_index, part_index)
+            if previous is not None and canonical <= previous:
+                raise ValidationError("native Static Exact capture is invalid")
+            previous = canonical
+            if (
+                cut_index >= len(ordered_cut_ids)
+                or part_index >= len(part_ids)
+                or net_index >= len(nets)
+                or sink_index >= len(nets[net_index]["sinks"])
+            ):
+                raise ValidationError("native Static Exact capture is invalid")
+            cut_net = ordered_cut_ids[cut_index]
+            fpga = part_ids[part_index]
+            if fpga not in ordered_cuts[cut_index].get("sink_fpgas", []):
+                raise ValidationError("native Static Exact capture is invalid")
+            endpoint = nets[net_index]["sinks"][sink_index]
+            raw_instance = endpoint["instance"]
+            if raw_instance is None:
+                kind = "top-output"
+                top_bit = validate_static_exact_capture_bit(endpoint["bit"])
+                identity = f"top:{endpoint['port']}[{top_bit}]"
+                port = None
+                bit = None
+            else:
+                source_index = instance_index.get(raw_instance)
+                if (
+                    source_index is None
+                    or source_index >= len(instances)
+                    or instances[source_index]["id"] != raw_instance
+                    or _instance_class(instances[source_index])
+                    != "architectural-state-or-memory"
+                    or instance_assignment.get(raw_instance)
+                    != fpga
+                ):
+                    raise ValidationError("native Static Exact capture is invalid")
+                kind = "architectural-state"
+                identity = raw_instance
+                port = endpoint["port"]
+                bit = endpoint["bit"]
+            yield (
+                cut_net,
+                fpga,
+                kind,
+                identity,
+                port,
+                bit,
+            )
+
+    return _normalize_native_capture_stream(capture_relation(), sorter_path)
+
+
+def _resolve_compact_native_coordinate_capture_stream(
+    path: Path,
+    capture_coordinates: Iterable[Tuple[int, int, int, int]],
+    ordered_cut_ids: Sequence[str],
+    part_ids: Sequence[str],
+    ordered_cuts: Sequence[Mapping[str, Any]],
+    instance_assignment: Mapping[str, str],
+    sorter_path: Path,
+) -> StaticExactRecordSequence:
+    """Resolve native captures with one ordered compact-EmuIR merge.
+
+    Protocol v3 coordinates already name the authoritative net and sink
+    ordinals.  Both the native stream and the source endpoint cursor use that
+    order, so Python advances one source cursor and keeps at most the current
+    endpoint row.  This avoids both a graph-sized coordinate container and
+    decoding a complete net once per capture (including every unrequested
+    sibling sink).
+    """
+
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        endpoint_rows = iter(
+            connection.execute(
+                """SELECT e.net_seq,e.ordinal,e.instance_seq,
+                          c.id AS instance_id,p.name AS port,e.bit,
+                          r.value AS resources_json
+                     FROM endpoint_records e
+                     LEFT JOIN cell_records c ON c.seq=e.instance_seq
+                     JOIN pin_names p ON p.seq=e.port_seq
+                     LEFT JOIN payloads r ON r.seq=c.resources_seq
+                    WHERE e.role=1
+                    ORDER BY e.net_seq,e.ordinal"""
+            )
+        )
+
+        def capture_relation() -> Iterator[
+            Tuple[str, str, str, str, Any, Any]
+        ]:
+            previous: Tuple[int, int, int, int] | None = None
+            endpoint = next(endpoint_rows, None)
+            for (
+                cut_index,
+                part_index,
+                net_index,
+                sink_index,
+            ) in capture_coordinates:
+                canonical = (net_index, sink_index, cut_index, part_index)
+                invalid_coordinate = any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value < 0
+                    or value >= 2**32
+                    for value in canonical
+                )
+                cut_sinks = (
+                    ordered_cuts[cut_index].get("sink_fpgas")
+                    if isinstance(cut_index, int)
+                    and not isinstance(cut_index, bool)
+                    and 0 <= cut_index < len(ordered_cuts)
+                    else None
+                )
+                if (
+                    invalid_coordinate
+                    or (previous is not None and canonical <= previous)
+                    or cut_index >= len(ordered_cut_ids)
+                    or part_index >= len(part_ids)
+                    or not isinstance(cut_sinks, list)
+                    or part_ids[part_index] not in cut_sinks
+                ):
+                    raise ValidationError("native Static Exact capture is invalid")
+                previous = canonical
+                target = (net_index, sink_index)
+                while endpoint is not None and (
+                    endpoint["net_seq"], endpoint["ordinal"]
+                ) < target:
+                    endpoint = next(endpoint_rows, None)
+                if endpoint is None or (
+                    endpoint["net_seq"], endpoint["ordinal"]
+                ) != target:
+                    raise ValidationError("native Static Exact capture is invalid")
+                cut_net = ordered_cut_ids[cut_index]
+                fpga = part_ids[part_index]
+                raw_instance = endpoint["instance_id"]
+                if endpoint["instance_seq"] is None:
+                    if (
+                        raw_instance is not None
+                        or endpoint["resources_json"] is not None
+                    ):
+                        raise ValidationError(
+                            "native Static Exact capture is invalid"
+                        )
+                    kind = "top-output"
+                    top_bit = validate_static_exact_capture_bit(endpoint["bit"])
+                    identity = f"top:{endpoint['port']}[{top_bit}]"
+                    port = None
+                    bit = None
+                else:
+                    if (
+                        not isinstance(raw_instance, str)
+                        or not raw_instance
+                        or instance_assignment.get(raw_instance) != fpga
+                    ):
+                        raise ValidationError(
+                            "native Static Exact capture is invalid"
+                        )
+                    try:
+                        resources = json.loads(endpoint["resources_json"])
+                    except (TypeError, json.JSONDecodeError) as error:
+                        raise ValidationError(
+                            "native Static Exact capture is invalid"
+                        ) from error
+                    if (
+                        not isinstance(resources, Mapping)
+                        or _instance_class({"resources": resources})
+                        != "architectural-state-or-memory"
+                    ):
+                        raise ValidationError(
+                            "native Static Exact capture is invalid"
+                        )
+                    kind = "architectural-state"
+                    identity = raw_instance
+                    port = endpoint["port"]
+                    bit = endpoint["bit"]
+                yield cut_net, fpga, kind, identity, port, bit
+
+        return _normalize_native_capture_stream(
+            capture_relation(), sorter_path
+        )
+    finally:
+        connection.close()
+
+
+def _resolve_native_capture_requests(
+    ordered_nets: Sequence[Mapping[str, Any]],
+    capture_requests: Sequence[Tuple[int, int, int]],
+    ordered_cut_ids: Sequence[str],
+    part_ids: Sequence[str],
+) -> List[Tuple[str, str, str, str, Any, Any]]:
+    """Materialized compatibility helper for focused diagnostic tests."""
+
+    return list(
+        _iter_native_capture_requests(
+            ordered_nets,
+            list(capture_requests),
+            ordered_cut_ids,
+            part_ids,
+        )
+    )
+
+
 def build_static_exact_semantic_contract(
     ir: EmuIR,
     platform: Mapping[str, Any],
@@ -801,6 +2148,8 @@ def build_static_exact_semantic_contract(
     *,
     max_dependency_depth: int,
     candidate_selection_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    stream_records: bool = False,
+    cut_net_ordinals: Sequence[int] | None = None,
 ) -> Dict[str, Any]:
     """Build the provisional Phase-3 exact-cut semantic contract.
 
@@ -809,138 +2158,231 @@ def build_static_exact_semantic_contract(
     gates and are intentionally named as pending in the returned contract.
     """
 
-    analysis = _analyze_static_exact_dependencies(
+    use_native_analyzer = (
+        static_exact_analysis_engine(len(ir.value["instances"]))
+        == "native-cpp-v1"
+    )
+    analyzer = (
+        _analyze_static_exact_dependencies_native
+        if use_native_analyzer
+        else _analyze_static_exact_dependencies
+    )
+    analysis = analyzer(
         ir,
         instance_assignment,
         cut_nets,
         max_dependency_depth=max_dependency_depth,
         candidate_selection_policy=candidate_selection_policy,
+        **(
+            {"cut_net_ordinals": cut_net_ordinals}
+            if use_native_analyzer
+            else {}
+        ),
     )
-    classes = analysis["classes"]
-    nets = analysis["nets"]
-    outgoing_by_instance = analysis["outgoing_by_instance"]
-    cut_by_net = analysis["cut_by_net"]
-    dependencies = analysis["dependencies"]
-    local_launches = analysis["local_launches"]
-    dependency_level = analysis["dependency_level"]
-    combinational_depth = analysis["combinational_depth"]
+    classes = analysis.get("classes")
+    nets = analysis.get("nets")
+    outgoing_by_instance = analysis.get("outgoing_by_instance")
+    cut_by_net = analysis.get("cut_by_net")
+    ordered_cuts = analysis.get("ordered_cuts")
+    analysis_records = analysis.get("analysis_records")
+    dependencies = analysis.get("dependencies")
+    local_launches = analysis.get("local_launches")
+    dependency_level = analysis.get("dependency_level")
+    combinational_depth = analysis.get("combinational_depth")
     maximum_depth = analysis["maximum_depth"]
-
-    capture_records: List[Dict[str, Any]] = []
-    for net_id, cut in sorted(cut_by_net.items()):
-        net = nets[net_id]
-        for sink_fpga in sorted(cut["sink_fpgas"]):
-            work = [
-                endpoint
-                for endpoint in net["sinks"]
-                if endpoint["instance"] is not None
-                and instance_assignment.get(endpoint["instance"]) == sink_fpga
-            ]
-            for endpoint in net["sinks"]:
-                if endpoint["instance"] is None:
-                    capture_records.append(
-                        {
-                            "cut_net": net_id,
-                            "fpga": sink_fpga,
-                            "kind": "top-output",
-                            "endpoint": f"top:{endpoint['port']}[{endpoint['bit']}]",
-                        }
-                    )
-            visited: Set[str] = set()
-            while work:
-                endpoint = work.pop()
-                instance_id = endpoint["instance"]
-                if instance_id is None:
-                    raise ValidationError("exact capture endpoint is unexpectedly top-level")
-                classification = classes[instance_id]
-                if classification == "architectural-state-or-memory":
-                    capture_records.append(
-                        {
-                            "cut_net": net_id,
-                            "fpga": sink_fpga,
-                            "kind": "architectural-state",
-                            "endpoint": instance_id,
-                            # A memory macro has many independent state
-                            # inputs.  Preserve the original reached pin, not
-                            # merely its instance, so Phase 7 can qualify the
-                            # exact lowered VPR/Vivado endpoint.
-                            "port": endpoint["port"],
-                            "bit": endpoint["bit"],
-                        }
-                    )
-                    continue
-                if instance_id in visited:
-                    continue
-                visited.add(instance_id)
-                for outgoing in outgoing_by_instance.get(instance_id, []):
-                    downstream_cut = cut_by_net.get(outgoing["id"])
-                    for endpoint in outgoing["sinks"]:
-                        sink = endpoint["instance"]
-                        # A transported downstream net can still have local
-                        # fanout on its source FPGA.  The downstream cut
-                        # contract owns only the remote branches; suppressing
-                        # the whole net drops real local architectural
-                        # captures and leaves Phase 7 unable to bind their
-                        # physical RX-to-capture segments.  Stop only at the
-                        # endpoints that actually leave ``sink_fpga``.
-                        if (
-                            downstream_cut is not None
-                            and downstream_cut["source_fpgas"][0]
-                            == sink_fpga
-                            and sink is not None
-                            and instance_assignment.get(sink) != sink_fpga
-                        ):
-                            continue
-                        if sink is None:
-                            capture_records.append(
-                                {
-                                    "cut_net": net_id,
-                                    "fpga": sink_fpga,
-                                    "kind": "top-output",
-                                    "endpoint": (
-                                        f"top:{endpoint['port']}[{endpoint['bit']}]"
-                                    ),
-                                }
-                            )
-                        elif instance_assignment.get(sink) == sink_fpga:
-                            work.append(endpoint)
-
-    unique_capture_records = sorted(
-        {
-            (
-                item["cut_net"],
-                item["fpga"],
-                item["kind"],
-                item["endpoint"],
-                item.get("port"),
-                item.get("bit"),
-            )
-            for item in capture_records
-        }
-    )
-    capture_records = [
-        {
-            "id": f"capture{index:06d}",
-            "cut_net": cut_net,
-            "fpga": fpga,
-            "kind": kind,
-            "endpoint": endpoint,
-            **(
-                {"port": port, "bit": bit}
-                if kind == "architectural-state"
-                else {}
-            ),
-        }
-        for index, (cut_net, fpga, kind, endpoint, port, bit) in enumerate(
-            unique_capture_records
+    captures_are_normalized = analysis.get("analysis_engine") == "native-cpp-v1"
+    if captures_are_normalized:
+        if (
+            not isinstance(analysis_records, _NativeStaticExactAnalysisRecords)
+            or not isinstance(ordered_cuts, Sequence)
+        ):
+            raise ValidationError("native Static Exact analysis is incomplete")
+    elif not all(
+        isinstance(value, Mapping)
+        for value in (
+            dependencies,
+            local_launches,
+            dependency_level,
+            combinational_depth,
         )
-    ]
+    ):
+        raise ValidationError("Static Exact reference analysis is incomplete")
 
+    capture_records: List[Dict[str, Any]] = analysis.get("capture_records", [])
+    capture_stream = analysis.get("capture_stream")
+    del analysis
+    if outgoing_by_instance is not None:
+        if (
+            not isinstance(classes, Mapping)
+            or not isinstance(nets, Mapping)
+            or not isinstance(cut_by_net, Mapping)
+        ):
+            raise ValidationError("Static Exact reference analysis is incomplete")
+        for net_id, cut in sorted(cut_by_net.items()):
+            net = nets[net_id]
+            for sink_fpga in sorted(cut["sink_fpgas"]):
+                work = [
+                    endpoint
+                    for endpoint in net["sinks"]
+                    if endpoint["instance"] is not None
+                    and instance_assignment.get(endpoint["instance"])
+                    == sink_fpga
+                ]
+                for endpoint in net["sinks"]:
+                    if endpoint["instance"] is None:
+                        top_bit = validate_static_exact_capture_bit(
+                            endpoint["bit"]
+                        )
+                        capture_records.append(
+                            {
+                                "cut_net": net_id,
+                                "fpga": sink_fpga,
+                                "kind": "top-output",
+                                "endpoint": (
+                                    f"top:{endpoint['port']}[{top_bit}]"
+                                ),
+                            }
+                        )
+                visited: Set[str] = set()
+                while work:
+                    endpoint = work.pop()
+                    instance_id = endpoint["instance"]
+                    if instance_id is None:
+                        raise ValidationError(
+                            "exact capture endpoint is unexpectedly top-level"
+                        )
+                    classification = classes[instance_id]
+                    if classification == "architectural-state-or-memory":
+                        capture_bit = validate_static_exact_capture_bit(
+                            endpoint["bit"]
+                        )
+                        capture_records.append(
+                            {
+                                "cut_net": net_id,
+                                "fpga": sink_fpga,
+                                "kind": "architectural-state",
+                                "endpoint": instance_id,
+                                "port": endpoint["port"],
+                                "bit": capture_bit,
+                            }
+                        )
+                        continue
+                    if instance_id in visited:
+                        continue
+                    visited.add(instance_id)
+                    for outgoing in outgoing_by_instance.get(instance_id, []):
+                        downstream_cut = cut_by_net.get(outgoing["id"])
+                        for endpoint in outgoing["sinks"]:
+                            sink = endpoint["instance"]
+                            if (
+                                downstream_cut is not None
+                                and downstream_cut["source_fpgas"][0]
+                                == sink_fpga
+                                and sink is not None
+                                and instance_assignment.get(sink) != sink_fpga
+                            ):
+                                continue
+                            if sink is None:
+                                top_bit = validate_static_exact_capture_bit(
+                                    endpoint["bit"]
+                                )
+                                capture_records.append(
+                                    {
+                                        "cut_net": net_id,
+                                        "fpga": sink_fpga,
+                                        "kind": "top-output",
+                                        "endpoint": (
+                                            f"top:{endpoint['port']}"
+                                            f"[{top_bit}]"
+                                        ),
+                                    }
+                                )
+                            elif instance_assignment.get(sink) == sink_fpga:
+                                work.append(endpoint)
+    del classes
+    del nets
+    del outgoing_by_instance
+
+    if captures_are_normalized:
+        if not isinstance(capture_stream, StaticExactRecordSequence):
+            raise ValidationError("native Static Exact captures are incomplete")
+        if stream_records:
+            capture_records = capture_stream
+        else:
+            capture_records = list(capture_stream)
+            del capture_stream
+    else:
+        unique_capture_records = sorted(
+            {
+                (
+                    item["cut_net"],
+                    item["fpga"],
+                    item["kind"],
+                    item["endpoint"],
+                    item.get("port"),
+                    item.get("bit"),
+                )
+                for item in capture_records
+            }
+        )
+        if stream_records:
+            capture_records = build_static_exact_capture_stream(
+                unique_capture_records
+            )
+        else:
+            capture_records = [
+                {
+                    "id": f"capture{index:06d}",
+                    "cut_net": cut_net,
+                    "fpga": fpga,
+                    "kind": kind,
+                    "endpoint": endpoint,
+                    **(
+                        {"port": port, "bit": bit}
+                        if kind == "architectural-state"
+                        else {}
+                    ),
+                }
+                for index, (
+                    cut_net,
+                    fpga,
+                    kind,
+                    endpoint,
+                    port,
+                    bit,
+                ) in enumerate(unique_capture_records)
+            ]
+        del unique_capture_records
+
+    if ordered_cuts is None:
+        if not isinstance(cut_by_net, Mapping):
+            raise ValidationError("Static Exact reference analysis is incomplete")
+        ordered_cut_ids = sorted(cut_by_net)
+        ordered_cuts = [cut_by_net.pop(net_id) for net_id in ordered_cut_ids]
+    else:
+        ordered_cut_ids = [cut["net"] for cut in ordered_cuts]
+    del cut_by_net
+    if analysis_records is not None:
+        if len(analysis_records) != len(ordered_cut_ids):
+            raise ValidationError("native Static Exact analysis is incomplete")
+        dependency_edge_count = analysis_records.dependency_edge_count
+        maximum_dependency_level = analysis_records.maximum_dependency_level
+    else:
+        dependency_edge_count = sum(
+            len(items) for items in dependencies.values()
+        )
+        maximum_dependency_level = max(dependency_level.values(), default=0)
+        # Each predecessor set is already final after the analyzer's cycle and
+        # depth checks.  Convert it in place to the ordered list owned by the
+        # corresponding cut-node record instead of retaining a set while a
+        # second graph-sized list population is built.
+        for net_id in ordered_cut_ids:
+            dependencies[net_id] = sorted(dependencies[net_id])
+
+    launch_flags = bytearray()
+    launch_segment_count = 0
     logic_segments: List[Dict[str, Any]] = []
-    source_segment_by_net: Dict[str, str] = {}
-    dependency_segment: Dict[Tuple[str, str], str] = {}
-    capture_segment: Dict[str, str] = {}
-    for net_id in sorted(cut_by_net):
+    for cut_index, net_id in enumerate(ordered_cut_ids):
         # A reconvergent source cone can be fed both by predecessor cuts and
         # by a local architectural launch (register/memory/top input).  Those
         # are distinct timing branches whose readiness must all be covered;
@@ -951,82 +2393,150 @@ def build_static_exact_semantic_contract(
         # downstream physical qualification does not demand a fictitious
         # launch endpoint.  It is ready at slot zero and therefore consumes
         # no dynamic settle budget.
-        if local_launches[net_id] or not dependencies[net_id]:
-            configuration_stable_constant = (
-                not local_launches[net_id] and not dependencies[net_id]
-            )
-            segment_id = f"segment{len(logic_segments):06d}"
-            source_segment_by_net[net_id] = segment_id
-            logic_segments.append(
-                {
-                    "id": segment_id,
-                    "kind": "launch_to_tx",
-                    "fpga": cut_by_net[net_id]["source_fpgas"][0],
-                    "sink_cut_net": net_id,
-                    **(
+        if analysis_records is None:
+            local_launch = local_launches[net_id]
+            predecessor_count = len(dependencies[net_id])
+        else:
+            local_launch = analysis_records.local_launch(cut_index)
+            predecessor_count = analysis_records.dependency_count(cut_index)
+        has_launch = local_launch or predecessor_count == 0
+        launch_flag = 1 if local_launch else (2 if has_launch else 0)
+        launch_flags.append(launch_flag)
+        if launch_flag:
+            segment_id = f"segment{launch_segment_count:06d}"
+            launch_segment_count += 1
+            if not stream_records:
+                logic_segments.append(
+                    {
+                        "id": segment_id,
+                        "kind": "launch_to_tx",
+                        "fpga": ordered_cuts[cut_index]["source_fpgas"][0],
+                        "sink_cut_net": net_id,
+                        **(
+                            {
+                                "source_semantics": (
+                                    "configuration-stable-constant"
+                                )
+                            }
+                            if launch_flag == 2
+                            else {}
+                        ),
+                    }
+                )
+    capture_segment_start = launch_segment_count + dependency_edge_count
+    dependency_edges: List[Dict[str, Any]] = []
+    def generate_cut_nodes() -> Iterator[Dict[str, Any]]:
+        launch_segment_number = 0
+        dependency_segment_number = launch_segment_count
+        capture_index = 0
+        capture_iterator = iter(capture_records)
+        next_capture = next(capture_iterator, None)
+        for cut_index, sink in enumerate(ordered_cut_ids):
+            cut = ordered_cuts[cut_index]
+            if analysis_records is None:
+                predecessor_cut_nets = dependencies.pop(sink)
+                local_launch = local_launches.pop(sink)
+                cut_dependency_level = dependency_level.pop(sink)
+                cut_combinational_depth = combinational_depth.pop(sink)
+            else:
+                predecessor_cut_nets = [
+                    ordered_cut_ids[source]
+                    for source in analysis_records.dependency_indices(cut_index)
+                ]
+                local_launch = analysis_records.local_launch(cut_index)
+                cut_dependency_level = analysis_records.dependency_level(
+                    cut_index
+                )
+                cut_combinational_depth = analysis_records.combinational_depth(
+                    cut_index
+                )
+            source_segments = []
+            if local_launch or not predecessor_cut_nets:
+                source_segments.append(
+                    f"segment{launch_segment_number:06d}"
+                )
+                launch_segment_number += 1
+            for source in predecessor_cut_nets:
+                segment_id = f"segment{dependency_segment_number:06d}"
+                if not stream_records:
+                    logic_segments.append(
                         {
-                            "source_semantics": (
-                                "configuration-stable-constant"
-                            )
+                            "id": segment_id,
+                            "kind": "rx_to_tx",
+                            "fpga": cut["source_fpgas"][0],
+                            "source_cut_net": source,
+                            "sink_cut_net": sink,
                         }
-                        if configuration_stable_constant
-                        else {}
-                    ),
-                }
-            )
-    for sink in sorted(dependencies):
-        for source in sorted(dependencies[sink]):
-            segment_id = f"segment{len(logic_segments):06d}"
-            dependency_segment[(source, sink)] = segment_id
-            logic_segments.append(
-                {
-                    "id": segment_id,
-                    "kind": "rx_to_tx",
-                    "fpga": cut_by_net[sink]["source_fpgas"][0],
-                    "source_cut_net": source,
-                    "sink_cut_net": sink,
-                }
-            )
-    for capture in capture_records:
-        segment_id = f"segment{len(logic_segments):06d}"
-        capture_segment[capture["id"]] = segment_id
-        logic_segments.append(
-            {
-                "id": segment_id,
-                "kind": "rx_to_capture",
-                "fpga": capture["fpga"],
-                "source_cut_net": capture["cut_net"],
-                "capture_requirement": capture["id"],
-            }
-        )
-
-    capture_by_cut: Dict[str, List[str]] = defaultdict(list)
-    for capture in capture_records:
-        capture_by_cut[capture["cut_net"]].append(
-            capture_segment[capture["id"]]
-        )
-    cut_nodes = []
-    for net_id, cut in sorted(cut_by_net.items()):
-        source_segments = []
-        if net_id in source_segment_by_net:
-            source_segments.append(source_segment_by_net[net_id])
-        source_segments.extend(
-            dependency_segment[(source, net_id)]
-            for source in sorted(dependencies[net_id])
-        )
-        cut_nodes.append(
-            {
-                "net": net_id,
-                "cut_class": nets[net_id]["cut_class"],
+                    )
+                    dependency_edges.append(
+                        {"from": source, "to": sink, "segment": segment_id}
+                    )
+                source_segments.append(
+                    f"segment{dependency_segment_number:06d}"
+                )
+                dependency_segment_number += 1
+            capture_segments = []
+            while (
+                next_capture is not None
+                and next_capture["cut_net"] == sink
+            ):
+                capture_segments.append(
+                    f"segment{capture_segment_start + capture_index:06d}"
+                )
+                capture_index += 1
+                next_capture = next(capture_iterator, None)
+            # Preserve the v3 canonical string ordering even after segment IDs
+            # grow beyond the six-digit minimum width.
+            capture_segments.sort()
+            yield {
+                "net": sink,
+                "cut_class": cut["cut_class"],
                 "source_fpgas": list(cut["source_fpgas"]),
                 "sink_fpgas": list(cut["sink_fpgas"]),
-                "dependency_level": dependency_level[net_id],
-                "combinational_dependency_depth": combinational_depth[net_id],
-                "predecessor_cut_nets": sorted(dependencies[net_id]),
+                "dependency_level": cut_dependency_level,
+                "combinational_dependency_depth": cut_combinational_depth,
+                "predecessor_cut_nets": predecessor_cut_nets,
                 "source_segment_ids": source_segments,
-                "capture_segment_ids": sorted(capture_by_cut.get(net_id, [])),
+                "capture_segment_ids": capture_segments,
             }
+        if next_capture is not None or capture_index != len(capture_records):
+            raise ValidationError("Static Exact capture ordering is inconsistent")
+        if (
+            launch_segment_number != launch_segment_count
+            or dependency_segment_number != capture_segment_start
+        ):
+            raise ValidationError("Static Exact segment numbering is inconsistent")
+        if not stream_records and len(logic_segments) != capture_segment_start:
+            raise ValidationError(
+                "Static Exact dependency numbering is inconsistent"
+            )
+
+    if stream_records:
+        cut_nodes = build_static_exact_cut_node_stream(generate_cut_nodes())
+        record_streams = build_static_exact_record_streams(
+            cut_nodes, capture_records, launch_flags
         )
+        dependency_edges = record_streams["dependency_edges"]
+        logic_segments = record_streams["logic_segments"]
+    else:
+        cut_nodes = list(generate_cut_nodes())
+        for capture in capture_records:
+            segment_id = f"segment{len(logic_segments):06d}"
+            logic_segments.append(
+                {
+                    "id": segment_id,
+                    "kind": "rx_to_capture",
+                    "fpga": capture["fpga"],
+                    "source_cut_net": capture["cut_net"],
+                    "capture_requirement": capture["id"],
+                }
+            )
+    if (
+        len(cut_nodes) != len(ordered_cut_ids)
+        or len(logic_segments) != capture_segment_start + len(capture_records)
+        or len(dependency_edges) != dependency_edge_count
+    ):
+        raise ValidationError("Static Exact segment numbering is inconsistent")
 
     platform_value = dict(platform)
     result = {
@@ -1036,15 +2546,7 @@ def build_static_exact_semantic_contract(
         "max_cross_fpga_dependency_depth": max_dependency_depth,
         "candidate_selection_policy": candidate_selection_policy,
         "cut_nodes": cut_nodes,
-        "dependency_edges": [
-            {
-                "from": source,
-                "to": sink,
-                "segment": dependency_segment[(source, sink)],
-            }
-            for sink in sorted(dependencies)
-            for source in sorted(dependencies[sink])
-        ],
+        "dependency_edges": dependency_edges,
         "logic_segments": logic_segments,
         "capture_requirements": capture_records,
         "metrics": {
@@ -1052,8 +2554,8 @@ def build_static_exact_semantic_contract(
             "combinational_cut_nets": sum(
                 item["cut_class"] == "combinational" for item in cut_nodes
             ),
-            "dependency_edges": sum(len(items) for items in dependencies.values()),
-            "maximum_dependency_level": max(dependency_level.values(), default=0),
+            "dependency_edges": dependency_edge_count,
+            "maximum_dependency_level": maximum_dependency_level,
             "maximum_combinational_dependency_depth": maximum_depth,
             "logic_segments": len(logic_segments),
             "capture_requirements": len(capture_records),
@@ -1062,7 +2564,7 @@ def build_static_exact_semantic_contract(
             "emuir": _bounded_emuir_identity(ir),
             "canonical_platform_sha256": _canonical_sha256(platform_value),
             "instance_assignment_sha256": _canonical_sha256(
-                {"instance_assignment": dict(sorted(instance_assignment.items()))}
+                {"instance_assignment": instance_assignment}
             ),
             "timing_source_sha256": None,
         },

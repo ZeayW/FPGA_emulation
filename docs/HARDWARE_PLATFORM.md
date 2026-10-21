@@ -19,23 +19,21 @@ kept distinct. The default four-FPGA preset applies a strict
 `utilization_limit` of **0.25 per FPGA**, measured against each device's raw
 capacity independently for LUT, FF, BRAM18K, DSP48, CARRY8, and URAM288.
 The two-FPGA comparison preset retains its explicit 0.75 limit.
-Partitioning defaults to **capacity-only resource constraints**:
-`balance_dimensions` is empty. There is no 27.5% design-share ceiling and no
-requirement to distribute cells, LUTs, FFs, or dedicated resources nearly
-equally. For each FPGA `i` and physical resource type `r`, the default
-four-FPGA preset enforces
+Partitioning defaults to a **0.1 balance tolerance for cells, LUTs, and FFs**.
+For four equal-capacity FPGAs, each of those dimensions is therefore limited
+to 27.5% of the design total. BRAM18K, DSP48, CARRY8, URAM288, and the other
+dedicated-resource dimensions are capacity-only: the partitioner may place an
+unequal share on one FPGA when it remains within that FPGA's physical budget.
+For each FPGA `i` and physical resource type `r`, the default four-FPGA preset
+also enforces
 `load[i,r] <= floor(0.25 * raw_capacity[i,r])`.
-A partition may contain more than one quarter of the design if it fits every
-resource budget and satisfies the structural, fixed-placement, FPGA-selection,
-and routing constraints. Cell count is a partition-size statistic, not a
-substitute for a physical resource budget.
+A partition must satisfy both applicable bounds; neither one is automatically
+relaxed. Cell count remains a partition-size statistic rather than a substitute
+for a physical resource budget.
 
-TritonPart initialization uses an envelope derived from these resource bounds,
-including the feasible lower bounds, rather than retaining an implicit 10%
-near-equal-share constraint. The native legalizer, PATRON refinement, and
-independent validators enforce the same per-resource limits. Existing
-initialization preferences may favor balanced loads, but resource balance is
-not a new PATRON optimization objective or a default acceptance threshold.
+TritonPart initialization uses an envelope derived from these resource and
+logic-balance bounds, including the feasible lower bounds. The native legalizer,
+PATRON refinement, and independent validators enforce the same limits.
 The minimum number of used FPGAs remains mandatory. If optional MFSPart
 post-refinement empties a required FPGA, it retains the legal initialization
 and records why it rejected the candidate; the native candidate certificate
@@ -53,13 +51,12 @@ Balance remains observable in `balance_observation`:
   `max_balance_limit_ratio` measures load relative to an enforced upper bound;
   it must not be interpreted as the maximum-to-mean balance ratio.
 
-Hard balance is available only through an explicit, nonempty
-`balance_dimensions` array. For those selected dimensions, `balance_tolerance`
-(default `0.1`) and optional per-dimension overrides bound the
-capacity-proportional design share in addition to physical capacity. Setting
-the tolerance alone does not enable hard balance; setting it to zero with
-selected dimensions requests exact proportional balance, not capacity-only
-partitioning. Reports identify `strict_balance_dimensions`,
+The default `balance_dimensions` array is `cells`, `lut`, and `ff`. An explicit
+array can select a different set or request capacity-only partitioning with an
+empty list. For selected dimensions, `balance_tolerance` (default `0.1`) and
+optional per-dimension overrides bound the capacity-proportional design share
+in addition to physical capacity. Setting the tolerance to zero requests exact
+proportional balance for those selected dimensions. Reports identify `strict_balance_dimensions`,
 `capacity_only_dimensions`, and the constraint mode for each dimension.
 Previously sealed artifacts retain their recorded constraints during
 validation. Indivisible/fixed clusters, repair passes, and validators never

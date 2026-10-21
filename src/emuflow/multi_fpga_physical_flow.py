@@ -7,14 +7,20 @@ import json
 import math
 import re
 import shutil
+import sqlite3
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 
 from .boundary_timing import (
     build_boundary_timing_database,
     validate_boundary_identity_database,
     validate_boundary_timing_database,
+)
+from .chimew_binding_storage import (
+    open_chimew_binding_schedule_entry_lookup,
+    read_chimew_binding,
 )
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
@@ -36,6 +42,7 @@ from .local_path_timing import (
     write_xilinx_local_path_query,
 )
 from .ir import EMUIR_SCHEMA, EmuIR
+from .emuir_storage import open_emuir_sqlite_read_only
 from .lowering import (
     PLACEMENT_IR_REPORT_SCHEMA,
     run_placement_ir_lowering_from_split,
@@ -53,7 +60,9 @@ from .physical_backend import (
     validate_physical_backend_descriptor,
     validate_physical_partition_result,
 )
+from .physical_summary_storage import publish_physical_evidence
 from .platform import Platform
+from .position_hints_storage import PositionHintsView, read_position_hints
 from .resource_budget import validate_device_resource_usage
 from .rapidwright_provider import validate_rapidwright_provider_manifest
 from .runtime import (
@@ -61,8 +70,13 @@ from .runtime import (
     build_virtual_runtime,
     validate_physical_summary,
 )
-from .synthesis import run_generic_yosys
-from .transport_fanout import buffer_transport_high_fanout_nets
+from .synthesis import run_generic_yosys_stream
+from .transport_fanout import buffer_transport_high_fanout_store
+from .tdm_schedule_storage import (
+    canonical_tdm_schedule_sha256,
+    read_tdm_schedule,
+)
+from .transport_storage import read_lane_map, read_transport, read_virtual_binding
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vpr_pack_place, run_vpr_route_packed
 from .vpr_boundary_timing import (
     import_vpr_boundary_timing,
@@ -81,7 +95,7 @@ from .virtual_board import (
 )
 from .vivado_backend import run_vivado_partition_backend
 from .vivado_netlist import emit_vivado_mapped_verilog
-from .yosys import import_yosys_json
+from .yosys import import_yosys_json_indexed
 from .xilinx_physical_backend import (
     run_rapidwright_openparf_native_candidate_backend,
     run_rapidwright_partition_backend,
@@ -101,6 +115,56 @@ _INACTIVE_PARTITION_PROVIDER = "inactive-empty-partition-v1"
 _VPR_SDC_MAX_TIME_NS = 2_000_000.0
 
 
+@contextmanager
+def _open_position_hint_lookup(
+    position_hints: Mapping[str, Any],
+) -> Iterator[Callable[[str], bool]]:
+    """Return a bounded-memory membership lookup for physical I/O anchors."""
+
+    if isinstance(position_hints, PositionHintsView):
+        connection = sqlite3.connect(
+            f"file:{position_hints.store_path.resolve()}?mode=ro&immutable=1",
+            uri=True,
+        )
+        try:
+            def contains(entry_id: str) -> bool:
+                try:
+                    row = connection.execute(
+                        "SELECT json_extract(record_json,'$.schedule_entry') "
+                        "FROM entries WHERE schedule_entry=?",
+                        (entry_id,),
+                    ).fetchone()
+                except sqlite3.DatabaseError as error:
+                    raise ValidationError(
+                        "position-hint entry is corrupt"
+                    ) from error
+                if row is None:
+                    return False
+                if row[0] != entry_id:
+                    raise ValidationError(
+                        "position-hint indexed identity disagrees"
+                    )
+                return True
+
+            yield contains
+        finally:
+            connection.close()
+        return
+
+    entries = position_hints.get("entries", [])
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise ValidationError("position hint entries must be an array")
+    entry_ids = set()
+    for record in entries:
+        if not isinstance(record, Mapping):
+            raise ValidationError("position hint is malformed")
+        entry_id = record.get("schedule_entry")
+        if not isinstance(entry_id, str) or not entry_id:
+            raise ValidationError("position hint is malformed")
+        entry_ids.add(entry_id)
+    yield entry_ids.__contains__
+
+
 def _implementation_stage(
     item: Mapping[str, Any], backend: str, stage: str
 ) -> Mapping[str, Any]:
@@ -112,6 +176,19 @@ def _implementation_stage(
     if backend == "rapidwright":
         return item["stages"]["rapidwright_implementation"][stage]
     return item["stages"][stage]
+
+
+def _indexed_emuir_counts(path: Path) -> tuple[int, int]:
+    """Read transport synthesis counts without reconstructing its graph."""
+
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        return (
+            int(connection.execute("SELECT count(*) FROM cell_records").fetchone()[0]),
+            int(connection.execute("SELECT count(*) FROM net_records").fetchone()[0]),
+        )
+    finally:
+        connection.close()
 
 
 def _partition_has_physical_work(
@@ -776,7 +853,7 @@ def run_multi_fpga_physical_flow(
     if manifest.get("schema") != SPLIT_MANIFEST_SCHEMA:
         raise ValidationError("multi-FPGA physical input split manifest is invalid")
     platform = Platform.load(platform_path)
-    schedule = read_json(schedule_path)
+    schedule = read_tdm_schedule(schedule_path)
     position_hints = None
     electrical_binding = None
     virtual_board = None
@@ -796,9 +873,13 @@ def run_multi_fpga_physical_flow(
     else:
         selected_fpgas = expected_fpgas
     if "position_hints" in manifest:
-        position_hints = read_json(split_root / manifest["position_hints"])
+        position_hints = read_position_hints(
+            split_root / manifest["position_hints"]
+        )
     if "electrical_binding" in manifest:
-        electrical_binding = read_json(split_root / manifest["electrical_binding"])
+        electrical_binding = read_chimew_binding(
+            split_root / manifest["electrical_binding"]
+        )
     if electrical_binding is not None and position_hints is None:
         raise ValidationError(
             "physical Chimew anchors require position hints with electrical binding"
@@ -820,12 +901,14 @@ def run_multi_fpga_physical_flow(
         ):
             raise ValidationError("physical virtual-board artifact coverage is invalid")
         virtual_board = read_json(split_root / wiring_ref)
-        virtual_binding = read_json(split_root / binding_ref)
+        virtual_binding = read_virtual_binding(split_root / binding_ref)
         validate_virtual_board(platform, virtual_board)
         virtual_phase6_artifacts = {
-            "lane_map": read_json(split_root / manifest["lane_map"]),
+            "lane_map": read_lane_map(split_root / manifest["lane_map"]),
             "transports": {
-                item["fpga"]: read_json(split_root / item["transport"])
+                item["fpga"]: read_transport(
+                    split_root / item["transport"]
+                )
                 for item in manifest["fpgas"]
             },
         }
@@ -843,7 +926,8 @@ def run_multi_fpga_physical_flow(
         ).hexdigest()
         if (
             virtual_binding.get("board_sha256") != canonical(virtual_board)
-            or virtual_binding.get("schedule_sha256") != canonical(schedule)
+            or virtual_binding.get("schedule_sha256")
+            != canonical_tdm_schedule_sha256(schedule)
         ):
             raise ValidationError(
                 "physical virtual-board binding source seals disagree"
@@ -1082,7 +1166,7 @@ def run_multi_fpga_physical_flow(
             )
         netlist_path = split_root / item["netlist"]
         transport_path = split_root / item["transport"]
-        transport = read_json(transport_path)
+        transport = read_transport(transport_path)
         split_selector = item.get("netlist_selector")
         if split_selector is not None:
             with SplitNetlistView(netlist_path, split_selector) as split_view:
@@ -1351,30 +1435,32 @@ def run_multi_fpga_physical_flow(
         )
         if module_match is None:
             raise ValidationError(f"cannot find transport top module for {fpga_id}")
-        transport_json = fpga_root / "transport-synthesized.json"
-        run_generic_yosys(
+        transport_ir_path = fpga_root / "transport.emuir.sqlite"
+        run_generic_yosys_stream(
             [runtime_controller, transport_rtl],
             module_match.group(1),
-            transport_json,
+            lambda stream: import_yosys_json_indexed(
+                Path("<generic-yosys-stdout>"),
+                transport_ir_path,
+                top=module_match.group(1),
+                clocks=("fabric_clk",),
+                _source_stream=stream,
+            ),
             executable=yosys,
             log_path=fpga_root / "transport-yosys.log",
         )
-        transport_ir = import_yosys_json(
-            transport_json,
-            top=module_match.group(1),
-            clocks=("fabric_clk",),
-        )
-        fanout_report = buffer_transport_high_fanout_nets(transport_ir)
+        fanout_report = buffer_transport_high_fanout_store(transport_ir_path)
         fanout_report_path = fpga_root / "transport-fanout-buffering.json"
         write_json(fanout_report_path, fanout_report, compact=True)
-        transport_ir_path = fpga_root / "transport.emuir.sqlite"
-        transport_ir.save(transport_ir_path)
+        transport_instances, transport_nets = _indexed_emuir_counts(
+            transport_ir_path
+        )
         transport_report = {
             "status": "pass",
             "provider": "yosys-generic-lut6-ff",
             "top": module_match.group(1),
-            "instances": len(transport_ir.value["instances"]),
-            "nets": len(transport_ir.value["nets"]),
+            "instances": transport_instances,
+            "nets": transport_nets,
             "fanout_buffering": {
                 "output": str(fanout_report_path),
                 "sha256": _sha256(fanout_report_path),
@@ -1451,18 +1537,6 @@ def run_multi_fpga_physical_flow(
             )
             fixed_io_targets = None
             if position_hints is not None and electrical_binding is not None:
-                hint_by_entry = {
-                    item["schedule_entry"]: item
-                    for item in position_hints.get("entries", [])
-                }
-                binding_by_entry = {}
-                for binding in electrical_binding.get("entries", []):
-                    for entry_id in binding.get("schedule_entries", []):
-                        if entry_id in binding_by_entry:
-                            raise ValidationError(
-                                "Chimew electrical binding duplicates a schedule entry"
-                            )
-                        binding_by_entry[entry_id] = binding
                 packed = read_json(packed_contract)
                 packed_io_names = {
                     cluster["name"]
@@ -1477,65 +1551,73 @@ def run_multi_fpga_physical_flow(
                 boundary_endpoints = read_json(boundary_identity_path)["endpoints"]
                 packed_groups: Dict[str, str] = {}
                 group_packed_blocks: Dict[str, str] = {}
-                for endpoint in boundary_endpoints:
-                    entry_id = endpoint["schedule_entry"]
-                    hint = hint_by_entry.get(entry_id)
-                    binding = binding_by_entry.get(entry_id)
-                    if hint is None or binding is None:
-                        raise ValidationError(
-                            "Chimew physical bindings do not cover every boundary endpoint"
-                        )
-                    if not binding.get("placement_anchor", True):
-                        continue
-                    # Bind the selected Chimew channel's actual physical site
-                    # coordinate.  A lane number is only an electrical
-                    # identity and cannot be used as a placement coordinate.
-                    if electrical_binding.get("schema", "").endswith("/v2"):
-                        endpoint_key = (
-                            "pin_a_point"
-                            if fpga_id == binding["fpga_a"]
-                            else "pin_b_point"
-                        )
-                        point = binding.get(endpoint_key)
-                        bounds_by_fpga = {
-                            item["fpga"]: (item["y_min"], item["y_max"])
-                            for item in electrical_binding.get("fpga_y_bounds", [])
-                        }
-                        bounds = bounds_by_fpga.get(fpga_id)
-                        if not isinstance(point, dict) or bounds is None:
+                binding_schema = electrical_binding.get("schema", "")
+                bounds_by_fpga = {
+                    item["fpga"]: (item["y_min"], item["y_max"])
+                    for item in electrical_binding.get("fpga_y_bounds", [])
+                }
+                links_by_id = {item.id: item for item in platform.links}
+                with (
+                    _open_position_hint_lookup(position_hints) as has_hint,
+                    open_chimew_binding_schedule_entry_lookup(
+                        electrical_binding
+                    ) as lookup_binding,
+                ):
+                    for endpoint in boundary_endpoints:
+                        entry_id = endpoint["schedule_entry"]
+                        binding = lookup_binding(entry_id)
+                        if not has_hint(entry_id) or binding is None:
                             raise ValidationError(
-                                "Chimew physical channel coordinates are missing"
+                                "Chimew physical bindings do not cover every boundary endpoint"
                             )
-                        low, high = bounds
-                        target_y = (float(point["y"]) - low) / (high - low)
-                    else:
-                        link = next(
-                            item for item in platform.links
-                            if item.id == binding["link"]
+                        if not binding.get("placement_anchor", True):
+                            continue
+                        # Bind the selected Chimew channel's actual physical site
+                        # coordinate.  A lane number is only an electrical
+                        # identity and cannot be used as a placement coordinate.
+                        if binding_schema.endswith("/v2"):
+                            endpoint_key = (
+                                "pin_a_point"
+                                if fpga_id == binding["fpga_a"]
+                                else "pin_b_point"
+                            )
+                            point = binding.get(endpoint_key)
+                            bounds = bounds_by_fpga.get(fpga_id)
+                            if not isinstance(point, dict) or bounds is None:
+                                raise ValidationError(
+                                    "Chimew physical channel coordinates are missing"
+                                )
+                            low, high = bounds
+                            target_y = (float(point["y"]) - low) / (high - low)
+                        else:
+                            link = links_by_id.get(binding["link"])
+                            if link is None:
+                                raise ValidationError(
+                                    "Chimew physical binding names an unknown link"
+                                )
+                            lane_limit = (
+                                link.transport_bits_per_cycle_per_direction - 1
+                            )
+                            target_y = (
+                                0.5 if lane_limit == 0 else
+                                float(binding["physical_lane"]) / float(lane_limit)
+                            )
+                        merged = endpoint["merged_ir"]
+                        packed_name = port_map.get(
+                            (merged["external_port"], merged["external_port_bit"])
                         )
-                        lane_limit = (
-                            link.transport_bits_per_cycle_per_direction - 1
+                        if packed_name not in packed_io_names:
+                            raise ValidationError(
+                                f"Chimew boundary {endpoint['id']!r} has no packed I/O cluster"
+                            )
+                        _record_chimew_fixed_io_target(
+                            fixed_io_targets,
+                            packed_groups,
+                            group_packed_blocks,
+                            packed_name=packed_name,
+                            group=binding["group"],
+                            target_y=target_y,
                         )
-                        target_y = (
-                            0.5 if lane_limit == 0 else
-                            float(binding["physical_lane"]) / float(lane_limit)
-                        )
-                    merged = endpoint["merged_ir"]
-                    packed_name = port_map.get(
-                        (merged["external_port"], merged["external_port_bit"])
-                    )
-                    if packed_name not in packed_io_names:
-                        raise ValidationError(
-                            f"Chimew boundary {endpoint['id']!r} has no packed I/O cluster"
-                        )
-                    _record_chimew_fixed_io_target(
-                        fixed_io_targets,
-                        packed_groups,
-                        group_packed_blocks,
-                        packed_name=packed_name,
-                        group=binding["group"],
-                        target_y=target_y,
-                    )
             placement_report = run_packed_openparf_placement(
                 packed_contract,
                 architecture_db,
@@ -2105,16 +2187,7 @@ def _assemble_multi_fpga_physical_results(
         "qualification": backend_descriptor["qualification"],
         "backend": backend_descriptor,
         "fpgas": physical_fpgas,
-        "boundary_identities": {
-            item["fpga"]: read_json(
-                Path(
-                    item["stages"]["placement_ir"]["boundary_identity"][
-                        "output"
-                    ]
-                )
-            )
-            for item in records
-        },
+        "boundary_identities": {},
     }
     if requires_virtual_io:
         physical_summary["virtual_io_implementation"] = {
@@ -2134,62 +2207,69 @@ def _assemble_multi_fpga_physical_results(
             ),
         }
     transports_by_fpga = {
-        item["fpga"]: read_json(split_root / item["transport"])
+        item["fpga"]: read_transport(split_root / item["transport"])
         for item in manifest["fpgas"]
     }
-    for fpga_id, database in physical_summary[
-        "boundary_identities"
-    ].items():
-        validate_boundary_identity_database(
-            database, transports_by_fpga[fpga_id]
+    physical_summary["boundary_timing"] = {}
+    for item in records:
+        fpga_id = item["fpga"]
+        identity_path = Path(
+            item["stages"]["placement_ir"]["boundary_identity"]["output"]
         )
-    physical_summary["boundary_timing"] = {
-        item["fpga"]: read_json(
-            Path(
-                _implementation_stage(item, backend, "boundary_timing")[
+        identity_database, identity_reference = publish_physical_evidence(
+            identity_path,
+            output_dir,
+            Path(fpga_id) / identity_path.name,
+        )
+        validate_boundary_identity_database(
+            identity_database, transports_by_fpga[fpga_id]
+        )
+        physical_summary["boundary_identities"][fpga_id] = identity_reference
+        timing_path = Path(
+            _implementation_stage(item, backend, "boundary_timing")[
+                "import"
+            ]["output"]
+        )
+        timing_database, timing_reference = publish_physical_evidence(
+            timing_path,
+            output_dir,
+            Path(fpga_id) / timing_path.name,
+        )
+        validate_boundary_timing_database(
+            timing_database,
+            identity_database,
+        )
+        physical_summary["boundary_timing"][fpga_id] = timing_reference
+    if include_logic_timing:
+        physical_summary["logic_segment_timing"] = {}
+        for item in records:
+            path = Path(
+                _implementation_stage(item, backend, "logic_segment_timing")[
                     "import"
                 ]["output"]
             )
-        )
-        for item in records
-    }
-    for fpga_id, database in physical_summary[
-        "boundary_timing"
-    ].items():
-        validate_boundary_timing_database(
-            database,
-            physical_summary["boundary_identities"][fpga_id],
-        )
-    if include_logic_timing:
-        physical_summary["logic_segment_timing"] = {
-            item["fpga"]: read_json(
-                Path(
-                    _implementation_stage(
-                        item, backend, "logic_segment_timing"
-                    )[
+            database, reference = publish_physical_evidence(
+                path,
+                output_dir,
+                Path(item["fpga"]) / path.name,
+            )
+            validate_logic_segment_timing(database)
+            physical_summary["logic_segment_timing"][item["fpga"]] = reference
+        if backend in {"open", "rapidwright"}:
+            physical_summary["local_path_timing"] = {}
+            for item in records:
+                path = Path(
+                    _implementation_stage(item, backend, "local_path_timing")[
                         "import"
                     ]["output"]
                 )
-            )
-            for item in records
-        }
-        for database in physical_summary["logic_segment_timing"].values():
-            validate_logic_segment_timing(database)
-        if backend in {"open", "rapidwright"}:
-            physical_summary["local_path_timing"] = {
-                item["fpga"]: read_json(
-                    Path(
-                        _implementation_stage(
-                            item, backend, "local_path_timing"
-                        )[
-                            "import"
-                        ]["output"]
-                    )
+                database, reference = publish_physical_evidence(
+                    path,
+                    output_dir,
+                    Path(item["fpga"]) / path.name,
                 )
-                for item in records
-            }
-            for database in physical_summary["local_path_timing"].values():
                 validate_local_path_timing(database)
+                physical_summary["local_path_timing"][item["fpga"]] = reference
     physical_summary["validation"] = validate_physical_summary(
         physical_summary, runtime, platform
     )

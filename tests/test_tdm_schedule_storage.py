@@ -1,0 +1,1028 @@
+from __future__ import annotations
+
+import json
+import hashlib
+import shutil
+import sqlite3
+
+import pytest
+
+import emuflow.tdm_schedule_storage as tdm_schedule_storage
+from emuflow.errors import ValidationError
+from emuflow.io import read_json
+from emuflow.tdm_schedule_storage import (
+    FULLY_TYPED_TDM_SCHEDULE_USER_VERSION,
+    FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    LEGACY_TDM_SCHEDULE_STORAGE_SCHEMA,
+    TDM_SCHEDULE_APPLICATION_ID,
+    TDM_SCHEDULE_STORAGE_SCHEMA,
+    TYPED_TDM_SCHEDULE_USER_VERSION,
+    TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    TYPED_ENTRY_RELATION_SCHEMA,
+    TYPED_COMPLETION_RELATION_SCHEMA,
+    TYPED_ROUTE_RELATION_SCHEMA,
+    canonical_tdm_schedule_sha256,
+    open_tdm_schedule_view,
+    pretty_tdm_schedule_sha256,
+    write_tdm_schedule_storage,
+)
+
+
+def _schedule(count: int = 5) -> dict:
+    return {
+        "schema": "emuflow.tdm-schedule/v1",
+        "design": "schedule-store-test",
+        "platform": "board",
+        "provider": "test-provider",
+        "transport_semantics": "registered-boundary",
+        "route_constraints": {"frame_slots": 32},
+        "routes": [
+            {
+                "id": f"d{index}",
+                "net": f"n{index}",
+                "source": "a",
+                "sinks": ["b"],
+                "tree_edges": [{"link": "ab", "from": "a", "to": "b"}],
+            }
+            for index in range(count)
+        ],
+        "entries": [
+            {
+                "id": f"e{index}",
+                "demand": f"d{index}",
+                "net": f"n{index}",
+                "link": "ab",
+                "from": "a",
+                "to": "b",
+                "slot": index,
+                "arrival_slot": index + 1,
+                "lane": 0,
+            }
+            for index in range(count)
+        ],
+        "demand_completions": [
+            {"demand": f"d{index}", "completion_slot": index + 1}
+            for index in range(count)
+        ],
+        "domain_schedules": [
+            {
+                "key": "ab:a:b",
+                "link": "ab",
+                "direction": "a->b",
+                "scheduled_bit_hops": count,
+            }
+        ],
+        "metrics": {"scheduled_bit_hops": count},
+    }
+
+
+def test_schedule_store_round_trip_lazy_iteration_and_relocation(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    expected = _schedule(11)
+    manifest = write_tdm_schedule_storage(source / "schedule.json", expected)
+    assert manifest["schema"] == TDM_SCHEDULE_STORAGE_SCHEMA
+    assert manifest["application_id"] == TDM_SCHEDULE_APPLICATION_ID
+    assert manifest["sections"]["entries"]["records"] == 11
+    assert (source / "schedule.json").stat().st_size < 2048
+
+    with open_tdm_schedule_view(source / "schedule.json") as view:
+        assert view["design"] == expected["design"]
+        assert len(view["entries"]) == 11
+        assert view["entries"][3] == expected["entries"][3]
+        assert list(view["entries"]) == expected["entries"]
+        expected_pretty = json.dumps(
+            expected, indent=2, sort_keys=True
+        ) + "\n"
+        assert pretty_tdm_schedule_sha256(view) == hashlib.sha256(
+            expected_pretty.encode("utf-8")
+        ).hexdigest()
+    assert read_json(source / "schedule.json") == expected
+
+    relocated = tmp_path / "relocated"
+    shutil.copytree(source, relocated)
+    assert read_json(relocated / "schedule.json") == expected
+
+
+def _typed_exact_schedule(count: int = 5) -> dict:
+    value = _schedule(count)
+    value["provider"] = "deterministic-dependency-earliest-slot-v1"
+    value["qualification"] = "dependency-schedule-readiness-pass"
+    for index, entry in enumerate(value["entries"]):
+        entry.update(
+            {
+                "id": f"s{index:06d}",
+                "hop": 0,
+                "capacity_key": "ab:a:b",
+                "ready_slot": index,
+            }
+        )
+    value["demand_completions"] = [
+        {
+            "demand": f"d{index}",
+            "net": f"n{index}",
+            "source_ready_slot": index,
+            "completion_slot": index + 1,
+            "sink_arrival_slots": {"b": index + 1},
+        }
+        for index in range(count)
+    ]
+    return value
+
+
+def _typed_multihop_schedule() -> dict:
+    value = _typed_exact_schedule(0)
+    value["routes"] = [
+        {
+            "id": "d0",
+            "net": "n0",
+            "source": "a",
+            "sinks": ["c", "d"],
+            "tree_edges": [
+                {"link": "ab", "from": "a", "to": "b"},
+                {"link": "bc", "from": "b", "to": "c"},
+                {"link": "bd", "from": "b", "to": "d"},
+            ],
+        }
+    ]
+    value["entries"] = [
+        {
+            "id": f"s{index:06d}",
+            "demand": "d0",
+            "net": "n0",
+            "hop": index,
+            "link": link,
+            "from": source,
+            "to": sink,
+            "capacity_key": f"{link}:{source}:{sink}",
+            "slot": index,
+            "lane": 0,
+            "ready_slot": index,
+            "arrival_slot": index + 1,
+        }
+        for index, (link, source, sink) in enumerate(
+            (("ab", "a", "b"), ("bc", "b", "c"), ("bd", "b", "d"))
+        )
+    ]
+    value["demand_completions"] = [
+        {
+            "demand": "d0",
+            "net": "n0",
+            "source_ready_slot": 0,
+            "completion_slot": 3,
+            "sink_arrival_slots": {"c": 2, "d": 3},
+        }
+    ]
+    value["domain_schedules"] = [
+        {
+            "key": "ab:a:b",
+            "link": "ab",
+            "direction": "a->b",
+            "scheduled_bit_hops": 1,
+        }
+    ]
+    value["metrics"] = {"scheduled_bit_hops": 3}
+    return value
+
+
+def _reseal_typed_store(path, mutate) -> dict:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    store = path.with_name(manifest["artifact"])
+    with sqlite3.connect(store) as connection:
+        mutate(connection)
+    digest = hashlib.sha256(store.read_bytes()).hexdigest()
+    resealed = path.with_name(f"schedule.{digest}.sqlite")
+    if resealed != store:
+        store.rename(resealed)
+    manifest["artifact"] = resealed.name
+    manifest["store_bytes"] = resealed.stat().st_size
+    manifest["store_sha256"] = digest
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
+
+
+def _downgrade_v4_store_to_v3(path, schedule) -> dict:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    store = path.with_name(manifest["artifact"])
+    with sqlite3.connect(store) as connection:
+        for section in ("routes", "demand_completions"):
+            for seq, record in enumerate(schedule[section]):
+                identity = record.get("id", record.get("demand"))
+                connection.execute(
+                    "INSERT INTO records(section,seq,identity,record_json) "
+                    "VALUES (?,?,?,?)",
+                    (
+                        section,
+                        seq,
+                        identity,
+                        json.dumps(record, separators=(",", ":"), sort_keys=True),
+                    ),
+                )
+        for table in (
+            "schedule_completion_arrivals",
+            "schedule_completions",
+            "schedule_route_edges",
+            "schedule_route_sinks",
+            "schedule_routes",
+        ):
+            connection.execute(f"DROP TABLE {table}")
+        connection.execute(
+            "DELETE FROM metadata WHERE key LIKE 'route_relation_%' "
+            "OR key LIKE 'completion_relation_%'"
+        )
+        connection.execute(f"PRAGMA user_version={TYPED_TDM_SCHEDULE_USER_VERSION}")
+    digest = hashlib.sha256(store.read_bytes()).hexdigest()
+    legacy_store = path.with_name(f"schedule.{digest}.sqlite")
+    store.rename(legacy_store)
+    manifest["schema"] = TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+    manifest["user_version"] = TYPED_TDM_SCHEDULE_USER_VERSION
+    manifest["artifact"] = legacy_store.name
+    manifest["store_bytes"] = legacy_store.stat().st_size
+    manifest["store_sha256"] = digest
+    manifest.pop("route_relation")
+    manifest.pop("completion_relation")
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return manifest
+
+
+def test_v4_exact_relations_live_once_in_producer_owned_typed_tables(tmp_path):
+    expected = _typed_exact_schedule(17)
+    path = tmp_path / "schedule.json"
+    manifest = write_tdm_schedule_storage(path, expected)
+
+    assert manifest["schema"] == FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+    assert manifest["entry_relation"] == {
+        "schema": TYPED_ENTRY_RELATION_SCHEMA,
+        "records": 17,
+    }
+    assert manifest["route_relation"] == {
+        "schema": TYPED_ROUTE_RELATION_SCHEMA,
+        "records": 17,
+        "sink_records": 17,
+        "edge_records": 17,
+    }
+    assert manifest["completion_relation"] == {
+        "schema": TYPED_COMPLETION_RELATION_SCHEMA,
+        "records": 17,
+        "arrival_records": 17,
+    }
+    assert manifest["artifact"] == (
+        f"schedule.{manifest['store_sha256']}.sqlite"
+    )
+    store = tmp_path / manifest["artifact"]
+    with sqlite3.connect(store) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == (
+            FULLY_TYPED_TDM_SCHEDULE_USER_VERSION
+        )
+        assert connection.execute(
+            "SELECT count(*) FROM schedule_entries"
+        ).fetchone()[0] == 17
+        assert connection.execute(
+            "SELECT count(*) FROM records WHERE section='entries'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT count(*) FROM records WHERE section='routes'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT count(*) FROM records WHERE section='demand_completions'"
+        ).fetchone()[0] == 0
+        indexes = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND tbl_name='schedule_entries'"
+            )
+        }
+        assert {
+            "schedule_entries_seq",
+            "schedule_entries_capacity_order",
+            "schedule_entries_collision",
+        } <= indexes
+
+    with open_tdm_schedule_view(path) as view:
+        assert view.materialize() == expected
+        view.validate_logical_seals()
+        assert canonical_tdm_schedule_sha256(view) == (
+            canonical_tdm_schedule_sha256(expected)
+        )
+        assert pretty_tdm_schedule_sha256(view) == (
+            pretty_tdm_schedule_sha256(expected)
+        )
+        with view.open_validation_index() as index:
+            assert index[("d3", "ab", "a", "b")]["id"] == "s000003"
+            assert index._db.execute(
+                "SELECT count(*) FROM sqlite_temp_master "
+                "WHERE name='validation_entries'"
+            ).fetchone()[0] == 0
+    assert read_json(path) == expected
+
+
+def test_v4_route_completion_cursors_do_not_decode_json(tmp_path, monkeypatch):
+    expected = _typed_exact_schedule(8)
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, expected)
+
+    with open_tdm_schedule_view(path) as view:
+        def reject_decode(*_args, **_kwargs):
+            raise AssertionError("typed route/completion cursor decoded JSON")
+
+        monkeypatch.setattr(tdm_schedule_storage.json, "loads", reject_decode)
+        assert list(view["routes"]) == expected["routes"]
+        assert list(view["demand_completions"]) == expected[
+            "demand_completions"
+        ]
+        assert [record.route_source for record in view.iter_transport_records()] == [
+            "a"
+        ] * 8
+
+
+def test_v4_consumer_cursors_cover_multihop_multisink_routes_without_n_plus_one(
+    tmp_path, monkeypatch
+):
+    expected = _typed_multihop_schedule()
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, expected)
+
+    with open_tdm_schedule_view(path) as view:
+        real_connect = sqlite3.connect
+        executed: list[str] = []
+
+        class RecordingConnection:
+            def __init__(self, connection):
+                self._connection = connection
+
+            def execute(self, sql, *args, **kwargs):
+                executed.append(sql)
+                return self._connection.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._connection, name)
+
+        monkeypatch.setattr(
+            tdm_schedule_storage.sqlite3,
+            "connect",
+            lambda *args, **kwargs: RecordingConnection(
+                real_connect(*args, **kwargs)
+            ),
+        )
+        joined = list(view.iter_entry_route_records())
+
+        assert len(executed) == 1
+        assert [entry for entry, _route in joined] == expected["entries"]
+        assert [route for _entry, route in joined] == [
+            expected["routes"][0]
+        ] * 3
+        assert list(view.iter_hop_identity_records()) == [
+            ("d0", "ab", "a", "b", "s000000"),
+            ("d0", "bc", "b", "c", "s000001"),
+            ("d0", "bd", "b", "d", "s000002"),
+        ]
+        assert list(view.iter_incoming_records()) == [
+            ("n0", "b", "s000000"),
+            ("n0", "c", "s000001"),
+            ("n0", "d", "s000002"),
+        ]
+
+
+def test_v4_incoming_cursor_rejects_duplicate_net_target(tmp_path):
+    value = _typed_exact_schedule(2)
+    value["routes"][1]["net"] = "n0"
+    value["entries"][1]["net"] = "n0"
+    value["demand_completions"][1]["net"] = "n0"
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, value)
+
+    with open_tdm_schedule_view(path) as view:
+        with pytest.raises(
+            ValidationError,
+            match="multiple incoming hops",
+        ):
+            list(view.iter_incoming_records())
+
+
+def test_v4_consumer_cursor_wraps_damaged_typed_table_as_validation_error(
+    tmp_path,
+):
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, _typed_exact_schedule(2))
+    with open_tdm_schedule_view(path) as view:
+        with sqlite3.connect(view.store_path) as connection:
+            connection.execute("DROP TABLE schedule_entries")
+        with pytest.raises(ValidationError, match="typed relation is unreadable"):
+            list(view.iter_hop_identity_records())
+    with pytest.raises(ValidationError, match="typed relations are unreadable"):
+        open_tdm_schedule_view(path, verify_store_hash=False)
+
+
+def test_v3_typed_entry_store_remains_readable(tmp_path):
+    expected = _typed_exact_schedule(4)
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, expected)
+    manifest = _downgrade_v4_store_to_v3(path, expected)
+
+    assert manifest["schema"] == TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+    with open_tdm_schedule_view(path) as view:
+        assert view.materialize() == expected
+        view.validate_logical_seals()
+        assert list(view.iter_incoming_records()) == [
+            (f"n{index}", "b", f"s{index:06d}")
+            for index in range(4)
+        ]
+
+
+@pytest.mark.parametrize(
+    ("section", "mutation", "message"),
+    [
+        (
+            "routes",
+            lambda value: value["routes"][0].update({"unknown": 1}),
+            "typed schedule route is malformed",
+        ),
+        (
+            "routes",
+            lambda value: value["routes"][0]["tree_edges"][0].update(
+                {"unknown": 1}
+            ),
+            "typed schedule route edge is malformed",
+        ),
+        (
+            "demand_completions",
+            lambda value: value["demand_completions"][0].update(
+                {"source_ready_slot": True}
+            ),
+            "typed schedule completion is malformed",
+        ),
+    ],
+)
+def test_v4_writer_rejects_malformed_typed_relations(
+    tmp_path, section, mutation, message
+):
+    del section
+    value = _typed_exact_schedule(1)
+    mutation(value)
+    with pytest.raises(ValidationError, match=message):
+        write_tdm_schedule_storage(tmp_path / "schedule.json", value)
+
+
+def test_v4_typed_route_mutation_breaks_logical_seal(tmp_path):
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, _typed_exact_schedule(3))
+    _reseal_typed_store(
+        path,
+        lambda connection: connection.execute(
+            "UPDATE schedule_routes SET net='tampered' WHERE seq=1"
+        ),
+    )
+
+    with open_tdm_schedule_view(path) as view:
+        with pytest.raises(ValidationError, match="logical seal"):
+            view.validate_logical_seals()
+
+
+def test_v4_open_rejects_missing_sink_arrival_row(tmp_path):
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, _typed_exact_schedule(3))
+    _reseal_typed_store(
+        path,
+        lambda connection: connection.execute(
+            "DELETE FROM schedule_completion_arrivals "
+            "WHERE completion_seq=1 AND seq=0"
+        ),
+    )
+
+    with pytest.raises(ValidationError, match="coverage disagrees"):
+        open_tdm_schedule_view(path)
+
+
+def test_v4_manifest_rejects_wrong_route_relation_schema(tmp_path):
+    path = tmp_path / "schedule.json"
+    manifest = write_tdm_schedule_storage(path, _typed_exact_schedule(2))
+    manifest["route_relation"]["schema"] = "unknown/relation"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValidationError, match="relations are malformed"):
+        open_tdm_schedule_view(path)
+
+
+def test_v3_storage_accepts_integer_values_for_semantic_validator(tmp_path):
+    expected = _typed_exact_schedule(1)
+    expected["entries"][0].update(
+        {
+            "hop": -1,
+            "slot": -2,
+            "lane": -3,
+            "ready_slot": -4,
+            "arrival_slot": -5,
+            "tdm_ratio": 0,
+        }
+    )
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, expected)
+
+    with open_tdm_schedule_view(path) as view:
+        assert view.materialize() == expected
+
+
+@pytest.mark.parametrize("typed", [False, True])
+def test_manifest_publication_failure_preserves_old_generation(
+    tmp_path, monkeypatch, typed
+):
+    path = tmp_path / "schedule.json"
+    old_schedule = _typed_exact_schedule(2) if typed else _schedule(2)
+    old_manifest = write_tdm_schedule_storage(path, old_schedule)
+    old_store = tmp_path / old_manifest["artifact"]
+
+    updated = _typed_exact_schedule(3) if typed else _schedule(3)
+
+    def fail_manifest(*_args, **_kwargs):
+        raise RuntimeError("injected manifest publication failure")
+
+    monkeypatch.setattr(tdm_schedule_storage, "write_json", fail_manifest)
+    with pytest.raises(RuntimeError, match="injected"):
+        write_tdm_schedule_storage(path, updated)
+
+    assert json.loads(path.read_text(encoding="utf-8")) == old_manifest
+    assert old_store.exists()
+    assert read_json(path) == old_schedule
+    assert len(list(tmp_path.glob("schedule.*.sqlite"))) == 2
+
+
+def test_v3_successful_publication_keeps_previous_generation_readable(tmp_path):
+    path = tmp_path / "schedule.json"
+    old_schedule = _typed_exact_schedule(2)
+    old_manifest = write_tdm_schedule_storage(path, old_schedule)
+    old_store = tmp_path / old_manifest["artifact"]
+
+    new_schedule = _typed_exact_schedule(3)
+    new_manifest = write_tdm_schedule_storage(path, new_schedule)
+    assert new_manifest["artifact"] != old_manifest["artifact"]
+    assert old_store.exists()
+
+    old_manifest_path = tmp_path / "old-schedule.json"
+    old_manifest_path.write_text(json.dumps(old_manifest), encoding="utf-8")
+    assert read_json(old_manifest_path) == old_schedule
+    assert read_json(path) == new_schedule
+
+
+def test_v3_rejects_non_content_addressed_artifact_name(tmp_path):
+    path = tmp_path / "schedule.json"
+    manifest = write_tdm_schedule_storage(path, _typed_exact_schedule(1))
+    manifest["artifact"] = "schedule.sqlite"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValidationError, match="artifact identity"):
+        open_tdm_schedule_view(path)
+
+
+def test_v3_open_rejects_noncontiguous_entry_sequence(tmp_path):
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, _typed_exact_schedule(3))
+    _reseal_typed_store(
+        path,
+        lambda connection: connection.execute(
+            "UPDATE schedule_entries SET seq=9 WHERE seq=1"
+        ),
+    )
+
+    with pytest.raises(ValidationError, match="sequence is not contiguous"):
+        open_tdm_schedule_view(path)
+
+
+def test_v3_open_rejects_wrong_required_index_columns(tmp_path):
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, _typed_exact_schedule(3))
+
+    def mutate(connection):
+        connection.execute("DROP INDEX schedule_entries_collision")
+        connection.execute(
+            "CREATE INDEX schedule_entries_collision "
+            "ON schedule_entries(capacity_key,lane,slot)"
+        )
+
+    _reseal_typed_store(path, mutate)
+    with pytest.raises(ValidationError, match="index definition"):
+        open_tdm_schedule_view(path)
+
+
+def test_v3_typed_entry_mutation_breaks_logical_seal_validation(tmp_path):
+    expected = _typed_exact_schedule(3)
+    path = tmp_path / "schedule.json"
+    manifest = write_tdm_schedule_storage(path, expected)
+    store = tmp_path / manifest["artifact"]
+    with sqlite3.connect(store) as connection:
+        connection.execute(
+            "UPDATE schedule_entries SET slot=slot+1 WHERE seq=1"
+        )
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["store_bytes"] = store.stat().st_size
+    manifest["store_sha256"] = hashlib.sha256(store.read_bytes()).hexdigest()
+    resealed_store = tmp_path / f"schedule.{manifest['store_sha256']}.sqlite"
+    store.rename(resealed_store)
+    manifest["artifact"] = resealed_store.name
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with open_tdm_schedule_view(path) as view:
+        with pytest.raises(ValidationError, match="logical seal|logical digest"):
+            view.validate_logical_seals()
+
+
+def test_typed_transport_cursor_avoids_python_json_decode(tmp_path, monkeypatch):
+    expected = _schedule(3)
+    expected["entries"][1]["tdm_ratio"] = 4
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, expected)
+
+    with open_tdm_schedule_view(path) as view:
+        def reject_decode(*_args, **_kwargs):
+            raise AssertionError("typed transport cursor decoded JSON in Python")
+
+        monkeypatch.setattr(tdm_schedule_storage.json, "loads", reject_decode)
+        records = list(view.iter_transport_records())
+
+    assert [record.entry_id for record in records] == ["e0", "e1", "e2"]
+    assert records[0]._asdict() == {
+        "entry_id": "e0",
+        "demand": "d0",
+        "net": "n0",
+        "link": "ab",
+        "source": "a",
+        "sink": "b",
+        "slot": 0,
+        "arrival_slot": 1,
+        "lane": 0,
+        "tdm_ratio": None,
+        "route_source": "a",
+    }
+    assert records[1].tdm_ratio == 4
+
+
+def test_typed_transport_cursor_preserves_sequence_across_million_boundary(
+    tmp_path,
+):
+    value = _schedule(2)
+    value["entries"][0]["id"] = "s999999"
+    value["entries"][1]["id"] = "s1000000"
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, value)
+
+    with open_tdm_schedule_view(path) as view:
+        assert [
+            record.entry_id for record in view.iter_transport_records()
+        ] == ["s999999", "s1000000"]
+        assert [
+            record.entry_id
+            for record in view.iter_transport_records(identity_order=True)
+        ] == ["s999999", "s1000000"]
+
+
+@pytest.mark.parametrize(
+    "mutation", ["net", "slot-type", "null-ratio", "missing-route"]
+)
+def test_typed_transport_cursor_fails_closed(tmp_path, mutation):
+    value = _schedule(1)
+    if mutation == "net":
+        value["entries"][0]["net"] = "different-net"
+        message = "malformed"
+    elif mutation == "slot-type":
+        value["entries"][0]["slot"] = True
+        message = "malformed"
+    elif mutation == "null-ratio":
+        value["entries"][0]["tdm_ratio"] = None
+        message = "malformed"
+    else:
+        value["entries"][0]["demand"] = "missing-demand"
+        message = "coverage"
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, value)
+
+    with open_tdm_schedule_view(path) as view:
+        with pytest.raises(ValidationError, match=message):
+            list(view.iter_transport_records())
+
+
+def test_schedule_store_publishes_large_section_in_one_pass(tmp_path):
+    class SinglePassRecords(list):
+        def __init__(self, records):
+            super().__init__(records)
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            if self.iterations > 1:
+                raise AssertionError("large schedule section was decoded twice")
+            yield from super().__iter__()
+
+    expected = _schedule(10_000)
+    value = dict(expected)
+    entries = SinglePassRecords(expected["entries"])
+    value["entries"] = entries
+    manifest = write_tdm_schedule_storage(tmp_path / "schedule.json", value)
+    assert entries.iterations == 1
+    assert manifest["logical_sha256"] == canonical_tdm_schedule_sha256(
+        expected
+    )
+    assert manifest["logical_pretty_sha256"] == pretty_tdm_schedule_sha256(
+        expected
+    )
+    with open_tdm_schedule_view(tmp_path / "schedule.json") as view:
+        assert list(view["entries"]) == expected["entries"]
+
+
+def test_schedule_store_consumes_canonical_entry_cursor_without_decode(tmp_path):
+    class CanonicalEntryRecords(list):
+        canonical_record_cursor_schema = (
+            "emuflow.native-exact-schedule-entry-cursor/v1"
+        )
+
+        def __init__(self, records):
+            super().__init__(records)
+            self.cursor_iterations = 0
+
+        def __iter__(self):
+            raise AssertionError("canonical entries were decoded as objects")
+
+        def iter_canonical_records(self):
+            self.cursor_iterations += 1
+            for item in list.__iter__(self):
+                yield item["id"], json.dumps(
+                    item,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+
+    expected = _schedule(10_000)
+    for index, entry in enumerate(expected["entries"]):
+        entry.update(
+            {
+                "id": f"s{index:06d}",
+                "capacity_key": "ab:a:b",
+                "hop": 0,
+                "ready_slot": index,
+                "tdm_ratio": 1,
+            }
+        )
+    value = dict(expected)
+    entries = CanonicalEntryRecords(expected["entries"])
+    value["entries"] = entries
+    manifest = write_tdm_schedule_storage(tmp_path / "schedule.json", value)
+    assert entries.cursor_iterations == 1
+    assert manifest["logical_sha256"] == canonical_tdm_schedule_sha256(
+        expected
+    )
+    assert manifest["logical_pretty_sha256"] == pretty_tdm_schedule_sha256(
+        expected
+    )
+    with open_tdm_schedule_view(tmp_path / "schedule.json") as view:
+        assert list(view["entries"]) == expected["entries"]
+
+
+def test_v3_consumes_native_typed_cursor_in_one_pass(tmp_path):
+    class TypedEntryRecords(list):
+        canonical_record_cursor_schema = (
+            "emuflow.native-exact-schedule-entry-cursor/v1"
+        )
+        typed_record_cursor_schema = (
+            "emuflow.native-exact-schedule-typed-entry-cursor/v1"
+        )
+
+        def __init__(self, records):
+            super().__init__(records)
+            self.cursor_iterations = 0
+
+        def __iter__(self):
+            raise AssertionError("typed entries were decoded as objects")
+
+        def iter_canonical_records(self):
+            raise AssertionError("parallel canonical cursor was opened")
+
+        def iter_typed_records(self):
+            self.cursor_iterations += 1
+            for item in list.__iter__(self):
+                yield (
+                    item["id"],
+                    (
+                        item["id"],
+                        item["demand"],
+                        item["net"],
+                        item["hop"],
+                        item["link"],
+                        item["from"],
+                        item["to"],
+                        item["capacity_key"],
+                        item["slot"],
+                        item["lane"],
+                        item["ready_slot"],
+                        item["arrival_slot"],
+                        item.get("tdm_ratio"),
+                    ),
+                )
+
+    expected = _typed_exact_schedule(10_000)
+    value = dict(expected)
+    entries = TypedEntryRecords(expected["entries"])
+    value["entries"] = entries
+    manifest = write_tdm_schedule_storage(tmp_path / "schedule.json", value)
+
+    assert entries.cursor_iterations == 1
+    assert manifest["schema"] == FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+    assert manifest["logical_sha256"] == canonical_tdm_schedule_sha256(
+        expected
+    )
+    assert manifest["logical_pretty_sha256"] == pretty_tdm_schedule_sha256(
+        expected
+    )
+    with sqlite3.connect(tmp_path / manifest["artifact"]) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM schedule_entries"
+        ).fetchone()[0] == 10_000
+        assert connection.execute(
+            "SELECT count(*) FROM records WHERE section='entries'"
+        ).fetchone()[0] == 0
+
+
+def test_v3_rejects_malformed_typed_cursor_record(tmp_path):
+    value = _typed_exact_schedule(1)
+    entry = value["entries"][0]
+
+    class MismatchedTypedEntries(list):
+        typed_record_cursor_schema = (
+            "emuflow.native-exact-schedule-typed-entry-cursor/v1"
+        )
+
+        def __iter__(self):
+            raise AssertionError("typed entries were decoded as objects")
+
+        def iter_typed_records(self):
+            yield (
+                entry["id"],
+                (
+                    "s999999",
+                    entry["demand"],
+                    entry["net"],
+                    entry["hop"],
+                    entry["link"],
+                    entry["from"],
+                    entry["to"],
+                    entry["capacity_key"],
+                    entry["slot"],
+                    entry["lane"],
+                    entry["ready_slot"],
+                    entry["arrival_slot"],
+                    None,
+                ),
+            )
+
+    value["entries"] = MismatchedTypedEntries([entry])
+    with pytest.raises(ValidationError, match="typed schedule entry is malformed"):
+        write_tdm_schedule_storage(tmp_path / "schedule.json", value)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["identity", "malformed-json", "noncanonical-order"],
+)
+def test_canonical_entry_cursor_fails_closed(tmp_path, mutation):
+    value = _schedule(1)
+    entry = value["entries"][0]
+    entry.update(
+        {
+            "id": "s000000",
+            "capacity_key": "ab:a:b",
+            "hop": 0,
+            "ready_slot": 0,
+            "tdm_ratio": 1,
+        }
+    )
+    encoded = json.dumps(
+        entry,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    identity = entry["id"]
+    if mutation == "identity":
+        identity = "s000001"
+    elif mutation == "malformed-json":
+        encoded = encoded[:-1] + ",}"
+    else:
+        encoded = json.dumps(
+            dict(reversed(list(entry.items()))),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=False,
+        )
+
+    class InvalidCanonicalEntries(list):
+        canonical_record_cursor_schema = (
+            "emuflow.native-exact-schedule-entry-cursor/v1"
+        )
+
+        def __iter__(self):
+            raise AssertionError("canonical entries were decoded as objects")
+
+        def iter_canonical_records(self):
+            yield identity, encoded
+
+    value["entries"] = InvalidCanonicalEntries([entry])
+    with pytest.raises(ValidationError, match="canonical schedule entry"):
+        write_tdm_schedule_storage(tmp_path / "schedule.json", value)
+
+
+def test_v1_schedule_manifest_remains_readable(tmp_path):
+    expected = _schedule(3)
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, expected)
+    manifest = json.loads(path.read_text())
+    manifest["schema"] = LEGACY_TDM_SCHEDULE_STORAGE_SCHEMA
+    manifest.pop("logical_pretty_sha256")
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert read_json(path) == expected
+    with open_tdm_schedule_view(path) as view:
+        assert pretty_tdm_schedule_sha256(view) == pretty_tdm_schedule_sha256(
+            expected
+        )
+
+
+def test_v2_validation_index_remains_a_compatible_fallback(tmp_path):
+    expected = _typed_exact_schedule(4)
+    expected["provider"] = "reference-provider"
+    path = tmp_path / "schedule.json"
+    manifest = write_tdm_schedule_storage(path, expected)
+    assert manifest["schema"] == TDM_SCHEDULE_STORAGE_SCHEMA
+
+    with open_tdm_schedule_view(path) as view:
+        with view.open_validation_index() as index:
+            assert len(index) == 4
+            assert index._db.execute(
+                "SELECT count(*) FROM sqlite_temp_master "
+                "WHERE name='validation_entries'"
+            ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("mutation", ["truncate", "replace", "manifest", "row"])
+def test_schedule_store_rejects_corruption_and_mixed_artifacts(tmp_path, mutation):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    first_manifest = write_tdm_schedule_storage(
+        first / "schedule.json", _schedule(4)
+    )
+    second_manifest = write_tdm_schedule_storage(
+        second / "schedule.json", _schedule(7)
+    )
+    store = first / first_manifest["artifact"]
+    if mutation == "truncate":
+        store.write_bytes(store.read_bytes()[:-19])
+    elif mutation == "replace":
+        shutil.copyfile(second / second_manifest["artifact"], store)
+    elif mutation == "manifest":
+        value = json.loads((first / "schedule.json").read_text())
+        value["sections"]["entries"]["records"] += 1
+        (first / "schedule.json").write_text(json.dumps(value))
+    else:
+        data = bytearray(store.read_bytes())
+        data[len(data) // 2] ^= 0x5A
+        store.write_bytes(data)
+    with pytest.raises(ValidationError):
+        read_json(first / "schedule.json")
+
+
+def test_schedule_store_rejects_duplicate_section_identity(tmp_path):
+    value = _schedule(2)
+    value["entries"][1]["id"] = value["entries"][0]["id"]
+    with pytest.raises(ValidationError, match="duplicate"):
+        write_tdm_schedule_storage(tmp_path / "schedule.json", value)
+
+
+def test_schedule_store_is_deterministic_for_repeated_structure(tmp_path):
+    expected = _schedule(5_000)
+    manifests = []
+    for run in range(2):
+        root = tmp_path / f"run-{run}"
+        root.mkdir()
+        manifests.append(
+            write_tdm_schedule_storage(root / "schedule.json", expected)
+        )
+        with open_tdm_schedule_view(root / "schedule.json") as view:
+            assert len(view["entries"]) == 5_000
+            assert sum(1 for _ in view["entries"]) == 5_000
+    assert manifests[0]["logical_sha256"] == manifests[1]["logical_sha256"]
+    assert manifests[0]["store_sha256"] == manifests[1]["store_sha256"]
+
+
+def test_v4_fully_typed_store_is_byte_deterministic(tmp_path):
+    expected = _typed_exact_schedule(5_000)
+    manifests = []
+    for run in range(2):
+        root = tmp_path / f"typed-{run}"
+        root.mkdir()
+        manifests.append(
+            write_tdm_schedule_storage(root / "schedule.json", expected)
+        )
+    assert manifests[0]["logical_sha256"] == manifests[1]["logical_sha256"]
+    assert manifests[0]["logical_pretty_sha256"] == (
+        manifests[1]["logical_pretty_sha256"]
+    )
+    assert manifests[0]["store_sha256"] == manifests[1]["store_sha256"]

@@ -4,9 +4,15 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.architecture import ArchitectureDB
+from emuflow.io import file_sha256
+from emuflow.xilinx_netlist import (
+    emit_xilinx_mapped_index,
+    open_xilinx_mapped_index,
+)
 from emuflow.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_PROVIDER,
@@ -16,12 +22,14 @@ from emuflow.xilinx_openparf_atomic import (
     validate_xilinx_openparf_atomic_placement,
 )
 from emuflow.xilinx_openparf_bridge import (
+    _BridgeClusterSequence,
     _validate_certificate,
     materialize_xilinx_openparf_atomic_contract,
 )
 from emuflow.xilinx_packing import validate_xilinx_packing
 from emuflow.xilinx_placement import validate_xilinx_placement
 from emuflow.xilinx_rwroute import export_rwroute_input
+from emuflow.yosys import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
 
@@ -94,6 +102,44 @@ def _native_certificate(
 
 
 class XilinxOpenparfBridgeTest(unittest.TestCase):
+    def test_bridge_cluster_random_access_does_not_expand_all_clusters(self):
+        class IndexedOnly(list):
+            def __iter__(self):
+                raise AssertionError("single cluster access expanded the tree")
+
+        clusters = IndexedOnly(
+            [
+                {
+                    "id": "cluster0",
+                    "kind": "slice",
+                    "site_templates": ["SLICEL"],
+                    "control_set": None,
+                    "assignments": [
+                        {
+                            "instance": "cell0",
+                            "cell_type": "LUT1",
+                            "bel": "A6LUT",
+                            "_placement_mode": "SLICEL",
+                            "_physical_site": "SLICE_X0Y0",
+                            "_placement_ordinal": 0,
+                        }
+                    ],
+                    "_placement": {
+                        "site": "SLICE_X0Y0",
+                        "site_type": "SLICEL",
+                        "x": 0,
+                        "y": 0,
+                        "fixed": False,
+                        "physical_region": None,
+                    },
+                }
+            ]
+        )
+        packed = _BridgeClusterSequence(clusters, placement=False)
+        placed = _BridgeClusterSequence(clusters, placement=True)
+        self.assertEqual(packed[0]["id"], "cluster0")
+        self.assertEqual(placed[0]["cluster"], "cluster0")
+
     def test_bram_tile_group_certificate_is_independently_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -358,6 +404,246 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             self.assertEqual(rwroute_report["physical_cells"], 138)
             self.assertTrue(rwroute.is_file())
 
+    def test_native_physical_handoff_replaces_both_large_json_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, architecture, certificate = _native_certificate(
+                root, include_hard=False
+            )
+            packed_json = root / "packed-sites.json"
+            placement_json = root / "placement.json"
+            handoff = root / "physical-handoff.sqlite"
+            packed = {}
+            placement = {}
+            with mock.patch(
+                "emuflow.xilinx_openparf_bridge._BridgeClusterSequence",
+                side_effect=AssertionError(
+                    "production handoff retained the physical cluster tree"
+                ),
+            ), mock.patch(
+                "emuflow.xilinx_openparf_bridge.validate_xilinx_packing",
+                side_effect=AssertionError(
+                    "production handoff rebuilt generic packing owner maps"
+                ),
+            ), mock.patch(
+                "emuflow.xilinx_openparf_bridge.validate_xilinx_placement",
+                side_effect=AssertionError(
+                    "production handoff rebuilt generic placement maps"
+                ),
+            ):
+                report = materialize_xilinx_openparf_atomic_contract(
+                    mapped, architecture, certificate,
+                    packed_json, placement_json,
+                    physical_handoff_path=handoff,
+                    packed_value_sink=packed,
+                    placement_value_sink=placement,
+                )
+
+            self.assertTrue(handoff.is_file())
+            self.assertFalse(packed_json.exists())
+            self.assertFalse(placement_json.exists())
+            self.assertEqual(report["physical_handoff_sha256"], file_sha256(handoff))
+            self.assertEqual(report["packed_sha256"], report["placement_sha256"])
+            self.assertEqual(report["runtime_breakdown"]["bytes"]["packed_output"], 0)
+            self.assertEqual(
+                report["runtime_breakdown"]["dataflow"]["bridge_contracts"],
+                "incremental-typed-single-owner-dual-view-v1",
+            )
+            self.assertEqual(
+                report["runtime_breakdown"]["dataflow"][
+                    "certificate_to_handoff"
+                ],
+                "validated-cluster-direct-typed-row",
+            )
+            self.assertEqual(
+                report["runtime_breakdown"]["dataflow"][
+                    "legalization_working_set"
+                ],
+                "mux-slice-clusters-only",
+            )
+            self.assertEqual(
+                report["runtime_breakdown"]["dataflow"][
+                    "certificate_assignment_ownership"
+                ],
+                "typed-unique-index-and-count",
+            )
+            self.assertEqual(
+                report["runtime_breakdown"]["dataflow"][
+                    "handoff_publication"
+                ],
+                "validate-temporary-before-atomic-replace",
+            )
+            self.assertEqual(
+                report["runtime_breakdown"]["dataflow"][
+                    "physical_contract_validation"
+                ],
+                "sqlite-single-scan-ordered-merge-bounded-special-subgraph",
+            )
+            self.assertEqual(
+                set(report["runtime_breakdown"]["publication_steps"]),
+                {
+                    "physical_handoff_write_seconds",
+                    "physical_handoff_validation_seconds",
+                    "physical_handoff_open_seconds",
+                    "packing_validation_seconds",
+                    "placement_validation_seconds",
+                },
+            )
+            self.assertTrue(all(
+                value >= 0.0
+                for value in report["runtime_breakdown"][
+                    "publication_steps"
+                ].values()
+            ))
+            self.assertEqual(len(packed["clusters"]), len(placement["clusters"]))
+            rwroute = root / "rwroute.tsv"
+            export = export_rwroute_input(
+                mapped, handoff, handoff, rwroute,
+                packed_value=packed, placement_value=placement,
+            )
+            self.assertEqual(export["logical_cells"], report["placed_cells"])
+
+            mapped_ir = root / "mapped.emuir.sqlite"
+            mapped_index = root / "mapped.sqlite"
+            import_yosys_json(mapped).save(mapped_ir)
+            emit_xilinx_mapped_index(mapped_ir, mapped_index)
+            with open_xilinx_mapped_index(mapped_index) as indexed:
+                indexed_export = export_rwroute_input(
+                    mapped_index, handoff, handoff,
+                    root / "rwroute-indexed.tsv",
+                    mapped_value=indexed,
+                    packed_value=packed,
+                    placement_value=placement,
+                    source_sha256={
+                        "mapped_sha256": "0" * 64,
+                        "packed_sha256": report["physical_handoff_sha256"],
+                        "placement_sha256": report["physical_handoff_sha256"],
+                    },
+                )
+            self.assertEqual(
+                indexed_export["logical_cells"], report["placed_cells"]
+            )
+            self.assertEqual(
+                indexed_export["runtime_breakdown"]["dataflow"],
+                {
+                    "route_cells": "generated-from-physical-binding",
+                    "physical_bindings": "typed-mapped-physical-join",
+                    "safe_names": "typed-ordinal-cursor",
+                    "endpoints": "typed-mapped-physical-join",
+                    "tsv": "streamed-atomic-spool",
+                },
+            )
+
+            repeated = root / "physical-handoff-repeat.sqlite"
+            repeated_report = materialize_xilinx_openparf_atomic_contract(
+                mapped, architecture, certificate,
+                root / "unused-packed.json", root / "unused-placement.json",
+                physical_handoff_path=repeated,
+            )
+            self.assertEqual(
+                repeated_report["physical_handoff_sha256"],
+                report["physical_handoff_sha256"],
+            )
+            self.assertEqual(repeated.read_bytes(), handoff.read_bytes())
+
+            compatibility_packed = root / "compatibility-packed.json"
+            compatibility_placement = root / "compatibility-placement.json"
+            materialize_xilinx_openparf_atomic_contract(
+                mapped, architecture, certificate,
+                compatibility_packed, compatibility_placement,
+            )
+            compatibility_packed_value = json.loads(
+                compatibility_packed.read_text(encoding="utf-8")
+            )
+            compatibility_placement_value = json.loads(
+                compatibility_placement.read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                list(packed["clusters"]),
+                compatibility_packed_value["clusters"],
+            )
+            self.assertEqual(
+                list(placement["clusters"]),
+                compatibility_placement_value["clusters"],
+            )
+            self.assertEqual(
+                packed["summary"], compatibility_packed_value["summary"]
+            )
+            self.assertEqual(
+                placement["summary"],
+                compatibility_placement_value["summary"],
+            )
+
+    def test_streamed_and_compatibility_validation_reject_lut_multidriver(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, architecture, certificate = _native_certificate(
+                root, include_hard=False
+            )
+            mapped_value = json.loads(mapped.read_text(encoding="utf-8"))
+            cells = mapped_value["modules"]["top"]["cells"]
+            # This bit is outside every MUX/CARRY topology working set.  Both
+            # validators must still apply the whole-netlist uniqueness rule.
+            cells["lut_00"]["connections"]["O"] = [9_999_999]
+            cells["lut_01"]["connections"]["O"] = [9_999_999]
+            mapped.write_text(json.dumps(mapped_value), encoding="utf-8")
+            certificate_value = json.loads(
+                certificate.read_text(encoding="utf-8")
+            )
+            certificate_value["source"]["mapped_sha256"] = file_sha256(mapped)
+            certificate.write_text(
+                json.dumps(certificate_value, sort_keys=True), encoding="utf-8"
+            )
+
+            for production in (False, True):
+                with self.subTest(production=production):
+                    handoff = root / "physical-handoff.sqlite"
+                    with self.assertRaisesRegex(
+                        ValidationError,
+                        r"mapped net bit 9999999 has multiple drivers",
+                    ):
+                        materialize_xilinx_openparf_atomic_contract(
+                            mapped, architecture, certificate,
+                            root / "packed.json", root / "placement.json",
+                            **(
+                                {"physical_handoff_path": handoff}
+                                if production else {}
+                            ),
+                        )
+                    self.assertFalse(handoff.exists())
+                    self.assertEqual(
+                        list(root.glob(".physical-handoff.sqlite.*.tmp")), []
+                    )
+
+    def test_failed_independent_validation_does_not_publish_handoff(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, architecture, certificate = _native_certificate(
+                root, include_hard=False
+            )
+            handoff = root / "physical-handoff.sqlite"
+            previous = b"previous-complete-artifact\n"
+            handoff.write_bytes(previous)
+
+            with mock.patch(
+                "emuflow.xilinx_openparf_bridge._validate_streamed_physical_handoff",
+                side_effect=ValidationError("late independent rejection"),
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, "late independent rejection"
+                ):
+                    materialize_xilinx_openparf_atomic_contract(
+                        mapped, architecture, certificate,
+                        root / "unused-packed.json",
+                        root / "unused-placement.json",
+                        physical_handoff_path=handoff,
+                    )
+
+            self.assertEqual(handoff.read_bytes(), previous)
+            self.assertEqual(
+                list(root.glob(f".{handoff.name}.*.tmp")), []
+            )
+
     def test_missing_atom_fails_without_publishing_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -375,6 +661,18 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                 )
             self.assertFalse(packed.exists())
             self.assertFalse(placement.exists())
+            handoff = root / "physical-handoff.sqlite"
+            with self.assertRaisesRegex(ValidationError, "coverage is incomplete"):
+                materialize_xilinx_openparf_atomic_contract(
+                    mapped, architecture, certificate,
+                    root / "unused-packed.json",
+                    root / "unused-placement.json",
+                    physical_handoff_path=handoff,
+                )
+            self.assertFalse(handoff.exists())
+            self.assertEqual(
+                list(root.glob(f".{handoff.name}.*.tmp")), []
+            )
 
     def test_bel_tampering_and_unsupported_primitive_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:

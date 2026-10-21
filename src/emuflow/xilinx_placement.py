@@ -1356,7 +1356,7 @@ def validate_xilinx_placement(
         site_base[site["name"]] = base
 
     entries = placement.get("clusters")
-    if not isinstance(entries, list):
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
         raise ValidationError("Xilinx placement clusters are invalid")
     placed = {}
     occupied = set()

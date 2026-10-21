@@ -16,6 +16,7 @@ from .indexed_physical_ir import IndexedPhysicalIR
 from .netlist import FPGA_NETLIST_SCHEMA, TRANSPORT_ENDPOINTS_SCHEMA
 from .placement_ir_storage import write_placement_emuir_from_split
 from .split_netlist_storage import SplitNetlistView
+from .transport_storage import read_transport
 
 
 PLACEMENT_IR_REPORT_SCHEMA = "emuflow.placement-ir-report/v1"
@@ -364,7 +365,7 @@ def run_placement_ir_lowering_from_value(
 ) -> Dict[str, Any]:
     """Lower one already-selected partition without a JSON round trip."""
 
-    transport = read_json(transport_path)
+    transport = read_transport(transport_path)
     transport_ir = EmuIR.load(transport_ir_path)
     result = build_placement_ir(
         netlist, transport, transport_ir
@@ -415,6 +416,29 @@ def run_placement_ir_lowering_from_split(
     report_path: Optional[Path] = None,
     boundary_identity_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    with IndexedPhysicalIR(transport_ir_path) as transport_ir:
+        return _run_placement_ir_lowering_from_split_indexed(
+            split_path,
+            fpga,
+            transport_path,
+            transport_ir_path,
+            transport_ir,
+            output_path,
+            report_path,
+            boundary_identity_path,
+        )
+
+
+def _run_placement_ir_lowering_from_split_indexed(
+    split_path: Path,
+    fpga: str,
+    transport_path: Path,
+    transport_ir_path: Path,
+    transport_ir: IndexedPhysicalIR,
+    output_path: Path,
+    report_path: Optional[Path] = None,
+    boundary_identity_path: Optional[Path] = None,
+) -> Dict[str, Any]:
     """Lower split SQLite directly into compact placement SQLite.
 
     The legacy adapter above remains for external JSON callers.  Production
@@ -422,55 +446,60 @@ def run_placement_ir_lowering_from_split(
     as nested Python objects between the two SQLite artifacts.
     """
 
-    transport = read_json(transport_path)
+    transport = read_transport(transport_path)
     if transport.get("schema") != TRANSPORT_ENDPOINTS_SCHEMA:
         raise ValidationError("invalid transport endpoint schema")
-    transport_ir = EmuIR.load(transport_ir_path)
     top_net_index: Dict[
-        Tuple[str, int, str], List[Dict[str, Any]]
+        Tuple[str, int, str], List[str]
     ] = {}
-    for net in transport_ir.value["nets"]:
-        for collection in ("drivers", "sinks"):
-            for endpoint in net[collection]:
-                if endpoint["instance"] is None:
-                    top_net_index.setdefault(
-                        (endpoint["port"], endpoint["bit"], collection), []
-                    ).append(net)
+    for row in transport_ir.connection.execute(
+        """SELECT pin.name,e.bit,e.role,n.id
+        FROM endpoint_records e
+        JOIN pin_names pin ON pin.seq=e.port_seq
+        JOIN net_records n ON n.seq=e.net_seq
+        WHERE e.instance_seq IS NULL
+        ORDER BY pin.name,e.bit,e.role,n.seq"""
+    ):
+        collection = ("drivers", "sinks")[int(row[2])]
+        top_net_index.setdefault(
+            (str(row[0]), int(row[1]), collection), []
+        ).append(str(row[3]))
+
+    def top_net(port: str, bit: int, collection: str) -> Dict[str, Any]:
+        matches = top_net_index.get((port, bit, collection), [])
+        if len(matches) != 1:
+            raise ValidationError(
+                f"transport EmuIR {port}[{bit}] expected one "
+                f"{collection[:-1]} net, found {len(matches)}"
+            )
+        return transport_ir.nets[matches[0]]
 
     namespace = "__emuflow_transport__/"
-    instance_map = {
-        instance["id"]: f"{namespace}{instance['id']}"
-        for instance in transport_ir.value["instances"]
-    }
 
     def remap_endpoint(endpoint: Mapping[str, Any]) -> Dict[str, Any]:
         value = dict(endpoint)
         if value["instance"] is not None:
-            value["instance"] = instance_map[value["instance"]]
+            value["instance"] = f"{namespace}{value['instance']}"
         return value
 
-    shadow_signal_to_logical_net = {
-        endpoint["signal"]: endpoint["net"]
-        for endpoint in transport["endpoints"]
-        if endpoint["kind"] == "rx"
-    }
-    rx_endpoint_ids_by_signal: Dict[str, List[str]] = {}
-    for endpoint in transport["endpoints"]:
-        if endpoint["kind"] == "rx":
-            rx_endpoint_ids_by_signal.setdefault(
-                endpoint["signal"], []
-            ).append(endpoint["id"])
-    shadow_index = {
-        item["signal"]: item["index"] for item in transport["shadow_signals"]
-    }
-    source_by_net = {
-        (
-            item["signal"][4:]
-            if item["signal"].startswith("net:")
-            else item["signal"]
-        ): item["index"]
-        for item in transport["source_signals"]
-    }
+    indexed_rx_signals = getattr(transport, "iter_rx_signal_records", None)
+    indexed_rx_bindings = getattr(
+        transport, "iter_expected_rx_bindings", None
+    )
+    legacy_rx_by_signal: Dict[str, Tuple[str, List[str]]] = {}
+    if indexed_rx_signals is None:
+        for endpoint in transport["endpoints"]:
+            if endpoint["kind"] != "rx":
+                continue
+            signal = endpoint["signal"]
+            logical_net, endpoint_ids = legacy_rx_by_signal.setdefault(
+                signal, (endpoint["net"], [])
+            )
+            if logical_net != endpoint["net"]:
+                raise ValidationError(
+                    "one transport shadow signal maps to multiple nets"
+                )
+            endpoint_ids.append(endpoint["id"])
     removed_ports = {"source_values", "shadow_values"}
 
     with SplitNetlistView(split_path, fpga) as split:
@@ -499,70 +528,92 @@ def run_placement_ir_lowering_from_split(
         preserved_shadow_nets = set()
         shadow_internal_sinks: Dict[str, List[Dict[str, Any]]] = {}
         rx_internal_drivers: Dict[str, List[Dict[str, Any]]] = {}
-        expected_rx_bindings = []
         local_net_ids = split.net_ids()
-        for signal, index in shadow_index.items():
-            top_net = _top_net(
-                top_net_index, "shadow_values", index, "sinks"
+        rx_signal_records = iter(
+            indexed_rx_signals()
+            if indexed_rx_signals is not None
+            else (
+                (signal, value[0])
+                for signal, value in sorted(legacy_rx_by_signal.items())
             )
+        )
+        for item in transport["shadow_signals"]:
+            signal = item["signal"]
+            index = item["index"]
+            try:
+                rx_signal, logical_net = next(rx_signal_records)
+            except StopIteration as error:
+                raise ValidationError(
+                    "transport shadow signal coverage is incomplete"
+                ) from error
+            if rx_signal != signal:
+                raise ValidationError(
+                    "transport shadow signal order disagrees with RX endpoints"
+                )
+            top_net_record = top_net("shadow_values", index, "sinks")
             internal = [
                 remap_endpoint(endpoint)
-                for endpoint in top_net["sinks"]
+                for endpoint in top_net_record["sinks"]
                 if endpoint["instance"] is not None
             ]
-            logical_net = shadow_signal_to_logical_net.get(signal)
             if logical_net is not None and logical_net in local_net_ids:
                 shadow_internal_sinks[logical_net] = internal
                 rx_internal_drivers[logical_net] = [
                     remap_endpoint(endpoint)
-                    for endpoint in top_net["drivers"]
+                    for endpoint in top_net_record["drivers"]
                     if endpoint["instance"] is not None
                 ]
-                expected_rx_bindings.extend(
-                    (logical_net, endpoint_id)
-                    for endpoint_id in rx_endpoint_ids_by_signal.get(
-                        signal, ()
-                    )
-                )
-                consumed_transport_nets.add(top_net["id"])
+                consumed_transport_nets.add(top_net_record["id"])
             else:
-                preserved_shadow_nets.add(top_net["id"])
+                preserved_shadow_nets.add(top_net_record["id"])
+        try:
+            next(rx_signal_records)
+        except StopIteration:
+            pass
+        else:
+            raise ValidationError(
+                "transport RX endpoints contain an unindexed shadow signal"
+            )
 
         source_internal_sinks: Dict[str, List[Dict[str, Any]]] = {}
-        for original_net, index in source_by_net.items():
+        for item in transport["source_signals"]:
+            signal = item["signal"]
+            original_net = signal[4:] if signal.startswith("net:") else signal
+            index = item["index"]
             if original_net not in local_net_ids:
                 raise ValidationError(
                     f"transport source net {original_net!r} is not local"
                 )
-            top_net = _top_net(
-                top_net_index, "source_values", index, "drivers"
-            )
-            consumed_transport_nets.add(top_net["id"])
+            top_net_record = top_net("source_values", index, "drivers")
+            consumed_transport_nets.add(top_net_record["id"])
             source_internal_sinks[original_net] = [
                 remap_endpoint(endpoint)
-                for endpoint in top_net["sinks"]
+                for endpoint in top_net_record["sinks"]
                 if endpoint["instance"] is not None
             ]
 
         shared_sinks: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
         for port_id, port in shared_input_ports.items():
             for bit in range(port["width"]):
-                top_net = _top_net(top_net_index, port_id, bit, "drivers")
-                consumed_transport_nets.add(top_net["id"])
+                top_net_record = top_net(port_id, bit, "drivers")
+                consumed_transport_nets.add(top_net_record["id"])
                 shared_sinks[(port_id, bit)] = [
                     remap_endpoint(endpoint)
-                    for endpoint in top_net["sinks"]
+                    for endpoint in top_net_record["sinks"]
                     if endpoint["instance"] is not None
                 ]
 
-        for net in transport_ir.value["nets"]:
-            if any(
-                endpoint["instance"] is None
-                and endpoint["port"] in removed_ports
-                for collection in ("drivers", "sinks")
-                for endpoint in net[collection]
-            ) and net["id"] not in preserved_shadow_nets:
-                consumed_transport_nets.add(net["id"])
+        for row in transport_ir.connection.execute(
+            """SELECT DISTINCT n.id FROM endpoint_records e
+            JOIN pin_names pin ON pin.seq=e.port_seq
+            JOIN net_records n ON n.seq=e.net_seq
+            WHERE e.instance_seq IS NULL
+              AND pin.name IN ('source_values','shadow_values')
+            ORDER BY n.seq"""
+        ):
+            net_id = str(row[0])
+            if net_id not in preserved_shadow_nets:
+                consumed_transport_nets.add(net_id)
 
         added_endpoints = []
         endpoint_orders: Dict[Tuple[str, int], int] = {}
@@ -592,36 +643,6 @@ def run_placement_ir_lowering_from_split(
                 port_added_endpoints.append(
                     (port_id, bit, order, endpoint)
                 )
-
-        transport_nets = []
-        for net in transport_ir.value["nets"]:
-            if net["id"] in consumed_transport_nets:
-                continue
-            value = deepcopy(net)
-            value["id"] = f"{namespace}{net['id']}"
-            value["name"] = f"{namespace}{net['name']}"
-            value["drivers"] = [
-                remap_endpoint(item) for item in net["drivers"]
-                if item["instance"] is not None or item["port"] not in removed_ports
-            ]
-            value["sinks"] = [
-                remap_endpoint(item) for item in net["sinks"]
-                if item["instance"] is not None or item["port"] not in removed_ports
-            ]
-            value["fanout"] = len(value["sinks"])
-            transport_nets.append(value)
-        transport_nets.sort(key=lambda item: item["id"])
-
-        transport_instances = [
-                {
-                    **deepcopy(instance),
-                    "id": instance_map[instance["id"]],
-                    "name": instance_map[instance["id"]],
-                }
-            for instance in sorted(
-                transport_ir.value["instances"], key=lambda item: item["id"]
-            )
-        ]
 
         ports = list(split.ports)
         ports_by_id = {port["id"]: port for port in ports}
@@ -653,13 +674,26 @@ def run_placement_ir_lowering_from_split(
             ports=ports,
             clocks=clocks,
             warnings=list(transport_ir.value.get("warnings", [])),
-            transport_instances=transport_instances,
-            transport_nets=transport_nets,
+            transport_ir_path=transport_ir_path,
+            consumed_transport_nets=consumed_transport_nets,
             added_endpoints=added_endpoints,
             port_added_endpoints=port_added_endpoints,
             recompute_fanout=shadow_internal_sinks,
             expected_source_nets=source_internal_sinks,
-            expected_rx_bindings=expected_rx_bindings,
+            expected_rx_bindings=(
+                (
+                    (net_id, endpoint_id)
+                    for net_id, endpoint_id in indexed_rx_bindings()
+                    if net_id in local_net_ids
+                )
+                if indexed_rx_bindings is not None
+                else (
+                    (net_id, endpoint_id)
+                    for net_id, endpoint_ids in legacy_rx_by_signal.values()
+                    if net_id in local_net_ids
+                    for endpoint_id in endpoint_ids
+                )
+            ),
         )
         original_instances = split.counts()["instances"]
 

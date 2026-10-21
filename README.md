@@ -23,6 +23,12 @@ mapping, clock, timing-path, and SQLite contracts, then uses the currently
 selected BoardDB for Phases 3–7. See the
 [user guide](docs/USER_GUIDE.md) for input requirements and failure behavior.
 
+Phases 3–7 exchange compact selector manifests and content-addressed SQLite
+sidecars for assignments, routes, schedules, transport, and physical handoffs.
+Production readers stream typed indexed relations; whole-graph materialization is
+an explicit compatibility operation. A continued run uses the current BoardDB
+and does not inherit an older interconnect configuration from the saved input.
+
 ## Flow
 
 | Phase | Responsibility | Algorithms and tools |

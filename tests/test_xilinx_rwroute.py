@@ -8,6 +8,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
+from emuflow.xilinx_netlist import (
+    emit_xilinx_mapped_index,
+    open_xilinx_mapped_index,
+)
+from emuflow.xilinx_physical_handoff import (
+    open_xilinx_physical_handoff,
+    write_xilinx_physical_handoff,
+)
 from emuflow.xilinx_rwroute import (
     _validate_rapidwright_device_data,
     export_rwroute_input,
@@ -18,12 +26,126 @@ from emuflow.xilinx_timing import (
     iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
 )
+from emuflow.yosys import import_yosys_json
 
 
 SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    def test_typed_handoff_streams_route_ordinals_without_safe_map(self):
+        mapped = {"modules": {"top": {
+            "attributes": {"top": "1"}, "ports": {},
+            "cells": {
+                "a_src": {
+                    "type": "LUT1", "parameters": {"INIT": "10"},
+                    "attributes": {}, "port_directions": {"O": "output"},
+                    "connections": {"O": [2]},
+                },
+                "z_sink": {
+                    "type": "FDRE", "parameters": {}, "attributes": {},
+                    "port_directions": {"D": "input"},
+                    "connections": {"D": [2]},
+                },
+            },
+            "netnames": {"signal": {"bits": [2]}},
+        }}}
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "status": "pass",
+            "mapping_profile": "test", "top": "top", "source": {},
+            "policy": {}, "cascade_chains": [], "unplaced_constants": [],
+            "clusters": [
+                {
+                    "id": "cluster0", "kind": "slice",
+                    "site_templates": ["SLICEL"], "control_set": None,
+                    "assignments": [{
+                        "instance": "a_src", "cell_type": "LUT1",
+                        "bel": "A6LUT",
+                    }],
+                },
+                {
+                    "id": "cluster1", "kind": "slice",
+                    "site_templates": ["SLICEL"], "control_set": None,
+                    "assignments": [{
+                        "instance": "z_sink", "cell_type": "FDRE",
+                        "bel": "AFF",
+                    }],
+                },
+            ],
+            "summary": {"clusters": 2},
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "status": "pass",
+            "part": "xcvu19p-test", "provider": "test", "policy": {},
+            "source": {}, "clusters": [
+                {
+                    "cluster": f"cluster{index}",
+                    "site": f"SLICE_X0Y{index}", "site_type": "SLICEL",
+                    "x": 0, "y": index, "fixed": False,
+                    "physical_region": None,
+                    "assignments": [{
+                        "instance": name, "cell_type": cell_type,
+                        "bel": bel, "placement_mode": "SLICEL",
+                        "site": f"SLICE_X0Y{index}",
+                    }],
+                }
+                for index, (name, cell_type, bel) in enumerate((
+                    ("a_src", "LUT1", "A6LUT"),
+                    ("z_sink", "FDRE", "AFF"),
+                ))
+            ],
+            "summary": {"clusters": 2},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "mapped.json"
+            ir_path = root / "mapped.emuir.sqlite"
+            mapped_index = root / "mapped.sqlite"
+            handoff = root / "physical-handoff.sqlite"
+            output = root / "route.tsv"
+            source.write_text(json.dumps(mapped), encoding="utf-8")
+            import_yosys_json(source).save(ir_path)
+            emit_xilinx_mapped_index(ir_path, mapped_index)
+            write_xilinx_physical_handoff(handoff, packed, placement)
+            packed_view, placement_view = open_xilinx_physical_handoff(handoff)
+            with (
+                open_xilinx_mapped_index(mapped_index) as indexed,
+                mock.patch.object(
+                    indexed,
+                    "iter_physical_cells",
+                    wraps=indexed.iter_physical_cells,
+                ) as physical_cells,
+                mock.patch(
+                    "emuflow.xilinx_rwroute.heapq.merge",
+                    side_effect=AssertionError("safe-name map was built"),
+                ),
+                mock.patch.object(
+                    type(indexed.cells), "items",
+                    side_effect=AssertionError("all mapped cells were scanned"),
+                ),
+            ):
+                report = export_rwroute_input(
+                    mapped_index, handoff, handoff, output,
+                    mapped_value=indexed, packed_value=packed_view,
+                    placement_value=placement_view,
+                    source_sha256={
+                        "mapped_sha256": "1" * 64,
+                        "packed_sha256": "2" * 64,
+                        "placement_sha256": "2" * 64,
+                    },
+                )
+                self.assertEqual(physical_cells.call_count, 1)
+            rows = output.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(
+            report["runtime_breakdown"]["dataflow"]["safe_names"],
+            "typed-ordinal-cursor",
+        )
+        self.assertIn("CELL\tc0\ta_src\tLUT1\tSLICE_X0Y0\tA6LUT", rows)
+        self.assertIn("CELL\tc1\tz_sink\tFDRE\tSLICE_X0Y1\tAFF", rows)
+        self.assertIn("PIN\tn2\tc0\tO\tdriver", rows)
+        self.assertIn("PIN\tn2\tc1\tD\tsink", rows)
+
     def test_exporter_routes_fixed_virtual_io_instead_of_excluding_top_ports(self):
         mapped = {"modules": {"top": {
             "ports": {
@@ -80,15 +202,67 @@ class XilinxRWRouteTest(unittest.TestCase):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
             report = export_rwroute_input(
-                *paths, output, virtual_io_contract=contract
+                *paths, output, virtual_io_contract=contract,
+                source_sha256={
+                    "mapped_sha256": SHA,
+                    "packed_sha256": SHA,
+                    "placement_sha256": SHA,
+                },
             )
             text = output.read_text(encoding="utf-8")
+            ir_path = root / "mapped.emuir.sqlite"
+            mapped_index = root / "mapped.sqlite"
+            import_yosys_json(paths[0]).save(ir_path)
+            emit_xilinx_mapped_index(ir_path, mapped_index)
+            indexed_output = root / "route-indexed.tsv"
+            with open_xilinx_mapped_index(mapped_index) as indexed:
+                indexed_report = export_rwroute_input(
+                    mapped_index, paths[1], paths[2], indexed_output,
+                    mapped_value=indexed,
+                    virtual_io_contract=contract,
+                    source_sha256={
+                        "mapped_sha256": SHA,
+                        "packed_sha256": SHA,
+                        "placement_sha256": SHA,
+                    },
+                )
+            indexed_text = indexed_output.read_text(encoding="utf-8")
         self.assertEqual(report["virtual_io_cells"], 2)
         self.assertEqual(report["routable_nets"], 2)
+        self.assertEqual(
+            report["runtime_breakdown"]["dataflow"],
+            {
+                "route_cells": "generated-from-physical-binding",
+                "physical_bindings": "compatibility-python-map",
+                "safe_names": "ordered-merge-integer-index",
+                "endpoints": "compatibility-python-index",
+                "tsv": "streamed-atomic-spool",
+            },
+        )
+        self.assertTrue(all(
+            report["runtime_breakdown"][name] >= 0.0
+            for name in (
+                "binding_seconds", "cell_and_io_rows_seconds",
+                "endpoint_index_seconds", "clock_validation_seconds",
+                "net_rows_seconds", "atomic_commit_seconds",
+                "total_seconds",
+            )
+        ))
         self.assertEqual(text.count("\nIOB\t"), 2)
         self.assertIn("\nNET\tn1\tsignal\n", text)
         self.assertIn("\nNET\tn2\tsignal\n", text)
         self.assertNotIn("boundary_or_driverless", text)
+        self.assertEqual(
+            indexed_report["routable_nets"], report["routable_nets"]
+        )
+        self.assertEqual(
+            indexed_report["virtual_io_cells"], report["virtual_io_cells"]
+        )
+        self.assertNotIn("boundary_or_driverless", indexed_text)
+        self.assertEqual(
+            indexed_report["runtime_breakdown"]["dataflow"]["endpoints"],
+            "typed-mapped-pin-stream",
+        )
 
     def test_recovery_tree_drops_stable_connections_between_iterations(self):
         source = (

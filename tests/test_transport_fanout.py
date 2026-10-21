@@ -4,7 +4,10 @@ from pathlib import Path
 
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
-from emuflow.transport_fanout import buffer_transport_high_fanout_nets
+from emuflow.transport_fanout import (
+    buffer_transport_high_fanout_nets,
+    buffer_transport_high_fanout_store,
+)
 from emuflow.xilinx_netlist import (
     emit_xilinx_mapped_index,
     open_xilinx_mapped_index,
@@ -122,6 +125,28 @@ class TransportFanoutTest(unittest.TestCase):
                     cell = module["cells"][name]
                     self.assertEqual(cell["type"], "LUT1")
                     self.assertEqual(cell["parameters"], {"INIT": "10"})
+
+    def test_compact_store_transform_matches_in_memory_topology(self) -> None:
+        expected = _transport_ir(17)
+        # Compact EmuIR readers make an absent alias list explicit.
+        expected.value["nets"][0]["aliases"] = []
+        expected_report = buffer_transport_high_fanout_nets(
+            expected, max_fanout=4
+        )
+        for net in expected.value["nets"]:
+            if net.get("yosys_bit", object()) is None:
+                net.pop("yosys_bit")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "transport.emuir.sqlite"
+            actual = _transport_ir(17)
+            actual.save(path)
+
+            report = buffer_transport_high_fanout_store(path, max_fanout=4)
+
+            self.assertEqual(report["summary"], expected_report["summary"])
+            self.assertEqual(report["nets"], expected_report["nets"])
+            self.assertEqual(report["policy"]["storage"], "compact-emuir-streaming")
+            self.assertEqual(EmuIR.load(path).value, expected.value)
 
     def test_rejects_invalid_limit(self) -> None:
         with self.assertRaisesRegex(ValidationError, ">= 2"):

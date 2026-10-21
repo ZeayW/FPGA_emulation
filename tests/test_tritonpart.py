@@ -709,13 +709,17 @@ class TritonPartTest(unittest.TestCase):
     def test_default_min_used_repair_checks_post_capacity_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            capacity_constraints = {
+                **self.constraints,
+                "balance_dimensions": [],
+            }
             solution = root / "input.part.2"
             solution.write_text("\n".join(str(i % 2) for i in range(len(self.clusters["clusters"]))) + "\n")
             collapsed = {cluster["id"]: "fpga0" for cluster in self.clusters["clusters"]}
             with mock.patch("emuflow.tritonpart._run_native_balance_legalizer",
                             return_value=(collapsed, {"moves": 1})) as native:
                 assignment = run_tritonpart(
-                    self.ir, self.platform, self.clusters, self.constraints,
+                    self.ir, self.platform, self.clusters, capacity_constraints,
                     root / "out", seed=1, solution_input=solution,
                 )
             native.assert_called_once()
@@ -723,7 +727,7 @@ class TritonPartTest(unittest.TestCase):
                             side_effect=ValidationError("no feasible capacity repair")):
                 with self.assertRaisesRegex(ValidationError, "no independently acceptable assignment"):
                     run_tritonpart(
-                        self.ir, self.platform, self.clusters, self.constraints,
+                        self.ir, self.platform, self.clusters, capacity_constraints,
                         root / "infeasible", seed=1, solution_input=solution,
                     )
             self.assertEqual(len(set(assignment["cluster_assignment"].values())), 2)
@@ -736,7 +740,7 @@ class TritonPartTest(unittest.TestCase):
                             return_value=(collapsed, {"moves": 1})):
                 with self.assertRaisesRegex(ValidationError, "no independently acceptable assignment"):
                     run_tritonpart(
-                        self.ir, self.platform, self.clusters, self.constraints,
+                        self.ir, self.platform, self.clusters, capacity_constraints,
                         root / "disabled", seed=1, solution_input=solution,
                         repair_min_used_fpgas=False,
                     )
@@ -999,7 +1003,7 @@ class TritonPartTest(unittest.TestCase):
                 self.ir,
                 self.platform,
                 self.clusters,
-                self.constraints,
+                {**self.constraints, "balance_dimensions": []},
                 output,
             )
             expected = 100.0 * (1.0 - min(artifact["base_balance"]))

@@ -1,10 +1,12 @@
 import copy
 import hashlib
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
@@ -12,13 +14,23 @@ from emuflow.chimew_bank_channel import (
     evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
+from emuflow.chimew_binding_storage import (
+    CHIMEW_BINDING_STORAGE_SCHEMA,
+    ChimewBindingEntrySequence,
+    ChimewBindingView,
+    open_chimew_binding_schedule_entry_lookup,
+    read_chimew_binding,
+    write_chimew_binding_storage,
+)
 from emuflow.chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_PROVIDER,
     CHIMEW_ELECTRICAL_MAP_SCHEMA,
     CHIMEW_ELECTRICAL_MAP_SCHEMA_V1,
     CHIMEW_PHASE6_BINDING_PROVIDER,
     build_chimew_phase6_pin_plan,
+    chimew_adapter_report_generation_path,
     run_chimew_phase6_adapter,
+    validate_chimew_adapter_generation,
     validate_chimew_electrical_map,
     validate_chimew_phase6_binding,
 )
@@ -31,7 +43,19 @@ from emuflow.cli import main
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
+from emuflow.pin_plan_storage import (
+    PinPlanEntrySequence,
+    write_pin_plan_storage,
+)
 from emuflow.platform import Platform
+from emuflow.tdm_schedule_storage import (
+    ScheduleRecordSequence,
+    TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    TypedScheduleEntrySequence,
+    canonical_tdm_schedule_sha256,
+    read_tdm_schedule,
+    write_tdm_schedule_storage,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -368,6 +392,370 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 schedule_entry["lane"],
             )
 
+    def test_indexed_binding_validation_uses_relational_join(self) -> None:
+        result = build_chimew_phase6_pin_plan(
+            self.schedule,
+            self.platform,
+            self.assignment_input,
+            self.electrical_map,
+            executable=str(self.executable),
+            region_count=4,
+        )
+        schedule_document = {
+            **self.schedule,
+            "routes": [],
+            "demand_completions": [],
+            "domain_schedules": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            schedule_path = root / "schedule.json"
+            write_tdm_schedule_storage(schedule_path, schedule_document)
+            indexed_schedule = read_tdm_schedule(schedule_path)
+            schedule_sha256 = canonical_tdm_schedule_sha256(indexed_schedule)
+            plan_document = copy.deepcopy(result["pin_plan"])
+            plan_document["configuration"]["schedule_sha256"] = (
+                schedule_sha256
+            )
+            binding = copy.deepcopy(result["electrical_binding"])
+            binding["provenance"]["schedule_sha256"] = schedule_sha256
+            indexed_plan = write_pin_plan_storage(
+                root / "pin_plan.json", plan_document
+            )
+            legacy_validation = validate_chimew_phase6_binding(
+                schedule_document,
+                self.platform,
+                plan_document,
+                binding,
+            )
+            with mock.patch.object(
+                ScheduleRecordSequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "Chimew indexed validation scanned schedule objects"
+                ),
+            ), mock.patch.object(
+                PinPlanEntrySequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "Chimew indexed validation scanned pin-plan objects"
+                ),
+            ):
+                indexed_validation = validate_chimew_phase6_binding(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_plan,
+                    binding,
+                )
+            self.assertEqual(indexed_validation, legacy_validation)
+
+            incomplete = copy.deepcopy(binding)
+            incomplete["entries"].pop()
+            with self.assertRaisesRegex(
+                ValidationError, "coverage is incomplete"
+            ):
+                validate_chimew_phase6_binding(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_plan,
+                    incomplete,
+                )
+
+            conflicting = copy.deepcopy(binding)
+            conflicting["entries"][0]["physical_lane"] = 1
+            with self.assertRaisesRegex(
+                ValidationError, "conflicts with pin plan"
+            ):
+                validate_chimew_phase6_binding(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_plan,
+                    conflicting,
+                )
+
+            duplicate = copy.deepcopy(binding)
+            duplicate["entries"][1]["schedule_entries"] = list(
+                duplicate["entries"][0]["schedule_entries"]
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "duplicates schedule entries"
+            ):
+                validate_chimew_phase6_binding(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_plan,
+                    duplicate,
+                )
+
+            wrong_direction = copy.deepcopy(binding)
+            wrong_direction["entries"][0]["direction"] = "b_to_a"
+            with self.assertRaisesRegex(
+                ValidationError, "TDM bundle is invalid"
+            ):
+                validate_chimew_phase6_binding(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_plan,
+                    wrong_direction,
+                )
+
+            original_connect = sqlite3.connect
+            observed_connections = []
+
+            class ObservedConnection(sqlite3.Connection):
+                close_calls = 0
+
+                def close(self):
+                    self.close_calls += 1
+                    return super().close()
+
+            def observed_connect(*args, **kwargs):
+                kwargs["factory"] = ObservedConnection
+                connection = original_connect(*args, **kwargs)
+                observed_connections.append(connection)
+                return connection
+
+            malformed_group = copy.deepcopy(binding)
+            malformed_group["entries"][0]["group"] = None
+            with mock.patch(
+                "emuflow.chimew_phase6.sqlite3.connect",
+                side_effect=observed_connect,
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, r"electrical_binding\[0\].group"
+                ):
+                    validate_chimew_phase6_binding(
+                        indexed_schedule,
+                        self.platform,
+                        indexed_plan,
+                        malformed_group,
+                    )
+            self.assertEqual(len(observed_connections), 1)
+            self.assertEqual(observed_connections[0].close_calls, 1)
+
+    def test_static_exact_v3_binding_validation_uses_typed_relation(self) -> None:
+        result = build_chimew_phase6_pin_plan(
+            self.schedule,
+            self.platform,
+            self.assignment_input,
+            self.electrical_map,
+            executable=str(self.executable),
+            region_count=4,
+        )
+        entries = [
+            {
+                **entry,
+                "demand": f"demand{index}",
+                "net": f"net{index}",
+                "hop": 0,
+                "capacity_key": f"AB_link:{entry['from']}:{entry['to']}",
+                "ready_slot": entry["slot"],
+                "arrival_slot": entry["slot"] + 1,
+            }
+            for index, entry in enumerate(self.schedule["entries"])
+        ]
+        schedule_document = {
+            **self.schedule,
+            "provider": "deterministic-dependency-earliest-slot-v1",
+            "routes": [{"id": entry["demand"]} for entry in entries],
+            "entries": entries,
+            "demand_completions": [],
+            "domain_schedules": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            schedule_path = root / "schedule.json"
+            manifest = write_tdm_schedule_storage(
+                schedule_path, schedule_document
+            )
+            self.assertEqual(
+                manifest["schema"], TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+            )
+            indexed_schedule = read_tdm_schedule(schedule_path)
+            schedule_sha256 = canonical_tdm_schedule_sha256(indexed_schedule)
+            plan_document = copy.deepcopy(result["pin_plan"])
+            plan_document["configuration"]["schedule_sha256"] = (
+                schedule_sha256
+            )
+            indexed_plan = write_pin_plan_storage(
+                root / "pin_plan.json", plan_document
+            )
+            binding = copy.deepcopy(result["electrical_binding"])
+            binding["provenance"]["schedule_sha256"] = schedule_sha256
+            indexed_binding = write_chimew_binding_storage(
+                root / "electrical_binding.json", binding
+            )
+            with mock.patch.object(
+                TypedScheduleEntrySequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "Chimew v3 validation expanded typed schedule entries"
+                ),
+            ):
+                with mock.patch.object(
+                    ChimewBindingEntrySequence,
+                    "__iter__",
+                    side_effect=AssertionError(
+                        "Chimew validation expanded typed binding members"
+                    ),
+                ):
+                    validation = validate_chimew_phase6_binding(
+                        indexed_schedule,
+                        self.platform,
+                        indexed_plan,
+                        indexed_binding,
+                    )
+            self.assertEqual(validation["status"], "pass")
+            self.assertEqual(validation["signals"], len(entries))
+
+    def test_indexed_producer_never_materializes_typed_schedule_hops(self) -> None:
+        entries = [
+            {
+                **entry,
+                "demand": f"demand{index}",
+                "net": f"net{index}",
+                "hop": 0,
+                "capacity_key": f"AB_link:{entry['from']}:{entry['to']}",
+                "ready_slot": entry["slot"],
+                "arrival_slot": entry["slot"] + 1,
+            }
+            for index, entry in enumerate(self.schedule["entries"])
+        ]
+        schedule_document = {
+            **self.schedule,
+            "provider": "deterministic-dependency-earliest-slot-v1",
+            "routes": [{"id": entry["demand"]} for entry in entries],
+            "entries": entries,
+            "demand_completions": [],
+            "domain_schedules": [],
+        }
+        legacy = build_chimew_phase6_pin_plan(
+            schedule_document,
+            self.platform,
+            self.assignment_input,
+            self.electrical_map,
+            executable=str(self.executable),
+            region_count=4,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            schedule_path = root / "schedule.json"
+            write_tdm_schedule_storage(schedule_path, schedule_document)
+            indexed_schedule = read_tdm_schedule(schedule_path)
+            with mock.patch.object(
+                TypedScheduleEntrySequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "Chimew producer expanded typed schedule entries"
+                ),
+            ):
+                indexed = build_chimew_phase6_pin_plan(
+                    indexed_schedule,
+                    self.platform,
+                    self.assignment_input,
+                    self.electrical_map,
+                    executable=str(self.executable),
+                    region_count=4,
+                    position_hints_output_path=root / "position_hints.json",
+                    pin_plan_output_path=root / "pin_plan.json",
+                    electrical_binding_output_path=root / "electrical_binding.json",
+                )
+            self.assertEqual(
+                indexed["position_hints"].materialize(),
+                legacy["position_hints"],
+            )
+            self.assertEqual(indexed["pin_plan"].materialize(), legacy["pin_plan"])
+            self.assertEqual(
+                indexed["electrical_binding"].materialize(),
+                legacy["electrical_binding"],
+            )
+
+    def test_indexed_binding_round_trip_and_tamper_rejection(self) -> None:
+        result = build_chimew_phase6_pin_plan(
+            self.schedule,
+            self.platform,
+            self.assignment_input,
+            self.electrical_map,
+            executable=str(self.executable),
+            region_count=4,
+        )
+        legacy_validation = validate_chimew_phase6_binding(
+            self.schedule,
+            self.platform,
+            result["pin_plan"],
+            result["electrical_binding"],
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector = root / "electrical_binding.json"
+            indexed = write_chimew_binding_storage(
+                selector, result["electrical_binding"]
+            )
+            self.assertEqual(
+                read_json(selector)["schema"], CHIMEW_BINDING_STORAGE_SCHEMA
+            )
+            self.assertEqual(
+                indexed.materialize(), result["electrical_binding"]
+            )
+            repeated = write_chimew_binding_storage(
+                root / "repeated" / "electrical_binding.json",
+                result["electrical_binding"],
+            )
+            self.assertEqual(
+                repeated.manifest["store_sha256"],
+                indexed.manifest["store_sha256"],
+            )
+            self.assertEqual(
+                repeated.store_path.read_bytes(), indexed.store_path.read_bytes()
+            )
+            indexed_validation = validate_chimew_phase6_binding(
+                self.schedule,
+                self.platform,
+                result["pin_plan"],
+                read_chimew_binding(selector),
+            )
+            self.assertEqual(indexed_validation, legacy_validation)
+
+            class EntriesMustStayLazy:
+                def __iter__(self):
+                    raise AssertionError("typed Chimew members were expanded")
+
+            indexed._entries = EntriesMustStayLazy()
+            with open_chimew_binding_schedule_entry_lookup(
+                indexed
+            ) as lookup_binding:
+                first = lookup_binding("s0")
+                self.assertIsNotNone(first)
+                self.assertEqual(first["group"], "group_ab")
+                self.assertNotIn("schedule_entries", first)
+                self.assertIsNone(lookup_binding("missing-entry"))
+
+            manifest = read_json(selector)
+            malformed = copy.deepcopy(manifest)
+            malformed["members"]["records"] += 1
+            write_json(selector, malformed, compact=True)
+            with self.assertRaisesRegex(ValidationError, "logical seal"):
+                ChimewBindingView(selector)
+
+            write_json(selector, manifest, compact=True)
+            with sqlite3.connect(indexed.store_path) as connection:
+                connection.execute(
+                    "UPDATE members SET member='tampered' WHERE member='s0'"
+                )
+            with self.assertRaisesRegex(ValidationError, "store seal"):
+                ChimewBindingView(selector)
+
+        duplicate = copy.deepcopy(result["electrical_binding"])
+        duplicate["entries"][1]["schedule_entries"] = ["s0"]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(
+                ValidationError, "repeats a group or schedule entry"
+            ):
+                write_chimew_binding_storage(
+                    Path(temporary_directory) / "electrical_binding.json",
+                    duplicate,
+                )
+
     def test_duplicate_concrete_lane_is_rejected(self) -> None:
         electrical_map = copy.deepcopy(self.electrical_map)
         electrical_map["channels"][0]["direction"] = "a_to_b"
@@ -588,11 +976,23 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 executable=str(self.executable),
             )
             self.assertEqual(report["status"], "pass")
+            selector = read_json(
+                root / "out" / report["artifacts"]["electrical_binding"]
+            )
+            self.assertEqual(selector["schema"], CHIMEW_BINDING_STORAGE_SCHEMA)
+            self.assertEqual(
+                report["artifacts"]["electrical_binding_store"],
+                selector["artifact"],
+            )
             self.assertEqual(
                 read_json(root / "out" / "adapter_report.json"), report
             )
             for name in report["artifacts"].values():
                 self.assertTrue((root / "out" / name).is_file())
+                self.assertIn(
+                    hashlib.sha256((root / "out" / name).read_bytes()).hexdigest(),
+                    name,
+                )
             self.assertEqual(
                 main(
                     [
@@ -615,6 +1015,312 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 0,
             )
             self.assertTrue((root / "cli-out" / "adapter_report.json").is_file())
+
+    def test_adapter_bundle_commit_preserves_previous_generation_on_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = {
+                "schedule": root / "schedule.json",
+                "platform": root / "platform.json",
+                "assignment": root / "assignment.json",
+                "electrical": root / "electrical.json",
+            }
+            for key, document in (
+                ("schedule", self.schedule),
+                ("platform", self.platform_document),
+                ("assignment", self.assignment_input),
+            ):
+                write_json(paths[key], document)
+            electrical_map = copy.deepcopy(self.electrical_map)
+            electrical_map["provenance"]["boarddb_sha256"] = hashlib.sha256(
+                paths["platform"].read_bytes()
+            ).hexdigest()
+            write_json(paths["electrical"], electrical_map)
+            output = root / "out"
+            original_report = run_chimew_phase6_adapter(
+                paths["schedule"],
+                paths["platform"],
+                paths["assignment"],
+                paths["electrical"],
+                output,
+                executable=str(self.executable),
+            )
+            self.assertFalse((output / "pin_plan.json").exists())
+            original_files = {
+                path.name: path.read_bytes()
+                for path in output.iterdir()
+                if path.is_file()
+            }
+
+            # Model a SIGKILL after a complete immutable adapter report was
+            # installed but before the fixed report commit.  The preceding
+            # fixed report remains authoritative, validates unchanged, and a
+            # later standalone run may collect only this complete orphan group.
+            orphan_inputs = root / "orphan-electrical.json"
+            orphan_electrical = copy.deepcopy(electrical_map)
+            orphan_electrical["provenance"]["producer_version"] = "orphan"
+            write_json(orphan_inputs, orphan_electrical)
+            orphan_source = root / "orphan-source"
+            orphan_report = run_chimew_phase6_adapter(
+                paths["schedule"],
+                paths["platform"],
+                paths["assignment"],
+                orphan_inputs,
+                orphan_source,
+                executable=str(self.executable),
+            )
+            orphan_report_generation = chimew_adapter_report_generation_path(
+                orphan_source, orphan_report
+            )
+            for source in (
+                *(orphan_source / name for name in orphan_report["artifacts"].values()),
+                orphan_report_generation,
+            ):
+                destination = output / source.name
+                if not destination.exists():
+                    shutil.copy2(source, destination)
+            installed_orphan_report = output / orphan_report_generation.name
+            self.assertEqual(
+                read_json(output / "adapter_report.json"), original_report
+            )
+            validate_chimew_adapter_generation(installed_orphan_report)
+            self.assertEqual(
+                run_chimew_phase6_adapter(
+                    paths["schedule"],
+                    paths["platform"],
+                    paths["assignment"],
+                    paths["electrical"],
+                    output,
+                    executable=str(self.executable),
+                ),
+                original_report,
+            )
+            self.assertFalse(installed_orphan_report.exists())
+            self.assertEqual(
+                {
+                    path.name: path.read_bytes()
+                    for path in output.iterdir()
+                    if path.is_file()
+                },
+                original_files,
+            )
+
+            orphan_document = read_json(
+                output / original_report["artifacts"]["bank_channel_report"]
+            )
+            orphan_document["orphan_generation_marker"] = True
+            orphan_temporary = output / "orphan-candidate.json"
+            write_json(orphan_temporary, orphan_document)
+            orphan_digest = hashlib.sha256(
+                orphan_temporary.read_bytes()
+            ).hexdigest()
+            orphan_path = (
+                output / f"bank_channel_report.{orphan_digest}.json"
+            )
+            orphan_temporary.replace(orphan_path)
+            self.assertTrue(orphan_path.is_file())
+            self.assertEqual(
+                run_chimew_phase6_adapter(
+                    paths["schedule"],
+                    paths["platform"],
+                    paths["assignment"],
+                    paths["electrical"],
+                    output,
+                    executable=str(self.executable),
+                ),
+                original_report,
+            )
+            # Bare artifacts have no immutable report root and must never be
+            # treated as a collectible generation.
+            self.assertTrue(orphan_path.exists())
+            orphan_path.unlink()
+            self.assertEqual(
+                {
+                    path.name: path.read_bytes()
+                    for path in output.iterdir()
+                    if path.is_file()
+                },
+                original_files,
+            )
+            electrical_map["provenance"]["producer_version"] = "2"
+            write_json(paths["electrical"], electrical_map)
+            real_publish = __import__(
+                "emuflow.chimew_phase6", fromlist=["_publish_chimew_adapter_file"]
+            )._publish_chimew_adapter_file
+
+            predicates = {
+                "sidecar": lambda path: path.suffix == ".sqlite"
+                and path.name.startswith("pin_plan."),
+                "selector": lambda path: path.suffix == ".json"
+                and path.name.startswith("pin_plan."),
+                "report": lambda path: path.name == "adapter_report.json",
+            }
+            for label, predicate in predicates.items():
+                def fail_selected(source, destination, *, predicate=predicate):
+                    if predicate(destination):
+                        raise OSError(f"injected {label} publication failure")
+                    return real_publish(source, destination)
+
+                with self.subTest(label=label), mock.patch(
+                    "emuflow.chimew_phase6._publish_chimew_adapter_file",
+                    side_effect=fail_selected,
+                ):
+                    with self.assertRaisesRegex(OSError, "injected"):
+                        run_chimew_phase6_adapter(
+                            paths["schedule"],
+                            paths["platform"],
+                            paths["assignment"],
+                            paths["electrical"],
+                            output,
+                            executable=str(self.executable),
+                        )
+                self.assertEqual(
+                    read_json(output / "adapter_report.json"), original_report
+                )
+                self.assertEqual(
+                    {
+                        path.name: path.read_bytes()
+                        for path in output.iterdir()
+                        if path.is_file()
+                    },
+                    original_files,
+                )
+                self.assertEqual(list(root.glob(".out.adapter-*.tmp")), [])
+
+            replacement_report = run_chimew_phase6_adapter(
+                paths["schedule"],
+                paths["platform"],
+                paths["assignment"],
+                paths["electrical"],
+                output,
+                executable=str(self.executable),
+            )
+            self.assertNotEqual(replacement_report, original_report)
+            replacement_names = set(replacement_report["artifacts"].values())
+            for name in replacement_names:
+                self.assertTrue((output / name).is_file())
+            for name in set(original_report["artifacts"].values()) - replacement_names:
+                self.assertFalse((output / name).exists())
+
+    def test_adapter_generation_requires_complete_sealed_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = {
+                "schedule": root / "schedule.json",
+                "platform": root / "platform.json",
+                "assignment": root / "assignment.json",
+                "electrical": root / "electrical.json",
+            }
+            for key, document in (
+                ("schedule", self.schedule),
+                ("platform", self.platform_document),
+                ("assignment", self.assignment_input),
+            ):
+                write_json(paths[key], document)
+            electrical_map = copy.deepcopy(self.electrical_map)
+            electrical_map["provenance"]["boarddb_sha256"] = hashlib.sha256(
+                paths["platform"].read_bytes()
+            ).hexdigest()
+            write_json(paths["electrical"], electrical_map)
+            output = root / "valid"
+            report = run_chimew_phase6_adapter(
+                paths["schedule"],
+                paths["platform"],
+                paths["assignment"],
+                paths["electrical"],
+                output,
+                executable=str(self.executable),
+            )
+            immutable_report = chimew_adapter_report_generation_path(
+                output, report
+            )
+            self.assertEqual(
+                validate_chimew_adapter_generation(immutable_report),
+                {
+                    immutable_report.resolve(),
+                    *{
+                        (output / name).resolve()
+                        for name in report["artifacts"].values()
+                    },
+                },
+            )
+
+            pragma_only = root / "pragma-only"
+            shutil.copytree(output, pragma_only)
+            original_store = pragma_only / report["artifacts"]["pin_plan_store"]
+            with sqlite3.connect(original_store) as connection:
+                application_id = connection.execute(
+                    "PRAGMA application_id"
+                ).fetchone()[0]
+                user_version = connection.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0]
+            fake_store = pragma_only / "pin_plan.incomplete.sqlite"
+            with sqlite3.connect(fake_store) as connection:
+                connection.execute(f"PRAGMA application_id={application_id}")
+                connection.execute(f"PRAGMA user_version={user_version}")
+            fake_store_digest = hashlib.sha256(fake_store.read_bytes()).hexdigest()
+            sealed_fake_store = pragma_only / f"pin_plan.{fake_store_digest}.sqlite"
+            fake_store.replace(sealed_fake_store)
+            pin_selector = read_json(
+                pragma_only / report["artifacts"]["pin_plan"]
+            )
+            pin_selector["artifact"] = sealed_fake_store.name
+            pin_selector["store_bytes"] = sealed_fake_store.stat().st_size
+            pin_selector["store_sha256"] = fake_store_digest
+            rewritten_pin = pragma_only / "pin_plan.rewritten.json"
+            write_json(rewritten_pin, pin_selector)
+            rewritten_pin_digest = hashlib.sha256(
+                rewritten_pin.read_bytes()
+            ).hexdigest()
+            sealed_rewritten_pin = (
+                pragma_only / f"pin_plan.{rewritten_pin_digest}.json"
+            )
+            rewritten_pin.replace(sealed_rewritten_pin)
+            pragma_report = copy.deepcopy(report)
+            pragma_report["artifacts"]["pin_plan_store"] = sealed_fake_store.name
+            pragma_report["artifacts"]["pin_plan"] = sealed_rewritten_pin.name
+            pragma_report_path = chimew_adapter_report_generation_path(
+                pragma_only, pragma_report
+            )
+            write_json(pragma_report_path, pragma_report)
+            with self.assertRaisesRegex(
+                ValidationError, "indexed generation is malformed"
+            ):
+                validate_chimew_adapter_generation(pragma_report_path)
+
+            two_field = root / "two-field-json"
+            shutil.copytree(output, two_field)
+            original_bank = read_json(
+                two_field / report["artifacts"]["bank_channel_report"]
+            )
+            fake_bank = two_field / "bank_channel_report.incomplete.json"
+            write_json(
+                fake_bank,
+                {
+                    "schema": original_bank["schema"],
+                    "provider": original_bank["provider"],
+                },
+            )
+            fake_bank_digest = hashlib.sha256(fake_bank.read_bytes()).hexdigest()
+            sealed_fake_bank = (
+                two_field / f"bank_channel_report.{fake_bank_digest}.json"
+            )
+            fake_bank.replace(sealed_fake_bank)
+            two_field_report = copy.deepcopy(report)
+            two_field_report["artifacts"][
+                "bank_channel_report"
+            ] = sealed_fake_bank.name
+            two_field_report_path = chimew_adapter_report_generation_path(
+                two_field, two_field_report
+            )
+            write_json(two_field_report_path, two_field_report)
+            with self.assertRaisesRegex(
+                ValidationError, "bank/channel report generation is malformed"
+            ):
+                validate_chimew_adapter_generation(two_field_report_path)
 
     def test_out_of_bounds_physical_placement_is_rejected(self) -> None:
         assignment = copy.deepcopy(self.assignment_input)

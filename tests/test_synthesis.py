@@ -15,6 +15,7 @@ from emuflow.synthesis import (
     build_generic_yosys_script,
     build_yosys_script,
     run_generic_yosys,
+    run_generic_yosys_stream,
     run_yosys,
     run_xilinx_ultrascaleplus_yosys_stream,
     run_xilinx_mapping_statistics,
@@ -23,6 +24,47 @@ from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 class SynthesisTest(unittest.TestCase):
+    def test_generic_json_can_pipe_directly_to_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "design.v"
+            source.write_text("module design; endmodule\n", encoding="utf-8")
+            executable = root / "fake-yosys"
+            executable.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env python3
+                    import json
+                    import sys
+                    sys.stderr.write("generic diagnostic tail\\n")
+                    json.dump({"modules": {"design": {"cells": {}}}}, sys.stdout)
+                    """
+                ),
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            log = root / "yosys.log"
+
+            consumed = run_generic_yosys_stream(
+                [source],
+                "design",
+                json.load,
+                executable=str(executable),
+                log_path=log,
+            )
+
+            self.assertEqual(
+                consumed,
+                {"modules": {"design": {"cells": {}}}},
+            )
+            self.assertEqual(
+                log.read_text(encoding="utf-8"),
+                "generic diagnostic tail\n",
+            )
+            self.assertEqual(
+                [path for path in root.iterdir() if "stdout" in path.name], []
+            )
+
     def test_mapping_profile_requires_native_pass_measurements(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

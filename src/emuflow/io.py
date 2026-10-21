@@ -47,15 +47,39 @@ def read_json(path: Path) -> Dict[str, Any]:
 
         return expand_managed_json(value, path)
     if schema in {
+        "emuflow.tdm-schedule-storage/v1",
+        "emuflow.tdm-schedule-storage/v2",
+        "emuflow.tdm-schedule-storage/v3",
+        "emuflow.tdm-schedule-storage/v4",
+    }:
+        from .tdm_schedule_storage import expand_tdm_schedule_storage
+
+        return expand_tdm_schedule_storage(value, path)
+    if schema == "emuflow.system-route-storage/v1":
+        from .system_route_storage import expand_system_route_storage
+
+        return expand_system_route_storage(value, path)
+    if schema in {
+        "emuflow.transport-storage/v1",
+        "emuflow.logical-lane-map-storage/v1",
+        "emuflow.virtual-io-anchors-storage/v1",
+        "emuflow.virtual-board-binding-storage/v1",
+    }:
+        from .transport_storage import expand_transport_storage
+
+        return expand_transport_storage(value, path)
+    if schema in {
         "emuflow.phase3-clusters-storage/v1",
         "emuflow.phase3-clusters-storage/v2",
         "emuflow.phase3-assignment-storage/v1",
         "emuflow.phase3-assignment-storage/v2",
+        "emuflow.phase3-assignment-storage/v3",
     }:
         from .phase3_storage import (
             COMPRESSED_CLUSTERS_SCHEMA,
             LEGACY_PACKED_ASSIGNMENT_SCHEMA,
             PACKED_ASSIGNMENT_SCHEMA,
+            PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
             expand_compressed_phase3_clusters,
             expand_phase3_assignment,
             expand_phase3_clusters,
@@ -63,6 +87,7 @@ def read_json(path: Path) -> Dict[str, Any]:
 
         if schema in {
             LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+            PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
             PACKED_ASSIGNMENT_SCHEMA,
         }:
             return expand_phase3_assignment(value, path, read_json)

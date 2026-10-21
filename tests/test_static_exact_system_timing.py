@@ -1,7 +1,9 @@
 import copy
 import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.cross_layer_timing import (
@@ -10,6 +12,8 @@ from emuflow.cross_layer_timing import (
 )
 from emuflow.errors import ValidationError
 from emuflow.combinational_cut import semantic_contract_sha256
+from emuflow.phase5 import validate_phase5
+from emuflow.platform import Platform
 from emuflow.static_exact_timing import (
     build_static_exact_segment_deadlines,
     validate_static_exact_segment_deadlines,
@@ -23,6 +27,11 @@ from emuflow.tdm import (
     build_tdm_schedule,
     reconstruct_tdm_schedule_timing,
     validate_tdm_schedule,
+)
+from emuflow.tdm_schedule_storage import (
+    ScheduleRecordSequence,
+    read_tdm_schedule,
+    write_tdm_schedule_storage,
 )
 from tests import test_combinational_cut as combinational_fixture
 
@@ -229,6 +238,222 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             ],
             "pass",
         )
+
+    def test_indexed_schedule_validation_matches_legacy_without_hop_decode(self):
+        fixture = (
+            combinational_fixture.StaticExactCombinationalCutPartitionTest()
+        )
+        fixture.setUp()
+        _, assignment = fixture._exact_artifacts(dependent_return=True)
+        routes = fixture._exact_routes(assignment)
+        routes["semantic_contract"] = {
+            "schema": assignment["semantic_contract"]["schema"],
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
+        schedule = build_tdm_schedule(routes, fixture.platform)
+        legacy = validate_tdm_schedule(routes, fixture.platform, schedule)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "schedule.json"
+            write_tdm_schedule_storage(path, schedule)
+            indexed = read_tdm_schedule(path)
+            with mock.patch.object(
+                ScheduleRecordSequence,
+                "__iter__",
+                side_effect=AssertionError("hop records were decoded"),
+            ):
+                self.assertEqual(
+                    validate_tdm_schedule(routes, fixture.platform, indexed),
+                    legacy,
+                )
+
+    def test_indexed_schedule_validation_rejects_tamper_and_missing_hop(self):
+        fixture = (
+            combinational_fixture.StaticExactCombinationalCutPartitionTest()
+        )
+        fixture.setUp()
+        _, assignment = fixture._exact_artifacts(dependent_return=True)
+        routes = fixture._exact_routes(assignment)
+        routes["semantic_contract"] = {
+            "schema": assignment["semantic_contract"]["schema"],
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
+        schedule = build_tdm_schedule(routes, fixture.platform)
+        cases = []
+        tampered = copy.deepcopy(schedule)
+        tampered["entries"][0]["ready_slot"] += 1
+        cases.append((tampered, "ready-slot mismatch"))
+        missing = copy.deepcopy(schedule)
+        missing["entries"].pop()
+        cases.append((missing, "route-hop coverage"))
+        collision = copy.deepcopy(schedule)
+        duplicate = copy.deepcopy(collision["entries"][0])
+        duplicate["id"] = "s999999"
+        duplicate["demand"] = "unexpected-demand"
+        collision["entries"].append(duplicate)
+        cases.append((collision, "collision"))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for index, (candidate, message) in enumerate(cases):
+                path = root / f"schedule-{index}.json"
+                write_tdm_schedule_storage(path, candidate)
+                with self.assertRaisesRegex(ValidationError, message):
+                    validate_tdm_schedule(
+                        routes,
+                        fixture.platform,
+                        read_tdm_schedule(path),
+                    )
+
+    def test_validate_phase5_keeps_indexed_schedule_lazy(self):
+        fixture = (
+            combinational_fixture.StaticExactCombinationalCutPartitionTest()
+        )
+        fixture.setUp()
+        _, assignment = fixture._exact_artifacts(dependent_return=True)
+        routes = fixture._exact_routes(assignment)
+        routes["semantic_contract"] = {
+            "schema": assignment["semantic_contract"]["schema"],
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
+        schedule = build_tdm_schedule(routes, fixture.platform)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            routes_path = root / "routes.json"
+            platform_path = root / "platform.json"
+            schedule_path = root / "schedule.json"
+            routes_path.write_text("{}", encoding="utf-8")
+            platform_path.write_text(
+                json.dumps(fixture.platform.to_dict()), encoding="utf-8"
+            )
+            write_tdm_schedule_storage(schedule_path, schedule)
+            with (
+                mock.patch(
+                    "emuflow.phase5._load_phase3_semantics",
+                    return_value=(routes, routes["semantic_contract"]),
+                ),
+                mock.patch.object(
+                    ScheduleRecordSequence,
+                    "__iter__",
+                    side_effect=AssertionError("schedule was materialized"),
+                ),
+            ):
+                result = validate_phase5(
+                    routes_path,
+                    platform_path,
+                    schedule_path,
+                    allow_legacy_generation=True,
+                )
+            self.assertEqual(result["status"], "pass")
+
+    def test_indexed_schedule_validation_preserves_ratio_and_bank_checks(self):
+        fixture = (
+            combinational_fixture.StaticExactCombinationalCutPartitionTest()
+        )
+        fixture.setUp()
+        _, assignment = fixture._exact_artifacts(dependent_return=True)
+        platform_value = fixture.platform.to_dict()
+        platform_value["links"][0].update(
+            {
+                "capacity_sharing": "shared_bidirectional",
+                "bank_count": 4,
+                "wires_per_bank": 8,
+                "tdm_delay_model": {
+                    "model": "linear-ratio-v1",
+                    "intercept_ns": 8.0,
+                    "ratio_coefficient_ns": 0.5,
+                },
+            }
+        )
+        platform = Platform.from_dict(platform_value)
+        routes = fixture._exact_routes(assignment)
+        routes["semantic_contract"] = {
+            "schema": assignment["semantic_contract"]["schema"],
+            "mode": "static-exact-combinational",
+            "qualification": "structural-partition-legality",
+            "indexed": True,
+        }
+        timing_route = routes["routes"][0]
+        timing_edge = timing_route["tree_edges"][0]
+        routes["timing"] = {
+            "schema": "emuflow.sta-paths/v1",
+            "normalization": {
+                "positive_slack_scale_ns": 100.0,
+                "negative_slack_scale_ns": 100.0,
+                "max_clock_period_ns": 100.0,
+            },
+            "paths": [
+                {
+                    "path": "ratio-path",
+                    "clock_domain": "clk",
+                    "clock_period_ns": 100.0,
+                    "fixed_delay_ns": 1.0,
+                    "cut_nets": [timing_route["net"]],
+                    "cut_transitions": [
+                        {
+                            "net": timing_route["net"],
+                            "from": timing_edge["from"],
+                            "to": timing_edge["to"],
+                        }
+                    ],
+                }
+            ],
+        }
+        schedule = build_tdm_schedule(routes, platform)
+        legacy_timing = reconstruct_tdm_schedule_timing(
+            routes, platform, schedule
+        )
+        candidates = [(schedule, None)]
+        bad_ratio = copy.deepcopy(schedule)
+        bad_ratio["entries"][0]["tdm_ratio"] = 0
+        candidates.append((bad_ratio, "tdm_ratio"))
+        bad_bank = copy.deepcopy(schedule)
+        entry = bad_bank["entries"][0]
+        allocation = next(
+            item
+            for item in bad_bank["bank_allocations"]
+            if (
+                item["link"], item["from"], item["to"]
+            ) == (entry["link"], entry["from"], entry["to"])
+        )
+        outside = allocation["lane_offset"] + allocation["lanes"]
+        entry["lane"] = outside if outside < 32 else 0
+        candidates.append((bad_bank, "allocated direction banks"))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for index, (candidate, error) in enumerate(candidates):
+                path = root / f"schedule-{index}.json"
+                write_tdm_schedule_storage(path, candidate)
+                if error is None:
+                    indexed = read_tdm_schedule(path)
+                    self.assertEqual(
+                        validate_tdm_schedule(
+                            routes, platform, indexed
+                        )["status"],
+                        "pass",
+                    )
+                    with mock.patch.object(
+                        ScheduleRecordSequence,
+                        "__iter__",
+                        side_effect=AssertionError(
+                            "timing reconstruction decoded all hops"
+                        ),
+                    ):
+                        self.assertEqual(
+                            reconstruct_tdm_schedule_timing(
+                                routes, platform, indexed
+                            ),
+                            legacy_timing,
+                        )
+                else:
+                    with self.assertRaisesRegex(ValidationError, error):
+                        validate_tdm_schedule(
+                            routes, platform, read_tdm_schedule(path)
+                        )
 
     def _system_inputs(self):
         routes = copy.deepcopy(self.routes)

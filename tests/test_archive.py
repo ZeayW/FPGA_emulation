@@ -41,6 +41,116 @@ def _run_small_flow(output: Path) -> None:
 
 
 class ValidationArchiveTest(unittest.TestCase):
+    def test_archive_keeps_selector_sidecar_retention_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            flow = root / "flow"
+            archive = root / "archive"
+            _run_small_flow(flow)
+
+            selector_path = flow / "system-route/routes.json"
+            selector = json.loads(selector_path.read_text(encoding="utf-8"))
+            sidecar_path = selector_path.with_name(selector["artifact"])
+            self.assertLess(
+                selector_path.stat().st_size, sidecar_path.stat().st_size
+            )
+            threshold = (
+                selector_path.stat().st_size + sidecar_path.stat().st_size
+            ) // 2
+
+            create_validation_archive(
+                flow,
+                archive,
+                run_id="atomic-selector-sidecar",
+                max_copy_bytes=threshold,
+            )
+            manifest = read_json(archive / "archive-manifest.json")
+            records = {
+                item["source_path"]: item for item in manifest["files"]
+            }
+            selector_record = records["system-route/routes.json"]
+            sidecar_record = records[
+                f"system-route/{sidecar_path.name}"
+            ]
+            self.assertEqual(selector_record["retention"], "hash-only")
+            self.assertEqual(sidecar_record["retention"], "hash-only")
+            self.assertIsNone(selector_record["archive_path"])
+            self.assertIsNone(sidecar_record["archive_path"])
+            checked_selectors = 0
+            for source_path, record in records.items():
+                source = flow / source_path
+                if source.suffix != ".json":
+                    continue
+                value = json.loads(source.read_text(encoding="utf-8"))
+                if not isinstance(value, dict) or not isinstance(
+                    value.get("artifact"), str
+                ) or not isinstance(value.get("store_sha256"), str):
+                    continue
+                dependency = (
+                    source.parent / value["artifact"]
+                ).resolve().relative_to(flow.resolve()).as_posix()
+                self.assertEqual(
+                    record["retention"], records[dependency]["retention"]
+                )
+                checked_selectors += 1
+            self.assertGreaterEqual(checked_selectors, 2)
+            self.assertEqual(
+                manifest["retention_policy"]["selector_sidecars"],
+                "atomic-retention-groups",
+            )
+            self.assertEqual(
+                validate_validation_archive(archive)["status"], "pass"
+            )
+
+    def test_archive_follows_schedule_manifest_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            flow = root / "flow"
+            archive = root / "archive"
+            _run_small_flow(flow)
+
+            schedule_path = flow / "tdm/schedule.json"
+            schedule_manifest = json.loads(schedule_path.read_text())
+            original_store = schedule_path.with_name(
+                schedule_manifest["artifact"]
+            )
+            relocated_store = schedule_path.with_name(
+                f"schedule.{schedule_manifest['store_sha256']}.sqlite"
+            )
+            original_store.rename(relocated_store)
+            schedule_manifest["artifact"] = relocated_store.name
+            write_json(schedule_path, schedule_manifest, compact=True)
+
+            flow_report_path = flow / "multi-fpga-flow-report.json"
+            flow_report = read_json(flow_report_path)
+            flow_report["artifacts"]["schedule"]["sha256"] = hashlib.sha256(
+                schedule_path.read_bytes()
+            ).hexdigest()
+            flow_report["artifacts"]["schedule_store"] = {
+                "path": f"tdm/{relocated_store.name}",
+                "sha256": hashlib.sha256(
+                    relocated_store.read_bytes()
+                ).hexdigest(),
+            }
+            write_json(flow_report_path, flow_report)
+
+            create_validation_archive(
+                flow, archive, run_id="content-addressed-schedule"
+            )
+            archived = read_json(archive / "archive-manifest.json")
+            schedule_store = next(
+                item
+                for item in archived["files"]
+                if "schedule_store" in item["roles"]
+            )
+            self.assertEqual(
+                schedule_store["source_path"],
+                f"tdm/{relocated_store.name}",
+            )
+            self.assertEqual(
+                validate_validation_archive(archive)["status"], "pass"
+            )
+
     def test_create_validate_and_guarded_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

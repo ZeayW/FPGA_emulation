@@ -21,6 +21,11 @@ from emuflow.partition import (
     validate_partition_artifacts_online,
 )
 from emuflow.phase3 import run_phase3, validate_phase3_indexed
+from emuflow.phase3_assignment_index import (
+    validate_phase3_assignment_index,
+    write_phase3_assignment_index,
+)
+from emuflow.phase3_exact_records import StaticExactRecordSequence
 from emuflow.platform import BoardLink, FpgaNode, Platform
 from emuflow.resources import RESOURCE_FIELDS, ResourceVector
 from emuflow.yosys import import_yosys_json
@@ -74,6 +79,26 @@ class Phase3Test(unittest.TestCase):
                     provider="greedy",
                     seed=7,
                 )
+            runtime = read_json(output / "phase3-runtime.json")
+            self.assertEqual(runtime["schema"], "emuflow.phase3-runtime/v1")
+            self.assertEqual(runtime["status"], "pass")
+            self.assertEqual(
+                report["artifacts"]["runtime_breakdown"],
+                "phase3-runtime.json",
+            )
+            self.assertEqual(
+                runtime["observations"]["instances"],
+                len(self.ir.value["instances"]),
+            )
+            step_by_name = {item["name"]: item for item in runtime["steps"]}
+            for name in (
+                "load_partition_ir",
+                "build_clusters",
+                "provider.greedy_assignment",
+                "publish.write_assignment_index",
+            ):
+                self.assertEqual(step_by_name[name]["status"], "pass")
+                self.assertGreaterEqual(step_by_name[name]["wall_seconds"], 0.0)
             with patch(
                 "emuflow.phase3.EmuIR.load",
                 side_effect=AssertionError(
@@ -87,6 +112,24 @@ class Phase3Test(unittest.TestCase):
                     output / "assignment.sqlite",
                 )
             self.assertEqual(checked, report["validation"])
+            with sqlite3.connect(output / "assignment.sqlite") as connection:
+                self.assertEqual(
+                    connection.execute("PRAGMA user_version").fetchone()[0],
+                    3,
+                )
+                schema = json.loads(
+                    connection.execute(
+                        "SELECT value FROM metadata WHERE key='schema'"
+                    ).fetchone()[0]
+                )
+                self.assertEqual(
+                    schema, "emuflow.phase3-assignment-sqlite/v3"
+                )
+                exact_tables = connection.execute(
+                    "SELECT count(*) FROM sqlite_master "
+                    "WHERE type='table' AND name LIKE 'exact_%'"
+                ).fetchone()[0]
+                self.assertEqual(exact_tables, 0)
             tampered = copy.deepcopy(report)
             tampered["validation"]["effective_balance_percent"] = 210.0
             (output / "phase3_report.json").write_text(json.dumps(tampered))
@@ -112,17 +155,66 @@ class Phase3Test(unittest.TestCase):
                     output / "assignment.sqlite",
                 )
 
-    def test_static_exact_compact_input_uses_bounded_source_identity(self) -> None:
+    def test_runtime_breakdown_survives_phase3_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             ir_path = root / "design.emuir.sqlite"
             output = root / "phase3"
             write_compact_emuir(ir_path, self.ir.to_dict())
             with patch(
+                "emuflow.phase3.build_clusters",
+                side_effect=RuntimeError("synthetic cluster failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "cluster failure"):
+                    run_phase3(
+                        ir_path,
+                        PLATFORM_PATH,
+                        output,
+                        provider="greedy",
+                        seed=7,
+                    )
+            runtime = read_json(output / "phase3-runtime.json")
+            self.assertEqual(runtime["status"], "failed")
+            step_by_name = {item["name"]: item for item in runtime["steps"]}
+            self.assertEqual(step_by_name["load_partition_ir"]["status"], "pass")
+            self.assertEqual(step_by_name["build_clusters"]["status"], "failed")
+
+    def test_static_exact_compact_input_uses_bounded_source_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.sqlite"
+            output = root / "phase3"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            observed_streams = []
+
+            def publish_index(path, ir, assignment):
+                contract = assignment["semantic_contract"]
+                observed_streams.append(
+                    (
+                        isinstance(
+                            contract["dependency_edges"],
+                            StaticExactRecordSequence,
+                        ),
+                        isinstance(
+                            contract["logic_segments"],
+                            StaticExactRecordSequence,
+                        ),
+                        isinstance(
+                            contract["capture_requirements"],
+                            StaticExactRecordSequence,
+                        ),
+                    )
+                )
+                return write_phase3_assignment_index(path, ir, assignment)
+
+            with patch(
                 "emuflow.partition_ir.EmuIR.load",
                 side_effect=AssertionError(
                     "Static Exact Phase 3 must stream compact EmuIR"
                 ),
+            ), patch(
+                "emuflow.phase3.write_phase3_assignment_index",
+                side_effect=publish_index,
             ):
                 run_phase3(
                     ir_path,
@@ -132,7 +224,34 @@ class Phase3Test(unittest.TestCase):
                     seed=7,
                     cut_mode="static-exact-combinational",
                 )
+            self.assertEqual(observed_streams, [(True, True, True)])
             assignment = read_json(output / "assignment.json")
+            packed_assignment = json.loads(
+                (output / "assignment.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                packed_assignment["schema"],
+                "emuflow.phase3-assignment-storage/v3",
+            )
+            self.assertIsNone(packed_assignment["semantic_contract"])
+            self.assertEqual(
+                packed_assignment["semantic_contract_index"]["artifact"],
+                "assignment.sqlite",
+            )
+            binary_path = output / "assignment.exact.bin"
+            self.assertTrue(binary_path.is_file())
+            with sqlite3.connect(output / "assignment.sqlite") as connection:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT count(*) FROM sqlite_master "
+                        "WHERE type='table' AND name LIKE 'exact_%'"
+                    ).fetchone()[0],
+                    0,
+                )
+            runtime = read_json(output / "phase3-runtime.json")
+            self.assertEqual(
+                runtime["observations"]["static_exact_native"], 0
+            )
             source = assignment["semantic_contract"]["source_identity"]
             self.assertEqual(
                 source["emuir"],
@@ -147,6 +266,11 @@ class Phase3Test(unittest.TestCase):
                 },
             )
             self.assertNotIn("canonical_emuir_sha256", source)
+            encoded = bytearray(binary_path.read_bytes())
+            encoded[28] ^= 1
+            binary_path.write_bytes(encoded)
+            with self.assertRaisesRegex(ValidationError, "Static Exact"):
+                validate_phase3_assignment_index(output / "assignment.sqlite")
 
     def test_minimum_capacity_policy_uses_one_partition_target(self) -> None:
         constraints = normalize_partition_constraints(
@@ -473,20 +597,22 @@ class Phase3Test(unittest.TestCase):
                 self.platform,
             )
 
-    def test_default_balance_dimensions_keep_every_dimension_capacity_only(self) -> None:
+    def test_default_balance_dimensions_enforce_logic_balance(self) -> None:
         constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
         self.assertEqual(
-            constraints["balance_dimensions"], []
+            constraints["balance_dimensions"], ["cells", "ff", "lut"]
         )
 
-    def test_tolerance_alone_does_not_enable_design_share_constraint(self) -> None:
+    def test_tolerance_override_preserves_default_logic_dimensions(self) -> None:
         constraints = normalize_partition_constraints(
             {"schema": "emuflow.partition-constraints/v1", "balance_tolerance": 0.0},
             self.ir, self.platform, balance_tolerance=0.10,
         )
-        self.assertEqual(constraints["balance_dimensions"], [])
+        self.assertEqual(
+            constraints["balance_dimensions"], ["cells", "ff", "lut"]
+        )
         self.assertEqual(constraints["balance_tolerance"], 0.10)
 
     def test_balance_dimensions_are_explicit_and_validated(self) -> None:
@@ -715,6 +841,7 @@ class Phase3Test(unittest.TestCase):
                 "schema": "emuflow.partition-constraints/v1",
                 "min_used_fpgas": 1,
                 "balance_tolerance": 0.10,
+                "balance_dimensions": [],
             },
             self.ir,
             self.platform,

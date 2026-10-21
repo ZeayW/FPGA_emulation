@@ -25,6 +25,7 @@ from .phase3_storage import read_phase3_assignment_view
 from .placement import _vivado_mapped_name
 from .platform import Platform
 from .routing import static_exact_contract_from_assignment, system_route_timing_paths
+from .system_route_storage import read_system_routes
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
     STA_PATH_DATABASE_INDEX_SCHEMA,
@@ -34,6 +35,7 @@ from .sta import (
     sta_path_endpoints,
 )
 from .tdm import reconstruct_tdm_schedule_timing_paths
+from .tdm_schedule_storage import read_tdm_schedule
 
 
 LOGIC_SEGMENT_IDENTITY_SCHEMA = "emuflow.logic-segment-identity/v1"
@@ -798,8 +800,8 @@ def prepare_logic_segment_query_inputs(
         include_semantic_contract=False,
     )
     path_database = read_json(path_database_path)
-    routes = read_json(routes_path)
-    schedule = read_json(schedule_path)
+    routes = read_system_routes(routes_path)
+    schedule = read_tdm_schedule(schedule_path)
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError("logic segment assignment schema is invalid")
     if path_database.get("schema") not in {

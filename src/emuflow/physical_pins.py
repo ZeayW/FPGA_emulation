@@ -12,8 +12,11 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_executable
+from .pin_plan_storage import read_pin_plan
+from .position_hints_storage import read_position_hints
 from .pin_planning import _schedule_tdm_ratio, validate_pin_plan
 from .platform import Platform
+from .tdm_schedule_storage import read_tdm_schedule
 
 
 HARDWARE_BSP_SCHEMA = "emuflow.hardware-bsp/v1"
@@ -1236,10 +1239,14 @@ def run_phase6b(
     placement_weight: float = 1.0,
     skew_weight: float = 1.0,
 ) -> Dict[str, Any]:
-    schedule = read_json(schedule_path)
+    schedule = read_tdm_schedule(schedule_path)
     platform = Platform.load(platform_path)
-    positions = read_json(positions_path) if positions_path is not None else None
-    plan = read_json(pin_plan_path) if pin_plan_path is not None else None
+    positions = (
+        read_position_hints(positions_path)
+        if positions_path is not None
+        else None
+    )
+    plan = read_pin_plan(pin_plan_path) if pin_plan_path is not None else None
     anchors = {fpga: read_json(path) for fpga, path in anchor_paths.items()}
     if bsp_path is None:
         binding = build_serial_transceiver_binding(

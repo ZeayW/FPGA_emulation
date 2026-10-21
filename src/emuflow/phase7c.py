@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -12,8 +13,11 @@ from .cross_layer_timing import (
 from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import Platform
+from .physical_summary_storage import read_physical_summary
 from .phase3_storage import read_phase3_assignment_view
+from .phase5 import validate_phase5_generation
 from .routing import semantic_contract_for_routes
+from .system_route_storage import read_system_routes
 from .runtime import (
     aggregate_qor,
     build_virtual_runtime,
@@ -22,6 +26,7 @@ from .runtime import (
     validate_virtual_runtime,
     virtual_runtime_controller_to_systemverilog,
 )
+from .tdm_schedule_storage import read_tdm_schedule
 
 
 PHASE7C_REPORT_SCHEMA = "emuflow.phase7c-report/v3"
@@ -76,12 +81,23 @@ def run_phase7c(
     global_sta_executable: Optional[str] = None,
     global_sta_results_dir: Optional[Path] = None,
     global_timing_engine: str = "opensta",
+    allow_legacy_phase5_generation: bool = False,
 ) -> Dict[str, Any]:
     if global_timing_engine not in {"opensta", "python"}:
         raise ValidationError("unsupported global timing engine")
     if global_timing_engine == "python" and (global_sta_executable is not None or global_sta_results_dir is not None):
         raise ValidationError("Python timing cannot accept OpenSTA options")
-    schedule = read_json(schedule_path)
+    generation_validation = validate_phase5_generation(
+        phase5_report_path,
+        allow_legacy=allow_legacy_phase5_generation,
+    )
+    if generation_validation.get("status") != "legacy" and Path(
+        os.path.abspath(schedule_path)
+    ) != Path(os.path.abspath(phase5_report_path.parent / "schedule.json")):
+        raise ValidationError(
+            "Phase 7C schedule path disagrees with Phase 5 generation report"
+        )
+    schedule = read_tdm_schedule(schedule_path)
     platform = Platform.load(platform_path)
     phase6_report = read_json(phase6_report_path)
     manifest_path = phase6_report_path.parent / "manifest.json"
@@ -96,7 +112,7 @@ def run_phase7c(
         runtime, schedule, platform, clock_periods
     )
     physical_summary = (
-        read_json(physical_summary_path)
+        read_physical_summary(physical_summary_path)
         if physical_summary_path is not None
         else None
     )
@@ -112,7 +128,9 @@ def run_phase7c(
         board_link_timing = read_json(board_link_timing_path)
         physical_summary = dict(physical_summary)
         physical_summary["board_link_timing"] = board_link_timing
-    routes = read_json(routes_path) if routes_path is not None else None
+    routes = (
+        read_system_routes(routes_path) if routes_path is not None else None
+    )
     semantic_contract = None
     if routes is not None and (
         routes.get("semantic_contract_schema") is not None

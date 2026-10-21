@@ -6,6 +6,7 @@ import gc
 import hashlib
 import json
 import math
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
@@ -278,10 +279,15 @@ def _run_rapidwright_routed_backend_tail(
 ) -> Dict[str, Any]:
     """Route and time one already materialized packed placement."""
 
+    packed_sha256 = _sha256(packed_path)
+    placement_sha256 = (
+        packed_sha256
+        if packed_path == placement_path else _sha256(placement_path)
+    )
     source_sha256 = {
         "mapped_sha256": mapped_sha256 or _sha256(mapped_path),
-        "packed_sha256": _sha256(packed_path),
-        "placement_sha256": _sha256(placement_path),
+        "packed_sha256": packed_sha256,
+        "placement_sha256": placement_sha256,
     }
     rwroute_input = output_dir / "rwroute.tsv"
     route_input_report = export_rwroute_input(
@@ -543,10 +549,6 @@ def _finish_rapidwright_routed_backend(
     virtual_io_cells = int(route_input_report.get("virtual_io_cells", 0))
     artifacts = {
         "mapped": _artifact(mapped_path, source_sha256["mapped_sha256"]),
-        "packed": _artifact(packed_path, source_sha256["packed_sha256"]),
-        "placement": _artifact(
-            placement_path, source_sha256["placement_sha256"]
-        ),
         "route": _artifact(route_path, route_check["route_sha256"]),
         "routed_timing": _artifact(
             routed_timing_path, timing_check["timing_sha256"]
@@ -555,6 +557,19 @@ def _finish_rapidwright_routed_backend(
             opensta_summary_path, opensta_check["summary_sha256"]
         ),
     }
+    if packed_path == placement_path:
+        if source_sha256["packed_sha256"] != source_sha256["placement_sha256"]:
+            raise ValidationError("shared physical handoff source seals disagree")
+        artifacts["physical_handoff"] = _artifact(
+            packed_path, source_sha256["packed_sha256"]
+        )
+    else:
+        artifacts["packed"] = _artifact(
+            packed_path, source_sha256["packed_sha256"]
+        )
+        artifacts["placement"] = _artifact(
+            placement_path, source_sha256["placement_sha256"]
+        )
     artifacts.update({
         name: _artifact(path) for name, path in placement_artifacts.items()
     })
@@ -879,6 +894,7 @@ def run_rapidwright_openparf_native_candidate_backend(
     mapped_value = open_xilinx_mapped_index(mapped_path)
     mapped_sha256 = mapped_report.get("output_sha256") or _sha256(mapped_path)
     atomic_source_path = output_dir / "openparf-atomic-source.json"
+    atomic_source_started = time.perf_counter()
     atomic_source = build_xilinx_openparf_atomic_source(
         mapped_path,
         atomic_source_path,
@@ -886,6 +902,30 @@ def run_rapidwright_openparf_native_candidate_backend(
         mapped_value=mapped_value,
         mapped_sha256=mapped_sha256,
     )
+    atomic_source_seconds = time.perf_counter() - atomic_source_started
+    atomic_source_store_path = getattr(atomic_source, "store_path", None)
+    atomic_source_selector = getattr(atomic_source, "selector", None)
+    atomic_source_storage = {
+        "dataflow": (
+            "mapped-index-derived-singletons+typed-exception-sidecar"
+            if isinstance(atomic_source_selector, Mapping)
+            else "legacy-logical-view"
+        ),
+        "build_seconds": atomic_source_seconds,
+        "selector_bytes": atomic_source_path.stat().st_size,
+        "store_bytes": (
+            atomic_source_store_path.stat().st_size
+            if atomic_source_store_path is not None else None
+        ),
+        "stored_macro_clusters": (
+            atomic_source_selector.get("counts", {}).get("macro_clusters")
+            if isinstance(atomic_source_selector, Mapping) else None
+        ),
+        "derived_singleton_clusters": (
+            atomic_source_selector.get("counts", {}).get("singleton_clusters")
+            if isinstance(atomic_source_selector, Mapping) else None
+        ),
+    }
     selected_slrs = _select_xilinx_slr_window(
         atomic_source_path,
         architecture_path,
@@ -919,11 +959,6 @@ def run_rapidwright_openparf_native_candidate_backend(
         architecture=architecture,
         allowed_slrs=selected_slrs,
     )
-    # ``atomic_source`` is a re-iterable view backed by the mapped SQLite
-    # index, not a graph-sized list.  Release it once the exporter has consumed
-    # the view so no source adapter state overlaps RWRoute/OpenSTA.
-    del atomic_source
-    gc.collect()
     certificate_path = qualification_root / "placement-certificate.json"
     compact_qualification = _compact_openparf_qualification(
         qualification, certificate_path
@@ -931,8 +966,13 @@ def run_rapidwright_openparf_native_candidate_backend(
     # The serialized certificate remains the independently checked boundary.
     # The complete Python assignment tree is not needed during RWRoute/OpenSTA.
     del qualification
-    packed_path = output_dir / "packed-sites.json"
-    placement_path = output_dir / "placement.json"
+    physical_handoff_path = output_dir / "physical-handoff.sqlite"
+    for legacy_name in ("packed-sites.json", "placement.json"):
+        (output_dir / legacy_name).unlink(missing_ok=True)
+    packed_path = physical_handoff_path
+    placement_path = physical_handoff_path
+    packed: Dict[str, Any] = {}
+    placement: Dict[str, Any] = {}
     bridge = materialize_xilinx_openparf_atomic_contract(
         mapped_path,
         architecture_path,
@@ -941,35 +981,24 @@ def run_rapidwright_openparf_native_candidate_backend(
         placement_path,
         top=mapped_report["top"],
         source_packed_path=atomic_source_path,
+        source_packed_value=atomic_source,
         constraints_path=region_path,
         native_constraints_path=openparf_native_constraints,
         provider_manifest_path=openparf_provider_manifest,
         mapped_value=mapped_value,
         mapped_sha256=mapped_sha256,
         architecture=architecture,
+        packed_value_sink=packed,
+        placement_value_sink=placement,
+        physical_handoff_path=physical_handoff_path,
     )
-    packed = read_json(packed_path)
-    placement = read_json(placement_path)
-    packing_check = validate_xilinx_packing(
-        mapped_path,
-        packed_path,
-        architecture_path=architecture_path,
-        mapped_value=mapped_value,
-        mapped_sha256=mapped_sha256,
-        packed_value=packed,
-        architecture=architecture.value,
-    )
-    placement_check = validate_xilinx_placement(
-        packed_path,
-        architecture_path,
-        placement_path,
-        constraints_path=region_path,
-        native_constraints_path=openparf_native_constraints,
-        provider_manifest_path=openparf_provider_manifest,
-        architecture=architecture,
-        packed_value=packed,
-        placement_value=placement,
-    )
+    # The source view and shared physical handoff were already independently
+    # validated before atomic publication. Reuse their lazy indexed views
+    # instead of materializing either historical JSON contract.
+    del atomic_source
+    gc.collect()
+    packing_check = bridge["validation"]["packing"]
+    placement_check = bridge["validation"]["placement"]
     return _run_rapidwright_routed_backend_tail(
         fpga=fpga,
         part=part,
@@ -998,6 +1027,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         provider="rapidwright-rwroute-openparf-native-candidate-v1",
         packing_stage={
             "source": atomic_summary,
+            "source_storage": atomic_source_storage,
             "result": packed["summary"],
             "validation": packing_check,
         },
@@ -1015,6 +1045,9 @@ def run_rapidwright_openparf_native_candidate_backend(
         placement_artifacts={
             "placement_region": region_path,
             "openparf_atomic_source": atomic_source_path,
+            **({
+                "openparf_atomic_source_store": atomic_source_store_path,
+            } if atomic_source_store_path is not None else {}),
             "openparf_atomic_certificate": certificate_path,
         },
         mapped_sha256=mapped_sha256,

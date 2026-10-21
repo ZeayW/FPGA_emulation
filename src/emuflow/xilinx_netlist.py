@@ -30,7 +30,11 @@ from .xilinx_primitives import (
 XILINX_MAPPED_NETLIST_REPORT_SCHEMA = (
     "emuflow.xilinx-mapped-netlist-report/v1"
 )
-XILINX_MAPPED_INDEX_SCHEMA = "emuflow.xilinx-mapped-index/v1"
+XILINX_MAPPED_INDEX_SCHEMA_V1 = "emuflow.xilinx-mapped-index/v1"
+XILINX_MAPPED_INDEX_SCHEMA = "emuflow.xilinx-mapped-index/v2"
+_XILINX_MAPPED_INDEX_SCHEMAS = {
+    XILINX_MAPPED_INDEX_SCHEMA_V1, XILINX_MAPPED_INDEX_SCHEMA,
+}
 _NATIVE_FFS = {"FDCE", "FDPE", "FDRE", "FDSE"}
 _VTR_HARD_MACROS = {"VTR_MULTIPLY", "VTR_SP_RAM", "VTR_DP_RAM"}
 
@@ -100,6 +104,97 @@ class _IndexedRecords(MappingABC[str, Mapping[str, Any]]):
             yield value
 
 
+class _IndexedCells(_IndexedRecords):
+    """Reconstruct compatibility cell connections from typed pin rows."""
+
+    _DIRECTION = {0: "input", 1: "output", 2: "inout"}
+
+    @classmethod
+    def _with_pins(
+        cls, value: Mapping[str, Any], rows: Iterator[sqlite3.Row]
+    ) -> Mapping[str, Any]:
+        cell = dict(value)
+        connections: Dict[str, list[Any]] = {}
+        directions: Dict[str, str] = {}
+        for row in rows:
+            port = str(row["port"])
+            width = int(row["port_width"])
+            values = connections.setdefault(port, [None] * width)
+            bit = int(row["port_bit"])
+            if bit < 0 or bit >= width or values[bit] is not None:
+                raise ValidationError("indexed mapped pin row is invalid")
+            values[bit] = (
+                int(row["net_bit"])
+                if int(row["value_kind"]) == 0 else str(row["constant"])
+            )
+            direction = cls._DIRECTION.get(int(row["direction"]))
+            if direction is None:
+                raise ValidationError("indexed mapped pin direction is invalid")
+            previous = directions.setdefault(port, direction)
+            if previous != direction:
+                raise ValidationError("indexed mapped port directions disagree")
+        if any(any(value is None for value in values) for values in connections.values()):
+            raise ValidationError("indexed mapped port is incomplete")
+        cell["connections"] = connections
+        cell["port_directions"] = directions
+        return cell
+
+    def __getitem__(self, key: str) -> Mapping[str, Any]:
+        row = self.connection.execute(
+            "SELECT record_json FROM cells WHERE id=?", (key,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        value = json.loads(row[0])
+        if not isinstance(value, dict):
+            raise ValidationError(f"indexed mapped record {key!r} is invalid")
+        pins = iter(self.connection.execute(
+            "SELECT * FROM cell_pins WHERE cell_id=? ORDER BY port,port_bit",
+            (key,),
+        ))
+        return self._with_pins(value, pins)
+
+    def _items(self, order: str) -> Iterator[Tuple[str, Mapping[str, Any]]]:
+        owner = "cell_seq" if order == "seq" else "cell_id"
+        pins = _RowsForOwner(
+            self.connection.execute(
+                f"SELECT * FROM cell_pins ORDER BY {owner},port,port_bit"
+            ),
+            owner,
+        )
+        for row in self.connection.execute(
+            f"SELECT id,seq,record_json FROM cells ORDER BY {order}"
+        ):
+            value = json.loads(row["record_json"])
+            if not isinstance(value, dict):
+                raise ValidationError(
+                    f"indexed mapped record {row['id']!r} is invalid"
+                )
+            owner_value = int(row["seq"]) if order == "seq" else str(row["id"])
+            yield str(row["id"]), self._with_pins(
+                value, iter(pins.take(owner_value))
+            )
+        pins.finish()
+
+    def items(self) -> Iterator[Tuple[str, Mapping[str, Any]]]:  # type: ignore[override]
+        yield from self._items("seq")
+
+    def items_by_id(self) -> Iterator[Tuple[str, Mapping[str, Any]]]:
+        yield from self._items("id")
+
+    def values(self) -> Iterator[Mapping[str, Any]]:  # type: ignore[override]
+        for _name, value in self.items():
+            yield value
+
+    def types_by_id(self) -> Iterator[Tuple[str, str]]:
+        """Stream the source-owned cell identity/type projection only."""
+
+        for row in self.connection.execute(
+            "SELECT id,type FROM cells ORDER BY id"
+        ):
+            yield str(row[0]), str(row[1])
+
+
 class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
     """Bounded read interface for a production Xilinx mapped netlist."""
 
@@ -110,12 +205,14 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
             uri=True,
             check_same_thread=False,
         )
+        self.connection.row_factory = sqlite3.Row
         row = self.connection.execute(
             "SELECT value FROM metadata WHERE key='schema'"
         ).fetchone()
-        if row is None or row[0] != XILINX_MAPPED_INDEX_SCHEMA:
+        if row is None or row[0] not in _XILINX_MAPPED_INDEX_SCHEMAS:
             self.connection.close()
             raise ValidationError("Xilinx mapped index schema is invalid")
+        self.schema = str(row[0])
         metadata = dict(self.connection.execute("SELECT key,value FROM metadata"))
         self.top = json.loads(metadata["top_json"])
         self.creator = json.loads(metadata["creator_json"])
@@ -123,7 +220,11 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
         if not isinstance(self.top, str) or not isinstance(self.ports, dict):
             self.connection.close()
             raise ValidationError("Xilinx mapped index metadata is invalid")
-        self.cells = _IndexedRecords(self.connection, "cells")
+        self.cells = (
+            _IndexedCells(self.connection, "cells")
+            if self.schema == XILINX_MAPPED_INDEX_SCHEMA
+            else _IndexedRecords(self.connection, "cells")
+        )
         self.netnames = _IndexedRecords(self.connection, "netnames")
         self.module: Mapping[str, Any] = {
             "attributes": {"top": "1"},
@@ -134,6 +235,7 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
             "netnames": self.netnames,
         }
         self.modules: Mapping[str, Any] = {self.top: self.module}
+        self._validated_physical_paths: set[Tuple[Path, int, int]] = set()
 
     def __getitem__(self, key: str) -> Any:
         if key == "creator":
@@ -148,6 +250,255 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
 
     def __len__(self) -> int:
         return 2
+
+    def iter_pins_by_net(
+        self,
+    ) -> Iterator[Tuple[int, str, str, int, int, str]]:
+        """Stream typed non-constant cell pins in routed-net order."""
+
+        if self.schema != XILINX_MAPPED_INDEX_SCHEMA:
+            raise ValidationError(
+                "legacy Xilinx mapped index has no typed pin relation"
+            )
+        direction_names = {0: "input", 1: "output", 2: "inout"}
+        for row in self.connection.execute(
+            """
+            SELECT net_bit,cell_id,port,port_bit,port_width,direction
+              FROM cell_pins
+             WHERE value_kind=0
+             ORDER BY net_bit,cell_id,port,port_bit
+            """
+        ):
+            direction = direction_names.get(int(row["direction"]))
+            if direction is None:
+                raise ValidationError("indexed mapped pin direction is invalid")
+            yield (
+                int(row["net_bit"]), str(row["cell_id"]), str(row["port"]),
+                int(row["port_bit"]), int(row["port_width"]), direction,
+            )
+
+    def iter_cells_by_type(
+        self, cell_type: str,
+    ) -> Iterator[Tuple[str, Mapping[str, Any]]]:
+        """Stream one primitive family without reconstructing every cell."""
+
+        if not isinstance(cell_type, str) or not cell_type:
+            raise ValidationError("indexed mapped cell type is invalid")
+        if self.schema != XILINX_MAPPED_INDEX_SCHEMA:
+            for name, cell in self.cells.items():
+                if cell.get("type") == cell_type:
+                    yield name, cell
+            return
+        pins = _RowsForOwner(
+            self.connection.execute(
+                """
+                SELECT p.*
+                  FROM cell_pins AS p
+                  JOIN cells AS c ON c.seq=p.cell_seq
+                 WHERE c.type=?
+                 ORDER BY p.cell_seq,p.port,p.port_bit
+                """,
+                (cell_type,),
+            ),
+            "cell_seq",
+        )
+        for row in self.connection.execute(
+            """
+            SELECT id,seq,record_json
+              FROM cells
+             WHERE type=?
+             ORDER BY seq
+            """,
+            (cell_type,),
+        ):
+            value = json.loads(row["record_json"])
+            if not isinstance(value, dict):
+                raise ValidationError(
+                    f"indexed mapped record {row['id']!r} is invalid"
+                )
+            yield str(row["id"]), _IndexedCells._with_pins(
+                value, iter(pins.take(int(row["seq"])))
+            )
+        pins.finish()
+
+    def _physical_connection(self, handoff_path: Path) -> sqlite3.Connection:
+        if self.schema != XILINX_MAPPED_INDEX_SCHEMA:
+            raise ValidationError(
+                "legacy Xilinx mapped index has no typed pin relation"
+            )
+        connection = sqlite3.connect(
+            f"file:{self.path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            handoff_stat = handoff_path.stat()
+            handoff_key = (
+                handoff_path.resolve(), handoff_stat.st_size,
+                handoff_stat.st_mtime_ns,
+            )
+            connection.execute(
+                "ATTACH DATABASE ? AS physical",
+                (
+                    f"file:{handoff_path.resolve()}?mode=ro&immutable=1",
+                ),
+            )
+            if handoff_key not in self._validated_physical_paths:
+                assignments = int(connection.execute(
+                    "SELECT count(*) FROM physical.assignment"
+                ).fetchone()[0])
+                joined, mismatched = connection.execute(
+                    """
+                    SELECT count(*),
+                           COALESCE(sum(c.type != a.cell_type),0)
+                      FROM physical.assignment AS a
+                      JOIN cells AS c ON c.id=a.instance
+                    """
+                ).fetchone()
+                if int(joined) != assignments or int(mismatched) != 0:
+                    raise ValidationError(
+                        "mapped index and physical handoff cell ownership disagree"
+                    )
+                self._validated_physical_paths.add(handoff_key)
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
+    def iter_physical_cells(
+        self, handoff_path: Path,
+    ) -> Iterator[Tuple[str, str, str, str]]:
+        """Stream mapped cell type plus exact site/BEL from one handoff."""
+
+        connection = self._physical_connection(handoff_path)
+        try:
+            for row in connection.execute(
+                """
+                SELECT a.instance,c.type,a.physical_site,a.bel
+                  FROM physical.assignment AS a
+                  JOIN cells AS c ON c.id=a.instance
+                 ORDER BY a.instance
+                """
+            ):
+                yield (
+                    str(row["instance"]), str(row["type"]),
+                    str(row["physical_site"]), str(row["bel"]),
+                )
+        finally:
+            connection.close()
+
+    def iter_physical_pins_by_net(
+        self, handoff_path: Path,
+    ) -> Iterator[Tuple[int, str, str, int, int, str, str]]:
+        """Stream placed typed pins by routed net without Python ownership."""
+
+        connection = self._physical_connection(handoff_path)
+        direction_names = {0: "input", 1: "output", 2: "inout"}
+        try:
+            for row in connection.execute(
+                """
+                SELECT p.net_bit,p.cell_id,p.port,p.port_bit,p.port_width,
+                       p.direction,a.physical_site
+                  FROM cell_pins AS p
+                  JOIN physical.assignment AS a ON a.instance=p.cell_id
+                 WHERE p.value_kind=0
+                 ORDER BY p.net_bit,p.cell_id,p.port,p.port_bit
+                """
+            ):
+                direction = direction_names.get(int(row["direction"]))
+                if direction is None:
+                    raise ValidationError(
+                        "indexed mapped pin direction is invalid"
+                    )
+                yield (
+                    int(row["net_bit"]), str(row["cell_id"]),
+                    str(row["port"]), int(row["port_bit"]),
+                    int(row["port_width"]), direction,
+                    str(row["physical_site"]),
+                )
+        finally:
+            connection.close()
+
+    def iter_physical_route_pins_by_net(
+        self, handoff_path: Path, *, ordinal_offset: int = 0,
+    ) -> Iterator[
+        Tuple[int, str, str, int, int, str, str, Optional[int], str]
+    ]:
+        """Stream placed pins with their deterministic RWRoute cell ordinal.
+
+        The physical assignment and mapped cell tables are already ordered by
+        instance identity.  Compute the cumulative route-cell count in SQLite
+        so the production exporter does not retain a graph-sized
+        ``instance -> cN`` dictionary merely to refer to cells again while
+        emitting nets.  LUT6_2 occupies two consecutive RapidWright cells;
+        its four routable logical pins are mapped to the same O5/O6 split used
+        by the CELL rows.  A null ordinal deliberately preserves fail-closed
+        handling for any other non-constant LUT6_2 pin.
+        """
+
+        if (
+            isinstance(ordinal_offset, bool)
+            or not isinstance(ordinal_offset, int)
+            or ordinal_offset < 0
+        ):
+            raise ValidationError("RWRoute ordinal offset is invalid")
+        connection = self._physical_connection(handoff_path)
+        direction_names = {0: "input", 1: "output", 2: "inout"}
+        try:
+            for row in connection.execute(
+                """
+                WITH physical_cells AS (
+                  SELECT a.instance,c.type,a.physical_site,
+                         ? + sum(CASE WHEN c.type='LUT6_2' THEN 2 ELSE 1 END)
+                           OVER (
+                             ORDER BY a.instance
+                             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                           )
+                           - CASE WHEN c.type='LUT6_2' THEN 2 ELSE 1 END
+                           AS route_ordinal
+                    FROM physical.assignment AS a
+                    JOIN cells AS c ON c.id=a.instance
+                )
+                SELECT p.net_bit,p.cell_id,p.port,p.port_bit,p.port_width,
+                       p.direction,r.physical_site,r.type,r.route_ordinal
+                  FROM cell_pins AS p
+                  JOIN physical_cells AS r ON r.instance=p.cell_id
+                 WHERE p.value_kind=0
+                 ORDER BY p.net_bit,p.cell_id,p.port,p.port_bit
+                """,
+                (ordinal_offset,),
+            ):
+                direction = direction_names.get(int(row["direction"]))
+                if direction is None:
+                    raise ValidationError(
+                        "indexed mapped pin direction is invalid"
+                    )
+                cell_type = str(row["type"])
+                port = str(row["port"])
+                route_ordinal: Optional[int] = int(row["route_ordinal"])
+                route_pin = (
+                    port if int(row["port_width"]) == 1
+                    else f"{port}[{int(row['port_bit'])}]"
+                )
+                if cell_type == "LUT6_2":
+                    if port == "I0":
+                        route_pin = "I0"
+                    elif port == "O5":
+                        route_pin = "O"
+                    elif port == "I1":
+                        route_ordinal += 1
+                        route_pin = "I1"
+                    elif port == "O6":
+                        route_ordinal += 1
+                        route_pin = "O"
+                    else:
+                        route_ordinal = None
+                yield (
+                    int(row["net_bit"]), str(row["cell_id"]), port,
+                    int(row["port_bit"]), int(row["port_width"]), direction,
+                    str(row["physical_site"]), route_ordinal, route_pin,
+                )
+        finally:
+            connection.close()
 
     def close(self) -> None:
         connection = getattr(self, "connection", None)
@@ -182,7 +533,7 @@ def is_xilinx_mapped_index(path: Path) -> bool:
         row = connection.execute(
             "SELECT value FROM metadata WHERE key='schema'"
         ).fetchone()
-        return row is not None and row[0] == XILINX_MAPPED_INDEX_SCHEMA
+        return row is not None and row[0] in _XILINX_MAPPED_INDEX_SCHEMAS
     except sqlite3.Error:
         return False
     finally:
@@ -392,6 +743,27 @@ def _emit_compact_xilinx_mapped_artifacts(
               id TEXT PRIMARY KEY,seq INTEGER NOT NULL UNIQUE,type TEXT NOT NULL,
               record_json TEXT NOT NULL
             ) WITHOUT ROWID;
+            CREATE TABLE cell_pins(
+              cell_seq INTEGER NOT NULL,
+              cell_id TEXT NOT NULL,
+              port TEXT NOT NULL,
+              port_bit INTEGER NOT NULL,
+              port_width INTEGER NOT NULL,
+              direction INTEGER NOT NULL CHECK(direction BETWEEN 0 AND 2),
+              value_kind INTEGER NOT NULL CHECK(value_kind IN (0,1)),
+              net_bit INTEGER,
+              constant TEXT,
+              PRIMARY KEY(cell_id,port,port_bit),
+              CHECK(
+                (value_kind=0 AND net_bit IS NOT NULL AND constant IS NULL)
+                OR (value_kind=1 AND net_bit IS NULL AND constant IS NOT NULL)
+              )
+            ) WITHOUT ROWID;
+            CREATE INDEX cell_pins_by_seq
+              ON cell_pins(cell_seq,port,port_bit);
+            CREATE INDEX cell_pins_by_net
+              ON cell_pins(net_bit,direction,cell_id,port,port_bit)
+              WHERE value_kind=0;
             CREATE TABLE netnames(
               id TEXT PRIMARY KEY,seq INTEGER NOT NULL UNIQUE,
               record_json TEXT NOT NULL
@@ -514,9 +886,31 @@ def _emit_compact_xilinx_mapped_artifacts(
                 inventory[cell_type] += 1
                 if contract["hard_block"]:
                     hard_blocks[cell_type] += 1
+                indexed_cell = {
+                    key: value for key, value in cell.items()
+                    if key not in {"connections", "port_directions"}
+                }
                 index.execute(
                     "INSERT INTO cells VALUES (?,?,?,?)",
-                    (str(row["id"]), int(row["seq"]), cell_type, _json(cell)),
+                    (
+                        str(row["id"]), int(row["seq"]), cell_type,
+                        _json(indexed_cell),
+                    ),
+                )
+                direction_code = {"input": 0, "output": 1, "inout": 2}
+                index.executemany(
+                    "INSERT INTO cell_pins VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        (
+                            int(row["seq"]), str(row["id"]), port, bit,
+                            len(values), direction_code[directions[port]],
+                            0 if isinstance(value, int) else 1,
+                            value if isinstance(value, int) else None,
+                            None if isinstance(value, int) else str(value),
+                        )
+                        for port, values in connections.items()
+                        for bit, value in enumerate(values)
+                    ),
                 )
                 yield str(row["id"]), cell
             endpoint_rows.finish()
