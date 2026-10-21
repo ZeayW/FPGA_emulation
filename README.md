@@ -105,8 +105,17 @@ Contract construction derives stable segment identities from ordered counters
 and expands predecessor names for only the current cut. Production publication
 derives cut nodes, dependency edges, logic segments and capture requirements
 through repeatable typed record streams. Those four graph-scale relations feed
-the canonical digest and `assignment.exact.bin` writer without becoming
-retained Python dictionary lists. Exact-binary v2 stores capture bits as
+the canonical digest without becoming retained Python dictionary lists. The
+`assignment.exact.bin` writer now consumes the native predecessor CSR, launch
+flags, raw cut-node bytes and raw capture bytes directly. It independently
+checks every integer predecessor and counter-derived segment identity against
+the canonical record view. Validated dependency edges enter typed temporary
+spools in that single cursor pass before canonical section assembly, so a
+stateful cursor cannot substitute an unvalidated second result. Capture-node
+segment IDs retain the contract's lexical string order across six-digit
+boundaries while binary logic records retain numeric global ordinals. The
+writer produces the same section bytes without building a cut-name list/hash
+table or expanding dependency and logic-segment dictionaries. Exact-binary v2 stores capture bits as
 canonical unsigned big-endian byte strings, permits at most 8192 bits and still
 reads v1 artifacts. Readers validate every section count against remaining
 bytes before allocating from it. A 300,000-record synthetic adapter benchmark
@@ -115,9 +124,12 @@ reduced measured transient allocation from 44,295,916 to 20,615,888 bytes
 1.61 ms and 13,464 bytes. A separate 100,000-cell/100,000-net compact-input
 microbenchmark reduced bridge peak Python allocation from 15.42 MiB to
 2.03 MiB (-86.85%) and measured 1.50 seconds versus 1.58 seconds. These
-measurements cover isolated adapter boundaries, not the required NVDLA run.
-Direct native binary emission, clustering/model construction and the C++
-capture vector remain migration work.
+measurements cover isolated adapter boundaries. On the same compact 100,000-cut,
+100,000-capture writer input, direct integer publication reduced traced peak
+allocation from 23.77 MiB to 9.71 MiB (-59.2%) and wall time from 14.368 to
+6.135 seconds (-57.3%), with byte-identical binary and descriptor output. These
+are not substitutes for the required NVDLA run. Canonical digest traversal,
+clustering/model construction and the C++ capture vector remain migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
@@ -279,9 +291,34 @@ Writers for one pipeline output serialize under an exclusive POSIX lock.
 Validators and production consumers hold a shared lease from reading
 `pipeline_report.json` through their last referenced-generation read, so GC
 cannot remove a generation beneath an older reader.
-Legacy logical JSON remains readable. The
-validated Chimew bank/group input itself is still a graph-sized Python
-document, and native input production remains Phase 6 migration work.
+Legacy logical JSON remains readable only through the explicit
+`allow_legacy=True` compatibility API; production readers fail closed on it.
+Production Chimew lookahead now writes
+`bank_channel_input.json` as an `emuflow.chimew-bank-channel-storage/v1`
+selector. Bank pairs, channels and group/member/fanin records live in one
+content-sealed SQLite sidecar; the qualifier, native serializer and Phase 6
+adapter receive repeatable lazy sequences and normalize one bank or group at a
+time. The Phase 6 binding cursor is ordered directly by group ID, without an
+H-sized Python sort. The selector and sidecar also have their own POSIX
+reader/writer lease: readers retain a shared lease through the final cursor,
+while staging, selector commit and old-sidecar cleanup run under an exclusive
+lease. The outer pipeline inventories the sidecar in the same locked,
+report-committed generation. Explicit compatibility utilities can opt into
+checked legacy JSON. Selectors and relation seals reject extensions;
+the SQLite sidecar rejects unknown tables/views/triggers, non-exact columns,
+symlinks and path escape. Its normalized header is rederived from the sealed
+raw header, so resealing only `problem_header` cannot relabel design, cost or
+provenance. Selector-last replacement restores the preceding
+selector after a caught validation/publication failure and does not collect its
+sidecar until the new view passes. On a synthetic 20,000-channel,
+20,000-singleton-group consumer validation, retained traced allocation fell
+from 52.38 MiB to 0.17 MiB, peak traced allocation from 59.39 MiB to 43.52 MiB,
+and process peak RSS from 159.75 MiB to 121.63 MiB. The prior pretty JSON was
+12,292,219 bytes; the selector plus store were 1,881 and 6,123,520 bytes.
+Validation took 1.138 versus 0.772 seconds, so this slice is a memory/storage
+improvement rather than a runtime claim. Formal NVDLA measurement remains
+pending. Initial lookahead grouping, the assignment report and native
+certificate maps remain graph-scale Python production work.
 Transport RTL is written atomically from slot-ordered cursors. Python still
 decodes records into the stores and emits adapter text, so native producer
 migration remains. ScheduleStore v4 keeps Static Exact hop, route and
@@ -348,8 +385,27 @@ singletons; macro and cascade identities cannot alias it or one another. The
 historical complete atomic-source JSON is available only
 through the explicit compatibility materializer. The per-partition physical
 report records source-build wall time, selector/sidecar bytes, stored macro
-count and derived singleton count. The bridge then publishes
-one versioned `physical-handoff.sqlite`. Normalized clusters stream
+count and derived singleton count. The atomic export also keeps
+`name_map.json` bounded: atom identities and CARRY8 cascade records are written
+once to a content-sealed typed SQLite sidecar, while the selector retains only
+coordinate/site and macro descriptors plus mapped, packed and architecture
+source seals. Production legalization and placement validation open a
+repeatable lazy logical view under a POSIX shared lease through their final
+atom/cascade iteration. Writers hold the exclusive lease through selector
+commit and best-effort old-sidecar collection; an unlink failure is deferred
+without reporting a committed generation as failed. Selector and sidecar
+symlinks are rejected. Legacy v2 JSON is rejected by default and is produced
+only by an explicit compatibility materializer; compatibility reads must opt
+in and still match every supplied source seal. CARRY8 chains have normalized
+ordered link/member rows, and the reader independently rechecks instance type
+and unique chain ownership. The atomic manifest inventories both selector and
+sidecar together with mapped/packed/architecture source identity, and every
+production site/legalization/placement consumer verifies packed identity.
+Selector-last replacement preserves the previous generation if publication
+fails. Atom collection validates packed
+ownership and mapped types with one ordered merge instead of retaining a second
+cell/type dictionary and ownership set. The bridge then publishes one
+versioned `physical-handoff.sqlite`. Normalized clusters stream
 directly into a private same-directory SQLite artifact; the site-pin legalizer
 retains only slices containing MUX cells, while the independent validator keeps
 only the MUX/CARRY topology it must cross-check. Its cluster and assignment

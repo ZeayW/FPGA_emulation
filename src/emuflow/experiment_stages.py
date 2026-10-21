@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from .academic_chimew import materialize_academic_chimew_inputs
+from .chimew_bank_channel_storage import chimew_bank_channel_store_path
 from .chimew_pipeline import (
     read_chimew_phase6_pipeline,
     run_chimew_phase6_pipeline,
@@ -1152,6 +1153,25 @@ def validate_physical_lookahead(
         path = _require_file(root, f"lookahead/inputs/{label}.json")
         if lookahead.get("artifacts", {}).get(label, {}).get("sha256") != _sha256(path):
             raise ValidationError(f"experiment Chimew lookahead {label} seal is broken")
+    bank_selector = root / "lookahead/inputs/bank_channel_input.json"
+    bank_store = chimew_bank_channel_store_path(bank_selector)
+    if bank_store is not None:
+        bank_selector_document = read_json(bank_selector)
+        store_record = lookahead.get("artifacts", {}).get(
+            "bank_channel_input_store"
+        )
+        supplied_path = (
+            store_record.get("path") if isinstance(store_record, dict) else None
+        )
+        if (
+            not isinstance(supplied_path, str)
+            or Path(supplied_path).resolve() != bank_store.resolve()
+            or store_record.get("sha256")
+            != bank_selector_document.get("store_sha256")
+        ):
+            raise ValidationError(
+                "experiment Chimew bank/channel sidecar seal is broken"
+            )
     result = {"status": "pass", "seed": report["seed"], "metrics": report["metrics"]}
     session.lookahead[cache_key] = copy.deepcopy(result)
     return result

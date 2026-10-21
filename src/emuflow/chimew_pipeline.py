@@ -15,6 +15,11 @@ from .chimew_bank_channel import (
     evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
+from .chimew_bank_channel_storage import (
+    chimew_bank_channel_store_path,
+    copy_chimew_bank_channel_storage,
+    read_chimew_bank_channel_input,
+)
 from .chimew_binding_storage import read_chimew_binding
 from .chimew_grouping import build_chimew_initial_groups
 from .chimew_phase6 import (
@@ -204,6 +209,8 @@ def _expected_generation_labels(
     expected = set(_BASE_ARTIFACTS)
     if "schedule_store" in artifacts:
         expected.add("schedule_store")
+    if "bank_channel_input_store" in artifacts:
+        expected.add("bank_channel_input_store")
     for label in (
         "adapter_electrical_binding_store",
         "adapter_pin_plan_store",
@@ -257,6 +264,7 @@ def _validate_pipeline_generation_directory(
     files: set[Path] = {manifest_path.resolve()}
     relative_files = {"generation_manifest.json"}
     artifact_paths: dict[str, Path] = {}
+    artifact_digests: dict[str, str] = {}
     for label, record in artifacts.items():
         if not isinstance(record, dict):
             raise ValidationError("Chimew pipeline generation artifact is invalid")
@@ -282,6 +290,7 @@ def _validate_pipeline_generation_directory(
         ):
             raise ValidationError("Chimew pipeline generation artifact seal differs")
         artifact_paths[label] = candidate
+        artifact_digests[label] = supplied_sha
         files.add(candidate)
         relative_files.add(relative.as_posix())
     actual_relative = {
@@ -306,6 +315,7 @@ def _validate_pipeline_generation_directory(
     semantic = _validate_pipeline_artifact_semantics(
         artifact_paths,
         provider=provider,
+        verified_sha256=artifact_digests,
     )
     if (
         manifest["design"] != semantic["schedule"].get("design")
@@ -382,11 +392,13 @@ def _garbage_collect_pipeline_generations(
         shutil.rmtree(quarantine, ignore_errors=True)
 
 
-def _validate_pipeline_artifact_semantics(
+def _validate_pipeline_artifact_semantics_with_bank_input(
     paths: Mapping[str, Path],
+    bank_input: Mapping[str, Any],
     *,
     provider: str,
     legacy_pre_scope: bool = False,
+    verified_sha256: Mapping[str, str] | None = None,
 ) -> Dict[str, Any]:
     """Validate every logical fact in one sealed pipeline generation."""
 
@@ -404,7 +416,12 @@ def _validate_pipeline_artifact_semantics(
     refined = read_json(paths["refined_grouping"])
     rudy_input = read_json(paths["rudy_input"])
     rudy_report = read_json(paths["rudy_report"])
-    bank_input = read_json(paths["bank_channel_input"])
+    if (
+        "bank_channel_input_store" in paths
+        and getattr(bank_input, "store_path", None)
+        != paths["bank_channel_input_store"].resolve()
+    ):
+        raise ValidationError("Chimew bank/channel selector sidecar differs")
     bank_report = read_json(paths["bank_channel_report"])
     electrical_map = read_json(paths["electrical_map"])
     electrical_provenance = electrical_map.get("provenance")
@@ -540,13 +557,44 @@ def _validate_pipeline_artifact_semantics(
     }
 
 
-def _run_chimew_phase6_pipeline_locked(
+def _validate_pipeline_artifact_semantics(
+    paths: Mapping[str, Path],
+    *,
+    provider: str,
+    legacy_pre_scope: bool = False,
+    verified_sha256: Mapping[str, str] | None = None,
+) -> Dict[str, Any]:
+    """Hold the bank/group generation lease through the last semantic cursor."""
+
+    bank_input = read_chimew_bank_channel_input(
+        paths["bank_channel_input"],
+        _verified_store_sha256=(
+            verified_sha256.get("bank_channel_input_store")
+            if verified_sha256 is not None
+            and "bank_channel_input_store" in paths
+            else None
+        ),
+    )
+    if not hasattr(bank_input, "__enter__"):
+        raise ValidationError("Chimew pipeline requires indexed bank storage")
+    with bank_input:
+        return _validate_pipeline_artifact_semantics_with_bank_input(
+            paths,
+            bank_input,
+            provider=provider,
+            legacy_pre_scope=legacy_pre_scope,
+            verified_sha256=verified_sha256,
+        )
+
+
+def _run_chimew_phase6_pipeline_with_bank_input(
     schedule_path: Path,
     platform_path: Path,
     crossings_path: Path,
     positions_path: Path,
     rudy_input_path: Path,
     bank_channel_input_path: Path,
+    bank_input: Mapping[str, Any],
     electrical_map_path: Path,
     output_dir: Path,
     *,
@@ -564,7 +612,6 @@ def _run_chimew_phase6_pipeline_locked(
     crossings = read_json(crossings_path)
     positions = read_json(positions_path)
     rudy_input = read_json(rudy_input_path)
-    bank_input = read_json(bank_channel_input_path)
     electrical_map = read_json(electrical_map_path)
 
     initial = build_chimew_initial_groups(
@@ -679,6 +726,8 @@ def _run_chimew_phase6_pipeline_locked(
             destination = inputs_dir / input_names[label]
             if label == "schedule":
                 copy_tdm_schedule_storage(source, destination)
+            elif label == "bank_channel_input":
+                copy_chimew_bank_channel_storage(source, destination)
             else:
                 shutil.copy2(source, destination)
             artifact_paths[label] = destination
@@ -686,6 +735,12 @@ def _run_chimew_phase6_pipeline_locked(
                 schedule_store = tdm_schedule_store_path(destination)
                 if schedule_store is not None:
                     artifact_paths["schedule_store"] = schedule_store
+            elif label == "bank_channel_input":
+                bank_store = chimew_bank_channel_store_path(destination)
+                if bank_store is not None:
+                    artifact_paths["bank_channel_input_store"] = (
+                        destination.parent / bank_store.name
+                    )
         if source_paths is not None:
             sources_dir = generation_root / "sources"
             sources_dir.mkdir(parents=True)
@@ -803,6 +858,46 @@ def _run_chimew_phase6_pipeline_locked(
             output_dir, generation_id, previous_report
         )
         return report
+
+
+def _run_chimew_phase6_pipeline_locked(
+    schedule_path: Path,
+    platform_path: Path,
+    crossings_path: Path,
+    positions_path: Path,
+    rudy_input_path: Path,
+    bank_channel_input_path: Path,
+    electrical_map_path: Path,
+    output_dir: Path,
+    *,
+    source_paths: Optional[Mapping[str, Path]] = None,
+    grouper: Optional[str] = None,
+    refiner: Optional[str] = None,
+    rudy: Optional[str] = None,
+    assigner: Optional[str] = None,
+    region_count: int = 31,
+) -> Dict[str, Any]:
+    bank_input = read_chimew_bank_channel_input(bank_channel_input_path)
+    if not hasattr(bank_input, "__enter__"):
+        raise ValidationError("Chimew pipeline requires indexed bank storage")
+    with bank_input:
+        return _run_chimew_phase6_pipeline_with_bank_input(
+            schedule_path,
+            platform_path,
+            crossings_path,
+            positions_path,
+            rudy_input_path,
+            bank_channel_input_path,
+            bank_input,
+            electrical_map_path,
+            output_dir,
+            source_paths=source_paths,
+            grouper=grouper,
+            refiner=refiner,
+            rudy=rudy,
+            assigner=assigner,
+            region_count=region_count,
+        )
 
 
 def _validate_chimew_phase6_pipeline_locked(output_dir: Path) -> Dict[str, Any]:

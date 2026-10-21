@@ -123,6 +123,8 @@ class StaticExactCutNodeSequence(StaticExactRecordSequence):
     ) -> None:
         super().__init__("cut_nodes", count, factory)
         self._indexer = indexer
+        self._binary_decoder: Callable[[int], tuple[Any, ...]] | None = None
+        self._direct_binary_source: StaticExactDirectBinarySource | None = None
 
     def __getitem__(self, index):
         if isinstance(index, slice):
@@ -133,6 +135,101 @@ class StaticExactCutNodeSequence(StaticExactRecordSequence):
         if resolved < 0 or resolved >= len(self):
             raise IndexError("Static Exact record index out of range")
         return self._indexer(resolved)
+
+    def _bind_binary_decoder(
+        self, decoder: Callable[[int], tuple[Any, ...]]
+    ) -> None:
+        self._binary_decoder = decoder
+
+    def binary_node(self, index: int) -> tuple[Any, ...]:
+        """Return one validated node as raw UTF-8 fields for typed writers."""
+
+        if self._binary_decoder is None:
+            raise ValidationError("Static Exact binary node source is unavailable")
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("Static Exact record index must be an integer")
+        if index < 0 or index >= len(self):
+            raise IndexError("Static Exact record index out of range")
+        return self._binary_decoder(index)
+
+    @property
+    def direct_binary_source(self) -> "StaticExactDirectBinarySource | None":
+        return self._direct_binary_source
+
+    def bind_direct_binary_source(
+        self,
+        captures: "StaticExactCaptureSequence",
+        launch_flags: bytes | bytearray,
+        integer_topology: Any,
+    ) -> None:
+        """Attach the native integer relation used by the exact-binary writer.
+
+        The logical record streams remain the canonical digest surface.  This
+        private production attachment lets the typed binary publisher consume
+        the already validated CSR relation without expanding dependency and
+        logic-segment dictionaries a second time.
+        """
+
+        self._direct_binary_source = StaticExactDirectBinarySource(
+            self, captures, launch_flags, integer_topology
+        )
+
+
+class StaticExactCaptureSequence(StaticExactRecordSequence):
+    """A capture stream with a raw typed cursor for binary publication."""
+
+    def __init__(
+        self,
+        count: int,
+        factory: Callable[[], Iterator[dict[str, Any]]],
+        binary_factory: Callable[
+            [], Iterator[tuple[bytes, bytes, int, bytes, bytes, bytes]]
+        ],
+    ) -> None:
+        super().__init__("capture_requirements", count, factory)
+        self._binary_factory = binary_factory
+
+    def iter_binary_captures(
+        self,
+    ) -> Iterator[tuple[bytes, bytes, int, bytes, bytes, bytes]]:
+        return self._binary_factory()
+
+
+class StaticExactDirectBinarySource:
+    """Compact native topology consumed directly by assignment.exact.bin.
+
+    ``integer_topology`` is the independently finalized analyzer relation.  It
+    deliberately exposes only bounded integer counts/cursors; the publisher
+    checks every integer predecessor against the canonical cut-node strings
+    before emitting bytes, so a stale or mixed relation fails closed.
+    """
+
+    def __init__(
+        self,
+        cut_nodes: StaticExactCutNodeSequence,
+        captures: StaticExactCaptureSequence,
+        launch_flags: bytes | bytearray,
+        integer_topology: Any,
+    ) -> None:
+        if (
+            len(launch_flags) != len(cut_nodes)
+            or any(flag not in {0, 1, 2} for flag in launch_flags)
+            or not hasattr(integer_topology, "dependency_count")
+            or not hasattr(integer_topology, "dependency_indices")
+        ):
+            raise ValidationError("Static Exact direct binary source is invalid")
+        try:
+            topology_count = len(integer_topology)
+        except (TypeError, ValueError) as error:
+            raise ValidationError(
+                "Static Exact direct binary source is invalid"
+            ) from error
+        if topology_count != len(cut_nodes):
+            raise ValidationError("Static Exact direct binary source is invalid")
+        self.cut_nodes = cut_nodes
+        self.captures = captures
+        self.launch_flags = bytes(launch_flags)
+        self.integer_topology = integer_topology
 
 
 def build_static_exact_cut_node_stream(
@@ -223,12 +320,12 @@ def build_static_exact_cut_node_stream(
 
     count = len(offsets)
 
-    def decode(index: int) -> dict[str, Any]:
+    def decode_fields(index: int, *, raw: bool) -> tuple[Any, ...]:
         view = memoryview(encoded)
         offset = offsets[index]
         end = offsets[index + 1] if index + 1 < count else len(view)
 
-        def read_string() -> str:
+        def read_string() -> str | bytes:
             nonlocal offset
             if offset + _STRING_LENGTH.size > end:
                 raise ValidationError("Static Exact cut-node stream ended early")
@@ -237,16 +334,18 @@ def build_static_exact_cut_node_stream(
             value_end = offset + length
             if value_end > end:
                 raise ValidationError("Static Exact cut-node stream ended early")
+            encoded_value = bytes(view[offset:value_end])
+            offset = value_end
+            if not encoded_value:
+                raise ValidationError("Static Exact cut-node stream is invalid")
+            if raw:
+                return encoded_value
             try:
-                value = bytes(view[offset:value_end]).decode("utf-8")
+                return encoded_value.decode("utf-8")
             except UnicodeDecodeError as error:
                 raise ValidationError(
                     "Static Exact cut-node identity is invalid"
                 ) from error
-            offset = value_end
-            if not value:
-                raise ValidationError("Static Exact cut-node stream is invalid")
-            return value
 
         net = read_string()
         cut_class = read_string()
@@ -266,31 +365,60 @@ def build_static_exact_cut_node_stream(
         def read_strings(size: int) -> list[str]:
             return [read_string() for _ in range(size)]
 
-        result = {
+        sink_fpgas = read_strings(sink_count)
+        predecessors = read_strings(predecessor_count)
+        source_segments = read_strings(source_count)
+        capture_segments = read_strings(capture_count)
+        if offset != end:
+            raise ValidationError("Static Exact cut-node stream has trailing data")
+        return (
+            net,
+            cut_class,
+            source_fpga,
+            sink_fpgas,
+            dependency_level,
+            combinational_depth,
+            predecessors,
+            source_segments,
+            capture_segments,
+        )
+
+    def decode(index: int) -> dict[str, Any]:
+        (
+            net,
+            cut_class,
+            source_fpga,
+            sink_fpgas,
+            dependency_level,
+            combinational_depth,
+            predecessors,
+            source_segments,
+            capture_segments,
+        ) = decode_fields(index, raw=False)
+        return {
             "net": net,
             "cut_class": cut_class,
             "source_fpgas": [source_fpga],
-            "sink_fpgas": read_strings(sink_count),
+            "sink_fpgas": sink_fpgas,
             "dependency_level": dependency_level,
             "combinational_dependency_depth": combinational_depth,
-            "predecessor_cut_nets": read_strings(predecessor_count),
-            "source_segment_ids": read_strings(source_count),
-            "capture_segment_ids": read_strings(capture_count),
+            "predecessor_cut_nets": predecessors,
+            "source_segment_ids": source_segments,
+            "capture_segment_ids": capture_segments,
         }
-        if offset != end:
-            raise ValidationError("Static Exact cut-node stream has trailing data")
-        return result
 
     def cut_nodes() -> Iterator[dict[str, Any]]:
         for index in range(count):
             yield decode(index)
 
-    return StaticExactCutNodeSequence(count, cut_nodes, decode)
+    result = StaticExactCutNodeSequence(count, cut_nodes, decode)
+    result._bind_binary_decoder(lambda index: decode_fields(index, raw=True))
+    return result
 
 
 def build_static_exact_capture_stream(
     capture_relation: Iterable[tuple[Any, ...]],
-) -> StaticExactRecordSequence:
+) -> StaticExactCaptureSequence:
     """Pack the canonical native capture relation behind a typed record stream.
 
     Python resolves native capture coordinates against authoritative EmuIR.
@@ -367,31 +495,23 @@ def build_static_exact_capture_stream(
             encoded.extend(field)
         count += 1
 
-    def capture_requirements() -> Iterator[dict[str, Any]]:
+    def binary_captures(
+    ) -> Iterator[tuple[bytes, bytes, int, bytes, bytes, bytes]]:
         view = memoryview(encoded)
         offset = 0
-        for index in range(count):
+        for _index in range(count):
             if offset + _CAPTURE_HEADER.size > len(view):
                 raise ValidationError("Static Exact capture stream ended early")
             kind, *lengths = _CAPTURE_HEADER.unpack_from(view, offset)
             offset += _CAPTURE_HEADER.size
-            fields = []
-            for field_index, length in enumerate(lengths):
+            fields: list[bytes] = []
+            for length in lengths:
                 end = offset + length
                 if end > len(view):
                     raise ValidationError(
                         "Static Exact capture stream ended early"
                     )
-                raw = bytes(view[offset:end])
-                if field_index == 4:
-                    fields.append(raw)
-                else:
-                    try:
-                        fields.append(raw.decode("utf-8"))
-                    except UnicodeDecodeError as error:
-                        raise ValidationError(
-                            "Static Exact capture stream identity is invalid"
-                        ) from error
+                fields.append(bytes(view[offset:end]))
                 offset = end
             if (
                 kind not in {0, 1}
@@ -406,23 +526,41 @@ def build_static_exact_capture_stream(
                 )
             ):
                 raise ValidationError("Static Exact capture stream is invalid")
+            for field in fields[:4]:
+                try:
+                    field.decode("utf-8")
+                except UnicodeDecodeError as error:
+                    raise ValidationError(
+                        "Static Exact capture stream identity is invalid"
+                    ) from error
+            yield fields[0], fields[1], kind, fields[2], fields[3], fields[4]
+        if offset != len(view):
+            raise ValidationError("Static Exact capture stream has trailing data")
+
+    def capture_requirements() -> Iterator[dict[str, Any]]:
+        for index, (
+            cut_net,
+            fpga,
+            kind,
+            endpoint,
+            port,
+            bit,
+        ) in enumerate(binary_captures()):
             yield {
                 "id": f"capture{index:06d}",
-                "cut_net": fields[0],
-                "fpga": fields[1],
+                "cut_net": cut_net.decode("utf-8"),
+                "fpga": fpga.decode("utf-8"),
                 "kind": "top-output" if kind == 0 else "architectural-state",
-                "endpoint": fields[2],
+                "endpoint": endpoint.decode("utf-8"),
                 **(
-                    {"port": fields[3], "bit": int.from_bytes(fields[4], "big")}
+                    {"port": port.decode("utf-8"), "bit": int.from_bytes(bit, "big")}
                     if kind == 1
                     else {}
                 ),
             }
-        if offset != len(view):
-            raise ValidationError("Static Exact capture stream has trailing data")
 
-    return StaticExactRecordSequence(
-        "capture_requirements", count, capture_requirements
+    return StaticExactCaptureSequence(
+        count, capture_requirements, binary_captures
     )
 
 
@@ -430,6 +568,8 @@ def build_static_exact_record_streams(
     cut_nodes: Sequence[Mapping[str, Any]],
     captures: Sequence[Mapping[str, Any]],
     launch_flags: bytes | bytearray,
+    *,
+    integer_topology: Any = None,
 ) -> dict[str, StaticExactRecordSequence]:
     """Build canonical edge/segment streams from final compact relations.
 
@@ -572,7 +712,7 @@ def build_static_exact_record_streams(
         ):
             raise ValidationError("Static Exact logic stream ended early")
 
-    return {
+    result = {
         "dependency_edges": StaticExactRecordSequence(
             "dependency_edges", dependency_count, dependency_edges
         ),
@@ -582,6 +722,15 @@ def build_static_exact_record_streams(
             logic_segments,
         ),
     }
+    if integer_topology is not None:
+        if not isinstance(cut_nodes, StaticExactCutNodeSequence) or not isinstance(
+            captures, StaticExactCaptureSequence
+        ):
+            raise ValidationError("Static Exact direct binary source is invalid")
+        cut_nodes.bind_direct_binary_source(
+            captures, launch_flags, integer_topology
+        )
+    return result
 
 
 def is_static_exact_record_sequence(value: Any) -> bool:

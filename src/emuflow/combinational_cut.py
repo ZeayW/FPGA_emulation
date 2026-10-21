@@ -2514,7 +2514,10 @@ def build_static_exact_semantic_contract(
     if stream_records:
         cut_nodes = build_static_exact_cut_node_stream(generate_cut_nodes())
         record_streams = build_static_exact_record_streams(
-            cut_nodes, capture_records, launch_flags
+            cut_nodes,
+            capture_records,
+            launch_flags,
+            integer_topology=analysis_records,
         )
         dependency_edges = record_streams["dependency_edges"]
         logic_segments = record_streams["logic_segments"]

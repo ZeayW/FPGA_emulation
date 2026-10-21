@@ -8,8 +8,6 @@ large inputs.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 import subprocess
 import tempfile
@@ -66,8 +64,218 @@ def _point(value: Any, label: str) -> Tuple[float, float]:
     )
 
 
-def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str, Any]:
-    """Validate source-qualified physical groups, banks, channels, and sites."""
+def _normalize_chimew_group(
+    raw: Mapping[str, Any],
+    index: int,
+    *,
+    schema: str,
+    domain_by_id: Mapping[str, int],
+) -> Dict[str, Any]:
+    """Validate one group without retaining sibling groups.
+
+    The indexed Phase 6 input store calls this helper while walking its ordered
+    group relation.  Keeping the validator record-local prevents a second
+    graph-sized normalized group tree from being built by production readers.
+    """
+
+    group_id = _string(raw.get("id"), f"chimew.assignment.groups[{index}].id")
+    domain_id = _string(raw.get("domain"), f"{group_id}.domain")
+    kind = raw.get("kind")
+    direction = raw.get("direction")
+    if domain_id not in domain_by_id:
+        raise ValidationError(f"invalid Chimew group domain for {group_id!r}")
+    if kind not in ("tdm_group", "common_signal"):
+        raise ValidationError(f"invalid Chimew group kind for {group_id!r}")
+    allowed_directions = (
+        {"a_to_b", "b_to_a"}
+        if schema == CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1
+        else {"a_to_b", "b_to_a", "bidirectional"}
+    )
+    if direction not in allowed_directions:
+        raise ValidationError(f"invalid Chimew direction for {group_id!r}")
+    if kind == "common_signal" and direction == "bidirectional":
+        raise ValidationError("a Chimew common signal cannot be bidirectional")
+    raw_members = raw.get("members")
+    if not isinstance(raw_members, list) or not raw_members:
+        raise ValidationError(f"Chimew group {group_id!r} has no signals")
+    if kind == "common_signal" and len(raw_members) != 1:
+        raise ValidationError("a Chimew common signal must be a singleton group")
+    members = []
+    seen_member_ids = set()
+    for member_index, raw_member in enumerate(raw_members):
+        if not isinstance(raw_member, dict):
+            raise ValidationError(f"{group_id}.members[{member_index}] is invalid")
+        member_id = _string(raw_member.get("id"), f"{group_id}.member.id")
+        raw_fanins = raw_member.get("fanins")
+        if (
+            member_id in seen_member_ids
+            or not isinstance(raw_fanins, list)
+            or not raw_fanins
+        ):
+            raise ValidationError(f"invalid Chimew signal member {member_id!r}")
+        seen_member_ids.add(member_id)
+        timing_weight = _number(
+            raw_member.get("timing_weight", 1.0),
+            f"{group_id}.{member_id}.timing_weight",
+            positive=True,
+        )
+        fanins = [
+            _point(point, f"{group_id}.{member_id}.fanins[{fanin_index}]")
+            for fanin_index, point in enumerate(raw_fanins)
+        ]
+        member_direction = raw_member.get("direction", direction)
+        if member_direction not in ("a_to_b", "b_to_a") or (
+            direction != "bidirectional" and member_direction != direction
+        ):
+            raise ValidationError(
+                f"invalid Chimew member direction for {member_id!r}"
+            )
+        members.append(
+            {
+                "id": member_id,
+                "direction": 0 if member_direction == "a_to_b" else 1,
+                "timing_weight": timing_weight,
+                "fanout": _point(
+                    raw_member.get("fanout"), f"{group_id}.{member_id}.fanout"
+                ),
+                "fanins": fanins,
+            }
+        )
+    normalized_direction = (
+        0 if direction == "a_to_b" else 1 if direction == "b_to_a" else 2
+    )
+    if normalized_direction == 2 and {
+        member["direction"] for member in members
+    } != {0, 1}:
+        raise ValidationError(
+            "a bidirectional Chimew bundle must contain both directions"
+        )
+    return {
+        "id": group_id,
+        "domain": domain_by_id[domain_id],
+        "kind": 0 if kind == "tdm_group" else 1,
+        "direction": normalized_direction,
+        "members": members,
+    }
+
+
+class _NormalizedDocumentGroups(Sequence[Mapping[str, Any]]):
+    """Normalize one legacy JSON group at a time without a sibling tree."""
+
+    def __init__(
+        self,
+        values: Sequence[Mapping[str, Any]],
+        *,
+        schema: str,
+        domain_by_id: Mapping[str, int],
+    ):
+        self._values = values
+        self._schema = schema
+        self._domain_by_id = dict(domain_by_id)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return list(self)[index]
+        normalized_index = index if index >= 0 else len(self) + index
+        return _normalize_chimew_group(
+            self._values[index],
+            normalized_index,
+            schema=self._schema,
+            domain_by_id=self._domain_by_id,
+        )
+
+    def __iter__(self):
+        for index, raw in enumerate(self._values):
+            yield _normalize_chimew_group(
+                raw,
+                index,
+                schema=self._schema,
+                domain_by_id=self._domain_by_id,
+            )
+
+
+def _normalize_chimew_bank(
+    raw: Mapping[str, Any],
+    index: int,
+    *,
+    domain_by_id: Mapping[str, int],
+    first_channel_index: int,
+) -> Tuple[Dict[str, Any], int]:
+    """Validate one bank pair and assign stable global channel indices."""
+
+    bank_id = _string(raw.get("id"), f"chimew.assignment.bank_pairs[{index}].id")
+    domain_id = _string(raw.get("domain"), f"{bank_id}.domain")
+    if domain_id not in domain_by_id:
+        raise ValidationError(f"invalid Chimew bank pair {bank_id!r}")
+    bank_a = raw.get("bank_a")
+    bank_b = raw.get("bank_b")
+    if not isinstance(bank_a, dict) or not isinstance(bank_b, dict):
+        raise ValidationError(f"Chimew bank pair {bank_id!r} endpoints are missing")
+    normalized_bank_a = {
+        "id": _string(bank_a.get("id"), f"{bank_id}.bank_a.id"),
+        "point": _point(bank_a, f"{bank_id}.bank_a"),
+    }
+    normalized_bank_b = {
+        "id": _string(bank_b.get("id"), f"{bank_id}.bank_b.id"),
+        "point": _point(bank_b, f"{bank_id}.bank_b"),
+    }
+    raw_channels = raw.get("channels")
+    if not isinstance(raw_channels, list) or not raw_channels:
+        raise ValidationError(f"Chimew bank pair {bank_id!r} has no channels")
+    channels = []
+    orders = set()
+    channel_index = first_channel_index
+    seen_ids = set()
+    for local_index, raw_channel in enumerate(raw_channels):
+        if not isinstance(raw_channel, dict):
+            raise ValidationError(f"{bank_id}.channels[{local_index}] is invalid")
+        channel_id = _string(
+            raw_channel.get("id"), f"{bank_id}.channels[{local_index}].id"
+        )
+        order = _integer(raw_channel.get("order"), f"{channel_id}.order")
+        if channel_id in seen_ids or order in orders:
+            raise ValidationError(f"duplicate Chimew channel/order in {bank_id!r}")
+        seen_ids.add(channel_id)
+        orders.add(order)
+        channels.append(
+            {
+                "id": channel_id,
+                "index": channel_index,
+                "order": order,
+                "pin_a": _point(raw_channel.get("pin_a"), f"{channel_id}.pin_a"),
+                "pin_b": _point(raw_channel.get("pin_b"), f"{channel_id}.pin_b"),
+            }
+        )
+        channel_index += 1
+    if orders != set(range(len(channels))):
+        raise ValidationError(f"Chimew channel order for {bank_id!r} is not contiguous")
+    channels.sort(key=lambda channel: channel["order"])
+    return (
+        {
+            "id": bank_id,
+            "domain": domain_by_id[domain_id],
+            "bank_a": normalized_bank_a,
+            "bank_b": normalized_bank_b,
+            "channels": channels,
+        },
+        channel_index,
+    )
+
+
+def _normalize_chimew_problem_header(
+    document: Mapping[str, Any],
+    *,
+    metrics: Mapping[str, int],
+) -> Dict[str, Any]:
+    """Derive every bounded normalized fact from the sealed logical header.
+
+    Indexed readers use this independently of the stored ``problem_header``.
+    The latter is an acceleration/checking record, never an authority for
+    design identity, cost scale, provenance, domains, or metrics.
+    """
 
     schema = document.get("schema")
     if schema not in {
@@ -78,21 +286,17 @@ def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str,
     if document.get("provider") != CHIMEW_BANK_CHANNEL_INPUT_PROVIDER:
         raise ValidationError("Chimew bank/channel input is not source-qualified")
     if document.get("coordinate_system") != "physical-site-xy":
-        raise ValidationError("Chimew bank/channel assignment rejects normalized coordinates")
-    design = _string(document.get("design"), "chimew.assignment.design")
-    platform = _string(document.get("platform"), "chimew.assignment.platform")
-    cost_scale = _integer(
-        document.get("cost_quantization_per_site"),
-        "chimew.assignment.cost_quantization_per_site",
-        1,
-    )
+        raise ValidationError(
+            "Chimew bank/channel assignment rejects normalized coordinates"
+        )
     provenance = document.get("provenance")
     if not isinstance(provenance, dict):
         raise ValidationError("Chimew bank/channel provenance is missing")
     normalized_provenance = {
         "producer": _string(provenance.get("producer"), "chimew.assignment.producer"),
         "producer_version": _string(
-            provenance.get("producer_version"), "chimew.assignment.producer_version"
+            provenance.get("producer_version"),
+            "chimew.assignment.producer_version",
         ),
     }
     for field in ("grouping_sha256", "placement_sha256", "architecture_sha256"):
@@ -104,17 +308,65 @@ def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str,
     if not isinstance(raw_domains, list) or not raw_domains:
         raise ValidationError("Chimew bank/channel domains are missing")
     domains = []
-    domain_by_id = {}
+    seen_domains = set()
     for index, raw in enumerate(raw_domains):
         if not isinstance(raw, dict):
-            raise ValidationError(f"chimew.assignment.domains[{index}]: expected an object")
+            raise ValidationError(
+                f"chimew.assignment.domains[{index}]: expected an object"
+            )
         domain_id = _string(raw.get("id"), f"chimew.assignment.domains[{index}].id")
         fpga_a = _string(raw.get("fpga_a"), f"{domain_id}.fpga_a")
         fpga_b = _string(raw.get("fpga_b"), f"{domain_id}.fpga_b")
-        if fpga_a == fpga_b or domain_id in domain_by_id:
+        if fpga_a == fpga_b or domain_id in seen_domains:
             raise ValidationError(f"invalid or duplicate Chimew domain {domain_id!r}")
-        domain_by_id[domain_id] = index
+        seen_domains.add(domain_id)
         domains.append({"id": domain_id, "fpga_a": fpga_a, "fpga_b": fpga_b})
+
+    return {
+        "design": _string(document.get("design"), "chimew.assignment.design"),
+        "platform": _string(document.get("platform"), "chimew.assignment.platform"),
+        "cost_scale": _integer(
+            document.get("cost_quantization_per_site"),
+            "chimew.assignment.cost_quantization_per_site",
+            1,
+        ),
+        "provenance": normalized_provenance,
+        "domains": domains,
+        "metrics": dict(metrics),
+    }
+
+
+def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str, Any]:
+    """Validate source-qualified physical groups, banks, channels, and sites."""
+
+    from .chimew_bank_channel_storage import BankChannelInputView
+
+    if isinstance(document, BankChannelInputView):
+        return document.validated_problem()
+
+    schema = document.get("schema")
+    raw_metrics = document.get("metrics")
+    if not isinstance(raw_metrics, dict):
+        raise ValidationError("Chimew bank/channel input metrics do not agree")
+    # Record-derived metrics are checked below.  This first pass derives all
+    # other bounded semantics from the logical header itself.
+    provisional_metrics = {
+        field: raw_metrics.get(field)
+        for field in (
+            "groups",
+            "signals",
+            "fanins",
+            "bank_pairs",
+            "channels",
+            "bidirectional_bundles",
+        )
+        if field in raw_metrics
+    }
+    bounded = _normalize_chimew_problem_header(
+        document, metrics=provisional_metrics
+    )
+    domains = bounded["domains"]
+    domain_by_id = {domain["id"]: index for index, domain in enumerate(domains)}
 
     raw_banks = document.get("bank_pairs")
     if not isinstance(raw_banks, list) or not raw_banks:
@@ -126,151 +378,43 @@ def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str,
     for index, raw in enumerate(raw_banks):
         if not isinstance(raw, dict):
             raise ValidationError(f"chimew.assignment.bank_pairs[{index}]: expected an object")
-        bank_id = _string(raw.get("id"), f"chimew.assignment.bank_pairs[{index}].id")
-        domain_id = _string(raw.get("domain"), f"{bank_id}.domain")
-        if bank_id in seen_bank_ids or domain_id not in domain_by_id:
+        bank, next_channel_count = _normalize_chimew_bank(
+            raw,
+            index,
+            domain_by_id=domain_by_id,
+            first_channel_index=channel_count,
+        )
+        bank_id = bank["id"]
+        if bank_id in seen_bank_ids:
             raise ValidationError(f"invalid or duplicate Chimew bank pair {bank_id!r}")
         seen_bank_ids.add(bank_id)
-        bank_a = raw.get("bank_a")
-        bank_b = raw.get("bank_b")
-        if not isinstance(bank_a, dict) or not isinstance(bank_b, dict):
-            raise ValidationError(f"Chimew bank pair {bank_id!r} endpoints are missing")
-        normalized_bank_a = {
-            "id": _string(bank_a.get("id"), f"{bank_id}.bank_a.id"),
-            "point": _point(bank_a, f"{bank_id}.bank_a"),
-        }
-        normalized_bank_b = {
-            "id": _string(bank_b.get("id"), f"{bank_id}.bank_b.id"),
-            "point": _point(bank_b, f"{bank_id}.bank_b"),
-        }
-        raw_channels = raw.get("channels")
-        if not isinstance(raw_channels, list) or not raw_channels:
-            raise ValidationError(f"Chimew bank pair {bank_id!r} has no channels")
-        channels = []
-        orders = set()
-        for channel_index, raw_channel in enumerate(raw_channels):
-            if not isinstance(raw_channel, dict):
-                raise ValidationError(f"{bank_id}.channels[{channel_index}] is invalid")
-            channel_id = _string(
-                raw_channel.get("id"), f"{bank_id}.channels[{channel_index}].id"
-            )
-            order = _integer(raw_channel.get("order"), f"{channel_id}.order")
-            if channel_id in seen_channel_ids or order in orders:
-                raise ValidationError(f"duplicate Chimew channel/order in {bank_id!r}")
-            seen_channel_ids.add(channel_id)
-            orders.add(order)
-            channels.append(
-                {
-                    "id": channel_id,
-                    "index": channel_count,
-                    "order": order,
-                    "pin_a": _point(raw_channel.get("pin_a"), f"{channel_id}.pin_a"),
-                    "pin_b": _point(raw_channel.get("pin_b"), f"{channel_id}.pin_b"),
-                }
-            )
-            channel_count += 1
-        if orders != set(range(len(channels))):
-            raise ValidationError(f"Chimew channel order for {bank_id!r} is not contiguous")
-        channels.sort(key=lambda channel: channel["order"])
-        banks.append(
-            {
-                "id": bank_id,
-                "domain": domain_by_id[domain_id],
-                "bank_a": normalized_bank_a,
-                "bank_b": normalized_bank_b,
-                "channels": channels,
-            }
-        )
+        for channel in bank["channels"]:
+            if channel["id"] in seen_channel_ids:
+                raise ValidationError(f"duplicate Chimew channel {channel['id']!r}")
+            seen_channel_ids.add(channel["id"])
+        channel_count = next_channel_count
+        banks.append(bank)
 
     raw_groups = document.get("groups")
     if not isinstance(raw_groups, list) or not raw_groups:
         raise ValidationError("Chimew signal groups are missing")
-    groups = []
     seen_group_ids = set()
     signal_count = fanin_count = 0
     for index, raw in enumerate(raw_groups):
         if not isinstance(raw, dict):
             raise ValidationError(f"chimew.assignment.groups[{index}]: expected an object")
-        group_id = _string(raw.get("id"), f"chimew.assignment.groups[{index}].id")
-        domain_id = _string(raw.get("domain"), f"{group_id}.domain")
-        kind = raw.get("kind")
-        direction = raw.get("direction")
-        if group_id in seen_group_ids or domain_id not in domain_by_id:
+        group = _normalize_chimew_group(
+            raw, index, schema=schema, domain_by_id=domain_by_id
+        )
+        group_id = group["id"]
+        if group_id in seen_group_ids:
             raise ValidationError(f"invalid or duplicate Chimew group {group_id!r}")
-        if kind not in ("tdm_group", "common_signal"):
-            raise ValidationError(f"invalid Chimew group kind for {group_id!r}")
-        allowed_directions = (
-            {"a_to_b", "b_to_a"}
-            if schema == CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1
-            else {"a_to_b", "b_to_a", "bidirectional"}
-        )
-        if direction not in allowed_directions:
-            raise ValidationError(f"invalid Chimew direction for {group_id!r}")
-        if kind == "common_signal" and direction == "bidirectional":
-            raise ValidationError("a Chimew common signal cannot be bidirectional")
-        raw_members = raw.get("members")
-        if not isinstance(raw_members, list) or not raw_members:
-            raise ValidationError(f"Chimew group {group_id!r} has no signals")
-        if kind == "common_signal" and len(raw_members) != 1:
-            raise ValidationError("a Chimew common signal must be a singleton group")
         seen_group_ids.add(group_id)
-        members = []
-        seen_member_ids = set()
-        for member_index, raw_member in enumerate(raw_members):
-            if not isinstance(raw_member, dict):
-                raise ValidationError(f"{group_id}.members[{member_index}] is invalid")
-            member_id = _string(raw_member.get("id"), f"{group_id}.member.id")
-            raw_fanins = raw_member.get("fanins")
-            if member_id in seen_member_ids or not isinstance(raw_fanins, list) or not raw_fanins:
-                raise ValidationError(f"invalid Chimew signal member {member_id!r}")
-            seen_member_ids.add(member_id)
-            timing_weight = raw_member.get("timing_weight", 1.0)
-            timing_weight = _number(
-                timing_weight,
-                f"{group_id}.{member_id}.timing_weight",
-                positive=True,
-            )
-            fanins = [
-                _point(point, f"{group_id}.{member_id}.fanins[{fanin_index}]")
-                for fanin_index, point in enumerate(raw_fanins)
-            ]
-            member_direction = raw_member.get("direction", direction)
-            if member_direction not in ("a_to_b", "b_to_a") or (
-                direction != "bidirectional" and member_direction != direction
-            ):
-                raise ValidationError(
-                    f"invalid Chimew member direction for {member_id!r}"
-                )
-            members.append(
-                {
-                    "id": member_id,
-                    "direction": 0 if member_direction == "a_to_b" else 1,
-                    "timing_weight": timing_weight,
-                    "fanout": _point(raw_member.get("fanout"), f"{group_id}.{member_id}.fanout"),
-                    "fanins": fanins,
-                }
-            )
-            signal_count += 1
-            fanin_count += len(fanins)
-        if direction == "bidirectional" and {
-            member["direction"] for member in members
-        } != {0, 1}:
-            raise ValidationError(
-                "a bidirectional Chimew bundle must contain both directions"
-            )
-        groups.append(
-            {
-                "id": group_id,
-                "domain": domain_by_id[domain_id],
-                "kind": 0 if kind == "tdm_group" else 1,
-                "direction": (
-                    0
-                    if direction == "a_to_b"
-                    else 1 if direction == "b_to_a" else 2
-                ),
-                "members": members,
-            }
-        )
+        signal_count += len(group["members"])
+        fanin_count += sum(len(member["fanins"]) for member in group["members"])
+    groups = _NormalizedDocumentGroups(
+        raw_groups, schema=schema, domain_by_id=domain_by_id
+    )
 
     for domain_index, domain in enumerate(domains):
         capacity = sum(
@@ -281,7 +425,7 @@ def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str,
             raise ValidationError(
                 f"Chimew domain {domain['id']!r} has insufficient channel capacity"
             )
-    metrics = document.get("metrics")
+    metrics = raw_metrics
     expected_metrics = {
         "groups": len(groups),
         "signals": signal_count,
@@ -302,15 +446,11 @@ def validate_chimew_bank_channel_input(document: Mapping[str, Any]) -> Dict[str,
         or declared_bidirectional != expected_metrics["bidirectional_bundles"]
     ):
         raise ValidationError("Chimew bidirectional-bundle metrics do not agree")
+    bounded["metrics"] = expected_metrics
     return {
-        "design": design,
-        "platform": platform,
-        "cost_scale": cost_scale,
-        "provenance": normalized_provenance,
-        "domains": domains,
+        **bounded,
         "banks": banks,
         "groups": groups,
-        "metrics": expected_metrics,
     }
 
 
@@ -345,32 +485,40 @@ def _candidate_cost(group: Mapping[str, Any], endpoint_a: Tuple[float, float], e
 
 
 def _serialize(problem: Mapping[str, Any], path: Path) -> None:
-    lines = [
-        "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V2",
-        f"PARAM {problem['cost_scale']}",
-    ]
-    for bank_index, bank in enumerate(problem["banks"]):
-        point_a = bank["bank_a"]["point"]
-        point_b = bank["bank_b"]["point"]
-        lines.append(
-            f"BANK {bank_index} {bank['domain']} {point_a[0]:.17g} {point_a[1]:.17g} {point_b[0]:.17g} {point_b[1]:.17g}"
-        )
-        for channel in bank["channels"]:
-            pin_a, pin_b = channel["pin_a"], channel["pin_b"]
-            lines.append(
-                f"CHANNEL {channel['index']} {bank_index} {channel['order']} {pin_a[0]:.17g} {pin_a[1]:.17g} {pin_b[0]:.17g} {pin_b[1]:.17g}"
+    with path.open("w", encoding="utf-8") as stream:
+        stream.write("EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V2\n")
+        stream.write(f"PARAM {problem['cost_scale']}\n")
+        for bank_index, bank in enumerate(problem["banks"]):
+            point_a = bank["bank_a"]["point"]
+            point_b = bank["bank_b"]["point"]
+            stream.write(
+                f"BANK {bank_index} {bank['domain']} {point_a[0]:.17g} "
+                f"{point_a[1]:.17g} {point_b[0]:.17g} {point_b[1]:.17g}\n"
             )
-    for group_index, group in enumerate(problem["groups"]):
-        lines.append(
-            f"GROUP {group_index} {group['domain']} {group['kind']} {group['direction']} {len(group['members'])}"
-        )
-        for member_index, member in enumerate(group["members"]):
-            fanout = member["fanout"]
-            fanins = " ".join(f"{point[0]:.17g} {point[1]:.17g}" for point in member["fanins"])
-            lines.append(
-                f"MEMBER {group_index} {member_index} {member['direction']} {member['timing_weight']:.17g} {fanout[0]:.17g} {fanout[1]:.17g} {len(member['fanins'])} {fanins}"
+            for channel in bank["channels"]:
+                pin_a, pin_b = channel["pin_a"], channel["pin_b"]
+                stream.write(
+                    f"CHANNEL {channel['index']} {bank_index} {channel['order']} "
+                    f"{pin_a[0]:.17g} {pin_a[1]:.17g} {pin_b[0]:.17g} "
+                    f"{pin_b[1]:.17g}\n"
+                )
+        for group_index, group in enumerate(problem["groups"]):
+            stream.write(
+                f"GROUP {group_index} {group['domain']} {group['kind']} "
+                f"{group['direction']} {len(group['members'])}\n"
             )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            for member_index, member in enumerate(group["members"]):
+                fanout = member["fanout"]
+                fanins = " ".join(
+                    f"{point[0]:.17g} {point[1]:.17g}"
+                    for point in member["fanins"]
+                )
+                stream.write(
+                    f"MEMBER {group_index} {member_index} "
+                    f"{member['direction']} {member['timing_weight']:.17g} "
+                    f"{fanout[0]:.17g} {fanout[1]:.17g} "
+                    f"{len(member['fanins'])} {fanins}\n"
+                )
 
 
 def _run_native(problem: Mapping[str, Any], executable: Optional[str]) -> Dict[str, Any]:
@@ -744,7 +892,9 @@ def evaluate_chimew_bank_channel_assignment(
                 "channel_cost": channel_raw_cost,
             }
         )
-    canonical_input = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    from .chimew_bank_channel_storage import (
+        canonical_bank_channel_input_sha256,
+    )
     return {
         "schema": CHIMEW_BANK_CHANNEL_REPORT_SCHEMA,
         "status": "standalone_paper_kernel",
@@ -759,7 +909,7 @@ def evaluate_chimew_bank_channel_assignment(
         ),
         "numeric_policy": "nearest-integer-cost-rank-with-explicit-scale",
         "provenance": problem["provenance"],
-        "input_sha256": hashlib.sha256(canonical_input).hexdigest(),
+        "input_sha256": canonical_bank_channel_input_sha256(document),
         "metrics": {
             **problem["metrics"],
             "stage1_cost_rank": stage1_cost,

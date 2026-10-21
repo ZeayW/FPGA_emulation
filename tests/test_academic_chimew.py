@@ -13,6 +13,7 @@ from emuflow.academic_chimew import (
     _timing_weights,
     materialize_academic_chimew_inputs,
 )
+from emuflow.chimew_bank_channel_storage import read_chimew_bank_channel_input
 from emuflow.chimew_pipeline import (
     run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
@@ -289,7 +290,7 @@ class AcademicChimewTest(unittest.TestCase):
                     grouper=self.executables["grouper"],
                     refiner=self.executables["refiner"],
                 )
-            bank_input = read_json(
+            bank_input = read_chimew_bank_channel_input(
                 Path(lookahead["artifacts"]["bank_channel_input"]["path"])
             )
             guarded_groups = [
@@ -360,7 +361,14 @@ class AcademicChimewTest(unittest.TestCase):
                     for entry in materialized_schedule["entries"]
                 )
             )
-            bank_input = read_json(Path(artifacts["bank_channel_input"]["path"]))
+            bank_selector_path = Path(
+                artifacts["bank_channel_input"]["path"]
+            )
+            self.assertIn("bank_channel_input_store", artifacts)
+            selector = read_json(bank_selector_path)
+            self.assertNotIn("groups", selector["header"])
+            self.assertNotIn("bank_pairs", selector["header"])
+            bank_input = read_chimew_bank_channel_input(bank_selector_path)
             electrical_map = read_json(Path(artifacts["electrical_map"]["path"]))
             directions = {group["direction"] for group in bank_input["groups"]}
             self.assertEqual(directions, {"a_to_b", "b_to_a"})
@@ -401,6 +409,7 @@ class AcademicChimewTest(unittest.TestCase):
                 region_count=4,
             )
             self.assertEqual(report["qualification_scope"], "byte-bound-source-artifacts")
+            self.assertIn("bank_channel_input_store", report["artifacts"])
             self.assertEqual(
                 validate_chimew_phase6_pipeline(root / "chimew")["status"],
                 "pass",
@@ -430,7 +439,7 @@ class AcademicChimewTest(unittest.TestCase):
                 refiner=self.executables["refiner"],
             )
             artifacts = lookahead["artifacts"]
-            bank_input = read_json(
+            bank_input = read_chimew_bank_channel_input(
                 Path(artifacts["bank_channel_input"]["path"])
             )
             electrical_map = read_json(
@@ -683,7 +692,7 @@ class AcademicChimewTest(unittest.TestCase):
                 set(),
             )
             self.assertEqual(timing_guard["relaxed_shared_bidirectional_lanes"], [])
-            bank_input = read_json(
+            bank_input = read_chimew_bank_channel_input(
                 Path(lookahead["artifacts"]["bank_channel_input"]["path"])
             )
             electrical_map = read_json(
@@ -761,7 +770,7 @@ class AcademicChimewTest(unittest.TestCase):
             self.assertEqual(
                 lookahead["timing_weighting"]["maximum_weight"], 10.0
             )
-            bank_input = read_json(
+            bank_input = read_chimew_bank_channel_input(
                 Path(lookahead["artifacts"]["bank_channel_input"]["path"])
             )
             weights = {
@@ -927,7 +936,7 @@ class AcademicChimewTest(unittest.TestCase):
                 grouper=self.executables["grouper"],
                 refiner=self.executables["refiner"],
             )
-            bank_input = read_json(
+            bank_input = read_chimew_bank_channel_input(
                 Path(lookahead["artifacts"]["bank_channel_input"]["path"])
             )
             weights = {

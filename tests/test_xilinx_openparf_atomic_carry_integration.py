@@ -7,6 +7,7 @@ from emuflow.xilinx_openparf_atomic import (
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
     read_xilinx_openparf_atomic_source,
+    read_xilinx_openparf_atomic_name_map,
     validate_xilinx_openparf_atomic_placement,
 )
 from emuflow.xilinx_openparf_bridge import (
@@ -121,7 +122,7 @@ class XilinxOpenparfAtomicCarryIntegrationTest(unittest.TestCase):
             self.assertEqual(len(constraints["site_chain_sets"]), 1)
 
             placement = root / "native.pl"
-            _write_atomic_placement(placement, read_json(output / "name_map.json"))
+            _write_atomic_placement(placement, read_xilinx_openparf_atomic_name_map(output / "name_map.json"))
             certificate_path = root / "certificate.json"
             certificate = validate_xilinx_openparf_atomic_placement(
                 placement,

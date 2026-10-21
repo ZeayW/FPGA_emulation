@@ -51,10 +51,16 @@ from .xilinx_openparf_source_storage import (
     read_xilinx_openparf_atomic_source,
     write_xilinx_openparf_atomic_source_storage,
 )
+from .xilinx_openparf_name_map_storage import (
+    OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
+    OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA,
+    read_xilinx_openparf_atomic_name_map,
+    materialize_xilinx_openparf_atomic_name_map,
+    write_xilinx_openparf_atomic_name_map_storage,
+)
 
 
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
-OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v2"
 OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v2"
 OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-placement-database/v2"
@@ -800,13 +806,32 @@ def load_xilinx_openparf_sites(
     expected_name_map_schema: str,
     coordinates: Optional[Sequence[Tuple[int, int]]] = None,
     resources: Optional[Sequence[str]] = None,
+    mapped_sha256: Optional[str] = None,
+    packed_sha256: Optional[str] = None,
+    architecture_sha256: Optional[str] = None,
+    allow_legacy_name_map: bool = False,
 ) -> List[Dict[str, Any]]:
     """Read only requested site rows from the normalized placement contract."""
 
-    name_map = read_json(name_map_path)
-    if name_map.get("schema") != expected_name_map_schema:
-        raise ValidationError("OpenPARF name map is invalid")
-    database_path, expected_count = _site_database_path(name_map_path, name_map)
+    name_map = (
+        read_xilinx_openparf_atomic_name_map(
+            name_map_path,
+            mapped_sha256=mapped_sha256,
+            packed_sha256=packed_sha256,
+            architecture_sha256=architecture_sha256,
+            allow_legacy=allow_legacy_name_map,
+        )
+        if expected_name_map_schema == OPENPARF_ATOMIC_NAME_MAP_SCHEMA
+        else read_json(name_map_path)
+    )
+    try:
+        if name_map.get("schema") != expected_name_map_schema:
+            raise ValidationError("OpenPARF name map is invalid")
+        database_path, expected_count = _site_database_path(name_map_path, name_map)
+    finally:
+        close_name_map = getattr(name_map, "close", None)
+        if callable(close_name_map):
+            close_name_map()
     requested = {
         (int(coordinate[0]), int(coordinate[1])) for coordinate in coordinates or []
     }
@@ -886,6 +911,10 @@ def load_xilinx_openparf_atomic_sites(
     *,
     coordinates: Optional[Sequence[Tuple[int, int]]] = None,
     resources: Optional[Sequence[str]] = None,
+    mapped_sha256: Optional[str] = None,
+    packed_sha256: Optional[str] = None,
+    architecture_sha256: Optional[str] = None,
+    allow_legacy_name_map: bool = False,
 ) -> List[Dict[str, Any]]:
     """Read selected sites from an atomic OpenPARF placement contract."""
 
@@ -894,6 +923,10 @@ def load_xilinx_openparf_atomic_sites(
         expected_name_map_schema=OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
         coordinates=coordinates,
         resources=resources,
+        mapped_sha256=mapped_sha256,
+        packed_sha256=packed_sha256,
+        architecture_sha256=architecture_sha256,
+        allow_legacy_name_map=allow_legacy_name_map,
     )
 
 
@@ -1202,6 +1235,7 @@ def legalize_xilinx_openparf_ff_control_sets(
     output_path: Path,
     *,
     mapped_value: Optional[Mapping[str, Any]] = None,
+    packed_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Repair only native FF slots that violate UltraScale+ control sets.
 
@@ -1212,20 +1246,33 @@ def legalize_xilinx_openparf_ff_control_sets(
     still rechecks the complete result after this bounded legalization pass.
     """
 
-    name_map = read_json(name_map_path)
+    mapped_digest = _sha256(mapped_path)
+    packed_digest = _sha256(packed_path) if packed_path is not None else None
+    name_map = read_xilinx_openparf_atomic_name_map(
+        name_map_path,
+        mapped_sha256=mapped_digest,
+        packed_sha256=packed_digest,
+    )
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
-    if name_map.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA:
-        raise ValidationError("OpenPARF atomic name map is invalid")
-    _top, module = _select_module(mapped, name_map.get("top"))
+    try:
+        if name_map.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA:
+            raise ValidationError("OpenPARF atomic name map is invalid")
+        name_map_top = name_map.get("top")
+        atom_sequence = name_map.get("atoms", [])
+        atoms = {
+            item["openparf"]: item for item in atom_sequence
+            if isinstance(item, Mapping) and isinstance(item.get("openparf"), str)
+        }
+        if len(atoms) != len(atom_sequence) or not atoms:
+            raise ValidationError("OpenPARF atomic name map has duplicate atoms")
+    finally:
+        close_name_map = getattr(name_map, "close", None)
+        if callable(close_name_map):
+            close_name_map()
+    _top, module = _select_module(mapped, name_map_top)
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped JSON cells are invalid")
-    atoms = {
-        item["openparf"]: item for item in name_map.get("atoms", [])
-        if isinstance(item, Mapping) and isinstance(item.get("openparf"), str)
-    }
-    if len(atoms) != len(name_map.get("atoms", [])) or not atoms:
-        raise ValidationError("OpenPARF atomic name map has duplicate atoms")
 
     raw: Dict[str, Tuple[int, int, int]] = {}
     with placement_path.open("r", encoding="utf-8") as stream:
@@ -1252,7 +1299,9 @@ def legalize_xilinx_openparf_ff_control_sets(
     ff_sites = {
         (site["dense_x"], site["dense_y"]): site
         for site in load_xilinx_openparf_atomic_sites(
-            name_map_path, resources=["FF"]
+            name_map_path, resources=["FF"],
+            mapped_sha256=mapped_digest,
+            packed_sha256=packed_digest,
         )
         if site.get("resources", {}).get("FF", 0) >= 16
         and len(site.get("physical_sites", {}).get("FF", [])) == 1
@@ -1838,17 +1887,6 @@ def _collect_atoms(
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped JSON cells are invalid")
-    # ``cells`` is an indexed SQLite mapping in the production Phase 7 path.
-    # Looking up every packed assignment with ``cells.get(instance)`` turns a
-    # linear validation into hundreds of thousands of individual SQL queries.
-    # Retain only the small type projection needed by this function and build
-    # it in one ordered scan.  Full cell records remain in SQLite and are
-    # streamed separately when Bookshelf pins/nets are rendered.
-    cell_types: Dict[str, str] = {}
-    for name, cell in _ordered_cell_items(cells):
-        if not isinstance(cell, Mapping) or not isinstance(cell.get("type"), str):
-            raise ValidationError("mapped JSON cell is invalid")
-        cell_types[name] = cell["type"]
     cascades = packed.get("cascade_chains", [])
     if not isinstance(cascades, Sequence) or isinstance(cascades, (str, bytes)):
         raise ValidationError("atomic mixed-resource cascade constraints are invalid")
@@ -1871,7 +1909,6 @@ def _collect_atoms(
                     "RAMB18E2 dedicated cascades are not yet qualified"
                 )
     atoms: List[Dict[str, str]] = []
-    seen = set()
     site_macros = []
     if physical_macro_contract is not None:
         site_macros = [
@@ -2006,10 +2043,10 @@ def _collect_atoms(
                 )
             instance = assignment.get("instance")
             cell_type = assignment.get("cell_type")
-            mapped_cell_type = (
-                cell_types.get(instance) if isinstance(instance, str) else None
-            )
-            if mapped_cell_type != cell_type:
+            if (
+                not isinstance(instance, str) or not instance
+                or not isinstance(cell_type, str) or not cell_type
+            ):
                 raise ValidationError("packed assignment does not match mapped JSON")
             if cell_type not in _SUPPORTED:
                 raise ValidationError(
@@ -2027,9 +2064,6 @@ def _collect_atoms(
                 )
             if kind == "hard" and cell_type not in _HARD_RESOURCES:
                 raise ValidationError("hard cluster contains an unsupported primitive")
-            if instance in seen:
-                raise ValidationError(f"mapped instance {instance!r} is packed twice")
-            seen.add(instance)
             atoms.append({
                 "instance": instance,
                 "cell_type": cell_type,
@@ -2045,12 +2079,37 @@ def _collect_atoms(
     expected_site_macros = {macro["id"] for macro in site_macros}
     if covered_site_macros != expected_site_macros:
         raise ValidationError("connectivity-derived slice macro coverage is incomplete")
-    physical_cells = {
-        name for name, cell_type in cell_types.items()
-        if cell_type not in {"GND", "VCC"}
-    }
-    if seen != physical_cells:
-        missing = sorted(physical_cells - seen)
+    # Validate type and complete ownership with one merge over the authoritative
+    # mapped index.  The previous implementation retained both a cell->type
+    # dictionary and a packed-instance set, then sorted the atom list anyway.
+    # Sorting once and merging removes those two graph-sized populations while
+    # preserving deterministic output and independent coverage checks.
+    atoms.sort(key=lambda item: item["instance"])
+    for previous, current in zip(atoms, atoms[1:]):
+        if previous["instance"] == current["instance"]:
+            raise ValidationError(
+                f"mapped instance {current['instance']!r} is packed twice"
+            )
+    atom_index = 0
+    missing: List[str] = []
+    for name, cell in _ordered_cell_items(cells):
+        if not isinstance(cell, Mapping) or not isinstance(cell.get("type"), str):
+            raise ValidationError("mapped JSON cell is invalid")
+        mapped_cell_type = cell["type"]
+        if mapped_cell_type in {"GND", "VCC"}:
+            continue
+        if atom_index < len(atoms) and atoms[atom_index]["instance"] < name:
+            raise ValidationError("packed assignment does not match mapped JSON")
+        if atom_index >= len(atoms) or atoms[atom_index]["instance"] > name:
+            if len(missing) < 16:
+                missing.append(name)
+            continue
+        if atoms[atom_index]["cell_type"] != mapped_cell_type:
+            raise ValidationError("packed assignment does not match mapped JSON")
+        atom_index += 1
+    if atom_index != len(atoms):
+        raise ValidationError("packed assignment does not match mapped JSON")
+    if missing:
         raise ValidationError(
             "atomic mixed-resource adapter requires complete physical cell coverage; "
             f"uncovered cells: {missing!r}"
@@ -2060,7 +2119,7 @@ def _collect_atoms(
         raise ValidationError(
             "pinned OpenPARF direct legalization requires at least one LUT and one FF"
         )
-    return selected_top, cells, sorted(atoms, key=lambda item: item["instance"])
+    return selected_top, cells, atoms
 
 
 def _ordered_cell_items(
@@ -3714,12 +3773,9 @@ def export_xilinx_openparf_atomic(
     write_json(
         output_dir / "openparf.json", config, compact=True, sort_keys=False
     )
-    name_map = {
+    name_map_header = {
         "schema": OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
         "top": selected_top,
-        "atoms": [
-            {"openparf": names[atom["instance"]], **atom} for atom in atoms
-        ],
         "coordinate_system": {
             "x_axis": coordinate_system["x_axis"],
             "y_axis": coordinate_system["y_axis"],
@@ -3727,18 +3783,33 @@ def export_xilinx_openparf_atomic(
         },
         "site_database": site_database_descriptor,
     }
+    carry_cascade_chains = []
     if has_carry8:
-        name_map["carry_cascade_chains"] = [
+        carry_cascade_chains = [
             chain for chain in packed.get("cascade_chains", [])
             if chain.get("cell_type") == "CARRY8"
         ]
     if hardblock_groups:
-        name_map["physical_macro_constraints"] = {
+        name_map_header["physical_macro_constraints"] = {
             "schema": OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA,
             "file": "physical-macro-groups.json",
             "groups": len(hardblock_groups),
         }
-    write_json(output_dir / "name_map.json", name_map, compact=True)
+    name_map = write_xilinx_openparf_atomic_name_map_storage(
+        output_dir / "name_map.json",
+        header=name_map_header,
+        atoms=(
+            {"openparf": names[atom["instance"]], **atom}
+            for atom in atoms
+        ),
+        carry_cascade_chains=carry_cascade_chains,
+        mapped_sha256=_sha256(mapped_path),
+        packed_sha256=_sha256(packed_path),
+        architecture_sha256=_sha256(architecture_path),
+    )
+    name_map_selector = name_map.selector
+    name_map_store_path = name_map.store_path
+    name_map.close()
     manifest = {
         "schema": OPENPARF_ATOMIC_MANIFEST_SCHEMA,
         "status": "pass", "mode": "native-atomic-mixed-resource-qualification",
@@ -3780,6 +3851,25 @@ def export_xilinx_openparf_atomic(
             },
         },
         "runtime_validation": "unverified",
+        "name_map_storage": {
+            "schema": OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA,
+            "logical_sha256": name_map_selector["logical_sha256"],
+            "source": dict(name_map_selector["source"]),
+            "atoms": name_map_selector["counts"]["atoms"],
+            "carry_cascade_chains": name_map_selector["counts"][
+                "carry_cascade_chains"
+            ],
+            "selector": {
+                "file": "name_map.json",
+                "bytes": (output_dir / "name_map.json").stat().st_size,
+                "sha256": _sha256(output_dir / "name_map.json"),
+            },
+            "store": {
+                "file": name_map_store_path.name,
+                "bytes": name_map_store_path.stat().st_size,
+                "sha256": name_map_selector["store_sha256"],
+            },
+        },
         "constraint_policy": {
             "ordinary_slice_clusters_are_repackable": True,
             "singleton_dsp_bram_uram_use_native_sssir_mcf": (
@@ -3813,6 +3903,7 @@ def export_xilinx_openparf_atomic(
         },
         "files": sorted([
             *files, "openparf.json", "name_map.json", "site-map.sqlite3",
+            name_map_store_path.name,
             *(["physical-macro-groups.json"] if hardblock_groups else []),
         ]),
     }
@@ -3847,27 +3938,45 @@ def validate_xilinx_openparf_atomic_placement(
     provider_manifest_path: Optional[Path] = None,
     mapped_value: Optional[Mapping[str, Any]] = None,
     architecture: Optional[ArchitectureDB] = None,
+    packed_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Validate and aggregate native atom placement without fallback."""
 
-    name_map = read_json(name_map_path)
+    mapped_digest = _sha256(mapped_path)
+    packed_digest = _sha256(packed_path) if packed_path is not None else None
+    architecture_digest = _sha256(architecture_path)
+    name_map = read_xilinx_openparf_atomic_name_map(
+        name_map_path,
+        mapped_sha256=mapped_digest,
+        packed_sha256=packed_digest,
+        architecture_sha256=architecture_digest,
+    )
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     architecture = (
         ArchitectureDB.load(architecture_path)
         if architecture is None else architecture
     )
-    if name_map.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA:
-        raise ValidationError("OpenPARF atomic name map is invalid")
-    _top, module = _select_module(mapped, name_map.get("top"))
+    try:
+        if name_map.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA:
+            raise ValidationError("OpenPARF atomic name map is invalid")
+        name_map_top = name_map.get("top")
+        atom_sequence = name_map.get("atoms", [])
+        atoms = {
+            item["openparf"]: item for item in atom_sequence
+            if isinstance(item, Mapping) and isinstance(item.get("openparf"), str)
+        }
+        if len(atoms) != len(atom_sequence) or not atoms:
+            raise ValidationError("OpenPARF atomic name map has duplicate atoms")
+        hardblock_groups = _load_physical_macro_groups(name_map_path, name_map)
+        carry_cascade_chains = list(name_map.get("carry_cascade_chains", []))
+    finally:
+        close_name_map = getattr(name_map, "close", None)
+        if callable(close_name_map):
+            close_name_map()
+    _top, module = _select_module(mapped, name_map_top)
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped JSON cells are invalid")
-    atoms = {
-        item["openparf"]: item for item in name_map.get("atoms", [])
-        if isinstance(item, Mapping) and isinstance(item.get("openparf"), str)
-    }
-    if len(atoms) != len(name_map.get("atoms", [])) or not atoms:
-        raise ValidationError("OpenPARF atomic name map has duplicate atoms")
     raw_placement: Dict[str, Tuple[int, int, int]] = {}
     with placement_path.open("r", encoding="utf-8") as stream:
         for line_number, raw in enumerate(stream, start=1):
@@ -3898,17 +4007,22 @@ def validate_xilinx_openparf_atomic_placement(
     site_map = {
         (item["dense_x"], item["dense_y"]): item
         for item in load_xilinx_openparf_atomic_sites(
-            name_map_path, coordinates=requested_coordinates
+            name_map_path, coordinates=requested_coordinates,
+            mapped_sha256=mapped_digest,
+            packed_sha256=packed_digest,
+            architecture_sha256=architecture_digest,
         )
     }
-    hardblock_groups = _load_physical_macro_groups(name_map_path, name_map)
-    carry_cascade_chains = name_map.get("carry_cascade_chains", [])
-    if not isinstance(carry_cascade_chains, list) or any(
+    if (
+        not isinstance(carry_cascade_chains, Sequence)
+        or isinstance(carry_cascade_chains, (str, bytes))
+        or any(
         not isinstance(chain, Mapping)
         or chain.get("cell_type") != "CARRY8"
         or not isinstance(chain.get("instances"), list)
         or len(chain["instances"]) < 2
         for chain in carry_cascade_chains
+        )
     ):
         raise ValidationError("OpenPARF CARRY8 cascade contract is invalid")
     native_hardblock_groups = [
@@ -3929,7 +4043,10 @@ def validate_xilinx_openparf_atomic_placement(
             provider_manifest_path=provider_manifest_path,
         )
         bram_sites = load_xilinx_openparf_atomic_sites(
-            name_map_path, resources=("RAMB18E2", "RAMB36E2")
+            name_map_path, resources=("RAMB18E2", "RAMB36E2"),
+            mapped_sha256=mapped_digest,
+            packed_sha256=packed_digest,
+            architecture_sha256=architecture_digest,
         )
         bram_candidates = _native_bram_candidates({"sites": bram_sites}, native)
         dense_by_anchor = {}
@@ -4290,7 +4407,7 @@ def validate_xilinx_openparf_atomic_placement(
         )
         derived_macro_contract = (
             build_xilinx_physical_macro_contract(
-                mapped_path, top=name_map.get("top"), source=mapped
+                mapped_path, top=name_map_top, source=mapped
             )
             if has_site_macro_groups else {"site_macros": []}
         )
@@ -4510,6 +4627,7 @@ def run_xilinx_openparf_atomic_qualification(
         placement, output_dir / "name_map.json", mapped_path,
         output_dir / "ff-control-set-legalization.json",
         mapped_value=mapped_value,
+        packed_path=packed_path,
     )
     checkpoint_path = _write_openparf_result_checkpoint(output_dir, placement)
     certificate = validate_xilinx_openparf_atomic_placement(
@@ -4519,6 +4637,7 @@ def run_xilinx_openparf_atomic_qualification(
         provider_manifest_path=provider_manifest_path,
         mapped_value=mapped_value,
         architecture=architecture,
+        packed_path=packed_path,
     )
     serialized_certificate = read_json(
         output_dir / "placement-certificate.json"
@@ -4608,12 +4727,14 @@ def run_xilinx_openparf_hardblock_qualification(
     ff_control_legalization = legalize_xilinx_openparf_ff_control_sets(
         placement, output_dir / "name_map.json", mapped_path,
         output_dir / "ff-control-set-legalization.json",
+        packed_path=packed_path,
     )
     certificate = validate_xilinx_openparf_atomic_placement(
         placement, output_dir / "name_map.json", mapped_path,
         architecture_path, output_dir / "placement-certificate.json",
         native_constraints_path=native_constraints_path,
         provider_manifest_path=provider_manifest_path,
+        packed_path=packed_path,
     )
     serialized_certificate = read_json(
         output_dir / "placement-certificate.json"

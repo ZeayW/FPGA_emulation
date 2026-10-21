@@ -32,6 +32,7 @@ from emuflow.xilinx_openparf_atomic import (
     run_xilinx_openparf_atomic_qualification,
     validate_xilinx_openparf_atomic_placement,
     materialize_xilinx_openparf_atomic_source,
+    read_xilinx_openparf_atomic_name_map,
 )
 from emuflow.xilinx_openparf_source_storage import (
     OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
@@ -564,7 +565,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 mapped, packed, architecture, output
             )
             config = json.loads((output / "openparf.json").read_text())
-            names = json.loads((output / "name_map.json").read_text())
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -576,6 +577,17 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             ).is_file()
             sites = (output / "design.scl").read_text()
             net_lines = (output / "design.nets").read_text().splitlines()
+            name_selector = json.loads(
+                (output / "name_map.json").read_text(encoding="utf-8")
+            )
+            self.assertNotIn("atoms", name_selector)
+            self.assertIn(name_selector["artifact"], manifest["files"])
+            self.assertTrue((output / name_selector["artifact"]).is_file())
+            self.assertEqual(manifest["name_map_storage"]["atoms"], 128)
+            self.assertEqual(
+                manifest["name_map_storage"]["store"]["sha256"],
+                name_selector["store_sha256"],
+            )
 
         declarations = [
             line.split() for line in net_lines if line.startswith("net ")
@@ -893,9 +905,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
             name_map_path = output / "name_map.json"
-            name_map = json.loads(name_map_path.read_text(encoding="utf-8"))
+            name_map = read_xilinx_openparf_atomic_name_map(name_map_path)
 
             site_database = output / name_map["site_database"]["file"]
+            name_map.close()
             site_database.unlink()
             with self.assertRaisesRegex(ValidationError, "database is missing"):
                 load_xilinx_openparf_atomic_sites(name_map_path)
@@ -907,6 +920,45 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 )
             with self.assertRaisesRegex(ValidationError, "metadata is invalid"):
                 load_xilinx_openparf_atomic_sites(name_map_path)
+
+    def test_all_placement_consumers_reject_mixed_packed_generation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_runtime_fixture(root)
+            output = root / "output"
+            manifest = export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output
+            )
+            packed.write_text(
+                packed.read_text(encoding="utf-8") + "\n",
+                encoding="utf-8",
+            )
+            mismatched_packed_sha = atomic_adapter._sha256(packed)
+            self.assertEqual(
+                manifest["name_map_storage"]["source"]["mapped_sha256"],
+                atomic_adapter._sha256(mapped),
+            )
+            with self.assertRaisesRegex(ValidationError, "packed source seal"):
+                load_xilinx_openparf_atomic_sites(
+                    output / "name_map.json",
+                    packed_sha256=mismatched_packed_sha,
+                )
+            with self.assertRaisesRegex(ValidationError, "packed source seal"):
+                legalize_xilinx_openparf_ff_control_sets(
+                    output / "missing.pl",
+                    output / "name_map.json",
+                    mapped,
+                    output / "legalization.json",
+                    packed_path=packed,
+                )
+            with self.assertRaisesRegex(ValidationError, "packed source seal"):
+                validate_xilinx_openparf_atomic_placement(
+                    output / "missing.pl",
+                    output / "name_map.json",
+                    mapped,
+                    architecture,
+                    packed_path=packed,
+                )
 
     def test_parallel_exports_share_immutable_device_geometry_and_database(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -995,7 +1047,11 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 mapped, packed, architecture, output
             )
             config = json.loads((output / "openparf.json").read_text())
-            names = json.loads((output / "name_map.json").read_text())
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            hard_atoms = [
+                atom for atom in names["atoms"]
+                if atom["resource"] in {"DSP48E2", "RAMB36E2", "URAM288"}
+            ]
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1020,10 +1076,6 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             sorted(int(fields[2]) for fields in declarations),
             [2] * 131 + [64],
         )
-        hard_atoms = [
-            atom for atom in names["atoms"]
-            if atom["resource"] in {"DSP48E2", "RAMB36E2", "URAM288"}
-        ]
         self.assertEqual(len(hard_atoms), 3)
         pin_rows = [
             line.strip() for line in net_lines
@@ -1069,7 +1121,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             architecture.write_text(json.dumps(value), encoding="utf-8")
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            names = json.loads((output / "name_map.json").read_text())
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1126,7 +1178,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             export_xilinx_openparf_atomic(
                 mapped, packed, architecture, output
             )
-            names = json.loads((output / "name_map.json").read_text())
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1608,7 +1660,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             mapped, packed, architecture = _fixture(root, mixed=True)
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            names = json.loads((output / "name_map.json").read_text())
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1733,7 +1785,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 if window[0]["anchor"] == lo_window["anchor"]
                 and window[0]["z"] != lo_window["z"]
             )
-            names = json.loads((output / "name_map.json").read_text())
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1891,7 +1943,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 [member["z"] for member in group["window_template"]["members"]],
                 [1, 3, 0],
             )
-            names = json.loads((output / "name_map.json").read_text(encoding="utf-8"))
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             openparf = {atom["instance"]: atom["openparf"] for atom in names["atoms"]}
             sites = load_xilinx_openparf_atomic_sites(output / "name_map.json")
             slice_sites = [site for site in sites if "LUT" in site["resources"]]
@@ -2022,9 +2074,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                         f"{instance} {macro_site_entry['dense_x']} "
                         f"{macro_site_entry['dense_y']} {entry['z']}"
                     )
-                names = json.loads(
-                    (output / "name_map.json").read_text(encoding="utf-8")
-                )
+                names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
                 ff = next(atom for atom in names["atoms"] if atom["instance"] == "ff")
                 macro_site = macro_site_entry["site"]
                 ff_site = next(site for site in sites.values()
@@ -2245,9 +2295,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 [site["site"] for site in chain["windows"][0]],
                 ["DSP48E2_X0Y0", "DSP48E2_X1Y0"],
             )
-            names = json.loads(
-                (output / "name_map.json").read_text(encoding="utf-8")
-            )
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )

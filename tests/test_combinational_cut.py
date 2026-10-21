@@ -69,6 +69,10 @@ from emuflow.phase3_exact_records import (
     StaticExactRecordSequence,
     build_static_exact_capture_stream,
 )
+from emuflow.phase3_exact_binary import (
+    validate_phase3_exact_binary,
+    write_phase3_exact_binary,
+)
 from emuflow.phase3_storage import (
     pack_phase3_assignment,
     pack_phase3_clusters,
@@ -910,11 +914,37 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.assertIsInstance(
                 streamed["cut_nodes"], StaticExactCutNodeSequence
             )
+            self.assertIsNotNone(
+                streamed["cut_nodes"].direct_binary_source
+            )
             self.assertEqual(list(streamed["cut_nodes"]), expected["cut_nodes"])
             self.assertEqual(
                 semantic_contract_sha256(streamed),
                 semantic_contract_sha256(expected),
             )
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                expected_path = root / "expected.bin"
+                streamed_path = root / "streamed.bin"
+                expected_descriptor = write_phase3_exact_binary(
+                    expected_path, expected, ["fpga0", "fpga1"]
+                )
+                streamed_descriptor = write_phase3_exact_binary(
+                    streamed_path,
+                    streamed,
+                    ["fpga0", "fpga1"],
+                    semantic_digest=semantic_contract_sha256(streamed),
+                )
+                self.assertEqual(
+                    streamed_path.read_bytes(), expected_path.read_bytes()
+                )
+                self.assertEqual(streamed_descriptor, expected_descriptor)
+                self.assertEqual(
+                    validate_phase3_exact_binary(
+                        streamed_path, streamed_descriptor
+                    )["status"],
+                    "pass",
+                )
 
     def test_native_semantic_analysis_accepts_noncanonical_emuir_order(self):
         _, assignment = self._exact_artifacts(dependent_return=True)

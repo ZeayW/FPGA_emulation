@@ -19,6 +19,7 @@ from emuflow.xilinx_openparf_atomic import (
     export_xilinx_openparf_atomic,
     load_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_sites,
+    read_xilinx_openparf_atomic_name_map,
     validate_xilinx_openparf_atomic_placement,
 )
 from emuflow.xilinx_openparf_bridge import (
@@ -58,7 +59,7 @@ def _native_certificate(
     export_xilinx_openparf_atomic(
         mapped, source_packed, architecture, export_dir
     )
-    name_map = json.loads((export_dir / "name_map.json").read_text())
+    name_map = read_xilinx_openparf_atomic_name_map(export_dir / "name_map.json")
     sites = load_xilinx_openparf_atomic_sites(export_dir / "name_map.json")
     slices = [item for item in sites if "LUT" in item["resources"]]
     hard_sites = {

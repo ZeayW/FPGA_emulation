@@ -19,6 +19,7 @@ from .chimew_bank_channel import (
     evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
+from .chimew_bank_channel_storage import read_chimew_bank_channel_input
 from .chimew_grouping import _tdm_ratio
 from .chimew_binding_storage import (
     CHIMEW_BINDING_STORAGE_SCHEMA,
@@ -1480,7 +1481,16 @@ def build_chimew_phase6_pin_plan(
         validation = validate_pin_plan(schedule, platform, positions, plan)
 
         def iter_binding_entries() -> Iterator[Mapping[str, Any]]:
-            for group in sorted(problem["groups"], key=lambda item: item["id"]):
+            # Typed production storage exposes this cursor in strict group-id
+            # order and validates that order record by record.  Avoid an H-size
+            # ``sorted`` list here; legacy callers retain their explicitly
+            # materialized compatibility path.
+            groups = problem["groups"]
+            if not hasattr(bank_channel_input, "store_path"):
+                groups = sorted(groups, key=lambda item: item["id"])
+            else:
+                groups = bank_channel_input.iter_normalized_groups_by_id()
+            for group in groups:
                 assignment = report_assignment[group["id"]]
                 channel = electrical["channels"][assignment["channel"]]
                 yield {
@@ -1990,10 +2000,10 @@ def validate_chimew_phase6_binding(
             connection.close()
 
 
-def run_chimew_phase6_adapter(
+def _run_chimew_phase6_adapter_with_input(
     schedule_path: Path,
     platform_path: Path,
-    bank_channel_input_path: Path,
+    assignment_input: Mapping[str, Any],
     electrical_map_path: Path,
     output_dir: Path,
     *,
@@ -2006,7 +2016,6 @@ def run_chimew_phase6_adapter(
     """Publish one crash-safe, report-committed Phase 6 adapter bundle."""
 
     schedule = read_tdm_schedule(schedule_path)
-    assignment_input = read_json(bank_channel_input_path)
     electrical_map = read_json(electrical_map_path)
     qualification = read_json(qualification_path) if qualification_path else None
     assignment_report = (
@@ -2230,3 +2239,36 @@ def run_chimew_phase6_adapter(
         raise
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def run_chimew_phase6_adapter(
+    schedule_path: Path,
+    platform_path: Path,
+    bank_channel_input_path: Path,
+    electrical_map_path: Path,
+    output_dir: Path,
+    *,
+    qualification_path: Optional[Path] = None,
+    bank_channel_report_path: Optional[Path] = None,
+    executable: Optional[str] = None,
+    region_count: int = 31,
+    defer_generation_gc: bool = False,
+) -> Dict[str, Any]:
+    """Lease typed bank/group storage through the adapter's final cursor."""
+
+    assignment_input = read_chimew_bank_channel_input(bank_channel_input_path)
+    if not hasattr(assignment_input, "__enter__"):
+        raise ValidationError("Phase 6 production requires indexed bank storage")
+    with assignment_input:
+        return _run_chimew_phase6_adapter_with_input(
+            schedule_path,
+            platform_path,
+            assignment_input,
+            electrical_map_path,
+            output_dir,
+            qualification_path=qualification_path,
+            bank_channel_report_path=bank_channel_report_path,
+            executable=executable,
+            region_count=region_count,
+            defer_generation_gc=defer_generation_gc,
+        )

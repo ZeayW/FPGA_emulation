@@ -64,11 +64,17 @@ CHIMEW_BYTE_BOUND_OPTIONAL_SOURCE_LABELS = {"timing_paths"}
 
 
 def canonical_sha256(document: Mapping[str, Any]) -> str:
+    from .chimew_bank_channel_storage import (
+        BankChannelInputView,
+        canonical_bank_channel_input_sha256,
+    )
     from .tdm_schedule_storage import (
         TDMScheduleView,
         canonical_tdm_schedule_sha256,
     )
 
+    if isinstance(document, BankChannelInputView):
+        return canonical_bank_channel_input_sha256(document)
     if isinstance(document, TDMScheduleView):
         return canonical_tdm_schedule_sha256(document)
     payload = json.dumps(
@@ -282,38 +288,52 @@ def validate_chimew_bank_channel_report_artifact(
         or report.get("input_sha256") != canonical_sha256(bank_input)
     ):
         raise ValidationError("Chimew bank/channel report provenance does not agree")
-    groups = {group["id"]: group for group in problem["groups"]}
     banks = {bank["id"]: bank for bank in problem["banks"]}
     channels = {
-        channel["id"]: (bank, channel)
-        for bank in problem["banks"]
+        channel["id"]: (bank["id"], bank["domain"], channel)
+        for bank in banks.values()
         for channel in bank["channels"]
     }
     assignments = report.get("assignments")
     if not isinstance(assignments, list):
         raise ValidationError("Chimew bank/channel assignments are missing")
-    seen_groups = set()
-    seen_channels = set()
-    stage1_rank = stage2_rank = 0
-    stage1_cost = stage2_cost = 0.0
+    assignment_by_group = {}
     for record in assignments:
         if not isinstance(record, dict):
             raise ValidationError("Chimew bank/channel assignment is invalid")
         group_id = record.get("group")
+        if (
+            not isinstance(group_id, str)
+            or not group_id
+            or group_id in assignment_by_group
+        ):
+            raise ValidationError("Chimew bank/channel assignment coverage is invalid")
+        assignment_by_group[group_id] = record
+    if len(assignment_by_group) != len(problem["groups"]):
+        raise ValidationError("Chimew bank/channel assignment coverage is invalid")
+    seen_channels = set()
+    stage1_rank = stage2_rank = 0
+    stage1_cost = stage2_cost = 0.0
+    for group in problem["groups"]:
+        group_id = group["id"]
+        record = assignment_by_group.get(group_id)
+        if record is None:
+            raise ValidationError("Chimew bank/channel assignment coverage is invalid")
         bank_id = record.get("bank_pair")
         channel_id = record.get("channel")
         if (
-            group_id not in groups
-            or bank_id not in banks
+            bank_id not in banks
             or channel_id not in channels
-            or group_id in seen_groups
             or channel_id in seen_channels
         ):
             raise ValidationError("Chimew bank/channel assignment coverage is invalid")
         bank = banks[bank_id]
-        channel_bank, channel = channels[channel_id]
-        group = groups[group_id]
-        if bank is not channel_bank or bank["domain"] != group["domain"]:
+        channel_bank_id, channel_domain, channel = channels[channel_id]
+        if (
+            bank["id"] != channel_bank_id
+            or bank["domain"] != channel_domain
+            or bank["domain"] != group["domain"]
+        ):
             raise ValidationError("Chimew bank/channel assignment crosses a domain")
         raw_bank = _raw_cost(group, bank["bank_a"]["point"], bank["bank_b"]["point"])
         raw_channel = _raw_cost(group, channel["pin_a"], channel["pin_b"])
@@ -331,14 +351,11 @@ def validate_chimew_bank_channel_report_artifact(
         }
         if any(not _close(record.get(field), value) for field, value in expected.items()):
             raise ValidationError("Chimew bank/channel assignment cost does not agree")
-        seen_groups.add(group_id)
         seen_channels.add(channel_id)
         stage1_rank += ranked_bank
         stage2_rank += ranked_channel
         stage1_cost += raw_bank
         stage2_cost += raw_channel
-    if seen_groups != set(groups):
-        raise ValidationError("Chimew bank/channel report does not cover every group")
     metrics = report.get("metrics")
     expected_metrics = {
         **problem["metrics"],

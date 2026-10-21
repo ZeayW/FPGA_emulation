@@ -14,6 +14,9 @@ from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
     evaluate_chimew_bank_channel_assignment,
 )
+from emuflow.chimew_bank_channel_storage import (
+    write_chimew_bank_channel_storage,
+)
 from emuflow.chimew_binding_storage import read_chimew_binding
 from emuflow.cli import main
 from emuflow.chimew_grouping import (
@@ -326,7 +329,10 @@ class ChimewQualificationTest(unittest.TestCase):
             paths = {}
             for label, document in documents.items():
                 paths[label] = root / f"{label}.json"
-                write_json(paths[label], document)
+                if label == "assignment-input":
+                    write_chimew_bank_channel_storage(paths[label], document)
+                else:
+                    write_json(paths[label], document)
             output = root / "qualification.json"
             arguments = ["pin-plan", "chimew-qualify"]
             for option in (
@@ -487,7 +493,12 @@ class ChimewQualificationTest(unittest.TestCase):
                 "assignment-input": bank_input,
             }.items():
                 paths[label] = root / f"{label}.json"
-                write_json(paths[label], document)
+                if label == "assignment-input":
+                    write_chimew_bank_channel_storage(
+                        paths[label], document
+                    ).close()
+                else:
+                    write_json(paths[label], document)
             electrical = {
                 "schema": CHIMEW_ELECTRICAL_MAP_SCHEMA,
                 "provider": CHIMEW_ELECTRICAL_MAP_PROVIDER,
@@ -565,7 +576,7 @@ class ChimewQualificationTest(unittest.TestCase):
             )
             self.assertEqual(main(["pin-plan", "chimew-validate", str(output)]), 0)
             validation = validate_chimew_phase6_pipeline(output)
-            self.assertEqual(validation["artifact_hashes_verified"], 27)
+            self.assertEqual(validation["artifact_hashes_verified"], 28)
             self.assertEqual(
                 validation["qualification_scope"], "byte-bound-source-artifacts"
             )
