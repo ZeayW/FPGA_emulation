@@ -1,3 +1,4 @@
+import copy
 import shutil
 import tempfile
 import unittest
@@ -9,6 +10,10 @@ from emuflow.phase3_exact_binary import (
     read_phase3_exact_binary_contract,
     validate_phase3_exact_binary,
     write_phase3_exact_binary,
+)
+from emuflow.phase3_exact_records import (
+    StaticExactRecordSequence,
+    build_static_exact_record_streams,
 )
 
 
@@ -91,6 +96,71 @@ def _contract(design="binary_fixture"):
 
 
 class Phase3ExactBinaryTest(unittest.TestCase):
+    def test_repeatable_record_stream_preserves_v3_digest_and_binary(self):
+        materialized = _contract()
+        streamed = copy.deepcopy(materialized)
+        record_streams = build_static_exact_record_streams(
+            streamed["cut_nodes"],
+            streamed["capture_requirements"],
+            bytes([1, 0]),
+        )
+        streamed.update(record_streams)
+
+        self.assertIsInstance(
+            streamed["dependency_edges"], StaticExactRecordSequence
+        )
+        self.assertEqual(
+            list(streamed["dependency_edges"]),
+            materialized["dependency_edges"],
+        )
+        self.assertEqual(
+            list(streamed["logic_segments"]),
+            materialized["logic_segments"],
+        )
+        self.assertEqual(
+            semantic_contract_sha256(streamed),
+            semantic_contract_sha256(materialized),
+        )
+        # Both the canonical hasher and binary publisher traverse the streams;
+        # a second traversal must remain complete and byte-identical.
+        self.assertEqual(
+            list(streamed["logic_segments"]),
+            materialized["logic_segments"],
+        )
+        with self.assertRaises(TypeError):
+            streamed["logic_segments"].append({})
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            materialized_path = root / "materialized.bin"
+            streamed_path = root / "streamed.bin"
+            materialized_descriptor = write_phase3_exact_binary(
+                materialized_path, materialized, ["fpga0", "fpga1"]
+            )
+            streamed_descriptor = write_phase3_exact_binary(
+                streamed_path, streamed, ["fpga0", "fpga1"]
+            )
+            self.assertEqual(
+                streamed_path.read_bytes(), materialized_path.read_bytes()
+            )
+            self.assertEqual(streamed_descriptor, materialized_descriptor)
+            self.assertEqual(
+                validate_phase3_exact_binary(
+                    streamed_path, streamed_descriptor
+                )["status"],
+                "pass",
+            )
+
+    def test_record_stream_rejects_inconsistent_cut_relation(self):
+        contract = _contract()
+        contract["cut_nodes"][1]["source_segment_ids"] = []
+        with self.assertRaisesRegex(ValidationError, "cut-node stream"):
+            build_static_exact_record_streams(
+                contract["cut_nodes"],
+                contract["capture_requirements"],
+                bytes([1, 0]),
+            )
+
     def test_roundtrip_and_relocation_preserve_canonical_contract(self):
         contract = _contract()
         assignment = {

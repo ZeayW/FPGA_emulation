@@ -123,6 +123,106 @@ def test_schedule_store_publishes_large_section_in_one_pass(tmp_path):
         assert list(view["entries"]) == expected["entries"]
 
 
+def test_schedule_store_consumes_canonical_entry_cursor_without_decode(tmp_path):
+    class CanonicalEntryRecords(list):
+        canonical_record_cursor_schema = (
+            "emuflow.native-exact-schedule-entry-cursor/v1"
+        )
+
+        def __init__(self, records):
+            super().__init__(records)
+            self.cursor_iterations = 0
+
+        def __iter__(self):
+            raise AssertionError("canonical entries were decoded as objects")
+
+        def iter_canonical_records(self):
+            self.cursor_iterations += 1
+            for item in list.__iter__(self):
+                yield item["id"], json.dumps(
+                    item,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+
+    expected = _schedule(10_000)
+    for index, entry in enumerate(expected["entries"]):
+        entry.update(
+            {
+                "id": f"s{index:06d}",
+                "capacity_key": "ab:a:b",
+                "hop": 0,
+                "ready_slot": index,
+                "tdm_ratio": 1,
+            }
+        )
+    value = dict(expected)
+    entries = CanonicalEntryRecords(expected["entries"])
+    value["entries"] = entries
+    manifest = write_tdm_schedule_storage(tmp_path / "schedule.json", value)
+    assert entries.cursor_iterations == 1
+    assert manifest["logical_sha256"] == canonical_tdm_schedule_sha256(
+        expected
+    )
+    assert manifest["logical_pretty_sha256"] == pretty_tdm_schedule_sha256(
+        expected
+    )
+    with open_tdm_schedule_view(tmp_path / "schedule.json") as view:
+        assert list(view["entries"]) == expected["entries"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["identity", "malformed-json", "noncanonical-order"],
+)
+def test_canonical_entry_cursor_fails_closed(tmp_path, mutation):
+    value = _schedule(1)
+    entry = value["entries"][0]
+    entry.update(
+        {
+            "id": "s000000",
+            "capacity_key": "ab:a:b",
+            "hop": 0,
+            "ready_slot": 0,
+            "tdm_ratio": 1,
+        }
+    )
+    encoded = json.dumps(
+        entry,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    identity = entry["id"]
+    if mutation == "identity":
+        identity = "s000001"
+    elif mutation == "malformed-json":
+        encoded = encoded[:-1] + ",}"
+    else:
+        encoded = json.dumps(
+            dict(reversed(list(entry.items()))),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=False,
+        )
+
+    class InvalidCanonicalEntries(list):
+        canonical_record_cursor_schema = (
+            "emuflow.native-exact-schedule-entry-cursor/v1"
+        )
+
+        def __iter__(self):
+            raise AssertionError("canonical entries were decoded as objects")
+
+        def iter_canonical_records(self):
+            yield identity, encoded
+
+    value["entries"] = InvalidCanonicalEntries([entry])
+    with pytest.raises(ValidationError, match="canonical schedule entry"):
+        write_tdm_schedule_storage(tmp_path / "schedule.json", value)
+
+
 def test_v1_schedule_manifest_remains_readable(tmp_path):
     expected = _schedule(3)
     path = tmp_path / "schedule.json"

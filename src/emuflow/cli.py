@@ -277,6 +277,7 @@ from .pin_planning import (
     build_signal_position_hints,
     validate_pin_plan,
 )
+from .pin_plan_storage import read_pin_plan
 from .release import run_phase7d
 from .route_artifact import validate_vpr_route_artifacts
 from .routing_tdm_comparison import (
@@ -6507,7 +6508,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 schedule,
                 platform,
                 read_json(args.positions),
-                read_json(args.plan),
+                read_pin_plan(args.plan),
             )
             _print_json(report)
         return 0
@@ -6592,7 +6593,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             if args.position_hints is not None
             else None
         )
-        plan = read_json(args.pin_plan) if args.pin_plan is not None else None
+        plan = read_pin_plan(args.pin_plan) if args.pin_plan is not None else None
         anchors = {
             fpga: read_json(path)
             for fpga, path in _keyed_paths(

@@ -145,8 +145,9 @@ def test_exact_compression_uses_complete_path_bundles(tmp_path):
                "slack_ns": row.required_ns-row.launch_ns-sum(row.arcs_ns)}
               for row in representatives]
     output = tmp_path / "measurements.tsv"
-    _write_expanded_measurements(output, rows, values, mapping)
+    emitted = _write_expanded_measurements(output, rows, values, mapping)
     expanded = read_measurements(output, rows)
+    assert emitted == expanded
     assert len(expanded) == len(rows)
     assert expanded[5]["path"] == "q"
     assert expanded[5]["event"] == "q-first"
@@ -162,6 +163,18 @@ def test_exact_compression_scales_for_repeated_path_classes():
     assert len(representatives) == 2
     assert len(mapping) == len(rows)
     assert set(mapping) == {0, 1}
+
+
+def test_exact_compression_preserves_interleaved_compatibility():
+    rows = validate_checks([
+        EventCheck("p", "target", "p-target", 0, (1,), 4),
+        EventCheck("q", "target", "q-target", 0, (1,), 4),
+        EventCheck("p", "runtime", "p-runtime", 0, (1,), 40),
+        EventCheck("q", "runtime", "q-runtime", 0, (1,), 40),
+    ])
+    representatives, mapping = _compress_path_equivalent_checks(rows)
+    assert representatives == rows[:1] + rows[2:3]
+    assert mapping == [0, 0, 1, 1]
 
 
 def test_run_event_checks_expands_engine_representatives(tmp_path, monkeypatch):

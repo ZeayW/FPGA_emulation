@@ -20,7 +20,11 @@ from emuflow.partition import (
     validate_partition_artifacts,
 )
 from emuflow.phase3 import run_phase3, validate_phase3_indexed
-from emuflow.phase3_assignment_index import validate_phase3_assignment_index
+from emuflow.phase3_assignment_index import (
+    validate_phase3_assignment_index,
+    write_phase3_assignment_index,
+)
+from emuflow.phase3_exact_records import StaticExactRecordSequence
 from emuflow.platform import BoardLink, FpgaNode, Platform
 from emuflow.resources import RESOURCE_FIELDS, ResourceVector
 from emuflow.yosys import import_yosys_json
@@ -173,11 +177,32 @@ class Phase3Test(unittest.TestCase):
             ir_path = root / "design.emuir.sqlite"
             output = root / "phase3"
             write_compact_emuir(ir_path, self.ir.to_dict())
+            observed_streams = []
+
+            def publish_index(path, ir, assignment):
+                contract = assignment["semantic_contract"]
+                observed_streams.append(
+                    (
+                        isinstance(
+                            contract["dependency_edges"],
+                            StaticExactRecordSequence,
+                        ),
+                        isinstance(
+                            contract["logic_segments"],
+                            StaticExactRecordSequence,
+                        ),
+                    )
+                )
+                return write_phase3_assignment_index(path, ir, assignment)
+
             with patch(
                 "emuflow.partition_ir.EmuIR.load",
                 side_effect=AssertionError(
                     "Static Exact Phase 3 must stream compact EmuIR"
                 ),
+            ), patch(
+                "emuflow.phase3.write_phase3_assignment_index",
+                side_effect=publish_index,
             ):
                 run_phase3(
                     ir_path,
@@ -187,6 +212,7 @@ class Phase3Test(unittest.TestCase):
                     seed=7,
                     cut_mode="static-exact-combinational",
                 )
+            self.assertEqual(observed_streams, [(True, True)])
             assignment = read_json(output / "assignment.json")
             packed_assignment = json.loads(
                 (output / "assignment.json").read_text(encoding="utf-8")

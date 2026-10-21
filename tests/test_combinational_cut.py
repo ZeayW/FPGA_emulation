@@ -51,6 +51,7 @@ from emuflow.phase3_assignment_index import (
     read_phase3_exact_semantic_partition,
     write_phase3_assignment_index,
 )
+from emuflow.phase3_exact_records import StaticExactRecordSequence
 from emuflow.phase3_storage import (
     pack_phase3_assignment,
     pack_phase3_clusters,
@@ -958,6 +959,38 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         self.assertEqual(actual, assignment["semantic_contract"])
         for name, mapping in owned.items():
             self.assertEqual(mapping, {}, name)
+
+    def test_semantic_builder_can_stream_derived_records(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        expected = assignment["semantic_contract"]
+
+        actual = build_static_exact_semantic_contract(
+            self.ir,
+            self.platform.to_dict(),
+            assignment["instance_assignment"],
+            assignment["cut_nets"],
+            max_dependency_depth=expected[
+                "max_cross_fpga_dependency_depth"
+            ],
+            stream_records=True,
+        )
+
+        self.assertIsInstance(
+            actual["dependency_edges"], StaticExactRecordSequence
+        )
+        self.assertIsInstance(
+            actual["logic_segments"], StaticExactRecordSequence
+        )
+        self.assertEqual(
+            list(actual["dependency_edges"]), expected["dependency_edges"]
+        )
+        self.assertEqual(
+            list(actual["logic_segments"]), expected["logic_segments"]
+        )
+        self.assertEqual(
+            semantic_contract_sha256(actual),
+            assignment["semantic_contract_sha256"],
+        )
 
     def test_indexed_assignment_storage_reconstructs_exact_contract(self):
         clusters, assignment = self._exact_artifacts(dependent_return=True)

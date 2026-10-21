@@ -968,6 +968,8 @@ def assign_clusters(
     constraints: Mapping[str, Any],
     seed: int = 0,
     route_constraints: Optional[Mapping[str, Any]] = None,
+    *,
+    _include_semantic_contract: bool = True,
 ) -> Dict[str, Any]:
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValidationError("partition seed: expected a non-negative integer")
@@ -1216,6 +1218,7 @@ def assign_clusters(
         assignment,
         provider="deterministic-multiresource-greedy-v1",
         seed=seed,
+        _include_semantic_contract=_include_semantic_contract,
     )
 
 
@@ -1230,6 +1233,7 @@ def build_partition_assignment(
     provider_metadata: Optional[Mapping[str, Any]] = None,
     *,
     _include_semantic_contract: bool = True,
+    _stream_semantic_records: bool = False,
 ) -> Dict[str, Any]:
     """Build the common Phase 3 assignment artifact for any provider."""
 
@@ -1281,6 +1285,7 @@ def build_partition_assignment(
                 "candidate_selection_policy",
                 STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
             ),
+            stream_records=_stream_semantic_records,
         )
         contract_nodes = semantic_contract["cut_nodes"]
         if len(contract_nodes) != len(cut_nets):

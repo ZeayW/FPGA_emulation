@@ -65,6 +65,9 @@ class _NativeExactEntryRecords(list):
 
     _FORMAT = "<12I"
     _RECORD_SIZE = struct.calcsize(_FORMAT)
+    canonical_record_cursor_schema = (
+        "emuflow.native-exact-schedule-entry-cursor/v1"
+    )
 
     def __init__(
         self,
@@ -136,6 +139,57 @@ class _NativeExactEntryRecords(list):
                             self._offset + index * self._RECORD_SIZE,
                         )
                     )
+
+    def iter_canonical_records(self) -> Iterator[Tuple[str, str]]:
+        """Stream canonical logical rows without constructing hop dictionaries."""
+
+        encode_string = json.JSONEncoder(
+            ensure_ascii=True, separators=(",", ":")
+        ).encode
+        with self._path.open("rb") as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                for index in range(self._count):
+                    (
+                        native_route,
+                        sequence,
+                        depth,
+                        native_capacity,
+                        native_link,
+                        native_from,
+                        native_to,
+                        slot,
+                        lane,
+                        ready_slot,
+                        arrival_slot,
+                        ratio,
+                    ) = struct.unpack_from(
+                        self._FORMAT,
+                        data,
+                        self._offset + index * self._RECORD_SIZE,
+                    )
+                    route = self._routes[native_route]
+                    identity = f"s{sequence:06d}"
+                    capacity = encode_string(
+                        self._capacity_keys[native_capacity]
+                    )
+                    demand = encode_string(route["id"])
+                    source = encode_string(self._fpga_ids[native_from])
+                    link = encode_string(self._link_ids[native_link])
+                    net = encode_string(route["net"])
+                    target = encode_string(self._fpga_ids[native_to])
+                    ratio_field = (
+                        f',"tdm_ratio":{ratio}' if ratio else ""
+                    )
+                    encoded = (
+                        f'{{"arrival_slot":{arrival_slot},'
+                        f'"capacity_key":{capacity},'
+                        f'"demand":{demand},"from":{source},'
+                        f'"hop":{depth},"id":{encode_string(identity)},'
+                        f'"lane":{lane},"link":{link},"net":{net},'
+                        f'"ready_slot":{ready_slot},"slot":{slot}'
+                        f'{ratio_field},"to":{target}}}'
+                    )
+                    yield identity, encoded
 
     def __getitem__(self, index: int | slice) -> Any:
         if isinstance(index, slice):

@@ -575,6 +575,7 @@ def run_phase3(
             constraints,
             seed=seed,
             route_constraints=route_constraints,
+            _include_semantic_contract=retain_diagnostics,
         )
         assignment["provider"] = "single-active-fpga-capacity-selection-v1"
         assignment["provider_metadata"] = {
@@ -592,6 +593,7 @@ def run_phase3(
             constraints,
             seed=seed,
             route_constraints=route_constraints,
+            _include_semantic_contract=retain_diagnostics,
         )
     elif provider == "tritonpart":
         tritonpart_assignment = phase3_runtime_call(
@@ -616,6 +618,7 @@ def run_phase3(
             repair_balance=tritonpart_repair_balance,
             balance_legalizer=tritonpart_balance_legalizer,
             run_unweighted_baseline=tritonpart_run_unweighted_baseline,
+            defer_semantic_contract=not retain_diagnostics,
             persist_input_manifest=retain_diagnostics,
         )
         assignment = tritonpart_assignment
@@ -800,6 +803,7 @@ def run_phase3(
             physical_feedback_scale=patron_physical_feedback_scale,
             output_validation=("full" if retain_diagnostics else "caller"),
             retain_trace_seals=retain_diagnostics,
+            stream_semantic_records=not retain_diagnostics,
             timeout_seconds=tritonpart_timeout_seconds,
         )
         if retain_diagnostics:
@@ -987,8 +991,8 @@ def run_phase3(
     ):
         # PATRON selection, optional MFSPart post-refinement, and hop repair
         # can all change the cluster assignment.  Keep the large downstream
-        # contract out of those hot paths and materialize it exactly once from
-        # the final Phase-3 assignment.  Materializing before the last
+        # contract out of those hot paths and construct it exactly once from
+        # the final Phase-3 assignment.  Constructing it before the last
         # refinement silently left Static Exact cuts without dependency and
         # logic-segment semantics in Phase 4/5.
         assignment = phase3_runtime_call(
@@ -1002,6 +1006,7 @@ def run_phase3(
             provider=str(assignment["provider"]),
             seed=int(assignment["seed"]),
             provider_metadata=assignment.get("provider_metadata"),
+            _stream_semantic_records=not retain_diagnostics,
         )
     if retain_diagnostics or provider == "repart-replication":
         validation = phase3_runtime_call(

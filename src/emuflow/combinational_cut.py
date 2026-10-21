@@ -22,6 +22,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set, Tuple
 from .errors import ValidationError
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
+from .phase3_exact_records import build_static_exact_record_streams
 from .resources import RESOURCE_FIELDS
 
 
@@ -1214,6 +1215,7 @@ def build_static_exact_semantic_contract(
     *,
     max_dependency_depth: int,
     candidate_selection_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    stream_records: bool = False,
 ) -> Dict[str, Any]:
     """Build the provisional Phase-3 exact-cut semantic contract.
 
@@ -1371,6 +1373,8 @@ def build_static_exact_semantic_contract(
     for net_id in ordered_cut_ids:
         dependencies[net_id] = sorted(dependencies[net_id])
 
+    launch_flags = bytearray()
+    launch_segment_count = 0
     logic_segments: List[Dict[str, Any]] = []
     for net_id in ordered_cut_ids:
         # A reconvergent source cone can be fed both by predecessor cuts and
@@ -1383,29 +1387,31 @@ def build_static_exact_semantic_contract(
         # downstream physical qualification does not demand a fictitious
         # launch endpoint.  It is ready at slot zero and therefore consumes
         # no dynamic settle budget.
-        if local_launches[net_id] or not dependencies[net_id]:
-            configuration_stable_constant = (
-                not local_launches[net_id] and not dependencies[net_id]
-            )
-            segment_id = f"segment{len(logic_segments):06d}"
-            logic_segments.append(
-                {
-                    "id": segment_id,
-                    "kind": "launch_to_tx",
-                    "fpga": cut_by_net[net_id]["source_fpgas"][0],
-                    "sink_cut_net": net_id,
-                    **(
-                        {
-                            "source_semantics": (
-                                "configuration-stable-constant"
-                            )
-                        }
-                        if configuration_stable_constant
-                        else {}
-                    ),
-                }
-            )
-    launch_segment_count = len(logic_segments)
+        local_launch = local_launches[net_id]
+        has_launch = local_launch or not dependencies[net_id]
+        launch_flag = 1 if local_launch else (2 if has_launch else 0)
+        launch_flags.append(launch_flag)
+        if launch_flag:
+            segment_id = f"segment{launch_segment_count:06d}"
+            launch_segment_count += 1
+            if not stream_records:
+                logic_segments.append(
+                    {
+                        "id": segment_id,
+                        "kind": "launch_to_tx",
+                        "fpga": cut_by_net[net_id]["source_fpgas"][0],
+                        "sink_cut_net": net_id,
+                        **(
+                            {
+                                "source_semantics": (
+                                    "configuration-stable-constant"
+                                )
+                            }
+                            if launch_flag == 2
+                            else {}
+                        ),
+                    }
+                )
     capture_segment_start = launch_segment_count + dependency_edge_count
     dependency_edges: List[Dict[str, Any]] = []
     cut_nodes = []
@@ -1423,19 +1429,20 @@ def build_static_exact_semantic_contract(
             )
             launch_segment_number += 1
         for source in predecessor_cut_nets:
-            segment_id = f"segment{len(logic_segments):06d}"
-            logic_segments.append(
-                {
-                    "id": segment_id,
-                    "kind": "rx_to_tx",
-                    "fpga": cut["source_fpgas"][0],
-                    "source_cut_net": source,
-                    "sink_cut_net": sink,
-                }
-            )
-            dependency_edges.append(
-                {"from": source, "to": sink, "segment": segment_id}
-            )
+            segment_id = f"segment{dependency_segment_number:06d}"
+            if not stream_records:
+                logic_segments.append(
+                    {
+                        "id": segment_id,
+                        "kind": "rx_to_tx",
+                        "fpga": cut["source_fpgas"][0],
+                        "source_cut_net": source,
+                        "sink_cut_net": sink,
+                    }
+                )
+                dependency_edges.append(
+                    {"from": source, "to": sink, "segment": segment_id}
+                )
             source_segments.append(
                 f"segment{dependency_segment_number:06d}"
             )
@@ -1465,26 +1472,33 @@ def build_static_exact_semantic_contract(
                 "capture_segment_ids": capture_segments,
             }
         )
-    if len(logic_segments) != capture_segment_start:
+    if not stream_records and len(logic_segments) != capture_segment_start:
         raise ValidationError("Static Exact dependency numbering is inconsistent")
-    for capture in capture_records:
-        segment_id = f"segment{len(logic_segments):06d}"
-        logic_segments.append(
-            {
-                "id": segment_id,
-                "kind": "rx_to_capture",
-                "fpga": capture["fpga"],
-                "source_cut_net": capture["cut_net"],
-                "capture_requirement": capture["id"],
-            }
+    if stream_records:
+        record_streams = build_static_exact_record_streams(
+            cut_nodes, capture_records, launch_flags
         )
+        dependency_edges = record_streams["dependency_edges"]
+        logic_segments = record_streams["logic_segments"]
+    else:
+        for capture in capture_records:
+            segment_id = f"segment{len(logic_segments):06d}"
+            logic_segments.append(
+                {
+                    "id": segment_id,
+                    "kind": "rx_to_capture",
+                    "fpga": capture["fpga"],
+                    "source_cut_net": capture["cut_net"],
+                    "capture_requirement": capture["id"],
+                }
+            )
     if (
         launch_segment_number != launch_segment_count
         or dependency_segment_number
         != capture_segment_start
         or capture_index != len(capture_records)
-        or len(logic_segments)
-        != capture_segment_start + len(capture_records)
+        or len(logic_segments) != capture_segment_start + len(capture_records)
+        or len(dependency_edges) != dependency_edge_count
     ):
         raise ValidationError("Static Exact segment numbering is inconsistent")
 

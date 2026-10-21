@@ -51,6 +51,7 @@ from emuflow.pin_planning import (
     _assignment_metrics,
     build_pin_plan,
 )
+from emuflow.pin_plan_storage import PIN_PLAN_STORAGE_SCHEMA, read_pin_plan
 from emuflow.platform import Platform
 from emuflow.open_transport_characterization import (
     BASE_FEATURE_NAMES,
@@ -996,6 +997,16 @@ class Phase6Test(unittest.TestCase):
             )
             self.assertEqual(report["artifacts"]["pin_plan"], "pin_plan.json")
             self.assertTrue((output / "pin_plan.json").is_file())
+            self.assertTrue((output / "pin_plan.sqlite").is_file())
+            self.assertEqual(
+                read_json(output / "pin_plan.json")["schema"],
+                PIN_PLAN_STORAGE_SCHEMA,
+            )
+            self.assertLess((output / "pin_plan.json").stat().st_size, 4096)
+            self.assertEqual(
+                read_pin_plan(output / "pin_plan.json", materialize=True),
+                plan,
+            )
             self.assertTrue((output / "position_hints.json").is_file())
             chimew_plan, binding = self._chimew_certificate(
                 schedule, positions, plan

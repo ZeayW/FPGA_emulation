@@ -1262,15 +1262,20 @@ def write_transport_storage(
     exact_storage = assignment_metadata.get("semantic_contract_binary")
 
     physical_lane_by_entry: dict[str, int] = {}
+    pin_lane_iterator: Iterator[tuple[str, int, int]] | None = None
     if pin_plan is not None:
         if pin_plan.get("schema") != "emuflow.placement-aware-pin-plan/v1":
             raise ValidationError("pin plan has an unsupported schema")
-        physical_lane_by_entry = {
-            item["schedule_entry"]: item["physical_lane"]
-            for item in pin_plan.get("entries", [])
-        }
-        if len(physical_lane_by_entry) != len(pin_plan.get("entries", [])):
-            raise ValidationError("pin plan repeats a schedule entry")
+        lane_records = getattr(pin_plan, "iter_lane_records", None)
+        if lane_records is not None:
+            pin_lane_iterator = iter(lane_records())
+        else:
+            physical_lane_by_entry = {
+                item["schedule_entry"]: item["physical_lane"]
+                for item in pin_plan.get("entries", [])
+            }
+            if len(physical_lane_by_entry) != len(pin_plan.get("entries", [])):
+                raise ValidationError("pin plan repeats a schedule entry")
 
     binding_wire_by_key: dict[tuple[str, int], Mapping[str, Any]] = {}
     binding_links = {link.id: link for link in platform.links}
@@ -1390,8 +1395,20 @@ def write_transport_storage(
             if source not in fpga_ids or sink not in fpga_ids:
                 raise ValidationError("schedule entry references an unknown FPGA")
             entry_id = entry["id"]
-            lane = physical_lane_by_entry.get(entry_id, entry["lane"])
-            if pin_plan is not None:
+            if pin_lane_iterator is not None:
+                pin_record = next(pin_lane_iterator, None)
+                if (
+                    pin_record is None
+                    or pin_record[0] != entry_id
+                    or pin_record[2] != entry["lane"]
+                ):
+                    raise ValidationError(
+                        "pin plan must cover schedule entries exactly"
+                    )
+                lane = pin_record[1]
+            else:
+                lane = physical_lane_by_entry.get(entry_id, entry["lane"])
+            if pin_plan is not None and pin_lane_iterator is None:
                 if entry_id not in physical_lane_by_entry:
                     raise ValidationError(
                         "pin plan must cover every schedule entry exactly"
@@ -1580,7 +1597,13 @@ def write_transport_storage(
             if len(lane_rows) >= 4096:
                 flush()
         flush()
-        if pin_plan is not None and set(physical_lane_by_entry) != seen_pin_entries:
+        if pin_lane_iterator is not None and next(pin_lane_iterator, None) is not None:
+            raise ValidationError("pin plan must cover schedule entries exactly")
+        if (
+            pin_plan is not None
+            and pin_lane_iterator is None
+            and set(physical_lane_by_entry) != seen_pin_entries
+        ):
             raise ValidationError("pin plan must cover every schedule entry exactly")
 
         if exact_mode:

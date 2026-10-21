@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .errors import EmuFlowError, ValidationError
 from .native_tools import resolve_native_executable
@@ -504,7 +504,7 @@ def validate_pin_plan(
             raise ValidationError(f"pin plan weight {field!r} is invalid")
     _validate_positions(schedule, positions)
     raw = plan.get("entries")
-    if not isinstance(raw, list):
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
         raise ValidationError("pin plan entries must be an array")
     if any(not isinstance(item, dict) for item in raw):
         raise ValidationError("pin plan entry is malformed")

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import uuid
@@ -48,12 +49,44 @@ CREATE TABLE metadata(
 CREATE TABLE records(
   section TEXT NOT NULL,
   seq INTEGER NOT NULL,
-  identity TEXT,
+  identity TEXT NOT NULL,
   record_json TEXT NOT NULL,
+  CHECK(json_valid(record_json)),
+  CHECK(
+    identity IS CASE section
+      WHEN 'domain_schedules' THEN json_extract(record_json,'$.key')
+      WHEN 'demand_completions' THEN json_extract(record_json,'$.demand')
+      ELSE json_extract(record_json,'$.id')
+    END
+  ),
   PRIMARY KEY(section,seq),
   UNIQUE(section,identity)
 ) WITHOUT ROWID;
 """
+
+NATIVE_EXACT_CANONICAL_ENTRY_CURSOR_SCHEMA = (
+    "emuflow.native-exact-schedule-entry-cursor/v1"
+)
+_CANONICAL_JSON_STRING = (
+    r'"(?:[\x20-\x21\x23-\x5b\x5d-\x7f]|'
+    r'\\(?:["\\bfnrt]|u[0-9a-f]{4}))*"'
+)
+_CANONICAL_UINT = r"(?:0|[1-9][0-9]*)"
+_NATIVE_EXACT_CANONICAL_ENTRY = re.compile(
+    rf'^\{{"arrival_slot":{_CANONICAL_UINT},'
+    rf'"capacity_key":{_CANONICAL_JSON_STRING},'
+    rf'"demand":{_CANONICAL_JSON_STRING},'
+    rf'"from":{_CANONICAL_JSON_STRING},'
+    rf'"hop":{_CANONICAL_UINT},'
+    rf'"id":(?P<identity>{_CANONICAL_JSON_STRING}),'
+    rf'"lane":{_CANONICAL_UINT},'
+    rf'"link":{_CANONICAL_JSON_STRING},'
+    rf'"net":{_CANONICAL_JSON_STRING},'
+    rf'"ready_slot":{_CANONICAL_UINT},'
+    rf'"slot":{_CANONICAL_UINT}'
+    rf'(?:,"tdm_ratio":[1-9][0-9]*)?,'
+    rf'"to":{_CANONICAL_JSON_STRING}\}}$'
+)
 
 
 def _canonical(value: Any) -> str:
@@ -168,6 +201,73 @@ def _update_digest(digest: Any, value: str) -> None:
     digest.update(value.encode("utf-8"))
 
 
+def _pretty_canonical_record(encoded: str) -> list[str]:
+    """Format canonical JSON like json.dumps(indent=2), without decoding it."""
+
+    lines: list[str] = []
+    current: list[str] = []
+    depth = 0
+    in_string = False
+    escaped = False
+    skip_index = -1
+    for index, character in enumerate(encoded):
+        if index == skip_index:
+            continue
+        if in_string:
+            current.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+            current.append(character)
+        elif character in "{[":
+            current.append(character)
+            if index + 1 < len(encoded) and encoded[index + 1] in "}]":
+                current.append(encoded[index + 1])
+                skip_index = index + 1
+            else:
+                lines.append("".join(current))
+                depth += 1
+                current = ["  " * depth]
+        elif character in "}]":
+            if current and "".join(current).strip():
+                lines.append("".join(current))
+                depth -= 1
+                current = ["  " * depth, character]
+            else:
+                current.append(character)
+        elif character == ",":
+            current.append(character)
+            lines.append("".join(current))
+            current = ["  " * depth]
+        elif character == ":":
+            current.extend((character, " "))
+        else:
+            current.append(character)
+    if current:
+        lines.append("".join(current))
+    return lines
+
+
+def _validate_native_exact_canonical_entry(
+    identity: str, encoded: str
+) -> None:
+    if re.fullmatch(r"s[0-9]{6,}", identity) is None:
+        raise ValidationError(
+            "native exact canonical schedule entry identity is invalid"
+        )
+    match = _NATIVE_EXACT_CANONICAL_ENTRY.fullmatch(encoded)
+    if match is None or match.group("identity") != _canonical(identity):
+        raise ValidationError(
+            "native exact canonical schedule entry is malformed or mismatched"
+        )
+
+
 def _publish_logical_schedule(
     connection: sqlite3.Connection,
     schedule: Mapping[str, Any],
@@ -201,33 +301,54 @@ def _publish_logical_schedule(
             _update_digest(pretty_digest, "[\n" if count else "[]")
             pending: list[tuple[str, int, str | None, str]] = []
             observed = 0
-            for seq, item in enumerate(value):
+            canonical_cursor = getattr(value, "iter_canonical_records", None)
+            cursor_schema = getattr(
+                value, "canonical_record_cursor_schema", None
+            )
+            if (
+                key == "entries"
+                and cursor_schema
+                == NATIVE_EXACT_CANONICAL_ENTRY_CURSOR_SCHEMA
+                and callable(canonical_cursor)
+            ):
+                source = canonical_cursor()
+                validate_canonical = _validate_native_exact_canonical_entry
+            else:
+                source = (
+                    (_section_identity(key, item), _canonical(item))
+                    if isinstance(item, Mapping)
+                    else (None, None)
+                    for item in value
+                )
+                validate_canonical = None
+            for seq, (identity, encoded) in enumerate(source):
                 observed += 1
-                if not isinstance(item, Mapping):
+                if (
+                    not isinstance(identity, str)
+                    or not identity
+                    or not isinstance(encoded, str)
+                    or not encoded.startswith("{")
+                    or not encoded.endswith("}")
+                    or "\n" in encoded
+                ):
                     raise ValidationError(
                         f"schedule.{key}[{seq}]: expected an object"
                     )
-                encoded = _canonical(item)
+                if validate_canonical is not None:
+                    validate_canonical(identity, encoded)
                 if seq:
                     _update_digest(compact_digest, ",")
                 _update_digest(compact_digest, encoded)
                 _update_digest(section_digest, encoded)
                 _update_digest(section_digest, "\n")
-                pretty = json.dumps(
-                    item,
-                    ensure_ascii=True,
-                    indent=2,
-                    sort_keys=True,
-                ).splitlines()
+                pretty = _pretty_canonical_record(encoded)
                 for line_index, line in enumerate(pretty):
                     _update_digest(pretty_digest, f"    {line}")
                     if line_index + 1 < len(pretty):
                         _update_digest(pretty_digest, "\n")
                 if seq + 1 < count:
                     _update_digest(pretty_digest, ",\n")
-                pending.append(
-                    (key, seq, _section_identity(key, item), encoded)
-                )
+                pending.append((key, seq, identity, encoded))
                 if len(pending) >= 4096:
                     connection.executemany(
                         "INSERT INTO records(section,seq,identity,record_json) "
@@ -325,6 +446,10 @@ def write_tdm_schedule_storage(
             connection.close()
         finally:
             temporary.unlink(missing_ok=True)
+        if "UNIQUE constraint failed" not in str(error):
+            raise ValidationError(
+                "schedule storage rejected an invalid record payload"
+            ) from error
         raise ValidationError(
             "schedule storage contains duplicate record identities"
         ) from error

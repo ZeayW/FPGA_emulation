@@ -110,6 +110,11 @@ class XilinxRWRouteTest(unittest.TestCase):
             packed_view, placement_view = open_xilinx_physical_handoff(handoff)
             with (
                 open_xilinx_mapped_index(mapped_index) as indexed,
+                mock.patch.object(
+                    indexed,
+                    "iter_physical_cells",
+                    wraps=indexed.iter_physical_cells,
+                ) as physical_cells,
                 mock.patch(
                     "emuflow.xilinx_rwroute.heapq.merge",
                     side_effect=AssertionError("safe-name map was built"),
@@ -129,6 +134,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                         "placement_sha256": "2" * 64,
                     },
                 )
+                self.assertEqual(physical_cells.call_count, 1)
             rows = output.read_text(encoding="utf-8").splitlines()
 
         self.assertEqual(

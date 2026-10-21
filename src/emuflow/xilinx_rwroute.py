@@ -625,30 +625,6 @@ def export_rwroute_input(
     expanded_lut6_2 = 0
     transformed_dsp48e2 = 0
     logical_cell_count = 0
-    for name, cell_type, site, bel in physical_rows():
-        logical_cell_count += 1
-        if "\0" in name:
-            raise ValidationError(
-                f"cell name {name!r} contains the reserved NUL separator"
-            )
-        if cell_type != "LUT6_2":
-            if cell_type == "DSP48E2":
-                transformed_dsp48e2 += 1
-            continue
-        match = re.fullmatch(r"([A-H])6LUT", bel)
-        if match is None:
-            raise ValidationError(
-                f"LUT6_2 cell {name!r} is not assigned to a 6LUT BEL"
-            )
-        letter = match.group(1)
-        o5_key = f"{name}\0O5"
-        o6_key = f"{name}\0O6"
-        if not use_typed_route_ordinals:
-            pin_bindings[(name, "I0")] = (o5_key, "I0")
-            pin_bindings[(name, "O5")] = (o5_key, "O")
-            pin_bindings[(name, "I1")] = (o6_key, "I1")
-            pin_bindings[(name, "O6")] = (o6_key, "O")
-        expanded_lut6_2 += 1
     io_rows: Dict[str, Mapping[str, Any]] = {}
     io_by_bit: Dict[int, Tuple[str, str, str]] = {}
     if virtual_io_contract is not None:
@@ -751,21 +727,41 @@ def export_rwroute_input(
         )
     next_route_ordinal = len(io_ordinals)
     for name, cell_type, site, bel in physical_rows():
+        logical_cell_count += 1
+        if "\0" in name:
+            raise ValidationError(
+                f"cell name {name!r} contains the reserved NUL separator"
+            )
         cell_ordinal = next_route_ordinal
         if cell_type == "LUT6_2":
-            letter = bel[0]
+            match = re.fullmatch(r"([A-H])6LUT", bel)
+            if match is None:
+                raise ValidationError(
+                    f"LUT6_2 cell {name!r} is not assigned to a 6LUT BEL"
+                )
+            letter = match.group(1)
+            o5_key = f"{name}\0O5"
+            o6_key = f"{name}\0O6"
+            if not use_typed_route_ordinals:
+                pin_bindings[(name, "I0")] = (o5_key, "I0")
+                pin_bindings[(name, "O5")] = (o5_key, "O")
+                pin_bindings[(name, "I1")] = (o6_key, "I1")
+                pin_bindings[(name, "O6")] = (o6_key, "O")
+            expanded_lut6_2 += 1
             route_rows = (
                 (
-                    f"{name}\0O5", f"{name}$physical_o5", "LUT5",
+                    o5_key, f"{name}$physical_o5", "LUT5",
                     f"{letter}5LUT", cell_ordinal,
                 ),
                 (
-                    f"{name}\0O6", f"{name}$physical_o6", "LUT6",
+                    o6_key, f"{name}$physical_o6", "LUT6",
                     f"{letter}6LUT", cell_ordinal + 1,
                 ),
             )
             next_route_ordinal += 2
         else:
+            if cell_type == "DSP48E2":
+                transformed_dsp48e2 += 1
             route_rows = ((name, name, cell_type, bel, cell_ordinal),)
             next_route_ordinal += 1
         for (

@@ -229,14 +229,11 @@ def _compress_path_equivalent_checks(
     the numerical signature, but the whole bundle is the unit of compression:
     individual TX, commit or observation rows are never merged in isolation.
     """
-    path_indices: dict[str, list[int]] = {}
-    for index, row in enumerate(rows):
-        path_indices.setdefault(row.path, []).append(index)
-
     representatives: list[EventCheck] = []
     representative_bundles: dict[tuple, tuple[int, ...]] = {}
     original_to_representative = [-1] * len(rows)
-    for indices in path_indices.values():
+
+    def add_bundle(indices: list[int]) -> None:
         signature = tuple(
             (rows[index].role, rows[index].launch_ns,
              rows[index].arcs_ns, rows[index].required_ns)
@@ -250,6 +247,38 @@ def _compress_path_equivalent_checks(
             representative_bundles[signature] = representative_indices
         for index, representative_index in zip(indices, representative_indices):
             original_to_representative[index] = representative_index
+
+    # bind_physical_checks emits one contiguous bundle per original path. Keep
+    # only the active bundle in that production order instead of a dictionary
+    # containing one index list for every path. Preserve the public helper's
+    # historical acceptance of interleaved callers through a compatibility
+    # fallback.
+    seen_paths = set()
+    current_path = None
+    current_indices: list[int] = []
+    interleaved = False
+    for index, row in enumerate(rows):
+        if row.path != current_path:
+            if row.path in seen_paths:
+                interleaved = True
+                break
+            if current_indices:
+                add_bundle(current_indices)
+            current_path = row.path
+            seen_paths.add(row.path)
+            current_indices = []
+        current_indices.append(index)
+    if interleaved:
+        representatives.clear()
+        representative_bundles.clear()
+        original_to_representative[:] = [-1] * len(rows)
+        path_indices: dict[str, list[int]] = {}
+        for index, row in enumerate(rows):
+            path_indices.setdefault(row.path, []).append(index)
+        for indices in path_indices.values():
+            add_bundle(indices)
+    elif current_indices:
+        add_bundle(current_indices)
     if any(index < 0 for index in original_to_representative):
         raise ValidationError("global STA path compression lost a timing check")
     return representatives, original_to_representative
@@ -257,26 +286,44 @@ def _compress_path_equivalent_checks(
 
 def _write_expanded_measurements(path: Path, rows: list[EventCheck],
                                  representative_values: list[dict],
-                                 original_to_representative: list[int]) -> None:
-    """Restore the canonical full-population TSV from OpenSTA scalars."""
+                                 original_to_representative: list[int]) -> list[dict]:
+    """Restore the full TSV and result records in the same ordered pass."""
     if len(original_to_representative) != len(rows):
         raise ValidationError("global STA expansion population disagrees")
-    with path.open("w") as stream:
-        stream.write("endpoint\tarrival_ns\trequired_ns\tslack_ns\n")
-        for index, (row, representative_index) in enumerate(
-                zip(rows, original_to_representative)):
-            try:
-                value = representative_values[representative_index]
-            except IndexError as exc:
-                raise ValidationError(
-                    "global STA expansion references a missing representative"
-                ) from exc
-            local_arrival = value["arrival_ns"] - row.launch_ns
-            local_required = value["required_ns"] - row.launch_ns
-            stream.write(
-                f"o{index}\t{local_arrival:.17g}\t{local_required:.17g}\t"
-                f"{value['slack_ns']:.17g}\n"
-            )
+    temporary = path.with_name(f".{path.name}.expanded.tmp")
+    result = []
+    try:
+        with temporary.open("w") as stream:
+            stream.write("endpoint\tarrival_ns\trequired_ns\tslack_ns\n")
+            for index, (row, representative_index) in enumerate(
+                    zip(rows, original_to_representative)):
+                try:
+                    value = representative_values[representative_index]
+                except IndexError as exc:
+                    raise ValidationError(
+                        "global STA expansion references a missing representative"
+                    ) from exc
+                local_arrival = value["arrival_ns"] - row.launch_ns
+                local_required = value["required_ns"] - row.launch_ns
+                stream.write(
+                    f"o{index}\t{local_arrival:.17g}\t{local_required:.17g}\t"
+                    f"{value['slack_ns']:.17g}\n"
+                )
+                result.append(
+                    {
+                        "path": row.path,
+                        "role": row.role,
+                        "event": row.event,
+                        "arrival_ns": value["arrival_ns"],
+                        "required_ns": value["required_ns"],
+                        "slack_ns": value["slack_ns"],
+                    }
+                )
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return result
 
 
 def run_event_checks(checks: Iterable[EventCheck], directory: Path,
@@ -306,7 +353,7 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
     representative_values = read_measurements(
         output, representatives, verify_arcs=verify_arcs
     )
-    _write_expanded_measurements(
+    expanded_values = _write_expanded_measurements(
         output, rows, representative_values, original_to_representative
     )
     with (directory / "opensta.log").open("a") as log:
@@ -315,7 +362,7 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
             f"original_checks={len(rows)} "
             f"representative_checks={len(representatives)}\n"
         )
-    return read_measurements(output, rows, verify_arcs=verify_arcs)
+    return expanded_values
 
 
 def read_engine_identity(log_path: Path) -> dict:

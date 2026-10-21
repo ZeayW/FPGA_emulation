@@ -19,6 +19,7 @@ from .netlist import (
     anchors_to_xdc_template,
 )
 from .platform import Platform
+from .pin_plan_storage import read_pin_plan, write_pin_plan_storage
 from .pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
 from .ppro_calibrated_platform import (
     predict_transport_resources,
@@ -239,7 +240,7 @@ def run_phase6(
         )
     schedule = read_tdm_schedule(schedule_path)
     platform = Platform.load(platform_path)
-    pin_plan = read_json(pin_plan_path) if pin_plan_path is not None else None
+    pin_plan = read_pin_plan(pin_plan_path) if pin_plan_path is not None else None
     position_hints = (
         read_json(position_hints_path)
         if position_hints_path is not None
@@ -289,6 +290,11 @@ def run_phase6(
 
         virtual_board = build_virtual_board(platform)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if pin_plan is not None:
+        # Publish one indexed copy before downstream transport materialization.
+        # The validated input may be legacy JSON or an existing indexed view;
+        # consumers below always receive the bounded cursor interface.
+        pin_plan = write_pin_plan_storage(output_dir / "pin_plan.json", pin_plan)
     transport_artifacts = write_transport_storage(
         output_dir,
         assignment_index_path,
@@ -524,7 +530,6 @@ def run_phase6(
         compact=managed_storage,
     )
     if pin_plan is not None:
-        write_json(output_dir / "pin_plan.json", pin_plan)
         write_json(output_dir / "position_hints.json", position_hints)
         if electrical_binding_path is not None:
             write_json(
@@ -681,10 +686,10 @@ def validate_phase6(
         for item in manifest["fpgas"]
     }
     pin_plan = (
-        read_json(pin_plan_path)
+        read_pin_plan(pin_plan_path)
         if pin_plan_path is not None
         else (
-            read_json(manifest_path.parent / manifest["pin_plan"])
+            read_pin_plan(manifest_path.parent / manifest["pin_plan"])
             if "pin_plan" in manifest
             else None
         )

@@ -88,8 +88,11 @@ every sink. Contract construction also derives stable segment identities from
 ordered counters instead of keeping duplicate source, dependency and capture
 lookup maps. It transfers predecessor lists into final cut nodes and releases
 the analyzer's cut, dependency, launch and depth maps as each cut is emitted.
-The final logical contract is still resident once until direct native emission
-into `assignment.exact.bin` is implemented.
+The final cut-node and capture relations are still resident once, but production
+publication now derives dependency edges and logic segments through repeatable
+typed record streams. Those two hop-scale relations feed the canonical digest
+and `assignment.exact.bin` writer without becoming retained Python dictionary
+lists. Direct native emission of the remaining relations is still pending.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
@@ -107,10 +110,11 @@ completions and domain records are stored once; `read_json` remains the
 explicit compatibility materializer. Native hop output remains in a fixed
 record file and is exposed through a lazy, memory-mapped list-compatible view;
 Phase 5 validates every record but no longer creates one resident Python
-dictionary per hop before ScheduleStore publication. ScheduleStore publication
-computes both logical seals, each section seal and the SQLite rows in one
-bounded pass, so each native hop is decoded once instead of three times. The
-baseline Phase 6 splitter opens the
+dictionary per hop before ScheduleStore publication. A versioned canonical
+cursor maps fixed records directly to rows, and the writer validates identity
+and schema while computing both logical seals, each section seal and the
+SQLite rows in one bounded pass. Native hops therefore reach ScheduleStore
+without first becoming Python dictionaries. The baseline Phase 6 splitter opens the
 store lazily and performs entry-to-route and incoming-cut joins in SQLite, so
 it no longer decodes a monolithic schedule JSON before splitting. Phase 6
 batch-streams endpoint, lane, anchor and fixed-board binding records into one
@@ -121,6 +125,10 @@ SystemVerilog generation scale with physical port count instead of rescanning
 all scheduled hops for every FPGA. Those XDC and SystemVerilog artifacts are
 written atomically as streams, and independent validation compares streaming
 digests instead of building expected and observed whole-file strings.
+Placement-aware pin plans are published as a compact `pin_plan.json` selector
+plus a sealed `pin_plan.sqlite`. Transport construction lockstep-merges its
+typed lane cursor with schedule entries instead of building another hop-sized
+lane dictionary and coverage set. Legacy logical pin-plan JSON remains readable.
 Transport RTL is written atomically from slot-ordered cursors. Python still
 decodes records into the stores and emits adapter text, so native producer
 migration remains. ScheduleStore v2 also seals the historical
@@ -379,6 +387,9 @@ All providers feed the EmuFlow netlist splitter and transport generator.
 Static TDM communication, shadow state, and frame synchronization implement
 the declared virtual-cycle semantics. These runtime mechanisms and their
 equivalence checks are project implementations, not part of Chimew.
+Production Phase 6 stores hop-sized pin-plan entries once in
+`pin_plan.sqlite`; `pin_plan.json` is a relocatable, content-sealed selector.
+Readers accept both that indexed form and the legacy logical JSON contract.
 
 ### Phase 7: FPGA physical implementation and global timing
 
@@ -488,7 +499,10 @@ exported model. Measurement import now validates canonical endpoint order and
 the independent arc equations while streaming directly into result records;
 it no longer retains a second endpoint-keyed measurement dictionary. Check
 validation likewise keeps one per-path target/runtime state instead of several
-duplicate path populations. See [timing scope and metric definitions](docs/global-opensta-qualification.md).
+duplicate path populations. Path-bundle compression consumes the canonical
+contiguous path order without retaining an index list for every path, and the
+expanded TSV writer returns the final records in the same pass instead of
+rereading that file. See [timing scope and metric definitions](docs/global-opensta-qualification.md).
 
 ### Selected research references
 
