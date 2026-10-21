@@ -504,6 +504,32 @@ def _qualified_lut_clock_gates(
     return qualified
 
 
+def _candidate_lut_clock_bits(cells: Mapping[str, Any]) -> Set[int]:
+    """Return only nets needed to qualify the canonical LUT clock gates."""
+
+    bits: Set[int] = set()
+    for _name, cell in cells.items():
+        if cell.get("type") != "LUT2":
+            continue
+        parameters = cell.get("parameters", {})
+        connections = cell.get("connections", {})
+        if (
+            not isinstance(parameters, Mapping)
+            or not isinstance(connections, Mapping)
+            or _primitive_parameter(parameters, "INIT") != "8"
+        ):
+            continue
+        values = [connections.get(port) for port in ("I0", "I1", "O")]
+        if all(
+            isinstance(value, list)
+            and len(value) == 1
+            and isinstance(value[0], int)
+            for value in values
+        ):
+            bits.update(int(value[0]) for value in values)
+    return bits
+
+
 def export_rwroute_input(
     mapped_path: Path,
     packed_path: Path,
@@ -727,42 +753,58 @@ def export_rwroute_input(
 
     cell_rows_seconds = time.perf_counter() - cell_rows_started
     endpoint_index_started = time.perf_counter()
-    endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
-    for name in sorted(physical):
-        cell = cells[name]
-        directions = cell.get("port_directions", {})
-        for port, bits in cell.get("connections", {}).items():
-            if not isinstance(bits, list):
-                raise ValidationError(f"cell {name!r} port {port!r} is invalid")
-            direction = directions.get(port)
-            if direction not in {"input", "output", "inout"}:
-                raise ValidationError(f"cell {name!r} port direction is invalid")
-            role = "driver" if direction in {"output", "inout"} else "sink"
-            for index, bit in enumerate(bits):
-                if isinstance(bit, int):
-                    endpoints[bit].append(
-                        (name, _logical_pin(port, index, len(bits)), role)
+    indexed_pin_source = getattr(mapped, "iter_pins_by_net", None)
+    if callable(indexed_pin_source):
+        candidate_bits = _candidate_lut_clock_bits(cells)
+        clock_endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
+        if candidate_bits:
+            for bit, name, port, port_bit, port_width, direction in (
+                indexed_pin_source()
+            ):
+                if bit not in candidate_bits or name not in physical:
+                    continue
+                role = (
+                    "driver" if direction in {"output", "inout"} else "sink"
+                )
+                clock_endpoints[bit].append(
+                    (name, _logical_pin(port, port_bit, port_width), role)
+                )
+            for bit, endpoint in io_by_bit.items():
+                if bit in candidate_bits:
+                    clock_endpoints[bit].append(endpoint)
+        endpoints = None
+        endpoint_dataflow = "typed-mapped-pin-stream"
+    else:
+        endpoints = defaultdict(list)
+        for name in sorted(physical):
+            cell = cells[name]
+            directions = cell.get("port_directions", {})
+            for port, bits in cell.get("connections", {}).items():
+                if not isinstance(bits, list):
+                    raise ValidationError(
+                        f"cell {name!r} port {port!r} is invalid"
                     )
-    for bit, endpoint in io_by_bit.items():
-        endpoints[bit].append(endpoint)
+                direction = directions.get(port)
+                if direction not in {"input", "output", "inout"}:
+                    raise ValidationError(
+                        f"cell {name!r} port direction is invalid"
+                    )
+                role = (
+                    "driver" if direction in {"output", "inout"} else "sink"
+                )
+                for index, bit in enumerate(bits):
+                    if isinstance(bit, int):
+                        endpoints[bit].append(
+                            (name, _logical_pin(port, index, len(bits)), role)
+                        )
+        for bit, endpoint in io_by_bit.items():
+            endpoints[bit].append(endpoint)
+        clock_endpoints = endpoints
+        endpoint_dataflow = "compatibility-python-index"
 
     endpoint_index_seconds = time.perf_counter() - endpoint_index_started
     clock_validation_started = time.perf_counter()
-    clock_gates = _qualified_lut_clock_gates(cells, endpoints)
-    for bit, values in endpoints.items():
-        sinks = [value for value in values if value[2] == "sink"]
-        if not any(_is_clock_sink_pin(pin) for _name, pin, _role in sinks):
-            continue
-        drivers = [value for value in values if value[2] == "driver"]
-        if drivers and not (
-            len(drivers) == 1
-            and drivers[0][0] in clock_gates
-            and drivers[0][1] == "O"
-        ):
-            raise ValidationError(
-                f"routed clock bit {bit} is not driven by a qualified "
-                "LUT2 INIT=1000 gate with an FDRE-latched enable"
-            )
+    clock_gates = _qualified_lut_clock_gates(cells, clock_endpoints)
     for name in sorted(clock_gates):
         lines.append(
             f"CLOCK_GATE\t{safe[name]}\tI0\tI1\tO\t"
@@ -774,14 +816,67 @@ def export_rwroute_input(
     included = 0
     excluded = 0
     carry_exit_owners: Dict[Tuple[str, int], Tuple[str, str]] = {}
-    for bit in sorted(endpoints):
-        values = endpoints[bit]
+
+    def indexed_endpoint_groups(
+    ) -> Iterator[Tuple[int, List[Tuple[str, str, str]]]]:
+        assert callable(indexed_pin_source)
+        cell_groups: List[Tuple[str, str, str]] = []
+        current_bit: Optional[int] = None
+        io_items = iter(sorted(io_by_bit.items()))
+        current_io = next(io_items, None)
+
+        def emit_cell_group(
+            bit: int, values: List[Tuple[str, str, str]]
+        ) -> Iterator[Tuple[int, List[Tuple[str, str, str]]]]:
+            nonlocal current_io
+            while current_io is not None and current_io[0] < bit:
+                yield current_io[0], [current_io[1]]
+                current_io = next(io_items, None)
+            if current_io is not None and current_io[0] == bit:
+                values.append(current_io[1])
+                current_io = next(io_items, None)
+            yield bit, values
+
+        for bit, name, port, port_bit, port_width, direction in (
+            indexed_pin_source()
+        ):
+            if name not in physical:
+                continue
+            if current_bit is not None and bit != current_bit:
+                yield from emit_cell_group(current_bit, cell_groups)
+                cell_groups = []
+            current_bit = bit
+            role = "driver" if direction in {"output", "inout"} else "sink"
+            cell_groups.append(
+                (name, _logical_pin(port, port_bit, port_width), role)
+            )
+        if current_bit is not None:
+            yield from emit_cell_group(current_bit, cell_groups)
+        while current_io is not None:
+            yield current_io[0], [current_io[1]]
+            current_io = next(io_items, None)
+
+    endpoint_groups = (
+        indexed_endpoint_groups()
+        if endpoints is None
+        else ((bit, endpoints[bit]) for bit in sorted(endpoints))
+    )
+    for bit, values in endpoint_groups:
         drivers = [value for value in values if value[2] == "driver"]
         sinks = [value for value in values if value[2] == "sink"]
         net_name = f"n{bit}"
         boundary_clock = any(
             _is_clock_sink_pin(pin) for _cell, pin, _role in sinks
         )
+        if boundary_clock and drivers and not (
+            len(drivers) == 1
+            and drivers[0][0] in clock_gates
+            and drivers[0][1] == "O"
+        ):
+            raise ValidationError(
+                f"routed clock bit {bit} is not driven by a qualified "
+                "LUT2 INIT=1000 gate with an FDRE-latched enable"
+            )
         if len(drivers) != 1 or not sinks:
             if not drivers and sinks and boundary_clock:
                 lines.append(
@@ -867,6 +962,7 @@ def export_rwroute_input(
             "dataflow": {
                 "route_cells": "generated-from-physical-binding",
                 "safe_names": "ordered-merge-index",
+                "endpoints": endpoint_dataflow,
                 "tsv": "streamed-atomic-spool",
             },
         },

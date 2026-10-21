@@ -8,6 +8,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
+from emuflow.xilinx_netlist import (
+    emit_xilinx_mapped_index,
+    open_xilinx_mapped_index,
+)
 from emuflow.xilinx_rwroute import (
     _validate_rapidwright_device_data,
     export_rwroute_input,
@@ -18,6 +22,7 @@ from emuflow.xilinx_timing import (
     iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
 )
+from emuflow.yosys import import_yosys_json
 
 
 SHA = "0" * 64
@@ -80,9 +85,31 @@ class XilinxRWRouteTest(unittest.TestCase):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
             report = export_rwroute_input(
-                *paths, output, virtual_io_contract=contract
+                *paths, output, virtual_io_contract=contract,
+                source_sha256={
+                    "mapped_sha256": SHA,
+                    "packed_sha256": SHA,
+                    "placement_sha256": SHA,
+                },
             )
             text = output.read_text(encoding="utf-8")
+            ir_path = root / "mapped.emuir.sqlite"
+            mapped_index = root / "mapped.sqlite"
+            import_yosys_json(paths[0]).save(ir_path)
+            emit_xilinx_mapped_index(ir_path, mapped_index)
+            indexed_output = root / "route-indexed.tsv"
+            with open_xilinx_mapped_index(mapped_index) as indexed:
+                indexed_report = export_rwroute_input(
+                    mapped_index, paths[1], paths[2], indexed_output,
+                    mapped_value=indexed,
+                    virtual_io_contract=contract,
+                    source_sha256={
+                        "mapped_sha256": SHA,
+                        "packed_sha256": SHA,
+                        "placement_sha256": SHA,
+                    },
+                )
+            indexed_text = indexed_output.read_text(encoding="utf-8")
         self.assertEqual(report["virtual_io_cells"], 2)
         self.assertEqual(report["routable_nets"], 2)
         self.assertEqual(
@@ -90,6 +117,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             {
                 "route_cells": "generated-from-physical-binding",
                 "safe_names": "ordered-merge-index",
+                "endpoints": "compatibility-python-index",
                 "tsv": "streamed-atomic-spool",
             },
         )
@@ -106,6 +134,17 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertIn("\nNET\tn1\tsignal\n", text)
         self.assertIn("\nNET\tn2\tsignal\n", text)
         self.assertNotIn("boundary_or_driverless", text)
+        self.assertEqual(
+            indexed_report["routable_nets"], report["routable_nets"]
+        )
+        self.assertEqual(
+            indexed_report["virtual_io_cells"], report["virtual_io_cells"]
+        )
+        self.assertNotIn("boundary_or_driverless", indexed_text)
+        self.assertEqual(
+            indexed_report["runtime_breakdown"]["dataflow"]["endpoints"],
+            "typed-mapped-pin-stream",
+        )
 
     def test_recovery_tree_drops_stable_connections_between_iterations(self):
         source = (

@@ -155,6 +155,11 @@ RWRoute TSV export likewise derives route-cell rows directly from the physical
 binding and builds only the safe-name index; it no longer duplicates every
 cell in a second route-cell dictionary. Its report separates binding, cell/I/O
 emission, endpoint indexing, clock checks, net emission, and atomic commit.
+Mapped-index v2 stores each typed cell pin once outside `record_json`; legacy
+cell mappings are reconstructed lazily. Production RWRoute groups this ordered
+pin relation by net, retaining only the clock-gate qualification subset rather
+than a whole-design Python endpoint dictionary. Mapped-index v1 remains
+readable.
 
 ## Flow
 

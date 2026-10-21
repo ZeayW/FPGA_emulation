@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,12 +9,60 @@ from emuflow.verilog import mapped_verilog
 from emuflow.xilinx_netlist import (
     emit_xilinx_mapped_index,
     emit_xilinx_mapped_json,
+    is_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
 from emuflow.yosys import import_yosys_json
 
 
 class XilinxMappedNetlistTests(unittest.TestCase):
+    def test_v1_index_remains_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "legacy.sqlite"
+            connection = sqlite3.connect(path)
+            connection.executescript("""
+                CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)
+                  WITHOUT ROWID;
+                CREATE TABLE cells(
+                  id TEXT PRIMARY KEY,seq INTEGER NOT NULL UNIQUE,type TEXT NOT NULL,
+                  record_json TEXT NOT NULL
+                ) WITHOUT ROWID;
+                CREATE TABLE netnames(
+                  id TEXT PRIMARY KEY,seq INTEGER NOT NULL UNIQUE,
+                  record_json TEXT NOT NULL
+                ) WITHOUT ROWID;
+            """)
+            connection.executemany(
+                "INSERT INTO metadata VALUES (?,?)",
+                (
+                    ("schema", "emuflow.xilinx-mapped-index/v1"),
+                    ("top_json", json.dumps("top")),
+                    ("creator_json", json.dumps("fixture")),
+                    ("ports_json", json.dumps({})),
+                ),
+            )
+            cell = {
+                "type": "LUT1", "parameters": {}, "attributes": {},
+                "port_directions": {"O": "output"},
+                "connections": {"O": [2]},
+            }
+            connection.execute(
+                "INSERT INTO cells VALUES (?,?,?,?)",
+                ("lut", 0, "LUT1", json.dumps(cell)),
+            )
+            connection.execute(
+                "INSERT INTO netnames VALUES (?,?,?)",
+                ("n", 0, json.dumps({"bits": [2]})),
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertTrue(is_xilinx_mapped_index(path))
+            with open_xilinx_mapped_index(path) as indexed:
+                self.assertEqual(
+                    indexed["modules"]["top"]["cells"]["lut"], cell
+                )
+
     def test_production_index_is_the_only_mapped_artifact(self) -> None:
         mapped = {
             "creator": "fixture",
@@ -46,6 +95,30 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                     indexed["modules"]["top"]["cells"]["lut"]["type"],
                     "LUT1",
                 )
+                self.assertEqual(
+                    list(indexed.iter_pins_by_net()),
+                    [
+                        (2, "lut", "I0", 0, 1, "input"),
+                        (3, "lut", "O", 0, 1, "output"),
+                    ],
+                )
+            connection = sqlite3.connect(index)
+            try:
+                schema = connection.execute(
+                    "SELECT value FROM metadata WHERE key='schema'"
+                ).fetchone()[0]
+                record = json.loads(connection.execute(
+                    "SELECT record_json FROM cells WHERE id='lut'"
+                ).fetchone()[0])
+                pin_count = connection.execute(
+                    "SELECT count(*) FROM cell_pins"
+                ).fetchone()[0]
+            finally:
+                connection.close()
+            self.assertEqual(schema, "emuflow.xilinx-mapped-index/v2")
+            self.assertNotIn("connections", record)
+            self.assertNotIn("port_directions", record)
+            self.assertEqual(pin_count, 2)
             self.assertTrue(index.is_file())
             self.assertFalse(absent_json.exists())
             self.assertEqual(report["output"], str(index))

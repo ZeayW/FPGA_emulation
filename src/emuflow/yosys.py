@@ -949,6 +949,7 @@ def import_yosys_json_indexed(
     transform_report: Optional[Dict[str, Any]] = None
     hierarchy_report: Optional[Dict[str, Any]] = None
     bit_aliases: Dict[int, Any] = {}
+    mapped_index_schema: Optional[str] = None
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -1065,7 +1066,11 @@ def import_yosys_json_indexed(
                     "SELECT key,value FROM mapped_source.metadata"
                 )
             )
-            if index_metadata.get("schema") != "emuflow.xilinx-mapped-index/v1":
+            mapped_index_schema = index_metadata.get("schema")
+            if mapped_index_schema not in {
+                "emuflow.xilinx-mapped-index/v1",
+                "emuflow.xilinx-mapped-index/v2",
+            }:
                 raise ImportError("mapped Xilinx SQLite index schema is invalid")
             try:
                 indexed_top = json.loads(index_metadata["top_json"])
@@ -1091,19 +1096,84 @@ def import_yosys_json_indexed(
             top_name = indexed_top
             creator = indexed_creator
             raw_ports = indexed_ports
-            connection.execute(
-                """
-                INSERT INTO staging_instances(id,type,ff,bram,record_json)
-                SELECT id,type,
-                       CASE WHEN type IN ('FDCE','FDPE','FDRE','FDSE')
-                            THEN 1 ELSE 0 END,
-                       CASE WHEN type IN ('RAMB18E2','RAMB36E2','URAM288')
-                            THEN 1 ELSE 0 END,
-                       record_json
-                  FROM mapped_source.cells
-                 ORDER BY id
-                """
-            )
+            if (
+                mapped_index_schema == "emuflow.xilinx-mapped-index/v2"
+                and staging_transform is not None
+            ):
+                pin_rows = iter(connection.execute(
+                    "SELECT * FROM mapped_source.cell_pins "
+                    "ORDER BY cell_id,port,port_bit"
+                ))
+                current_pin = next(pin_rows, None)
+                direction_names = {0: "input", 1: "output", 2: "inout"}
+                for cell_row in connection.execute(
+                    "SELECT id,type,record_json FROM mapped_source.cells "
+                    "ORDER BY id"
+                ):
+                    cell_id = str(cell_row["id"])
+                    cell = json.loads(cell_row["record_json"])
+                    connections: Dict[str, List[Any]] = {}
+                    port_directions: Dict[str, str] = {}
+                    while (
+                        current_pin is not None
+                        and str(current_pin["cell_id"]) == cell_id
+                    ):
+                        port = str(current_pin["port"])
+                        width = int(current_pin["port_width"])
+                        values = connections.setdefault(port, [None] * width)
+                        bit = int(current_pin["port_bit"])
+                        values[bit] = (
+                            int(current_pin["net_bit"])
+                            if int(current_pin["value_kind"]) == 0
+                            else str(current_pin["constant"])
+                        )
+                        direction = direction_names.get(
+                            int(current_pin["direction"])
+                        )
+                        if direction is None:
+                            raise ImportError(
+                                "mapped Xilinx pin direction is invalid"
+                            )
+                        port_directions[port] = direction
+                        current_pin = next(pin_rows, None)
+                    if not isinstance(cell, dict) or any(
+                        any(value is None for value in values)
+                        for values in connections.values()
+                    ):
+                        raise ImportError(
+                            f"mapped Xilinx cell {cell_id!r} is invalid"
+                        )
+                    cell["connections"] = connections
+                    cell["port_directions"] = port_directions
+                    cell_type = str(cell_row["type"])
+                    connection.execute(
+                        "INSERT INTO staging_instances VALUES (?,?,?,?,?)",
+                        (
+                            cell_id, cell_type,
+                            int(cell_type in {"FDCE", "FDPE", "FDRE", "FDSE"}),
+                            int(cell_type in {"RAMB18E2", "RAMB36E2", "URAM288"}),
+                            json.dumps(
+                                cell, ensure_ascii=False,
+                                separators=(",", ":"), sort_keys=True,
+                            ),
+                        ),
+                    )
+                if current_pin is not None:
+                    raise ImportError("mapped Xilinx pin row is orphaned")
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO staging_instances(id,type,ff,bram,record_json)
+                    SELECT id,type,
+                           CASE WHEN type IN ('FDCE','FDPE','FDRE','FDSE')
+                                THEN 1 ELSE 0 END,
+                           CASE WHEN type IN ('RAMB18E2','RAMB36E2','URAM288')
+                                THEN 1 ELSE 0 END,
+                           record_json
+                      FROM mapped_source.cells
+                     ORDER BY id
+                    """
+                )
             connection.execute(
                 """
                 INSERT INTO staging_names(
@@ -1317,38 +1387,64 @@ def import_yosys_json_indexed(
                         bit_index,
                     )
 
-        for staged_cell in connection.execute(
-            "SELECT id, record_json FROM staging_instances ORDER BY id"
-        ):
-            cell_name = staged_cell["id"]
-            raw_cell = json.loads(staged_cell["record_json"])
-            directions = raw_cell.get("port_directions", {})
-            connections = raw_cell.get("connections", {})
-            if not isinstance(directions, dict):
-                directions = {}
-            if not isinstance(connections, dict):
-                raise ImportError(f"cell {cell_name!r}: connections must be an object")
-            for port_name, bits in sorted(connections.items()):
-                if not isinstance(bits, list):
+        if mapped_index_schema == "emuflow.xilinx-mapped-index/v2":
+            directions = {0: "input", 1: "output", 2: "inout"}
+            for pin in connection.execute(
+                """
+                SELECT cell_id,port,port_bit,net_bit,direction
+                  FROM mapped_source.cell_pins
+                 WHERE value_kind=0
+                 ORDER BY cell_id,port,port_bit
+                """
+            ):
+                direction = directions.get(int(pin["direction"]))
+                if direction is None:
+                    raise ImportError("mapped Xilinx pin direction is invalid")
+                for role_name in _roles(direction, is_top_port=False):
+                    stage_endpoint(
+                        int(pin["net_bit"]),
+                        0 if role_name == "driver" else 1,
+                        str(pin["cell_id"]),
+                        str(pin["port"]),
+                        int(pin["port_bit"]),
+                    )
+        else:
+            for staged_cell in connection.execute(
+                "SELECT id, record_json FROM staging_instances ORDER BY id"
+            ):
+                cell_name = staged_cell["id"]
+                raw_cell = json.loads(staged_cell["record_json"])
+                directions = raw_cell.get("port_directions", {})
+                connections = raw_cell.get("connections", {})
+                if not isinstance(directions, dict):
+                    directions = {}
+                if not isinstance(connections, dict):
                     raise ImportError(
-                        f"cell {cell_name!r} port {port_name!r}: bits must be an array"
+                        f"cell {cell_name!r}: connections must be an object"
                     )
-                direction = directions.get(port_name, "unknown")
-                if direction == "unknown":
-                    warnings.append(
-                        f"cell {cell_name!r} port {port_name!r} has unknown direction"
-                    )
-                for bit_index, bit in enumerate(bits):
-                    if not isinstance(bit, int):
-                        continue
-                    for role_name in _roles(direction, is_top_port=False):
-                        stage_endpoint(
-                            bit,
-                            0 if role_name == "driver" else 1,
-                            cell_name,
-                            port_name,
-                            bit_index,
+                for port_name, bits in sorted(connections.items()):
+                    if not isinstance(bits, list):
+                        raise ImportError(
+                            f"cell {cell_name!r} port {port_name!r}: "
+                            "bits must be an array"
                         )
+                    direction = directions.get(port_name, "unknown")
+                    if direction == "unknown":
+                        warnings.append(
+                            f"cell {cell_name!r} port {port_name!r} "
+                            "has unknown direction"
+                        )
+                    for bit_index, bit in enumerate(bits):
+                        if not isinstance(bit, int):
+                            continue
+                        for role_name in _roles(direction, is_top_port=False):
+                            stage_endpoint(
+                                bit,
+                                0 if role_name == "driver" else 1,
+                                cell_name,
+                                port_name,
+                                bit_index,
+                            )
 
         flush_endpoints()
         connection.commit()
@@ -1434,6 +1530,15 @@ def import_yosys_json_indexed(
         connection.commit()
 
         def instances() -> Iterator[Dict[str, Any]]:
+            constant_rows = iter(connection.execute(
+                """
+                SELECT cell_id,port,port_bit,constant
+                  FROM mapped_source.cell_pins
+                 WHERE value_kind=1
+                 ORDER BY cell_id,port,port_bit
+                """
+            )) if mapped_index_schema == "emuflow.xilinx-mapped-index/v2" else iter(())
+            current_constant = next(constant_rows, None)
             for staged_cell in connection.execute(
                 "SELECT id, type, record_json FROM staging_instances ORDER BY id"
             ):
@@ -1444,20 +1549,37 @@ def import_yosys_json_indexed(
                 parameters = raw_cell.get("parameters", {})
                 attributes = raw_cell.get("attributes", {})
                 constants = []
-                connections = raw_cell.get("connections", {})
-                if isinstance(connections, dict):
-                    for port_name, bits in sorted(connections.items()):
-                        if not isinstance(bits, list):
-                            continue
-                        for bit_index, bit in enumerate(bits):
-                            if isinstance(bit, str):
-                                constants.append(
-                                    {
-                                        "port": port_name,
-                                        "bit": bit_index,
-                                        "value": bit.lower(),
-                                    }
-                                )
+                if mapped_index_schema == "emuflow.xilinx-mapped-index/v2":
+                    if (
+                        current_constant is not None
+                        and str(current_constant["cell_id"]) < str(cell_name)
+                    ):
+                        raise ImportError("mapped Xilinx constant pin is orphaned")
+                    while (
+                        current_constant is not None
+                        and str(current_constant["cell_id"]) == str(cell_name)
+                    ):
+                        constants.append({
+                            "port": str(current_constant["port"]),
+                            "bit": int(current_constant["port_bit"]),
+                            "value": str(current_constant["constant"]).lower(),
+                        })
+                        current_constant = next(constant_rows, None)
+                else:
+                    connections = raw_cell.get("connections", {})
+                    if isinstance(connections, dict):
+                        for port_name, bits in sorted(connections.items()):
+                            if not isinstance(bits, list):
+                                continue
+                            for bit_index, bit in enumerate(bits):
+                                if isinstance(bit, str):
+                                    constants.append(
+                                        {
+                                            "port": port_name,
+                                            "bit": bit_index,
+                                            "value": bit.lower(),
+                                        }
+                                    )
                 yield {
                     "id": cell_name,
                     "name": cell_name,
@@ -1467,6 +1589,8 @@ def import_yosys_json_indexed(
                     "attributes": attributes if isinstance(attributes, dict) else {},
                     "constant_connections": constants,
                 }
+            if current_constant is not None:
+                raise ImportError("mapped Xilinx constant pin is orphaned")
 
         def nets() -> Iterator[Dict[str, Any]]:
             endpoints = _indexed_endpoint_groups(connection)
