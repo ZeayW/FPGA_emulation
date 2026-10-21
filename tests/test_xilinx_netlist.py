@@ -202,6 +202,11 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                         (3, "lut", "O", 0, 1, "output"),
                     ],
                 )
+                self.assertEqual(
+                    [name for name, _cell in indexed.iter_cells_by_type("LUT1")],
+                    ["lut"],
+                )
+                self.assertEqual(list(indexed.iter_cells_by_type("LUT2")), [])
             connection = sqlite3.connect(index)
             try:
                 schema = connection.execute(

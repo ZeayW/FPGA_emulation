@@ -114,6 +114,10 @@ class XilinxRWRouteTest(unittest.TestCase):
                     "emuflow.xilinx_rwroute.heapq.merge",
                     side_effect=AssertionError("safe-name map was built"),
                 ),
+                mock.patch.object(
+                    type(indexed.cells), "items",
+                    side_effect=AssertionError("all mapped cells were scanned"),
+                ),
             ):
                 report = export_rwroute_input(
                     mapped_index, handoff, handoff, output,

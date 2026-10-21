@@ -269,6 +269,50 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
                 int(row["port_bit"]), int(row["port_width"]), direction,
             )
 
+    def iter_cells_by_type(
+        self, cell_type: str,
+    ) -> Iterator[Tuple[str, Mapping[str, Any]]]:
+        """Stream one primitive family without reconstructing every cell."""
+
+        if not isinstance(cell_type, str) or not cell_type:
+            raise ValidationError("indexed mapped cell type is invalid")
+        if self.schema != XILINX_MAPPED_INDEX_SCHEMA:
+            for name, cell in self.cells.items():
+                if cell.get("type") == cell_type:
+                    yield name, cell
+            return
+        pins = _RowsForOwner(
+            self.connection.execute(
+                """
+                SELECT p.*
+                  FROM cell_pins AS p
+                  JOIN cells AS c ON c.seq=p.cell_seq
+                 WHERE c.type=?
+                 ORDER BY p.cell_seq,p.port,p.port_bit
+                """,
+                (cell_type,),
+            ),
+            "cell_seq",
+        )
+        for row in self.connection.execute(
+            """
+            SELECT id,seq,record_json
+              FROM cells
+             WHERE type=?
+             ORDER BY seq
+            """,
+            (cell_type,),
+        ):
+            value = json.loads(row["record_json"])
+            if not isinstance(value, dict):
+                raise ValidationError(
+                    f"indexed mapped record {row['id']!r} is invalid"
+                )
+            yield str(row["id"]), _IndexedCells._with_pins(
+                value, iter(pins.take(int(row["seq"])))
+            )
+        pins.finish()
+
     def _physical_connection(self, handoff_path: Path) -> sqlite3.Connection:
         if self.schema != XILINX_MAPPED_INDEX_SCHEMA:
             raise ValidationError(

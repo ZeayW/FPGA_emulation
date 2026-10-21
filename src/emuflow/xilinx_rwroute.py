@@ -413,14 +413,13 @@ def _primitive_parameter(parameters: Mapping[str, Any], name: str) -> Optional[s
     return value
 
 
-def _qualified_lut_clock_gates(
-    cells: Mapping[str, Any],
-    endpoints: Mapping[int, List[Tuple[str, str, str]]],
-) -> Set[str]:
-    """Recognize the canonical, already-latched NVDLA clock-gate pattern."""
-    candidates: Set[str] = set()
+def _lut_clock_candidate_pins(
+    cells: Iterable[Tuple[str, Mapping[str, Any]]],
+) -> Dict[str, Tuple[int, int, int]]:
+    """Return the three routed bits of each canonical LUT2 candidate."""
+
     pins: Dict[str, Tuple[int, int, int]] = {}
-    for name, cell in cells.items():
+    for name, cell in cells:
         if cell.get("type") != "LUT2":
             continue
         parameters = cell.get("parameters", {})
@@ -439,6 +438,24 @@ def _qualified_lut_clock_gates(
             values.append(bits[0])
         if len(values) != 3:
             continue
+        pins[name] = (values[0], values[1], values[2])
+    return pins
+
+
+def _qualified_lut_clock_gates(
+    cells: Mapping[str, Any],
+    endpoints: Mapping[int, List[Tuple[str, str, str]]],
+    candidate_pins: Optional[Mapping[str, Tuple[int, int, int]]] = None,
+) -> Set[str]:
+    """Recognize the canonical, already-latched NVDLA clock-gate pattern."""
+
+    raw_pins = (
+        _lut_clock_candidate_pins(cells.items())
+        if candidate_pins is None else candidate_pins
+    )
+    candidates: Set[str] = set()
+    pins: Dict[str, Tuple[int, int, int]] = {}
+    for name, values in raw_pins.items():
         enable_drivers = [
             (instance, pin)
             for instance, pin, role in endpoints.get(values[1], [])
@@ -451,7 +468,7 @@ def _qualified_lut_clock_gates(
         ):
             continue
         candidates.add(name)
-        pins[name] = (values[0], values[1], values[2])
+        pins[name] = values
 
     qualified: Set[str] = set()
     for name in sorted(candidates):
@@ -504,30 +521,14 @@ def _qualified_lut_clock_gates(
     return qualified
 
 
-def _candidate_lut_clock_bits(cells: Mapping[str, Any]) -> Set[int]:
-    """Return only nets needed to qualify the canonical LUT clock gates."""
+def _candidate_lut_clock_bits(
+    candidate_pins: Mapping[str, Tuple[int, int, int]],
+) -> Set[int]:
+    """Return only nets needed to qualify canonical LUT clock gates."""
 
-    bits: Set[int] = set()
-    for _name, cell in cells.items():
-        if cell.get("type") != "LUT2":
-            continue
-        parameters = cell.get("parameters", {})
-        connections = cell.get("connections", {})
-        if (
-            not isinstance(parameters, Mapping)
-            or not isinstance(connections, Mapping)
-            or _primitive_parameter(parameters, "INIT") != "8"
-        ):
-            continue
-        values = [connections.get(port) for port in ("I0", "I1", "O")]
-        if all(
-            isinstance(value, list)
-            and len(value) == 1
-            and isinstance(value[0], int)
-            for value in values
-        ):
-            bits.update(int(value[0]) for value in values)
-    return bits
+    return {
+        bit for values in candidate_pins.values() for bit in values
+    }
 
 
 def export_rwroute_input(
@@ -579,6 +580,7 @@ def export_rwroute_input(
     indexed_physical_route_pins = getattr(
         mapped, "iter_physical_route_pins_by_net", None
     )
+    indexed_cells_by_type = getattr(mapped, "iter_cells_by_type", None)
     use_typed_physical = (
         packed_path == placement_path
         and callable(indexed_physical_cells)
@@ -851,7 +853,11 @@ def export_rwroute_input(
             )
 
     if use_typed_physical or callable(indexed_pin_source):
-        candidate_bits = _candidate_lut_clock_bits(cells)
+        candidate_pins = _lut_clock_candidate_pins(
+            indexed_cells_by_type("LUT2")
+            if callable(indexed_cells_by_type) else cells.items()
+        )
+        candidate_bits = _candidate_lut_clock_bits(candidate_pins)
         clock_endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
         clock_route_ordinals: Dict[str, int] = {}
         if candidate_bits:
@@ -905,11 +911,14 @@ def export_rwroute_input(
             endpoints[bit].append(endpoint)
         clock_endpoints = endpoints
         clock_route_ordinals = {}
+        candidate_pins = _lut_clock_candidate_pins(cells.items())
         endpoint_dataflow = "compatibility-python-index"
 
     endpoint_index_seconds = time.perf_counter() - endpoint_index_started
     clock_validation_started = time.perf_counter()
-    clock_gates = _qualified_lut_clock_gates(cells, clock_endpoints)
+    clock_gates = _qualified_lut_clock_gates(
+        cells, clock_endpoints, candidate_pins
+    )
     for name in sorted(clock_gates):
         lines.append(
             f"CLOCK_GATE\t{safe_name(name, clock_route_ordinals.get(name))}"

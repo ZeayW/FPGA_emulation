@@ -168,7 +168,8 @@ from ordered joins; RWRoute therefore no longer retains an
 deterministic route-cell ordinal, including the two-cell LUT6_2 expansion, so
 the production exporter formats `cN` while streaming without retaining a
 million-entry safe-name map. Compatibility JSON inputs keep the historical
-lookup path.
+lookup path. Clock-gate discovery likewise queries only typed `LUT2` records
+and their pins; it no longer reconstructs every mapped cell before routing.
 
 ## Flow
 
