@@ -521,6 +521,46 @@ class Phase6Test(unittest.TestCase):
         self.assertEqual(equivalence["mismatches"], 0)
         self.assertEqual(equivalence["cycles"], 12)
 
+    def test_split_manifest_carries_phase3_resource_reservation(self) -> None:
+        assignment = copy.deepcopy(self.assignment)
+        reservations = {
+            "fpga0": {"ff": 2, "lut": 3},
+            "fpga1": {"ff": 4, "lut": 5},
+        }
+        assignment["constraints"][
+            "resource_reservations_by_fpga"
+        ] = reservations
+        artifacts = build_split_artifacts(
+            self.ir, assignment, self.schedule, self.platform
+        )
+        self.assertEqual(
+            artifacts["manifest"]["resource_reservations_by_fpga"],
+            reservations,
+        )
+        validate_split_artifacts(
+            self.ir,
+            assignment,
+            self.schedule,
+            self.platform,
+            artifacts,
+            reconstruct=False,
+        )
+        broken = copy.deepcopy(artifacts)
+        broken["manifest"]["resource_reservations_by_fpga"]["fpga0"][
+            "lut"
+        ] += 1
+        with self.assertRaisesRegex(
+            ValidationError, "resource reservations disagree"
+        ):
+            validate_split_artifacts(
+                self.ir,
+                assignment,
+                self.schedule,
+                self.platform,
+                broken,
+                reconstruct=False,
+            )
+
     def test_sqlite_data_plane_matches_legacy_split_exactly(self) -> None:
         old = build_split_artifacts(
             self.ir, self.assignment, self.schedule, self.platform

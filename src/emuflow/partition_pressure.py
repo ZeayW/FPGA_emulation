@@ -38,6 +38,7 @@ from .partition_physical_feedback import (
     PARTITION_PHYSICAL_FEEDBACK_SCHEMA,
     validate_partition_physical_feedback_seal,
 )
+from .partition_limits import planning_resource_capacities
 from .phase3_runtime import phase3_runtime_call
 from .resources import RESOURCE_FIELDS
 from .routing import (
@@ -1573,8 +1574,13 @@ def _write_patron_native_input(
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
         constraints.get("balance_dimensions", ()),
+        constraints.get("resource_reservations_by_fpga", {}),
     )
     fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
+    planning_capacity = planning_resource_capacities(
+        [fpga_by_id[part] for part in parts],
+        constraints.get("resource_reservations_by_fpga", {}),
+    )
     domains = sorted(model["capacities"], key=lambda item: item["key"])
     domain_index = {
         domain["key"]: index for index, domain in enumerate(domains)
@@ -1631,7 +1637,7 @@ def _write_patron_native_input(
             hard.append(
                 float(total_cells)
                 if dimension == "cells"
-                else float(fpga_by_id[part].effective_capacity[dimension])
+                else float(planning_capacity[part][dimension])
             )
             allowed.append(
                 float(balance["balance_allowed_loads"][part][dimension])

@@ -45,6 +45,71 @@ class StrictPartitionLimitsTest(unittest.TestCase):
         )
         self.assertEqual(limits["fpga0"], {"cells": 27, "lut": 100})
 
+    def test_downstream_reservation_reduces_planning_not_physical_capacity(self):
+        reservations = {"fpga0": {"lut": 20}}
+        balanced = strict_balance_limits(
+            self.fpgas,
+            {"cells": 320, "lut": 320},
+            0.1,
+            balance_dimensions={"cells", "lut"},
+            resource_reservations_by_fpga=reservations,
+        )
+        # The physical-capacity share is still 25%, so the normal 88-LUT
+        # balance bound applies to unreserved devices.  Only fpga0 is clipped
+        # by its 80-LUT planning capacity.
+        self.assertEqual(balanced["fpga0"], {"cells": 88, "lut": 80})
+        self.assertEqual(balanced["fpga1"], {"cells": 88, "lut": 88})
+        capacity_only = strict_balance_limits(
+            self.fpgas,
+            {"cells": 320, "lut": 320},
+            0.1,
+            balance_dimensions={"cells"},
+            resource_reservations_by_fpga=reservations,
+        )
+        self.assertEqual(capacity_only["fpga0"]["lut"], 80)
+        self.assertEqual(capacity_only["fpga1"]["lut"], 100)
+
+    def test_validator_seals_reservation_and_rejects_original_design_overflow(self):
+        clusters = [
+            {
+                "id": f"c{i}",
+                "instances": [f"i{i}"],
+                "resources": {"lut": load},
+                "fixed_fpga": None,
+            }
+            for i, load in enumerate((81, 80, 80, 79))
+        ]
+        assignment = {f"c{i}": f"fpga{i}" for i in range(4)}
+        reservations = {"fpga0": {"lut": 20}}
+        with self.assertRaisesRegex(
+            ValidationError, "multi-resource balance/capacity"
+        ):
+            validate_cluster_assignment_balance(
+                SimpleNamespace(fpgas=self.fpgas),
+                clusters,
+                assignment,
+                0.1,
+                requested_balance_dimensions=("cells",),
+                resource_reservations_by_fpga=reservations,
+            )
+        clusters[0]["resources"]["lut"] = 80
+        clusters[3]["resources"]["lut"] = 80
+        report = validate_cluster_assignment_balance(
+            SimpleNamespace(fpgas=self.fpgas),
+            clusters,
+            assignment,
+            0.1,
+            requested_balance_dimensions=("cells",),
+            resource_reservations_by_fpga=reservations,
+        )
+        self.assertEqual(report["capacity_limits"]["fpga0"]["lut"], 80)
+        self.assertEqual(
+            report["physical_capacity_limits"]["fpga0"]["lut"], 100
+        )
+        self.assertEqual(
+            report["resource_reservations_by_fpga"]["fpga0"], {"lut": 20}
+        )
+
     def test_validator_cannot_relax_for_oversized_cluster(self):
         platform = SimpleNamespace(fpgas=self.fpgas)
         clusters = [{"id": f"c{i}", "instances": list(range(w)),

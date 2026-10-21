@@ -50,6 +50,14 @@ adjustment, and a reserved post-adjustment convergence window before exact
 legalization and negotiated routing. The final route still requires zero
 overused nodes and complete source-to-sink connectivity.
 
+Phase 3 can seal per-FPGA downstream resource reservations in
+`resource_reservations_by_fpga`. Every partition provider then limits the
+original design to the 25%-capped physical capacity minus that reservation,
+while balance shares remain based on the unchanged physical devices. Phase 6
+carries the seal into the split manifest; Phase 7 streams the synthesized
+transport resource totals from SQLite, rejects any reservation overrun, and
+still checks the combined implementation against the original physical cap.
+
 The table names the principal upstream tools and method sources; EmuFlow's
 integration and extensions are mapped to implementation entry points in the
 [algorithm/provider overview](docs/ALGORITHMS.md). See also the

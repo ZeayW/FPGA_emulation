@@ -543,6 +543,17 @@ def build_split_artifacts(
         "runtime_controller_rtl": "virtual_runtime_controller.sv",
         **(
             {
+                "resource_reservations_by_fpga": assignment.get(
+                    "constraints", {}
+                )["resource_reservations_by_fpga"]
+            }
+            if assignment.get("constraints", {}).get(
+                "resource_reservations_by_fpga"
+            )
+            else {}
+        ),
+        **(
+            {
                 "cut_mode": "static-exact-combinational",
                 "qualification": "exact-boundary-materialization-pass",
                 "semantic_contract_schema": exact_contract["schema"],
@@ -879,6 +890,16 @@ def validate_split_artifacts(
                     f"split artifact {key!r} does not match independent "
                     "reconstruction"
                 )
+
+    expected_reservations = assignment.get("constraints", {}).get(
+        "resource_reservations_by_fpga"
+    )
+    if artifacts.get("manifest", {}).get(
+        "resource_reservations_by_fpga"
+    ) != expected_reservations:
+        raise ValidationError(
+            "split manifest resource reservations disagree with Phase 3"
+        )
 
     instance_counts = Counter(
         instance["id"]

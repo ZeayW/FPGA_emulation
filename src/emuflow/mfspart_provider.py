@@ -276,6 +276,7 @@ def _balanced_capacities(
         constraints["balance_tolerance"],
         overrides,
         constraints.get("balance_dimensions", ()),
+        constraints.get("resource_reservations_by_fpga", {}),
     )
     validate_indivisible_limits(
         ((str(node.get("id", node.get("cluster", index))), node["weights"],
@@ -528,6 +529,7 @@ def refine_mfspart_partition(
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
         constraints.get("balance_dimensions", ()),
+        constraints.get("resource_reservations_by_fpga", {}),
     )
     used = len(set(refined_cluster_assignment.values()))
     required = constraints["min_used_fpgas"]
@@ -548,6 +550,7 @@ def refine_mfspart_partition(
             constraints["balance_tolerance"],
             constraints.get("balance_tolerance_by_dimension", {}),
             constraints.get("active_fpgas"), constraints.get("balance_dimensions", ()),
+            constraints.get("resource_reservations_by_fpga", {}),
         )
     selection = {
         "policy": "required-fpga-count-v1",

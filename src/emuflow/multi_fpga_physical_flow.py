@@ -62,8 +62,10 @@ from .physical_backend import (
 )
 from .physical_summary_storage import publish_physical_evidence
 from .platform import Platform
+from .partition_limits import planning_resource_capacities
 from .position_hints_storage import PositionHintsView, read_position_hints
 from .resource_budget import validate_device_resource_usage
+from .resources import RESOURCE_FIELDS, ResourceVector
 from .rapidwright_provider import validate_rapidwright_provider_manifest
 from .runtime import (
     PHYSICAL_SUMMARY_SCHEMA,
@@ -189,6 +191,61 @@ def _indexed_emuir_counts(path: Path) -> tuple[int, int]:
         )
     finally:
         connection.close()
+
+
+def _indexed_emuir_resource_totals(path: Path) -> Dict[str, int]:
+    """Aggregate indexed resources without materializing transport cells."""
+
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        raw = {
+            str(resource): int(amount)
+            for resource, amount in connection.execute(
+                "SELECT resource, SUM(amount) FROM instance_resources "
+                "GROUP BY resource"
+            )
+            if int(amount)
+        }
+    finally:
+        connection.close()
+    return ResourceVector.from_mapping(
+        raw, "indexed transport resources"
+    ).to_dict(include_zeros=False)
+
+
+def _validate_transport_resource_reservation(
+    fpga_id: str,
+    used: Mapping[str, int],
+    reservations: Mapping[str, Mapping[str, int]],
+) -> Dict[str, Any]:
+    reserved = reservations.get(fpga_id, {})
+    violations = [
+        {
+            "resource": field,
+            "used": int(used.get(field, 0)),
+            "reserved": int(reserved.get(field, 0)),
+        }
+        for field in RESOURCE_FIELDS
+        if int(used.get(field, 0)) > int(reserved.get(field, 0))
+    ]
+    if violations:
+        raise ValidationError(
+            f"transport resources exceed sealed Phase 3 reservation for "
+            f"{fpga_id}: {violations}; automatic capacity relaxation is forbidden"
+        )
+    fields = sorted(set(used) | set(reserved))
+    return {
+        "status": "pass",
+        "provider": "phase3-sealed-transport-resource-reservation-v1",
+        "used": {field: int(used.get(field, 0)) for field in fields},
+        "reserved": {field: int(reserved.get(field, 0)) for field in fields},
+        "headroom": {
+            field: int(reserved.get(field, 0)) - int(used.get(field, 0))
+            for field in fields
+        },
+        "violations": 0,
+        "automatic_relaxation": False,
+    }
 
 
 def _partition_has_physical_work(
@@ -853,6 +910,24 @@ def run_multi_fpga_physical_flow(
     if manifest.get("schema") != SPLIT_MANIFEST_SCHEMA:
         raise ValidationError("multi-FPGA physical input split manifest is invalid")
     platform = Platform.load(platform_path)
+    raw_reservations = manifest.get("resource_reservations_by_fpga", {})
+    if (
+        not isinstance(raw_reservations, Mapping)
+        or any(not isinstance(row, Mapping) for row in raw_reservations.values())
+    ):
+        raise ValidationError(
+            "split manifest resource reservations are malformed"
+        )
+    transport_resource_reservations = {
+        str(fpga_id): {str(field): amount for field, amount in row.items()}
+        for fpga_id, row in raw_reservations.items()
+    }
+    # Revalidate the sealed reservation against this exact BoardDB.  The
+    # returned planning capacities are consumed in Phase 3; Phase 7 retains
+    # the physical capacity and checks the synthesized transport separately.
+    planning_resource_capacities(
+        platform.fpgas, transport_resource_reservations
+    )
     schedule = read_tdm_schedule(schedule_path)
     position_hints = None
     electrical_binding = None
@@ -997,6 +1072,14 @@ def run_multi_fpga_physical_flow(
             schedule_path,
             platform,
         )
+        assignment_reservations = prepared_logic_inputs.assignment.get(
+            "constraints", {}
+        ).get("resource_reservations_by_fpga", {})
+        if assignment_reservations != transport_resource_reservations:
+            raise ValidationError(
+                "split manifest resource reservations disagree with the "
+                "Phase 3 assignment"
+            )
         if backend in {"open", "rapidwright"}:
             prepared_local_inputs = prepare_vpr_local_path_query_inputs(
                 original_ir_path,
@@ -1268,6 +1351,12 @@ def run_multi_fpga_physical_flow(
                     },
                 },
             }
+            if transport_resource_reservations:
+                stages["transport_resource_reservation"] = (
+                    _validate_transport_resource_reservation(
+                        fpga_id, {}, transport_resource_reservations
+                    )
+                )
             artifact_paths = {
                 "placement_ir": merged_ir,
                 "boundary_identity": boundary_identity_path,
@@ -1455,12 +1544,16 @@ def run_multi_fpga_physical_flow(
         transport_instances, transport_nets = _indexed_emuir_counts(
             transport_ir_path
         )
+        transport_resources = _indexed_emuir_resource_totals(
+            transport_ir_path
+        )
         transport_report = {
             "status": "pass",
             "provider": "yosys-generic-lut6-ff",
             "top": module_match.group(1),
             "instances": transport_instances,
             "nets": transport_nets,
+            "resources": transport_resources,
             "fanout_buffering": {
                 "output": str(fanout_report_path),
                 "sha256": _sha256(fanout_report_path),
@@ -1478,6 +1571,14 @@ def run_multi_fpga_physical_flow(
             "transport_synthesis": transport_report,
             "placement_ir": lowering_report,
         }
+        if transport_resource_reservations:
+            stages["transport_resource_reservation"] = (
+                _validate_transport_resource_reservation(
+                    fpga_id,
+                    transport_resources,
+                    transport_resource_reservations,
+                )
+            )
         provider_fields: Dict[str, Any] = {}
         if backend == "open":
             if architecture_path is None:

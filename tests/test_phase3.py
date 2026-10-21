@@ -307,6 +307,46 @@ class Phase3Test(unittest.TestCase):
                 tampered, self.ir, self.platform
             )
 
+    def test_partition_constraints_seal_downstream_resource_reservations(self) -> None:
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "resource_reservations_by_fpga": {
+                    "fpga1": {"ff": 2, "lut": 1},
+                    "fpga0": {"lut": 0},
+                },
+            },
+            self.ir,
+            self.platform,
+        )
+        self.assertEqual(
+            constraints["resource_reservations_by_fpga"],
+            {"fpga1": {"ff": 2, "lut": 1}},
+        )
+        invalid_values = [
+            {"fpga0": {"lut": True}},
+            {"fpga0": {"lut": -1}},
+            {"fpga0": {"unknown": 1}},
+            {"missing": {"lut": 1}},
+            {
+                "fpga0": {
+                    "lut": self.platform.fpgas[0].effective_capacity["lut"]
+                    + 1
+                }
+            },
+        ]
+        for reservations in invalid_values:
+            with self.subTest(reservations=reservations):
+                with self.assertRaises(ValidationError):
+                    normalize_partition_constraints(
+                        {
+                            "schema": "emuflow.partition-constraints/v1",
+                            "resource_reservations_by_fpga": reservations,
+                        },
+                        self.ir,
+                        self.platform,
+                    )
+
     def test_minimum_capacity_scales_to_homogeneous_32_fpga_platform(
         self,
     ) -> None:

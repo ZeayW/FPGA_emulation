@@ -19,6 +19,7 @@ from .partition import (
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
 )
+from .partition_limits import planning_resource_capacities
 from .platform import Platform
 from .phase3_storage import read_phase3_assignment_view
 from .replication import apply_replication
@@ -246,6 +247,11 @@ def _write_native_input(
         partition_constraints.get("balance_tolerance_by_dimension", {}),
         partition_constraints.get("active_fpgas"),
         partition_constraints.get("balance_dimensions", ()),
+        partition_constraints.get("resource_reservations_by_fpga", {}),
+    )
+    planning_capacity = planning_resource_capacities(
+        partition_fpgas,
+        partition_constraints.get("resource_reservations_by_fpga", {}),
     )
     dimensions = balance["balance_dimensions"]
     nets = _primary_net_records(ir, clusters_artifact, net_weights)
@@ -279,7 +285,7 @@ def _write_native_input(
             hard_capacity = (
                 math.ceil(balance_bound)
                 if dimension == "cells"
-                else fpga.effective_capacity[dimension]
+                else planning_capacity[fpga.id][dimension]
             )
             lines.append(
                 f"BOUND {fpga_index[fpga.id]} {dimension_index} "

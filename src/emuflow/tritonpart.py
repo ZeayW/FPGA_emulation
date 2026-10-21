@@ -30,7 +30,11 @@ from .partition import (
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
 )
-from .partition_limits import strict_balance_limits, validate_indivisible_limits
+from .partition_limits import (
+    planning_resource_capacities,
+    strict_balance_limits,
+    validate_indivisible_limits,
+)
 from .phase3_runtime import phase3_runtime_call
 from .platform import Platform
 from .resources import RESOURCE_FIELDS
@@ -269,6 +273,7 @@ def export_tritonpart_inputs(
         constraints["balance_tolerance"],
         tolerances,
         constraints.get("balance_dimensions", ()),
+        constraints.get("resource_reservations_by_fpga", {}),
     )
     validate_indivisible_limits(
         ((cluster["id"], dict(zip(dimensions, row)), cluster.get("fixed_fpga"))
@@ -489,9 +494,10 @@ def _repair_min_used_fpgas(
     }
     partition_fpgas = active_partition_fpgas(platform, constraints)
     fpga_ids = [fpga.id for fpga in partition_fpgas]
-    capacity = {
-        fpga.id: fpga.effective_capacity for fpga in partition_fpgas
-    }
+    capacity = planning_resource_capacities(
+        partition_fpgas,
+        constraints.get("resource_reservations_by_fpga", {}),
+    )
     loads = {
         fpga_id: {field: 0 for field in RESOURCE_FIELDS}
         for fpga_id in fpga_ids
@@ -647,6 +653,7 @@ def _repair_multi_resource_balance_reference(
         constraints["balance_tolerance"],
         tolerance_overrides,
         constraints.get("balance_dimensions", ()),
+        constraints.get("resource_reservations_by_fpga", {}),
     )
     allowed = [
         [limits[fpga_id][field] for field in dimensions]
@@ -1562,6 +1569,7 @@ def _repair_multi_resource_balance_reference(
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
         constraints.get("balance_dimensions", ()),
+        constraints.get("resource_reservations_by_fpga", {}),
     )
     return assignment, {
         "moves": move_total,
@@ -2184,6 +2192,7 @@ def run_tritonpart(
                     constraints.get("balance_tolerance_by_dimension", {}),
                     constraints.get("active_fpgas"),
                     constraints.get("balance_dimensions", ()),
+                    constraints.get("resource_reservations_by_fpga", {}),
                 )
             )
         except ValidationError as error:

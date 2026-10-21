@@ -19,11 +19,13 @@ from emuflow.multi_fpga_physical_flow import (
     MULTI_FPGA_PHYSICAL_SCHEMA,
     _assemble_multi_fpga_physical_results,
     _implementation_stage,
+    _indexed_emuir_resource_totals,
     _open_position_hint_lookup,
     _partition_has_physical_work,
     _partition_declares_dut_clock,
     _physical_clock_delays,
     _record_chimew_fixed_io_target,
+    _validate_transport_resource_reservation,
     _write_vpr_runtime_sdc,
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
@@ -88,6 +90,24 @@ def _merged_ir(fpga):
 
 
 class MultiFpgaPhysicalFlowTest(unittest.TestCase):
+    def test_transport_resources_must_fit_sealed_phase3_reservation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "transport.emuir.sqlite"
+            _merged_ir("fpga0").save(path)
+            resources = _indexed_emuir_resource_totals(path)
+        self.assertEqual(resources, {"lut": 2})
+        report = _validate_transport_resource_reservation(
+            "fpga0", resources, {"fpga0": {"lut": 2}}
+        )
+        self.assertEqual(report["headroom"], {"lut": 0})
+        self.assertFalse(report["automatic_relaxation"])
+        with self.assertRaisesRegex(
+            ValidationError, "sealed Phase 3 reservation"
+        ):
+            _validate_transport_resource_reservation(
+                "fpga0", resources, {"fpga0": {"lut": 1}}
+            )
+
     def test_indexed_position_hint_lookup_does_not_expand_entries(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "position-hints.json"

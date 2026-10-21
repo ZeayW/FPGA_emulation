@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 from .errors import ValidationError
 from .io import read_json
 from .ir import EmuIR
-from .partition_limits import strict_balance_limits
+from .partition_limits import planning_resource_capacities, strict_balance_limits
 from .platform import FpgaNode, Platform
 from .resources import RESOURCE_FIELDS, ResourceVector
 from .combinational_cut import (
@@ -640,7 +640,54 @@ def normalize_partition_constraints(
             "constraints.balance_dimensions: duplicate dimensions"
         )
 
-    return {
+    raw_reservations = raw.get("resource_reservations_by_fpga", {})
+    if not isinstance(raw_reservations, dict):
+        raise ValidationError(
+            "constraints.resource_reservations_by_fpga: expected an object"
+        )
+    inactive_reservations = sorted(
+        set(raw_reservations) - set(active_fpgas)
+    )
+    if inactive_reservations:
+        raise ValidationError(
+            "constraints.resource_reservations_by_fpga references unknown/"
+            f"inactive FPGAs {inactive_reservations}"
+        )
+    fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
+    resource_reservations: Dict[str, Dict[str, int]] = {}
+    for fpga_id, raw_row in raw_reservations.items():
+        if not isinstance(raw_row, dict):
+            raise ValidationError(
+                "constraints.resource_reservations_by_fpga."
+                f"{fpga_id}: expected an object"
+            )
+        unknown_resources = sorted(set(raw_row) - set(RESOURCE_FIELDS))
+        if unknown_resources:
+            raise ValidationError(
+                "constraints.resource_reservations_by_fpga."
+                f"{fpga_id}: unknown resources {unknown_resources}"
+            )
+        normalized_row: Dict[str, int] = {}
+        for field, amount in raw_row.items():
+            physical = fpga_by_id[fpga_id].effective_capacity.get(field, 0)
+            if (
+                isinstance(amount, bool)
+                or not isinstance(amount, int)
+                or amount < 0
+                or amount > physical
+            ):
+                raise ValidationError(
+                    "constraints.resource_reservations_by_fpga."
+                    f"{fpga_id}.{field}: expected an integer in [0, {physical}]"
+                )
+            if amount:
+                normalized_row[field] = amount
+        if normalized_row:
+            resource_reservations[fpga_id] = dict(
+                sorted(normalized_row.items())
+            )
+
+    normalized = {
         "schema": PARTITION_CONSTRAINTS_SCHEMA,
         "groups": groups,
         "fixed": sorted(
@@ -655,6 +702,11 @@ def normalize_partition_constraints(
         ),
         "balance_dimensions": sorted(raw_balance_dimensions),
     }
+    if resource_reservations:
+        normalized["resource_reservations_by_fpga"] = dict(
+            sorted(resource_reservations.items())
+        )
+    return normalized
 
 
 def active_partition_fpgas(
@@ -1012,9 +1064,10 @@ def assign_clusters(
     )
     partition_fpgas = active_partition_fpgas(platform, constraints)
     fpga_ids = [fpga.id for fpga in partition_fpgas]
-    effective_capacity = {
-        fpga.id: fpga.effective_capacity for fpga in partition_fpgas
-    }
+    planning_capacity = planning_resource_capacities(
+        partition_fpgas,
+        constraints.get("resource_reservations_by_fpga", {}),
+    )
     loads = {
         fpga_id: {field: 0 for field in RESOURCE_FIELDS}
         for fpga_id in fpga_ids
@@ -1024,37 +1077,24 @@ def assign_clusters(
         ResourceVector.from_mapping(cluster["resources"])
         for cluster in clusters.values()
     ).to_dict()
-    soft_caps: Dict[str, Dict[str, int]] = {
-        fpga_id: {} for fpga_id in fpga_ids
-    }
     tolerance = constraints["balance_tolerance"]
     dimension_tolerances = constraints.get(
         "balance_tolerance_by_dimension", {}
     )
-    for field in RESOURCE_FIELDS:
-        total = total_resources[field]
-        capacities = {
-            fpga_id: effective_capacity[fpga_id].get(field, 0)
-            for fpga_id in fpga_ids
-        }
-        capacity_total = sum(capacities.values())
-        if total == 0 or capacity_total == 0:
-            continue
-        for fpga_id in fpga_ids:
-            proportional = total * capacities[fpga_id] / capacity_total
-            field_tolerance = dimension_tolerances.get(field, tolerance)
-            soft_caps[fpga_id][field] = min(
-                capacities[fpga_id],
-                math.floor(
-                    proportional * (1.0 + field_tolerance) + 1e-9
-                ),
-            )
+    soft_caps = strict_balance_limits(
+        partition_fpgas,
+        total_resources,
+        tolerance,
+        dimension_tolerances,
+        constraints.get("balance_dimensions", ()),
+        constraints.get("resource_reservations_by_fpga", {}),
+    )
 
     def dominant_size(cluster: Mapping[str, Any]) -> float:
         resources = cluster["resources"]
         ratios = []
         for fpga_id in fpga_ids:
-            capacity = effective_capacity[fpga_id]
+            capacity = planning_capacity[fpga_id]
             ratios.extend(
                 resources.get(field, 0) / capacity[field]
                 for field in capacity
@@ -1097,7 +1137,7 @@ def assign_clusters(
             clusters[cluster_id]["resources"]
         ).to_dict()
         projected = _resource_add(loads[fpga_id], cluster_resources)
-        if not _fits(projected, effective_capacity[fpga_id]):
+        if not _fits(projected, planning_capacity[fpga_id]):
             raise ValidationError(
                 f"cluster {cluster_id!r} does not fit FPGA {fpga_id!r}"
             )
@@ -1128,7 +1168,7 @@ def assign_clusters(
                             clusters[cluster_id]["resources"]
                         ).to_dict(),
                     ),
-                    effective_capacity[fpga_id],
+                    planning_capacity[fpga_id],
                 )
             ),
             None,
@@ -1146,7 +1186,7 @@ def assign_clusters(
                                 clusters[cluster_id]["resources"]
                             ).to_dict(),
                         ),
-                        effective_capacity[fpga_id],
+                        planning_capacity[fpga_id],
                     )
                 ),
                 None,
@@ -1169,7 +1209,7 @@ def assign_clusters(
             for fpga_id in fpga_ids
             if _fits(
                 _resource_add(loads[fpga_id], resources),
-                effective_capacity[fpga_id],
+                planning_capacity[fpga_id],
             )
         ]
         if not capacity_candidates:
@@ -1201,9 +1241,9 @@ def assign_clusters(
             )
             projected = _resource_add(loads[fpga_id], resources)
             ratios = [
-                projected[field] / effective_capacity[fpga_id][field]
-                for field in effective_capacity[fpga_id]
-                if effective_capacity[fpga_id][field] > 0
+                projected[field] / planning_capacity[fpga_id][field]
+                for field in planning_capacity[fpga_id]
+                if planning_capacity[fpga_id][field] > 0
             ]
             return (
                 float(cut_cost),
@@ -1333,6 +1373,10 @@ def build_partition_assignment(
             }
         )
         _remove_static_exact_global_rounds(cut_nets, cut_metrics)
+    reservations = constraints.get("resource_reservations_by_fpga", {})
+    planning_capacity = planning_resource_capacities(
+        platform.fpgas, reservations
+    )
     partition_records = []
     for fpga in platform.fpgas:
         cluster_ids = sorted(
@@ -1348,29 +1392,36 @@ def build_partition_assignment(
             for cluster_id in cluster_ids
         ).to_dict(include_zeros=False)
         if not ResourceVector.from_mapping(resources).fits_capacity(
-            fpga.effective_capacity
+            planning_capacity[fpga.id]
         ):
             raise ValidationError(
-                f"provider assignment exceeds effective capacity of {fpga.id!r}"
+                f"provider assignment exceeds reserved planning capacity of "
+                f"{fpga.id!r}"
             )
         utilization = {
             field: resources.get(field, 0) / fpga.effective_capacity[field]
             for field in fpga.effective_capacity
             if fpga.effective_capacity[field] > 0
         }
-        partition_records.append(
-            {
-                "fpga": fpga.id,
-                "clusters": cluster_ids,
-                "cluster_count": len(cluster_ids),
-                "instance_count": instance_count,
-                "resources": resources,
-                "effective_capacity": dict(
-                    sorted(fpga.effective_capacity.items())
-                ),
-                "utilization": dict(sorted(utilization.items())),
-            }
-        )
+        record = {
+            "fpga": fpga.id,
+            "clusters": cluster_ids,
+            "cluster_count": len(cluster_ids),
+            "instance_count": instance_count,
+            "resources": resources,
+            "effective_capacity": dict(
+                sorted(fpga.effective_capacity.items())
+            ),
+            "utilization": dict(sorted(utilization.items())),
+        }
+        if reservations:
+            record["planning_capacity"] = dict(
+                sorted(planning_capacity[fpga.id].items())
+            )
+            record["resource_reservation"] = dict(
+                sorted(reservations.get(fpga.id, {}).items())
+            )
+        partition_records.append(record)
 
     result: Dict[str, Any] = {
         "schema": PARTITION_ASSIGNMENT_SCHEMA,
@@ -1497,9 +1548,15 @@ def validate_partition_artifacts_online(
         fpga_id: ResourceVector.from_mapping(totals)
         for fpga_id, totals in resource_totals.items()
     }
+    planning_capacity = planning_resource_capacities(
+        list(fpga_by_id.values()),
+        constraints.get("resource_reservations_by_fpga", {}),
+    )
     for fpga_id, resources in resources_by_fpga.items():
-        if not resources.fits_capacity(fpga_by_id[fpga_id].effective_capacity):
-            raise ValidationError("online assignment exceeds FPGA capacity")
+        if not resources.fits_capacity(planning_capacity[fpga_id]):
+            raise ValidationError(
+                "online assignment exceeds reserved planning capacity"
+            )
     used_fpgas = len(set(cluster_assignment.values()))
     if used_fpgas < constraints.get("min_used_fpgas", 1):
         raise ValidationError("online assignment uses too few FPGAs")
@@ -1517,6 +1574,7 @@ def validate_partition_artifacts_online(
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
         constraints.get("balance_dimensions"),
+        constraints.get("resource_reservations_by_fpga", {}),
     )
     result = {
         "status": "pass",
@@ -1722,6 +1780,9 @@ def validate_cluster_assignment_balance(
     requested_tolerance_by_dimension: Optional[Mapping[str, float]] = None,
     active_fpgas: Optional[Sequence[str]] = None,
     requested_balance_dimensions: Optional[Sequence[str]] = (),
+    resource_reservations_by_fpga: Optional[
+        Mapping[str, Mapping[str, int]]
+    ] = None,
 ) -> Dict[str, Any]:
     """Check capacities and opt-in share limits; explicit None is legacy all-fields."""
     active_set = (
@@ -1779,6 +1840,10 @@ def validate_cluster_assignment_balance(
         requested_tolerance,
         tolerance_overrides,
         strict_dimensions,
+        resource_reservations_by_fpga,
+    )
+    planning_capacity = planning_resource_capacities(
+        partition_fpgas, resource_reservations_by_fpga
     )
     loads = {
         fpga_id: {dimension: 0 for dimension in dimensions}
@@ -1862,10 +1927,27 @@ def validate_cluster_assignment_balance(
                 dimension: (
                     totals[dimension]
                     if dimension == "cells"
+                    else planning_capacity[fpga.id][dimension]
+                )
+                for dimension in dimensions
+            }
+            for fpga in partition_fpgas
+        },
+        "physical_capacity_limits": {
+            fpga.id: {
+                dimension: (
+                    totals[dimension]
+                    if dimension == "cells"
                     else fpga.effective_capacity[dimension]
                 )
                 for dimension in dimensions
             }
+            for fpga in partition_fpgas
+        },
+        "resource_reservations_by_fpga": {
+            fpga.id: dict(
+                sorted((resource_reservations_by_fpga or {}).get(fpga.id, {}).items())
+            )
             for fpga in partition_fpgas
         },
         "balance_observation": summarize_balance_observation(loads, strict_dimensions),
@@ -2070,10 +2152,14 @@ def validate_partition_artifacts(
         resources_by_fpga = replication_validation["resources_by_fpga"]
     else:
         resources_by_fpga = primary_resources_by_fpga
+    planning_capacity = planning_resource_capacities(
+        list(fpga_by_id.values()),
+        constraints.get("resource_reservations_by_fpga", {}),
+    )
     for fpga_id, resources in resources_by_fpga.items():
-        if not resources.fits_capacity(fpga_by_id[fpga_id].effective_capacity):
+        if not resources.fits_capacity(planning_capacity[fpga_id]):
             raise ValidationError(
-                f"FPGA {fpga_id!r} exceeds effective capacity: "
+                f"FPGA {fpga_id!r} exceeds reserved planning capacity: "
                 f"{resources.to_dict(include_zeros=False)}"
             )
     used_fpgas = sum(
@@ -2109,6 +2195,7 @@ def validate_partition_artifacts(
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
         constraints.get("balance_dimensions", DEFAULT_BALANCE_DIMENSIONS),
+        constraints.get("resource_reservations_by_fpga", {}),
     )
 
     legal_cut_classes = set(LEGAL_CUT_CLASSES)

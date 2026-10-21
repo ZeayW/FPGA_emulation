@@ -165,6 +165,9 @@ def _balanced_repart_capacities(
     requested_tolerance: float,
     tolerance_overrides: Optional[Mapping[str, float]] = None,
     balance_dimensions: Optional[Sequence[str]] = (),
+    resource_reservations_by_fpga: Optional[
+        Mapping[str, Mapping[str, int]]
+    ] = None,
 ) -> Tuple[List[str], List[List[int]], float]:
     dimensions = ["cells", *resource_dimensions]
     weights = [
@@ -191,6 +194,7 @@ def _balanced_repart_capacities(
         requested_tolerance,
         tolerance_overrides,
         balance_dimensions=balance_dimensions,
+        resource_reservations_by_fpga=resource_reservations_by_fpga,
     )
     validate_indivisible_limits(
         ((cluster["id"], dict(zip(dimensions, row)), cluster.get("fixed_fpga"))
@@ -238,6 +242,7 @@ def export_repart_inputs(
             float(constraints["balance_tolerance"]),
             constraints.get("balance_tolerance_by_dimension", {}),
             constraints.get("balance_dimensions", ()),
+            constraints.get("resource_reservations_by_fpga", {}),
         )
     )
     padded_dimensions = [

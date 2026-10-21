@@ -62,6 +62,20 @@ Previously sealed artifacts retain their recorded constraints during
 validation. Indivisible/fixed clusters, repair passes, and validators never
 automatically relax an applicable capacity or explicit balance bound.
 
+`resource_reservations_by_fpga` optionally reserves downstream physical
+resources such as transport LUTs and FFs. For FPGA `i` and resource `r`, Phase
+3 uses `planning_capacity[i,r] = effective_capacity[i,r] - reservation[i,r]`.
+The capacity-proportional share used by `balance_tolerance` is still computed
+from `effective_capacity`; a reservation can tighten an FPGA's integer upper
+bound but cannot redefine balance. Greedy, TritonPart, MFSPart, RePart, the hop
+refiner, PATRON, indexed terminal validation, and artifact replay all consume
+the same sealed value. Phase 6 copies it into the split manifest. Phase 7
+independently aggregates the synthesized transport resources from compact
+SQLite, requires each total to fit its reservation, and separately requires
+the combined mapped and materialized design to fit the unchanged physical
+capacity. An underestimated reservation fails closed and must be increased by
+an explicit rerun from the saved Phase 1--2 boundary.
+
 OpenROAD/TritonPart can return a best-effort partition that still requires
 resource legalization. Capacity legalization and minimum-used-FPGA repair
 are enabled by default. Phase 3 invokes the compiled

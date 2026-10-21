@@ -30,7 +30,7 @@ from .partition_physical_feedback import (
     validate_partition_physical_feedback,
 )
 from .platform import Platform
-from .partition_limits import strict_balance_limits
+from .partition_limits import planning_resource_capacities, strict_balance_limits
 from .resource_budget import validate_device_resource_usage
 from .resources import RESOURCE_FIELDS
 from .repart import run_repart
@@ -1417,6 +1417,7 @@ def validate_phase3_indexed(
         tolerance,
         overrides,
         strict_dimensions,
+        constraints.get("resource_reservations_by_fpga", {}),
     )
     expected_modes = {
         field: ("balance" if field in strict_dimensions else "capacity")
@@ -1433,17 +1434,48 @@ def validate_phase3_indexed(
                     "is forbidden"
                 )
     percentages = {field: overrides.get(field, tolerance) * 100.0 for field in fields}
+    planning_capacity = planning_resource_capacities(
+        fpgas, constraints.get("resource_reservations_by_fpga", {})
+    )
     expected_capacity_limits = {
         fpga.id: {
             field: (
                 totals[field]
                 if field == "cells"
-                else fpga.effective_capacity[field]
+                else planning_capacity[fpga.id][field]
             )
             for field in fields
         }
         for fpga in fpgas
     }
+    reservation_evidence_disagrees = bool(
+        constraints.get("resource_reservations_by_fpga")
+        and (
+            validation.get("physical_capacity_limits")
+            != {
+                fpga.id: {
+                    field: (
+                        totals[field]
+                        if field == "cells"
+                        else fpga.effective_capacity[field]
+                    )
+                    for field in fields
+                }
+                for fpga in fpgas
+            }
+            or validation.get("resource_reservations_by_fpga")
+            != {
+                fpga.id: dict(
+                    sorted(
+                        constraints.get(
+                            "resource_reservations_by_fpga", {}
+                        ).get(fpga.id, {}).items()
+                    )
+                )
+                for fpga in fpgas
+            }
+        )
+    )
     if (validation.get("balance_auto_relaxed") is not False
         or validation.get("requested_balance_percent") != tolerance * 100.0
         or validation.get("effective_balance_percent") != max(percentages.values())
@@ -1455,6 +1487,7 @@ def validate_phase3_indexed(
         or validation.get("enforced_balance_percent_by_dimension")
             != {field: percentages[field] for field in strict_dimensions}
         or validation.get("capacity_limits") != expected_capacity_limits
+        or reservation_evidence_disagrees
         or validation.get("strict_balance_violations") != 0
         or validation.get("capacity_violations") != 0
         or validation.get("balance_loads") != loads
