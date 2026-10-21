@@ -252,8 +252,11 @@ views open, and the ordered production writer no longer builds a second
 cluster lookup table. Packing and placement now share one bridge-owned
 cluster/assignment tree and expose the two historical contracts as bounded
 generated views; compatibility JSON alone expands those views explicitly.
-The remaining million-instance cost is that shared Python bridge tree and
-RWRoute's whole-design export dictionaries.
+RWRoute TSV export now generates route-cell rows from the physical binding and
+retains only its safe-name index instead of a second whole-design route-cell
+dictionary; its report exposes per-substep timing. The remaining
+million-instance costs are the shared Python bridge tree, physical/safe-name
+maps, and the whole-design endpoint index.
 
 The migration boundary is the OpenPARF placement certificate through RWRoute
 launch. Work proceeds in this order:

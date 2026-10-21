@@ -85,6 +85,23 @@ class XilinxRWRouteTest(unittest.TestCase):
             text = output.read_text(encoding="utf-8")
         self.assertEqual(report["virtual_io_cells"], 2)
         self.assertEqual(report["routable_nets"], 2)
+        self.assertEqual(
+            report["runtime_breakdown"]["dataflow"],
+            {
+                "route_cells": "generated-from-physical-binding",
+                "safe_names": "ordered-merge-index",
+                "tsv": "streamed-atomic-spool",
+            },
+        )
+        self.assertTrue(all(
+            report["runtime_breakdown"][name] >= 0.0
+            for name in (
+                "binding_seconds", "cell_and_io_rows_seconds",
+                "endpoint_index_seconds", "clock_validation_seconds",
+                "net_rows_seconds", "atomic_commit_seconds",
+                "total_seconds",
+            )
+        ))
         self.assertEqual(text.count("\nIOB\t"), 2)
         self.assertIn("\nNET\tn1\tsignal\n", text)
         self.assertIn("\nNET\tn2\tsignal\n", text)

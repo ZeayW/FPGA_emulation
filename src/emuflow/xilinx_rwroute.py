@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import math
 import os
@@ -11,6 +12,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import time
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Set, Tuple
@@ -515,6 +517,7 @@ def export_rwroute_input(
     virtual_io_contract: Optional[Mapping[str, Any]] = None,
     resource_limits: Optional[Mapping[str, int]] = None,
 ) -> Dict[str, Any]:
+    export_started = time.perf_counter()
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     packed = read_json(packed_path) if packed_value is None else packed_value
     placement = (
@@ -544,6 +547,7 @@ def export_rwroute_input(
         raise ValidationError("PackedSiteNetlist top is invalid")
     module = _select_module(mapped, top)
     cells = module["cells"]
+    binding_started = time.perf_counter()
     physical = {
         assignment["instance"]: (
             assignment.get("site", entry["site"]), assignment["bel"]
@@ -562,15 +566,17 @@ def export_rwroute_input(
     # cell in EmuFlow, but lower it at this provider boundary to the documented
     # shared A5LUT/A6LUT physical pair.  Only the four functional route-through
     # pins may carry non-constant nets.
-    route_cells: Dict[str, Tuple[str, str, str, str]] = {}
     pin_bindings: Dict[Tuple[str, str], Tuple[str, str]] = {}
     expanded_lut6_2 = 0
     transformed_dsp48e2 = 0
     for name in sorted(physical):
         site, bel = physical[name]
         cell_type = cells[name]["type"]
+        if "\0" in name:
+            raise ValidationError(
+                f"cell name {name!r} contains the reserved NUL separator"
+            )
         if cell_type != "LUT6_2":
-            route_cells[name] = (name, cell_type, site, bel)
             if cell_type == "DSP48E2":
                 transformed_dsp48e2 += 1
             continue
@@ -582,8 +588,6 @@ def export_rwroute_input(
         letter = match.group(1)
         o5_key = f"{name}\0O5"
         o6_key = f"{name}\0O6"
-        route_cells[o5_key] = (f"{name}$physical_o5", "LUT5", site, f"{letter}5LUT")
-        route_cells[o6_key] = (f"{name}$physical_o6", "LUT6", site, f"{letter}6LUT")
         pin_bindings[(name, "I0")] = (o5_key, "I0")
         pin_bindings[(name, "O5")] = (o5_key, "O")
         pin_bindings[(name, "I1")] = (o6_key, "I1")
@@ -633,10 +637,24 @@ def export_rwroute_input(
                 key, "I" if direction == "tx" else "O", role
             )
             io_rows[key] = entry
+    def route_keys() -> Iterator[str]:
+        for name in sorted(physical):
+            if cells[name]["type"] == "LUT6_2":
+                yield f"{name}\0O5"
+                yield f"{name}\0O6"
+            else:
+                yield name
+
+    # Both inputs are ordered. Merge them directly so safe-name assignment
+    # does not first retain another whole-design route-cell table.
     safe = {
         name: f"c{index}"
-        for index, name in enumerate(sorted([*route_cells, *io_rows]))
+        for index, name in enumerate(heapq.merge(
+            sorted(io_rows), route_keys()
+        ))
     }
+    binding_seconds = time.perf_counter() - binding_started
+    cell_rows_started = time.perf_counter()
     lines = _TsvSpool(output_path)
     for field, count in sorted((resource_limits or {}).items()):
         if field not in {"lut", "ff", "bram18k", "dsp48", "carry8", "uram288"} or isinstance(count, bool) or not isinstance(count, int) or count < 0:
@@ -658,18 +676,31 @@ def export_rwroute_input(
                 ).encode("utf-8")
             ).hexdigest()
         )
-    for route_name in sorted(route_cells):
-        display_name, cell_type, site, bel = route_cells[route_name]
-        if any(character in display_name for character in "\t\r\n"):
-            raise ValidationError(f"cell name {display_name!r} is not TSV-safe")
-        lines.append(
-            f"CELL\t{safe[route_name]}\t{display_name}\t{cell_type}\t{site}\t{bel}"
-        )
+    for name in sorted(physical):
+        site, bel = physical[name]
+        cell_type = cells[name]["type"]
+        if cell_type == "LUT6_2":
+            letter = bel[0]
+            route_rows = (
+                (f"{name}\0O5", f"{name}$physical_o5", "LUT5", f"{letter}5LUT"),
+                (f"{name}\0O6", f"{name}$physical_o6", "LUT6", f"{letter}6LUT"),
+            )
+        else:
+            route_rows = ((name, name, cell_type, bel),)
+        for route_name, display_name, route_type, route_bel in route_rows:
+            if any(character in display_name for character in "\t\r\n"):
+                raise ValidationError(
+                    f"cell name {display_name!r} is not TSV-safe"
+                )
+            lines.append(
+                f"CELL\t{safe[route_name]}\t{display_name}\t{route_type}"
+                f"\t{site}\t{route_bel}"
+            )
         if cell_type in {"RAMB18E2", "RAMB36E2"}:
-            parameters = cells[route_name].get("parameters", {})
+            parameters = cells[name].get("parameters", {})
             if not isinstance(parameters, dict):
                 raise ValidationError(
-                    f"hard primitive {display_name!r} parameters are invalid"
+                    f"hard primitive {name!r} parameters are invalid"
                 )
             for parameter in (
                 "READ_WIDTH_A", "READ_WIDTH_B", "WRITE_WIDTH_A",
@@ -679,7 +710,7 @@ def export_rwroute_input(
                 value = _primitive_parameter(parameters, parameter)
                 if value is not None:
                     lines.append(
-                        f"PARAM\t{safe[route_name]}\t{parameter}\t{value}"
+                        f"PARAM\t{safe[name]}\t{parameter}\t{value}"
                     )
     for key, entry in sorted(io_rows.items()):
         fields = [
@@ -694,6 +725,8 @@ def export_rwroute_input(
             raise ValidationError("RWRoute virtual I/O entry is not TSV-safe")
         lines.append("\t".join(fields))
 
+    cell_rows_seconds = time.perf_counter() - cell_rows_started
+    endpoint_index_started = time.perf_counter()
     endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
     for name in sorted(physical):
         cell = cells[name]
@@ -713,6 +746,8 @@ def export_rwroute_input(
     for bit, endpoint in io_by_bit.items():
         endpoints[bit].append(endpoint)
 
+    endpoint_index_seconds = time.perf_counter() - endpoint_index_started
+    clock_validation_started = time.perf_counter()
     clock_gates = _qualified_lut_clock_gates(cells, endpoints)
     for bit, values in endpoints.items():
         sinks = [value for value in values if value[2] == "sink"]
@@ -734,6 +769,8 @@ def export_rwroute_input(
             "lut2-init-1000-fdre-latched-enable-v1"
         )
 
+    clock_validation_seconds = time.perf_counter() - clock_validation_started
+    net_rows_started = time.perf_counter()
     included = 0
     excluded = 0
     carry_exit_owners: Dict[Tuple[str, int], Tuple[str, str]] = {}
@@ -797,7 +834,7 @@ def export_rwroute_input(
             route_name, route_pin = pin_bindings.get(
                 (name, pin), (name, pin)
             )
-            if route_name not in route_cells and route_name not in io_rows:
+            if route_name not in safe:
                 raise ValidationError(
                     f"cell {name!r} pin {pin!r} has no RWRoute physical binding"
                 )
@@ -805,7 +842,10 @@ def export_rwroute_input(
                 f"PIN\t{net_name}\t{safe[route_name]}\t{route_pin}\t{role}"
             )
         included += 1
+    net_rows_seconds = time.perf_counter() - net_rows_started
+    commit_started = time.perf_counter()
     lines.commit()
+    commit_seconds = time.perf_counter() - commit_started
     return {
         "status": "pass", "cells": len(safe), "logical_cells": len(physical),
         "virtual_io_cells": len(io_rows),
@@ -815,6 +855,21 @@ def export_rwroute_input(
         "physical_cells": len(safe) + 7 * transformed_dsp48e2,
         "routable_nets": included,
         "excluded_nets": excluded, "output": str(output_path),
+        "runtime_breakdown": {
+            "schema": "emuflow.rwroute-export-runtime/v1",
+            "binding_seconds": binding_seconds,
+            "cell_and_io_rows_seconds": cell_rows_seconds,
+            "endpoint_index_seconds": endpoint_index_seconds,
+            "clock_validation_seconds": clock_validation_seconds,
+            "net_rows_seconds": net_rows_seconds,
+            "atomic_commit_seconds": commit_seconds,
+            "total_seconds": time.perf_counter() - export_started,
+            "dataflow": {
+                "route_cells": "generated-from-physical-binding",
+                "safe_names": "ordered-merge-index",
+                "tsv": "streamed-atomic-spool",
+            },
+        },
     }
 
 

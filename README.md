@@ -151,6 +151,10 @@ validation, and placement validation so large NVDLA runs identify the actual
 handoff bottleneck. The bridge now owns each cluster and assignment once;
 packing and placement are bounded generated views over that same tree, so the
 production handoff no longer retains a second million-instance placement tree.
+RWRoute TSV export likewise derives route-cell rows directly from the physical
+binding and builds only the safe-name index; it no longer duplicates every
+cell in a second route-cell dictionary. Its report separates binding, cell/I/O
+emission, endpoint indexing, clock checks, net emission, and atomic commit.
 
 ## Flow
 
