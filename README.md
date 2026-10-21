@@ -69,7 +69,12 @@ Phase 3 computes the canonical Static Exact digest when the final assignment is
 created. Assignment-index publication reuses that validated owner-provided
 identity instead of serializing the same multi-million-record contract for a
 second hash pass. Explicit migration of detached legacy artifacts still
-reconstructs and hashes its input independently.
+reconstructs and hashes its input independently. A same-input NVDLA Phase 3
+replay reduced index publication from 1,086.81 to 361.53 seconds (-66.73%) and
+total Phase 3 wall time from 5,719.81 to 4,999.22 seconds (-12.60%), with the
+same semantic/binary digests, row counts, validation results and report hashes.
+Peak process-tree RSS remained 42.70 GiB, confirming that direct native
+semantic emission is still required for the memory target.
 `assignment.json` contains only the contract schema and SHA-256 identity;
 explicit legacy-style reads reconstruct and verify the same logical contract.
 Completed assignment-index v1/v2 artifacts remain readable.

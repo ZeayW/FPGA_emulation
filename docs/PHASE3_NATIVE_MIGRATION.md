@@ -89,8 +89,7 @@ digest. Production assignment-index publication passes that already validated
 identity into the binary writer rather than iterating the complete resident
 contract a second time. The explicit migration path for detached historical
 artifacts continues to recompute the digest because it does not share the
-producer's validated in-process object. Full NVDLA timing and RSS qualification
-for this change remains pending.
+producer's validated in-process object.
 
 The next Phase 3 data boundary will stream native semantic records directly
 into the index. The current implementation still materializes the final
@@ -174,6 +173,35 @@ format benchmark, not a replacement for the required full NVDLA rerun.
 
 The next Phase 3 tranche is direct native emission into the binary sections so
 the full Python semantic contract no longer has to exist before publication.
+
+### Digest-reuse NVDLA A/B
+
+A later same-input NVDLA Phase 3 replay compared `8d802686` with `2040572a`.
+Both used the same prepared EmuIR and timing inputs, imported four-way
+TritonPart solution, frozen PATRON v14 replay, platform, constraints, and
+native executable hashes. They ran on different otherwise-idle compute nodes,
+so this is a stage-level qualification rather than a substitute for the final
+same-host Phase 1--7/7C gate.
+
+| Metric | `8d802686` | `2040572a` | Change |
+| --- | ---: | ---: | ---: |
+| Phase 3 wall time | 5,719.81 s | 4,999.22 s | -12.60% |
+| Parent CPU time | 5,697.84 s | 4,974.99 s | -12.69% |
+| Peak process-tree RSS | 44,772,444 KiB | 44,773,952 KiB | +0.003% |
+| Assignment-index publication | 1,086.81 s | 361.53 s | -66.73% |
+| Parent bytes read | 6,462,756,864 | 8,850,466,816 | +36.95% |
+| Parent bytes written | 6,517,743,616 | 6,517,723,136 | unchanged |
+
+The candidate index publication spent 233.93 seconds writing the exact binary,
+102.30 seconds writing primary copies, 3.89 seconds writing cut sinks,
+0.42 seconds committing, and 15.21 seconds in the independent indexed
+validator. Its semantic digest, binary manifest digest, row counts, validation
+metrics, artifact sizes, and byte hashes for `clusters.json`, `assignment.json`
+and `phase3_report.json` all match the baseline. The unchanged 42.70 GiB peak
+shows that removing the repeated digest traversal saves CPU and wall time but
+does not solve the resident Python semantic-contract tree; direct native
+emission remains the Phase 3 memory priority. The higher read count is retained
+as measured node/page-cache variance and is not claimed as an I/O improvement.
 
 ## Phase 1--7 repeated-materialization audit
 
