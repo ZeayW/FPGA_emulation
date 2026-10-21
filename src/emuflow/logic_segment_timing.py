@@ -440,6 +440,7 @@ def _xilinx_object(
     instances: Mapping[str, Mapping[str, Any]],
 ) -> tuple[str, str]:
     """Return a provider-independent Xilinx logical pin identity."""
+    endpoint = _normalize_xilinx_logical_endpoint(endpoint, pins, instances)
     instance_id = endpoint["instance"]
     port = endpoint["port"]
     bit = endpoint["bit"]
@@ -479,6 +480,39 @@ def _xilinx_object(
     )
     suffix = port if width == 1 else f"{port}[{bit}]"
     return "pin", f"cell:{instance_id}/{suffix}"
+
+
+def _normalize_xilinx_logical_endpoint(
+    endpoint: Mapping[str, Any],
+    pins: Mapping[str, set[tuple[str, int]]],
+    instances: Mapping[str, Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """Map physical-width RAMB18 aliases onto the logical Unisim port.
+
+    The pre-placement timing model can name the four RAMB18E2 BEL write-enable
+    pins.  The logical RAMB18E2 primitive exposes only WEA[1:0], with physical
+    pins 2/3 duplicating logical bits 0/1.  Apply that bridge only when the
+    physical-width endpoint is absent and its logical alias exists; an
+    independently represented bit therefore remains distinct.
+    """
+
+    instance_id = endpoint.get("instance")
+    if not isinstance(instance_id, str):
+        return endpoint
+    instance = instances.get(instance_id)
+    if (
+        instance is None
+        or instance.get("type") != "RAMB18E2"
+        or endpoint.get("port") != "WEA"
+        or endpoint.get("bit") not in {2, 3}
+    ):
+        return endpoint
+    instance_pins = pins.get(instance_id, set())
+    physical = ("WEA", endpoint["bit"])
+    logical = ("WEA", endpoint["bit"] % 2)
+    if physical in instance_pins or logical not in instance_pins:
+        return endpoint
+    return {**endpoint, "bit": endpoint["bit"] % 2}
 
 
 def _boundary_maps(
@@ -1238,6 +1272,13 @@ def _write_logic_segment_query(
                 continue
             try:
                 start_endpoint, end_endpoint = prepared.path_endpoints[member]
+                if object_provider == "xilinx":
+                    start_endpoint = _normalize_xilinx_logical_endpoint(
+                        start_endpoint, merged_pins, merged_instances
+                    )
+                    end_endpoint = _normalize_xilinx_logical_endpoint(
+                        end_endpoint, merged_pins, merged_instances
+                    )
                 start_instance = start_endpoint["instance"]
                 end_instance = end_endpoint["instance"]
                 if (

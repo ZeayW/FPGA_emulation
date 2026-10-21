@@ -154,6 +154,9 @@ lookahead path currently requires the explicit VTR backend/profile combination.
   Original-path TNS sums negative slack per original path, not once per
   unique register endpoint. Per-FPGA metrics are separate diagnostics.
   See [timing-model scope](docs/global-opensta-qualification.md).
+- Xilinx physical timing normalizes the RAMB18E2 BEL aliases WEA[2:3] to the
+  logical Unisim WEA[0:1] pins only when the corresponding physical-width pin
+  is absent; independently represented pins remain distinct and fail closed.
 
 Unsupported inputs must be reported explicitly; a backend must not silently
 substitute a different architecture, mapping, or timing engine.
