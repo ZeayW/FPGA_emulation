@@ -59,6 +59,9 @@ def test_rejects_changed_clock_contract(tmp_path, boundaries):
 def test_full_flow_continuation_reaches_phase3_without_synthesis_or_sta(tmp_path, boundaries):
     class ReachedPartition(Exception):
         pass
+    write_json(boundaries[1] / "experiment-timing-report.json", {
+        "status": "pass", "clocks": {"clk": 10.0},
+        "sta": {"status": "pass", "path_limit_reached": False}})
     timing_model = tmp_path / "architecture-timing.json"
     write_json(timing_model, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
     with patch("emuflow.multi_fpga_flow.run_phase3", side_effect=ReachedPartition), \
@@ -69,7 +72,7 @@ def test_full_flow_continuation_reaches_phase3_without_synthesis_or_sta(tmp_path
         with pytest.raises(ReachedPartition):
             run_multi_fpga_flow(output_dir=tmp_path / "continued", prepared_frontend=boundaries[0],
                                prepared_timing=boundaries[1], clock_periods={"clk": 10.0},
-                               architecture_timing_db=timing_model)
+                               architecture_timing_db=timing_model, sta_require_complete=True)
     assert read_json(tmp_path / "continued/stage-metrics/phase3.json")["status"] == "failed"
 
 
@@ -98,3 +101,18 @@ def test_native_published_phase2_checks_clocks_and_counts_without_standalone_rep
     with pytest.raises(ValidationError, match="clock constraints mismatch"):
         bind_prepared_inputs(front, timing, tmp_path / "invalid/front", tmp_path / "invalid/timing",
                              DEFAULT_PLATFORM_PATH, {"clk": 20.0}, PROFILE)
+
+
+def test_strict_continuation_rejects_missing_original_completeness(tmp_path, boundaries):
+    """A published DB and passing generic report cannot invent uncapped STA."""
+    timing_model = tmp_path / "architecture-timing.json"
+    write_json(timing_model, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
+    with patch("emuflow.multi_fpga_flow.run_phase3", side_effect=AssertionError("must not partition")), \
+         patch("emuflow.multi_fpga_flow.run_phase1", side_effect=AssertionError("must not synthesize")), \
+         patch("emuflow.multi_fpga_flow.run_opensta_path_database", side_effect=AssertionError("must not rerun STA")), \
+         patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"), \
+         patch("emuflow.multi_fpga_flow.check_opensta_engine_version"):
+        with pytest.raises(ValidationError, match="complete"):
+            run_multi_fpga_flow(output_dir=tmp_path / "continued", prepared_frontend=boundaries[0],
+                               prepared_timing=boundaries[1], clock_periods={"clk": 10.0},
+                               architecture_timing_db=timing_model, sta_require_complete=True)

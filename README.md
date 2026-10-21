@@ -138,6 +138,9 @@ interface; faster routing does not establish better timing. See the
 
 Use `--stop-after phase3` or `--stop-after phase5` for an explicit intermediate
 boundary, and `--sta-require-complete` to reject truncated path exports.
+An explicit `--frame-slots` applies to partition pressure and routing alike.
+Audited prefix continuation can reuse unchanged frontend/STA inputs; see the
+[user guide](docs/USER_GUIDE.md).
 These produce a scoped stage report, not a full-flow or physical pass. Phase 5
 distinguishes exact original-member timing from legacy compressed diagnostics. Optional
 `--synthesis-profile-passes` records live Xilinx synthesis progress. Physical SRAM

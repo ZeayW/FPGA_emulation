@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sqlite3
+import re
 from typing import Mapping
 
 from .errors import ValidationError
@@ -50,6 +51,45 @@ def _published_timing_report(timing, database, weights, clock_periods):
                     "paths": payloads[0][1]},
             "weights": {"weighted_nets": count},
             "publication_validation": "sqlite-version-clocks-row-counts-v1"}
+
+
+def recover_published_timing_report(timing, clock_periods, *, max_paths):
+    """Recover completeness from the original completed export, never infer it.
+
+    Callers must seal the original invocation, producer and input identities.
+    A manifest alone proves publication, not that the STA query was uncapped.
+    """
+    timing = Path(timing)
+    if isinstance(max_paths, bool) or not isinstance(max_paths, int) or max_paths <= 0:
+        raise ValidationError("original STA query bound must be a positive integer")
+    database = read_json(timing / "path-database.json")
+    weights = read_json(timing / "partition-net-weights.json")
+    if database.get("schema") != "emuflow.sta-path-database/v3":
+        raise ValidationError("prepared recovery requires the indexed timing schema")
+    report = _published_timing_report(timing, database, weights, clock_periods)
+    log_path = timing / "opensta.log"
+    if not log_path.is_file():
+        raise ValidationError("prepared timing lacks original OpenSTA completion log")
+    pattern = re.compile(
+        r"^EMUFLOW_OPENSTA_DATABASE status=pass clocks=(\d+) "
+        r"queried_paths=(\d+) emitted_paths=(\d+) output=(.+)$", re.MULTILINE)
+    matches = pattern.findall(log_path.read_text())
+    if len(matches) != 1:
+        raise ValidationError("prepared timing requires one original successful export marker")
+    clock_count, queried, emitted, original_output = matches[0]
+    clock_count, queried, emitted = int(clock_count), int(queried), int(emitted)
+    if clock_count != len(clock_periods) or emitted != report["sta"]["paths"]:
+        raise ValidationError("prepared timing export counts differ from published database")
+    if not 0 < emitted <= queried < max_paths:
+        raise ValidationError("prepared timing query reached its bound or has invalid counts")
+    report["sta"].update(
+        status="pass", max_paths=max_paths, path_limit_reached=False,
+        queried_paths=queried, completeness_evidence={
+            "kind": "original-export-log-plus-published-population",
+            "log": str(log_path.resolve()), "original_output": original_output,
+            "max_paths_origin": "sealed-original-invocation",
+        })
+    return report
 
 
 def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path,
@@ -102,7 +142,9 @@ def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path
     write_json(phase1_out / "platform.normalized.json", platform.to_dict())
     write_json(timing_out / "experiment-timing-report.json", timing_report, compact=True)
     bound_report = {**report, "platform": platform.name,
-                    "continuation": {"mode": "read-only-indexed-boundary", "source": str(source_ir)}}
+                    "continuation": {"mode": "read-only-indexed-boundary", "source": str(source_ir),
+                                     **({"source_producer": timing_report["source_producer"]}
+                                        if "source_producer" in timing_report else {})}}
     write_json(phase1_out / "phase1_report.json", bound_report, compact=True)
     return bound_report, {
         "status": "pass", "mode": "validated-existing-phase2", "backend": "opensta",

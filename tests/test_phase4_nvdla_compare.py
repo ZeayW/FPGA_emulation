@@ -94,7 +94,9 @@ class ContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             common = root / "common"
-            (common / "partition").mkdir(parents=True)
+            (common / "partition/patron").mkdir(parents=True)
+            native = common / "partition/patron/patron.in"
+            native.write_text("EMUFLOW_PATRON_INPUT_V14_BANKS_V1\nPARAM 4 10 4 4 10 5 -1 1024 1\n")
             board = root / "board.json"
             board.write_text(json.dumps({"platform": {"virtual_board_wiring": "wires.csv"}}))
             (root / "wires.csv").write_text("wire data")
@@ -121,6 +123,11 @@ class ContractTest(unittest.TestCase):
                  patch.object(compare, "check_producer"):
                 sealed = compare.seal_contract(common, board, provenance)
                 self.assertIn(str((common / "paths.sqlite").resolve()), sealed["files"])
+                self.assertIn(str(native.resolve()), sealed["files"])
+                native.write_text(native.read_text().replace("1024", "32"))
+                with self.assertRaisesRegex(ValueError, "actual PATRON frame_slots"):
+                    compare.seal_contract(common, board, provenance)
+                native.write_text(native.read_text().replace("-1 32", "-1 1024"))
                 self.assertNotIn(str((common / "unrelated-large-scratch").resolve()), sealed["files"])
                 self.assertEqual(sealed["coverage"]["combinational_cut_nets"], 5)
                 compare.verify_contract(sealed, common, board)
@@ -131,6 +138,20 @@ class ContractTest(unittest.TestCase):
                     "validation": {"combinational_cut_nets": 0}}))
                 with self.assertRaisesRegex(ValueError, "naturally selected"):
                     compare.seal_contract(common, board, provenance)
+
+    def test_actual_patron_header_rejects_missing_wrong_version_and_frame(self):
+        with tempfile.TemporaryDirectory() as directory:
+            common = Path(directory)
+            native = common / "partition/patron/patron.in"
+            with self.assertRaisesRegex(ValueError, "missing actual PATRON"):
+                compare.check_patron_frame(common)
+            native.parent.mkdir(parents=True)
+            for header, fields in [("EMUFLOW_PATRON_INPUT_V14_BANKS_V1", "PARAM 4 1 1 1 1 1 -1 32"),
+                                   ("EMUFLOW_PATRON_INPUT_V6_BANKS_V1", "PARAM 4 1 1 1 1 1 -1 1024"),
+                                   ("EMUFLOW_PATRON_INPUT_V14_BANKS_V1", "PARAM 1024")]:
+                native.write_text(header + "\n" + fields + "\n")
+                with self.assertRaises(ValueError):
+                    compare.check_patron_frame(common)
 
     def test_stale_completed_producer_cannot_be_sealed_with_fresh_provenance(self):
         provenance = {"source_sha256": {"src/emuflow/phase3.py": "current", "script.py": "current"},

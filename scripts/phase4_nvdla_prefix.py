@@ -48,13 +48,31 @@ def flow_options(args, benchmark, constraints):
 def worker(args):
     from emuflow.multi_fpga_flow import run_multi_fpga_flow
     os.environ["EMUFLOW_NATIVE_ROOT"] = str(args.native_root)
+    os.environ["EMUFLOW_PATRON_INPUT_COPY"] = str(args.output / "common/partition/patron/patron.in")
     provenance = args.output / "provenance.json"
     verify_provenance(read(provenance))
     benchmark = BenchmarkRun.load(args.benchmark)
     constraints = args.output / "partition-constraints.json"
     write(constraints, {"schema": "emuflow.partition-constraints/v1",
                         "min_used_fpgas": 4, "balance_dimensions": []})
-    report = run_multi_fpga_flow(**flow_options(args, benchmark, constraints))
+    options = flow_options(args, benchmark, constraints)
+    if args.reuse_prefix:
+        from phase4_nvdla_reuse import verify_reuse_binding
+        reuse = read(args.output / "prepared-prefix.json")
+        verify_reuse_binding(reuse)
+        options.update(sources=(), include_dirs=(), defines=(),
+                       prepared_frontend=Path(reuse["prepared_frontend"]),
+                       prepared_timing=Path(reuse["prepared_timing"]))
+    report = run_multi_fpga_flow(**options)
+    if args.reuse_prefix:
+        verify_reuse_binding(reuse)
+        report["reused_boundaries"] = {
+            "producer_commit": reuse["source_producer"]["producer_commit"],
+            "source_run": reuse["source_run"],
+            "contract": str(args.output / "prepared-prefix.json"),
+            "contract_sha256": digest(args.output / "prepared-prefix.json"),
+        }
+        write(args.output / "common/multi-fpga-stage-report.json", report)
     require(report.get("completed_through") == "phase3", "wrong prefix boundary")
     contract = seal_contract(args.output / "common", args.platform, provenance)
     write(args.output / "contract.json", contract)
@@ -73,6 +91,8 @@ def supervise(args, argv):
         require(path.is_file() and os.access(path, os.X_OK), f"not executable: {path}")
     bins = args.native_root / "bin"
     tools = [args.yosys, args.sta, args.architecture_timing_db]
+    if args.reuse_prefix:
+        tools.append(ROOT / "scripts/phase4_nvdla_reuse.py")
     for name in ("openroad", "emuflow_patron_refiner", "emuflow_tritonpart_balance_legalizer"):
         path = bins / name
         require(path.is_file() and os.access(path, os.X_OK), f"missing native tool: {path}")
@@ -86,8 +106,13 @@ def supervise(args, argv):
         "started_at": now(), "sta_max_paths": args.sta_max_paths,
         "path_limit_policy": "reject reached limit before partitioning",
     })
-    write(args.output / "provenance.json", capture_provenance(
-        args.benchmark, args.source_root, prefix_tools=tools))
+    provenance = capture_provenance(args.benchmark, args.source_root, prefix_tools=tools)
+    if args.reuse_prefix:
+        from phase4_nvdla_reuse import prepare_reuse
+        reuse = prepare_reuse(args, provenance, parser())
+        write(args.output / "prepared-prefix.json", reuse)
+        provenance["reused_boundaries"] = reuse
+    write(args.output / "provenance.json", provenance)
     command = [sys.executable, str(Path(__file__).resolve()), *argv, "--worker"]
     record = {"status": "running", "command": command, "started_at": now(),
               "peak_sampled_tree_rss_kib": None,
@@ -135,6 +160,10 @@ def parser():
     p.add_argument("--sample-seconds", type=float, default=2)
     p.add_argument("--provenance-input", type=Path, action="append", default=[],
                    help="additional consumed mapping file or tool-data directory to seal")
+    p.add_argument("--reuse-prefix", type=Path,
+                   help="prior stopped run with completed, unchanged Phase1 and STA publications")
+    p.add_argument("--reuse-producer-commit",
+                   help="exact original Git commit; only audited Phase3 frame repair may affect shared flow")
     p.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     return p
 
@@ -146,6 +175,8 @@ def main(argv=None):
         if isinstance(value, Path):
             setattr(args, key, value.resolve())
     args.provenance_input = [p.resolve() for p in args.provenance_input]
+    require(bool(args.reuse_prefix) == bool(args.reuse_producer_commit),
+            "--reuse-prefix and --reuse-producer-commit must be supplied together")
     require(args.sta_max_paths > 0 and args.partition_timeout_seconds > 0 and
             args.timeout_seconds > 0 and args.memory_gib > 0 and args.sample_seconds > 0,
             "limits must be positive")

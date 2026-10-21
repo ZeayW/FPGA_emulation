@@ -1982,6 +1982,23 @@ def run_multi_fpga_flow(
             ),
         }
 
+    # Partition pressure and routing must consume the same explicit frame.
+    # Merge after board-link projection so all other route constraints survive.
+    if frame_slots is not None:
+        raw_constraints = (
+            read_json(effective_route_constraints.resolve())
+            if effective_route_constraints is not None
+            else {"schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA}
+        )
+        if not isinstance(raw_constraints, dict):
+            raise ValidationError("route constraints must be an object")
+        raw_constraints = {**raw_constraints, "frame_slots": frame_slots}
+        timing_root.mkdir(parents=True, exist_ok=True)
+        if effective_route_constraints_path is None:
+            effective_route_constraints_path = timing_root / "route-constraints.json"
+        write_json(effective_route_constraints_path, raw_constraints)
+        effective_route_constraints = effective_route_constraints_path
+
     if timing_report is not None:
         provider_consumes_weights = (
             timing_driven and partition_provider != "greedy"

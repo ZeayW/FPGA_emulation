@@ -63,7 +63,18 @@ write capture where required by the original macro. Functional differential
 checks and actual BRAM inference are separate preparation gates. The portable
 `scripts/phase4_nvdla_prefix.py` command captures provenance and produces one
 PATRON v14 Static Exact prefix on the four-XCVU19P mesh, preserving both 10 ns
-clocks and the fixed 1024-slot frame. Inspect its `--help` for tool/input paths.
+clocks and the fixed 1024-slot frame. An explicit `--frame-slots` overrides the
+route-constraints file for both Phase 3 partition pressure and Phase 4 routing;
+other route constraints are preserved. The paired seal checks the retained
+PATRON native input header as well as the requested configuration. Inspect its
+`--help` for tool/input paths. After an audited Phase 3 frame-propagation repair,
+`--reuse-prefix <stopped-prefix> --reuse-producer-commit <original-full-sha>`
+can bind its completed Phase 1 and original STA publications read-only. The
+runner checks unchanged RTL, tools, timing constraints and producer code,
+recovers completeness from the original uncapped OpenSTA export log, and seals
+the reused payloads once. It records the original producer separately from the
+new prefix producer; missing evidence or upstream computation changes reject
+reuse. This continuation rebuilds Phase 3 and does not reuse an assignment.
 `scripts/phase4_nvdla_compare.py --contract ... --common-run ... --platform ...
 --output ...` runs the explicit old and author routers against this same prefix
 and identical Phase 5 settings; its `--help` lists the required native tools.

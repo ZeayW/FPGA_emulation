@@ -161,6 +161,19 @@ def check_producer(report, provenance):
             "executable_sha256": runtime["python_sha256"]}, "completed prefix Python differs")
 
 
+def check_patron_frame(common):
+    """Check the emitted native input, not only the requested flow options."""
+    path = common / "partition/patron/patron.in"
+    require(path.is_file(), "missing actual PATRON input evidence")
+    with path.open() as stream:
+        header = stream.readline().strip()
+        fields = stream.readline().split()
+    require(header == "EMUFLOW_PATRON_INPUT_V14_BANKS_V1", "actual PATRON version differs")
+    require(len(fields) >= 9 and fields[0] == "PARAM" and fields[8] == "1024",
+            "actual PATRON frame_slots must be 1024")
+    return path.resolve()
+
+
 def seal_contract(common, platform, provenance_path):
     provenance = read(provenance_path)
     verify_provenance(provenance)
@@ -174,8 +187,10 @@ def seal_contract(common, platform, provenance_path):
     cuts = partition.get("validation", {}).get("combinational_cut_nets", 0)
     require(cuts > 0, "Static Exact qualification requires naturally selected combinational cuts")
     coverage["combinational_cut_nets"] = cuts
+    patron_input = check_patron_frame(common)
     # Seal only the canonical downstream contract, not scratch, logs or builds.
     paths = {(common / name).resolve() for name in artifacts.values()}
+    paths.add(patron_input)
     paths.update({(common / "multi-fpga-stage-report.json").resolve(), platform.resolve(),
                   (common / "partition/phase3_report.json").resolve()})
     assignment = (common / artifacts["assignment"]).resolve()
@@ -215,6 +230,8 @@ def verify_contract(contract, common, platform):
     report = read(common / "multi-fpga-stage-report.json")
     check_producer(report, contract["provenance"])
     coverage = check_prefix(report)
+    patron_input = check_patron_frame(common)
+    require(str(patron_input) in contract["files"], "actual PATRON input is not sealed")
     coverage["combinational_cut_nets"] = read(common / "partition/phase3_report.json")["validation"]["combinational_cut_nets"]
     require(coverage == contract["coverage"] and coverage["combinational_cut_nets"] > 0,
             "common coverage changed")
