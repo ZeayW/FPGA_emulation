@@ -84,15 +84,18 @@ def _select_xilinx_slr_window(
     packed_value: Optional[Mapping[str, Any]] = None,
     architecture: Optional[ArchitectureDB] = None,
 ) -> Tuple[str, ...]:
-    """Choose the smallest contiguous SLR window with explicit headroom.
+    """Use every SLR while retaining a fail-closed capacity admission check.
 
-    A sparse partition must not be analytically spread over the whole device:
-    that needlessly lengthens ordinary and high-fanout nets and makes detailed
-    routing recovery dominate Phase 7.  The input is the final post-Phase-6
-    packed/atomic netlist, so transport logic is included.  Require 1.5x site
-    headroom for every represented resource, then choose the most central
-    capacity-feasible contiguous window.  If only the complete device fits,
-    the complete device remains the result.
+    The per-FPGA resource contract limits use to 25% of the complete device;
+    it does not define a 25%-area pblock.  Confining a large partition to the
+    smallest capacity-feasible SLR window turns otherwise available routing
+    fabric into an artificial bottleneck.  High-fanout transport nets are
+    buffered before placement, so the production default spreads placement
+    over the complete device and lets OpenPARF trade wirelength for routability.
+
+    The input is the final post-Phase-6 packed/atomic netlist, including
+    transport logic.  Keep the 1.5x resource-headroom check as an admission
+    guard, but do not use it to shrink the legal placement region.
     """
 
     packed = read_json(packed_path) if packed_value is None else packed_value
@@ -160,26 +163,7 @@ def _select_xilinx_slr_window(
             "packed partition exceeds the complete Xilinx device capacity "
             f"with {_ACTIVE_REGION_RESOURCE_HEADROOM:g}x placement headroom"
         )
-    device_center = (len(ordered) - 1) / 2.0
-    for width in range(1, len(ordered) + 1):
-        feasible = []
-        for start in range(0, len(ordered) - width + 1):
-            names = tuple(ordered[start:start + width])
-            capacity = sum((capacities[name] for name in names), Counter())
-            if any(required[key] > capacity[key] for key in required):
-                continue
-            center_distance = abs((start + (width - 1) / 2.0) - device_center)
-            minimum_margin = min(
-                (
-                    (capacity[key] - required[key]) / required[key]
-                    for key in required
-                ),
-                default=0.0,
-            )
-            feasible.append((center_distance, -minimum_margin, start, names))
-        if feasible:
-            return min(feasible)[-1]
-    raise ValidationError("no contiguous Xilinx SLR placement window is feasible")
+    return tuple(ordered)
 
 
 def _sha256(path: Path) -> str:
@@ -913,7 +897,7 @@ def run_rapidwright_openparf_native_candidate_backend(
     write_json(region_path, {
         "schema": "emuflow.xilinx-placement-constraints/v1",
         "policy": {
-            "provider": "compact-contiguous-slr-window-v1",
+            "provider": "full-device-routability-v1",
             "resource_headroom": _ACTIVE_REGION_RESOURCE_HEADROOM,
         },
         "global": {"allowed_slrs": list(selected_slrs)},
@@ -1019,7 +1003,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         },
         placement_stage={
             "region": {
-                "scope": "compact-contiguous-slr-window",
+                "scope": "full-device",
                 "allowed_slrs": list(selected_slrs),
                 "resource_headroom": _ACTIVE_REGION_RESOURCE_HEADROOM,
             },

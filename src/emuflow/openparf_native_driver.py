@@ -20,6 +20,8 @@ import os
 from pathlib import Path
 from typing import Any, MutableMapping
 
+from .openparf_continuous_driver import apply_high_fanout_net_weights
+
 
 OPENPARF_NATIVE_CONVERGENCE_SCHEMA = (
     "emuflow.openparf-native-convergence/v1"
@@ -50,24 +52,46 @@ def _has_active_area_type(engine: Any) -> bool:
     return bool(value.item() if hasattr(value, "item") else value)
 
 
+def _logic_overflow(engine: Any, metric: Any) -> dict[str, float]:
+    names = tuple(getattr(engine.params, "logic_area_type_names", ()))
+    if not names:
+        raise RuntimeError("OpenPARF has no logic area types for convergence")
+    result = {}
+    for name in names:
+        index = int(engine.placedb.getAreaTypeIndexFromName(name))
+        if index < 0 or index >= len(metric.overflow):
+            raise RuntimeError(f"OpenPARF logic area type {name!r} is invalid")
+        result[str(name)] = _number(metric.overflow[index])
+    return result
+
+
 def _active_overflow_is_feasible(engine: Any, metric: Any) -> bool:
+    """Qualify routability-bearing logic density before exact legalization.
+
+    LUT and FF areas are the resources inflated by the RUDY and pin-density
+    feedback loop.  Sparse MUX and hard-block area types can retain a large
+    analytical overflow even though the native direct legalizer assigns every
+    instance to an exact legal site.  Treating those analytical values as the
+    global-placement stop condition hid the state that matters to fabric
+    routability and forced every mixed-resource design to the iteration limit.
+    """
+
     io_area_types = set()
     if bool(getattr(engine.params, "io_legalization_flag", False)):
         io_area_types = {
             int(engine.placedb.getAreaTypeIndexFromName(name))
             for name in engine.params.io_at_names
         }
-    mask = engine.data_cls.optimization_area_type_mask
-    for area_type, overflow in enumerate(metric.overflow):
-        active = mask[area_type]
-        if hasattr(active, "item"):
-            active = active.item()
-        if not bool(active) or area_type in io_area_types:
+    logic_names = set(getattr(engine.params, "logic_area_type_names", ()))
+    if not logic_names:
+        raise RuntimeError("OpenPARF has no logic area types for convergence")
+    for name in logic_names:
+        area_type = int(engine.placedb.getAreaTypeIndexFromName(name))
+        if area_type in io_area_types:
             continue
-        if (
-            len(engine.data_cls.area_type_inst_groups[area_type]) > 10
-            and _number(overflow) > float(engine.params.stop_overflow)
-        ):
+        if area_type < 0 or area_type >= len(metric.overflow):
+            raise RuntimeError(f"OpenPARF logic area type {name!r} is invalid")
+        if _number(metric.overflow[area_type]) > float(engine.params.stop_overflow):
             return False
     return True
 
@@ -118,6 +142,8 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
         }
         engine._emuflow_stable_convergence = state
         engine._emuflow_best_feasible_position = None
+
+    state["terminal_logic_overflow"] = _logic_overflow(engine, current)
 
     maximum_iterations = int(engine.params.max_global_place_iters)
     at_iteration_limit = iteration >= maximum_iterations
@@ -225,6 +251,8 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
         "restored_best_feasible": bool(
             state.get("restored_best_feasible", False)
         ),
+        "feasibility_scope": "logic-area-types-before-exact-legalization",
+        "terminal_logic_overflow": state.get("terminal_logic_overflow", {}),
         "policy": {
             "minimum_feasible_iterations": int(
                 engine.params.emuflow_min_feasible_iterations
@@ -237,6 +265,9 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
             ),
         },
     }
+    weighting = getattr(engine, "_emuflow_high_fanout_weighting", None)
+    if weighting is not None:
+        value["high_fanout_net_weighting"] = weighting
     output = native_metrics_path(placement_path)
     output.write_text(
         json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
@@ -323,7 +354,14 @@ def main() -> int:
 
     original_call = placer.Placer.__call__
     original_write = placer.Placer.write
+    original_init = placer.Placer.__init__
     completed_engine: dict[str, Any] = {}
+
+    def init_with_high_fanout_weights(
+        engine: Any, loaded_params: Any, placedb: Any
+    ) -> None:
+        original_init(engine, loaded_params, placedb)
+        apply_high_fanout_net_weights(engine)
 
     def call_and_capture(engine: Any) -> Any:
         try:
@@ -332,6 +370,7 @@ def main() -> int:
             completed_engine["value"] = engine
 
     placer.Placer.stop_condition = stable_native_stop_condition
+    placer.Placer.__init__ = init_with_high_fanout_weights
     placer.Placer.__call__ = call_and_capture
     placement_path = Path(params.result_dir) / f"{params.design_name()}.pl"
     place(params, str(placement_path))

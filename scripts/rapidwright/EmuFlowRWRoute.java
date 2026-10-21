@@ -637,6 +637,7 @@ public final class EmuFlowRWRoute {
                 );
             }
             super.routeIndirectConnections(connections);
+            printCongestionSnapshot(connections);
             recoveryConnections.removeIf(
                 connection -> !super.shouldRoute(connection)
             );
@@ -661,6 +662,60 @@ public final class EmuFlowRWRoute {
                     + "Re-run placement with high-fanout routability weighting."
                 );
             }
+        }
+
+        private void printCongestionSnapshot(Collection<Connection> connections) {
+            long congestedConnections = connections.stream()
+                .filter(Connection::isCongested).count();
+            long unroutedConnections = connections.stream()
+                .filter(connection -> !connection.isRouted()).count();
+            long overusedNodes = 0;
+            long excessUsers = 0;
+            int maximumOccupancy = 0;
+            Map<String, Long> byIntent = new HashMap<>();
+            Map<Integer, Long> bySLR = new HashMap<>();
+            for (com.xilinx.rapidwright.rwroute.RouteNode node
+                : routingGraph.getRnodes()) {
+                if (!node.isOverUsed()) continue;
+                overusedNodes++;
+                int occupancy = node.getOccupancy();
+                excessUsers += Math.max(0, occupancy - 1);
+                maximumOccupancy = Math.max(maximumOccupancy, occupancy);
+                byIntent.merge(node.getIntentCode().name(), 1L, Long::sum);
+                bySLR.merge(node.getSLRIndex(routingGraph), 1L, Long::sum);
+            }
+            List<Map.Entry<String, Long>> intents = new ArrayList<>(
+                byIntent.entrySet()
+            );
+            intents.sort(
+                Map.Entry.<String, Long>comparingByValue().reversed()
+                    .thenComparing(Map.Entry.comparingByKey())
+            );
+            StringBuilder topIntents = new StringBuilder();
+            for (int index = 0; index < Math.min(8, intents.size()); index++) {
+                if (index > 0) topIntents.append(',');
+                topIntents.append(intents.get(index).getKey()).append(':')
+                    .append(intents.get(index).getValue());
+            }
+            List<Integer> slrs = new ArrayList<>(bySLR.keySet());
+            Collections.sort(slrs);
+            StringBuilder slrCounts = new StringBuilder();
+            for (int index = 0; index < slrs.size(); index++) {
+                if (index > 0) slrCounts.append(',');
+                int slr = slrs.get(index);
+                slrCounts.append(slr).append(':').append(bySLR.get(slr));
+            }
+            System.out.println(
+                "INFO: EmuFlow congestion snapshot: iteration=" + routeIteration
+                + " connections=" + connections.size()
+                + " congested_connections=" + congestedConnections
+                + " unrouted_connections=" + unroutedConnections
+                + " overused_nodes=" + overusedNodes
+                + " excess_users=" + excessUsers
+                + " maximum_occupancy=" + maximumOccupancy
+                + " slr_overused_nodes=" + slrCounts
+                + " top_intents=" + topIntents
+            );
         }
 
         private void routeRecoveryTree(RecoveryPartitionTree.Node node) {

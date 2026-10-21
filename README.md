@@ -256,7 +256,23 @@ resulting-fanout counts in `transport-fanout-buffering.json`. Added LUTs pass
 through the same per-FPGA resource-budget checks as every other physical cell;
 the transform cannot relax the configured device limit.
 
-For sparse, headroom-qualified Xilinx placement regions, the pinned OpenPARF
+Native OpenPARF placement also applies a bounded square-root weight to every
+net above 64 pins, including DUT reset and enable networks. This changes the
+analytical placement objective without changing the circuit. Its convergence
+certificate gates the LUT/FF area types used by RUDY and pin-density inflation;
+sparse mux and hard-block legality remains the responsibility of the exact
+native legalizer and independent site/BEL validator.
+
+The default Xilinx placement region uses all SLRs in the device. The per-FPGA
+25% resource limit is a whole-device capacity contract, not an implicit pblock;
+confining that load to the smallest capacity-feasible SLR window can create
+local routing hotspots while leaving legal routing fabric unused. The placer
+may therefore trade additional wirelength for lower density across the full
+device. RWRoute reports each iteration's congested connections, overused-node
+counts, excess users, maximum occupancy, SLR distribution, and leading intent
+classes so a non-converging route can be attributed before another full run.
+
+For native Xilinx placement, the pinned OpenPARF
 direct legalizer can be rebuilt with
 `scripts/openparf/build_sparse_legalizer.sh`. The alternate runtime tries the
 nearest legal LUT/FF site before invoking the upstream rip-up search and keeps
@@ -486,7 +502,7 @@ evidence. Indexed Phase 3 publication seals the requested constraints;
 terminal SQLite validation independently recomputes primary loads, replicated
 capacity usage, and any explicitly selected balance bounds against the
 selected platform. Reports cannot widen a configured bound or reuse a
-different device budget. SLR window selection and OpenPARF density do not
+different device budget. Full-device placement and OpenPARF density do not
 redefine the whole-device utilization denominator or relax its limit.
 Passing partition resource checks does not establish physical routability or
 whole-design timing closure; those require the Phase 7 and global timing
