@@ -794,6 +794,26 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
                         include_dependency_levels=False,
                         include_source_identity=False,
                     )
+                packed = actual["eligible_ids"]
+                self.assertEqual(
+                    list(packed),
+                    sorted(expected["eligible_ids"]),
+                )
+                self.assertTrue(hasattr(packed, "contains_ordinal"))
+                for net_ordinal, net in enumerate(value["nets"]):
+                    self.assertEqual(
+                        packed.contains_ordinal(net_ordinal),
+                        net["id"] in expected["eligible_ids"],
+                    )
+                self.assertLessEqual(
+                    packed.packed_bytes,
+                    (len(value["nets"]) + 7) // 8
+                    + sum(
+                        len(name.encode("utf-8")) + 8
+                        for name in expected["eligible_ids"]
+                    )
+                    + 8,
+                )
                 self.assertEqual(actual, expected)
 
     def test_compact_v2_candidate_index_randomized_differential(self):

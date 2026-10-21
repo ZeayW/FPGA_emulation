@@ -5,6 +5,7 @@ import hashlib
 import math
 from array import array
 from collections import defaultdict, deque
+from collections.abc import Set as AbstractSet
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
@@ -114,7 +115,7 @@ def _compact_partition_ir_path(ir: Any) -> Optional[Path]:
 def _build_clusters_from_compact_ir(
     ir: Any,
     constraints: Mapping[str, Any],
-    released_combinational_nets: Set[str],
+    released_combinational_nets: AbstractSet[str],
 ) -> List[Dict[str, Any]]:
     """Build canonical clusters from integer SQLite records.
 
@@ -229,10 +230,18 @@ def _build_clusters_from_compact_ir(
                 endpoint = next(endpoint_rows, None)
             if len(members) < 2:
                 continue
+            ordinal_membership = getattr(
+                released_combinational_nets, "contains_ordinal", None
+            )
+            released = (
+                ordinal_membership(net_seq)
+                if ordinal_membership is not None
+                else net["id"] in released_combinational_nets
+            )
             if (
                 net["cut_class"]
                 not in LEGAL_CUT_CLASSES | REPLICATED_NET_CLASSES
-                and net["id"] not in released_combinational_nets
+                and not released
             ):
                 member_iter = iter(members)
                 first = next(member_iter)
@@ -941,7 +950,7 @@ def build_clusters(
             "partition cut mode must be 'sequential-only' or "
             "'static-exact-combinational'"
         )
-    released_combinational_nets: Set[str] = set()
+    released_combinational_nets: AbstractSet[str] = set()
     candidate_index = None
     if cut_mode == CUT_MODE_STATIC_EXACT:
         if static_exact_candidate_policy not in STATIC_EXACT_CANDIDATE_POLICIES:
@@ -965,7 +974,7 @@ def build_clusters(
         # cone and therefore have actual dependency depth one.  Release every
         # structurally legal candidate and reconstruct actual depth only after
         # the provider supplies an assignment.
-        released_combinational_nets = set(candidate_index["eligible_ids"])
+        released_combinational_nets = candidate_index["eligible_ids"]
     compact_ir_path = _compact_partition_ir_path(ir)
     if compact_ir_path is not None:
         clusters = _build_clusters_from_compact_ir(
@@ -993,8 +1002,10 @@ def build_clusters(
                     "max_cross_fpga_dependency_depth": (
                         max_cross_fpga_dependency_depth
                     ),
-                    "eligible_combinational_cut_nets": sorted(
-                        released_combinational_nets
+                    "eligible_combinational_cut_nets": (
+                        released_combinational_nets.ordered_names()
+                        if hasattr(released_combinational_nets, "ordered_names")
+                        else sorted(released_combinational_nets)
                     ),
                     "transported_cut_classes": sorted(
                         {*TRANSPORTED_CUT_CLASSES, "combinational"}
@@ -1102,8 +1113,10 @@ def build_clusters(
                 "max_cross_fpga_dependency_depth": (
                     max_cross_fpga_dependency_depth
                 ),
-                "eligible_combinational_cut_nets": sorted(
-                    released_combinational_nets
+                "eligible_combinational_cut_nets": (
+                    released_combinational_nets.ordered_names()
+                    if hasattr(released_combinational_nets, "ordered_names")
+                    else sorted(released_combinational_nets)
                 ),
                 "transported_cut_classes": sorted(
                     {*TRANSPORTED_CUT_CLASSES, "combinational"}

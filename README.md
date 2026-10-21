@@ -186,8 +186,14 @@ wall time changed from 2.246 to 2.494 seconds; the output was 1,058,932 bytes.
 The runtime breakdown now attributes the complete operation to
 `publish.write_clusters` instead of a separate `publish.pack_clusters` step.
 This is a bounded-publication-memory improvement rather than a runtime or
-NVDLA claim. Final cluster/path objects, the eligible candidate-name set and
-the C++ analyzer's graph/capture vectors remain graph-scale migration work.
+NVDLA claim. Compact eligibility reconstruction now keeps one ordinal bit per
+net plus a lexical UTF-8 identity pool with fixed-width offsets; clustering and
+native Static Exact validation use the ordinal bitmap directly. A synthetic
+1,000,000-name representation comparison reduced process peak RSS from
+139,264,000 to 57,245,696 bytes with a 16,125,008-byte packed payload; build
+time changed from 0.24 to 0.30 seconds. The final eligible-name policy list,
+cluster/path objects and the C++ analyzer's graph/capture vectors remain
+graph-scale migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary

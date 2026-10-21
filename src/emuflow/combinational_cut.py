@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 from array import array
 from collections import defaultdict, deque
+from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, Set, Tuple
 
@@ -463,7 +464,95 @@ def _packed_cyclic_nodes(
     return cyclic
 
 
-def _compact_combinational_cut_candidate_ids(ir: Any, path: Path) -> Set[str]:
+class _PackedEligibleCutIds(AbstractSet[str]):
+    """Self-contained ordinal bitmap plus lexical UTF-8 identity pool."""
+
+    __slots__ = ("_ordinal_bits", "_name_bytes", "_name_offsets", "_net_count")
+
+    def __init__(
+        self,
+        ordinal_bits: bytearray,
+        name_bytes: bytes,
+        name_offsets: array,
+        net_count: int,
+    ) -> None:
+        if len(ordinal_bits) != (net_count + 7) // 8:
+            raise ValidationError("compact eligible-cut bitmap is invalid")
+        if (
+            name_offsets.typecode != "Q"
+            or not name_offsets
+            or name_offsets[0] != 0
+            or name_offsets[-1] != len(name_bytes)
+            or any(
+                name_offsets[index - 1] > name_offsets[index]
+                for index in range(1, len(name_offsets))
+            )
+        ):
+            raise ValidationError("compact eligible-cut name pool is invalid")
+        self._ordinal_bits = bytes(ordinal_bits)
+        self._name_bytes = name_bytes
+        self._name_offsets = name_offsets
+        self._net_count = net_count
+
+    def __len__(self) -> int:
+        return len(self._name_offsets) - 1
+
+    def __iter__(self) -> Iterator[str]:
+        for index in range(len(self)):
+            yield self._name_bytes[
+                self._name_offsets[index] : self._name_offsets[index + 1]
+            ].decode("utf-8")
+
+    def __contains__(self, value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        encoded = value.encode("utf-8")
+        lower = 0
+        upper = len(self)
+        while lower < upper:
+            middle = (lower + upper) // 2
+            candidate = self._name_bytes[
+                self._name_offsets[middle] : self._name_offsets[middle + 1]
+            ]
+            if candidate < encoded:
+                lower = middle + 1
+            else:
+                upper = middle
+        return (
+            lower < len(self)
+            and self._name_bytes[
+                self._name_offsets[lower] : self._name_offsets[lower + 1]
+            ]
+            == encoded
+        )
+
+    def contains_ordinal(self, ordinal: int) -> bool:
+        if (
+            isinstance(ordinal, bool)
+            or not isinstance(ordinal, int)
+            or ordinal < 0
+            or ordinal >= self._net_count
+        ):
+            return False
+        return bool(
+            self._ordinal_bits[ordinal >> 3] & (1 << (ordinal & 7))
+        )
+
+    @property
+    def packed_bytes(self) -> int:
+        return (
+            len(self._ordinal_bits)
+            + len(self._name_bytes)
+            + len(self._name_offsets) * self._name_offsets.itemsize
+        )
+
+    def ordered_names(self) -> List[str]:
+        return list(self)
+
+
+def _compact_combinational_cut_candidate_ids(
+    ir: Any, path: Path
+) -> AbstractSet[str]:
     """Compute production candidate identities from compact integer records.
 
     The reference analyzer deliberately retains its rich string-keyed graph for
@@ -471,10 +560,11 @@ def _compact_combinational_cut_candidate_ids(ir: Any, path: Path) -> Set[str]:
     compact store already owns dense cell ordinals, so keep cell classes in one
     byte each, deduplicate arcs in disk-backed SQLite scratch, and traverse
     packed uint32 CSR arrays.  A second ordered endpoint cursor independently
-    applies the exact per-net eligibility rules.  The returned ``Set[str]`` is
-    still graph-sized because the current cluster artifact embeds every
-    eligible name; replacing that output with an ordinal bitmap/typed store is
-    a separate contract migration.
+    applies the exact per-net eligibility rules. Eligible membership is stored
+    as one bit per net, while the legacy name-facing contract is a lexical
+    UTF-8 pool with fixed-width offsets. The current cluster artifact still
+    embeds every eligible name; replacing that final output list is a separate
+    contract migration.
 
     This function validates the bare compact store's candidate-relevant
     structure, but it cannot authenticate its content: the direct Phase 3 API
@@ -742,7 +832,8 @@ def _compact_combinational_cut_candidate_ids(ir: Any, path: Path) -> Set[str]:
 
         cyclic = _packed_cyclic_nodes(connection, classes)
 
-        eligible: Set[str] = set()
+        eligible_bits = bytearray((net_count + 7) // 8)
+        eligible_count = 0
         endpoint_rows = iter(
             connection.execute(
                 """SELECT e.net_seq,e.role,e.instance_seq,c.type,
@@ -798,10 +889,41 @@ def _compact_combinational_cut_candidate_ids(ir: Any, path: Path) -> Set[str]:
             if sink_count == 0:
                 reasons = True
             if not reasons:
-                eligible.add(net["id"])
+                eligible_bits[net_seq >> 3] |= 1 << (net_seq & 7)
+                eligible_count += 1
         if endpoint is not None:
             raise ValidationError("compact EmuIR has orphaned endpoints")
-        return eligible
+        name_bytes = bytearray()
+        name_offsets = array("Q", [0])
+        observed_eligible = 0
+        for net in connection.execute(
+            "SELECT seq,id FROM net_records ORDER BY id"
+        ):
+            net_seq = net["seq"]
+            if (
+                isinstance(net_seq, bool)
+                or not isinstance(net_seq, int)
+                or net_seq < 0
+                or net_seq >= net_count
+            ):
+                raise ValidationError("compact EmuIR net sequence is invalid")
+            if not eligible_bits[net_seq >> 3] & (1 << (net_seq & 7)):
+                continue
+            net_id = net["id"]
+            if not isinstance(net_id, str) or not net_id:
+                raise ValidationError("compact EmuIR net identity is invalid")
+            encoded = net_id.encode("utf-8")
+            name_bytes.extend(encoded)
+            name_offsets.append(len(name_bytes))
+            observed_eligible += 1
+        if observed_eligible != eligible_count:
+            raise ValidationError("compact EmuIR eligible-cut count disagrees")
+        return _PackedEligibleCutIds(
+            eligible_bits,
+            bytes(name_bytes),
+            name_offsets,
+            net_count,
+        )
     except sqlite3.DatabaseError as error:
         raise ValidationError("compact EmuIR candidate store is invalid") from error
     finally:
@@ -1549,7 +1671,7 @@ def _validate_compact_native_cuts(
     ordered_cuts: Sequence[Mapping[str, Any]],
     ordered_cut_ids: Sequence[str],
     ordered_cut_ordinals: Sequence[int],
-    eligible: Set[str],
+    eligible: AbstractSet[str],
 ) -> Sequence[Mapping[str, Any]]:
     """Validate cut names, ordinals and classes with one indexed-store scan.
 
@@ -1604,7 +1726,13 @@ def _validate_compact_native_cuts(
                 raise ValidationError(
                     f"exact cut {net_id!r} class disagrees with EmuIR"
                 )
-            if row["cut_class"] == "combinational" and net_id not in eligible:
+            ordinal_membership = getattr(eligible, "contains_ordinal", None)
+            is_eligible = (
+                ordinal_membership(row["seq"])
+                if ordinal_membership is not None
+                else net_id in eligible
+            )
+            if row["cut_class"] == "combinational" and not is_eligible:
                 raise ValidationError(
                     f"combinational cut {net_id!r} is not in the "
                     "independently reconstructed eligible set"
@@ -1852,7 +1980,7 @@ def _analyze_static_exact_dependencies_native(
         include_dependency_levels=False,
         include_source_identity=False,
     )
-    eligible = set(candidate_index["eligible_ids"])
+    eligible = candidate_index["eligible_ids"]
     del candidate_index
     instances = ir.value["instances"]
     nets = ir.value["nets"]
