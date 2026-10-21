@@ -4,8 +4,13 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import EmuFlowError, ValidationError
+from emuflow.pin_plan_storage import (
+    PinPlanEntrySequence,
+    write_pin_plan_storage,
+)
 from emuflow.pin_planning import (
     LEGACY_PIN_PLAN_PROVIDERS,
     PIN_PLAN_PROVIDER,
@@ -14,6 +19,11 @@ from emuflow.pin_planning import (
     validate_pin_plan,
 )
 from emuflow.platform import Platform
+from emuflow.tdm_schedule_storage import (
+    ScheduleRecordSequence,
+    read_tdm_schedule,
+    write_tdm_schedule_storage,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -202,6 +212,125 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
             validate_pin_plan(
                 self.schedule, self.platform, self.positions, broken
             )
+
+    def test_indexed_validation_uses_bounded_relations(self) -> None:
+        plan = build_pin_plan(
+            self.schedule,
+            self.platform,
+            self.positions,
+            executable=str(self.executable),
+        )
+        legacy_validation = validate_pin_plan(
+            self.schedule, self.platform, self.positions, plan
+        )
+        schedule_document = {
+            "schema": "emuflow.tdm-schedule/v1",
+            **self.schedule,
+            "routes": [],
+            "demand_completions": [],
+            "domain_schedules": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            schedule_path = root / "schedule.json"
+            plan_path = root / "pin_plan.json"
+            write_tdm_schedule_storage(schedule_path, schedule_document)
+            indexed_schedule = read_tdm_schedule(schedule_path)
+            indexed_plan = write_pin_plan_storage(plan_path, plan)
+            with mock.patch.object(
+                ScheduleRecordSequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "indexed validation scanned schedule entry objects"
+                ),
+            ), mock.patch.object(
+                PinPlanEntrySequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "indexed validation scanned pin-plan entry objects"
+                ),
+            ):
+                validation = validate_pin_plan(
+                    indexed_schedule,
+                    self.platform,
+                    self.positions,
+                    indexed_plan,
+                )
+            self.assertEqual(validation["status"], "pass")
+            self.assertEqual(validation["signals"], 6)
+            self.assertEqual(validation["groups"], 2)
+            self.assertEqual(set(validation), set(legacy_validation))
+            for field, expected in legacy_validation.items():
+                if isinstance(expected, float):
+                    self.assertAlmostEqual(validation[field], expected, places=12)
+                else:
+                    self.assertEqual(validation[field], expected)
+
+            broken = copy.deepcopy(plan)
+            by_id = {
+                item["schedule_entry"]: item
+                for item in broken["entries"]
+            }
+            by_id["entry3"]["physical_lane"] = by_id["entry0"][
+                "physical_lane"
+            ]
+            indexed_broken = write_pin_plan_storage(
+                root / "broken.json", broken
+            )
+            with self.assertRaisesRegex(ValidationError, "collision"):
+                validate_pin_plan(
+                    indexed_schedule,
+                    self.platform,
+                    self.positions,
+                    indexed_broken,
+                )
+
+            incomplete = copy.deepcopy(plan)
+            incomplete["entries"].pop()
+            indexed_incomplete = write_pin_plan_storage(
+                root / "incomplete.json", incomplete
+            )
+            with self.assertRaisesRegex(ValidationError, "cover"):
+                validate_pin_plan(
+                    indexed_schedule,
+                    self.platform,
+                    self.positions,
+                    indexed_incomplete,
+                )
+
+            wrong_metrics = copy.deepcopy(plan)
+            wrong_metrics["metrics"]["objective"] += 1.0
+            indexed_wrong_metrics = write_pin_plan_storage(
+                root / "wrong-metrics.json", wrong_metrics
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "objective.*independently agree"
+            ):
+                validate_pin_plan(
+                    indexed_schedule,
+                    self.platform,
+                    self.positions,
+                    indexed_wrong_metrics,
+                )
+
+            malformed_schedule_document = copy.deepcopy(schedule_document)
+            malformed_schedule_document["entries"][0].pop("link")
+            malformed_schedule_path = root / "malformed-schedule.json"
+            write_tdm_schedule_storage(
+                malformed_schedule_path, malformed_schedule_document
+            )
+            malformed_schedule = read_tdm_schedule(
+                malformed_schedule_path
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "schedule entry .* malformed"
+            ):
+                validate_pin_plan(
+                    malformed_schedule,
+                    self.platform,
+                    self.positions,
+                    indexed_plan,
+                )
 
     def test_minimum_legal_group_count_exceeding_lanes_is_rejected(
         self,

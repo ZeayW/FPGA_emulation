@@ -6,6 +6,7 @@ import shutil
 
 import pytest
 
+import emuflow.tdm_schedule_storage as tdm_schedule_storage
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.tdm_schedule_storage import (
@@ -93,6 +94,80 @@ def test_schedule_store_round_trip_lazy_iteration_and_relocation(tmp_path):
     relocated = tmp_path / "relocated"
     shutil.copytree(source, relocated)
     assert read_json(relocated / "schedule.json") == expected
+
+
+def test_typed_transport_cursor_avoids_python_json_decode(tmp_path, monkeypatch):
+    expected = _schedule(3)
+    expected["entries"][1]["tdm_ratio"] = 4
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, expected)
+
+    with open_tdm_schedule_view(path) as view:
+        def reject_decode(*_args, **_kwargs):
+            raise AssertionError("typed transport cursor decoded JSON in Python")
+
+        monkeypatch.setattr(tdm_schedule_storage.json, "loads", reject_decode)
+        records = list(view.iter_transport_records())
+
+    assert [record.entry_id for record in records] == ["e0", "e1", "e2"]
+    assert records[0]._asdict() == {
+        "entry_id": "e0",
+        "demand": "d0",
+        "net": "n0",
+        "link": "ab",
+        "source": "a",
+        "sink": "b",
+        "slot": 0,
+        "arrival_slot": 1,
+        "lane": 0,
+        "tdm_ratio": None,
+        "route_source": "a",
+    }
+    assert records[1].tdm_ratio == 4
+
+
+def test_typed_transport_cursor_preserves_sequence_across_million_boundary(
+    tmp_path,
+):
+    value = _schedule(2)
+    value["entries"][0]["id"] = "s999999"
+    value["entries"][1]["id"] = "s1000000"
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, value)
+
+    with open_tdm_schedule_view(path) as view:
+        assert [
+            record.entry_id for record in view.iter_transport_records()
+        ] == ["s999999", "s1000000"]
+        assert [
+            record.entry_id
+            for record in view.iter_transport_records(identity_order=True)
+        ] == ["s999999", "s1000000"]
+
+
+@pytest.mark.parametrize(
+    "mutation", ["net", "slot-type", "null-ratio", "missing-route"]
+)
+def test_typed_transport_cursor_fails_closed(tmp_path, mutation):
+    value = _schedule(1)
+    if mutation == "net":
+        value["entries"][0]["net"] = "different-net"
+        message = "malformed"
+    elif mutation == "slot-type":
+        value["entries"][0]["slot"] = True
+        message = "malformed"
+    elif mutation == "null-ratio":
+        value["entries"][0]["tdm_ratio"] = None
+        message = "malformed"
+    else:
+        value["entries"][0]["demand"] = "missing-demand"
+        message = "coverage"
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, value)
+
+    with open_tdm_schedule_view(path) as view:
+        with pytest.raises(ValidationError, match=message):
+            list(view.iter_transport_records())
 
 
 def test_schedule_store_publishes_large_section_in_one_pass(tmp_path):

@@ -78,6 +78,7 @@ from emuflow.tdm_schedule_storage import (
 from emuflow.tdm_ratio import build_tdm_ratio_plan
 from emuflow.tdm_slot import refine_tdm_schedule_native
 from emuflow.timing_routing import route_system_native
+from emuflow.transport_storage import write_transport_storage
 from tests.native_build import (
     static_exact_analyzer,
     tdm_exact_scheduler,
@@ -981,11 +982,18 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         self.assertIsInstance(
             actual["logic_segments"], StaticExactRecordSequence
         )
+        self.assertIsInstance(
+            actual["capture_requirements"], StaticExactRecordSequence
+        )
         self.assertEqual(
             list(actual["dependency_edges"]), expected["dependency_edges"]
         )
         self.assertEqual(
             list(actual["logic_segments"]), expected["logic_segments"]
+        )
+        self.assertEqual(
+            list(actual["capture_requirements"]),
+            expected["capture_requirements"],
         )
         self.assertEqual(
             semantic_contract_sha256(actual),
@@ -2791,7 +2799,48 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 sorted(indexed_captures, key=lambda item: item["id"]),
                 assignment["semantic_contract"]["capture_requirements"],
             )
-            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            legacy_transport = write_transport_storage(
+                root / "legacy-transport",
+                root / "assignment.sqlite",
+                schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+            )
+            write_tdm_schedule_storage(schedule_path, schedule)
+            indexed_schedule = read_tdm_schedule(schedule_path)
+            typed_transport = write_transport_storage(
+                root / "typed-transport",
+                root / "assignment.sqlite",
+                indexed_schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+            )
+            self.assertEqual(
+                typed_transport["lane_map"].materialize(),
+                legacy_transport["lane_map"].materialize(),
+            )
+            self.assertEqual(
+                {
+                    fpga: value.materialize()
+                    for fpga, value in typed_transport["transports"].items()
+                },
+                {
+                    fpga: value.materialize()
+                    for fpga, value in legacy_transport["transports"].items()
+                },
+            )
+            self.assertEqual(
+                {
+                    fpga: value.materialize()
+                    for fpga, value in typed_transport["anchors"].items()
+                },
+                {
+                    fpga: value.materialize()
+                    for fpga, value in legacy_transport["anchors"].items()
+                },
+            )
             report = run_phase6(
                 ir_path,
                 assignment_path,

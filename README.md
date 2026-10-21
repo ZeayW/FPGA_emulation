@@ -88,11 +88,13 @@ every sink. Contract construction also derives stable segment identities from
 ordered counters instead of keeping duplicate source, dependency and capture
 lookup maps. It transfers predecessor lists into final cut nodes and releases
 the analyzer's cut, dependency, launch and depth maps as each cut is emitted.
-The final cut-node and capture relations are still resident once, but production
-publication now derives dependency edges and logic segments through repeatable
-typed record streams. Those two hop-scale relations feed the canonical digest
-and `assignment.exact.bin` writer without becoming retained Python dictionary
-lists. Direct native emission of the remaining relations is still pending.
+The final cut-node relation is still resident once, but production publication
+now derives dependency edges, logic segments and capture requirements through
+repeatable typed record streams. Those three graph-scale relations feed the
+canonical digest and `assignment.exact.bin` writer without becoming retained
+Python dictionary lists. Native capture analysis still returns a transient
+sorted tuple relation before it is packed into the byte-backed stream; direct
+native emission of that relation and the remaining cut nodes is pending.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
@@ -114,9 +116,12 @@ dictionary per hop before ScheduleStore publication. A versioned canonical
 cursor maps fixed records directly to rows, and the writer validates identity
 and schema while computing both logical seals, each section seal and the
 SQLite rows in one bounded pass. Native hops therefore reach ScheduleStore
-without first becoming Python dictionaries. The baseline Phase 6 splitter opens the
-store lazily and performs entry-to-route and incoming-cut joins in SQLite, so
-it no longer decodes a monolithic schedule JSON before splitting. Phase 6
+without first becoming Python dictionaries. Phase 6 now reads the ScheduleStore
+through a typed SQL projection which validates and joins routes without
+per-hop `json.loads` or Python entry/route dictionaries. When a typed pin plan
+is present, both streams use the same natural identity order, including IDs
+past six digits, before lockstep validation. The baseline splitter also opens
+the store lazily and performs incoming-cut joins in SQLite. Phase 6
 batch-streams endpoint, lane, anchor and fixed-board binding records into one
 content-sealed TransportStore. Validation and RTL/XDC consumers iterate its
 selectors without rebuilding global hop dictionaries. Unique differential
@@ -128,7 +133,12 @@ digests instead of building expected and observed whole-file strings.
 Placement-aware pin plans are published as a compact `pin_plan.json` selector
 plus a sealed `pin_plan.sqlite`. Transport construction lockstep-merges its
 typed lane cursor with schedule entries instead of building another hop-sized
-lane dictionary and coverage set. Legacy logical pin-plan JSON remains readable.
+lane dictionary and coverage set. Its first generic validation joins sealed
+schedule, plan and position relations in a file-backed SQLite workspace, then
+publishes the final selector and store only after generic and provider-specific
+checks pass. Legacy logical pin-plan JSON remains readable. The Chimew
+electrical validator and position-hint ingress still retain hop-sized Python
+state and remain Phase 6 migration work.
 Transport RTL is written atomically from slot-ordered cursors. Python still
 decodes records into the stores and emits adapter text, so native producer
 migration remains. ScheduleStore v2 also seals the historical
@@ -495,14 +505,18 @@ the selected TDM events to an abstract global timing model. **OpenSTA is the
 default global STA engine**. The internal timing composer is a separate engine
 option for explicit comparisons, not an implicit prerequisite for OpenSTA.
 The binding/export layer is EmuFlow code; the STA engine computes timing on the
-exported model. Measurement import now validates canonical endpoint order and
-the independent arc equations while streaming directly into result records;
-it no longer retains a second endpoint-keyed measurement dictionary. Check
-validation likewise keeps one per-path target/runtime state instead of several
-duplicate path populations. Path-bundle compression consumes the canonical
-contiguous path order without retaining an index list for every path, and the
-expanded TSV writer returns the final records in the same pass instead of
-rereading that file. See [timing scope and metric definitions](docs/global-opensta-qualification.md).
+exported model. Timing reconstruction carries fixed-slot TX time and ratio in
+each scheduled-hop record, so physical-check binding no longer rebuilds a
+second entry-keyed ScheduleStore dictionary. Measurement import validates
+canonical endpoint order and the independent arc equations while streaming
+directly into result records; it no longer retains a second endpoint-keyed
+measurement dictionary. Check validation likewise keeps one per-path
+target/runtime state instead of several duplicate path populations. Canonical
+report stitching consumes one contiguous path bundle at a time, retaining
+only the active identities and target/runtime rows; the expanded TSV writer
+returns final path records in the same pass instead of rereading the file.
+Interleaved legacy input uses an explicit checked compatibility fallback. See
+[timing scope and metric definitions](docs/global-opensta-qualification.md).
 
 ### Selected research references
 

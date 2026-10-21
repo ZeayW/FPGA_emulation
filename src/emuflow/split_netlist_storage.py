@@ -422,14 +422,16 @@ def build_streaming_split_metadata(
             item["schedule_entry"]: item["physical_lane"]
             for item in pin_plan.get("entries", [])
         }
-        expected_entries = {item["id"] for item in schedule["entries"]}
-        if set(physical_lane_by_entry) != expected_entries:
+        if len(physical_lane_by_entry) != len(pin_plan.get("entries", [])):
             raise ValidationError(
-                "pin plan must cover every schedule entry exactly"
+                "pin plan repeats a schedule entry"
             )
 
+    typed_records = getattr(schedule, "iter_transport_records", None)
     joined_records = getattr(schedule, "iter_entry_route_records", None)
-    if joined_records is None:
+    if typed_records is not None:
+        entry_routes = ((record, None) for record in typed_records())
+    elif joined_records is None:
         route_by_demand = {
             route["id"]: route for route in schedule_routes(schedule)
         }
@@ -445,39 +447,68 @@ def build_streaming_split_metadata(
         fpga: [] for fpga in fpga_ids
     }
     lane_entries: list[dict[str, Any]] = []
+    seen_pin_entries: set[str] = set()
     for entry, route in entry_routes:
-        if route is None:
+        if typed_records is not None:
+            entry_id = entry.entry_id
+            demand = entry.demand
+            net = entry.net
+            link = entry.link
+            source = entry.source
+            sink = entry.sink
+            slot = entry.slot
+            arrival_slot = entry.arrival_slot
+            logical_lane = entry.lane
+            route_source = entry.route_source
+        elif route is None:
             raise ValidationError(
                 f"schedule entry {entry['id']!r} has no route metadata"
             )
-        if entry["from"] not in part_index or entry["to"] not in part_index:
+        else:
+            entry_id = entry["id"]
+            demand = entry["demand"]
+            net = entry["net"]
+            link = entry["link"]
+            source = entry["from"]
+            sink = entry["to"]
+            slot = entry["slot"]
+            arrival_slot = entry["arrival_slot"]
+            logical_lane = entry["lane"]
+            route_source = route["source"]
+        if source not in part_index or sink not in part_index:
             raise ValidationError("schedule entry references an unknown FPGA")
-        tx_id = _endpoint_id("tx", entry["id"])
-        rx_id = _endpoint_id("rx", entry["id"])
+        if pin_plan is not None:
+            if entry_id not in physical_lane_by_entry:
+                raise ValidationError(
+                    "pin plan must cover every schedule entry exactly"
+                )
+            seen_pin_entries.add(entry_id)
+        tx_id = _endpoint_id("tx", entry_id)
+        rx_id = _endpoint_id("rx", entry_id)
         tx_signal = (
-            f"net:{entry['net']}"
-            if entry["from"] == route["source"]
-            else f"shadow:{entry['demand']}:{entry['from']}"
+            f"net:{net}"
+            if source == route_source
+            else f"shadow:{demand}:{source}"
         )
-        rx_signal = f"shadow:{entry['demand']}:{entry['to']}"
+        rx_signal = f"shadow:{demand}:{sink}"
         common = {
-            "schedule_entry": entry["id"],
-            "demand": entry["demand"],
-            "net": entry["net"],
-            "link": entry["link"],
-            "slot": entry["slot"],
-            "arrival_slot": entry["arrival_slot"],
-            "lane": physical_lane_by_entry.get(entry["id"], entry["lane"]),
-            "logical_lane": entry["lane"],
+            "schedule_entry": entry_id,
+            "demand": demand,
+            "net": net,
+            "link": link,
+            "slot": slot,
+            "arrival_slot": arrival_slot,
+            "lane": physical_lane_by_entry.get(entry_id, logical_lane),
+            "logical_lane": logical_lane,
         }
         exact_tx: dict[str, Any] = {}
         exact_rx: dict[str, Any] = {}
         if exact_mode:
-            if entry["net"] not in exact_nodes:
+            if net not in exact_nodes:
                 raise ValidationError("exact schedule references an unknown cut node")
-            source_entry = entry["from"] == route["source"]
+            source_entry = source == route_source
             exact_tx = {
-                "boundary_identity": f"static_exact:tx:{entry['id']}",
+                "boundary_identity": f"static_exact:tx:{entry_id}",
                 "semantic_contract_sha256": exact_digest,
                 "source_role": (
                     "cut_source" if source_entry else "route_tree_relay"
@@ -485,42 +516,47 @@ def build_streaming_split_metadata(
                 "preserve": True,
             }
             exact_rx = {
-                "boundary_identity": f"static_exact:rx:{entry['id']}",
+                "boundary_identity": f"static_exact:rx:{entry_id}",
                 "semantic_contract_sha256": exact_digest,
                 "preserve": True,
             }
-        endpoints_by_fpga[entry["from"]].append({
+        endpoints_by_fpga[source].append({
             "id": tx_id,
             "kind": "tx",
-            "fpga": entry["from"],
-            "peer": entry["to"],
+            "fpga": source,
+            "peer": sink,
             "signal": tx_signal,
             **common,
             **exact_tx,
         })
-        endpoints_by_fpga[entry["to"]].append({
+        endpoints_by_fpga[sink].append({
             "id": rx_id,
             "kind": "rx",
-            "fpga": entry["to"],
-            "peer": entry["from"],
+            "fpga": sink,
+            "peer": source,
             "signal": rx_signal,
             **common,
             **exact_rx,
         })
         lane_entries.append({
-            "id": f"lane_{entry['id']}",
-            "schedule_entry": entry["id"],
-            "demand": entry["demand"],
-            "net": entry["net"],
-            "link": entry["link"],
-            "from": entry["from"],
-            "to": entry["to"],
-            "slot": entry["slot"],
-            "lane": physical_lane_by_entry.get(entry["id"], entry["lane"]),
-            "logical_lane": entry["lane"],
+            "id": f"lane_{entry_id}",
+            "schedule_entry": entry_id,
+            "demand": demand,
+            "net": net,
+            "link": link,
+            "from": source,
+            "to": sink,
+            "slot": slot,
+            "lane": physical_lane_by_entry.get(entry_id, logical_lane),
+            "logical_lane": logical_lane,
             "tx_endpoint": tx_id,
             "rx_endpoint": rx_id,
         })
+
+    if pin_plan is not None and set(physical_lane_by_entry) != seen_pin_entries:
+        raise ValidationError(
+            "pin plan must cover every schedule entry exactly"
+        )
 
     clock_order = sorted(item["id"] for item in clocks) or ["clk"]
     transports: dict[str, dict[str, Any]] = {}

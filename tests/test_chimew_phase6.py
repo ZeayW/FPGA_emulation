@@ -31,7 +31,12 @@ from emuflow.cli import main
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
+from emuflow.pin_plan_storage import write_pin_plan_storage
 from emuflow.platform import Platform
+from emuflow.tdm_schedule_storage import (
+    read_tdm_schedule,
+    write_tdm_schedule_storage,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -350,6 +355,29 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             )["status"],
             "pass",
         )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            schedule_document = {
+                **self.schedule,
+                "routes": [],
+                "demand_completions": [],
+                "domain_schedules": [],
+            }
+            schedule_path = root / "schedule.json"
+            write_tdm_schedule_storage(schedule_path, schedule_document)
+            indexed_schedule = read_tdm_schedule(schedule_path)
+            indexed_plan = write_pin_plan_storage(
+                root / "pin_plan.json", result["pin_plan"]
+            )
+            self.assertEqual(
+                validate_pin_plan(
+                    indexed_schedule,
+                    self.platform,
+                    result["position_hints"],
+                    indexed_plan,
+                )["status"],
+                "pass",
+            )
         self.assertEqual(
             validate_chimew_phase6_binding(
                 self.schedule,

@@ -191,6 +191,10 @@ class Phase3Test(unittest.TestCase):
                             contract["logic_segments"],
                             StaticExactRecordSequence,
                         ),
+                        isinstance(
+                            contract["capture_requirements"],
+                            StaticExactRecordSequence,
+                        ),
                     )
                 )
                 return write_phase3_assignment_index(path, ir, assignment)
@@ -212,7 +216,7 @@ class Phase3Test(unittest.TestCase):
                     seed=7,
                     cut_mode="static-exact-combinational",
                 )
-            self.assertEqual(observed_streams, [(True, True)])
+            self.assertEqual(observed_streams, [(True, True, True)])
             assignment = read_json(output / "assignment.json")
             packed_assignment = json.loads(
                 (output / "assignment.json").read_text(encoding="utf-8")

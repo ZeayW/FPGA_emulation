@@ -11,6 +11,7 @@ record stream directly.
 
 from __future__ import annotations
 
+import struct
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
@@ -18,6 +19,7 @@ from .errors import ValidationError
 
 
 STATIC_EXACT_RECORD_STREAM_SCHEMA = "emuflow.static-exact-record-stream/v1"
+_CAPTURE_HEADER = struct.Struct("<BIIIII")
 
 
 class StaticExactRecordSequence(list):
@@ -71,6 +73,122 @@ class StaticExactRecordSequence(list):
     __setitem__ = _immutable
     __iadd__ = _immutable
     __imul__ = _immutable
+
+
+def build_static_exact_capture_stream(
+    capture_relation: Sequence[tuple[Any, ...]],
+) -> StaticExactRecordSequence:
+    """Pack the canonical native capture relation behind a typed record stream.
+
+    The native analyzer resolves capture endpoint identity once.  Production
+    publication retains those records in one compact byte buffer instead of
+    expanding a dictionary for every capture requirement.  Diagnostic callers
+    can still materialize the returned sequence with ``list(...)``.
+    """
+
+    encoded = bytearray()
+    previous_key: tuple[Any, ...] | None = None
+    for item in capture_relation:
+        if not isinstance(item, tuple) or len(item) != 6:
+            raise ValidationError("Static Exact capture relation is invalid")
+        cut_net, fpga, kind, endpoint, port, bit = item
+        if (
+            not all(
+                isinstance(value, str) and value
+                for value in (cut_net, fpga, kind, endpoint)
+            )
+            or kind not in {"top-output", "architectural-state"}
+            or (
+                kind == "top-output"
+                and (port is not None or bit is not None)
+            )
+            or (
+                kind == "architectural-state"
+                and (
+                    not isinstance(port, str)
+                    or not port
+                    or isinstance(bit, bool)
+                    or not isinstance(bit, int)
+                    or bit < 0
+                    or bit >= 2**32
+                )
+            )
+        ):
+            raise ValidationError("Static Exact capture relation is invalid")
+        sort_key = (
+            cut_net,
+            fpga,
+            kind,
+            endpoint,
+            "" if port is None else port,
+            -1 if bit is None else bit,
+        )
+        if previous_key is not None and sort_key <= previous_key:
+            raise ValidationError("Static Exact capture relation is invalid")
+        previous_key = sort_key
+        try:
+            fields = [
+                cut_net.encode("utf-8"),
+                fpga.encode("utf-8"),
+                endpoint.encode("utf-8"),
+                b"" if port is None else port.encode("utf-8"),
+            ]
+        except UnicodeEncodeError as error:
+            raise ValidationError(
+                "Static Exact capture identity is invalid"
+            ) from error
+        if any(len(field) >= 2**32 for field in fields):
+            raise ValidationError("Static Exact capture identity is too large")
+        encoded.extend(
+            _CAPTURE_HEADER.pack(
+                0 if kind == "top-output" else 1,
+                0 if bit is None else bit,
+                *(len(field) for field in fields),
+            )
+        )
+        for field in fields:
+            encoded.extend(field)
+
+    count = len(capture_relation)
+
+    def capture_requirements() -> Iterator[dict[str, Any]]:
+        view = memoryview(encoded)
+        offset = 0
+        for index in range(count):
+            if offset + _CAPTURE_HEADER.size > len(view):
+                raise ValidationError("Static Exact capture stream ended early")
+            kind, bit, *lengths = _CAPTURE_HEADER.unpack_from(view, offset)
+            offset += _CAPTURE_HEADER.size
+            fields = []
+            for length in lengths:
+                end = offset + length
+                if end > len(view):
+                    raise ValidationError(
+                        "Static Exact capture stream ended early"
+                    )
+                try:
+                    fields.append(bytes(view[offset:end]).decode("utf-8"))
+                except UnicodeDecodeError as error:
+                    raise ValidationError(
+                        "Static Exact capture stream identity is invalid"
+                    ) from error
+                offset = end
+            if kind not in {0, 1} or (kind == 1 and not fields[3]):
+                raise ValidationError("Static Exact capture stream is invalid")
+            yield {
+                "id": f"capture{index:06d}",
+                "cut_net": fields[0],
+                "fpga": fields[1],
+                "kind": "top-output" if kind == 0 else "architectural-state",
+                "endpoint": fields[2],
+                **({"port": fields[3], "bit": bit} if kind == 1 else {}),
+            }
+        if offset != len(view):
+            raise ValidationError("Static Exact capture stream has trailing data")
+
+    return StaticExactRecordSequence(
+        "capture_requirements", count, capture_requirements
+    )
 
 
 def build_static_exact_record_streams(
@@ -128,6 +246,7 @@ def build_static_exact_record_streams(
         raise ValidationError("Static Exact capture stream coverage disagrees")
     capture_segment_start = launch_count + dependency_count
     capture_index = 0
+    capture_iterator = iter(captures)
     for node in cut_nodes:
         segment_ids = node["capture_segment_ids"]
         expected_ids = sorted(
@@ -138,8 +257,8 @@ def build_static_exact_record_streams(
         )
         if segment_ids != expected_ids:
             raise ValidationError("Static Exact capture segment order disagrees")
-        for index in range(capture_index, capture_index + len(segment_ids)):
-            capture = captures[index]
+        for _ in segment_ids:
+            capture = next(capture_iterator, None)
             if (
                 not isinstance(capture, Mapping)
                 or capture.get("cut_net") != node.get("net")
@@ -147,7 +266,9 @@ def build_static_exact_record_streams(
                 raise ValidationError(
                     "Static Exact capture stream order disagrees"
                 )
-        capture_index += len(segment_ids)
+            capture_index += 1
+    if next(capture_iterator, None) is not None:
+        raise ValidationError("Static Exact capture stream coverage disagrees")
 
     def dependency_edges() -> Iterator[dict[str, Any]]:
         observed = 0

@@ -51,7 +51,11 @@ from emuflow.pin_planning import (
     _assignment_metrics,
     build_pin_plan,
 )
-from emuflow.pin_plan_storage import PIN_PLAN_STORAGE_SCHEMA, read_pin_plan
+from emuflow.pin_plan_storage import (
+    PIN_PLAN_STORAGE_SCHEMA,
+    read_pin_plan,
+    write_pin_plan_storage,
+)
 from emuflow.platform import Platform
 from emuflow.open_transport_characterization import (
     BASE_FEATURE_NAMES,
@@ -61,7 +65,10 @@ from emuflow.open_transport_characterization import (
 )
 from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import build_tdm_schedule
-from emuflow.tdm_schedule_storage import write_tdm_schedule_storage
+from emuflow.tdm_schedule_storage import (
+    open_tdm_schedule_view,
+    write_tdm_schedule_storage,
+)
 from emuflow.transport_storage import (
     LANE_MAP_STORAGE_SCHEMA,
     TRANSPORT_STORAGE_SCHEMA,
@@ -288,6 +295,129 @@ class Phase6Test(unittest.TestCase):
                     )
             self.assertEqual(writer_uri_modes, [True, True])
             self.assertEqual(summaries[0]["sha256"], summaries[1]["sha256"])
+
+    def test_transport_store_consumes_typed_schedule_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            assignment_path = root / "assignment.sqlite"
+            schedule_path = root / "schedule.json"
+            write_phase3_assignment_index(
+                assignment_path, self.ir, self.assignment
+            )
+            write_tdm_schedule_storage(schedule_path, self.schedule)
+
+            legacy = write_transport_storage(
+                root / "legacy",
+                assignment_path,
+                self.schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+            )
+            with open_tdm_schedule_view(schedule_path) as indexed:
+                with mock.patch.object(
+                    type(indexed),
+                    "iter_entry_route_records",
+                    side_effect=AssertionError(
+                        "legacy schedule dictionaries were materialized"
+                    ),
+                ), mock.patch(
+                    "emuflow.tdm_schedule_storage.ScheduleRecordSequence.__iter__",
+                    side_effect=AssertionError(
+                        "schedule sections were decoded in Python"
+                    ),
+                ):
+                    typed = write_transport_storage(
+                        root / "typed",
+                        assignment_path,
+                        indexed,
+                        self.platform,
+                        design=self.ir.value["design"],
+                        clocks=self.ir.value["clocks"],
+                    )
+
+            self.assertEqual(
+                typed["lane_map"].materialize(),
+                legacy["lane_map"].materialize(),
+            )
+            self.assertEqual(
+                {
+                    fpga: value.materialize()
+                    for fpga, value in typed["transports"].items()
+                },
+                {
+                    fpga: value.materialize()
+                    for fpga, value in legacy["transports"].items()
+                },
+            )
+            self.assertEqual(
+                {
+                    fpga: value.materialize()
+                    for fpga, value in typed["anchors"].items()
+                },
+                {
+                    fpga: value.materialize()
+                    for fpga, value in legacy["anchors"].items()
+                },
+            )
+
+    def test_transport_store_joins_indexed_pin_plan_by_entry_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            assignment_path = root / "assignment.sqlite"
+            schedule_path = root / "schedule.json"
+            write_phase3_assignment_index(
+                assignment_path, self.ir, self.assignment
+            )
+            schedule = copy.deepcopy(self.schedule)
+            for index, entry in enumerate(schedule["entries"]):
+                entry["id"] = (
+                    "s999999" if index == 0 else f"s{999999 + index}"
+                )
+            write_tdm_schedule_storage(schedule_path, schedule)
+            pin_plan = write_pin_plan_storage(
+                root / "pin-plan.json",
+                {
+                    "schema": "emuflow.placement-aware-pin-plan/v1",
+                    "design": self.ir.value["design"],
+                    "platform": self.platform.name,
+                    "entries": [
+                        {
+                            "schedule_entry": entry["id"],
+                            "group": index,
+                            "physical_lane": entry["lane"],
+                            "logical_lane": entry["lane"],
+                        }
+                        for index, entry in enumerate(schedule["entries"])
+                    ],
+                },
+            )
+
+            legacy = write_transport_storage(
+                root / "legacy-pin",
+                assignment_path,
+                schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+                pin_plan=pin_plan,
+            )
+            with open_tdm_schedule_view(schedule_path) as indexed:
+                typed = write_transport_storage(
+                    root / "typed-pin",
+                    assignment_path,
+                    indexed,
+                    self.platform,
+                    design=self.ir.value["design"],
+                    clocks=self.ir.value["clocks"],
+                    pin_plan=pin_plan,
+                )
+            self.assertEqual(
+                typed["lane_map"].materialize(),
+                legacy["lane_map"].materialize(),
+            )
 
     def test_split_exact_coverage_lane_agreement_and_equivalence(self) -> None:
         artifacts = build_split_artifacts(
@@ -1016,17 +1146,20 @@ class Phase6Test(unittest.TestCase):
             write_json(chimew_plan_path, chimew_plan)
             write_json(binding_path, binding)
             chimew_output = root / "phase6-chimew"
+            invalid_output = root / "phase6-chimew-without-binding"
             with self.assertRaisesRegex(ValueError, "electrical_binding_path"):
                 run_phase6(
                     paths["ir"],
                     paths["assignment"],
                     paths["schedule"],
                     PLATFORM_PATH,
-                    root / "phase6-chimew-without-binding",
+                    invalid_output,
                     equivalence_cycles=4,
                     pin_plan_path=chimew_plan_path,
                     position_hints_path=paths["positions"],
                 )
+            self.assertFalse((invalid_output / "pin_plan.json").exists())
+            self.assertFalse((invalid_output / "pin_plan.sqlite").exists())
             chimew_report = run_phase6(
                 paths["ir"],
                 paths["assignment"],

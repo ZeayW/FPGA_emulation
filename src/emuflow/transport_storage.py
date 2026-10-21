@@ -1339,8 +1339,16 @@ def write_transport_storage(
             (f"file:{assignment_index_path.resolve()}?mode=ro&immutable=1",),
         )
 
+        typed_records = getattr(schedule, "iter_transport_records", None)
         joined_records = getattr(schedule, "iter_entry_route_records", None)
-        if joined_records is None:
+        if typed_records is not None:
+            entry_routes = (
+                (record, None)
+                for record in typed_records(
+                    identity_order=pin_lane_iterator is not None
+                )
+            )
+        elif joined_records is None:
             routes = schedule.get("routes")
             entries = schedule.get("entries")
             if not isinstance(routes, Sequence) or not isinstance(entries, Sequence):
@@ -1348,7 +1356,12 @@ def write_transport_storage(
             route_by_demand = {route["id"]: route for route in routes}
             entry_routes = (
                 (entry, route_by_demand.get(entry["demand"]))
-                for entry in sorted(entries, key=lambda item: item["id"])
+                for entry in sorted(
+                    entries,
+                    key=lambda item: (
+                        len(item["id"]), item["id"]
+                    ) if pin_lane_iterator is not None else item["id"],
+                )
             )
         else:
             entry_routes = joined_records()
@@ -1386,28 +1399,49 @@ def write_transport_storage(
                 binding_adapter_rows.clear()
 
         for entry, route in entry_routes:
-            if route is None:
+            if typed_records is not None:
+                entry_id = entry.entry_id
+                demand = entry.demand
+                net = entry.net
+                link = entry.link
+                source = entry.source
+                sink = entry.sink
+                slot = entry.slot
+                arrival_slot = entry.arrival_slot
+                logical_lane = entry.lane
+                tdm_ratio = entry.tdm_ratio
+                route_source = entry.route_source
+            elif route is None:
                 raise ValidationError(
                     f"schedule entry {entry['id']!r} has no route metadata"
                 )
-            source = entry.get("from")
-            sink = entry.get("to")
+            else:
+                entry_id = entry["id"]
+                demand = entry["demand"]
+                net = entry["net"]
+                link = entry["link"]
+                source = entry.get("from")
+                sink = entry.get("to")
+                slot = entry["slot"]
+                arrival_slot = entry["arrival_slot"]
+                logical_lane = entry["lane"]
+                tdm_ratio = entry.get("tdm_ratio")
+                route_source = route["source"]
             if source not in fpga_ids or sink not in fpga_ids:
                 raise ValidationError("schedule entry references an unknown FPGA")
-            entry_id = entry["id"]
             if pin_lane_iterator is not None:
                 pin_record = next(pin_lane_iterator, None)
                 if (
                     pin_record is None
                     or pin_record[0] != entry_id
-                    or pin_record[2] != entry["lane"]
+                    or pin_record[2] != logical_lane
                 ):
                     raise ValidationError(
                         "pin plan must cover schedule entries exactly"
                     )
                 lane = pin_record[1]
             else:
-                lane = physical_lane_by_entry.get(entry_id, entry["lane"])
+                lane = physical_lane_by_entry.get(entry_id, logical_lane)
             if pin_plan is not None and pin_lane_iterator is None:
                 if entry_id not in physical_lane_by_entry:
                     raise ValidationError(
@@ -1417,20 +1451,20 @@ def write_transport_storage(
             tx_id = _endpoint_id("tx", entry_id)
             rx_id = _endpoint_id("rx", entry_id)
             tx_signal = (
-                f"net:{entry['net']}"
-                if source == route["source"]
-                else f"shadow:{entry['demand']}:{source}"
+                f"net:{net}"
+                if source == route_source
+                else f"shadow:{demand}:{source}"
             )
-            rx_signal = f"shadow:{entry['demand']}:{sink}"
+            rx_signal = f"shadow:{demand}:{sink}"
             common = {
                 "schedule_entry": entry_id,
-                "demand": entry["demand"],
-                "net": entry["net"],
-                "link": entry["link"],
-                "slot": entry["slot"],
-                "arrival_slot": entry["arrival_slot"],
+                "demand": demand,
+                "net": net,
+                "link": link,
+                "slot": slot,
+                "arrival_slot": arrival_slot,
                 "lane": lane,
-                "logical_lane": entry["lane"],
+                "logical_lane": logical_lane,
             }
             tx_exact: dict[str, Any] = {}
             rx_exact: dict[str, Any] = {}
@@ -1440,7 +1474,7 @@ def write_transport_storage(
                     "semantic_contract_sha256": exact_digest,
                     "source_role": (
                         "cut_source"
-                        if source == route["source"]
+                        if source == route_source
                         else "route_tree_relay"
                     ),
                     "preserve": True,
@@ -1473,34 +1507,33 @@ def write_transport_storage(
                     (
                         endpoint["id"], endpoint["fpga"], endpoint["kind"],
                         endpoint["peer"], endpoint["signal"], entry_id,
-                        entry["demand"], entry["net"], entry["link"],
-                        entry["slot"], entry["arrival_slot"], lane,
-                        entry["lane"], _canonical(endpoint),
+                        demand, net, link, slot, arrival_slot, lane,
+                        logical_lane, _canonical(endpoint),
                     )
                 )
             lane_record = {
                 "id": f"lane_{entry_id}",
                 "schedule_entry": entry_id,
-                "demand": entry["demand"],
-                "net": entry["net"],
-                "link": entry["link"],
+                "demand": demand,
+                "net": net,
+                "link": link,
                 "from": source,
                 "to": sink,
-                "slot": entry["slot"],
+                "slot": slot,
                 "lane": lane,
-                "logical_lane": entry["lane"],
+                "logical_lane": logical_lane,
                 "tx_endpoint": tx_id,
                 "rx_endpoint": rx_id,
             }
             lane_rows.append(
                 (
-                    lane_record["id"], entry_id, entry["demand"], entry["net"],
-                    entry["link"], source, sink, entry["slot"], lane,
-                    entry["lane"], tx_id, rx_id, _canonical(lane_record),
+                    lane_record["id"], entry_id, demand, net,
+                    link, source, sink, slot, lane,
+                    logical_lane, tx_id, rx_id, _canonical(lane_record),
                 )
             )
             if virtual_board is not None:
-                wire = binding_wire_by_key.get((entry["link"], lane))
+                wire = binding_wire_by_key.get((link, lane))
                 if wire is None:
                     raise ValidationError(
                         "scheduled wire has no virtual board connection"
@@ -1532,12 +1565,12 @@ def write_transport_storage(
                     }
                     bound_end["logical_port"] = logical_port
                     bound_end["logical_port_width"] = binding_links[
-                        entry["link"]
+                        link
                     ].transport_bits_per_cycle_per_direction
                     for polarity in ("p", "n"):
                         pin = pair[polarity]
                         port = (
-                            f"emuflow_io_{kind}_{pin_port_name(entry['link'])}_"
+                            f"emuflow_io_{kind}_{pin_port_name(link)}_"
                             f"wire{wire['wire']}_{polarity}"
                         )
                         identity = (endpoint_fpga, pin["package_pin"])
@@ -1575,10 +1608,10 @@ def write_transport_storage(
                         )
                 binding_record = {
                     "schedule_entry": entry_id,
-                    "net": entry.get("net"),
-                    "slot": entry["slot"],
-                    "arrival_slot": entry.get("arrival_slot"),
-                    "tdm_ratio": entry.get("tdm_ratio"),
+                    "net": net,
+                    "slot": slot,
+                    "arrival_slot": arrival_slot,
+                    "tdm_ratio": tdm_ratio,
                     "wire_id": wire["id"],
                     "wire": wire["wire"],
                     "link": wire["link"],
@@ -1589,7 +1622,7 @@ def write_transport_storage(
                 }
                 binding_rows.append(
                     (
-                        entry_id, entry["link"], entry["slot"], wire["wire"],
+                        entry_id, link, slot, wire["wire"],
                         source, sink, _canonical(binding_record),
                     )
                 )

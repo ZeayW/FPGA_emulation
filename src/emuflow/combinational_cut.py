@@ -22,7 +22,10 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set, Tuple
 from .errors import ValidationError
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
-from .phase3_exact_records import build_static_exact_record_streams
+from .phase3_exact_records import (
+    build_static_exact_capture_stream,
+    build_static_exact_record_streams,
+)
 from .resources import RESOURCE_FIELDS
 
 
@@ -1080,25 +1083,8 @@ def _analyze_static_exact_dependencies_native(
 
     unique_capture_records_set = set(raw_captures)
     del raw_captures
-    unique_capture_records = sorted(unique_capture_records_set)
+    capture_relation = sorted(unique_capture_records_set)
     del unique_capture_records_set
-    capture_records = [
-        {
-            "id": f"capture{index:06d}",
-            "cut_net": cut_net,
-            "fpga": fpga,
-            "kind": kind,
-            "endpoint": endpoint,
-            **(
-                {"port": port, "bit": bit}
-                if kind == "architectural-state"
-                else {}
-            ),
-        }
-        for index, (cut_net, fpga, kind, endpoint, port, bit) in enumerate(
-            unique_capture_records
-        )
-    ]
 
     successors: Dict[str, Set[str]] = defaultdict(set)
     indegree = {net_id: len(items) for net_id, items in dependencies.items()}
@@ -1148,7 +1134,7 @@ def _analyze_static_exact_dependencies_native(
         "dependency_level": dependency_level,
         "combinational_depth": combinational_depth,
         "maximum_depth": maximum_depth,
-        "capture_records": capture_records,
+        "capture_relation": capture_relation,
         "analysis_engine": "native-cpp-v1",
     }
 
@@ -1249,6 +1235,7 @@ def build_static_exact_semantic_contract(
     captures_are_normalized = analysis.get("analysis_engine") == "native-cpp-v1"
 
     capture_records: List[Dict[str, Any]] = analysis.get("capture_records", [])
+    capture_relation = analysis.get("capture_relation")
     del analysis
     if outgoing_by_instance is not None:
         if not isinstance(classes, Mapping) or not isinstance(nets, Mapping):
@@ -1329,7 +1316,17 @@ def build_static_exact_semantic_contract(
     del nets
     del outgoing_by_instance
 
-    if not captures_are_normalized:
+    if captures_are_normalized:
+        if not isinstance(capture_relation, list):
+            raise ValidationError("native Static Exact captures are incomplete")
+        capture_stream = build_static_exact_capture_stream(capture_relation)
+        del capture_relation
+        if stream_records:
+            capture_records = capture_stream
+        else:
+            capture_records = list(capture_stream)
+            del capture_stream
+    else:
         unique_capture_records = sorted(
             {
                 (
@@ -1343,23 +1340,34 @@ def build_static_exact_semantic_contract(
                 for item in capture_records
             }
         )
-        capture_records = [
-            {
-                "id": f"capture{index:06d}",
-                "cut_net": cut_net,
-                "fpga": fpga,
-                "kind": kind,
-                "endpoint": endpoint,
-                **(
-                    {"port": port, "bit": bit}
-                    if kind == "architectural-state"
-                    else {}
-                ),
-            }
-            for index, (cut_net, fpga, kind, endpoint, port, bit) in enumerate(
+        if stream_records:
+            capture_records = build_static_exact_capture_stream(
                 unique_capture_records
             )
-        ]
+        else:
+            capture_records = [
+                {
+                    "id": f"capture{index:06d}",
+                    "cut_net": cut_net,
+                    "fpga": fpga,
+                    "kind": kind,
+                    "endpoint": endpoint,
+                    **(
+                        {"port": port, "bit": bit}
+                        if kind == "architectural-state"
+                        else {}
+                    ),
+                }
+                for index, (
+                    cut_net,
+                    fpga,
+                    kind,
+                    endpoint,
+                    port,
+                    bit,
+                ) in enumerate(unique_capture_records)
+            ]
+        del unique_capture_records
 
     ordered_cut_ids = sorted(cut_by_net)
     dependency_edge_count = sum(
@@ -1418,6 +1426,8 @@ def build_static_exact_semantic_contract(
     launch_segment_number = 0
     dependency_segment_number = launch_segment_count
     capture_index = 0
+    capture_iterator = iter(capture_records)
+    next_capture = next(capture_iterator, None)
     for sink in ordered_cut_ids:
         cut = cut_by_net.pop(sink)
         predecessor_cut_nets = dependencies.pop(sink)
@@ -1449,13 +1459,14 @@ def build_static_exact_semantic_contract(
             dependency_segment_number += 1
         capture_segments = []
         while (
-            capture_index < len(capture_records)
-            and capture_records[capture_index]["cut_net"] == sink
+            next_capture is not None
+            and next_capture["cut_net"] == sink
         ):
             capture_segments.append(
                 f"segment{capture_segment_start + capture_index:06d}"
             )
             capture_index += 1
+            next_capture = next(capture_iterator, None)
         # Preserve the v3 canonical string ordering even after segment IDs
         # grow beyond the six-digit minimum width.
         capture_segments.sort()
@@ -1472,6 +1483,8 @@ def build_static_exact_semantic_contract(
                 "capture_segment_ids": capture_segments,
             }
         )
+    if next_capture is not None:
+        raise ValidationError("Static Exact capture ordering is inconsistent")
     if not stream_records and len(logic_segments) != capture_segment_start:
         raise ValidationError("Static Exact dependency numbering is inconsistent")
     if stream_records:

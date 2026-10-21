@@ -17,7 +17,7 @@ import sqlite3
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple, Optional
 
 from .errors import ValidationError
 from .io import file_sha256, write_json
@@ -67,6 +67,22 @@ CREATE TABLE records(
 NATIVE_EXACT_CANONICAL_ENTRY_CURSOR_SCHEMA = (
     "emuflow.native-exact-schedule-entry-cursor/v1"
 )
+
+
+class ScheduleTransportRecord(NamedTuple):
+    entry_id: str
+    demand: str
+    net: str
+    link: str
+    source: str
+    sink: str
+    slot: int
+    arrival_slot: int
+    lane: int
+    tdm_ratio: Optional[int]
+    route_source: str
+
+
 _CANONICAL_JSON_STRING = (
     r'"(?:[\x20-\x21\x23-\x5b\x5d-\x7f]|'
     r'\\(?:["\\bfnrt]|u[0-9a-f]{4}))*"'
@@ -728,6 +744,138 @@ class TDMScheduleView(Mapping[str, Any]):
             raise ValidationError(
                 "schedule entry/route join contains corrupt JSON"
             ) from error
+        finally:
+            connection.close()
+
+    def iter_transport_records(
+        self, *, identity_order: bool = False
+    ) -> Iterator[ScheduleTransportRecord]:
+        """Stream the typed Phase 6 projection without JSON object decoding."""
+
+        connection = sqlite3.connect(
+            f"file:{self.store_path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        try:
+            order_clause = (
+                "length(e.identity),e.identity" if identity_order else "e.seq"
+            )
+            rows = connection.execute(
+                f"""
+                SELECT e.identity,
+                       json_extract(e.record_json,'$.id'),
+                       json_extract(e.record_json,'$.demand'),
+                       json_extract(e.record_json,'$.net'),
+                       json_extract(e.record_json,'$.link'),
+                       json_extract(e.record_json,'$.from'),
+                       json_extract(e.record_json,'$.to'),
+                       json_extract(e.record_json,'$.slot'),
+                       json_extract(e.record_json,'$.arrival_slot'),
+                       json_extract(e.record_json,'$.lane'),
+                       json_extract(e.record_json,'$.tdm_ratio'),
+                       r.identity,
+                       json_extract(r.record_json,'$.id'),
+                       json_extract(r.record_json,'$.net'),
+                       json_extract(r.record_json,'$.source'),
+                       CASE WHEN
+                         json_type(e.record_json,'$.id')='text' AND
+                         json_type(e.record_json,'$.demand')='text' AND
+                         json_type(e.record_json,'$.net')='text' AND
+                         json_type(e.record_json,'$.link')='text' AND
+                         json_type(e.record_json,'$.from')='text' AND
+                         json_type(e.record_json,'$.to')='text' AND
+                         json_type(e.record_json,'$.slot')='integer' AND
+                         json_type(e.record_json,'$.arrival_slot')='integer' AND
+                         json_type(e.record_json,'$.lane')='integer' AND
+                         (json_type(e.record_json,'$.tdm_ratio') IS NULL OR
+                          json_type(e.record_json,'$.tdm_ratio')='integer') AND
+                         json_type(r.record_json,'$.id')='text' AND
+                         json_type(r.record_json,'$.net')='text' AND
+                         json_type(r.record_json,'$.source')='text'
+                       THEN 1 ELSE 0 END
+                FROM records e
+                JOIN records r
+                  ON r.section='routes'
+                 AND r.identity=json_extract(e.record_json,'$.demand')
+                WHERE e.section='entries'
+                ORDER BY {order_clause}
+                """
+            )
+            count = 0
+            for row in rows:
+                count += 1
+                (
+                    entry_id,
+                    record_id,
+                    demand,
+                    net,
+                    link,
+                    source,
+                    sink,
+                    slot,
+                    arrival_slot,
+                    lane,
+                    tdm_ratio,
+                    route_identity,
+                    route_id,
+                    route_net,
+                    route_source,
+                    is_well_typed,
+                ) = row
+                strings = (
+                    entry_id,
+                    demand,
+                    net,
+                    link,
+                    source,
+                    sink,
+                    route_source,
+                )
+                integers = (slot, arrival_slot, lane)
+                if (
+                    is_well_typed != 1
+                    or not all(
+                        isinstance(value, str) and value
+                        for value in strings
+                    )
+                    or record_id != entry_id
+                    or route_identity != demand
+                    or route_id != demand
+                    or route_net != net
+                    or not all(
+                        isinstance(value, int)
+                        and not isinstance(value, bool)
+                        and value >= 0
+                        for value in integers
+                    )
+                    or (
+                        tdm_ratio is not None
+                        and (
+                            not isinstance(tdm_ratio, int)
+                            or isinstance(tdm_ratio, bool)
+                            or tdm_ratio < 1
+                        )
+                    )
+                ):
+                    raise ValidationError(
+                        "typed schedule transport record is malformed"
+                    )
+                yield ScheduleTransportRecord(
+                    entry_id,
+                    demand,
+                    net,
+                    link,
+                    source,
+                    sink,
+                    slot,
+                    arrival_slot,
+                    lane,
+                    tdm_ratio,
+                    route_source,
+                )
+            if count != len(self._sections["entries"]):
+                raise ValidationError(
+                    "typed schedule transport coverage disagrees"
+                )
         finally:
             connection.close()
 

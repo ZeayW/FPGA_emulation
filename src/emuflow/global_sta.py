@@ -431,7 +431,22 @@ the Python event propagator or consume its per-path numerical results.
             {"board_link_timing": build_board_link_timing_model(platform)}, platform)
     if endpoints is None or segments is None or links is None:
         raise ValidationError("global OpenSTA requires physical logic and endpoint measurements")
-    entries = {e["id"]: e for e in schedule["entries"]}
+    # Timing reconstruction already binds each routed hop to its schedule
+    # entry and carries the concrete TX time/ratio in ``scheduled_hops``.
+    # Keep a compatibility lookup only for older injected reconstruction
+    # records; production must not rebuild a second hop-sized entry map.
+    legacy_entries = None
+
+    def legacy_entry(identity):
+        nonlocal legacy_entries
+        if legacy_entries is None:
+            legacy_entries = {e["id"]: e for e in schedule["entries"]}
+        try:
+            return legacy_entries[identity]
+        except KeyError as exc:
+            raise ValidationError(
+                "global STA references a missing scheduled event"
+            ) from exc
     board_links = {link.id: link for link in platform.links}
     demand_by_net = {r["net"]: r["id"] for r in routes["routes"]}
     uncertainty = float(physical.get("static_exact_clock_uncertainty_ns", 0.0))
@@ -480,17 +495,26 @@ the Python event propagator or consume its per-path numerical results.
                     if eid in seen_entries:
                         raise ValidationError("global STA reused a scheduled event")
                     seen_entries.add(eid)
-                    entry = entries[eid]
-                    for field in ("link", "from", "to"):
-                        if entry[field] != hop[field]:
-                            raise ValidationError("global STA hop/event identity disagrees")
                     period = float(hop["tdm_slot_ns"])
                     periods.add(period)
-                    tx = entry["slot"] * period
+                    if "fixed_slot_tx_time_ns" in hop:
+                        tx = float(hop["fixed_slot_tx_time_ns"])
+                        ratio = hop.get("tdm_ratio")
+                    else:
+                        entry = legacy_entry(eid)
+                        for field in ("link", "from", "to"):
+                            if entry[field] != hop[field]:
+                                raise ValidationError(
+                                    "global STA hop/event identity disagrees"
+                                )
+                        tx = entry["slot"] * period
+                        ratio = entry.get("tdm_ratio")
+                    if not math.isfinite(tx) or tx < 0.0:
+                        raise ValidationError("global STA TX time is invalid")
                     arcs = trailing + (float(chain[k]["delay_ns"]) if not j else
                                        endpoints[hop["tx_endpoint"]],)
                     delay_model = board_links[hop["link"]].tdm_delay_model
-                    link_delay = (delay_model.delay_ns(entry.get("tdm_ratio"))
+                    link_delay = (delay_model.delay_ns(ratio)
                                   if delay_model is not None else
                                   links[hop["link"], hop["from"], hop["to"]])
                     if ratio_mode:
@@ -564,29 +588,154 @@ def build_opensta_timing(runtime, metadata, measurements):
     Binding owns coverage and physical qualifications. OpenSTA owns numerical
     propagation. Python only aggregates the project's original-path metric.
     """
-    observed = {(r["path"], r["role"]): r for r in measurements
-                if r["role"] in {"target", "runtime"}}
-    expected = {(p, role) for p in metadata["paths"] for role in ("target", "runtime")}
-    identities = {(r["path"], r["role"], r["event"]) for r in measurements}
-    if (set(observed) != expected or len(identities) != len(measurements)
-            or sum(r["role"] in {"target", "runtime"} for r in measurements) != len(expected)
-            or any(r["path"] not in metadata["paths"] or r["role"] not in
-                   {"target", "runtime", "tx", "commit"} for r in measurements)
-            or any(not math.isfinite(r[k]) for r in measurements
-                   for k in ("arrival_ns", "required_ns", "slack_ns"))):
-        raise ValidationError("global STA invalid standalone measurement population")
-    paths = []
-    for pid, info in sorted(metadata["paths"].items()):
-        path = {"path": pid, **info,
-                "system_delay_bound_ns": observed[pid, "target"]["arrival_ns"]}
-        for role in ("target", "runtime"):
-            row = observed[pid, role]
-            path[f"{role}_required_time_ns"] = row["required_ns"]
-            path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
-        paths.append(path)
+    metadata_paths = metadata["paths"]
+
+    class InterleavedMeasurements(Exception):
+        pass
+
+    def ordered_paths():
+        # bind_physical_checks emits one contiguous bundle per original path.
+        # Validate identities within the live bundle and construct the final
+        # path row when that bundle ends. This avoids an H-sized identity set
+        # and a second P-sized target/runtime record map in production.
+        paths = []
+        completed = set()
+        current_path = None
+        current_rows = {}
+        current_identities = set()
+        failures = 0
+        checks = 0
+
+        def finish_bundle():
+            if current_path is None:
+                return
+            if set(current_rows) != {"target", "runtime"}:
+                raise InterleavedMeasurements
+            info = metadata_paths[current_path]
+            target = current_rows["target"]
+            path = {
+                "path": current_path,
+                **info,
+                "system_delay_bound_ns": target["arrival_ns"],
+            }
+            for role in ("target", "runtime"):
+                row = current_rows[role]
+                path[f"{role}_required_time_ns"] = row["required_ns"]
+                path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
+            paths.append(path)
+            completed.add(current_path)
+
+        for row in measurements:
+            checks += 1
+            path_id = row.get("path")
+            role = row.get("role")
+            event = row.get("event")
+            if (
+                path_id not in metadata_paths
+                or role not in {"target", "runtime", "tx", "commit"}
+                or not isinstance(event, str)
+                or not event
+            ):
+                raise ValidationError(
+                    "global STA invalid standalone measurement population"
+                )
+            if path_id != current_path:
+                if path_id in completed:
+                    raise InterleavedMeasurements
+                finish_bundle()
+                current_path = path_id
+                current_rows = {}
+                current_identities = set()
+            identity = (role, event)
+            if identity in current_identities:
+                raise ValidationError(
+                    "global STA invalid standalone measurement population"
+                )
+            current_identities.add(identity)
+            if any(
+                isinstance(row.get(key), bool)
+                or not isinstance(row.get(key), (int, float))
+                or not math.isfinite(row[key])
+                for key in ("arrival_ns", "required_ns", "slack_ns")
+            ):
+                raise ValidationError(
+                    "global STA invalid standalone measurement population"
+                )
+            if role in {"target", "runtime"}:
+                if role in current_rows:
+                    raise ValidationError(
+                        "global STA invalid standalone measurement population"
+                    )
+                current_rows[role] = row
+            elif row["slack_ns"] < -1e-3:
+                failures += 1
+        finish_bundle()
+        if not paths or len(paths) != len(metadata_paths):
+            raise ValidationError(
+                "global STA invalid standalone measurement population"
+            )
+        paths.sort(key=lambda path: path["path"])
+        return paths, failures, checks
+
+    try:
+        paths, failures, measurement_count = ordered_paths()
+    except InterleavedMeasurements:
+        # Preserve compatibility for external callers that do not retain the
+        # canonical path-bundle order. This is outside the production path.
+        observed = {}
+        identities = set()
+        failures = 0
+        for row in measurements:
+            identity = (row.get("path"), row.get("role"), row.get("event"))
+            if (
+                row.get("path") not in metadata_paths
+                or row.get("role") not in {"target", "runtime", "tx", "commit"}
+                or identity in identities
+                or any(
+                    isinstance(row.get(key), bool)
+                    or not isinstance(row.get(key), (int, float))
+                    or not math.isfinite(row[key])
+                    for key in ("arrival_ns", "required_ns", "slack_ns")
+                )
+            ):
+                raise ValidationError(
+                    "global STA invalid standalone measurement population"
+                )
+            identities.add(identity)
+            if row["role"] in {"target", "runtime"}:
+                key = (row["path"], row["role"])
+                if key in observed:
+                    raise ValidationError(
+                        "global STA invalid standalone measurement population"
+                    )
+                observed[key] = row
+            elif row["slack_ns"] < -1e-3:
+                failures += 1
+        expected = {
+            (path_id, role)
+            for path_id in metadata_paths
+            for role in ("target", "runtime")
+        }
+        if set(observed) != expected:
+            raise ValidationError(
+                "global STA invalid standalone measurement population"
+            )
+        paths = []
+        for path_id, info in sorted(metadata_paths.items()):
+            target = observed[path_id, "target"]
+            path = {
+                "path": path_id,
+                **info,
+                "system_delay_bound_ns": target["arrival_ns"],
+            }
+            for role in ("target", "runtime"):
+                row = observed[path_id, role]
+                path[f"{role}_required_time_ns"] = row["required_ns"]
+                path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
+            paths.append(path)
+        measurement_count = len(measurements)
     if not paths:
         raise ValidationError("global STA empty standalone result")
-    failures = sum(r["slack_ns"] < -1e-3 for r in measurements if r["role"] in {"tx", "commit"})
     source = metadata["source_binding"]
     scope = "whole-original-design" if source is not None else "cross-fpga-path-subset"
     local = sum(p["path_scope"] == "same-fpga-local" for p in paths)
@@ -632,7 +781,7 @@ def build_opensta_timing(runtime, metadata, measurements):
         timing["status"] = "fail"
     timing["global_opensta"] = {"schema": "emuflow.global-opensta-check/v1",
         "authority": "opensta", "execution": "standalone", "status": timing["status"],
-        "timing_scope": scope, "original_paths": len(paths), "checks": len(measurements),
+        "timing_scope": scope, "original_paths": len(paths), "checks": measurement_count,
         "event_failures": failures, "metrics": metrics,
         "tns_definition": "sum-negative-slack-once-per-original-TimingPathDB-path"}
     return timing

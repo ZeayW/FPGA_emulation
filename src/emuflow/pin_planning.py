@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sqlite3
 import tempfile
 from collections import defaultdict
 from pathlib import Path
@@ -453,6 +454,818 @@ def validate_bank_pin_assignment(
                 )
 
 
+def _indexed_pin_plan_validation_available(
+    schedule: Mapping[str, Any], plan: Mapping[str, Any]
+) -> bool:
+    """Return whether both hop-sized relations have sealed SQLite stores."""
+
+    return all(
+        isinstance(getattr(value, "store_path", None), Path)
+        for value in (schedule, plan)
+    )
+
+
+def _open_indexed_pin_plan_validation(
+    schedule: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    platform: Platform,
+) -> tuple[sqlite3.Connection, int]:
+    """Build a file-backed validation index without Python hop maps."""
+
+    connection = sqlite3.connect("")
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA temp_store=FILE")
+    try:
+        connection.execute(
+            "ATTACH DATABASE ? AS schedule_store",
+            (
+                f"file:{schedule.store_path.resolve()}"
+                "?mode=ro&immutable=1",
+            ),
+        )
+        connection.execute(
+            "ATTACH DATABASE ? AS pin_store",
+            (
+                f"file:{plan.store_path.resolve()}"
+                "?mode=ro&immutable=1",
+            ),
+        )
+        malformed = connection.execute(
+            """
+            SELECT identity
+            FROM schedule_store.records
+            WHERE section='entries'
+              AND (
+                json_type(record_json,'$.link') IS NOT 'text'
+                OR json_type(record_json,'$.from') IS NOT 'text'
+                OR json_type(record_json,'$.to') IS NOT 'text'
+                OR json_type(record_json,'$.slot') IS NOT 'integer'
+                OR json_type(record_json,'$.lane') IS NOT 'integer'
+                OR (
+                  json_type(record_json,'$.tdm_ratio') IS NOT NULL
+                  AND json_type(record_json,'$.tdm_ratio') IS NOT 'integer'
+                )
+              )
+            LIMIT 1
+            """
+        ).fetchone()
+        if malformed is not None:
+            raise ValidationError(
+                f"schedule entry {malformed[0]!r} is malformed"
+            )
+        pin_mismatch = connection.execute(
+            """
+            SELECT schedule_entry
+            FROM pin_store.entries
+            WHERE schedule_entry IS NOT json_extract(
+                    record_json,'$.schedule_entry'
+                  )
+               OR group_id IS NOT json_extract(record_json,'$.group')
+               OR physical_lane IS NOT json_extract(
+                    record_json,'$.physical_lane'
+                  )
+               OR logical_lane IS NOT json_extract(
+                    record_json,'$.logical_lane'
+                  )
+            LIMIT 1
+            """
+        ).fetchone()
+        if pin_mismatch is not None:
+            raise ValidationError(
+                f"pin-plan indexed record {pin_mismatch[0]!r} disagrees"
+            )
+        schedule_count = connection.execute(
+            "SELECT count(*) FROM schedule_store.records "
+            "WHERE section='entries'"
+        ).fetchone()[0]
+        plan_count = connection.execute(
+            "SELECT count(*) FROM pin_store.entries"
+        ).fetchone()[0]
+        joined_count = connection.execute(
+            """
+            SELECT count(*)
+            FROM schedule_store.records AS schedule
+            JOIN pin_store.entries AS pin
+              ON pin.schedule_entry=schedule.identity
+            WHERE schedule.section='entries'
+            """
+        ).fetchone()[0]
+        if schedule_count != plan_count or joined_count != schedule_count:
+            raise ValidationError(
+                "pin plan must cover schedule entries exactly"
+            )
+        connection.executescript(
+            """
+            CREATE TABLE validation_rows(
+              entry_id TEXT PRIMARY KEY,
+              group_id INTEGER NOT NULL,
+              physical_lane INTEGER NOT NULL,
+              logical_lane INTEGER NOT NULL,
+              link_id TEXT NOT NULL,
+              source_fpga TEXT NOT NULL,
+              sink_fpga TEXT NOT NULL,
+              slot INTEGER NOT NULL,
+              schedule_lane INTEGER NOT NULL,
+              tdm_ratio INTEGER NOT NULL
+            ) WITHOUT ROWID;
+            CREATE TABLE link_specs(
+              link_id TEXT PRIMARY KEY,
+              capacity INTEGER NOT NULL,
+              shared_bidirectional INTEGER NOT NULL,
+              full_duplex INTEGER NOT NULL,
+              banked INTEGER NOT NULL
+            ) WITHOUT ROWID;
+            """
+        )
+        try:
+            connection.execute(
+                """
+                INSERT INTO validation_rows
+                SELECT schedule.identity,
+                       pin.group_id,
+                       pin.physical_lane,
+                       pin.logical_lane,
+                       json_extract(schedule.record_json,'$.link'),
+                       json_extract(schedule.record_json,'$.from'),
+                       json_extract(schedule.record_json,'$.to'),
+                       json_extract(schedule.record_json,'$.slot'),
+                       json_extract(schedule.record_json,'$.lane'),
+                       coalesce(
+                         json_extract(schedule.record_json,'$.tdm_ratio'),1
+                       )
+                FROM schedule_store.records AS schedule
+                JOIN pin_store.entries AS pin
+                  ON pin.schedule_entry=schedule.identity
+                WHERE schedule.section='entries'
+                """
+            )
+        except sqlite3.IntegrityError as error:
+            raise ValidationError(
+                "indexed pin-plan validation rows are malformed"
+            ) from error
+        connection.executemany(
+            "INSERT INTO link_specs VALUES (?,?,?,?,?)",
+            (
+                (
+                    link.id,
+                    link.transport_bits_per_cycle_per_direction,
+                    int(link.capacity_sharing == "shared_bidirectional"),
+                    int(link.direction == "full_duplex"),
+                    int(link.bank_count is not None),
+                )
+                for link in platform.links
+            ),
+        )
+        connection.execute(
+            "CREATE INDEX validation_group_idx ON "
+            "validation_rows(group_id,entry_id)"
+        )
+        connection.execute(
+            "CREATE INDEX validation_domain_idx ON "
+            "validation_rows(link_id,source_fpga,sink_fpga,schedule_lane)"
+        )
+        return connection, int(schedule_count)
+    except BaseException:
+        connection.close()
+        raise
+
+
+def _stage_indexed_positions(
+    connection: sqlite3.Connection,
+    schedule: Mapping[str, Any],
+    positions: Mapping[str, Any],
+) -> None:
+    """Validate and index position hints with bounded Python state."""
+
+    if positions.get("schema") != SIGNAL_POSITION_HINTS_SCHEMA:
+        raise ValidationError(
+            f"positions.schema: expected {SIGNAL_POSITION_HINTS_SCHEMA!r}"
+        )
+    if (
+        positions.get("design") != schedule.get("design")
+        or positions.get("platform") != schedule.get("platform")
+    ):
+        raise ValidationError(
+            "position hints do not match the schedule design/platform"
+        )
+    provider = positions.get("provider")
+    if provider not in {
+        "openparf-lookahead-centroid-v1",
+        CHIMEW_PHYSICAL_POSITION_PROVIDER,
+    }:
+        raise ValidationError(
+            "position hints are not from a supported source-qualified provider"
+        )
+    if provider == CHIMEW_PHYSICAL_POSITION_PROVIDER:
+        if positions.get("source_coordinate_system") != "physical-site-xy":
+            raise ValidationError(
+                "Chimew position projection is not physical-site based"
+            )
+        provenance = positions.get("provenance")
+        if not isinstance(provenance, dict):
+            raise ValidationError(
+                "Chimew position projection provenance is missing"
+            )
+        for field in ("producer", "producer_version"):
+            if not isinstance(provenance.get(field), str) or not provenance[field]:
+                raise ValidationError(
+                    "Chimew position projection provenance is invalid"
+                )
+        for field in (
+            "assignment_input_sha256",
+            "placement_sha256",
+            "architecture_sha256",
+        ):
+            digest = provenance.get(field)
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in digest
+                )
+            ):
+                raise ValidationError(
+                    f"Chimew position projection {field} is invalid"
+                )
+    region_count = positions.get("region_count")
+    if (
+        isinstance(region_count, bool)
+        or not isinstance(region_count, int)
+        or not 1 <= region_count <= 31
+    ):
+        raise ValidationError("position hints have an invalid region count")
+    raw = positions.get("entries")
+    if not isinstance(raw, list):
+        raise ValidationError("positions.entries: expected an array")
+    connection.execute(
+        """
+        CREATE TABLE position_rows(
+          entry_id TEXT PRIMARY KEY,
+          source_y REAL NOT NULL,
+          sink_y REAL NOT NULL,
+          source_region INTEGER NOT NULL,
+          sink_region INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    fallback_count = 0
+    pending: list[tuple[Any, ...]] = []
+    try:
+        for item in raw:
+            if not isinstance(item, dict) or not isinstance(
+                item.get("schedule_entry"), str
+            ):
+                raise ValidationError("position hint is malformed")
+            entry_id = item["schedule_entry"]
+            for field in ("source_y", "sink_y"):
+                value = item.get(field)
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not 0.0 <= float(value) <= 1.0
+                ):
+                    raise ValidationError(
+                        f"position {entry_id}.{field}: "
+                        "expected 0 <= value <= 1"
+                    )
+            for field in ("source_region", "sink_region"):
+                value = item.get(field)
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or not 0 <= value < region_count
+                ):
+                    raise ValidationError(
+                        f"position {entry_id}.{field}: expected integer "
+                        f"[0, {region_count - 1}]"
+                    )
+            for field in ("source_fallback", "sink_fallback"):
+                if not isinstance(item.get(field), bool):
+                    raise ValidationError(
+                        f"position {entry_id}.{field}: expected boolean"
+                    )
+                fallback_count += int(item[field])
+            pending.append(
+                (
+                    entry_id,
+                    float(item["source_y"]),
+                    float(item["sink_y"]),
+                    item["source_region"],
+                    item["sink_region"],
+                )
+            )
+            if len(pending) >= 4096:
+                connection.executemany(
+                    "INSERT INTO position_rows VALUES (?,?,?,?,?)", pending
+                )
+                pending.clear()
+        if pending:
+            connection.executemany(
+                "INSERT INTO position_rows VALUES (?,?,?,?,?)", pending
+            )
+    except sqlite3.IntegrityError as error:
+        raise ValidationError("duplicate position hint") from error
+    position_count = connection.execute(
+        "SELECT count(*) FROM position_rows"
+    ).fetchone()[0]
+    covered_count = connection.execute(
+        """
+        SELECT count(*)
+        FROM validation_rows AS validation
+        JOIN position_rows AS position
+          ON position.entry_id=validation.entry_id
+        """
+    ).fetchone()[0]
+    validation_count = connection.execute(
+        "SELECT count(*) FROM validation_rows"
+    ).fetchone()[0]
+    if position_count != validation_count or covered_count != validation_count:
+        missing = [
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT validation.entry_id
+                FROM validation_rows AS validation
+                LEFT JOIN position_rows AS position
+                  ON position.entry_id=validation.entry_id
+                WHERE position.entry_id IS NULL
+                ORDER BY validation.entry_id LIMIT 5
+                """
+            )
+        ]
+        extra = [
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT position.entry_id
+                FROM position_rows AS position
+                LEFT JOIN validation_rows AS validation
+                  ON validation.entry_id=position.entry_id
+                WHERE validation.entry_id IS NULL
+                ORDER BY position.entry_id LIMIT 5
+                """
+            )
+        ]
+        raise ValidationError(
+            "position hints must cover schedule entries exactly; "
+            f"missing={missing}, extra={extra}"
+        )
+    metrics = positions.get("metrics")
+    if (
+        not isinstance(metrics, dict)
+        or metrics.get("signals") != len(raw)
+        or metrics.get("endpoint_centroid_fallbacks") != fallback_count
+    ):
+        raise ValidationError("position hint metrics do not agree")
+
+
+def _stream_indexed_assignment_metrics(
+    connection: sqlite3.Connection,
+    *,
+    baseline: bool,
+    crossing_weight: float,
+    position_weight: float,
+) -> Dict[str, float]:
+    """Recompute metrics while retaining only one scalar group accumulator."""
+
+    if baseline:
+        domains = list(
+            connection.execute(
+                """
+                SELECT DISTINCT link_id,source_fpga,sink_fpga
+                FROM validation_rows
+                ORDER BY link_id,source_fpga,sink_fpga
+                """
+            )
+        )
+        connection.execute(
+            """
+            CREATE TABLE baseline_domains(
+              link_id TEXT NOT NULL,
+              source_fpga TEXT NOT NULL,
+              sink_fpga TEXT NOT NULL,
+              domain_index INTEGER NOT NULL,
+              PRIMARY KEY(link_id,source_fpga,sink_fpga)
+            ) WITHOUT ROWID
+            """
+        )
+        connection.executemany(
+            "INSERT INTO baseline_domains VALUES (?,?,?,?)",
+            (
+                (row[0], row[1], row[2], index)
+                for index, row in enumerate(domains)
+            ),
+        )
+        rows = connection.execute(
+            """
+            SELECT domains.domain_index * 4294967296
+                     + validation.schedule_lane AS metric_group,
+                   position.source_y,position.sink_y,
+                   position.source_region,position.sink_region,
+                   links.capacity,validation.schedule_lane
+            FROM validation_rows AS validation
+            JOIN position_rows AS position
+              ON position.entry_id=validation.entry_id
+            JOIN link_specs AS links ON links.link_id=validation.link_id
+            JOIN baseline_domains AS domains
+              ON domains.link_id=validation.link_id
+             AND domains.source_fpga=validation.source_fpga
+             AND domains.sink_fpga=validation.sink_fpga
+            ORDER BY metric_group,validation.entry_id
+            """
+        )
+    else:
+        rows = connection.execute(
+            """
+            SELECT validation.group_id AS metric_group,
+                   position.source_y,position.sink_y,
+                   position.source_region,position.sink_region,
+                   links.capacity,validation.physical_lane
+            FROM validation_rows AS validation
+            JOIN position_rows AS position
+              ON position.entry_id=validation.entry_id
+            JOIN link_specs AS links ON links.link_id=validation.link_id
+            ORDER BY metric_group,validation.entry_id
+            """
+        )
+    current_group = None
+    crossing = 0
+    samples = 0
+    mean = 0.0
+    group_sse = 0.0
+    crossing_bits = 0
+    position_sse = 0.0
+    pin_distance = 0.0
+    for row in rows:
+        group = int(row[0])
+        if current_group is not None and group != current_group:
+            crossing_bits += bin(crossing).count("1")
+            position_sse += group_sse
+            crossing = 0
+            samples = 0
+            mean = 0.0
+            group_sse = 0.0
+        current_group = group
+        crossing |= (1 << int(row[3])) | (1 << (32 + int(row[4])))
+        for value in (float(row[1]), float(row[2])):
+            samples += 1
+            delta = value - mean
+            mean += delta / samples
+            group_sse += delta * (value - mean)
+        capacity = int(row[5])
+        pin = int(row[6])
+        pin_y = 0.5 if capacity == 1 else pin / (capacity - 1)
+        pin_distance += abs(float(row[1]) - pin_y)
+        pin_distance += abs(float(row[2]) - pin_y)
+    if current_group is not None:
+        crossing_bits += bin(crossing).count("1")
+        position_sse += group_sse
+    return {
+        "objective": crossing_weight * crossing_bits
+        + position_weight * position_sse,
+        "crossing_bits": float(crossing_bits),
+        "position_sse": position_sse,
+        "pin_distance": pin_distance,
+    }
+
+
+def _validate_indexed_bank_pin_assignment(
+    connection: sqlite3.Connection,
+    schedule: Mapping[str, Any],
+    platform: Platform,
+) -> None:
+    links = {
+        link.id: link for link in platform.links if link.bank_count is not None
+    }
+    if not links:
+        return
+    expected = {
+        (link.id, source, sink)
+        for link in links.values()
+        for source, sink in (link.endpoints, tuple(reversed(link.endpoints)))
+    }
+    raw = schedule.get("bank_allocations")
+    if not isinstance(raw, list):
+        raise ValidationError(
+            "bank pin assignment requires Phase 5 bank_allocations"
+        )
+    budgets = {}
+    owners = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValidationError("bank pin allocation is malformed")
+        key = (item.get("link"), item.get("from"), item.get("to"))
+        if key not in expected or key in budgets:
+            raise ValidationError(
+                "bank pin allocation direction coverage is invalid"
+            )
+        link = links[key[0]]
+        count, offset, lanes = (
+            item.get(field)
+            for field in ("bank_count", "lane_offset", "lanes")
+        )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            for value in (count, offset, lanes)
+        ):
+            raise ValidationError(
+                "bank pin allocation requires nonnegative integers"
+            )
+        width = link.wires_per_bank
+        if (
+            item.get("wires_per_bank") != width
+            or offset % width
+            or lanes != count * width
+            or offset + lanes
+            > link.transport_bits_per_cycle_per_direction
+        ):
+            raise ValidationError(
+                "bank pin allocation disagrees with BoardDB capacity"
+            )
+        for bank in range(offset // width, (offset + lanes) // width):
+            bank_key = (link.id, bank)
+            if bank_key in owners:
+                raise ValidationError(
+                    "bank pin allocation assigns one bank to both directions"
+                )
+            owners[bank_key] = key
+        budgets[key] = (offset, offset + lanes)
+    if set(budgets) != expected:
+        raise ValidationError(
+            "bank pin allocation direction coverage is incomplete"
+        )
+    for row in connection.execute(
+        """
+        SELECT link_id,source_fpga,sink_fpga,schedule_lane,physical_lane
+        FROM validation_rows ORDER BY entry_id
+        """
+    ):
+        if row[0] not in links:
+            continue
+        key = (row[0], row[1], row[2])
+        if key not in budgets:
+            raise ValidationError(
+                "bank pin assignment has an unknown direction"
+            )
+        low, high = budgets[key]
+        if any(not low <= int(lane) < high for lane in (row[3], row[4])):
+            raise ValidationError(
+                "pin assignment leaves the schedule's allocated direction banks"
+            )
+
+
+def _validate_indexed_pin_plan(
+    schedule: Mapping[str, Any],
+    platform: Platform,
+    positions: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    weights: Mapping[str, Any],
+    metrics_document: Mapping[str, Any],
+) -> Dict[str, Any]:
+    connection, signal_count = _open_indexed_pin_plan_validation(
+        schedule, plan, platform
+    )
+    try:
+        _stage_indexed_positions(connection, schedule, positions)
+        unknown_link = connection.execute(
+            """
+            SELECT validation.entry_id
+            FROM validation_rows AS validation
+            LEFT JOIN link_specs AS links
+              ON links.link_id=validation.link_id
+            WHERE links.link_id IS NULL LIMIT 1
+            """
+        ).fetchone()
+        if unknown_link is not None:
+            raise ValidationError(
+                f"pin assignment for {unknown_link[0]!r} is invalid"
+            )
+        invalid = connection.execute(
+            """
+            SELECT validation.entry_id
+            FROM validation_rows AS validation
+            JOIN link_specs AS links ON links.link_id=validation.link_id
+            WHERE validation.group_id < 0
+               OR validation.physical_lane < 0
+               OR validation.physical_lane >= links.capacity
+               OR validation.tdm_ratio < 1
+            LIMIT 1
+            """
+        ).fetchone()
+        if invalid is not None:
+            raise ValidationError(
+                f"pin assignment for {invalid[0]!r} is invalid"
+            )
+        changed_lane = connection.execute(
+            """
+            SELECT entry_id FROM validation_rows
+            WHERE logical_lane != schedule_lane LIMIT 1
+            """
+        ).fetchone()
+        if changed_lane is not None:
+            raise ValidationError(
+                f"pin assignment for {changed_lane[0]!r} "
+                "changed logical lane"
+            )
+        _validate_indexed_bank_pin_assignment(connection, schedule, platform)
+        collision = connection.execute(
+            """
+            SELECT validation.link_id,
+                   CASE WHEN links.shared_bidirectional
+                        THEN 'shared_bidirectional'
+                        ELSE validation.source_fpga END,
+                   CASE WHEN links.shared_bidirectional
+                        THEN 'shared_bidirectional'
+                        ELSE validation.sink_fpga END,
+                   validation.physical_lane,validation.slot
+            FROM validation_rows AS validation
+            JOIN link_specs AS links ON links.link_id=validation.link_id
+            GROUP BY 1,2,3,4,5 HAVING count(*) > 1 LIMIT 1
+            """
+        ).fetchone()
+        if collision is not None:
+            raise ValidationError(
+                f"physical lane/slot collision at {tuple(collision)}"
+            )
+        multiple_groups = connection.execute(
+            """
+            SELECT validation.link_id,
+                   CASE WHEN links.shared_bidirectional
+                        THEN 'shared_bidirectional'
+                        ELSE validation.source_fpga END,
+                   CASE WHEN links.shared_bidirectional
+                        THEN 'shared_bidirectional'
+                        ELSE validation.sink_fpga END,
+                   validation.physical_lane
+            FROM validation_rows AS validation
+            JOIN link_specs AS links ON links.link_id=validation.link_id
+            GROUP BY 1,2,3,4
+            HAVING min(validation.group_id) != max(validation.group_id)
+            LIMIT 1
+            """
+        ).fetchone()
+        if multiple_groups is not None:
+            raise ValidationError(
+                f"physical pin {tuple(multiple_groups)} "
+                "is assigned to multiple groups"
+            )
+        group_count = 0
+        for row in connection.execute(
+            """
+            SELECT validation.group_id,
+                   count(DISTINCT json_array(
+                     validation.link_id,
+                     validation.source_fpga,
+                     validation.sink_fpga
+                   )) AS domain_count,
+                   count(DISTINCT validation.physical_lane) AS pin_count,
+                   count(DISTINCT validation.link_id) AS link_count,
+                   count(DISTINCT json_array(
+                     validation.link_id,
+                     CASE WHEN links.shared_bidirectional
+                          THEN 'shared_bidirectional'
+                          ELSE validation.source_fpga END,
+                     CASE WHEN links.shared_bidirectional
+                          THEN 'shared_bidirectional'
+                          ELSE validation.sink_fpga END
+                   )) AS physical_domain_count,
+                   min(validation.link_id) AS link_id
+            FROM validation_rows AS validation
+            JOIN link_specs AS links ON links.link_id=validation.link_id
+            GROUP BY validation.group_id ORDER BY validation.group_id
+            """
+        ):
+            group_count += 1
+            link = next(
+                item for item in platform.links if item.id == row[5]
+            )
+            shared_chimew_bundle = (
+                plan.get("provider") == CHIMEW_PIN_PLAN_PROVIDER
+                and link.bank_count is None
+                and row[1] == 2
+                and row[3] == 1
+                and row[4] == 1
+                and link.direction == "full_duplex"
+                and link.capacity_sharing == "shared_bidirectional"
+            )
+            if (
+                (row[1] != 1 and not shared_chimew_bundle)
+                or row[2] != 1
+            ):
+                raise ValidationError(
+                    f"group {row[0]} is not homogeneous"
+                )
+        capacity_violation = connection.execute(
+            """
+            SELECT group_id
+            FROM validation_rows
+            GROUP BY group_id,link_id,source_fpga,sink_fpga
+            HAVING min(tdm_ratio) != max(tdm_ratio)
+                OR count(*) > min(tdm_ratio)
+            LIMIT 1
+            """
+        ).fetchone()
+        if capacity_violation is None:
+            capacity_violation = connection.execute(
+                """
+                SELECT group_id FROM validation_rows
+                GROUP BY group_id,slot HAVING count(*) > 1 LIMIT 1
+                """
+            ).fetchone()
+        if capacity_violation is not None:
+            raise ValidationError(
+                f"group {capacity_violation[0]} violates TDM capacity"
+            )
+        metrics = _stream_indexed_assignment_metrics(
+            connection,
+            baseline=False,
+            crossing_weight=float(weights["crossing"]),
+            position_weight=float(weights["position"]),
+        )
+        baseline_metrics = _stream_indexed_assignment_metrics(
+            connection,
+            baseline=True,
+            crossing_weight=float(weights["crossing"]),
+            position_weight=float(weights["position"]),
+        )
+    finally:
+        connection.close()
+    for field in (
+        "objective",
+        "crossing_bits",
+        "position_sse",
+        "pin_distance",
+    ):
+        try:
+            expected_value = float(metrics_document[field])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValidationError(
+                f"pin plan metric {field!r} is invalid"
+            ) from error
+        tolerance = 1.0e-8 * max(1.0, abs(expected_value))
+        if abs(metrics[field] - expected_value) > tolerance:
+            raise ValidationError(
+                f"pin plan metric {field!r} does not independently agree"
+            )
+    for field, value in baseline_metrics.items():
+        metric_name = f"baseline_logical_lane_{field}"
+        try:
+            expected_value = float(metrics_document[metric_name])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValidationError(
+                f"pin plan metric {metric_name!r} is invalid"
+            ) from error
+        tolerance = 1.0e-8 * max(1.0, abs(expected_value))
+        if abs(value - expected_value) > tolerance:
+            raise ValidationError(
+                f"pin plan metric {metric_name!r} does not independently agree"
+            )
+    if (
+        metrics_document.get("signals") != signal_count
+        or metrics_document.get("groups") != group_count
+    ):
+        raise ValidationError("pin plan count metrics do not agree")
+    objective_improvement = (
+        100.0
+        * (baseline_metrics["objective"] - metrics["objective"])
+        / baseline_metrics["objective"]
+        if baseline_metrics["objective"]
+        else 0.0
+    )
+    pin_distance_improvement = (
+        100.0
+        * (baseline_metrics["pin_distance"] - metrics["pin_distance"])
+        / baseline_metrics["pin_distance"]
+        if baseline_metrics["pin_distance"]
+        else 0.0
+    )
+    return {
+        "status": "pass",
+        "signals": signal_count,
+        "groups": group_count,
+        "physical_lane_slot_collisions": 0,
+        **metrics,
+        "baseline_logical_lane_objective": baseline_metrics["objective"],
+        "baseline_logical_lane_crossing_bits": baseline_metrics[
+            "crossing_bits"
+        ],
+        "baseline_logical_lane_position_sse": baseline_metrics[
+            "position_sse"
+        ],
+        "baseline_logical_lane_pin_distance": baseline_metrics[
+            "pin_distance"
+        ],
+        "objective_improvement_percent": objective_improvement,
+        "crossing_bits_reduction": (
+            baseline_metrics["crossing_bits"] - metrics["crossing_bits"]
+        ),
+        "pin_distance_improvement_percent": pin_distance_improvement,
+    }
+
+
 def validate_pin_plan(
     schedule: Mapping[str, Any],
     platform: Platform,
@@ -502,6 +1315,15 @@ def validate_pin_plan(
             or float(value) < 0.0
         ):
             raise ValidationError(f"pin plan weight {field!r} is invalid")
+    if _indexed_pin_plan_validation_available(schedule, plan):
+        return _validate_indexed_pin_plan(
+            schedule,
+            platform,
+            positions,
+            plan,
+            weights,
+            metrics_document,
+        )
     _validate_positions(schedule, positions)
     raw = plan.get("entries")
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -246,38 +248,59 @@ def run_phase6(
         if position_hints_path is not None
         else None
     )
+    output_dir.mkdir(parents=True, exist_ok=True)
     pin_validation = None
     electrical_validation = None
     electrical_binding = None
     if pin_plan is not None:
-        if position_hints is None:
-            raise ValueError(
-                "position_hints_path is required with pin_plan_path"
+        # Normalize legacy input into an indexed relation before its first
+        # full validation, but do not publish an invalid plan into the phase
+        # directory. The temporary directory gives the selector and SQLite
+        # sidecar their final relative names while validation is in flight.
+        with tempfile.TemporaryDirectory(
+            prefix=".pin-plan-validation-", dir=output_dir
+        ) as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            staged_pin_plan = write_pin_plan_storage(
+                temporary_root / "pin_plan.json", pin_plan
             )
-        pin_validation = validate_pin_plan(
-            schedule,
-            platform,
-            position_hints,
-            pin_plan,
-        )
-        if pin_plan.get("provider") == CHIMEW_PIN_PLAN_PROVIDER:
-            if electrical_binding_path is None:
+            if position_hints is None:
                 raise ValueError(
-                    "electrical_binding_path is required with a Chimew pin plan"
+                    "position_hints_path is required with pin_plan_path"
                 )
-            from .chimew_phase6 import validate_chimew_phase6_binding
-
-            electrical_binding = read_json(electrical_binding_path)
-            electrical_validation = validate_chimew_phase6_binding(
+            pin_validation = validate_pin_plan(
                 schedule,
                 platform,
-                pin_plan,
-                electrical_binding,
+                position_hints,
+                staged_pin_plan,
             )
-        elif electrical_binding_path is not None:
-            raise ValueError(
-                "electrical_binding_path is supported only with a Chimew pin plan"
+            if staged_pin_plan.get("provider") == CHIMEW_PIN_PLAN_PROVIDER:
+                if electrical_binding_path is None:
+                    raise ValueError(
+                        "electrical_binding_path is required with a Chimew pin plan"
+                    )
+                from .chimew_phase6 import validate_chimew_phase6_binding
+
+                electrical_binding = read_json(electrical_binding_path)
+                electrical_validation = validate_chimew_phase6_binding(
+                    schedule,
+                    platform,
+                    staged_pin_plan,
+                    electrical_binding,
+                )
+            elif electrical_binding_path is not None:
+                raise ValueError(
+                    "electrical_binding_path is supported only with a Chimew pin plan"
+                )
+            os.replace(
+                temporary_root / "pin_plan.sqlite",
+                output_dir / "pin_plan.sqlite",
             )
+            os.replace(
+                temporary_root / "pin_plan.json",
+                output_dir / "pin_plan.json",
+            )
+        pin_plan = read_pin_plan(output_dir / "pin_plan.json")
     elif position_hints is not None:
         raise ValueError(
             "pin_plan_path is required with position_hints_path"
@@ -289,12 +312,6 @@ def run_phase6(
         from .virtual_board import build_virtual_board
 
         virtual_board = build_virtual_board(platform)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if pin_plan is not None:
-        # Publish one indexed copy before downstream transport materialization.
-        # The validated input may be legacy JSON or an existing indexed view;
-        # consumers below always receive the bounded cursor interface.
-        pin_plan = write_pin_plan_storage(output_dir / "pin_plan.json", pin_plan)
     transport_artifacts = write_transport_storage(
         output_dir,
         assignment_index_path,

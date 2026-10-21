@@ -363,6 +363,43 @@ def test_standalone_report_preserves_event_gate_without_comparison(late, monkeyp
         )
 
 
+def test_standalone_report_preserves_interleaved_measurement_compatibility():
+    import emuflow.global_sta as sta
+
+    rows = [
+        {"path": "p", "role": "target", "event": "capture",
+         "arrival_ns": 3.0, "required_ns": 10.0, "slack_ns": 7.0},
+        {"path": "q", "role": "target", "event": "capture",
+         "arrival_ns": 4.0, "required_ns": 10.0, "slack_ns": 6.0},
+        {"path": "p", "role": "runtime", "event": "capture",
+         "arrival_ns": 3.0, "required_ns": 100.0, "slack_ns": 97.0},
+        {"path": "q", "role": "runtime", "event": "capture",
+         "arrival_ns": 4.0, "required_ns": 100.0, "slack_ns": 96.0},
+    ]
+    metadata = {
+        "paths": {
+            path: {
+                "path_scope": "cross-fpga",
+                "physical_logic_segments_cone_bound": False,
+            }
+            for path in ("p", "q")
+        },
+        "source_binding": None,
+        "compressed_representative_paths": 2,
+    }
+    report = sta.build_opensta_timing(
+        {
+            "virtual_dut_clocks": {
+                "clk": {"nominal_period_ns": 100}
+            },
+            "virtual_dut_clock": {"nominal_period_ns": 100},
+        },
+        metadata,
+        rows,
+    )
+    assert [path["path"] for path in report["paths"]] == ["p", "q"]
+
+
 def test_engine_defaults_are_uniform_and_python_is_explicit():
     import inspect
     from emuflow.cli import _build_parser
@@ -396,6 +433,43 @@ def test_physical_binding_uses_raw_measurements():
     del physical["board_link_timing"]
     assert bind_physical_checks(build_virtual_runtime(fixture.schedule, fixture.platform),
                                 routes, fixture.schedule, physical, fixture.platform) == checks
+
+
+def test_physical_binding_does_not_reindex_schedule_entries():
+    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
+    from emuflow.board_link_timing import build_board_link_timing_model
+    from emuflow.runtime import build_virtual_runtime
+
+    class SinglePassEntries(list):
+        iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            if self.iterations > 1:
+                raise AssertionError("global STA rebuilt the schedule entry map")
+            return super().__iter__()
+
+    fixture = StaticExactSystemTimingTest()
+    fixture.setUp()
+    _, routes, _ = fixture._system_inputs()
+    runtime = build_virtual_runtime(fixture.schedule, fixture.platform)
+    schedule = dict(fixture.schedule)
+    schedule["entries"] = SinglePassEntries(fixture.schedule["entries"])
+    physical = fixture._system_physical()
+    physical["board_link_timing"] = build_board_link_timing_model(
+        fixture.platform
+    )
+
+    checks = bind_physical_checks(
+        runtime,
+        routes,
+        schedule,
+        physical,
+        fixture.platform,
+    )
+
+    assert checks
+    assert schedule["entries"].iterations == 1
 
 
 @pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENSTA"), reason="real OpenSTA not configured")

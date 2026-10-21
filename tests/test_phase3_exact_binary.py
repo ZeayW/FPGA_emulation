@@ -13,6 +13,7 @@ from emuflow.phase3_exact_binary import (
 )
 from emuflow.phase3_exact_records import (
     StaticExactRecordSequence,
+    build_static_exact_capture_stream,
     build_static_exact_record_streams,
 )
 
@@ -96,9 +97,29 @@ def _contract(design="binary_fixture"):
 
 
 class Phase3ExactBinaryTest(unittest.TestCase):
+    def test_capture_stream_rejects_non_utf8_identity(self):
+        with self.assertRaisesRegex(ValidationError, "identity is invalid"):
+            build_static_exact_capture_stream(
+                [("cut\ud800", "fpga0", "top-output", "out[0]", None, None)]
+            )
+
     def test_repeatable_record_stream_preserves_v3_digest_and_binary(self):
         materialized = _contract()
         streamed = copy.deepcopy(materialized)
+        capture_relation = [
+            (
+                item["cut_net"],
+                item["fpga"],
+                item["kind"],
+                item["endpoint"],
+                item.get("port"),
+                item.get("bit"),
+            )
+            for item in streamed["capture_requirements"]
+        ]
+        streamed["capture_requirements"] = (
+            build_static_exact_capture_stream(capture_relation)
+        )
         record_streams = build_static_exact_record_streams(
             streamed["cut_nodes"],
             streamed["capture_requirements"],
@@ -108,6 +129,13 @@ class Phase3ExactBinaryTest(unittest.TestCase):
 
         self.assertIsInstance(
             streamed["dependency_edges"], StaticExactRecordSequence
+        )
+        self.assertIsInstance(
+            streamed["capture_requirements"], StaticExactRecordSequence
+        )
+        self.assertEqual(
+            list(streamed["capture_requirements"]),
+            materialized["capture_requirements"],
         )
         self.assertEqual(
             list(streamed["dependency_edges"]),
@@ -159,6 +187,15 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                 contract["cut_nodes"],
                 contract["capture_requirements"],
                 bytes([1, 0]),
+            )
+
+    def test_capture_stream_rejects_noncanonical_relation(self):
+        with self.assertRaisesRegex(ValidationError, "capture relation"):
+            build_static_exact_capture_stream(
+                [
+                    ("net1", "fpga1", "top-output", "top:z[0]", None, None),
+                    ("net0", "fpga0", "top-output", "top:a[0]", None, None),
+                ]
             )
 
     def test_roundtrip_and_relocation_preserve_canonical_contract(self):

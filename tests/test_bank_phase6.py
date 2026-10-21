@@ -18,8 +18,13 @@ from emuflow.pin_planning import (
     SIGNAL_POSITION_HINTS_SCHEMA, _assignment_metrics, _baseline_assignment,
     validate_bank_pin_assignment, validate_pin_plan,
 )
+from emuflow.pin_plan_storage import write_pin_plan_storage
 from emuflow.platform import Platform
 from emuflow.tdm import TDM_SCHEDULE_SCHEMA
+from emuflow.tdm_schedule_storage import (
+    read_tdm_schedule,
+    write_tdm_schedule_storage,
+)
 
 
 def fixture():
@@ -68,6 +73,31 @@ def fixture():
 def test_valid_remapping_stays_inside_the_phase5_direction_banks():
     platform, schedule, positions, plan = fixture()
     assert validate_pin_plan(schedule, platform, positions, plan)["status"] == "pass"
+
+
+def test_indexed_validation_preserves_phase5_direction_banks(tmp_path):
+    platform, schedule, positions, plan = fixture()
+    schedule_document = {
+        **schedule,
+        "routes": [],
+        "demand_completions": [],
+        "domain_schedules": [],
+    }
+    schedule_path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(schedule_path, schedule_document)
+    indexed_schedule = read_tdm_schedule(schedule_path)
+    indexed_plan = write_pin_plan_storage(tmp_path / "pin_plan.json", plan)
+    assert validate_pin_plan(
+        indexed_schedule, platform, positions, indexed_plan
+    )["status"] == "pass"
+
+    broken = copy.deepcopy(plan)
+    broken["entries"][1]["physical_lane"] = 18
+    indexed_broken = write_pin_plan_storage(tmp_path / "broken.json", broken)
+    with pytest.raises(ValidationError, match="allocated direction banks"):
+        validate_pin_plan(
+            indexed_schedule, platform, positions, indexed_broken
+        )
 
 
 def test_opposite_direction_cannot_use_another_wire_in_the_same_bank():
