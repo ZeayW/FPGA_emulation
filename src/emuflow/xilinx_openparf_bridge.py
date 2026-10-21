@@ -10,12 +10,13 @@ PackedSiteNetlist and Xilinx placement schemas consumed by RWRoute.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterator, Sequence
 import math
 import os
 from pathlib import Path
 import tempfile
 import time
-from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 from .architecture import ArchitectureDB
 from .errors import ValidationError
@@ -67,6 +68,65 @@ _CERTIFICATE_ASSIGNMENT_KEYS = {
     "instance", "cell_type", "bel", "physical_site", "placement_mode",
     "source_cluster", "bram_tile_group",
 }
+
+
+class _BridgeClusterSequence(Sequence[Mapping[str, Any]]):
+    """Expose packing or placement from one bridge-owned cluster tree."""
+
+    def __init__(
+        self, clusters: list[Dict[str, Any]], *, placement: bool
+    ) -> None:
+        self._clusters = clusters
+        self._placement = placement
+
+    def __len__(self) -> int:
+        return len(self._clusters)
+
+    def __iter__(self) -> Iterator[Mapping[str, Any]]:
+        for cluster in self._clusters:
+            assignments = cluster["assignments"]
+            if self._placement:
+                metadata = cluster["_placement"]
+                yield {
+                    "cluster": cluster["id"],
+                    "site": metadata["site"],
+                    "site_type": metadata["site_type"],
+                    "x": metadata["x"],
+                    "y": metadata["y"],
+                    "fixed": metadata["fixed"],
+                    "physical_region": metadata["physical_region"],
+                    "assignments": [{
+                        "instance": assignment["instance"],
+                        "cell_type": assignment["cell_type"],
+                        "bel": assignment["bel"],
+                        "placement_mode": assignment["_placement_mode"],
+                        "site": assignment["_physical_site"],
+                    } for assignment in sorted(
+                        assignments,
+                        key=lambda item: item["_placement_ordinal"],
+                    )],
+                }
+                continue
+            value: Dict[str, Any] = {
+                "id": cluster["id"],
+                "kind": cluster["kind"],
+                "site_templates": cluster["site_templates"],
+                "control_set": cluster["control_set"],
+                "assignments": [{
+                    "instance": assignment["instance"],
+                    "cell_type": assignment["cell_type"],
+                    "bel": assignment["bel"],
+                } for assignment in assignments],
+            }
+            if "control_sets" in cluster:
+                value["control_sets"] = cluster["control_sets"]
+            if "site_mode" in cluster:
+                value["site_mode"] = cluster["site_mode"]
+            yield value
+
+    def __getitem__(self, index: int | slice) -> Any:
+        values = list(self)
+        return values[index]
 
 
 def _sha256(path: Path) -> str:
@@ -155,7 +215,7 @@ def _validate_certificate(
     native_bram_groups: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Tuple[
     str, Mapping[str, Any], list[Dict[str, Any]], list[str],
-    list[Dict[str, Any]], list[Dict[str, Any]]
+    list[Dict[str, Any]], Sequence[Mapping[str, Any]]
 ]:
     if (
         certificate.get("schema") != OPENPARF_ATOMIC_PLACEMENT_SCHEMA
@@ -242,7 +302,6 @@ def _validate_certificate(
 
     owners: Dict[str, str] = {}
     physical_clusters: list[Dict[str, Any]] = []
-    placement_clusters: list[Dict[str, Any]] = []
     site_names = set()
     hard_counts: Counter = Counter()
     lut_count = 0
@@ -377,6 +436,9 @@ def _validate_certificate(
                 )
             normalized = {
                 "instance": name, "cell_type": cell_type, "bel": bel_name,
+                "_placement_mode": assignment["placement_mode"],
+                "_physical_site": assignment["physical_site"],
+                "_placement_ordinal": assignment_index,
             }
             if cell_type in (
                 LUT_TYPES | {DUAL_OUTPUT_LUT_TYPE, "CARRY8"}
@@ -453,6 +515,11 @@ def _validate_certificate(
                 [*slice_assignments, *hard_assignments],
                 key=lambda item: item["instance"],
             ),
+            "_placement": {
+                "site": site_name, "site_type": site["type"],
+                "x": site["x"], "y": site["y"], "fixed": False,
+                "physical_region": site.get("physical_region"),
+            },
         }
         if len(control_sets) > 1:
             physical_cluster["control_sets"] = control_sets
@@ -463,18 +530,6 @@ def _validate_certificate(
                 f"RAMB18E2x{len(hard_assignments)}"
             )
         physical_clusters.append(physical_cluster)
-        placement_clusters.append({
-            "cluster": entry["cluster"], "site": site_name,
-            "site_type": site["type"], "x": site["x"], "y": site["y"],
-            "fixed": False, "physical_region": site.get("physical_region"),
-            "assignments": [{
-                "instance": assignment["instance"],
-                "cell_type": assignment["cell_type"],
-                "bel": assignment["bel"],
-                "placement_mode": assignment["placement_mode"],
-                "site": assignment["physical_site"],
-            } for assignment in assignments],
-        })
     if set(owners) != expected:
         missing = sorted(expected - set(owners))
         extra = sorted(set(owners) - expected)
@@ -516,10 +571,9 @@ def _validate_certificate(
     if certificate.get("summary") != expected_summary:
         raise ValidationError("OpenPARF atomic placement summary is invalid")
     physical_clusters.sort(key=lambda item: item["id"])
-    placement_clusters.sort(key=lambda item: item["cluster"])
     return (
         selected_top, cells, physical_clusters, constants, cascades,
-        placement_clusters,
+        _BridgeClusterSequence(physical_clusters, placement=True),
     )
 
 
@@ -639,15 +693,7 @@ def materialize_xilinx_openparf_atomic_contract(
             "native placement certificate"
         )
     site_pin_legalization = legalize_xilinx_slice_site_pins(cells, clusters)
-    # The site-pin legalizer can move an FF between BELs inside its certified
-    # site.  Keep the placement view on the same exact physical binding.
-    legalized_bels = {
-        assignment["instance"]: assignment["bel"]
-        for cluster in clusters for assignment in cluster["assignments"]
-    }
-    for placement_cluster in placement_clusters:
-        for assignment in placement_cluster["assignments"]:
-            assignment["bel"] = legalized_bels[assignment["instance"]]
+    packed_clusters = _BridgeClusterSequence(clusters, placement=False)
     certificate_sha = _sha256(atomic_placement_path)
     architecture_sha = _sha256(architecture_path)
     kind_counts = Counter(cluster["kind"] for cluster in clusters)
@@ -674,7 +720,7 @@ def materialize_xilinx_openparf_atomic_contract(
                 "ultrascaleplus-half-slice-cksr-ff-lane-ce-v1"
             ),
         },
-        "clusters": clusters,
+        "clusters": packed_clusters,
         "cascade_chains": cascades,
         "unplaced_constants": constants,
         "summary": {
@@ -808,9 +854,14 @@ def materialize_xilinx_openparf_atomic_contract(
         placement_temp = Path(placement_name)
         try:
             step_started = time.perf_counter()
-            write_json(packed_temp, packed, compact=True)
+            compatibility_packed = dict(packed)
+            compatibility_packed["clusters"] = list(packed_clusters)
+            compatibility_placement = dict(placement)
+            compatibility_placement["clusters"] = list(placement_clusters)
+            write_json(packed_temp, compatibility_packed, compact=True)
             placement["source"]["packed_sha256"] = _sha256(packed_temp)
-            write_json(placement_temp, placement, compact=True)
+            compatibility_placement["source"] = dict(placement["source"])
+            write_json(placement_temp, compatibility_placement, compact=True)
             publication_steps["compatibility_json_write_seconds"] = (
                 time.perf_counter() - step_started
             )
@@ -928,6 +979,7 @@ def materialize_xilinx_openparf_atomic_contract(
             },
             "dataflow": {
                 "certificate": "streaming-sqlite-or-inline-compatibility",
+                "bridge_contracts": "single-owner-dual-view",
                 "source_packed": (
                     "in-process-view" if source_packed_value is not None
                     else "serialized-compatibility"

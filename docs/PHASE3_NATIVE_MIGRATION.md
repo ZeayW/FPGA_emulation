@@ -249,9 +249,11 @@ export and routed timing use relocatable lazy views over that file. The bridge
 also keeps a site-pin legalizer's FF BEL moves synchronized between its packing
 and placement views. The validator's full-file SHA-256 is reused when those
 views open, and the ordered production writer no longer builds a second
-cluster lookup table. The remaining million-instance cost is the bridge's
-temporary Python packing/placement trees and RWRoute's whole-design export
-dictionaries.
+cluster lookup table. Packing and placement now share one bridge-owned
+cluster/assignment tree and expose the two historical contracts as bounded
+generated views; compatibility JSON alone expands those views explicitly.
+The remaining million-instance cost is that shared Python bridge tree and
+RWRoute's whole-design export dictionaries.
 
 The migration boundary is the OpenPARF placement certificate through RWRoute
 launch. Work proceeds in this order:

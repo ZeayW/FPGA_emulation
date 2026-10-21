@@ -148,7 +148,9 @@ the deterministically ordered production rows also stream without constructing
 a duplicate cluster-to-placement dictionary. The publication timing is split
 into database write, handoff validation/hash, lazy-view open, packing
 validation, and placement validation so large NVDLA runs identify the actual
-handoff bottleneck.
+handoff bottleneck. The bridge now owns each cluster and assignment once;
+packing and placement are bounded generated views over that same tree, so the
+production handoff no longer retains a second million-instance placement tree.
 
 ## Flow
 

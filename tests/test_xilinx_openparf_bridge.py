@@ -384,6 +384,10 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             self.assertEqual(report["packed_sha256"], report["placement_sha256"])
             self.assertEqual(report["runtime_breakdown"]["bytes"]["packed_output"], 0)
             self.assertEqual(
+                report["runtime_breakdown"]["dataflow"]["bridge_contracts"],
+                "single-owner-dual-view",
+            )
+            self.assertEqual(
                 set(report["runtime_breakdown"]["publication_steps"]),
                 {
                     "physical_handoff_write_seconds",
