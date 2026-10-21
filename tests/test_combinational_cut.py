@@ -16,6 +16,7 @@ from emuflow.combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
     _build_combinational_cut_candidate_index,
+    _resolve_native_capture_requests,
     build_static_exact_semantic_contract,
     characterize_combinational_cuts,
     semantic_contract_sha256,
@@ -67,6 +68,10 @@ from emuflow.tdm import (
     SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
     build_tdm_schedule,
     validate_tdm_schedule,
+)
+from emuflow.tdm_schedule_storage import (
+    read_tdm_schedule,
+    write_tdm_schedule_storage,
 )
 from emuflow.tdm_ratio import build_tdm_ratio_plan
 from emuflow.tdm_slot import refine_tdm_schedule_native
@@ -868,6 +873,57 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 )
             self.assertEqual(actual, expected)
 
+    def test_native_capture_resolution_only_materializes_requested_sinks(self):
+        class UnrequestedEndpoint(dict):
+            def __getitem__(self, key):
+                raise AssertionError("unrequested endpoint was expanded")
+
+        nets = [
+            {
+                "sinks": [UnrequestedEndpoint() for _ in range(128)]
+                + [
+                    {
+                        "instance": "state0",
+                        "port": "D",
+                        "bit": 3,
+                    }
+                ]
+            }
+        ]
+        self.assertEqual(
+            _resolve_native_capture_requests(
+                nets,
+                [(128, 1, 0), (128, 0, 1)],
+                ["net0", "net1"],
+                ["fpga0", "fpga1"],
+            ),
+            [
+                (
+                    "net1",
+                    "fpga0",
+                    "architectural-state",
+                    "state0",
+                    "D",
+                    3,
+                ),
+                (
+                    "net0",
+                    "fpga1",
+                    "architectural-state",
+                    "state0",
+                    "D",
+                    3,
+                ),
+            ],
+        )
+        with self.assertRaisesRegex(ValidationError, "capture is invalid"):
+            _resolve_native_capture_requests(
+                nets,
+                [(129, 0, 0)],
+                ["net0"],
+                ["fpga0"],
+            )
+
     def test_indexed_assignment_storage_reconstructs_exact_contract(self):
         clusters, assignment = self._exact_artifacts(dependent_return=True)
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1183,13 +1239,24 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 patch("emuflow.tdm.NATIVE_EXACT_SCHEDULE_MIN_ROUTES", 0),
             ):
                 native = build_tdm_schedule(candidate, self.platform)
+            self.assertIsInstance(native["entries"], list)
+            self.assertIsNot(type(native["entries"]), list)
+            self.assertGreater(len(native["entries"]), 0)
+            self.assertEqual(list.__len__(native["entries"]), 0)
             self.assertEqual(native, reference)
+            self.assertEqual(json.loads(json.dumps(native)), reference)
             self.assertEqual(
                 validate_tdm_schedule(
                     candidate, self.platform, native
                 )["status"],
                 "pass",
             )
+            with tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "schedule.json"
+                write_tdm_schedule_storage(path, native)
+                self.assertEqual(
+                    read_tdm_schedule(path, materialize=True), reference
+                )
 
         compare(routes)
         template = next(

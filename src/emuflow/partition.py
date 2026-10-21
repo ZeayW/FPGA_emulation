@@ -1282,11 +1282,16 @@ def build_partition_assignment(
                 STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
             ),
         )
-        contract_nodes = {
-            item["net"]: item for item in semantic_contract["cut_nodes"]
-        }
-        for cut in cut_nets:
-            node = contract_nodes[cut["net"]]
+        contract_nodes = semantic_contract["cut_nodes"]
+        if len(contract_nodes) != len(cut_nets):
+            raise ValidationError(
+                "Static Exact contract cut coverage disagrees"
+            )
+        for cut, node in zip(cut_nets, contract_nodes):
+            if cut["net"] != node["net"]:
+                raise ValidationError(
+                    "Static Exact contract cut order disagrees"
+                )
             cut.update(
                 {
                     "dependency_level": node["dependency_level"],
@@ -2086,11 +2091,16 @@ def validate_partition_artifacts(
                 STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
             ),
         )
-        contract_nodes = {
-            item["net"]: item for item in expected_contract["cut_nodes"]
-        }
-        for cut in expected_cuts:
-            node = contract_nodes[cut["net"]]
+        contract_nodes = expected_contract["cut_nodes"]
+        if len(contract_nodes) != len(expected_cuts):
+            raise ValidationError(
+                "Static Exact contract cut coverage disagrees"
+            )
+        for cut, node in zip(expected_cuts, contract_nodes):
+            if cut["net"] != node["net"]:
+                raise ValidationError(
+                    "Static Exact contract cut order disagrees"
+                )
             cut.update(
                 {
                     "dependency_level": node["dependency_level"],

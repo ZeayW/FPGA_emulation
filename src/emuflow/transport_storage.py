@@ -121,6 +121,19 @@ CREATE TABLE binding_entries(
 ) WITHOUT ROWID;
 CREATE INDEX binding_source ON binding_entries(source_fpga,schedule_entry);
 CREATE INDEX binding_sink ON binding_entries(sink_fpga,schedule_entry);
+CREATE TABLE binding_adapter_ports(
+  fpga TEXT NOT NULL,
+  p_port TEXT NOT NULL,
+  n_port TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('source','sink')),
+  logical_port TEXT NOT NULL,
+  logical_port_width INTEGER NOT NULL,
+  package_pin_p TEXT NOT NULL,
+  package_pin_n TEXT NOT NULL,
+  iostandard TEXT NOT NULL,
+  PRIMARY KEY(fpga,p_port),
+  UNIQUE(fpga,n_port)
+) WITHOUT ROWID;
 """
 
 
@@ -814,6 +827,92 @@ class VirtualBindingView(_BaseView):
         finally:
             connection.close()
 
+    def iter_adapter_ports(self, fpga: str) -> Iterator[Mapping[str, Any]]:
+        """Yield unique adapter pin pairs without scanning hop records.
+
+        The virtual binding keeps one entry per scheduled hop for compatibility.
+        RTL and XDC emission only depend on the much smaller set of physical
+        differential pairs.  New stores normalize that set here so every FPGA
+        exporter does not decode the complete hop relation again.
+        """
+
+        connection = _connect(self.store_path)
+        try:
+            has_relation = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='binding_adapter_ports'"
+            ).fetchone()
+            if has_relation is not None:
+                for row in connection.execute(
+                    "SELECT role,logical_port,logical_port_width,p_port,n_port,"
+                    "package_pin_p,package_pin_n,iostandard "
+                    "FROM binding_adapter_ports WHERE fpga=? ORDER BY p_port",
+                    (fpga,),
+                ):
+                    yield {
+                        "role": str(row["role"]),
+                        "logical_port": str(row["logical_port"]),
+                        "logical_port_width": int(row["logical_port_width"]),
+                        "iostandard": str(row["iostandard"]),
+                        "p": {
+                            "port": str(row["p_port"]),
+                            "package_pin": str(row["package_pin_p"]),
+                        },
+                        "n": {
+                            "port": str(row["n_port"]),
+                            "package_pin": str(row["package_pin_n"]),
+                        },
+                    }
+                return
+
+            # Compatibility for v1 stores written before the normalized
+            # adapter relation existed.  This path is intentionally bounded by
+            # physical port count, although it must decode historical entries.
+            records: dict[str, Mapping[str, Any]] = {}
+            for row in connection.execute(
+                "SELECT record_json FROM binding_entries "
+                "WHERE source_fpga=? OR sink_fpga=? ORDER BY schedule_entry",
+                (fpga, fpga),
+            ):
+                value = json.loads(row[0])
+                if not isinstance(value, dict):
+                    raise ValidationError("virtual binding entry is malformed")
+                for role in ("source", "sink"):
+                    end = value.get(role)
+                    if isinstance(end, Mapping) and end.get("fpga") == fpga:
+                        record = {"role": role, **end, "iostandard": value.get("iostandard")}
+                        records[str(end["p"]["port"])] = record
+            yield from (records[key] for key in sorted(records))
+        except json.JSONDecodeError as error:
+            raise ValidationError("virtual binding entry is corrupt") from error
+        finally:
+            connection.close()
+
+    def iter_adapter_port_fpgas(self) -> Iterator[str]:
+        """Yield the complete FPGA population represented by adapter ports."""
+
+        connection = _connect(self.store_path)
+        try:
+            has_relation = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='binding_adapter_ports'"
+            ).fetchone()
+            if has_relation is not None:
+                for row in connection.execute(
+                    "SELECT DISTINCT fpga FROM binding_adapter_ports "
+                    "ORDER BY fpga"
+                ):
+                    yield str(row[0])
+                return
+            for row in connection.execute(
+                "SELECT source_fpga AS fpga FROM binding_entries "
+                "UNION SELECT sink_fpga AS fpga FROM binding_entries "
+                "ORDER BY fpga"
+            ):
+                yield str(row[0])
+        finally:
+            connection.close()
+
 
 def read_transport(path: Path, *, materialize: bool = False) -> Mapping[str, Any]:
     value = _raw_manifest(path)
@@ -1252,6 +1351,8 @@ def write_transport_storage(
         endpoint_rows: list[tuple[Any, ...]] = []
         lane_rows: list[tuple[Any, ...]] = []
         binding_rows: list[tuple[Any, ...]] = []
+        binding_adapter_rows: list[tuple[Any, ...]] = []
+        seen_binding_adapter_ports: set[tuple[str, str]] = set()
 
         def flush() -> None:
             if endpoint_rows:
@@ -1272,6 +1373,12 @@ def write_transport_storage(
                     binding_rows,
                 )
                 binding_rows.clear()
+            if binding_adapter_rows:
+                connection.executemany(
+                    "INSERT INTO binding_adapter_ports VALUES (?,?,?,?,?,?,?,?,?)",
+                    binding_adapter_rows,
+                )
+                binding_adapter_rows.clear()
 
         for entry, route in entry_routes:
             if route is None:
@@ -1433,6 +1540,22 @@ def write_transport_storage(
                             )
                         bound_end[polarity] = {**pin, "port": port}
                     bound[role] = bound_end
+                    adapter_identity = (endpoint_fpga, bound_end["p"]["port"])
+                    if adapter_identity not in seen_binding_adapter_ports:
+                        seen_binding_adapter_ports.add(adapter_identity)
+                        binding_adapter_rows.append(
+                            (
+                                endpoint_fpga,
+                                bound_end["p"]["port"],
+                                bound_end["n"]["port"],
+                                role,
+                                logical_port,
+                                bound_end["logical_port_width"],
+                                bound_end["p"]["package_pin"],
+                                bound_end["n"]["package_pin"],
+                                virtual_board["assumptions"]["iostandard"],
+                            )
+                        )
                 binding_record = {
                     "schedule_entry": entry_id,
                     "net": entry.get("net"),

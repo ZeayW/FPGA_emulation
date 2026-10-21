@@ -17,8 +17,15 @@ from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import build_tdm_schedule
 from emuflow.timing_routing import route_system_native
-from emuflow.transport_storage import VIRTUAL_BINDING_STORAGE_SCHEMA
-from emuflow.virtual_board import build_virtual_binding
+from emuflow.transport_storage import (
+    VIRTUAL_BINDING_STORAGE_SCHEMA,
+    read_virtual_binding,
+)
+from emuflow.virtual_board import (
+    build_virtual_binding,
+    virtual_binding_to_systemverilog,
+    virtual_binding_to_xdc,
+)
 from emuflow.yosys import import_yosys_json
 from tests.native_build import tlr_router
 
@@ -101,6 +108,25 @@ def test_phase6_automatically_emits_binding_and_replay_matches_report(tmp_path,i
                         assert f"set_property PACKAGE_PIN {pin['package_pin']} [get_ports {{{pin['port']}}}]" in xdc
                         assert f"set_property IOSTANDARD LVDS [get_ports {{{pin['port']}}}]" in xdc
     assert read_json(out/'lane_map.json')['binding_status']=='logical_only'
+
+
+def test_indexed_binding_emits_adapter_without_iterating_hop_entries(tmp_path, inputs):
+    _, out, _ = emit(tmp_path, inputs)
+    view = read_virtual_binding(out / 'virtual_board_binding.json')
+    materialized = view.materialize()
+
+    class NoHopScan:
+        def __iter__(self):
+            raise AssertionError('adapter emission scanned hop-sized binding entries')
+
+    view._sections['entries'] = NoHopScan()
+    for fpga in ('fpga0', 'fpga1'):
+        assert virtual_binding_to_xdc(view, fpga) == virtual_binding_to_xdc(
+            materialized, fpga
+        )
+        assert virtual_binding_to_systemverilog(
+            view, fpga
+        ) == virtual_binding_to_systemverilog(materialized, fpga)
 
 
 @pytest.mark.parametrize('mutation',['manifest','missing','wiring','polarity','binding','xdc',

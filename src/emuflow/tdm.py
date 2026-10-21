@@ -48,9 +48,118 @@ COMBINATIONAL_SETTLE_SLOTS = 1
 NATIVE_EXACT_SCHEDULE_MIN_ROUTES = 100_000
 _NATIVE_EXACT_SCHEDULE_INPUT_MAGIC = 0x3149534D44544545
 _NATIVE_EXACT_SCHEDULE_OUTPUT_MAGIC = 0x314F534D44544545
-_NATIVE_EXACT_SCHEDULE_VERSION = 1
+_NATIVE_EXACT_SCHEDULE_INPUT_VERSION = 1
+_NATIVE_EXACT_SCHEDULE_OUTPUT_VERSION = 2
 _NATIVE_UNASSIGNED_LANE = (1 << 32) - 1
 HopKey = Tuple[str, str, str, str]
+
+
+class _NativeExactEntryRecords(list):
+    """List-compatible lazy view over native Static Exact hop records.
+
+    The public schedule contract historically exposes ``entries`` as a list.
+    Keeping this as a list subclass preserves JSON encoding and compatibility
+    comparisons while avoiding one resident Python dictionary per scheduled
+    hop.  Each traversal decodes one fixed-width native record at a time.
+    """
+
+    _FORMAT = "<12I"
+    _RECORD_SIZE = struct.calcsize(_FORMAT)
+
+    def __init__(
+        self,
+        *,
+        owner: tempfile.TemporaryDirectory[str],
+        path: Path,
+        offset: int,
+        count: int,
+        routes: Sequence[Mapping[str, Any]],
+        capacity_keys: Sequence[str],
+        link_ids: Sequence[str],
+        fpga_ids: Sequence[str],
+    ) -> None:
+        super().__init__()
+        self._owner = owner
+        self._path = path
+        self._offset = offset
+        self._count = count
+        self._routes = routes
+        self._capacity_keys = capacity_keys
+        self._link_ids = link_ids
+        self._fpga_ids = fpga_ids
+
+    def __len__(self) -> int:
+        return self._count
+
+    def _decode(self, values: Tuple[int, ...]) -> Dict[str, Any]:
+        (
+            native_route,
+            sequence,
+            depth,
+            native_capacity,
+            native_link,
+            native_from,
+            native_to,
+            slot,
+            lane,
+            ready_slot,
+            arrival_slot,
+            ratio,
+        ) = values
+        route = self._routes[native_route]
+        entry = {
+            "id": f"s{sequence:06d}",
+            "demand": route["id"],
+            "net": route["net"],
+            "hop": depth,
+            "link": self._link_ids[native_link],
+            "from": self._fpga_ids[native_from],
+            "to": self._fpga_ids[native_to],
+            "capacity_key": self._capacity_keys[native_capacity],
+            "slot": slot,
+            "lane": lane,
+            "ready_slot": ready_slot,
+            "arrival_slot": arrival_slot,
+        }
+        if ratio:
+            entry["tdm_ratio"] = ratio
+        return entry
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        with self._path.open("rb") as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                for index in range(self._count):
+                    yield self._decode(
+                        struct.unpack_from(
+                            self._FORMAT,
+                            data,
+                            self._offset + index * self._RECORD_SIZE,
+                        )
+                    )
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(self._count))]
+        if index < 0:
+            index += self._count
+        if index < 0 or index >= self._count:
+            raise IndexError(index)
+        with self._path.open("rb") as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                return self._decode(
+                    struct.unpack_from(
+                        self._FORMAT,
+                        data,
+                        self._offset + index * self._RECORD_SIZE,
+                    )
+                )
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Sequence) and not isinstance(other, (str, bytes)):
+            return len(self) == len(other) and all(
+                left == right for left, right in zip(self, other)
+            )
+        return False
 
 
 def sampled_virtual_wire_timing_constraints(
@@ -1041,7 +1150,7 @@ def _schedule_indexed_exact_native(
             emit(
                 "<Q7I",
                 _NATIVE_EXACT_SCHEDULE_INPUT_MAGIC,
-                _NATIVE_EXACT_SCHEDULE_VERSION,
+                _NATIVE_EXACT_SCHEDULE_INPUT_VERSION,
                 constraints["frame_slots"],
                 RUNTIME_BARRIER_SLOTS,
                 COMBINATIONAL_SETTLE_SLOTS,
@@ -1156,7 +1265,7 @@ def _schedule_indexed_exact_native(
                 )
                 if (
                     magic != _NATIVE_EXACT_SCHEDULE_OUTPUT_MAGIC
-                    or version != _NATIVE_EXACT_SCHEDULE_VERSION
+                    or version != _NATIVE_EXACT_SCHEDULE_OUTPUT_VERSION
                     or output_route_count != len(ordered_by_net)
                 ):
                     raise ValidationError(
@@ -1170,7 +1279,8 @@ def _schedule_indexed_exact_native(
                         "native Static Exact schedule route order is invalid"
                     )
                 ordered_routes = [ordered_by_net[index] for index in order_indices]
-                entries: List[Dict[str, Any]] = []
+                entries_offset = offset
+                seen_sequences = bytearray(entry_count)
                 for _ in range(entry_count):
                     (
                         native_route,
@@ -1184,9 +1294,12 @@ def _schedule_indexed_exact_native(
                         lane,
                         ready_slot,
                         arrival_slot,
-                    ) = take("<11I")
+                        ratio,
+                    ) = take(_NativeExactEntryRecords._FORMAT)
                     if (
                         native_route >= len(ordered_by_net)
+                        or sequence >= entry_count
+                        or seen_sequences[sequence]
                         or native_capacity >= len(capacity_keys)
                         or native_link >= len(link_ids)
                         or native_from >= len(fpga_ids)
@@ -1195,6 +1308,7 @@ def _schedule_indexed_exact_native(
                         raise ValidationError(
                             "native Static Exact schedule entry is invalid"
                         )
+                    seen_sequences[sequence] = 1
                     route = ordered_by_net[native_route]
                     edge = {
                         "link": link_ids[native_link],
@@ -1220,23 +1334,16 @@ def _schedule_indexed_exact_native(
                             edge["to"],
                         )
                     )
-                    entry = {
-                        "id": f"s{sequence:06d}",
-                        "demand": route["id"],
-                        "net": route["net"],
-                        "hop": depth,
-                        "link": edge["link"],
-                        "from": edge["from"],
-                        "to": edge["to"],
-                        "capacity_key": arc["capacity_key"],
-                        "slot": slot,
-                        "lane": lane,
-                        "ready_slot": ready_slot,
-                        "arrival_slot": arrival_slot,
-                    }
-                    if assigned is not None:
-                        entry["tdm_ratio"] = assigned["discrete_ratio"]
-                    entries.append(entry)
+                    if (assigned is None) != (ratio == 0) or (
+                        assigned is not None
+                        and (
+                            ratio != assigned["discrete_ratio"]
+                            or lane != assigned["lane"]
+                        )
+                    ):
+                        raise ValidationError(
+                            "native Static Exact schedule ratio is invalid"
+                        )
                 completions: List[Dict[str, Any]] = []
                 exact_arrivals: Dict[Tuple[str, str], int] = {}
                 seen_completions = set()
@@ -1286,6 +1393,21 @@ def _schedule_indexed_exact_native(
                     raise ValidationError(
                         "native Static Exact schedule output has trailing bytes"
                     )
+        retained = tempfile.TemporaryDirectory(
+            prefix="emuflow-tdm-exact-records-"
+        )
+        retained_output = Path(retained.name) / output_path.name
+        os.replace(output_path, retained_output)
+        entries = _NativeExactEntryRecords(
+            owner=retained,
+            path=retained_output,
+            offset=entries_offset,
+            count=entry_count,
+            routes=ordered_by_net,
+            capacity_keys=capacity_keys,
+            link_ids=link_ids,
+            fpga_ids=fpga_ids,
+        )
     return ordered_routes, entries, completions, exact_arrivals
 
 
@@ -1631,14 +1753,15 @@ def build_tdm_schedule(
                 exact_arrivals[(route["net"], sink)] = arrival
         demand_completions.append(completion)
 
-    entries.sort(
-        key=lambda entry: (
-            entry["slot"],
-            entry["capacity_key"],
-            entry["lane"],
-            entry["demand"],
+    if not native_exact_schedule:
+        entries.sort(
+            key=lambda entry: (
+                entry["slot"],
+                entry["capacity_key"],
+                entry["lane"],
+                entry["demand"],
+            )
         )
-    )
     domain_schedules = _domain_schedule_records(
         platform,
         constraints,

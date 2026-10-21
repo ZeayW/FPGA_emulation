@@ -15,7 +15,7 @@ import sys
 from collections import defaultdict
 from itertools import zip_longest
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Iterator, Mapping
 
 from .errors import ValidationError
 from .io import read_json, write_json
@@ -391,6 +391,7 @@ def validate_virtual_binding(platform: Platform, board: Mapping[str, Any], sched
         direction_by_wire = {}
         pin_ports = {}
         port_pins = {}
+        adapter_ports: Dict[str, Dict[str, Mapping[str, Any]]] = defaultdict(dict)
         count = 0
         missing = object()
         for entry, mapped, observed in zip_longest(
@@ -469,6 +470,17 @@ def validate_virtual_binding(platform: Platform, board: Mapping[str, Any], sched
                         )
                     bound_end[polarity] = {**pin, "port": port}
                 bound[role] = bound_end
+                adapter_record = _adapter_port_record(
+                    role, bound_end, board["assumptions"]["iostandard"]
+                )
+                adapter_key = bound_end["p"]["port"]
+                previous_adapter = adapter_ports[fpga].setdefault(
+                    adapter_key, adapter_record
+                )
+                if previous_adapter != adapter_record:
+                    raise ValidationError(
+                        "one virtual adapter port has inconsistent bindings"
+                    )
             expected = {
                 "schedule_entry": entry["id"],
                 "net": entry.get("net"),
@@ -516,6 +528,25 @@ def validate_virtual_binding(platform: Platform, board: Mapping[str, Any], sched
                 "virtual board binding header does not match schedule, ports, "
                 "and fixed pin pairs"
             )
+        indexed_adapter_fpgas = getattr(
+            binding, "iter_adapter_port_fpgas", None
+        )
+        if indexed_adapter_fpgas is not None and set(
+            indexed_adapter_fpgas()
+        ) != set(adapter_ports):
+            raise ValidationError(
+                "virtual adapter port index has unexpected FPGA ownership"
+            )
+        for fpga in sorted(adapter_ports):
+            observed_ports = list(_iter_binding_adapter_ports(binding, fpga))
+            expected_ports = [
+                adapter_ports[fpga][key]
+                for key in sorted(adapter_ports[fpga])
+            ]
+            if observed_ports != expected_ports:
+                raise ValidationError(
+                    "virtual adapter port index differs from hop bindings"
+                )
         return {
             "status": "pass",
             "qualification": expected_header["qualification"],
@@ -537,13 +568,10 @@ def virtual_binding_to_xdc(binding: Mapping[str, Any], fpga: str) -> str:
              "# Data ports only; 1.8 V VCCO and internal 100-ohm receiver termination assumed.",
              "# Clock/reset/control constraints and physical backend integration remain required."]
     records = {}
-    for entry in binding["entries"]:
-        for role in ("source", "sink"):
-            end = entry[role]
-            if end["fpga"] == fpga:
-                for polarity in ("p", "n"):
-                    pin = end[polarity]
-                    records[pin["port"]] = (pin["package_pin"], entry["iostandard"])
+    for end in _iter_binding_adapter_ports(binding, fpga):
+        for polarity in ("p", "n"):
+            pin = end[polarity]
+            records[pin["port"]] = (pin["package_pin"], end["iostandard"])
     for port, (pin, standard) in sorted(records.items()):
         if any(c in port + pin + standard for c in "{}\n\r;"):
             raise ValidationError("unsafe name in virtual data-pin constraint")
@@ -554,12 +582,10 @@ def virtual_binding_to_xdc(binding: Mapping[str, Any], fpga: str) -> str:
 
 def virtual_binding_to_systemverilog(binding: Mapping[str, Any], fpga: str) -> str:
     """Emit a standalone data adapter; the backend must integrate it at top level."""
-    records = {}
-    for entry in binding["entries"]:
-        for role in ("source", "sink"):
-            end = entry[role]
-            if end["fpga"] == fpga:
-                records[end["p"]["port"]] = (role, end)
+    records = {
+        end["p"]["port"]: (end["role"], end)
+        for end in _iter_binding_adapter_ports(binding, fpga)
+    }
     buses = {}
     pins = []
     body = []
@@ -596,6 +622,46 @@ def virtual_binding_to_systemverilog(binding: Mapping[str, Any], fpga: str) -> s
         "// Whole-bank directions are static for this build; internal receiver termination enabled.",
         f"module emuflow_virtual_io_{_name(fpga)} (", ",\n".join(ports), ");", *body, "endmodule", "",
     ])
+
+
+def _iter_binding_adapter_ports(
+    binding: Mapping[str, Any], fpga: str
+) -> Iterator[Mapping[str, Any]]:
+    """Iterate unique physical adapter endpoints in stable P-port order."""
+
+    indexed = getattr(binding, "iter_adapter_ports", None)
+    if indexed is not None:
+        yield from indexed(fpga)
+        return
+
+    records: Dict[str, Mapping[str, Any]] = {}
+    for entry in binding["entries"]:
+        for role in ("source", "sink"):
+            end = entry[role]
+            if end["fpga"] == fpga:
+                records[end["p"]["port"]] = _adapter_port_record(
+                    role, end, entry["iostandard"]
+                )
+    yield from (records[key] for key in sorted(records))
+
+
+def _adapter_port_record(
+    role: str, end: Mapping[str, Any], iostandard: str
+) -> Mapping[str, Any]:
+    return {
+        "role": role,
+        "logical_port": end["logical_port"],
+        "logical_port_width": end["logical_port_width"],
+        "iostandard": iostandard,
+        "p": {
+            "port": end["p"]["port"],
+            "package_pin": end["p"]["package_pin"],
+        },
+        "n": {
+            "port": end["n"]["port"],
+            "package_pin": end["n"]["package_pin"],
+        },
+    }
 
 
 def build_virtual_io_physical_contract(

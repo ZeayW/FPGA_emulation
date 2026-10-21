@@ -16,7 +16,8 @@ namespace {
 
 constexpr std::uint64_t kInputMagic = 0x3149534d44544545ULL;
 constexpr std::uint64_t kOutputMagic = 0x314f534d44544545ULL;
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kInputVersion = 1;
+constexpr std::uint32_t kOutputVersion = 2;
 constexpr std::uint32_t kUnassignedLane =
     std::numeric_limits<std::uint32_t>::max();
 
@@ -99,7 +100,7 @@ class AvailableSlots {
 void Run(const std::string& input_path, const std::string& output_path) {
   emuflow::core::BinaryReader input(input_path);
   if (input.Read<std::uint64_t>() != kInputMagic ||
-      input.Read<std::uint32_t>() != kVersion) {
+      input.Read<std::uint32_t>() != kInputVersion) {
     throw std::runtime_error("unsupported exact schedule input header");
   }
   const auto frame_slots = input.Read<std::uint32_t>();
@@ -314,7 +315,7 @@ void Run(const std::string& input_path, const std::string& output_path) {
 
   emuflow::core::AtomicBinaryWriter output(output_path);
   output.Write(kOutputMagic);
-  output.Write(kVersion);
+  output.Write(kOutputVersion);
   output.Write(static_cast<std::uint64_t>(entries.size()));
   output.Write(route_count);
   for (const auto route : order) output.Write(route);
@@ -331,6 +332,7 @@ void Run(const std::string& input_path, const std::string& output_path) {
     output.Write(entry.lane);
     output.Write(entry.ready);
     output.Write(entry.arrival);
+    output.Write(hop.assigned_lane == kUnassignedLane ? 0u : hop.ratio);
   }
   for (const auto& completion : completions) {
     output.Write(completion.route);
