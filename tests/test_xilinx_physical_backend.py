@@ -320,7 +320,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 mock.patch(
                     "emuflow.xilinx_physical_backend._sha256",
                     return_value="0" * 64,
-                ),
+                ) as digest,
                 mock.patch(
                     "emuflow.xilinx_physical_backend.pack_xilinx_sites",
                     side_effect=forbidden,
@@ -360,6 +360,10 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             qualify.assert_called_once()
             bridge.assert_called_once()
             export.assert_called_once()
+            self.assertEqual(
+                digest.call_args_list.count(mock.call(physical_handoff_path)),
+                1,
+            )
             validate_packing.assert_not_called()
             validate_placement.assert_not_called()
             read.assert_not_called()

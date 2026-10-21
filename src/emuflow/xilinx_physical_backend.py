@@ -294,10 +294,15 @@ def _run_rapidwright_routed_backend_tail(
 ) -> Dict[str, Any]:
     """Route and time one already materialized packed placement."""
 
+    packed_sha256 = _sha256(packed_path)
+    placement_sha256 = (
+        packed_sha256
+        if packed_path == placement_path else _sha256(placement_path)
+    )
     source_sha256 = {
         "mapped_sha256": mapped_sha256 or _sha256(mapped_path),
-        "packed_sha256": _sha256(packed_path),
-        "placement_sha256": _sha256(placement_path),
+        "packed_sha256": packed_sha256,
+        "placement_sha256": placement_sha256,
     }
     rwroute_input = output_dir / "rwroute.tsv"
     route_input_report = export_rwroute_input(

@@ -159,7 +159,9 @@ Mapped-index v2 stores each typed cell pin once outside `record_json`; legacy
 cell mappings are reconstructed lazily. Production RWRoute groups this ordered
 pin relation by net, retaining only the clock-gate qualification subset rather
 than a whole-design Python endpoint dictionary. Mapped-index v1 remains
-readable.
+readable. Because packing and placement share one immutable handoff path, the
+physical backend also computes its source digest once and reuses it for both
+historical contract identities.
 
 ## Flow
 
