@@ -2001,6 +2001,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--partition-constraints", type=Path)
     multi_fpga_compile.add_argument(
+        "--synthesis-profile-passes", action="store_true",
+        help="Record live Yosys pass headers and detailed timing for fresh Xilinx synthesis",
+    )
+    multi_fpga_compile.add_argument(
         "--xilinx-mapping-strategy",
         choices=sorted(VALID_XILINX_MAPPING_STRATEGIES),
         help="Explicit native Xilinx mapper A/B selection; defaults to hierarchical ABC9",
@@ -5947,6 +5951,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             yosys=args.yosys,
             mapping_profile=mapping_profile,
             xilinx_mapping_strategy=args.xilinx_mapping_strategy,
+            synthesis_profile_passes=args.synthesis_profile_passes,
             partition_constraints=args.partition_constraints,
             partition_provider=args.partition_provider,
             seed=args.seed,

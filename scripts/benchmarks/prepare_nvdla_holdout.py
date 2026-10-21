@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CATALOG_PATH = ROOT / "benchmarks" / "rtl_catalog.json"
 COMPAT_PATH = ROOT / "scripts" / "yosys" / "nvdla_compat.v"
 PREPARATION_SCHEMA = "emuflow.nvdla-preparation/v1"
-GENERATOR_ID = "nvdla-shared-frontend-v2"
+GENERATOR_ID = "nvdla-shared-frontend-v3"
 DEFINES = [
     "SYNTHESIS",
     "DESIGNWARE_NOEXIST",

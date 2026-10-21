@@ -30,6 +30,7 @@ def flow_options(args, benchmark, constraints):
         top="NV_nvdla", clocks=list(CLOCKS), clock_periods=dict(CLOCKS),
         timing_io=benchmark.value["timing_io"],
         mapping_profile="xilinx-ultrascaleplus-open-v1",
+        synthesis_profile_passes=True,
         yosys=str(args.yosys), opensta=str(args.sta),
         architecture_timing_db=args.architecture_timing_db,
         partition_constraints=constraints, partition_provider="patron",

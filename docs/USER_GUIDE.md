@@ -50,12 +50,14 @@ projection; `--stop-after phase5` includes routing and schedule validation.
 Both publish `multi-fpga-stage-report.json` with `status: partial` and an explicit
 validated boundary. They do not imply Phase 6/7 completion. Add
 `--sta-require-complete` to reject an exhausted or unknown STA export limit
-before partitioning. Physical execution and full-flow archival cannot be
+before partitioning. For fresh Xilinx RTL synthesis, `--synthesis-profile-passes`
+streams pass progress to `frontend/yosys.log` without changing mapping options.
+Physical execution and full-flow archival cannot be
 combined with these intermediate boundaries.
 
 For a paired full NV_nvdla routing study, prepare the pinned design using
 `scripts/benchmarks/prepare_nvdla_holdout.py` with the explicit
-`physically-implementable-shared-memory-model-v1` policy. The portable
+`physically-implementable-shared-memory-model-v2` policy. The portable
 `scripts/phase4_nvdla_prefix.py` command captures provenance and produces one
 PATRON v14 Static Exact prefix on the four-XCVU19P mesh, preserving both 10 ns
 clocks and the fixed 1024-slot frame. Inspect its `--help` for tool/input paths.
@@ -65,7 +67,12 @@ and identical Phase 5 settings; its `--help` lists the required native tools.
 Reports distinguish projected inter-FPGA Phase 5 timing from whole-design
 physical timing. Phase 5 includes per-clock WNS/TNS and path counts, preserving
 original clock identities and counting each original path after output-copy
-aggregation. Successful preparation alone is not qualification evidence.
+aggregation. For whole-original-population estimates, use
+`scripts/phase4_nvdla_timing.py --producer-root ... --contract ...
+--comparison-root ... --output ...`. It restores each original path’s own logic
+delay, checks population coverage, and counts the worst output copy once.
+These estimates do not establish physical timing closure. Successful preparation
+alone is not qualification evidence.
 
 The contest comparison tool separately reuses a baseline only when its Python
 producer/evaluator, runtime, native tools, settings, inputs and sealed outputs

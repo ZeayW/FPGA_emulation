@@ -560,9 +560,12 @@ def run_xilinx_ultrascaleplus_yosys_stream(
     include_dirs: Iterable[Path] = (),
     defines: Iterable[str] = (),
     mapping_strategy: str = DEFAULT_XILINX_MAPPING_STRATEGY,
+    profile_passes: bool = False,
 ) -> Tuple[Dict[str, Any], _T]:
     """Pipe mapped Xilinx JSON into a bounded consumer without an artifact."""
 
+    if not isinstance(profile_passes, bool):
+        raise EmuFlowError("profile_passes must be a boolean")
     source_list = list(sources)
     for source in source_list:
         if not source.is_file():
@@ -592,12 +595,18 @@ def run_xilinx_ultrascaleplus_yosys_stream(
         log_path.parent if log_path is not None else source_list[0].parent
     )
     diagnostic_parent.mkdir(parents=True, exist_ok=True)
-    diagnostic = diagnostic_parent / f".yosys-stderr-{uuid.uuid4().hex}.tmp"
+    # Profiling headers go directly to the observable log; stdout remains
+    # exclusively the mapped JSON interchange. Never add -t or merge streams.
+    live_log = profile_passes and log_path is not None
+    diagnostic = log_path if live_log else (
+        diagnostic_parent / f".yosys-stderr-{uuid.uuid4().hex}.tmp"
+    )
+    flags = ["-v", "2", "-d"] if profile_passes else ["-q"]
     process: Optional[subprocess.Popen[bytes]] = None
     try:
         with diagnostic.open("wb") as errors:
             process = subprocess.Popen(
-                [command, "-q", "-p", script],
+                [command, *flags, "-p", script],
                 stdout=subprocess.PIPE,
                 stderr=errors,
             )
@@ -618,11 +627,11 @@ def run_xilinx_ultrascaleplus_yosys_stream(
                     # impossible to diagnose.
                     consumer_error = error
             return_code = process.wait()
-        diagnostic_bytes = diagnostic.read_bytes()
-        diagnostic_text = diagnostic_bytes[-2 * 1024 * 1024 :].decode(
-            "utf-8", errors="replace"
-        )
-        if log_path is not None:
+        with diagnostic.open("rb") as diagnostics:
+            diagnostics.seek(0, 2)
+            diagnostics.seek(max(0, diagnostics.tell() - 2 * 1024 * 1024))
+            diagnostic_text = diagnostics.read().decode("utf-8", errors="replace")
+        if log_path is not None and not live_log:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_path.write_text(diagnostic_text, encoding="utf-8")
         if return_code != 0:
@@ -650,6 +659,14 @@ def run_xilinx_ultrascaleplus_yosys_stream(
                 "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
                 "mapping_strategy": mapping_strategy,
                 "interchange": "stdout-hierarchical-to-indexed-phase1",
+                **({"profile_passes": True, "pass_timings": [
+                    {"pass": match[4], "calls": int(match[2]),
+                     "seconds": float(match[3]), "percent": int(match[1])}
+                    for match in re.finditer(
+                        r"^\s*(\d+)%\s+(\d+) calls\s+([0-9.]+) sec\s+(\S+)\s*$",
+                        diagnostic_text, re.MULTILINE,
+                    )
+                ]} if profile_passes else {}),
             },
             result,
         )
@@ -657,7 +674,8 @@ def run_xilinx_ultrascaleplus_yosys_stream(
         if process is not None and process.poll() is None:
             process.kill()
             process.wait()
-        diagnostic.unlink(missing_ok=True)
+        if not live_log:
+            diagnostic.unlink(missing_ok=True)
 
 
 def run_xilinx_ultrascaleplus_yosys(

@@ -1299,6 +1299,7 @@ def run_multi_fpga_flow(
     yosys: Optional[str] = None,
     mapping_profile: str = XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     xilinx_mapping_strategy: Optional[str] = None,
+    synthesis_profile_passes: bool = False,
     partition_constraints: Optional[Path] = None,
     partition_provider: str = "patron",
     seed: int = 0,
@@ -1445,6 +1446,13 @@ def run_multi_fpga_flow(
             f"{mapping_profile!r}; expected one of "
             f"{', '.join(MULTI_FPGA_MAPPING_PROFILES)}"
         )
+    if not isinstance(synthesis_profile_passes, bool):
+        raise EmuFlowError("synthesis_profile_passes must be a boolean")
+    if synthesis_profile_passes and (
+        mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+        or yosys_json is not None or prepared_frontend is not None
+    ):
+        raise EmuFlowError("synthesis pass profiling requires fresh Xilinx RTL synthesis")
     if xilinx_mapping_strategy is not None:
         if xilinx_mapping_strategy not in VALID_XILINX_MAPPING_STRATEGIES:
             raise EmuFlowError("unsupported Xilinx mapping strategy")
@@ -1763,6 +1771,7 @@ def run_multi_fpga_flow(
                         ),
                         executable=yosys,
                         log_path=frontend_root / "yosys.log",
+                        profile_passes=synthesis_profile_passes,
                         include_dirs=include_dir_list,
                         defines=define_list,
                         mapping_strategy=(

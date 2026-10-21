@@ -92,8 +92,12 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 mapper.assert_called_once()
 
     def test_native_xilinx_mapper_selection_reaches_streaming_frontend(self):
-        for strategy in (None, "hierarchical-classic-v1", "hierarchical-abc9-v1"):
-            with self.subTest(strategy=strategy), tempfile.TemporaryDirectory() as tmp:
+        for strategy, profiling in (
+            (strategy, profiling)
+            for strategy in (None, "hierarchical-classic-v1", "hierarchical-abc9-v1")
+            for profiling in (False, True)
+        ):
+            with self.subTest(strategy=strategy, profiling=profiling), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 timing = root / "timing.json"
                 write_json(timing, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
@@ -109,11 +113,13 @@ class MultiFpgaFlowTest(unittest.TestCase):
                             sources=[ROOT / "examples/rtl/counter.v"], top="counter",
                             mapping_profile="xilinx-ultrascaleplus-open-v1",
                             xilinx_mapping_strategy=strategy,
+                            synthesis_profile_passes=profiling,
                             architecture_timing_db=timing, clock_periods={"clk": 10},
                             partition_provider="greedy",
                         )
                     self.assertEqual(frontend.call_args.kwargs["mapping_strategy"],
                                      strategy or "hierarchical-abc9-v1")
+                    self.assertEqual(frontend.call_args.kwargs["profile_passes"], profiling)
 
     def test_mapper_override_rejects_invalid_context_before_frontend(self):
         for profile, supplied, strategy, message in (

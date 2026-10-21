@@ -94,6 +94,55 @@ class SynthesisTest(unittest.TestCase):
                 [path for path in root.iterdir() if "mapped" in path.name], []
             )
 
+    def test_stream_pass_profile_keeps_live_stderr_separate_from_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "design.v"
+            source.write_text("module design; endmodule\n")
+            executable = root / "fake-yosys"
+            executable.write_text(textwrap.dedent("""\
+                #!/usr/bin/env python3
+                import json, sys
+                assert sys.argv[1:4] == ["-v", "2", "-d"]
+                assert "-q" not in sys.argv[1:-1]
+                assert "-t" not in sys.argv[1:-1]
+                assert sys.argv[4] == "-p"
+                assert "write_json" in sys.argv[5]
+                sys.stderr.write("1. Executing synthesis pass\\n")
+                sys.stderr.flush()
+                json.dump({"modules": {"design": {"cells": {}}}}, sys.stdout)
+                sys.stdout.flush()
+                sys.stderr.write("Time spent:\\n  100%  1 calls 0.125 sec synth_xilinx\\n")
+                sys.stderr.flush()
+                """))
+            executable.chmod(0o755)
+            log = root / "yosys.log"
+
+            def consume(stream):
+                first = stream.read(1)
+                # The producer has emitted data but has not been waited on.
+                self.assertIn("Executing synthesis pass", log.read_text())
+                self.assertEqual(first, "{")
+                return json.loads(first + stream.read())
+
+            report, consumed = run_xilinx_ultrascaleplus_yosys_stream(
+                [source], "design", consume, executable=str(executable),
+                log_path=log, profile_passes=True,
+            )
+            self.assertIn("design", consumed["modules"])
+            self.assertEqual(report["pass_timings"], [
+                {"pass": "synth_xilinx", "calls": 1, "seconds": 0.125, "percent": 100}
+            ])
+            self.assertIn("Time spent:", log.read_text())
+            self.assertEqual(list(root.glob(".yosys-stderr-*")), [])
+
+    def test_synthesis_profile_cli_is_explicit_opt_in(self) -> None:
+        parser = _build_parser()
+        base = ["multi-fpga", "compile", "design.v", "--top", "design",
+                "--clock", "clk", "--clock-period", "clk=10", "--out", "run"]
+        self.assertFalse(parser.parse_args(base).synthesis_profile_passes)
+        self.assertTrue(parser.parse_args(base + ["--synthesis-profile-passes"]).synthesis_profile_passes)
+
     def test_xilinx_stream_preserves_yosys_failure_diagnostic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

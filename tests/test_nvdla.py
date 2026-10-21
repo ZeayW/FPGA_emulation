@@ -84,6 +84,9 @@ endmodule
 """,
             encoding="utf-8",
         )
+        (rams / "nv_ram_rws_32x64_logic.v").write_text(
+            "RAMDP_32X64_GL_M1_E2 ram_Inst_32X64 ();\n", encoding="utf-8"
+        )
         compat = root / "compat.v"
         compat.write_text("module NV_DW_lsd; endmodule\n", encoding="utf-8")
         return source, catalog, compat
@@ -220,6 +223,9 @@ endmodule
             }
             for name, body in wrappers.items():
                 (root / f"{name}.v").write_text(body, encoding="utf-8")
+                (root / f"{name}_logic.v").write_text(
+                    "RAMDP_32X64_GL_M1_E2 ram_Inst_32X64 ();\n", encoding="utf-8"
+                )
             output = root / "models.v"
             self.assertEqual(
                 generate(root, output, PHYSICAL_MEMORY_POLICY),
@@ -231,9 +237,22 @@ endmodule
             self.assertIn("reg [63:0] mem [0:31];", text)
             self.assertIn("always @(posedge clk)", text)
             self.assertIn("read_data <= mem[ra];", text)
-            self.assertIn("read_data <= (we && (wa == ra)) ? di : mem[ra];", text)
-            self.assertIn("output_data <= read_data;", text)
-            self.assertIn("output_data <= byp_sel ? dbyp : read_data;", text)
+            self.assertIn("if (write_through) write_through_data <= di;", text)
+            self.assertIn("output_data <= ram_output;", text)
+            self.assertIn("output_data <= byp_sel ? dbyp : functional_read;", text)
+
+    def test_physical_policy_requires_macro_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, _, _ = self._prepared_fixture(root)
+            ram_root = source / "vmod/rams/synth"
+            logic = ram_root / "nv_ram_rws_32x64_logic.v"
+            logic.unlink()
+            with self.assertRaisesRegex(ValueError, "requires original wrapper logic"):
+                generate(ram_root, root / "models.v", PHYSICAL_MEMORY_POLICY)
+            logic.write_text("// unknown macro\n")
+            with self.assertRaisesRegex(ValueError, "macro provenance"):
+                generate(ram_root, root / "models.v", PHYSICAL_MEMORY_POLICY)
 
     def test_physical_policy_rejects_unknown_memory_wrapper(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

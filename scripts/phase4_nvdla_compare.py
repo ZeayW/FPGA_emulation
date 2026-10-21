@@ -26,7 +26,7 @@ OLD = "timing-aware-global-candidate-v1"
 NEW = "synergistic-author-route-v1"
 P5 = "deterministic-dependency-earliest-slot-v1"
 CLOCKS = {"dla_core_clk": 10.0, "dla_csb_clk": 10.0}
-PHYSICAL_MEMORY = "physically-implementable-shared-memory-model-v1"
+PHYSICAL_MEMORY = "physically-implementable-shared-memory-model-v2"
 
 
 def require(condition, message):
