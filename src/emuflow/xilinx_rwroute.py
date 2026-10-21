@@ -630,7 +630,10 @@ def export_rwroute_input(
     if virtual_io_contract is not None:
         if (
             virtual_io_contract.get("schema")
-            != "emuflow.virtual-io-physical-contract/v1"
+            not in {
+                "emuflow.virtual-io-physical-contract/v1",
+                "emuflow.virtual-io-physical-contract/v2",
+            }
             or virtual_io_contract.get("status") != "pass"
         ):
             raise ValidationError("RWRoute virtual I/O contract is invalid")

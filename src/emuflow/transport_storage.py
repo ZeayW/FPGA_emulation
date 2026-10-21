@@ -134,6 +134,14 @@ CREATE TABLE binding_adapter_ports(
   PRIMARY KEY(fpga,p_port),
   UNIQUE(fpga,n_port)
 ) WITHOUT ROWID;
+CREATE TABLE binding_physical_ports(
+  fpga TEXT NOT NULL,
+  p_port TEXT NOT NULL,
+  record_json TEXT NOT NULL,
+  schedule_entry_count INTEGER NOT NULL,
+  schedule_entries_sha256 TEXT NOT NULL,
+  PRIMARY KEY(fpga,p_port)
+) WITHOUT ROWID;
 """
 
 
@@ -913,6 +921,196 @@ class VirtualBindingView(_BaseView):
         finally:
             connection.close()
 
+    def iter_physical_contract_entries(
+        self, fpga: str
+    ) -> Iterator[Mapping[str, Any]]:
+        """Yield independently verified compact fixed-I/O records.
+
+        Phase 7 only consumes the physical pair and logical bus identity.  The
+        complete hop relation remains authoritative in ``binding_entries``;
+        each compact record carries only a cached count and canonical digest of
+        its schedule-entry membership.  Recompute those values from the
+        authoritative hop rows and merge them with the compact relation in
+        physical-port order.  This keeps Python state bounded to one port while
+        still rejecting a compact relation that has been tampered with and
+        resealed at the file level.
+        """
+
+        connection = _connect(self.store_path)
+        try:
+            has_relation = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='binding_physical_ports'"
+            ).fetchone()
+            if has_relation is None:
+                # Historical stores predate the compact relation.  Reconstruct
+                # their contract explicitly for read compatibility.
+                records: dict[str, dict[str, Any]] = {}
+                for row in connection.execute(
+                    "SELECT record_json FROM binding_entries "
+                    "WHERE source_fpga=? OR sink_fpga=? ORDER BY schedule_entry",
+                    (fpga, fpga),
+                ):
+                    value = json.loads(row[0])
+                    if not isinstance(value, dict):
+                        raise ValidationError("virtual binding entry is malformed")
+                    for role, direction in (("source", "tx"), ("sink", "rx")):
+                        end = value.get(role)
+                        if not isinstance(end, Mapping) or end.get("fpga") != fpga:
+                            continue
+                        logical = re.fullmatch(
+                            r"([a-zA-Z_][a-zA-Z0-9_]*)\[(\d+)\]",
+                            str(end.get("logical_port", "")),
+                        )
+                        if logical is None:
+                            raise ValidationError(
+                                "virtual binding logical port is invalid"
+                            )
+                        identity = f"{direction}:{end['p']['port']}"
+                        record = {
+                            "id": identity,
+                            "direction": direction,
+                            "link": value["link"],
+                            "wire": value["wire"],
+                            "wire_id": value["wire_id"],
+                            "bank": end["bank"],
+                            "pair_id": end["pair_id"],
+                            "iostandard": value["iostandard"],
+                            "logical_port": logical.group(1),
+                            "logical_bit": int(logical.group(2)),
+                            "logical_port_width": end["logical_port_width"],
+                            "p": dict(end["p"]),
+                            "n": dict(end["n"]),
+                            "schedule_entries": [],
+                        }
+                        previous = records.setdefault(identity, record)
+                        comparable = {
+                            key: item
+                            for key, item in record.items()
+                            if key != "schedule_entries"
+                        }
+                        if {
+                            key: item
+                            for key, item in previous.items()
+                            if key != "schedule_entries"
+                        } != comparable:
+                            raise ValidationError(
+                                "one physical differential pair has conflicting bindings"
+                            )
+                        previous["schedule_entries"].append(
+                            str(value["schedule_entry"])
+                        )
+                for identity in sorted(records):
+                    record = records[identity]
+                    members = sorted(record.pop("schedule_entries"))
+                    digest = hashlib.sha256()
+                    for member in members:
+                        digest.update(_canonical(member).encode("utf-8"))
+                        digest.update(b"\n")
+                    record["schedule_entry_count"] = len(members)
+                    record["schedule_entries_sha256"] = digest.hexdigest()
+                    yield record
+                return
+
+            compact_rows = iter(connection.execute(
+                "SELECT record_json,schedule_entry_count,"
+                "schedule_entries_sha256 FROM binding_physical_ports "
+                "WHERE fpga=? ORDER BY p_port",
+                (fpga,),
+            ))
+            # Expand both endpoint roles in SQL, then sort once by physical
+            # port and schedule identity.  The cursor may contain H endpoint
+            # memberships, but Python retains only the digest for the current
+            # pair.  json_extract reads the authoritative binding entry rather
+            # than any producer-provided field in binding_physical_ports.
+            membership_rows = iter(connection.execute(
+                """
+                SELECT p_port,schedule_entry FROM (
+                  SELECT json_extract(record_json,'$.source.p.port') AS p_port,
+                         schedule_entry
+                  FROM binding_entries WHERE source_fpga=?
+                  UNION ALL
+                  SELECT json_extract(record_json,'$.sink.p.port') AS p_port,
+                         schedule_entry
+                  FROM binding_entries WHERE sink_fpga=?
+                )
+                ORDER BY p_port,schedule_entry
+                """,
+                (fpga, fpga),
+            ))
+            member = next(membership_rows, None)
+            for row in compact_rows:
+                value = json.loads(row["record_json"])
+                if not isinstance(value, dict):
+                    raise ValidationError(
+                        "virtual binding physical-port record is malformed"
+                    )
+                p = value.get("p")
+                p_port = p.get("port") if isinstance(p, Mapping) else None
+                if not isinstance(p_port, str) or not p_port:
+                    raise ValidationError(
+                        "virtual binding physical-port record is malformed"
+                    )
+                if member is not None and (
+                    not isinstance(member["p_port"], str)
+                    or not isinstance(member["schedule_entry"], str)
+                ):
+                    raise ValidationError(
+                        "virtual binding physical-port membership is malformed"
+                    )
+                if member is not None and member["p_port"] < p_port:
+                    raise ValidationError(
+                        "virtual binding physical-port relation is incomplete"
+                    )
+                digest = hashlib.sha256()
+                count = 0
+                while member is not None and member["p_port"] == p_port:
+                    digest.update(
+                        _canonical(str(member["schedule_entry"])).encode("utf-8")
+                    )
+                    digest.update(b"\n")
+                    count += 1
+                    member = next(membership_rows, None)
+                    if member is not None and (
+                        not isinstance(member["p_port"], str)
+                        or not isinstance(member["schedule_entry"], str)
+                    ):
+                        raise ValidationError(
+                            "virtual binding physical-port membership is malformed"
+                        )
+                observed_digest = digest.hexdigest()
+                cached_count = row["schedule_entry_count"]
+                cached_digest = row["schedule_entries_sha256"]
+                if (
+                    count <= 0
+                    or isinstance(cached_count, bool)
+                    or not isinstance(cached_count, int)
+                    or cached_count != count
+                    or not isinstance(cached_digest, str)
+                    or cached_digest != observed_digest
+                ):
+                    raise ValidationError(
+                        "virtual binding physical-port membership disagrees "
+                        "with binding entries"
+                    )
+                value["schedule_entry_count"] = count
+                value["schedule_entries_sha256"] = observed_digest
+                yield value
+            if member is not None:
+                raise ValidationError(
+                    "virtual binding physical-port relation is incomplete"
+                )
+        except json.JSONDecodeError as error:
+            raise ValidationError(
+                "virtual binding physical-port record is corrupt"
+            ) from error
+        except sqlite3.OperationalError as error:
+            raise ValidationError(
+                "virtual binding physical-port membership is corrupt"
+            ) from error
+        finally:
+            connection.close()
+
 
 def read_transport(path: Path, *, materialize: bool = False) -> Mapping[str, Any]:
     value = _raw_manifest(path)
@@ -1371,6 +1569,12 @@ def write_transport_storage(
         binding_rows: list[tuple[Any, ...]] = []
         binding_adapter_rows: list[tuple[Any, ...]] = []
         seen_binding_adapter_ports: set[tuple[str, str]] = set()
+        binding_contract_records: dict[
+            tuple[str, str], Mapping[str, Any]
+        ] = {}
+        binding_contract_lookup: dict[
+            tuple[str, str, int, str], tuple[str, str]
+        ] = {}
 
         def flush() -> None:
             if endpoint_rows:
@@ -1606,6 +1810,53 @@ def write_transport_storage(
                                 virtual_board["assumptions"]["iostandard"],
                             )
                         )
+                    logical_match = re.fullmatch(
+                        r"([a-zA-Z_][a-zA-Z0-9_]*)\[(\d+)\]", logical_port
+                    )
+                    if logical_match is None:
+                        raise ValidationError(
+                            "virtual binding logical port is invalid"
+                        )
+                    direction_name = "tx" if role == "source" else "rx"
+                    contract_record = {
+                        "id": f"{direction_name}:{bound_end['p']['port']}",
+                        "direction": direction_name,
+                        "link": wire["link"],
+                        "wire": wire["wire"],
+                        "wire_id": wire["id"],
+                        "bank": bound_end["bank"],
+                        "pair_id": bound_end["pair_id"],
+                        "iostandard": virtual_board["assumptions"][
+                            "iostandard"
+                        ],
+                        "logical_port": logical_match.group(1),
+                        "logical_bit": int(logical_match.group(2)),
+                        "logical_port_width": bound_end[
+                            "logical_port_width"
+                        ],
+                        "p": dict(bound_end["p"]),
+                        "n": dict(bound_end["n"]),
+                    }
+                    previous_contract = binding_contract_records.setdefault(
+                        adapter_identity, contract_record
+                    )
+                    if previous_contract != contract_record:
+                        raise ValidationError(
+                            "one physical differential pair has conflicting bindings"
+                        )
+                    lookup_key = (
+                        endpoint_fpga,
+                        link,
+                        int(wire["wire"]),
+                        role,
+                    )
+                    previous_identity = binding_contract_lookup.setdefault(
+                        lookup_key, adapter_identity
+                    )
+                    if previous_identity != adapter_identity:
+                        raise ValidationError(
+                            "one virtual wire has conflicting physical ports"
+                        )
                 binding_record = {
                     "schedule_entry": entry_id,
                     "net": net,
@@ -1638,6 +1889,54 @@ def write_transport_storage(
             and set(physical_lane_by_entry) != seen_pin_entries
         ):
             raise ValidationError("pin plan must cover every schedule entry exactly")
+
+        if virtual_board is not None:
+            membership_counts = {
+                identity: 0 for identity in binding_contract_records
+            }
+            membership_digests = {
+                identity: hashlib.sha256()
+                for identity in binding_contract_records
+            }
+            for row in connection.execute(
+                "SELECT schedule_entry,link,wire,source_fpga,sink_fpga "
+                "FROM binding_entries ORDER BY schedule_entry"
+            ):
+                for role, fpga_column in (
+                    ("source", "source_fpga"),
+                    ("sink", "sink_fpga"),
+                ):
+                    lookup_key = (
+                        str(row[fpga_column]),
+                        str(row["link"]),
+                        int(row["wire"]),
+                        role,
+                    )
+                    identity = binding_contract_lookup.get(lookup_key)
+                    if identity is None:
+                        raise ValidationError(
+                            "virtual binding physical-port relation is incomplete"
+                        )
+                    membership_counts[identity] += 1
+                    membership_digests[identity].update(
+                        _canonical(str(row["schedule_entry"])).encode("utf-8")
+                    )
+                    membership_digests[identity].update(b"\n")
+            connection.executemany(
+                "INSERT INTO binding_physical_ports VALUES (?,?,?,?,?)",
+                (
+                    (
+                        identity[0],
+                        identity[1],
+                        _canonical(record),
+                        membership_counts[identity],
+                        membership_digests[identity].hexdigest(),
+                    )
+                    for identity, record in sorted(
+                        binding_contract_records.items()
+                    )
+                ),
+            )
 
         if exact_mode:
             missing = connection.execute(

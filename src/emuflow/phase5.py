@@ -35,6 +35,7 @@ from .tdm_ratio import (
 )
 from .tdm_slot import refine_tdm_schedule_native
 from .tdm_schedule_storage import (
+    FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
     TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
     read_tdm_schedule,
     write_tdm_schedule_storage,
@@ -464,10 +465,15 @@ def run_phase5(
     report["schedule_storage"] = {
         "schema": schedule_storage["schema"],
         "dataflow": (
-            "typed-sqlite-entry-relation-v1"
+            "typed-sqlite-route-entry-completion-relations-v1"
             if schedule_storage["schema"]
-            == TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
-            else "indexed-sqlite-ordered-records-v1"
+            == FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+            else (
+                "typed-sqlite-entry-relation-v1"
+                if schedule_storage["schema"]
+                == TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+                else "indexed-sqlite-ordered-records-v1"
+            )
         ),
         "wall_seconds": time.monotonic() - schedule_storage_started,
         "bytes": schedule_storage["store_bytes"],

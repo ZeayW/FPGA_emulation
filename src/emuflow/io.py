@@ -50,6 +50,7 @@ def read_json(path: Path) -> Dict[str, Any]:
         "emuflow.tdm-schedule-storage/v1",
         "emuflow.tdm-schedule-storage/v2",
         "emuflow.tdm-schedule-storage/v3",
+        "emuflow.tdm-schedule-storage/v4",
     }:
         from .tdm_schedule_storage import expand_tdm_schedule_storage
 

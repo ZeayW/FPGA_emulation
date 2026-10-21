@@ -15,7 +15,7 @@ namespace {
 
 constexpr std::uint64_t kInputMagic = 0x31584553464d5545ULL;
 constexpr std::uint64_t kOutputMagic = 0x315845534f4d5545ULL;
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersion = 2;
 
 struct Instance {
   bool state = false;
@@ -252,7 +252,16 @@ void Analyze(const std::string& input_path, const std::string& output_path) {
       }
     }
   }
-  std::sort(captures.begin(), captures.end());
+  // Protocol v2 emits endpoint-token order so the Python adapter can replay
+  // EmuIR endpoints once while retaining capture requests as fixed-width
+  // integer columns. Cut and part ordinals provide a deterministic total
+  // order and keep exact duplicates adjacent for removal.
+  std::sort(captures.begin(), captures.end(),
+            [](const auto& left, const auto& right) {
+              if (left[2] != right[2]) return left[2] < right[2];
+              if (left[0] != right[0]) return left[0] < right[0];
+              return left[1] < right[1];
+            });
   captures.erase(std::unique(captures.begin(), captures.end()), captures.end());
 
   emuflow::core::AtomicBinaryWriter output(output_path);

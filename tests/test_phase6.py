@@ -41,6 +41,7 @@ from emuflow.phase3_assignment_index import (
 )
 from emuflow.split_netlist_storage import (
     SplitNetlistView,
+    _schedule_incoming_rows,
     build_streaming_split_metadata,
     read_split_netlist_sqlite,
     write_split_netlists_sqlite,
@@ -364,6 +365,74 @@ class Phase6Test(unittest.TestCase):
                     for fpga, value in legacy["anchors"].items()
                 },
             )
+
+    def test_phase6_incoming_join_consumes_persisted_v4_static_exact(self) -> None:
+        schedule = {
+            "schema": "emuflow.tdm-schedule/v1",
+            "design": "phase6-v4-incoming",
+            "platform": "three",
+            "provider": "deterministic-dependency-earliest-slot-v1",
+            "qualification": "dependency-schedule-readiness-pass",
+            "transport_semantics": "registered-boundary",
+            "route_constraints": {"frame_slots": 8},
+            "routes": [
+                {
+                    "id": "d0",
+                    "net": "n0",
+                    "source": "a",
+                    "sinks": ["c"],
+                    "tree_edges": [
+                        {"link": "ab", "from": "a", "to": "b"},
+                        {"link": "bc", "from": "b", "to": "c"},
+                    ],
+                }
+            ],
+            "entries": [
+                {
+                    "id": f"s{index:06d}",
+                    "demand": "d0",
+                    "net": "n0",
+                    "hop": index,
+                    "link": link,
+                    "from": source,
+                    "to": sink,
+                    "capacity_key": f"{link}:{source}:{sink}",
+                    "slot": index,
+                    "lane": 0,
+                    "ready_slot": index,
+                    "arrival_slot": index + 1,
+                }
+                for index, (link, source, sink) in enumerate(
+                    (("ab", "a", "b"), ("bc", "b", "c"))
+                )
+            ],
+            "demand_completions": [
+                {
+                    "demand": "d0",
+                    "net": "n0",
+                    "source_ready_slot": 0,
+                    "completion_slot": 2,
+                    "sink_arrival_slots": {"c": 2},
+                }
+            ],
+            "domain_schedules": [],
+            "metrics": {"scheduled_bit_hops": 2},
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "schedule.json"
+            manifest = write_tdm_schedule_storage(path, schedule)
+            self.assertEqual(
+                manifest["schema"], "emuflow.tdm-schedule-storage/v4"
+            )
+            with open_tdm_schedule_view(path) as indexed:
+                rows = list(
+                    _schedule_incoming_rows(
+                        indexed, {"a": 0, "b": 1, "c": 2}
+                    )
+                )
+        self.assertEqual(
+            rows, [("n0", 1, "s000000"), ("n0", 2, "s000001")]
+        )
 
     def test_transport_store_joins_indexed_pin_plan_by_entry_identity(
         self,

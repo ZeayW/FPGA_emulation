@@ -1,6 +1,8 @@
 """Phase 6 materializes and independently replays the declared virtual board."""
 import copy
+import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,8 @@ from emuflow.transport_storage import (
     read_virtual_binding,
 )
 from emuflow.virtual_board import (
+    IO_CONTRACT_STORAGE_SCHEMA,
+    build_virtual_io_physical_contract,
     build_virtual_binding,
     virtual_binding_to_systemverilog,
     virtual_binding_to_xdc,
@@ -128,6 +132,79 @@ def test_indexed_binding_emits_adapter_without_iterating_hop_entries(tmp_path, i
         assert virtual_binding_to_systemverilog(
             view, fpga
         ) == virtual_binding_to_systemverilog(materialized, fpga)
+
+        indexed_contract = build_virtual_io_physical_contract(
+            view,
+            fpga,
+            xdc_path=out / fpga / 'virtual_data_pins.xdc',
+            adapter_path=out / fpga / 'virtual_differential_io.sv',
+        )
+        legacy_contract = build_virtual_io_physical_contract(
+            materialized,
+            fpga,
+            xdc_path=out / fpga / 'virtual_data_pins.xdc',
+            adapter_path=out / fpga / 'virtual_differential_io.sv',
+        )
+        assert indexed_contract['schema'] == IO_CONTRACT_STORAGE_SCHEMA
+        assert indexed_contract['metrics'] == legacy_contract['metrics']
+        assert len(indexed_contract['entries']) == len(legacy_contract['entries'])
+        legacy_by_id = {entry['id']: entry for entry in legacy_contract['entries']}
+        for entry in indexed_contract['entries']:
+            legacy = legacy_by_id[entry['id']]
+            members = legacy.pop('schedule_entries')
+            count = entry.pop('schedule_entry_count')
+            digest = entry.pop('schedule_entries_sha256')
+            assert entry == legacy
+            assert count == len(members)
+            expected = hashlib.sha256()
+            for member in members:
+                expected.update(json.dumps(member, separators=(',', ':')).encode())
+                expected.update(b'\n')
+            assert digest == expected.hexdigest()
+
+
+@pytest.mark.parametrize('field', ['schedule_entry_count', 'schedule_entries_sha256'])
+def test_indexed_physical_contract_rejects_resealed_membership_tamper(
+    tmp_path, inputs, field
+):
+    _, out, _ = emit(tmp_path, inputs)
+    selector_path = out / 'virtual_board_binding.json'
+    selector = json.loads(selector_path.read_text(encoding='utf-8'))
+    store = out / selector['artifact']
+    with sqlite3.connect(store) as connection:
+        row = connection.execute(
+            'SELECT fpga,p_port,schedule_entry_count,schedule_entries_sha256 '
+            'FROM binding_physical_ports ORDER BY fpga,p_port LIMIT 1'
+        ).fetchone()
+        assert row is not None
+        value = (
+            int(row[2]) + 1
+            if field == 'schedule_entry_count'
+            else ('0' * 64 if row[3] != '0' * 64 else '1' * 64)
+        )
+        connection.execute(
+            f'UPDATE binding_physical_ports SET {field}=? '
+            'WHERE fpga=? AND p_port=?',
+            (value, row[0], row[1]),
+        )
+    selector['store_bytes'] = store.stat().st_size
+    selector['store_sha256'] = hashlib.sha256(store.read_bytes()).hexdigest()
+    selector_path.write_text(
+        json.dumps(selector, separators=(',', ':'), sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+
+    binding = read_virtual_binding(selector_path)
+    with pytest.raises(
+        ValidationError,
+        match='physical-port membership disagrees with binding entries',
+    ):
+        build_virtual_io_physical_contract(
+            binding,
+            str(row[0]),
+            xdc_path=out / str(row[0]) / 'virtual_data_pins.xdc',
+            adapter_path=out / str(row[0]) / 'virtual_differential_io.sv',
+        )
 
 
 def test_phase6_streams_adapter_files_without_building_complete_strings(

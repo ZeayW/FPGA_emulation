@@ -26,15 +26,18 @@ from .io import file_sha256, write_json
 LEGACY_TDM_SCHEDULE_STORAGE_SCHEMA = "emuflow.tdm-schedule-storage/v1"
 TDM_SCHEDULE_STORAGE_SCHEMA = "emuflow.tdm-schedule-storage/v2"
 TYPED_TDM_SCHEDULE_STORAGE_SCHEMA = "emuflow.tdm-schedule-storage/v3"
+FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA = "emuflow.tdm-schedule-storage/v4"
 TDM_SCHEDULE_STORAGE_SCHEMAS = {
     LEGACY_TDM_SCHEDULE_STORAGE_SCHEMA,
     TDM_SCHEDULE_STORAGE_SCHEMA,
     TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
 }
 TDM_SCHEDULE_LOGICAL_SCHEMA = "emuflow.tdm-schedule/v1"
 TDM_SCHEDULE_APPLICATION_ID = 0x454D5554  # ASCII "EMUT"
 TDM_SCHEDULE_USER_VERSION = 1
 TYPED_TDM_SCHEDULE_USER_VERSION = 2
+FULLY_TYPED_TDM_SCHEDULE_USER_VERSION = 3
 TDM_SCHEDULE_STORE_NAME = "schedule.sqlite"
 TDM_SCHEDULE_STORE_PREFIX = "schedule."
 TDM_SCHEDULE_STORE_SUFFIX = ".sqlite"
@@ -70,6 +73,10 @@ CREATE TABLE records(
 """
 
 TYPED_ENTRY_RELATION_SCHEMA = "emuflow.tdm-schedule-entry-relation/v1"
+TYPED_ROUTE_RELATION_SCHEMA = "emuflow.tdm-schedule-route-relation/v1"
+TYPED_COMPLETION_RELATION_SCHEMA = (
+    "emuflow.tdm-schedule-completion-relation/v1"
+)
 TDM_EXACT_DEPENDENCY_PROVIDER = "deterministic-dependency-earliest-slot-v1"
 
 TYPED_DDL = LEGACY_DDL + """
@@ -92,6 +99,44 @@ CREATE TABLE schedule_entries(
 ) WITHOUT ROWID;
 """
 
+FULLY_TYPED_DDL = TYPED_DDL + """
+CREATE TABLE schedule_routes(
+  seq INTEGER NOT NULL UNIQUE,
+  demand TEXT NOT NULL PRIMARY KEY,
+  net TEXT NOT NULL,
+  source_fpga TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE schedule_route_sinks(
+  route_seq INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  sink_fpga TEXT NOT NULL,
+  PRIMARY KEY(route_seq,seq)
+) WITHOUT ROWID;
+CREATE TABLE schedule_route_edges(
+  route_seq INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  link_id TEXT NOT NULL,
+  source_fpga TEXT NOT NULL,
+  sink_fpga TEXT NOT NULL,
+  PRIMARY KEY(route_seq,seq)
+) WITHOUT ROWID;
+CREATE TABLE schedule_completions(
+  seq INTEGER NOT NULL UNIQUE,
+  demand TEXT NOT NULL PRIMARY KEY,
+  net TEXT NOT NULL,
+  source_ready_slot INTEGER NOT NULL,
+  completion_slot INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE schedule_completion_arrivals(
+  completion_seq INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  sink_fpga TEXT NOT NULL,
+  arrival_slot INTEGER NOT NULL,
+  PRIMARY KEY(completion_seq,seq),
+  UNIQUE(completion_seq,sink_fpga)
+) WITHOUT ROWID;
+"""
+
 TYPED_INDEX_DDL = """
 CREATE INDEX schedule_entries_seq ON schedule_entries(seq);
 CREATE INDEX schedule_entries_capacity_order
@@ -110,6 +155,16 @@ _TYPED_REQUIRED_INDEX_COLUMNS = {
         "sink_fpga",
     ),
     "schedule_entries_collision": ("capacity_key", "slot", "lane"),
+}
+
+_TYPED_ROUTE_KEYS = {"id", "net", "source", "sinks", "tree_edges"}
+_TYPED_ROUTE_EDGE_KEYS = {"link", "from", "to"}
+_TYPED_COMPLETION_KEYS = {
+    "demand",
+    "net",
+    "source_ready_slot",
+    "completion_slot",
+    "sink_arrival_slots",
 }
 
 NATIVE_EXACT_CANONICAL_ENTRY_CURSOR_SCHEMA = (
@@ -320,11 +375,200 @@ def _typed_entry_canonical(values: Sequence[Any]) -> str:
     )
 
 
+def _typed_route_values(
+    identity: str, record: Mapping[str, Any]
+) -> tuple[str, str, str, list[str], list[tuple[str, str, str]]]:
+    if set(record) != _TYPED_ROUTE_KEYS:
+        raise ValidationError("typed schedule route is malformed")
+    demand = record.get("id")
+    net = record.get("net")
+    source = record.get("source")
+    sinks = record.get("sinks")
+    edges = record.get("tree_edges")
+    if (
+        demand != identity
+        or not all(
+            isinstance(value, str) and value
+            for value in (demand, net, source)
+        )
+        or not isinstance(sinks, list)
+        or not all(isinstance(value, str) and value for value in sinks)
+        or not isinstance(edges, list)
+    ):
+        raise ValidationError("typed schedule route is malformed")
+    typed_edges: list[tuple[str, str, str]] = []
+    for edge in edges:
+        if not isinstance(edge, Mapping) or set(edge) != _TYPED_ROUTE_EDGE_KEYS:
+            raise ValidationError("typed schedule route edge is malformed")
+        values = (edge.get("link"), edge.get("from"), edge.get("to"))
+        if not all(isinstance(value, str) and value for value in values):
+            raise ValidationError("typed schedule route edge is malformed")
+        typed_edges.append(values)
+    return demand, net, source, list(sinks), typed_edges
+
+
+def _typed_route_mapping(
+    demand: str,
+    net: str,
+    source: str,
+    sinks: Sequence[str],
+    edges: Sequence[tuple[str, str, str]],
+) -> dict[str, Any]:
+    return {
+        "id": demand,
+        "net": net,
+        "source": source,
+        "sinks": list(sinks),
+        "tree_edges": [
+            {"link": link, "from": edge_source, "to": edge_sink}
+            for link, edge_source, edge_sink in edges
+        ],
+    }
+
+
+def _typed_route_canonical(
+    demand: str,
+    net: str,
+    source: str,
+    sinks: Sequence[str],
+    edges: Sequence[tuple[str, str, str]],
+) -> str:
+    encoded_sinks = ",".join(_canonical(sink) for sink in sinks)
+    encoded_edges = ",".join(
+        (
+            f'{{"from":{_canonical(edge_source)},'
+            f'"link":{_canonical(link)},"to":{_canonical(edge_sink)}}}'
+        )
+        for link, edge_source, edge_sink in edges
+    )
+    return (
+        f'{{"id":{_canonical(demand)},"net":{_canonical(net)},'
+        f'"sinks":[{encoded_sinks}],"source":{_canonical(source)},'
+        f'"tree_edges":[{encoded_edges}]}}'
+    )
+
+
+def _typed_completion_values(
+    identity: str, record: Mapping[str, Any]
+) -> tuple[str, str, int, int, list[tuple[str, int]]]:
+    if set(record) != _TYPED_COMPLETION_KEYS:
+        raise ValidationError("typed schedule completion is malformed")
+    demand = record.get("demand")
+    net = record.get("net")
+    source_ready = record.get("source_ready_slot")
+    completion = record.get("completion_slot")
+    arrivals = record.get("sink_arrival_slots")
+    if (
+        demand != identity
+        or not all(isinstance(value, str) and value for value in (demand, net))
+        or not all(
+            isinstance(value, int) and not isinstance(value, bool)
+            for value in (source_ready, completion)
+        )
+        or not isinstance(arrivals, Mapping)
+    ):
+        raise ValidationError("typed schedule completion is malformed")
+    typed_arrivals: list[tuple[str, int]] = []
+    for sink, arrival in arrivals.items():
+        if (
+            not isinstance(sink, str)
+            or not sink
+            or not isinstance(arrival, int)
+            or isinstance(arrival, bool)
+        ):
+            raise ValidationError("typed schedule sink arrival is malformed")
+        typed_arrivals.append((sink, arrival))
+    # Canonical logical records sort object keys, including sink identities.
+    typed_arrivals.sort()
+    return demand, net, source_ready, completion, typed_arrivals
+
+
+def _typed_completion_mapping(
+    demand: str,
+    net: str,
+    source_ready: int,
+    completion: int,
+    arrivals: Sequence[tuple[str, int]],
+) -> dict[str, Any]:
+    return {
+        "demand": demand,
+        "net": net,
+        "source_ready_slot": source_ready,
+        "completion_slot": completion,
+        "sink_arrival_slots": dict(arrivals),
+    }
+
+
+def _typed_completion_canonical(
+    demand: str,
+    net: str,
+    source_ready: int,
+    completion: int,
+    arrivals: Sequence[tuple[str, int]],
+) -> str:
+    encoded_arrivals = ",".join(
+        f"{_canonical(sink)}:{arrival}" for sink, arrival in arrivals
+    )
+    return (
+        f'{{"completion_slot":{completion},"demand":{_canonical(demand)},'
+        f'"net":{_canonical(net)},"sink_arrival_slots":'
+        f'{{{encoded_arrivals}}},"source_ready_slot":{source_ready}}}'
+    )
+
+
+def _validate_fully_typed_relation_structure(
+    connection: sqlite3.Connection,
+    *,
+    expected_routes: int,
+    expected_completions: int,
+    expected_sinks: int,
+    expected_edges: int,
+    expected_arrivals: int,
+) -> None:
+    for table, expected in (
+        ("schedule_routes", expected_routes),
+        ("schedule_completions", expected_completions),
+    ):
+        summary = connection.execute(
+            f"SELECT count(*),count(DISTINCT seq),min(seq),max(seq) FROM {table}"
+        ).fetchone()
+        if summary != (
+            expected,
+            expected,
+            0 if expected else None,
+            expected - 1 if expected else None,
+        ):
+            raise ValidationError(
+                f"{table} typed sequence is not contiguous"
+            )
+    for table, parent_column, parent_table, expected in (
+        ("schedule_route_sinks", "route_seq", "schedule_routes", expected_sinks),
+        ("schedule_route_edges", "route_seq", "schedule_routes", expected_edges),
+        (
+            "schedule_completion_arrivals",
+            "completion_seq",
+            "schedule_completions",
+            expected_arrivals,
+        ),
+    ):
+        count = connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        if count != expected:
+            raise ValidationError(f"{table} typed coverage disagrees")
+        gap = connection.execute(
+            f"SELECT 1 FROM {table} GROUP BY {parent_column} "
+            "HAVING min(seq)!=0 OR max(seq)!=count(*)-1 LIMIT 1"
+        ).fetchone()
+        orphan = connection.execute(
+            f"SELECT 1 FROM {table} c LEFT JOIN {parent_table} p "
+            f"ON p.seq=c.{parent_column} WHERE p.seq IS NULL LIMIT 1"
+        ).fetchone()
+        if gap is not None or orphan is not None:
+            raise ValidationError(f"{table} typed sequence is malformed")
 class ScheduleValidationIndex(Mapping[tuple[str, str, str, str], Mapping[str, Any]]):
     """Disk-backed typed hop index over one sealed ScheduleStore.
 
-    Store v3 owns this indexed relation directly.  Legacy v1/v2 stores retain
-    the former compatibility path which derives a temporary relation from
+    Stores v3/v4 own this indexed relation directly. Legacy v1/v2 stores
+    retain the compatibility path which derives a temporary relation from
     canonical JSON rows without constructing hop-sized Python containers.
     """
 
@@ -656,11 +900,12 @@ def _content_addressed_store_name(store_sha256: str) -> str:
 
 def _validate_manifest(value: Mapping[str, Any], path: Path) -> Path:
     schema = value.get("schema")
-    expected_user_version = (
-        TYPED_TDM_SCHEDULE_USER_VERSION
-        if schema == TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
-        else TDM_SCHEDULE_USER_VERSION
-    )
+    expected_user_version = {
+        TYPED_TDM_SCHEDULE_STORAGE_SCHEMA: TYPED_TDM_SCHEDULE_USER_VERSION,
+        FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA: (
+            FULLY_TYPED_TDM_SCHEDULE_USER_VERSION
+        ),
+    }.get(schema, TDM_SCHEDULE_USER_VERSION)
     if (
         schema not in TDM_SCHEDULE_STORAGE_SCHEMAS
         or value.get("logical_schema") != TDM_SCHEDULE_LOGICAL_SCHEMA
@@ -679,12 +924,16 @@ def _validate_manifest(value: Mapping[str, Any], path: Path) -> Path:
     if schema in {
         TDM_SCHEDULE_STORAGE_SCHEMA,
         TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+        FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
     } and (
         not isinstance(value.get("logical_pretty_sha256"), str)
         or len(value["logical_pretty_sha256"]) != 64
     ):
         raise ValidationError(f"{path}: schedule storage manifest is malformed")
-    if schema == TYPED_TDM_SCHEDULE_STORAGE_SCHEMA:
+    if schema in {
+        TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+        FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    }:
         relation = value.get("entry_relation")
         if (
             not isinstance(relation, dict)
@@ -701,6 +950,31 @@ def _validate_manifest(value: Mapping[str, Any], path: Path) -> Path:
         ):
             raise ValidationError(
                 f"{path}: schedule typed artifact identity disagrees"
+            )
+    if schema == FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA:
+        route_relation = value.get("route_relation")
+        completion_relation = value.get("completion_relation")
+        if (
+            not isinstance(route_relation, dict)
+            or route_relation.get("schema") != TYPED_ROUTE_RELATION_SCHEMA
+            or any(
+                isinstance(route_relation.get(key), bool)
+                or not isinstance(route_relation.get(key), int)
+                or route_relation[key] < 0
+                for key in ("records", "sink_records", "edge_records")
+            )
+            or not isinstance(completion_relation, dict)
+            or completion_relation.get("schema")
+            != TYPED_COMPLETION_RELATION_SCHEMA
+            or any(
+                isinstance(completion_relation.get(key), bool)
+                or not isinstance(completion_relation.get(key), int)
+                or completion_relation[key] < 0
+                for key in ("records", "arrival_records")
+            )
+        ):
+            raise ValidationError(
+                f"{path}: schedule typed route/completion relations are malformed"
             )
     sections = value["sections"]
     if set(sections) != set(TDM_SCHEDULE_SECTIONS):
@@ -719,12 +993,23 @@ def _validate_manifest(value: Mapping[str, Any], path: Path) -> Path:
                 f"{path}: schedule storage section {section!r} is malformed"
             )
     if (
-        schema == TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+        schema in {
+            TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+            FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+        }
         and value["entry_relation"]["records"]
         != sections["entries"]["records"]
     ):
         raise ValidationError(
             f"{path}: schedule typed entry relation coverage disagrees"
+        )
+    if schema == FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA and (
+        value["route_relation"]["records"] != sections["routes"]["records"]
+        or value["completion_relation"]["records"]
+        != sections["demand_completions"]["records"]
+    ):
+        raise ValidationError(
+            f"{path}: schedule typed route/completion coverage disagrees"
         )
     return _descriptor_store_path(path, value)
 
@@ -805,12 +1090,23 @@ def _publish_logical_schedule(
     schedule: Mapping[str, Any],
     *,
     typed_entries: bool,
-) -> tuple[str, str, dict[str, dict[str, Any]]]:
+    fully_typed: bool,
+) -> tuple[
+    str,
+    str,
+    dict[str, dict[str, Any]],
+    dict[str, int],
+]:
     """Hash and insert the schedule with one traversal of each large section."""
 
     compact_digest = hashlib.sha256()
     pretty_digest = hashlib.sha256()
     section_summaries: dict[str, dict[str, Any]] = {}
+    relation_counts = {
+        "route_sinks": 0,
+        "route_edges": 0,
+        "completion_arrivals": 0,
+    }
     header = {
         key: value
         for key, value in schedule.items()
@@ -833,8 +1129,64 @@ def _publish_logical_schedule(
             count = len(value)
             _update_digest(compact_digest, "[")
             _update_digest(pretty_digest, "[\n" if count else "[]")
-            pending: list[tuple[str, int, str | None, str]] = []
-            pending_typed: list[tuple[Any, ...]] = []
+            pending: list[tuple[str, int, str, str]] = []
+            pending_entries: list[tuple[Any, ...]] = []
+            pending_routes: list[tuple[Any, ...]] = []
+            pending_sinks: list[tuple[Any, ...]] = []
+            pending_edges: list[tuple[Any, ...]] = []
+            pending_completions: list[tuple[Any, ...]] = []
+            pending_arrivals: list[tuple[Any, ...]] = []
+
+            def flush_typed() -> None:
+                if pending_entries:
+                    connection.executemany(
+                        "INSERT INTO schedule_entries("
+                        "seq,entry_id,demand,net,hop,link_id,source_fpga,"
+                        "sink_fpga,capacity_key,slot,lane,ready_slot,"
+                        "arrival_slot,tdm_ratio) VALUES (?,?,?,?,?,?,?,?,"
+                        "?,?,?,?,?,?)",
+                        pending_entries,
+                    )
+                    pending_entries.clear()
+                if pending_routes:
+                    connection.executemany(
+                        "INSERT INTO schedule_routes("
+                        "seq,demand,net,source_fpga) VALUES (?,?,?,?)",
+                        pending_routes,
+                    )
+                    pending_routes.clear()
+                if pending_sinks:
+                    connection.executemany(
+                        "INSERT INTO schedule_route_sinks("
+                        "route_seq,seq,sink_fpga) VALUES (?,?,?)",
+                        pending_sinks,
+                    )
+                    pending_sinks.clear()
+                if pending_edges:
+                    connection.executemany(
+                        "INSERT INTO schedule_route_edges("
+                        "route_seq,seq,link_id,source_fpga,sink_fpga) "
+                        "VALUES (?,?,?,?,?)",
+                        pending_edges,
+                    )
+                    pending_edges.clear()
+                if pending_completions:
+                    connection.executemany(
+                        "INSERT INTO schedule_completions("
+                        "seq,demand,net,source_ready_slot,completion_slot) "
+                        "VALUES (?,?,?,?,?)",
+                        pending_completions,
+                    )
+                    pending_completions.clear()
+                if pending_arrivals:
+                    connection.executemany(
+                        "INSERT INTO schedule_completion_arrivals("
+                        "completion_seq,seq,sink_fpga,arrival_slot) "
+                        "VALUES (?,?,?,?)",
+                        pending_arrivals,
+                    )
+                    pending_arrivals.clear()
+
             observed = 0
             canonical_cursor = getattr(value, "iter_canonical_records", None)
             cursor_schema = getattr(
@@ -858,8 +1210,7 @@ def _publish_logical_schedule(
                 validate_canonical = _validate_native_exact_canonical_entry
             elif (
                 key == "entries"
-                and cursor_schema
-                == NATIVE_EXACT_CANONICAL_ENTRY_CURSOR_SCHEMA
+                and cursor_schema == NATIVE_EXACT_CANONICAL_ENTRY_CURSOR_SCHEMA
                 and callable(canonical_cursor)
             ):
                 source = (
@@ -875,27 +1226,70 @@ def _publish_logical_schedule(
                     for item in value
                 )
                 validate_canonical = None
+
             for seq, (identity, encoded, typed_value) in enumerate(source):
                 observed += 1
+                stored_typed = False
                 if typed_entries and key == "entries":
                     if typed_value is None:
                         raise ValidationError(
                             "typed schedule entry cursor is unavailable"
                         )
-                    values = (
+                    entry_values = (
                         _typed_entry_values(identity, typed_value)
                         if isinstance(typed_value, Mapping)
-                        else _validate_typed_entry_values(
-                            identity, typed_value
-                        )
+                        else _validate_typed_entry_values(identity, typed_value)
                     )
-                    canonical = _typed_entry_canonical(values)
+                    canonical = _typed_entry_canonical(entry_values)
                     if encoded is not None and canonical != encoded:
                         raise ValidationError(
                             "typed schedule entry disagrees with canonical record"
                         )
                     encoded = canonical
-                    pending_typed.append((seq, *values))
+                    pending_entries.append((seq, *entry_values))
+                    stored_typed = True
+                elif fully_typed and key == "routes":
+                    if not isinstance(typed_value, Mapping):
+                        raise ValidationError("typed schedule route is malformed")
+                    demand, net, route_source, sinks, edges = _typed_route_values(
+                        identity, typed_value
+                    )
+                    encoded = _typed_route_canonical(
+                        demand, net, route_source, sinks, edges
+                    )
+                    pending_routes.append((seq, demand, net, route_source))
+                    pending_sinks.extend(
+                        (seq, child_seq, sink)
+                        for child_seq, sink in enumerate(sinks)
+                    )
+                    pending_edges.extend(
+                        (seq, child_seq, *edge)
+                        for child_seq, edge in enumerate(edges)
+                    )
+                    relation_counts["route_sinks"] += len(sinks)
+                    relation_counts["route_edges"] += len(edges)
+                    stored_typed = True
+                elif fully_typed and key == "demand_completions":
+                    if not isinstance(typed_value, Mapping):
+                        raise ValidationError(
+                            "typed schedule completion is malformed"
+                        )
+                    demand, net, ready, completion, arrivals = (
+                        _typed_completion_values(identity, typed_value)
+                    )
+                    encoded = _typed_completion_canonical(
+                        demand, net, ready, completion, arrivals
+                    )
+                    pending_completions.append(
+                        (seq, demand, net, ready, completion)
+                    )
+                    pending_arrivals.extend(
+                        (seq, child_seq, sink, arrival)
+                        for child_seq, (sink, arrival) in enumerate(arrivals)
+                    )
+                    relation_counts["completion_arrivals"] += len(arrivals)
+                    stored_typed = True
+
                 if (
                     not isinstance(identity, str)
                     or not identity
@@ -921,26 +1315,24 @@ def _publish_logical_schedule(
                         _update_digest(pretty_digest, "\n")
                 if seq + 1 < count:
                     _update_digest(pretty_digest, ",\n")
-                if typed_entries and key == "entries":
-                    if len(pending_typed) >= 4096:
-                        connection.executemany(
-                            "INSERT INTO schedule_entries("
-                            "seq,entry_id,demand,net,hop,link_id,source_fpga,"
-                            "sink_fpga,capacity_key,slot,lane,ready_slot,"
-                            "arrival_slot,tdm_ratio) VALUES (?,?,?,?,?,?,?,?,"
-                            "?,?,?,?,?,?)",
-                            pending_typed,
-                        )
-                        pending_typed.clear()
-                else:
+                if not stored_typed:
                     pending.append((key, seq, identity, encoded))
-                    if len(pending) >= 4096:
-                        connection.executemany(
-                            "INSERT INTO records(section,seq,identity,record_json) "
-                            "VALUES (?,?,?,?)",
-                            pending,
-                        )
-                        pending.clear()
+                if len(pending) >= 4096:
+                    connection.executemany(
+                        "INSERT INTO records(section,seq,identity,record_json) "
+                        "VALUES (?,?,?,?)",
+                        pending,
+                    )
+                    pending.clear()
+                if max(
+                    len(pending_entries),
+                    len(pending_routes),
+                    len(pending_sinks),
+                    len(pending_edges),
+                    len(pending_completions),
+                    len(pending_arrivals),
+                ) >= 4096:
+                    flush_typed()
             if observed != count:
                 raise ValidationError(
                     f"schedule.{key}: length changed during publication"
@@ -951,15 +1343,7 @@ def _publish_logical_schedule(
                     "VALUES (?,?,?,?)",
                     pending,
                 )
-            if pending_typed:
-                connection.executemany(
-                    "INSERT INTO schedule_entries("
-                    "seq,entry_id,demand,net,hop,link_id,source_fpga,"
-                    "sink_fpga,capacity_key,slot,lane,ready_slot,"
-                    "arrival_slot,tdm_ratio) VALUES (?,?,?,?,?,?,?,?,"
-                    "?,?,?,?,?,?)",
-                    pending_typed,
-                )
+            flush_typed()
             _update_digest(compact_digest, "]")
             if count:
                 _update_digest(pretty_digest, "\n  ]")
@@ -992,13 +1376,40 @@ def _publish_logical_schedule(
     if typed_entries:
         metadata.extend(
             (
-                (
-                    "entry_relation_schema",
-                    _canonical(TYPED_ENTRY_RELATION_SCHEMA),
-                ),
+                ("entry_relation_schema", _canonical(TYPED_ENTRY_RELATION_SCHEMA)),
                 (
                     "entry_relation_records",
                     _canonical(section_summaries["entries"]["records"]),
+                ),
+            )
+        )
+    if fully_typed:
+        metadata.extend(
+            (
+                ("route_relation_schema", _canonical(TYPED_ROUTE_RELATION_SCHEMA)),
+                (
+                    "route_relation_records",
+                    _canonical(section_summaries["routes"]["records"]),
+                ),
+                (
+                    "route_relation_sink_records",
+                    _canonical(relation_counts["route_sinks"]),
+                ),
+                (
+                    "route_relation_edge_records",
+                    _canonical(relation_counts["route_edges"]),
+                ),
+                (
+                    "completion_relation_schema",
+                    _canonical(TYPED_COMPLETION_RELATION_SCHEMA),
+                ),
+                (
+                    "completion_relation_records",
+                    _canonical(section_summaries["demand_completions"]["records"]),
+                ),
+                (
+                    "completion_relation_arrival_records",
+                    _canonical(relation_counts["completion_arrivals"]),
                 ),
             )
         )
@@ -1009,8 +1420,8 @@ def _publish_logical_schedule(
         compact_digest.hexdigest(),
         pretty_digest.hexdigest(),
         section_summaries,
+        relation_counts,
     )
-
 
 def write_tdm_schedule_storage(
     manifest_path: Path,
@@ -1026,13 +1437,22 @@ def write_tdm_schedule_storage(
             raise ValidationError(f"schedule.{section}: expected an array")
 
     typed_entries = schedule.get("provider") == TDM_EXACT_DEPENDENCY_PROVIDER
+    fully_typed = bool(
+        typed_entries
+        and schedule.get("qualification")
+        == "dependency-schedule-readiness-pass"
+    )
     storage_schema = (
-        TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+        FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+        if fully_typed
+        else TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
         if typed_entries
         else TDM_SCHEDULE_STORAGE_SCHEMA
     )
     user_version = (
-        TYPED_TDM_SCHEDULE_USER_VERSION
+        FULLY_TYPED_TDM_SCHEDULE_USER_VERSION
+        if fully_typed
+        else TYPED_TDM_SCHEDULE_USER_VERSION
         if typed_entries
         else TDM_SCHEDULE_USER_VERSION
     )
@@ -1052,13 +1472,21 @@ def write_tdm_schedule_storage(
         connection.execute("PRAGMA temp_store=FILE")
         connection.execute(f"PRAGMA application_id={TDM_SCHEDULE_APPLICATION_ID}")
         connection.execute(f"PRAGMA user_version={user_version}")
-        connection.executescript(TYPED_DDL if typed_entries else LEGACY_DDL)
+        connection.executescript(
+            FULLY_TYPED_DDL if fully_typed else (
+                TYPED_DDL if typed_entries else LEGACY_DDL
+            )
+        )
         (
             logical_sha256,
             logical_pretty_sha256,
             section_summaries,
+            relation_counts,
         ) = _publish_logical_schedule(
-            connection, schedule, typed_entries=typed_entries
+            connection,
+            schedule,
+            typed_entries=typed_entries,
+            fully_typed=fully_typed,
         )
         if typed_entries:
             connection.executescript(TYPED_INDEX_DDL)
@@ -1119,6 +1547,18 @@ def write_tdm_schedule_storage(
         manifest["entry_relation"] = {
             "schema": TYPED_ENTRY_RELATION_SCHEMA,
             "records": section_summaries["entries"]["records"],
+        }
+    if fully_typed:
+        manifest["route_relation"] = {
+            "schema": TYPED_ROUTE_RELATION_SCHEMA,
+            "records": section_summaries["routes"]["records"],
+            "sink_records": relation_counts["route_sinks"],
+            "edge_records": relation_counts["route_edges"],
+        }
+        manifest["completion_relation"] = {
+            "schema": TYPED_COMPLETION_RELATION_SCHEMA,
+            "records": section_summaries["demand_completions"]["records"],
+            "arrival_records": relation_counts["completion_arrivals"],
         }
     # The manifest is the publication commit point.  A reader observing the
     # previous manifest continues to reject any mismatched store identity.
@@ -1231,6 +1671,12 @@ _TYPED_ENTRY_COLUMNS = (
 )
 
 
+def _qualified_typed_entry_columns(alias: str) -> str:
+    return ",".join(
+        f"{alias}.{column}" for column in _TYPED_ENTRY_COLUMNS.split(",")
+    )
+
+
 class TypedScheduleEntrySequence(Sequence[Mapping[str, Any]]):
     """Lazy logical entry sequence backed only by typed ScheduleStore rows."""
 
@@ -1315,6 +1761,229 @@ class TypedScheduleEntrySequence(Sequence[Mapping[str, Any]]):
             connection.close()
 
 
+class TypedScheduleRouteSequence(Sequence[Mapping[str, Any]]):
+    """Lazy route records reconstructed from normalized typed relations."""
+
+    section = "routes"
+
+    def __init__(self, store_path: Path, count: int, digest: str):
+        self._store_path = store_path
+        self._count = count
+        self.expected_sha256 = digest
+
+    def __len__(self) -> int:
+        return self._count
+
+    def _iter_values(
+        self, order: str
+    ) -> Iterator[tuple[str, str, str, list[str], list[tuple[str, str, str]]]]:
+        connection = sqlite3.connect(
+            f"file:{self._store_path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        try:
+            parents = connection.execute(
+                "SELECT seq,demand,net,source_fpga FROM schedule_routes "
+                f"ORDER BY {order}"
+            )
+            joined_order = "r.seq" if order == "seq" else "r.demand"
+            sinks = iter(connection.execute(
+                "SELECT r.seq,s.sink_fpga FROM schedule_routes r "
+                "JOIN schedule_route_sinks s ON s.route_seq=r.seq "
+                f"ORDER BY {joined_order},s.seq"
+            ))
+            edges = iter(connection.execute(
+                "SELECT r.seq,e.link_id,e.source_fpga,e.sink_fpga "
+                "FROM schedule_routes r JOIN schedule_route_edges e "
+                "ON e.route_seq=r.seq "
+                f"ORDER BY {joined_order},e.seq"
+            ))
+            sink_row = next(sinks, None)
+            edge_row = next(edges, None)
+            observed = 0
+            for route_seq, demand, net, source in parents:
+                observed += 1
+                route_sinks: list[str] = []
+                while sink_row is not None and sink_row[0] == route_seq:
+                    route_sinks.append(sink_row[1])
+                    sink_row = next(sinks, None)
+                route_edges: list[tuple[str, str, str]] = []
+                while edge_row is not None and edge_row[0] == route_seq:
+                    route_edges.append(tuple(edge_row[1:]))
+                    edge_row = next(edges, None)
+                yield demand, net, source, route_sinks, route_edges
+            if observed != self._count or sink_row is not None or edge_row is not None:
+                raise ValidationError(
+                    "schedule routes typed relation coverage disagrees"
+                )
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "schedule routes typed relation is unreadable"
+            ) from error
+        finally:
+            connection.close()
+
+    def __iter__(self) -> Iterator[Mapping[str, Any]]:
+        return (
+            _typed_route_mapping(*values)
+            for values in self._iter_values("seq")
+        )
+
+    def iter_canonical_records(self) -> Iterator[str]:
+        return (
+            _typed_route_canonical(*values)
+            for values in self._iter_values("seq")
+        )
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(self._count))]
+        if index < 0:
+            index += self._count
+        if index < 0 or index >= self._count:
+            raise IndexError(index)
+        connection = sqlite3.connect(
+            f"file:{self._store_path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        try:
+            parent = connection.execute(
+                "SELECT demand,net,source_fpga FROM schedule_routes WHERE seq=?",
+                (index,),
+            ).fetchone()
+            if parent is None:
+                raise ValidationError(
+                    "schedule routes typed sequence is not contiguous"
+                )
+            sinks = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT sink_fpga FROM schedule_route_sinks "
+                    "WHERE route_seq=? ORDER BY seq",
+                    (index,),
+                )
+            ]
+            edges = [
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT link_id,source_fpga,sink_fpga "
+                    "FROM schedule_route_edges WHERE route_seq=? ORDER BY seq",
+                    (index,),
+                )
+            ]
+            return _typed_route_mapping(*parent, sinks, edges)
+        finally:
+            connection.close()
+
+    def iter_by_identity(self) -> Iterator[Mapping[str, Any]]:
+        return (
+            _typed_route_mapping(*values)
+            for values in self._iter_values("demand")
+        )
+
+
+class TypedScheduleCompletionSequence(Sequence[Mapping[str, Any]]):
+    """Lazy completion/sink-arrival records backed by typed rows."""
+
+    section = "demand_completions"
+
+    def __init__(self, store_path: Path, count: int, digest: str):
+        self._store_path = store_path
+        self._count = count
+        self.expected_sha256 = digest
+
+    def __len__(self) -> int:
+        return self._count
+
+    def _iter_values(
+        self, order: str
+    ) -> Iterator[tuple[str, str, int, int, list[tuple[str, int]]]]:
+        connection = sqlite3.connect(
+            f"file:{self._store_path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        try:
+            parents = connection.execute(
+                "SELECT seq,demand,net,source_ready_slot,completion_slot "
+                f"FROM schedule_completions ORDER BY {order}"
+            )
+            joined_order = "c.seq" if order == "seq" else "c.demand"
+            arrivals = iter(connection.execute(
+                "SELECT c.seq,a.sink_fpga,a.arrival_slot "
+                "FROM schedule_completions c "
+                "JOIN schedule_completion_arrivals a "
+                "ON a.completion_seq=c.seq "
+                f"ORDER BY {joined_order},a.seq"
+            ))
+            arrival_row = next(arrivals, None)
+            observed = 0
+            for completion_seq, demand, net, ready, completion in parents:
+                observed += 1
+                values: list[tuple[str, int]] = []
+                while arrival_row is not None and arrival_row[0] == completion_seq:
+                    values.append((arrival_row[1], arrival_row[2]))
+                    arrival_row = next(arrivals, None)
+                yield demand, net, ready, completion, values
+            if observed != self._count or arrival_row is not None:
+                raise ValidationError(
+                    "schedule completions typed relation coverage disagrees"
+                )
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "schedule completions typed relation is unreadable"
+            ) from error
+        finally:
+            connection.close()
+
+    def __iter__(self) -> Iterator[Mapping[str, Any]]:
+        return (
+            _typed_completion_mapping(*values)
+            for values in self._iter_values("seq")
+        )
+
+    def iter_canonical_records(self) -> Iterator[str]:
+        return (
+            _typed_completion_canonical(*values)
+            for values in self._iter_values("seq")
+        )
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(self._count))]
+        if index < 0:
+            index += self._count
+        if index < 0 or index >= self._count:
+            raise IndexError(index)
+        connection = sqlite3.connect(
+            f"file:{self._store_path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        try:
+            parent = connection.execute(
+                "SELECT demand,net,source_ready_slot,completion_slot "
+                "FROM schedule_completions WHERE seq=?",
+                (index,),
+            ).fetchone()
+            if parent is None:
+                raise ValidationError(
+                    "schedule completions typed sequence is not contiguous"
+                )
+            arrivals = [
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT sink_fpga,arrival_slot "
+                    "FROM schedule_completion_arrivals "
+                    "WHERE completion_seq=? ORDER BY seq",
+                    (index,),
+                )
+            ]
+            return _typed_completion_mapping(*parent, arrivals)
+        finally:
+            connection.close()
+
+    def iter_by_identity(self) -> Iterator[Mapping[str, Any]]:
+        return (
+            _typed_completion_mapping(*values)
+            for values in self._iter_values("demand")
+        )
+
+
 class TDMScheduleView(Mapping[str, Any]):
     """Lazy, relocatable view over a sealed schedule store."""
 
@@ -1334,8 +2003,13 @@ class TDMScheduleView(Mapping[str, Any]):
         ):
             raise ValidationError("schedule SQLite store digest disagrees")
         self.store_path = store_path
-        self._producer_owned_entries = (
-            self.manifest["schema"] == TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+        self._producer_owned_entries = self.manifest["schema"] in {
+            TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+            FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+        }
+        self._producer_owned_routes = (
+            self.manifest["schema"]
+            == FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
         )
         connection = sqlite3.connect(
             f"file:{store_path.resolve()}?mode=ro&immutable=1", uri=True
@@ -1372,12 +2046,46 @@ class TDMScheduleView(Mapping[str, Any]):
                 raise ValidationError(
                     "schedule typed entry metadata disagrees"
                 )
+            if self._producer_owned_routes and (
+                metadata.get("route_relation_schema")
+                != TYPED_ROUTE_RELATION_SCHEMA
+                or metadata.get("route_relation_records")
+                != self.manifest["route_relation"]["records"]
+                or metadata.get("route_relation_sink_records")
+                != self.manifest["route_relation"]["sink_records"]
+                or metadata.get("route_relation_edge_records")
+                != self.manifest["route_relation"]["edge_records"]
+                or metadata.get("completion_relation_schema")
+                != TYPED_COMPLETION_RELATION_SCHEMA
+                or metadata.get("completion_relation_records")
+                != self.manifest["completion_relation"]["records"]
+                or metadata.get("completion_relation_arrival_records")
+                != self.manifest["completion_relation"]["arrival_records"]
+            ):
+                raise ValidationError(
+                    "schedule typed route/completion metadata disagrees"
+                )
             self._header = metadata["header"]
             self._sections = {}
             for section in TDM_SCHEDULE_SECTIONS:
                 descriptor = self.manifest["sections"][section]
                 if section == "entries" and self._producer_owned_entries:
                     records = TypedScheduleEntrySequence(
+                        self.store_path,
+                        descriptor["records"],
+                        descriptor["sha256"],
+                    )
+                elif section == "routes" and self._producer_owned_routes:
+                    records = TypedScheduleRouteSequence(
+                        self.store_path,
+                        descriptor["records"],
+                        descriptor["sha256"],
+                    )
+                elif (
+                    section == "demand_completions"
+                    and self._producer_owned_routes
+                ):
+                    records = TypedScheduleCompletionSequence(
                         self.store_path,
                         descriptor["records"],
                         descriptor["sha256"],
@@ -1396,13 +2104,23 @@ class TDMScheduleView(Mapping[str, Any]):
                 )
             )
             for section, records in self._sections.items():
-                actual = (
-                    connection.execute(
+                if section == "entries" and self._producer_owned_entries:
+                    actual = connection.execute(
                         "SELECT count(*) FROM schedule_entries"
                     ).fetchone()[0]
-                    if section == "entries" and self._producer_owned_entries
-                    else int(actual_counts.get(section, 0))
-                )
+                elif section == "routes" and self._producer_owned_routes:
+                    actual = connection.execute(
+                        "SELECT count(*) FROM schedule_routes"
+                    ).fetchone()[0]
+                elif (
+                    section == "demand_completions"
+                    and self._producer_owned_routes
+                ):
+                    actual = connection.execute(
+                        "SELECT count(*) FROM schedule_completions"
+                    ).fetchone()[0]
+                else:
+                    actual = int(actual_counts.get(section, 0))
                 if actual != len(records):
                     raise ValidationError(
                         f"schedule {section} row count disagrees"
@@ -1417,8 +2135,38 @@ class TDMScheduleView(Mapping[str, Any]):
                 _validate_typed_relation_structure(
                     connection, len(self._sections["entries"])
                 )
+            if self._producer_owned_routes:
+                expected_record_sections.remove("routes")
+                expected_record_sections.remove("demand_completions")
+                if (
+                    "routes" in actual_counts
+                    or "demand_completions" in actual_counts
+                ):
+                    raise ValidationError(
+                        "typed schedule duplicates route/completion records"
+                    )
+                _validate_fully_typed_relation_structure(
+                    connection,
+                    expected_routes=len(self._sections["routes"]),
+                    expected_completions=len(
+                        self._sections["demand_completions"]
+                    ),
+                    expected_sinks=self.manifest["route_relation"][
+                        "sink_records"
+                    ],
+                    expected_edges=self.manifest["route_relation"][
+                        "edge_records"
+                    ],
+                    expected_arrivals=self.manifest["completion_relation"][
+                        "arrival_records"
+                    ],
+                )
             if set(actual_counts) - expected_record_sections:
                 raise ValidationError("schedule SQLite has an unknown section")
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "schedule SQLite typed relations are unreadable"
+            ) from error
         finally:
             connection.close()
 
@@ -1486,6 +2234,16 @@ class TDMScheduleView(Mapping[str, Any]):
                         "FROM schedule_entries ORDER BY seq"
                     )
                 )
+            elif (
+                self._producer_owned_routes
+                and section in {"routes", "demand_completions"}
+            ):
+                source = (
+                    (encoded,)
+                    for encoded in self._sections[
+                        section
+                    ].iter_canonical_records()
+                )
             else:
                 source = connection.execute(
                     "SELECT record_json FROM records "
@@ -1541,6 +2299,16 @@ class TDMScheduleView(Mapping[str, Any]):
                                 f"SELECT {_TYPED_ENTRY_COLUMNS} "
                                 "FROM schedule_entries ORDER BY seq"
                             )
+                        )
+                    elif (
+                        self._producer_owned_routes
+                        and key in {"routes", "demand_completions"}
+                    ):
+                        source = (
+                            (encoded,)
+                            for encoded in self._sections[
+                                key
+                            ].iter_canonical_records()
                         )
                     else:
                         source = connection.execute(
@@ -1621,7 +2389,42 @@ class TDMScheduleView(Mapping[str, Any]):
             f"file:{self.store_path.resolve()}?mode=ro&immutable=1", uri=True
         )
         try:
-            if self._producer_owned_entries:
+            if self._producer_owned_routes:
+                rows = connection.execute(
+                    f"""
+                    WITH ordered_sinks AS (
+                      SELECT route_seq,seq,json_quote(sink_fpga) AS value
+                      FROM schedule_route_sinks
+                      ORDER BY route_seq,seq
+                    ), route_sinks AS (
+                      SELECT route_seq,
+                             '[' || group_concat(value,',') || ']' AS value
+                      FROM ordered_sinks
+                      GROUP BY route_seq
+                    ), ordered_edges AS (
+                      SELECT route_seq,seq,
+                             '{{"link":' || json_quote(link_id) ||
+                             ',"from":' || json_quote(source_fpga) ||
+                             ',"to":' || json_quote(sink_fpga) || '}}' AS value
+                      FROM schedule_route_edges
+                      ORDER BY route_seq,seq
+                    ), route_edges AS (
+                      SELECT route_seq,
+                             '[' || group_concat(value,',') || ']' AS value
+                      FROM ordered_edges
+                      GROUP BY route_seq
+                    )
+                    SELECT {_qualified_typed_entry_columns("e")},
+                           r.demand,r.net,r.source_fpga,
+                           COALESCE(s.value,'[]'),COALESCE(t.value,'[]')
+                    FROM schedule_entries e
+                    JOIN schedule_routes r ON r.demand=e.demand
+                    LEFT JOIN route_sinks s ON s.route_seq=r.seq
+                    LEFT JOIN route_edges t ON t.route_seq=r.seq
+                    ORDER BY e.entry_id
+                    """
+                )
+            elif self._producer_owned_entries:
                 rows = connection.execute(
                     f"""
                     SELECT {_TYPED_ENTRY_COLUMNS},r.record_json
@@ -1646,13 +2449,32 @@ class TDMScheduleView(Mapping[str, Any]):
             count = 0
             for row in rows:
                 count += 1
-                if self._producer_owned_entries:
+                if self._producer_owned_routes:
+                    entry_values = _validate_typed_entry_values(
+                        row[0], row[:13]
+                    )
+                    entry = _typed_entry_mapping(entry_values)
+                    demand, net, source, sinks_json, edges_json = row[13:]
+                    sinks = json.loads(sinks_json)
+                    edge_records = json.loads(edges_json)
+                    route_record = {
+                        "id": demand,
+                        "net": net,
+                        "source": source,
+                        "sinks": sinks,
+                        "tree_edges": edge_records,
+                    }
+                    route = _typed_route_mapping(
+                        *_typed_route_values(demand, route_record)
+                    )
+                elif self._producer_owned_entries:
                     entry = _typed_entry_mapping(row[:-1])
                     route_json = row[-1]
                 else:
                     entry_json, route_json = row
                     entry = json.loads(entry_json)
-                route = json.loads(route_json)
+                if not self._producer_owned_routes:
+                    route = json.loads(route_json)
                 if not isinstance(entry, dict) or not isinstance(route, dict):
                     raise ValidationError(
                         "schedule entry/route join contains a malformed record"
@@ -1666,6 +2488,10 @@ class TDMScheduleView(Mapping[str, Any]):
             raise ValidationError(
                 "schedule entry/route join contains corrupt JSON"
             ) from error
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "schedule entry/route typed relation is unreadable"
+            ) from error
         finally:
             connection.close()
 
@@ -1678,7 +2504,24 @@ class TDMScheduleView(Mapping[str, Any]):
             f"file:{self.store_path.resolve()}?mode=ro&immutable=1", uri=True
         )
         try:
-            if self._producer_owned_entries:
+            if self._producer_owned_routes:
+                order_clause = (
+                    "length(e.entry_id),e.entry_id"
+                    if identity_order
+                    else "e.seq"
+                )
+                rows = connection.execute(
+                    f"""
+                    SELECT e.entry_id,e.entry_id,e.demand,e.net,e.link_id,
+                           e.source_fpga,e.sink_fpga,e.slot,e.arrival_slot,
+                           e.lane,e.tdm_ratio,r.demand,r.demand,r.net,
+                           r.source_fpga,1
+                    FROM schedule_entries e
+                    JOIN schedule_routes r ON r.demand=e.demand
+                    ORDER BY {order_clause}
+                    """
+                )
+            elif self._producer_owned_entries:
                 order_clause = (
                     "length(e.entry_id),e.entry_id"
                     if identity_order
@@ -1819,6 +2662,10 @@ class TDMScheduleView(Mapping[str, Any]):
                 raise ValidationError(
                     "typed schedule transport coverage disagrees"
                 )
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "schedule transport typed relation is unreadable"
+            ) from error
         finally:
             connection.close()
 
@@ -1831,7 +2678,16 @@ class TDMScheduleView(Mapping[str, Any]):
             f"file:{self.store_path.resolve()}?mode=ro&immutable=1", uri=True
         )
         try:
-            if self._producer_owned_entries:
+            if self._producer_owned_routes:
+                rows = connection.execute(
+                    """
+                    SELECT demand,link_id,source_fpga,sink_fpga,
+                           entry_id,entry_id,1
+                    FROM schedule_entries
+                    ORDER BY demand,link_id,source_fpga,sink_fpga,entry_id
+                    """
+                )
+            elif self._producer_owned_entries:
                 rows = connection.execute(
                     """
                     SELECT demand,link_id,source_fpga,sink_fpga,
@@ -1887,6 +2743,10 @@ class TDMScheduleView(Mapping[str, Any]):
                 raise ValidationError(
                     "schedule hop identity coverage disagrees"
                 )
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "schedule hop identity typed relation is unreadable"
+            ) from error
         finally:
             connection.close()
 
@@ -1897,7 +2757,26 @@ class TDMScheduleView(Mapping[str, Any]):
             f"file:{self.store_path.resolve()}?mode=ro&immutable=1", uri=True
         )
         try:
-            if self._producer_owned_entries:
+            if self._producer_owned_routes:
+                duplicate = connection.execute(
+                    """
+                    SELECT 1
+                    FROM schedule_entries e
+                    JOIN schedule_routes r ON r.demand=e.demand
+                    GROUP BY r.net,e.sink_fpga
+                    HAVING count(*) != 1
+                    LIMIT 1
+                    """
+                ).fetchone()
+                rows = connection.execute(
+                    """
+                    SELECT r.net,e.sink_fpga,e.entry_id
+                    FROM schedule_entries e
+                    JOIN schedule_routes r ON r.demand=e.demand
+                    ORDER BY r.net,e.sink_fpga,e.entry_id
+                    """
+                )
+            elif self._producer_owned_entries:
                 duplicate = connection.execute(
                     """
                     SELECT 1
@@ -1928,7 +2807,9 @@ class TDMScheduleView(Mapping[str, Any]):
                 raise ValidationError(
                     "a routed demand has multiple incoming hops at one FPGA"
                 )
-            if self._producer_owned_entries:
+            if self._producer_owned_routes:
+                pass
+            elif self._producer_owned_entries:
                 rows = connection.execute(
                     """
                     SELECT json_extract(r.record_json,'$.net'),
@@ -1967,6 +2848,10 @@ class TDMScheduleView(Mapping[str, Any]):
                 raise ValidationError(
                     "schedule incoming coverage disagrees"
                 )
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "schedule incoming typed relation is unreadable"
+            ) from error
         finally:
             connection.close()
 

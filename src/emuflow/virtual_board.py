@@ -30,6 +30,7 @@ MODEL = "xcvu19p-hp-lvds-cable-v1"
 WIRING_SCHEMA = "emuflow.virtual-board-wiring/v1"
 BINDING_SCHEMA = "emuflow.virtual-board-binding/v1"
 IO_CONTRACT_SCHEMA = "emuflow.virtual-io-physical-contract/v1"
+IO_CONTRACT_STORAGE_SCHEMA = "emuflow.virtual-io-physical-contract/v2"
 INVENTORY_PATH = Path(__file__).parent / "data/io/xcvu19p-fsva3824-2-e.hp-pins.json"
 FIXED_WIRING_ROOT = Path(__file__).resolve().parents[2] / "platforms/virtual"
 
@@ -809,6 +810,125 @@ def build_virtual_io_physical_contract(
         raise ValidationError(f"{fpga} virtual data-pin XDC differs from its binding")
     if not virtual_binding_systemverilog_matches(adapter_path, binding, fpga):
         raise ValidationError(f"{fpga} differential I/O adapter differs from its binding")
+
+    indexed_entries = getattr(binding, "iter_physical_contract_entries", None)
+    if indexed_entries is not None:
+        entries = [dict(record) for record in indexed_entries(fpga)]
+        entries.sort(key=lambda item: item.get("id", ""))
+        adapter_by_port = {
+            str(record["p"]["port"]): record
+            for record in _iter_binding_adapter_ports(binding, fpga)
+        }
+        seen = set()
+        seen_ports = set()
+        scheduled_hops = 0
+        for record in entries:
+            identity = record.get("id")
+            direction = record.get("direction")
+            count = record.get("schedule_entry_count")
+            digest = record.get("schedule_entries_sha256")
+            logical_port = record.get("logical_port")
+            logical_bit = record.get("logical_bit")
+            logical_width = record.get("logical_port_width")
+            p = record.get("p")
+            n = record.get("n")
+            p_port = p.get("port") if isinstance(p, Mapping) else None
+            n_port = n.get("port") if isinstance(n, Mapping) else None
+            p_package_pin = (
+                p.get("package_pin") if isinstance(p, Mapping) else None
+            )
+            n_package_pin = (
+                n.get("package_pin") if isinstance(n, Mapping) else None
+            )
+            p_site = p.get("site") if isinstance(p, Mapping) else None
+            n_site = n.get("site") if isinstance(n, Mapping) else None
+            adapter = adapter_by_port.get(p_port) if isinstance(p_port, str) else None
+            expected_role = "source" if direction == "tx" else "sink"
+            if (
+                not isinstance(identity, str)
+                or not identity
+                or identity in seen
+                or direction not in {"tx", "rx"}
+                or identity != f"{direction}:{p_port}"
+                or not isinstance(logical_port, str)
+                or re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", logical_port) is None
+                or isinstance(logical_bit, bool)
+                or not isinstance(logical_bit, int)
+                or isinstance(logical_width, bool)
+                or not isinstance(logical_width, int)
+                or logical_bit < 0
+                or logical_bit >= logical_width
+                or not isinstance(n_port, str)
+                or not isinstance(p_package_pin, str)
+                or not isinstance(n_package_pin, str)
+                or not isinstance(p_site, str)
+                or not isinstance(n_site, str)
+                or adapter is None
+                or adapter.get("role") != expected_role
+                or adapter.get("logical_port")
+                != f"{logical_port}[{logical_bit}]"
+                or adapter.get("logical_port_width") != logical_width
+                or adapter.get("iostandard") != record.get("iostandard")
+                or adapter.get("p", {}).get("package_pin")
+                != p_package_pin
+                or adapter.get("n", {}).get("package_pin")
+                != n_package_pin
+                or adapter.get("n", {}).get("port") != n_port
+                or isinstance(count, bool)
+                or not isinstance(count, int)
+                or count <= 0
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                raise ValidationError(
+                    "virtual I/O physical-port membership is invalid"
+                )
+            seen.add(identity)
+            seen_ports.add(p_port)
+            scheduled_hops += count
+        if seen_ports != set(adapter_by_port):
+            raise ValidationError(
+                "virtual I/O physical-port coverage differs from its adapter"
+            )
+        manifest = getattr(binding, "manifest", None)
+        relation = {
+            "logical_sha256": _artifact_digest(binding),
+            "membership": (
+                "per-port canonical JSON schedule-entry strings, newline framed"
+            ),
+            **(
+                {"store_sha256": manifest["store_sha256"]}
+                if isinstance(manifest, Mapping)
+                and isinstance(manifest.get("store_sha256"), str)
+                else {}
+            ),
+        }
+        return {
+            "schema": IO_CONTRACT_STORAGE_SCHEMA,
+            "status": "pass",
+            "provider": "phase6-indexed-xdc-differential-adapter-contract-v2",
+            "platform": binding["platform"],
+            "design": binding.get("design"),
+            "fpga": fpga,
+            "binding_sha256": _artifact_digest(binding),
+            "binding_relation": relation,
+            "xdc": {"path": str(xdc_path), "sha256": _file_sha256(xdc_path)},
+            "adapter": {
+                "path": str(adapter_path),
+                "sha256": _file_sha256(adapter_path),
+                "module": f"emuflow_virtual_io_{_name(fpga)}",
+            },
+            "implementation_contract": (
+                "one fixed RapidWright LVDS IOB at the P package pin; the verified "
+                "N package pin is the dedicated complementary mate"
+            ),
+            "entries": entries,
+            "metrics": {
+                "differential_pairs": len(entries),
+                "physical_ports": 2 * len(entries),
+                "scheduled_hops": scheduled_hops,
+            },
+        }
 
     records: Dict[str, Dict[str, Any]] = {}
     for item in binding["entries"]:

@@ -101,8 +101,14 @@ streams. Those four graph-scale relations feed the canonical digest and
 lists. Native capture analysis still returns a transient token vector, but
 Python now replays it into a scratch ordered relation and encodes the canonical
 byte-backed stream in one cursor pass, without raw, set, and sorted capture
-populations coexisting. Direct native binary emission, the analyzer's initial
-cut-name map and native input/capture vectors remain migration work.
+populations coexisting. Capture protocol v2 returns endpoint-token, cut and
+sink-partition records in canonical order; Python keeps those columns in three
+fixed-width arrays and no longer builds a tuple list or sorts it again. A
+200,000-record synthetic adapter benchmark reduced traced peak allocation from
+25,601,772 to 2,537,274 bytes (-90.1%). This is boundary evidence, not a
+replacement for the required NVDLA run. Direct native binary emission, the
+analyzer's initial cut-name map and native input/capture vectors remain
+migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
@@ -123,16 +129,20 @@ explicit compatibility materializer. Native hop output remains in a fixed
 record file and is exposed through a lazy, memory-mapped list-compatible view;
 Phase 5 validates every record but no longer creates one resident Python
 dictionary per hop before ScheduleStore publication. A versioned canonical
-typed cursor maps fixed records directly to the v3 entry relation, and the
-writer derives canonical records while computing both logical seals and
+typed cursor maps fixed records directly to the ScheduleStore entry relation,
+and the writer derives canonical records while computing both logical seals and
 each section seal in one bounded pass. Static Exact entries are not also kept
 as JSON rows. Native hops therefore reach ScheduleStore without first becoming
 Python dictionaries. Phase 6 now reads the ScheduleStore
 through a typed SQL projection which validates and joins routes without
 per-hop `json.loads` or Python entry/route dictionaries. When a typed pin plan
 is present, both streams use the same natural identity order, including IDs
-past six digits, before lockstep validation. The baseline splitter also opens
-the store lazily and performs incoming-cut joins in SQLite. Phase 6
+past six digits, before lockstep validation. Qualified Static Exact publication
+uses ScheduleStore v4: routes, route sinks/edges, completions and sink arrivals
+are typed relations, while only link-domain-scale records remain JSON.
+Cross-layer timing and the baseline splitter consume these relations directly;
+entry-route reconstruction uses one set query rather than two sink/edge queries
+per hop. Older v1--v3 stores remain readable. Phase 6
 batch-streams endpoint, lane, anchor and fixed-board binding records into one
 content-sealed TransportStore. Validation and RTL/XDC consumers iterate its
 selectors without rebuilding global hop dictionaries. Unique differential
@@ -141,6 +151,17 @@ SystemVerilog generation scale with physical port count instead of rescanning
 all scheduled hops for every FPGA. Those XDC and SystemVerilog artifacts are
 written atomically as streams, and independent validation compares streaming
 digests instead of building expected and observed whole-file strings.
+The same store now carries one `binding_physical_ports` row per real
+differential pair, including its member count and ordered member seal. Indexed
+physical-I/O contract v2 reads this bounded relation instead of rescanning and
+serializing every hop for every FPGA. Its reader independently recomputes each
+port's member count and seal from the authoritative binding-entry cursor before
+accepting the compact row. RWRoute accepts v1 and v2 without
+changing lane, slot, direction or fixed-pin semantics. On a synthetic
+200,000-hop, one-pair fixture, the emitted contract JSON fell from 3,001,270 to
+1,645 bytes (-99.95%). The current reader also performs the independent ordered
+membership scan, so timing and RSS must be measured again; NVDLA qualification
+remains pending.
 Placement-aware pin plans are published as a compact `pin_plan.json` selector
 plus a sealed `pin_plan.sqlite`. Transport construction lockstep-merges its
 typed lane cursor with schedule entries instead of building another hop-sized
@@ -160,12 +181,12 @@ electrical-binding input is still a full JSON list and remains Phase 6
 migration work.
 Transport RTL is written atomically from slot-ordered cursors. Python still
 decodes records into the stores and emits adapter text, so native producer
-migration remains. ScheduleStore v3 keeps Static Exact hop columns and its
-capacity/collision/identity indexes in the producer-owned store while sealing
+migration remains. ScheduleStore v4 keeps Static Exact hop, route and
+completion columns plus their indexes in the producer-owned store while sealing
 both historical logical digests. Physical orchestration, logic-segment query
 preparation and Phase 7C keep lazy views with unchanged timing and
 qualification identities; fixed-name v1/v2 stores remain readable, while new
-v2 and v3 writers use selector-last content-addressed publication. Cross-layer timing
+stores use selector-last content-addressed publication. Cross-layer timing
 certificate construction now merges a typed, ordered ScheduleStore hop cursor
 with routed-hop identities, avoiding per-hop JSON decoding and the former
 entry map plus duplicate coverage set/map.
@@ -202,11 +223,20 @@ Python migration work.
 
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
 from their sealed SQLite sidecar, reuses the in-process atomic-source view, and
-publishes one versioned `physical-handoff.sqlite`. Its normalized cluster and
-assignment rows are exposed as lazy PackedSiteNetlist and XilinxPlacement
+publishes one versioned `physical-handoff.sqlite`. Normalized clusters stream
+directly into a private same-directory SQLite artifact; the site-pin legalizer
+retains only slices containing MUX cells, while the independent validator keeps
+only the MUX/CARRY topology it must cross-check. Its cluster and assignment
+rows are exposed as lazy PackedSiteNetlist and XilinxPlacement
 views, so RWRoute export and routed timing consume the same indexed artifact
 without writing or rereading `packed-sites.json` and `placement.json`. The
-independent packing and placement validators run against those read-only views
+independent typed validator checks ownership, placement identity, site/BEL
+capacity and topology with uniqueness constraints, counts, one ordered
+assignment scan and bounded per-site state. Source-certificate ownership is
+compared in temporary disk-backed relations instead of a million-entry Python
+map. A second temporary relation preserves the old validator's all-output-bit
+multiple-driver rejection without constructing a whole-design driver map. All
+checks run on the private artifact before its atomic publication and
 before RapidWright starts; schema and row accounting are always checked, while
 SQLite `quick_check` remains an explicit diagnostic operation outside normal
 handoff. The standard JSON contracts remain available only through the
@@ -218,9 +248,10 @@ the deterministically ordered production rows also stream without constructing
 a duplicate cluster-to-placement dictionary. The publication timing is split
 into database write, handoff validation/hash, lazy-view open, packing
 validation, and placement validation so large NVDLA runs identify the actual
-handoff bottleneck. The bridge now owns each cluster and assignment once;
-packing and placement are bounded generated views over that same tree, so the
-production handoff no longer retains a second million-instance placement tree.
+handoff bottleneck. The production bridge no longer retains a shared Python
+cluster tree or invokes generic validators that rebuild full owner and
+placement maps. Packing and placement are bounded generated views over the
+same published typed artifact.
 Single-cluster access renders only that cluster instead of expanding the full
 view, and certificate coverage uses validated owner cardinality rather than a
 duplicate expected-cell set. Fixed-I/O anchor preparation queries indexed
@@ -553,7 +584,13 @@ target/runtime state instead of several duplicate path populations. Canonical
 report stitching consumes one contiguous path bundle at a time, retaining
 only the active identities and target/runtime rows; the expanded TSV writer
 returns final path records in the same pass instead of rereading the file.
-Interleaved legacy input uses an explicit checked compatibility fallback. See
+Representative membership uses a fixed-width integer map, and original-check
+measurements are exposed as a repeatable lazy sequence instead of another
+check-sized dictionary list. A 400,000-check synthetic benchmark reduced the
+membership map's shallow size by 50% and replaced a 147,293,552-byte eager
+overlay with a 592-byte lazy object; full original-check order and WNS/TNS
+accounting are unchanged. Interleaved legacy input uses an explicit checked
+compatibility fallback. See
 [timing scope and metric definitions](docs/global-opensta-qualification.md).
 
 ### Selected research references

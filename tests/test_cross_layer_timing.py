@@ -109,7 +109,76 @@ def _schedule(*, exact=False):
     }
 
 
+def _persistable_static_exact_schedule():
+    value = _schedule()
+    value.update(
+        {
+            "provider": "deterministic-dependency-earliest-slot-v1",
+            "qualification": "dependency-schedule-readiness-pass",
+            "routes": _routes()["routes"],
+            "demand_completions": [
+                {
+                    "demand": "d000000",
+                    "net": "n0",
+                    "source_ready_slot": 0,
+                    "completion_slot": 2,
+                    "sink_arrival_slots": {"c": 2},
+                }
+            ],
+            "domain_schedules": [
+                {
+                    "key": "ab:a:b",
+                    "link": "ab",
+                    "direction": "a->b",
+                    "scheduled_bit_hops": 1,
+                }
+            ],
+            "metrics": {"scheduled_bit_hops": 2},
+        }
+    )
+    for index, entry in enumerate(value["entries"]):
+        entry.update(
+            {
+                "net": "n0",
+                "hop": index,
+                "capacity_key": (
+                    f"{entry['link']}:{entry['from']}:{entry['to']}"
+                ),
+                "slot": index,
+                "lane": 0,
+                "ready_slot": index,
+                "arrival_slot": index + 1,
+            }
+        )
+    return value
+
+
 class CrossLayerTimingContractTest(unittest.TestCase):
+    def test_persisted_v4_static_exact_schedule_binds_all_route_hops(self):
+        routes = _routes()
+        schedule = _persistable_static_exact_schedule()
+        expected = build_cross_layer_timing_contract(routes, schedule)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "schedule.json"
+            manifest = write_tdm_schedule_storage(path, schedule)
+            self.assertEqual(
+                manifest["schema"], "emuflow.tdm-schedule-storage/v4"
+            )
+            indexed = read_tdm_schedule(path)
+            with mock.patch.object(
+                ScheduleRecordSequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "v4 cross-layer binding decoded legacy JSON records"
+                ),
+            ):
+                actual = build_cross_layer_timing_contract(routes, indexed)
+                validation = validate_cross_layer_timing_contract(
+                    routes, actual, indexed
+                )
+        self.assertEqual(actual, expected)
+        self.assertEqual(validation["status"], "pass")
+
     def test_indexed_schedule_hop_binding_avoids_record_decode(self):
         routes = _routes()
         schedule = {

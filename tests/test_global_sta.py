@@ -1,13 +1,15 @@
 import os
 import subprocess
+from array import array
 
 import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.global_sta import (
     EventCheck, _compress_path_equivalent_checks, _write_expanded_measurements,
-    adopt_opensta_results, bind_physical_checks, compare_system_timing, export_event_checks,
-    read_engine_identity, read_measurements, run_event_checks, validate_checks,
+    adopt_opensta_results, bind_physical_checks, build_opensta_timing,
+    compare_system_timing, export_event_checks, read_engine_identity,
+    read_measurements, run_event_checks, validate_checks,
 )
 
 
@@ -176,7 +178,8 @@ def test_exact_compression_uses_complete_path_bundles(tmp_path):
     rows = validate_checks(first + second + changed)
     representatives, mapping = _compress_path_equivalent_checks(rows)
     assert representatives == first + changed
-    assert mapping == list(range(5)) + list(range(5)) + list(range(5, 10))
+    assert isinstance(mapping, array)
+    assert list(mapping) == list(range(5)) + list(range(5)) + list(range(5, 10))
 
     values = [{"path": row.path, "role": row.role, "event": row.event,
                "arrival_ns": row.launch_ns + sum(row.arcs_ns),
@@ -186,6 +189,7 @@ def test_exact_compression_uses_complete_path_bundles(tmp_path):
     output = tmp_path / "measurements.tsv"
     emitted = _write_expanded_measurements(output, rows, values, mapping)
     expanded = read_measurements(output, rows)
+    assert not isinstance(emitted, list)
     assert emitted == expanded
     assert len(expanded) == len(rows)
     assert expanded[5]["path"] == "q"
@@ -213,7 +217,55 @@ def test_exact_compression_preserves_interleaved_compatibility():
     ])
     representatives, mapping = _compress_path_equivalent_checks(rows)
     assert representatives == rows[:1] + rows[2:3]
-    assert mapping == [0, 0, 1, 1]
+    assert list(mapping) == [0, 0, 1, 1]
+
+
+def test_lazy_expansion_is_reiterable_sliceable_and_fail_closed(tmp_path):
+    rows = validate_checks(example())
+    representatives, mapping = _compress_path_equivalent_checks(rows)
+    values = [
+        {
+            "path": row.path,
+            "role": row.role,
+            "event": row.event,
+            "arrival_ns": row.launch_ns + sum(row.arcs_ns),
+            "required_ns": row.required_ns,
+            "slack_ns": row.required_ns - row.launch_ns - sum(row.arcs_ns),
+        }
+        for row in representatives
+    ]
+    expanded = _write_expanded_measurements(
+        tmp_path / "measurements.tsv", rows, values, mapping
+    )
+    assert list(expanded) == list(expanded)
+    assert expanded[-1] == list(expanded)[-1]
+    assert expanded[1:3] == list(expanded)[1:3]
+    timing = build_opensta_timing(
+        {
+            "virtual_dut_clocks": {"clk": {"nominal_period_ns": 100}},
+            "virtual_dut_clock": {"nominal_period_ns": 100},
+        },
+        {
+            "paths": {
+                "p": {
+                    "path_scope": "cross-fpga",
+                    "physical_logic_segments_cone_bound": False,
+                }
+            },
+            "source_binding": None,
+            "compressed_representative_paths": 1,
+        },
+        expanded,
+    )
+    assert timing["summary"]["timing_paths"] == 1
+    assert timing["summary"]["maximum_system_delay_bound_ns"] == 31.5
+
+    damaged = array("q", mapping)
+    damaged[-1] = len(values)
+    with pytest.raises(ValidationError, match="missing representative"):
+        _write_expanded_measurements(
+            tmp_path / "damaged.tsv", rows, values, damaged
+        )
 
 
 def test_run_event_checks_expands_engine_representatives(tmp_path, monkeypatch):

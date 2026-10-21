@@ -15,6 +15,7 @@ from emuflow.cli import main
 from emuflow.combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
+    _NativeStaticExactCaptureRequests,
     _NativeStaticExactAnalysisRecords,
     _analyze_static_exact_dependencies,
     _analyze_static_exact_dependencies_native,
@@ -1024,6 +1025,26 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 ["net0"],
                 ["fpga0"],
             )
+
+    def test_native_capture_requests_are_fixed_width_and_canonical(self):
+        requests = _NativeStaticExactCaptureRequests()
+        requests.append(2, 0, 1)
+        requests.append(2, 1, 0)
+        requests.append(9, 0, 0)
+        self.assertEqual(requests.payload_bytes, 3 * 3 * 4)
+        self.assertEqual(
+            list(requests),
+            [(2, 0, 1), (2, 1, 0), (9, 0, 0)],
+        )
+        with self.assertRaisesRegex(ValidationError, "capture is invalid"):
+            requests.append(9, 0, 0)
+        out_of_order = _NativeStaticExactCaptureRequests()
+        out_of_order.append(4, 0, 0)
+        with self.assertRaisesRegex(ValidationError, "capture is invalid"):
+            out_of_order.append(3, 1, 0)
+        requests.clear()
+        self.assertEqual(len(requests), 0)
+        self.assertEqual(requests.payload_bytes, 0)
 
     def test_native_capture_stream_canonicalizes_without_tuple_population(self):
         nets = [

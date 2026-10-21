@@ -54,6 +54,7 @@ STATIC_EXACT_CANDIDATE_POLICIES = {
 STATIC_EXACT_NATIVE_MIN_INSTANCES = 100_000
 _STATIC_EXACT_NATIVE_INPUT_MAGIC = 0x31584553464D5545
 _STATIC_EXACT_NATIVE_OUTPUT_MAGIC = 0x315845534F4D5545
+_STATIC_EXACT_NATIVE_PROTOCOL_VERSION = 2
 SEQUENTIAL_TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
 SEQUENTIAL_LEGAL_CUT_CLASSES = {
     *SEQUENTIAL_TRANSPORTED_CUT_CLASSES,
@@ -970,6 +971,58 @@ class _NativeStaticExactAnalysisRecords:
             raise ValidationError("exact cut dependency graph contains a cycle")
 
 
+class _NativeStaticExactCaptureRequests:
+    """Endpoint-ordered native capture requests in fixed-width columns.
+
+    Protocol v2 orders capture triples by endpoint token, cut ordinal, and
+    sink-part ordinal. Keeping those fields in three ``uint32`` arrays avoids
+    recreating a Python tuple plus three Python integers for every capture and
+    removes the Python-side whole-population sort before endpoint replay.
+    """
+
+    def __init__(self) -> None:
+        self._endpoint_tokens = array("I")
+        self._cut_indices = array("I")
+        self._sink_part_indices = array("I")
+        self._previous: tuple[int, int, int] | None = None
+
+    def __len__(self) -> int:
+        return len(self._endpoint_tokens)
+
+    @property
+    def payload_bytes(self) -> int:
+        return (
+            self._endpoint_tokens.itemsize * len(self._endpoint_tokens)
+            + self._cut_indices.itemsize * len(self._cut_indices)
+            + self._sink_part_indices.itemsize
+            * len(self._sink_part_indices)
+        )
+
+    def append(
+        self, endpoint_token: int, cut_index: int, sink_part_index: int
+    ) -> None:
+        current = (endpoint_token, cut_index, sink_part_index)
+        if self._previous is not None and current <= self._previous:
+            raise ValidationError("native Static Exact capture is invalid")
+        self._endpoint_tokens.append(endpoint_token)
+        self._cut_indices.append(cut_index)
+        self._sink_part_indices.append(sink_part_index)
+        self._previous = current
+
+    def __iter__(self) -> Iterator[Tuple[int, int, int]]:
+        return zip(
+            self._endpoint_tokens,
+            self._cut_indices,
+            self._sink_part_indices,
+        )
+
+    def clear(self) -> None:
+        self._endpoint_tokens = array("I")
+        self._cut_indices = array("I")
+        self._sink_part_indices = array("I")
+        self._previous = None
+
+
 def _analyze_static_exact_dependencies_native(
     ir: EmuIR,
     instance_assignment: Mapping[str, str],
@@ -1072,7 +1125,7 @@ def _analyze_static_exact_dependencies_native(
             emit(
                 "<Q6I",
                 _STATIC_EXACT_NATIVE_INPUT_MAGIC,
-                1,
+                _STATIC_EXACT_NATIVE_PROTOCOL_VERSION,
                 len(ordered_instances),
                 len(ordered_nets),
                 len(ordered_cut_ids),
@@ -1169,7 +1222,7 @@ def _analyze_static_exact_dependencies_native(
                 magic, version, output_cut_count, capture_count = take("<QIIQ")
                 if (
                     magic != _STATIC_EXACT_NATIVE_OUTPUT_MAGIC
-                    or version != 1
+                    or version != _STATIC_EXACT_NATIVE_PROTOCOL_VERSION
                     or output_cut_count != len(ordered_cut_ids)
                 ):
                     raise ValidationError(
@@ -1200,7 +1253,7 @@ def _analyze_static_exact_dependencies_native(
                     analysis_records.append(
                         bool(local_launch), dependency_indices
                     )
-                capture_requests: List[Tuple[int, int, int]] = []
+                capture_requests = _NativeStaticExactCaptureRequests()
                 for _ in range(capture_count):
                     cut_index, sink_part_index, endpoint_token = take("<III")
                     if (
@@ -1211,7 +1264,7 @@ def _analyze_static_exact_dependencies_native(
                             "native Static Exact capture is invalid"
                         )
                     capture_requests.append(
-                        (endpoint_token, cut_index, sink_part_index)
+                        endpoint_token, cut_index, sink_part_index
                     )
                 if offset != len(data):
                     raise ValidationError(
@@ -1257,31 +1310,36 @@ def _analyze_static_exact_dependencies_native(
 
 def _iter_native_capture_requests(
     ordered_nets: Sequence[Mapping[str, Any]],
-    capture_requests: List[Tuple[int, int, int]],
+    capture_requests: Sequence[Tuple[int, int, int]]
+    | _NativeStaticExactCaptureRequests,
     ordered_cut_ids: Sequence[str],
     part_ids: Sequence[str],
 ) -> Iterator[Tuple[str, str, str, str, Any, Any]]:
     """Resolve only capture endpoints returned by the native analyzer.
 
-    Native endpoint tokens are ordinals in the ordered net/sink stream.  A
-    previous implementation retained a four-item Python tuple for every sink
-    while the analyzer ran, even though only capture endpoints are returned.
-    Sorting the owned request population in place and replaying the existing
-    EmuIR references avoids retaining a graph-sized endpoint identity index.
+    Native endpoint tokens are ordinals in the ordered net/sink stream. The
+    endpoint replay already avoids an identity tuple for every sink. Protocol
+    v2 also keeps the returned capture subset in endpoint order and fixed-width
+    columns, so replay needs neither per-capture Python tuples nor a second
+    whole-population sort.
     """
 
-    capture_requests.sort(key=lambda item: item[0])
     if not capture_requests:
         return
-    request_index = 0
+    if isinstance(capture_requests, _NativeStaticExactCaptureRequests):
+        requests = iter(capture_requests)
+    else:
+        # Compatibility and diagnostic callers may still pass an arbitrary
+        # tuple sequence. Production analyzer output is already canonical.
+        requests = iter(sorted(capture_requests, key=lambda item: item[0]))
+    current = next(requests, None)
     endpoint_token = 0
     for net in ordered_nets:
         for endpoint in net["sinks"]:
-            while (
-                request_index < len(capture_requests)
-                and capture_requests[request_index][0] == endpoint_token
-            ):
-                _, cut_index, sink_part_index = capture_requests[request_index]
+            if current is not None and current[0] < endpoint_token:
+                raise ValidationError("native Static Exact capture is invalid")
+            while current is not None and current[0] == endpoint_token:
+                _, cut_index, sink_part_index = current
                 raw_instance = endpoint["instance"]
                 if raw_instance is None:
                     kind = "top-output"
@@ -1301,15 +1359,16 @@ def _iter_native_capture_requests(
                     port,
                     bit,
                 )
-                request_index += 1
+                current = next(requests, None)
             endpoint_token += 1
-    if request_index != len(capture_requests):
+    if current is not None:
         raise ValidationError("native Static Exact capture is invalid")
 
 
 def _resolve_native_capture_stream(
     ordered_nets: Sequence[Mapping[str, Any]],
-    capture_requests: List[Tuple[int, int, int]],
+    capture_requests: List[Tuple[int, int, int]]
+    | _NativeStaticExactCaptureRequests,
     ordered_cut_ids: Sequence[str],
     part_ids: Sequence[str],
     sorter_path: Path,

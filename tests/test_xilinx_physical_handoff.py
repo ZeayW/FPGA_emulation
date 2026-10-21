@@ -8,6 +8,7 @@ from emuflow.errors import ValidationError
 from emuflow.io import file_sha256
 from emuflow.xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from emuflow.xilinx_physical_handoff import (
+    XilinxPhysicalHandoffBuilder,
     open_xilinx_physical_handoff,
     validate_xilinx_physical_handoff,
     validate_xilinx_physical_handoff_pair,
@@ -55,6 +56,23 @@ def _contracts(identity: str = "cell0"):
 
 
 class XilinxPhysicalHandoffTest(unittest.TestCase):
+    @staticmethod
+    def _bridge_cluster(index: int):
+        site = f"SLICEL_X{index}Y0"
+        return {
+            "id": f"openparf:{site}", "kind": "slice",
+            "site_templates": ["SLICEL"], "control_set": None,
+            "assignments": [{
+                "instance": f"cell{index}", "cell_type": "LUT1",
+                "bel": "A6LUT", "_placement_mode": "SLICEL",
+                "_physical_site": site, "_placement_ordinal": 0,
+            }],
+            "_placement": {
+                "site": site, "site_type": "SLICEL", "x": index,
+                "y": 0, "fixed": False, "physical_region": None,
+            },
+        }
+
     def test_round_trip_exposes_lazy_equivalent_views(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "physical-handoff.sqlite"
@@ -112,8 +130,8 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
                 "SLICEL_X1Y0"
             )
             first_packed["clusters"].extend(second_packed["clusters"])
+            first_packed["clusters"].reverse()
             first_placement["clusters"].extend(second_placement["clusters"])
-            first_placement["clusters"].reverse()
 
             write_xilinx_physical_handoff(
                 path, first_packed, first_placement
@@ -122,11 +140,11 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
 
             self.assertEqual(
                 [cluster["id"] for cluster in packed["clusters"]],
-                ["openparf:SLICEL_X0Y0", "openparf:SLICEL_X1Y0"],
+                ["openparf:SLICEL_X1Y0", "openparf:SLICEL_X0Y0"],
             )
             self.assertEqual(
                 [cluster["cluster"] for cluster in placement["clusters"]],
-                ["openparf:SLICEL_X0Y0", "openparf:SLICEL_X1Y0"],
+                ["openparf:SLICEL_X1Y0", "openparf:SLICEL_X0Y0"],
             )
 
     def test_corruption_and_truncation_fail_closed(self):
@@ -184,6 +202,95 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
                 validate_xilinx_physical_handoff_pair(
                     packed_first, placement_other
                 )
+
+    def test_incremental_builder_streams_large_repeated_clusters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "physical-handoff.sqlite"
+            packed, placement = _contracts()
+            packed["clusters"] = ()
+            packed["cascade_chains"] = []
+            packed["unplaced_constants"] = []
+            placement["clusters"] = ()
+            cluster_count = 2_048
+
+            with XilinxPhysicalHandoffBuilder(path) as builder:
+                for index in range(cluster_count - 1, -1, -1):
+                    builder.append_bridge_cluster(self._bridge_cluster(index))
+                builder.seal(
+                    packed, placement, cascades=[], constants=[]
+                )
+                report = validate_xilinx_physical_handoff(
+                    builder.temporary_path
+                )
+                self.assertFalse(path.exists())
+                builder.publish()
+
+            actual_packed, actual_placement = open_xilinx_physical_handoff(path)
+            self.assertEqual(report["packed_clusters"], cluster_count)
+            self.assertEqual(report["assignments"], cluster_count)
+            self.assertEqual(len(actual_packed["clusters"]), cluster_count)
+            self.assertEqual(
+                actual_packed["clusters"][0]["id"],
+                "openparf:SLICEL_X0Y0",
+            )
+            self.assertEqual(
+                actual_placement["clusters"][0]["cluster"],
+                "openparf:SLICEL_X0Y0",
+            )
+
+    def test_incremental_builder_failure_removes_unpublished_temporary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "physical-handoff.sqlite"
+            with mock.patch(
+                "emuflow.xilinx_physical_handoff._BUILDER_COMMIT_ROWS", 1
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, "failed to append"
+                ):
+                    with XilinxPhysicalHandoffBuilder(path) as builder:
+                        builder.append_bridge_cluster(self._bridge_cluster(0))
+                        builder.append_bridge_cluster(self._bridge_cluster(0))
+
+            self.assertFalse(path.exists())
+            self.assertEqual(list(root.glob(f".{path.name}.*.tmp")), [])
+
+    def test_incremental_builder_compares_source_ownership_in_sqlite(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "physical-handoff.sqlite"
+            packed, placement = _contracts()
+            packed["clusters"] = ()
+            packed["cascade_chains"] = []
+            packed["unplaced_constants"] = []
+            placement["clusters"] = ()
+            with XilinxPhysicalHandoffBuilder(path) as builder:
+                cluster = self._bridge_cluster(0)
+                cluster["assignments"][0]["_source_cluster"] = "source:0"
+                builder.append_source_assignment("cell0", "source:0")
+                builder.append_bridge_cluster(cluster)
+                builder.validate_source_ownership(1)
+                builder.seal(packed, placement, cascades=[], constants=[])
+                builder.publish()
+            self.assertTrue(path.is_file())
+            self.assertEqual(list(root.glob(f".{path.name}.source.*.tmp")), [])
+
+    def test_incremental_builder_rejects_source_ownership_mismatch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "physical-handoff.sqlite"
+            with self.assertRaisesRegex(
+                ValidationError, "source cell ownership is invalid"
+            ):
+                with XilinxPhysicalHandoffBuilder(path) as builder:
+                    cluster = self._bridge_cluster(0)
+                    cluster["assignments"][0]["_source_cluster"] = "source:other"
+                    builder.append_source_assignment("cell0", "source:0")
+                    builder.append_bridge_cluster(cluster)
+                    builder.validate_source_ownership(1)
+            self.assertFalse(path.exists())
+            self.assertEqual(list(root.glob(f".{path.name}.*.tmp")), [])
 
 
 if __name__ == "__main__":

@@ -13,6 +13,8 @@ from __future__ import annotations
 import math
 import re
 import subprocess
+from array import array
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -286,7 +288,7 @@ def read_measurements(path: Path, rows: list[EventCheck], *, verify_arcs=True) -
 
 
 def _compress_path_equivalent_checks(
-        rows: list[EventCheck]) -> tuple[list[EventCheck], list[int]]:
+        rows: list[EventCheck]) -> tuple[list[EventCheck], Sequence[int]]:
     """Deduplicate complete, numerically identical original-path bundles.
 
     Every exported check is an independent timing chain.  Two original paths
@@ -298,7 +300,18 @@ def _compress_path_equivalent_checks(
     """
     representatives: list[EventCheck] = []
     representative_bundles: dict[tuple, tuple[int, ...]] = {}
-    original_to_representative = [-1] * len(rows)
+    # This relation has one value per exported check. A Python ``list[int]``
+    # costs at least one pointer per entry, while representative indices fit a
+    # fixed-width unsigned value.  Reserve UINT32_MAX as the fail-closed
+    # sentinel and keep the production relation at exactly four bytes/check.
+    missing_representative = (1 << 32) - 1
+    if len(rows) >= missing_representative:
+        raise ValidationError(
+            "global STA check population exceeds indexed expansion"
+        )
+    original_to_representative = array(
+        "I", (missing_representative for _ in rows)
+    )
 
     def add_bundle(indices: list[int]) -> None:
         signature = tuple(
@@ -338,7 +351,9 @@ def _compress_path_equivalent_checks(
     if interleaved:
         representatives.clear()
         representative_bundles.clear()
-        original_to_representative[:] = [-1] * len(rows)
+        original_to_representative = array(
+            "I", (missing_representative for _ in rows)
+        )
         path_indices: dict[str, list[int]] = {}
         for index, row in enumerate(rows):
             path_indices.setdefault(row.path, []).append(index)
@@ -346,45 +361,88 @@ def _compress_path_equivalent_checks(
             add_bundle(indices)
     elif current_indices:
         add_bundle(current_indices)
-    if any(index < 0 for index in original_to_representative):
+    if any(
+        index == missing_representative
+        for index in original_to_representative
+    ):
         raise ValidationError("global STA path compression lost a timing check")
     return representatives, original_to_representative
 
 
+class _ExpandedMeasurementSequence(Sequence):
+    """Lazy identity overlay for expanded representative measurements.
+
+    OpenSTA evaluates only representative path bundles.  The persisted TSV
+    still contains every original check, but the in-process consumer only
+    needs an indexed view which combines the original identity with the
+    representative scalar row.  Keeping that overlay lazy avoids allocating a
+    second check-sized population of Python dictionaries before stitching.
+    """
+
+    def __init__(self, rows: list[EventCheck], representative_values: list[dict],
+                 original_to_representative: Sequence[int]):
+        if len(original_to_representative) != len(rows):
+            raise ValidationError("global STA expansion population disagrees")
+        self._rows = rows
+        self._representative_values = representative_values
+        self._original_to_representative = original_to_representative
+
+    def __len__(self):
+        return len(self._rows)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        representative_index = self._original_to_representative[index]
+        if (
+            isinstance(representative_index, bool)
+            or not isinstance(representative_index, int)
+            or representative_index < 0
+            or representative_index >= len(self._representative_values)
+        ):
+            raise ValidationError(
+                "global STA expansion references a missing representative"
+            )
+        row = self._rows[index]
+        value = self._representative_values[representative_index]
+        return {
+            "path": row.path,
+            "role": row.role,
+            "event": row.event,
+            "arrival_ns": value["arrival_ns"],
+            "required_ns": value["required_ns"],
+            "slack_ns": value["slack_ns"],
+        }
+
+    def __eq__(self, other):
+        if not isinstance(other, Sequence) or len(self) != len(other):
+            return False
+        return all(left == right for left, right in zip(self, other))
+
+
 def _write_expanded_measurements(path: Path, rows: list[EventCheck],
                                  representative_values: list[dict],
-                                 original_to_representative: list[int]) -> list[dict]:
-    """Restore the full TSV and result records in the same ordered pass."""
-    if len(original_to_representative) != len(rows):
-        raise ValidationError("global STA expansion population disagrees")
+                                 original_to_representative: Sequence[int]
+                                 ) -> Sequence[dict]:
+    """Restore the full TSV and return a lazy original-identity overlay."""
+    result = _ExpandedMeasurementSequence(
+        rows, representative_values, original_to_representative
+    )
     temporary = path.with_name(f".{path.name}.expanded.tmp")
-    result = []
     try:
         with temporary.open("w") as stream:
             stream.write("endpoint\tarrival_ns\trequired_ns\tslack_ns\n")
-            for index, (row, representative_index) in enumerate(
-                    zip(rows, original_to_representative)):
-                try:
-                    value = representative_values[representative_index]
-                except IndexError as exc:
-                    raise ValidationError(
-                        "global STA expansion references a missing representative"
-                    ) from exc
+            for index, row in enumerate(rows):
+                value = result[index]
                 local_arrival = value["arrival_ns"] - row.launch_ns
                 local_required = value["required_ns"] - row.launch_ns
                 stream.write(
                     f"o{index}\t{local_arrival:.17g}\t{local_required:.17g}\t"
                     f"{value['slack_ns']:.17g}\n"
-                )
-                result.append(
-                    {
-                        "path": row.path,
-                        "role": row.role,
-                        "event": row.event,
-                        "arrival_ns": value["arrival_ns"],
-                        "required_ns": value["required_ns"],
-                        "slack_ns": value["slack_ns"],
-                    }
                 )
         temporary.replace(path)
     except BaseException:
@@ -394,7 +452,8 @@ def _write_expanded_measurements(path: Path, rows: list[EventCheck],
 
 
 def run_event_checks(checks: Iterable[EventCheck], directory: Path,
-                     executable: str | None = None, *, verify_arcs=True) -> list[dict]:
+                     executable: str | None = None, *, verify_arcs=True
+                     ) -> Sequence[dict]:
     rows = validate_checks(checks)
     representatives, original_to_representative = (
         _compress_path_equivalent_checks(rows)
