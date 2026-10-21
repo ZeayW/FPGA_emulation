@@ -33,6 +33,7 @@ struct Progress {
   std::uint64_t cluster_done = 0, cluster_total = 0;
   std::uint64_t ratio_candidates = 0, affected_paths = 0, max_affected_paths = 0;
   std::uint64_t ratio_reused_paths = 0;
+  std::uint64_t incremental_nets = 0, endpoint_updates = 0;
   std::uint64_t net_pins = 0, exposure_pins = 0;
   using Clock = std::chrono::steady_clock;
   Clock::time_point started = Clock::now(), last = started;
@@ -53,6 +54,8 @@ struct Progress {
               << " affected_paths=" << affected_paths
               << " max_affected_paths=" << max_affected_paths
               << " ratio_reused_paths=" << ratio_reused_paths
+              << " incremental_nets=" << incremental_nets
+              << " endpoint_updates=" << endpoint_updates
               << " net_pins=" << net_pins << " exposure_pins=" << exposure_pins << '\n';
   }
   void begin(const char* name) {
@@ -164,10 +167,18 @@ struct ProxyNetState {
   double delay_ns = 0.0;
   std::pair<int, int> worst_transition = {-1, -1};
   std::vector<Transition> transitions;
+  std::vector<std::pair<int, int>> driver_counts;
   std::vector<std::pair<int, int>> sink_counts;
   std::vector<std::pair<int, int>> domain_counts;
   long long hops = 0;
   long long cuts = 0;
+};
+
+struct ClusterNetIndex {
+  std::vector<std::vector<int>> nets;
+  // Aligned with nets: multiplicity as driver and as sink, independently.
+  std::vector<std::vector<std::pair<int, int>>> counts;
+  const std::vector<int>& operator[](int cluster) const { return nets[cluster]; }
 };
 
 struct CachedTransition {
@@ -933,22 +944,13 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
   return result;
 }
 
-ProxyNetState build_proxy_net(const Model& model,
-                              const std::vector<int>& assignment,
-                              int net_index) {
+ProxyNetState build_proxy_net_counts(const Model& model,
+                                    const std::map<int, int>& driver_counts,
+                                    const std::map<int, int>& sink_counts) {
   ProxyNetState state;
-  std::set<int> sources;
-  std::map<int, int> sink_counts;
-  for (int cluster : model.net[net_index].drivers) {
-    sources.insert(assignment[cluster]);
-  }
-  for (int cluster : model.net[net_index].sinks) {
-    ++sink_counts[assignment[cluster]];
-    ++progress.net_pins;
-    progress.report("proxy-net-sinks", progress.net_pins, 0);
-  }
   std::map<int, int> domain_counts;
-  for (int source : sources) {
+  for (const auto& source_item : driver_counts) {
+    const int source = source_item.first;
     for (const auto& sink_item : sink_counts) {
       const int sink = sink_item.first;
       if (source == sink) {
@@ -980,9 +982,24 @@ ProxyNetState build_proxy_net(const Model& model,
       ++state.cuts;
     }
   }
+  state.driver_counts.assign(driver_counts.begin(), driver_counts.end());
   state.sink_counts.assign(sink_counts.begin(), sink_counts.end());
   state.domain_counts.assign(domain_counts.begin(), domain_counts.end());
   return state;
+}
+
+ProxyNetState build_proxy_net(const Model& model,
+                              const std::vector<int>& assignment,
+                              int net_index) {
+  std::map<int, int> driver_counts, sink_counts;
+  for (int cluster : model.net[net_index].drivers)
+    ++driver_counts[assignment[cluster]];
+  for (int cluster : model.net[net_index].sinks) {
+    ++sink_counts[assignment[cluster]];
+    ++progress.net_pins;
+    progress.report("proxy-net-sinks", progress.net_pins, 0);
+  }
+  return build_proxy_net_counts(model, driver_counts, sink_counts);
 }
 
 bool proxy_transport_feasible(const Model& model,
@@ -1292,21 +1309,26 @@ ProxyState build_proxy_state(
   return state;
 }
 
-std::vector<std::vector<int>> build_cluster_nets(const Model& model) {
-  std::vector<std::set<int>> sets(model.clusters);
+ClusterNetIndex build_cluster_nets(const Model& model) {
+  std::vector<std::map<int, std::pair<int, int>>> memberships(model.clusters);
   for (int net = 0; net < model.nets; ++net) {
     for (int cluster : model.net[net].drivers) {
-      sets[cluster].insert(net);
+      ++memberships[cluster][net].first;
       progress.report("cluster-index-pins", net, model.nets);
     }
     for (int cluster : model.net[net].sinks) {
-      sets[cluster].insert(net);
+      ++memberships[cluster][net].second;
       progress.report("cluster-index-pins", net, model.nets);
     }
   }
-  std::vector<std::vector<int>> result(model.clusters);
+  ClusterNetIndex result;
+  result.nets.resize(model.clusters);
+  result.counts.resize(model.clusters);
   for (int cluster = 0; cluster < model.clusters; ++cluster) {
-    result[cluster].assign(sets[cluster].begin(), sets[cluster].end());
+    for (const auto& membership : memberships[cluster]) {
+      result.nets[cluster].push_back(membership.first);
+      result.counts[cluster].push_back(membership.second);
+    }
   }
   return result;
 }
@@ -1329,7 +1351,7 @@ std::vector<std::vector<int>> build_net_paths(const Model& model) {
 ProxyDelta evaluate_proxy_move(
     const Model& model,
     ProxyState& state,
-    const std::vector<std::vector<int>>& cluster_nets,
+    const ClusterNetIndex& cluster_nets,
     const std::vector<std::vector<int>>& net_paths,
     int cluster,
     int target);
@@ -1341,7 +1363,7 @@ void apply_proxy_delta(const Model& model,
 std::vector<int> diagnose_flow_corridors(
     const Model& model,
     const ProxyState& state,
-    const std::vector<std::vector<int>>& cluster_nets,
+    const ClusterNetIndex& cluster_nets,
     const std::vector<std::vector<int>>& net_paths,
     const std::vector<double>& exposure,
     int cover_domain) {
@@ -3187,7 +3209,7 @@ void erase_one(std::multiset<int>& values, int value) {
 ProxyDelta evaluate_proxy_changes(
     const Model& model,
     ProxyState& state,
-    const std::vector<std::vector<int>>& cluster_nets,
+    const ClusterNetIndex& cluster_nets,
     const std::vector<std::vector<int>>& net_paths,
     int cluster,
     int target,
@@ -3287,19 +3309,48 @@ ProxyDelta evaluate_proxy_changes(
       state.assignment[std::get<0>(change)] = std::get<1>(change);
     }
   };
-  std::vector<int> affected_nets;
+  // Net partition histograms change only at the moved endpoint occurrences.
+  // Do not infer path equivalence from these counts: all original incident
+  // net paths are still reconstructed below, including endpoint-exact paths.
+  using EndpointDeltas = std::pair<std::vector<int>, std::vector<int>>;
+  std::map<int, EndpointDeltas> endpoint_deltas;
   for (const auto& change : changes) {
-    const int changed_cluster = std::get<0>(change);
-    affected_nets.insert(affected_nets.end(),
-                         cluster_nets[changed_cluster].begin(),
-                         cluster_nets[changed_cluster].end());
+    const int moved = std::get<0>(change);
+    const int source = std::get<1>(change), target_part = std::get<2>(change);
+    const auto& nets = cluster_nets[moved];
+    for (std::size_t index = 0; index < nets.size(); ++index) {
+      auto inserted = endpoint_deltas.try_emplace(nets[index]);
+      auto& values = inserted.first->second;
+      if (inserted.second) {
+        values.first.assign(model.parts, 0);
+        values.second.assign(model.parts, 0);
+      }
+      const auto multiplicity = cluster_nets.counts[moved][index];
+      values.first[source] -= multiplicity.first;
+      values.first[target_part] += multiplicity.first;
+      values.second[source] -= multiplicity.second;
+      values.second[target_part] += multiplicity.second;
+      ++progress.endpoint_updates;
+    }
   }
-  std::sort(affected_nets.begin(), affected_nets.end());
-  affected_nets.erase(
-      std::unique(affected_nets.begin(), affected_nets.end()),
-      affected_nets.end());
-  for (int net : affected_nets) {
-    ProxyNetState replacement = build_proxy_net(model, state.assignment, net);
+  for (const auto& item : endpoint_deltas) {
+    const int net = item.first;
+    const auto& old = state.net[net];
+    std::map<int, int> drivers(old.driver_counts.begin(), old.driver_counts.end());
+    std::map<int, int> sinks(old.sink_counts.begin(), old.sink_counts.end());
+    for (int part = 0; part < model.parts; ++part) {
+      const auto adjust = [part](std::map<int, int>& counts, int change) {
+        if (!change) return;
+        const int value = (counts.count(part) ? counts.at(part) : 0) + change;
+        require(value >= 0, "negative incremental endpoint count");
+        if (value) counts[part] = value;
+        else counts.erase(part);
+      };
+      adjust(drivers, item.second.first[part]);
+      adjust(sinks, item.second.second[part]);
+    }
+    ProxyNetState replacement = build_proxy_net_counts(model, drivers, sinks);
+    ++progress.incremental_nets;
     if (!replacement.feasible) {
       restore_assignment();
       return delta;
@@ -3484,7 +3535,7 @@ ProxyDelta evaluate_proxy_changes(
 ProxyDelta evaluate_proxy_move(
     const Model& model,
     ProxyState& state,
-    const std::vector<std::vector<int>>& cluster_nets,
+    const ClusterNetIndex& cluster_nets,
     const std::vector<std::vector<int>>& net_paths,
     int cluster,
     int target) {
@@ -3495,7 +3546,7 @@ ProxyDelta evaluate_proxy_move(
 ProxyDelta evaluate_proxy_ejection(
     const Model& model,
     ProxyState& state,
-    const std::vector<std::vector<int>>& cluster_nets,
+    const ClusterNetIndex& cluster_nets,
     const std::vector<std::vector<int>>& net_paths,
     int cluster,
     int partner,
@@ -3522,7 +3573,7 @@ ProxyDelta evaluate_proxy_ejection(
 ProxyDelta evaluate_proxy_comove(
     const Model& model,
     ProxyState& state,
-    const std::vector<std::vector<int>>& cluster_nets,
+    const ClusterNetIndex& cluster_nets,
     const std::vector<std::vector<int>>& net_paths,
     int cluster,
     int partner,
