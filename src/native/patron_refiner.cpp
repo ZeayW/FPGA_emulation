@@ -3800,7 +3800,24 @@ void run_scalable(const Model& model,
 
   std::vector<NativeMove> moves;
   std::vector<NativeBatch> batches;
-  for (int sweep = 0; sweep < model.max_sweeps; ++sweep) {
+  // A whole-design local sweep evaluates every movable cluster against every
+  // target partition. On the 2.6M-cluster NVDLA model, one sweep already
+  // costs tens of minutes. Repeating it four times prevents v14 from ever
+  // reaching the bounded frontier-flow phase that owns its two primary
+  // objectives (maximum path hops, then maximum path TDM-ratio sum).
+  //
+  // Keep the historical multi-sweep behavior for qualification-sized models
+  // and older algorithms. Large v14 models receive one complete local sweep,
+  // then proceed to ejection/comove and exact frontier flow. This is a search
+  // budget policy only: capacity checks and the lexicographic acceptance
+  // predicate are unchanged.
+  constexpr int large_v14_cluster_threshold = 500000;
+  const int local_sweep_limit =
+      model.flow_version >= 8
+          && model.clusters >= large_v14_cluster_threshold
+      ? 1
+      : model.max_sweeps;
+  for (int sweep = 0; sweep < local_sweep_limit; ++sweep) {
     const std::size_t sweep_start = moves.size();
     for (int cluster : order) {
       if (static_cast<int>(moves.size()) >= model.max_moves) {

@@ -155,6 +155,14 @@ and OpenSTA global physical timing. Generalized Static Exact combinational
 cuts and Chimew are explicit options. The integrated Chimew
 lookahead path currently requires the explicit VTR backend/profile combination.
 
+For very large PATRON v14 designs, Phase 3 performs one complete local-move
+sweep before the existing ejection/comove and frontier-flow passes. Repeating
+the full cluster-by-partition scan can consume the native timeout before the
+primary maximum-hop and secondary maximum-path-TDM-ratio objectives are
+reached. Small qualification models and older PATRON versions retain the
+configured multi-sweep behavior; all capacity and lexicographic acceptance
+checks remain unchanged.
+
 - State the period of every analyzed clock explicitly.
 - Mapping profiles must match the physical device model; generic soft mapping
   can expand RAM/DSP-heavy designs substantially.
