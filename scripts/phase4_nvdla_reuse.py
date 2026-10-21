@@ -97,7 +97,7 @@ def check_frame_only_change(old, new):
 _DOWNSTREAM_FUNCTIONS = {
     "src/emuflow/phase5.py": {"run_phase5"},
     "src/emuflow/phase3.py": {"run_phase3"},
-    "src/emuflow/partition_pressure.py": {"run_partition_pressure_native"},
+    "src/emuflow/partition_pressure.py": {"run_partition_pressure_native", "_parse_patron_native_output"},
     "src/emuflow/tdm.py": {"reconstruct_tdm_schedule_timing"},
     "src/emuflow/timing_routing.py": {
         "compress_sta_paths", "validate_member_constraints", "validate_native_system_routes",

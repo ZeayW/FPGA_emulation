@@ -261,3 +261,14 @@ separate native and continuation producer identities. It still executes normal
 Phase3 validation, Static Exact construction and original timing-path projection.
 Stopped or partial native results cannot be continued; native completion alone
 is not a Phase3 pass. Use each script’s `--help` for required sealing inputs.
+
+### Explicit PATRON search budget
+
+The native PATRON v14 option `--sweep-prefix-clusters N` selects a deterministic
+research variant: visit at most N clusters in critical order, finish each
+candidate transaction, then reconstruct and validate the full final assignment.
+It does not execute subsequent ejection, comove or flow refinement. This limits
+search work, not design or timing-path coverage. Output records the budget and
+termination reason and makes no convergence claim. Omitting the option retains
+the full search. Seal the exact command alongside input and output when using
+a budgeted result; all normal Phase3 and downstream validation still applies.

@@ -25,6 +25,13 @@ namespace {
 constexpr double kQuantum = 1.0e-9;
 
 // Diagnostics never participate in candidate ordering or objective arithmetic.
+// Explicit research search policy. It budgets optimizer work, never input
+// graph/path coverage or final legality reconstruction. Zero retains full v14.
+struct SweepPrefixBudget {
+  std::uint64_t limit = 0, visited = 0;
+  const char* reason = "not-requested";
+} sweep_prefix_budget;
+
 struct Progress {
   bool enabled = false;
   const char* phase = "read";
@@ -3753,6 +3760,10 @@ void write_output(const std::string& output_path,
   }
   output << header;
   output << "MODE " << mode << '\n';
+  if (sweep_prefix_budget.limit != 0) {
+    output << "SEARCH_BUDGET sweep-prefix-clusters/v1 " << sweep_prefix_budget.limit
+           << ' ' << sweep_prefix_budget.visited << ' ' << sweep_prefix_budget.reason << '\n';
+  }
   output << "INITIAL";
   write_vector(output, initial.objective);
   output << '\n';
@@ -3955,6 +3966,41 @@ void run_exact(const Model& model,
                emit_trace);
 }
 
+void finish_scalable(const Model& model, const ProxyState& state,
+                     const Evaluation& initial, const std::vector<NativeMove>& moves,
+                     const std::vector<NativeBatch>& batches,
+                     const std::string& output_path, bool emit_trace) {
+  progress.begin("final-reconstruction");
+  const ProxyState endpoint = build_proxy_state(model, &state.assignment);
+  require(endpoint.evaluation.feasible,
+          "final scalable assignment is infeasible");
+  require(endpoint.evaluation.ranked.size() == 10,
+          "final scalable assignment objective rank is invalid");
+  std::string mode = "endpoint-exact-critical-ejection-v6";
+  if (model.flow_version == 14) {
+    mode = "endpoint-exact-critical-flow-v14";
+  } else if (model.flow_version == 11) {
+    mode = "endpoint-exact-critical-flow-v11";
+  } else if (model.flow_version == 10) {
+    mode = "endpoint-exact-critical-flow-v10";
+  } else if (model.flow_version == 9) {
+    mode = "endpoint-exact-critical-flow-v9";
+  } else if (model.flow_version == 8) {
+    mode = "endpoint-exact-critical-flow-v8";
+  } else if (model.flow_version == 7) {
+    mode = "endpoint-exact-critical-flow-v7";
+  }
+  write_output(output_path,
+               mode,
+               initial,
+               endpoint.evaluation,
+               moves,
+               state.assignment,
+               batches,
+               model.flow_version,
+               emit_trace);
+}
+
 void run_scalable(const Model& model,
                   const std::string& output_path,
                   bool emit_trace) {
@@ -4018,6 +4064,12 @@ void run_scalable(const Model& model,
     const std::size_t sweep_start = moves.size();
     std::uint64_t visited = 0;
     for (int cluster : order) {
+      if (sweep_prefix_budget.limit != 0
+          && sweep_prefix_budget.visited >= sweep_prefix_budget.limit) {
+        sweep_prefix_budget.reason = "budget-exhausted";
+        finish_scalable(model, state, initial, moves, batches, output_path, emit_trace);
+        return;
+      }
       progress.cluster = cluster;
       progress.cluster_done = visited++;
       progress.cluster_total = order.size();
@@ -4025,6 +4077,7 @@ void run_scalable(const Model& model,
       if (static_cast<int>(moves.size()) >= model.max_moves) {
         break;
       }
+      if (sweep_prefix_budget.limit != 0) ++sweep_prefix_budget.visited;
       bool found = false;
       ProxyDelta best;
       for (int target = 0; target < model.parts; ++target) {
@@ -4068,6 +4121,14 @@ void run_scalable(const Model& model,
     }
   }
 
+  if (sweep_prefix_budget.limit != 0) {
+    // This explicitly selected variant ends after critical ordered sweeps.
+    // It does not silently proceed to unbounded ejection/corridor/flow work.
+    sweep_prefix_budget.reason = sweep_prefix_budget.visited >= sweep_prefix_budget.limit
+        ? "budget-exhausted" : "sweep-stage-ended";
+    finish_scalable(model, state, initial, moves, batches, output_path, emit_trace);
+    return;
+  }
   progress.begin("ejections");
   std::vector<int> donor_order(model.clusters);
   std::iota(donor_order.begin(), donor_order.end(), 0);
@@ -5189,35 +5250,7 @@ void run_scalable(const Model& model,
     }
   }
   std::cerr << '\n';
-  progress.begin("final-reconstruction");
-  const ProxyState endpoint = build_proxy_state(model, &state.assignment);
-  require(endpoint.evaluation.feasible,
-          "final scalable assignment is infeasible");
-  require(endpoint.evaluation.ranked.size() == 10,
-          "final scalable assignment objective rank is invalid");
-  std::string mode = "endpoint-exact-critical-ejection-v6";
-  if (model.flow_version == 14) {
-    mode = "endpoint-exact-critical-flow-v14";
-  } else if (model.flow_version == 11) {
-    mode = "endpoint-exact-critical-flow-v11";
-  } else if (model.flow_version == 10) {
-    mode = "endpoint-exact-critical-flow-v10";
-  } else if (model.flow_version == 9) {
-    mode = "endpoint-exact-critical-flow-v9";
-  } else if (model.flow_version == 8) {
-    mode = "endpoint-exact-critical-flow-v8";
-  } else if (model.flow_version == 7) {
-    mode = "endpoint-exact-critical-flow-v7";
-  }
-  write_output(output_path,
-               mode,
-               initial,
-               endpoint.evaluation,
-               moves,
-               state.assignment,
-               batches,
-               model.flow_version,
-               emit_trace);
+  finish_scalable(model, state, initial, moves, batches, output_path, emit_trace);
 }
 
 void run(const Model& model,
@@ -5234,7 +5267,7 @@ void run(const Model& model,
 
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "usage: emuflow_patron_refiner [--summary-output] [--progress] INPUT OUTPUT\n";
+    std::cout << "usage: emuflow_patron_refiner [--summary-output] [--progress] [--sweep-prefix-clusters N] INPUT OUTPUT\n";
     return 0;
   }
   bool summary_output = false;
@@ -5243,10 +5276,22 @@ int main(int argc, char** argv) {
     const std::string option = argv[input_index++];
     if (option == "--summary-output") summary_output = true;
     else if (option == "--progress") progress.enabled = true;
+    else if (option == "--sweep-prefix-clusters") {
+      if (sweep_prefix_budget.limit || input_index >= argc) {
+        std::cerr << "missing or duplicate sweep prefix budget\n"; return 2;
+      }
+      const std::string value = argv[input_index++];
+      if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos) {
+        std::cerr << "invalid sweep prefix budget\n"; return 2;
+      }
+      try { sweep_prefix_budget.limit = std::stoull(value); }
+      catch (const std::exception&) { std::cerr << "invalid sweep prefix budget\n"; return 2; }
+      if (!sweep_prefix_budget.limit) { std::cerr << "budget must be positive\n"; return 2; }
+    }
     else { std::cerr << "unknown option: " << option << '\n'; return 2; }
   }
   if (argc - input_index != 2) {
-    std::cerr << "usage: emuflow_patron_refiner [--summary-output] [--progress] INPUT OUTPUT\n";
+    std::cerr << "usage: emuflow_patron_refiner [--summary-output] [--progress] [--sweep-prefix-clusters N] INPUT OUTPUT\n";
     return 2;
   }
   try {
@@ -5254,6 +5299,8 @@ int main(int argc, char** argv) {
     progress.begin("read");
     Model model = read_model(argv[input_index]);
     progress.begin("read-complete");
+    require(!sweep_prefix_budget.limit || model.flow_version == 14,
+            "sweep prefix budget requires explicit PATRON v14");
     run(model, argv[output_index], !summary_output);
     progress.begin("complete");
     return 0;

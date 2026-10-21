@@ -844,6 +844,8 @@ def run_phase3(
                 "batch_changes": change_count,
                 "native_output_bytes": native_output_bytes,
             }
+        if "search_budget" in patron_trace:
+            patron_validation["search_budget"] = patron_trace["search_budget"]
         if patron_completed_result is not None:
             patron_validation["native_result_provenance"] = patron_trace["native_result_provenance"]
         if patron_physical_feedback_validation is not None:

@@ -54,9 +54,9 @@ def validate_mapping_producer(commit):
     names = [name for name in names if name.endswith(".py")]
     objects = subprocess.check_output(["git", "-C", str(root), "cat-file", "--batch"],
                                      input="".join(f"{commit}:{n}\n" for n in names).encode())
-    permitted = {"src/emuflow/multi_fpga_flow.py": "run_multi_fpga_flow",
-                 "src/emuflow/phase3.py": "run_phase3",
-                 "src/emuflow/partition_pressure.py": "run_partition_pressure_native"}
+    permitted = {"src/emuflow/multi_fpga_flow.py": {"run_multi_fpga_flow"},
+                 "src/emuflow/phase3.py": {"run_phase3"},
+                 "src/emuflow/partition_pressure.py": {"run_partition_pressure_native", "_parse_patron_native_output"}}
     offset = 0
     for name in names:
         end = objects.index(b"\n", offset)
@@ -69,13 +69,29 @@ def validate_mapping_producer(commit):
         def retained(source):
             tree = ast.parse(source)
             tree.body = [n for n in tree.body if not
-                         (isinstance(n, ast.FunctionDef) and n.name == permitted.get(name))]
+                         (isinstance(n, ast.FunctionDef) and n.name in permitted.get(name, set()))]
             return ast.dump(tree, include_attributes=False)
         _require(name in permitted and retained(original) == retained(current),
                  "mapping producer dependency changed: " + name)
     current_names = {str(p.relative_to(root)) for p in (root/'src/emuflow').rglob('*.py')}
     _require(current_names - set(names) <= {"src/emuflow/patron_result.py"},
              "mapping producer gained an unaudited dependency")
+
+
+def command_search_budget(command):
+    """Parse only the explicitly supported native execution contract."""
+    budget = None
+    options = iter(command[1:-2])
+    for option in options:
+        if option in {"--progress", "--summary-output"}:
+            continue
+        _require(option == "--sweep-prefix-clusters" and budget is None,
+                 "unsupported or duplicate native command flag")
+        value = next(options, "")
+        _require(value.isascii() and value.isdigit() and 0 < int(value) <= 2**64 - 1,
+                 "invalid native sweep prefix budget")
+        budget = int(value)
+    return budget
 
 
 def validate_completed_result(path):
@@ -99,7 +115,7 @@ def validate_completed_result(path):
     _require(Path(command[0]).resolve() == Path(value["binary"]["path"])
              and Path(command[-2]).resolve() == Path(value["input"]["path"])
              and Path(command[-1]).resolve() == Path(value["output"]["path"]), "executed command binding differs")
-    _require(set(command[1:-2]) <= {"--progress", "--summary-output"}, "unsupported native command flags")
+    command_search_budget(command)
     receipt = read_json(Path(value["receipt"]["path"]))
     _require(type(receipt.get("exit_code")) is int and receipt["exit_code"] == 0
              and receipt.get("status") in {"pass", "completed"}

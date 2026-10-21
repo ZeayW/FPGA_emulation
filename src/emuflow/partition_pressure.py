@@ -1823,6 +1823,7 @@ def _parse_patron_native_output(
     initial_metrics = None
     mode = None
     summary = None
+    search_budget = None
     capacity_summary = None
     path_max_summary = None
     for line in lines[1:]:
@@ -1833,6 +1834,18 @@ def _parse_patron_native_output(
             if mode is not None:
                 raise ValidationError("native PATRON returned duplicate MODE")
             mode = fields[1]
+        elif fields[0] == "SEARCH_BUDGET" and len(fields) == 5:
+            if (search_budget is not None or fields[1] != "sweep-prefix-clusters/v1"
+                    or output_version != "EMUFLOW_PATRON_OUTPUT_V14"):
+                raise ValidationError("native PATRON search budget is invalid")
+            limit, visited = int(fields[2]), int(fields[3])
+            if (limit <= 0 or visited < 0 or visited > limit
+                    or fields[4] not in {"budget-exhausted", "sweep-stage-ended"}
+                    or ((fields[4] == "budget-exhausted") != (visited == limit))):
+                raise ValidationError("native PATRON search budget counters are invalid")
+            search_budget = {"policy": fields[1], "cluster_limit": limit,
+                             "visited_clusters": visited, "termination_reason": fields[4],
+                             "convergence_claim": False, "later_refinement_stages": "not-executed"}
         elif fields[0] == "INITIAL" and len(fields) == 9:
             if initial_metrics is not None:
                 raise ValidationError("native PATRON returned duplicate INITIAL")
@@ -2046,6 +2059,8 @@ def _parse_patron_native_output(
         raise ValidationError(
             "native PATRON summary-only output contains trace records"
         )
+    if search_budget is not None:
+        summary["search_budget"] = search_budget
     if final_metrics is None or initial_metrics is None or mode is None:
         raise ValidationError("native PATRON output metadata is incomplete")
     if capacity_summary is not None:
@@ -2248,6 +2263,10 @@ def run_partition_pressure_native(
         )
     if completed_result is not None:
         verify_native_input(completed_result, Path(completed_result["input"]["path"]), indexes)
+        from .patron_result import command_search_budget
+        requested_budget = command_search_budget(completed_result["execution"]["command"])
+        if requested_budget != output_summary.get("search_budget", {}).get("cluster_limit"):
+            raise ValidationError("native PATRON output budget differs from executed command")
     provider_metadata = {
         "initial_provider": initial_assignment.get("provider"),
     }
@@ -2358,6 +2377,8 @@ def run_partition_pressure_native(
         ),
         "final_metrics": final_metrics,
     }
+    if "search_budget" in output_summary:
+        trace["search_budget"] = output_summary["search_budget"]
     if completed_result is not None:
         trace["native_result_provenance"] = result_provenance(completed_result_path, completed_result)
     if retain_trace_seals:

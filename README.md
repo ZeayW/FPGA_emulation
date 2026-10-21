@@ -146,7 +146,8 @@ These produce a scoped stage report, not a full-flow or physical pass. Phase 5
 distinguishes exact original-member timing from legacy compressed diagnostics. Optional
 `--synthesis-profile-passes` records live Xilinx synthesis progress. PATRON writes
 rate-limited native progress and evaluation-reuse/early-rejection counters to
-`partition/patron/refiner.log`. Physical SRAM
+`partition/patron/refiner.log`. An explicit native sweep-prefix budget provides a
+non-converged research variant; see the [user guide](docs/USER_GUIDE.md). Physical SRAM
 enable/retention semantics, BRAM mapping and independent timing checks are described in
 [paired routing validation](docs/USER_GUIDE.md#paired-phase-4-validation).
 
