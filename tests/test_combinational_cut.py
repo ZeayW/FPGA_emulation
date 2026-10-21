@@ -795,9 +795,10 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
                         include_source_identity=False,
                     )
                 packed = actual["eligible_ids"]
+                expected_names = sorted(expected["eligible_ids"])
                 self.assertEqual(
                     list(packed),
-                    sorted(expected["eligible_ids"]),
+                    expected_names,
                 )
                 self.assertTrue(hasattr(packed, "contains_ordinal"))
                 for net_ordinal, net in enumerate(value["nets"]):
@@ -813,6 +814,28 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
                         for name in expected["eligible_ids"]
                     )
                     + 8,
+                )
+                streamed_names = packed.streaming_ordered_names()
+                self.assertIsInstance(streamed_names, list)
+                self.assertEqual(list.__len__(streamed_names), 0)
+                self.assertEqual(len(streamed_names), len(expected_names))
+                self.assertEqual(streamed_names, expected_names)
+                self.assertEqual(streamed_names[:], expected_names)
+                self.assertEqual(
+                    json.dumps(streamed_names, separators=(",", ":")),
+                    json.dumps(expected_names, separators=(",", ":")),
+                )
+                copied_names = copy.deepcopy(streamed_names)
+                self.assertIs(type(copied_names), list)
+                self.assertEqual(copied_names, expected_names)
+                streamed_names.append("__compatibility_mutation__")
+                self.assertEqual(
+                    streamed_names,
+                    [*expected_names, "__compatibility_mutation__"],
+                )
+                self.assertEqual(
+                    list(packed), expected_names,
+                    "mutating the compatibility view changed packed identity",
                 )
                 self.assertEqual(actual, expected)
 

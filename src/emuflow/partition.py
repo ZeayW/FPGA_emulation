@@ -944,7 +944,11 @@ def build_clusters(
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    *,
+    _stream_eligible_policy_names: bool = False,
 ) -> Dict[str, Any]:
+    if not isinstance(_stream_eligible_policy_names, bool):
+        raise ValidationError("stream eligible policy names flag is invalid")
     if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
         raise ValidationError(
             "partition cut mode must be 'sequential-only' or "
@@ -1003,8 +1007,16 @@ def build_clusters(
                         max_cross_fpga_dependency_depth
                     ),
                     "eligible_combinational_cut_nets": (
-                        released_combinational_nets.ordered_names()
-                        if hasattr(released_combinational_nets, "ordered_names")
+                        released_combinational_nets.streaming_ordered_names()
+                        if _stream_eligible_policy_names
+                        and hasattr(
+                            released_combinational_nets,
+                            "streaming_ordered_names",
+                        )
+                        else released_combinational_nets.ordered_names()
+                        if hasattr(
+                            released_combinational_nets, "ordered_names"
+                        )
                         else sorted(released_combinational_nets)
                     ),
                     "transported_cut_classes": sorted(
@@ -1114,7 +1126,13 @@ def build_clusters(
                     max_cross_fpga_dependency_depth
                 ),
                 "eligible_combinational_cut_nets": (
-                    released_combinational_nets.ordered_names()
+                    released_combinational_nets.streaming_ordered_names()
+                    if _stream_eligible_policy_names
+                    and hasattr(
+                        released_combinational_nets,
+                        "streaming_ordered_names",
+                    )
+                    else released_combinational_nets.ordered_names()
                     if hasattr(released_combinational_nets, "ordered_names")
                     else sorted(released_combinational_nets)
                 ),

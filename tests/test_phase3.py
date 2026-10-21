@@ -102,8 +102,46 @@ class Phase3Test(unittest.TestCase):
                 constraints,
                 cut_mode="static-exact-combinational",
             )
+            streamed_exact = build_clusters(
+                compact_ir,
+                constraints,
+                cut_mode="static-exact-combinational",
+                _stream_eligible_policy_names=True,
+            )
         self.assertEqual(actual, expected)
         self.assertEqual(actual_exact, expected_exact)
+        streamed_names = streamed_exact["policy"][
+            "eligible_combinational_cut_nets"
+        ]
+        self.assertIsInstance(streamed_names, list)
+        self.assertEqual(list.__len__(streamed_names), 0)
+        self.assertEqual(streamed_exact, expected_exact)
+        self.assertEqual(
+            json.dumps(streamed_exact, sort_keys=True, separators=(",", ":")),
+            json.dumps(expected_exact, sort_keys=True, separators=(",", ":")),
+        )
+        copied = copy.deepcopy(streamed_exact)
+        self.assertIs(
+            type(copied["policy"]["eligible_combinational_cut_nets"]),
+            list,
+        )
+        self.assertEqual(copied, expected_exact)
+        streamed_assignment = assign_clusters(
+            self.ir,
+            self.platform,
+            streamed_exact,
+            constraints,
+            seed=3,
+        )
+        self.assertEqual(
+            validate_partition_artifacts(
+                self.ir,
+                self.platform,
+                streamed_exact,
+                streamed_assignment,
+            )["status"],
+            "pass",
+        )
 
     def test_compact_cluster_builder_rejects_invalid_endpoint_owner(self) -> None:
         constraints = normalize_partition_constraints(

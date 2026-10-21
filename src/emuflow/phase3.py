@@ -534,6 +534,7 @@ def run_phase3(
                 max_cross_fpga_dependency_depth
             ),
             static_exact_candidate_policy=static_exact_candidate_policy,
+            _stream_eligible_policy_names=True,
         )
     else:
         clusters = phase3_runtime_call(

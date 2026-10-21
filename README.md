@@ -73,8 +73,11 @@ multi-driver and state-source nets do not accumulate sink populations. A
 1,000,000-endpoint high-fanout regression stays below 16 MiB of traced Python
 allocation. A separate 100,001-instance chain used 11.38 MB peak versus 90.99
 MB for the reference path while preserving the same 100,000 eligible cuts.
-The final eligible-name set remains graph-sized migration debt, and direct
-bare-database callers still rely on their managed source seal.
+Production cluster construction now exposes the packed lexical pool through a
+private list-compatible streaming view: canonical JSON publication decodes one
+name at a time, while default and explicitly mutable API callers still receive
+an ordinary list. The logical policy array remains graph-sized on disk, and
+direct bare-database callers still rely on their managed source seal.
 New Phase 3 publications use assignment-index schema v3. SQLite is the bounded
 control plane for instance ownership, partitions and cut sinks. Static Exact
 nodes, segments and captures are integer-coded in the versioned,
@@ -191,9 +194,14 @@ net plus a lexical UTF-8 identity pool with fixed-width offsets; clustering and
 native Static Exact validation use the ordinal bitmap directly. A synthetic
 1,000,000-name representation comparison reduced process peak RSS from
 139,264,000 to 57,245,696 bytes with a 16,125,008-byte packed payload; build
-time changed from 0.24 to 0.30 seconds. The final eligible-name policy list,
-cluster/path objects and the C++ analyzer's graph/capture vectors remain
-graph-scale migration work.
+time changed from 0.24 to 0.30 seconds. Production no longer turns that packed
+view back into a retained Python string list before publication. In a separate
+1,000,000-name construction-plus-canonical-encoding comparison, identical
+14,000,014-character JSON used 11,327 versus 68,009,482 bytes of incremental
+traced peak allocation and 64,749,568 versus 203,161,600 bytes of process peak
+RSS; wall time was 1.780 versus 1.618 seconds. The policy array remains
+graph-sized in the logical v1 schema; final cluster/path objects and the C++
+analyzer's graph/capture vectors remain graph-scale migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary

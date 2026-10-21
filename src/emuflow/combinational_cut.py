@@ -499,9 +499,16 @@ class _PackedEligibleCutIds(AbstractSet[str]):
 
     def __iter__(self) -> Iterator[str]:
         for index in range(len(self)):
-            yield self._name_bytes[
-                self._name_offsets[index] : self._name_offsets[index + 1]
-            ].decode("utf-8")
+            yield self.name_at(index)
+
+    def name_at(self, index: int) -> str:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("packed eligible-cut name index out of range")
+        return self._name_bytes[
+            self._name_offsets[index] : self._name_offsets[index + 1]
+        ].decode("utf-8")
 
     def __contains__(self, value: object) -> bool:
         if not isinstance(value, str):
@@ -549,6 +556,185 @@ class _PackedEligibleCutIds(AbstractSet[str]):
     def ordered_names(self) -> List[str]:
         return list(self)
 
+    def streaming_ordered_names(self) -> List[str]:
+        return _PackedEligibleCutNames(self)
+
+
+class _PackedEligibleCutNames(list):
+    """List-compatible lazy view over packed eligible-cut identities.
+
+    The Phase 3 cluster schema still exposes an ordered JSON array. Keeping a
+    normal Python list until publication would duplicate every decoded net
+    name after compact candidate construction. JSON encoders iterate list
+    subclasses, so this view preserves the existing schema and exact bytes
+    while decoding each name only as it is consumed. Explicit mutation first
+    materializes an ordinary backing list, preserving compatibility for
+    callers that intentionally edit a cluster artifact.
+    """
+
+    __slots__ = ("_source", "_materialized")
+
+    def __init__(self, source: _PackedEligibleCutIds) -> None:
+        super().__init__()
+        self._source = source
+        self._materialized = False
+
+    def _ensure_materialized(self) -> None:
+        if self._materialized:
+            return
+        list.extend(self, self._source)
+        self._materialized = True
+
+    def __len__(self) -> int:
+        if self._materialized:
+            return list.__len__(self)
+        return len(self._source)
+
+    def __bool__(self) -> bool:
+        return len(self) != 0
+
+    def __iter__(self) -> Iterator[str]:
+        if self._materialized:
+            return list.__iter__(self)
+        return iter(self._source)
+
+    def __reversed__(self) -> Iterator[str]:
+        if self._materialized:
+            return list.__reversed__(self)
+        return (
+            self._source.name_at(index)
+            for index in range(len(self._source) - 1, -1, -1)
+        )
+
+    def __getitem__(self, index: Any) -> Any:
+        if self._materialized:
+            return list.__getitem__(self, index)
+        if isinstance(index, slice):
+            return [
+                self._source.name_at(item)
+                for item in range(*index.indices(len(self)))
+            ]
+        return self._source.name_at(index)
+
+    def __contains__(self, value: object) -> bool:
+        if self._materialized:
+            return list.__contains__(self, value)
+        return value in self._source
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, list):
+            return False
+        if len(self) != len(other):
+            return False
+        return all(left == right for left, right in zip(self, other))
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    def __lt__(self, other: object) -> bool:
+        return list(self) < other
+
+    def __le__(self, other: object) -> bool:
+        return list(self) <= other
+
+    def __gt__(self, other: object) -> bool:
+        return list(self) > other
+
+    def __ge__(self, other: object) -> bool:
+        return list(self) >= other
+
+    def __add__(self, other: object) -> List[Any]:
+        return list(self) + other
+
+    def __radd__(self, other: object) -> List[Any]:
+        return other + list(self)
+
+    def __mul__(self, count: int) -> List[str]:
+        return list(self) * count
+
+    def __rmul__(self, count: int) -> List[str]:
+        return list(self) * count
+
+    def __repr__(self) -> str:
+        return repr(list(self))
+
+    def copy(self) -> List[str]:
+        return list(self)
+
+    def __copy__(self) -> List[str]:
+        return list(self)
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> List[str]:
+        result = list(self)
+        memo[id(self)] = result
+        return result
+
+    def __reduce_ex__(self, protocol: int) -> Any:
+        return (list, (list(self),))
+
+    def __setitem__(self, index: Any, value: Any) -> None:
+        self._ensure_materialized()
+        list.__setitem__(self, index, value)
+
+    def __delitem__(self, index: Any) -> None:
+        self._ensure_materialized()
+        list.__delitem__(self, index)
+
+    def __iadd__(self, values: Iterable[Any]) -> "_PackedEligibleCutNames":
+        self._ensure_materialized()
+        list.__iadd__(self, values)
+        return self
+
+    def __imul__(self, count: int) -> "_PackedEligibleCutNames":
+        self._ensure_materialized()
+        list.__imul__(self, count)
+        return self
+
+    def append(self, value: Any) -> None:
+        self._ensure_materialized()
+        list.append(self, value)
+
+    def extend(self, values: Iterable[Any]) -> None:
+        self._ensure_materialized()
+        list.extend(self, values)
+
+    def insert(self, index: int, value: Any) -> None:
+        self._ensure_materialized()
+        list.insert(self, index, value)
+
+    def pop(self, index: int = -1) -> Any:
+        self._ensure_materialized()
+        return list.pop(self, index)
+
+    def remove(self, value: Any) -> None:
+        self._ensure_materialized()
+        list.remove(self, value)
+
+    def clear(self) -> None:
+        self._ensure_materialized()
+        list.clear(self)
+
+    def reverse(self) -> None:
+        self._ensure_materialized()
+        list.reverse(self)
+
+    def sort(self, *args: Any, **kwargs: Any) -> None:
+        self._ensure_materialized()
+        list.sort(self, *args, **kwargs)
+
+    def count(self, value: Any) -> int:
+        if self._materialized:
+            return list.count(self, value)
+        return sum(item == value for item in self._source)
+
+    def index(
+        self, value: Any, start: int = 0, stop: int | None = None
+    ) -> int:
+        values = list(self)
+        if stop is None:
+            return values.index(value, start)
+        return values.index(value, start, stop)
+
 
 def _compact_combinational_cut_candidate_ids(
     ir: Any, path: Path
@@ -563,8 +749,8 @@ def _compact_combinational_cut_candidate_ids(
     applies the exact per-net eligibility rules. Eligible membership is stored
     as one bit per net, while the legacy name-facing contract is a lexical
     UTF-8 pool with fixed-width offsets. The current cluster artifact still
-    embeds every eligible name; replacing that final output list is a separate
-    contract migration.
+    emits every eligible name, but its list-compatible policy view decodes
+    names only while a consumer or publisher iterates them.
 
     This function validates the bare compact store's candidate-relevant
     structure, but it cannot authenticate its content: the direct Phase 3 API
