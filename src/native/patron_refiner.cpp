@@ -3801,14 +3801,17 @@ void run_scalable(const Model& model,
   std::vector<NativeMove> moves;
   std::vector<NativeBatch> batches;
   // A whole-design local sweep evaluates every movable cluster against every
-  // target partition. On the 2.6M-cluster NVDLA model, one sweep already
-  // costs tens of minutes. Repeating it four times prevents v14 from ever
-  // reaching the bounded frontier-flow phase that owns its two primary
-  // objectives (maximum path hops, then maximum path TDM-ratio sum).
+  // target partition. On the 2.6M-cluster NVDLA model, one sweep still takes
+  // hours because every candidate rebuilds and sorts its affected net/path
+  // sets. It also delays the bounded frontier-flow phase that owns v14's two
+  // primary objectives (maximum path hops, then maximum path TDM-ratio sum).
   //
   // Keep the historical multi-sweep behavior for qualification-sized models
-  // and older algorithms. Large v14 models receive one complete local sweep,
-  // then proceed to ejection/comove and exact frontier flow. This is a search
+  // and older algorithms. For large v14 models, use the already-configured
+  // critical-cluster budget for the local seed sweep, then proceed to the
+  // ejection/comove and exact frontier-flow phases. The order is ranked by
+  // maximum path hops, maximum path ratio sum, and timing exposure, so this
+  // preserves the intended priority while bounding work. This is a search
   // budget policy only: capacity checks and the lexicographic acceptance
   // predicate are unchanged.
   constexpr int large_v14_cluster_threshold = 500000;
@@ -3817,9 +3820,17 @@ void run_scalable(const Model& model,
           && model.clusters >= large_v14_cluster_threshold
       ? 1
       : model.max_sweeps;
+  const int local_cluster_limit =
+      model.flow_version >= 8
+          && model.clusters >= large_v14_cluster_threshold
+      ? std::min(model.ejection_critical_limit, model.clusters)
+      : model.clusters;
   for (int sweep = 0; sweep < local_sweep_limit; ++sweep) {
     const std::size_t sweep_start = moves.size();
-    for (int cluster : order) {
+    for (int order_index = 0;
+         order_index < local_cluster_limit;
+         ++order_index) {
+      const int cluster = order[order_index];
       if (static_cast<int>(moves.size()) >= model.max_moves) {
         break;
       }
