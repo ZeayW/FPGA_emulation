@@ -2,6 +2,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.errors import ValidationError
 from emuflow.io import file_sha256
@@ -72,6 +73,60 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
             self.assertEqual(actual_packed["cascade_chains"], packed["cascade_chains"])
             self.assertEqual(
                 actual_placement["source"]["packed_sha256"], file_sha256(path)
+            )
+
+    def test_validated_digest_avoids_rehashing_published_database(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "physical-handoff.sqlite"
+            write_xilinx_physical_handoff(path, *_contracts())
+            digest = file_sha256(path)
+
+            with mock.patch(
+                "emuflow.xilinx_physical_handoff.file_sha256",
+                side_effect=AssertionError("unexpected duplicate digest"),
+            ):
+                packed, placement = open_xilinx_physical_handoff(
+                    path, validated_sha256=digest
+                )
+
+            self.assertEqual(
+                packed["source"]["physical_handoff_sha256"], digest
+            )
+            self.assertEqual(placement["source"]["packed_sha256"], digest)
+
+            with self.assertRaisesRegex(ValidationError, "digest is invalid"):
+                open_xilinx_physical_handoff(path, validated_sha256="invalid")
+
+    def test_unordered_compatibility_views_remain_supported(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "physical-handoff.sqlite"
+            first_packed, first_placement = _contracts("cell0")
+            second_packed, second_placement = _contracts("cell1")
+            second_packed["clusters"][0]["id"] = "openparf:SLICEL_X1Y0"
+            second_placement["clusters"][0].update({
+                "cluster": "openparf:SLICEL_X1Y0",
+                "site": "SLICEL_X1Y0",
+                "x": 1,
+            })
+            second_placement["clusters"][0]["assignments"][0]["site"] = (
+                "SLICEL_X1Y0"
+            )
+            first_packed["clusters"].extend(second_packed["clusters"])
+            first_placement["clusters"].extend(second_placement["clusters"])
+            first_placement["clusters"].reverse()
+
+            write_xilinx_physical_handoff(
+                path, first_packed, first_placement
+            )
+            packed, placement = open_xilinx_physical_handoff(path)
+
+            self.assertEqual(
+                [cluster["id"] for cluster in packed["clusters"]],
+                ["openparf:SLICEL_X0Y0", "openparf:SLICEL_X1Y0"],
+            )
+            self.assertEqual(
+                [cluster["cluster"] for cluster in placement["clusters"]],
+                ["openparf:SLICEL_X0Y0", "openparf:SLICEL_X1Y0"],
             )
 
     def test_corruption_and_truncation_fail_closed(self):

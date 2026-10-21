@@ -138,12 +138,31 @@ def write_xilinx_physical_handoff(
         placement_clusters, Sequence
     ):
         raise ValidationError("Xilinx physical handoff clusters are invalid")
-    placement_by_id = {
-        entry.get("cluster"): entry for entry in placement_clusters
-        if isinstance(entry, Mapping)
-    }
-    if len(placement_by_id) != len(placement_clusters):
-        raise ValidationError("Xilinx physical handoff placement IDs are invalid")
+    # The production OpenPARF bridge sorts both views by cluster identity.
+    # Preserve support for compatibility callers with arbitrary placement
+    # order, but avoid a graph-sized duplicate cluster dictionary in the
+    # ordered production path.
+    placements_are_aligned = (
+        len(packed_clusters) == len(placement_clusters)
+        and all(
+            isinstance(packed_cluster, Mapping)
+            and isinstance(placed_cluster, Mapping)
+            and packed_cluster.get("id") == placed_cluster.get("cluster")
+            for packed_cluster, placed_cluster in zip(
+                packed_clusters, placement_clusters
+            )
+        )
+    )
+    placement_by_id: Optional[Dict[str, Mapping[str, Any]]] = None
+    if not placements_are_aligned:
+        placement_by_id = {
+            entry.get("cluster"): entry for entry in placement_clusters
+            if isinstance(entry, Mapping)
+            and isinstance(entry.get("cluster"), str)
+        }
+        if len(placement_by_id) != len(placement_clusters):
+            raise ValidationError("Xilinx physical handoff placement IDs are invalid")
+    placement_iterator = iter(placement_clusters) if placements_are_aligned else None
 
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -230,7 +249,11 @@ def write_xilinx_physical_handoff(
             if not isinstance(packed_cluster, Mapping):
                 raise ValidationError("Xilinx physical handoff packing cluster is invalid")
             cluster_id = packed_cluster.get("id")
-            placed = placement_by_id.get(cluster_id)
+            if placement_iterator is not None:
+                placed = next(placement_iterator)
+            else:
+                assert placement_by_id is not None
+                placed = placement_by_id.get(cluster_id)
             if not isinstance(cluster_id, str) or not isinstance(placed, Mapping):
                 raise ValidationError("Xilinx physical handoff cluster coverage disagrees")
             seen_placement_ids.add(cluster_id)
@@ -286,7 +309,9 @@ def write_xilinx_physical_handoff(
                 assignment_count += 1
             if len(packed_assignments) != len(placed_assignments):
                 raise ValidationError("Xilinx physical handoff assignment count disagrees")
-        if seen_placement_ids != set(placement_by_id):
+        if placement_by_id is not None and (
+            seen_placement_ids != set(placement_by_id)
+        ):
             raise ValidationError("Xilinx physical handoff cluster coverage disagrees")
         cascades = packed.get("cascade_chains", [])
         constants = packed.get("unplaced_constants", [])
@@ -369,9 +394,18 @@ def validate_xilinx_physical_handoff(
 
 
 def open_xilinx_physical_handoff(
-    path: Path,
+    path: Path, *, validated_sha256: Optional[str] = None,
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """Open relocatable lazy compatibility views over one physical handoff."""
+
+    if validated_sha256 is not None and (
+        len(validated_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in validated_sha256
+        )
+    ):
+        raise ValidationError("Xilinx physical handoff digest is invalid")
 
     connection = _connect(path)
     try:
@@ -398,7 +432,11 @@ def open_xilinx_physical_handoff(
         connection.close()
     if set(documents) != {"packed", "placement"}:
         raise ValidationError("Xilinx physical handoff documents are incomplete")
-    identity = file_sha256(path)
+    # The production caller has just validated and hashed the immutable,
+    # atomically published artifact.  Reusing that identity avoids a second
+    # complete read of the same large database.  Standalone callers retain
+    # the self-contained hash calculation.
+    identity = validated_sha256 or file_sha256(path)
     packed = dict(documents["packed"])
     placement = dict(documents["placement"])
     packed_source = dict(packed.get("source", {}))

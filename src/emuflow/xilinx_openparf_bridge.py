@@ -752,7 +752,8 @@ def materialize_xilinx_openparf_atomic_contract(
             physical_handoff_path
         )
         published_packed, published_placement = open_xilinx_physical_handoff(
-            physical_handoff_path
+            physical_handoff_path,
+            validated_sha256=handoff_validation["physical_handoff_sha256"],
         )
         packing_validation = validate_xilinx_packing(
             mapped_path, physical_handoff_path, top=selected_top,

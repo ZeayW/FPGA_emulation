@@ -219,7 +219,9 @@ versioned physical-handoff database replaces the packed and placement JSON
 publications in the production native path. Independent validators, RWRoute
 export and routed timing use relocatable lazy views over that file. The bridge
 also keeps a site-pin legalizer's FF BEL moves synchronized between its packing
-and placement views. The remaining million-instance cost is the bridge's
+and placement views. The validator's full-file SHA-256 is reused when those
+views open, and the ordered production writer no longer builds a second
+cluster lookup table. The remaining million-instance cost is the bridge's
 temporary Python packing/placement trees and RWRoute's whole-design export
 dictionaries.
 

@@ -137,7 +137,10 @@ SQLite `quick_check` remains an explicit diagnostic operation outside normal
 handoff. The standard JSON contracts remain available only through the
 compatibility bridge mode. The bridge report records row counts, artifact
 bytes, dataflow mode, and time spent in certificate validation versus
-publication.
+publication. Publication reuses the SHA-256 produced by that validation when
+opening the immutable lazy views, avoiding a second complete database read;
+the deterministically ordered production rows also stream without constructing
+a duplicate cluster-to-placement dictionary.
 
 ## Flow
 
