@@ -182,6 +182,8 @@ timing input exists). Ties keep continuous pressure. The selection receipt is
 sealed with the flow artifacts. Frame-search v5 records actual providers and
 policies; older sealed reports remain independently readable.
 Externally supplied timing test paths are also retained in the flow bundle.
+See the [case results](docs/PHASE4_AUTHOR_ROUTER_RESULTS.md) for contest
+cases 1–10, complete PicoRV32 validation, and measured quality/runtime tradeoffs.
 
 ### Phase 5: TDM ratio, lane, and slot assignment
 
