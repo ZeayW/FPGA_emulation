@@ -82,12 +82,11 @@ class _BridgeClusterSequence(Sequence[Mapping[str, Any]]):
     def __len__(self) -> int:
         return len(self._clusters)
 
-    def __iter__(self) -> Iterator[Mapping[str, Any]]:
-        for cluster in self._clusters:
-            assignments = cluster["assignments"]
-            if self._placement:
-                metadata = cluster["_placement"]
-                yield {
+    def _render(self, cluster: Mapping[str, Any]) -> Mapping[str, Any]:
+        assignments = cluster["assignments"]
+        if self._placement:
+            metadata = cluster["_placement"]
+            return {
                     "cluster": cluster["id"],
                     "site": metadata["site"],
                     "site_type": metadata["site_type"],
@@ -106,27 +105,31 @@ class _BridgeClusterSequence(Sequence[Mapping[str, Any]]):
                         key=lambda item: item["_placement_ordinal"],
                     )],
                 }
-                continue
-            value: Dict[str, Any] = {
-                "id": cluster["id"],
-                "kind": cluster["kind"],
-                "site_templates": cluster["site_templates"],
-                "control_set": cluster["control_set"],
-                "assignments": [{
-                    "instance": assignment["instance"],
-                    "cell_type": assignment["cell_type"],
-                    "bel": assignment["bel"],
-                } for assignment in assignments],
-            }
-            if "control_sets" in cluster:
-                value["control_sets"] = cluster["control_sets"]
-            if "site_mode" in cluster:
-                value["site_mode"] = cluster["site_mode"]
-            yield value
+        value: Dict[str, Any] = {
+            "id": cluster["id"],
+            "kind": cluster["kind"],
+            "site_templates": cluster["site_templates"],
+            "control_set": cluster["control_set"],
+            "assignments": [{
+                "instance": assignment["instance"],
+                "cell_type": assignment["cell_type"],
+                "bel": assignment["bel"],
+            } for assignment in assignments],
+        }
+        if "control_sets" in cluster:
+            value["control_sets"] = cluster["control_sets"]
+        if "site_mode" in cluster:
+            value["site_mode"] = cluster["site_mode"]
+        return value
+
+    def __iter__(self) -> Iterator[Mapping[str, Any]]:
+        for cluster in self._clusters:
+            yield self._render(cluster)
 
     def __getitem__(self, index: int | slice) -> Any:
-        values = list(self)
-        return values[index]
+        if isinstance(index, slice):
+            return [self._render(cluster) for cluster in self._clusters[index]]
+        return self._render(self._clusters[index])
 
 
 def _sha256(path: Path) -> str:
@@ -246,7 +249,7 @@ def _validate_certificate(
         name for name, cell in cells.items()
         if isinstance(cell, Mapping) and cell.get("type") in CONSTANT_TYPES
     )
-    expected = set(cells) - set(constants)
+    expected_count = len(cells) - len(constants)
     cascades: list[Dict[str, Any]] = []
     source_owner: Dict[str, str] = {}
     if source_packed is not None:
@@ -287,8 +290,16 @@ def _validate_certificate(
                     raise ValidationError(
                         "OpenPARF atomic source cell ownership is invalid"
                     )
+                source_cell = cells.get(instance)
+                if (
+                    not isinstance(source_cell, Mapping)
+                    or source_cell.get("type") in CONSTANT_TYPES
+                ):
+                    raise ValidationError(
+                        "OpenPARF atomic source cell ownership is invalid"
+                    )
                 source_owner[instance] = source_cluster["id"]
-        if set(source_owner) != expected:
+        if len(source_owner) != expected_count:
             raise ValidationError(
                 "OpenPARF atomic source cell coverage is incomplete"
             )
@@ -300,7 +311,7 @@ def _validate_certificate(
     if clusters is None or isinstance(clusters, (str, bytes, Mapping)):
         raise ValidationError("OpenPARF atomic placement clusters are invalid")
 
-    owners: Dict[str, str] = {}
+    owners: set[str] = set()
     physical_clusters: list[Dict[str, Any]] = []
     site_names = set()
     hard_counts: Counter = Counter()
@@ -340,7 +351,7 @@ def _validate_certificate(
                 raise ValidationError(f"{assignment_context}: mapped cell identity is invalid")
             if name in owners:
                 raise ValidationError(f"cell {name!r} is assigned more than once")
-            owners[name] = site_name
+            owners.add(name)
             source_cluster = assignment.get("source_cluster")
             if source_packed is not None and source_owner.get(name) != source_cluster:
                 raise ValidationError(
@@ -530,14 +541,20 @@ def _validate_certificate(
                 f"RAMB18E2x{len(hard_assignments)}"
             )
         physical_clusters.append(physical_cluster)
-    if set(owners) != expected:
-        missing = sorted(expected - set(owners))
-        extra = sorted(set(owners) - expected)
+    if len(owners) != expected_count:
+        missing = sorted(
+            name
+            for name, cell in cells.items()
+            if isinstance(cell, Mapping)
+            and cell.get("type") not in CONSTANT_TYPES
+            and name not in owners
+        )
+        extra: list[str] = []
         raise ValidationError(
             f"OpenPARF atomic placement coverage is incomplete; missing={missing}, extra={extra}"
         )
     expected_summary = {
-        "atoms": len(expected), "occupied_sites": len(physical_clusters),
+        "atoms": expected_count, "occupied_sites": len(physical_clusters),
         "luts": lut_count, "ffs": ff_count,
         "hard_resources": dict(sorted(hard_counts.items())),
     }

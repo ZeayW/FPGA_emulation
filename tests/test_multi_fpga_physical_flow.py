@@ -14,6 +14,7 @@ from emuflow.multi_fpga_physical_flow import (
     MULTI_FPGA_PHYSICAL_SCHEMA,
     _assemble_multi_fpga_physical_results,
     _implementation_stage,
+    _open_position_hint_lookup,
     _partition_has_physical_work,
     _partition_declares_dut_clock,
     _physical_clock_delays,
@@ -28,6 +29,7 @@ from emuflow.physical_summary_storage import (
 )
 from emuflow.physical_backend import physical_backend_descriptor
 from emuflow.platform import Platform
+from emuflow.position_hints_storage import write_position_hints_storage
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +83,46 @@ def _merged_ir(fpga):
 
 
 class MultiFpgaPhysicalFlowTest(unittest.TestCase):
+    def test_indexed_position_hint_lookup_does_not_expand_entries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "position-hints.json"
+            positions = write_position_hints_storage(
+                path,
+                {
+                    "schema": "emuflow.signal-position-hints/v1",
+                    "design": "design",
+                    "platform": "platform",
+                    "provider": "test",
+                    "region_count": 3,
+                    "metrics": {
+                        "signals": 2,
+                        "endpoint_centroid_fallbacks": 0,
+                    },
+                    "entries": [
+                        {
+                            "schedule_entry": entry_id,
+                            "source_y": 0.25,
+                            "sink_y": 0.75,
+                            "source_region": 0,
+                            "sink_region": 2,
+                            "source_fallback": False,
+                            "sink_fallback": False,
+                        }
+                        for entry_id in ("entry-a", "entry-b")
+                    ],
+                },
+            )
+
+            class EntriesMustStayLazy:
+                def __iter__(self):
+                    raise AssertionError("indexed entries were expanded")
+
+            positions._entries = EntriesMustStayLazy()
+            with _open_position_hint_lookup(positions) as has_hint:
+                self.assertTrue(has_hint("entry-b"))
+                self.assertTrue(has_hint("entry-a"))
+                self.assertFalse(has_hint("entry-missing"))
+
     def test_only_exactly_empty_partitions_skip_physical_work(self):
         netlist = {"instances": [], "nets": [], "ports": []}
         transport = {

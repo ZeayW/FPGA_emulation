@@ -7,9 +7,11 @@ import json
 import math
 import re
 import shutil
+import sqlite3
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 
 from .boundary_timing import (
     build_boundary_timing_database,
@@ -56,6 +58,7 @@ from .physical_backend import (
 )
 from .physical_summary_storage import publish_physical_evidence
 from .platform import Platform
+from .position_hints_storage import PositionHintsView, read_position_hints
 from .resource_budget import validate_device_resource_usage
 from .rapidwright_provider import validate_rapidwright_provider_manifest
 from .runtime import (
@@ -105,6 +108,56 @@ _INACTIVE_PARTITION_PROVIDER = "inactive-empty-partition-v1"
 # affects VPR's local implementation constraint; system timing continues to
 # use the exact virtual-runtime period recorded upstream.
 _VPR_SDC_MAX_TIME_NS = 2_000_000.0
+
+
+@contextmanager
+def _open_position_hint_lookup(
+    position_hints: Mapping[str, Any],
+) -> Iterator[Callable[[str], bool]]:
+    """Return a bounded-memory membership lookup for physical I/O anchors."""
+
+    if isinstance(position_hints, PositionHintsView):
+        connection = sqlite3.connect(
+            f"file:{position_hints.store_path.resolve()}?mode=ro&immutable=1",
+            uri=True,
+        )
+        try:
+            def contains(entry_id: str) -> bool:
+                try:
+                    row = connection.execute(
+                        "SELECT json_extract(record_json,'$.schedule_entry') "
+                        "FROM entries WHERE schedule_entry=?",
+                        (entry_id,),
+                    ).fetchone()
+                except sqlite3.DatabaseError as error:
+                    raise ValidationError(
+                        "position-hint entry is corrupt"
+                    ) from error
+                if row is None:
+                    return False
+                if row[0] != entry_id:
+                    raise ValidationError(
+                        "position-hint indexed identity disagrees"
+                    )
+                return True
+
+            yield contains
+        finally:
+            connection.close()
+        return
+
+    entries = position_hints.get("entries", [])
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise ValidationError("position hint entries must be an array")
+    entry_ids = set()
+    for record in entries:
+        if not isinstance(record, Mapping):
+            raise ValidationError("position hint is malformed")
+        entry_id = record.get("schedule_entry")
+        if not isinstance(entry_id, str) or not entry_id:
+            raise ValidationError("position hint is malformed")
+        entry_ids.add(entry_id)
+    yield entry_ids.__contains__
 
 
 def _implementation_stage(
@@ -815,7 +868,9 @@ def run_multi_fpga_physical_flow(
     else:
         selected_fpgas = expected_fpgas
     if "position_hints" in manifest:
-        position_hints = read_json(split_root / manifest["position_hints"])
+        position_hints = read_position_hints(
+            split_root / manifest["position_hints"]
+        )
     if "electrical_binding" in manifest:
         electrical_binding = read_json(split_root / manifest["electrical_binding"])
     if electrical_binding is not None and position_hints is None:
@@ -1466,10 +1521,6 @@ def run_multi_fpga_physical_flow(
             )
             fixed_io_targets = None
             if position_hints is not None and electrical_binding is not None:
-                hint_by_entry = {
-                    item["schedule_entry"]: item
-                    for item in position_hints.get("entries", [])
-                }
                 binding_by_entry = {}
                 for binding in electrical_binding.get("entries", []):
                     for entry_id in binding.get("schedule_entries", []):
@@ -1492,65 +1543,65 @@ def run_multi_fpga_physical_flow(
                 boundary_endpoints = read_json(boundary_identity_path)["endpoints"]
                 packed_groups: Dict[str, str] = {}
                 group_packed_blocks: Dict[str, str] = {}
-                for endpoint in boundary_endpoints:
-                    entry_id = endpoint["schedule_entry"]
-                    hint = hint_by_entry.get(entry_id)
-                    binding = binding_by_entry.get(entry_id)
-                    if hint is None or binding is None:
-                        raise ValidationError(
-                            "Chimew physical bindings do not cover every boundary endpoint"
-                        )
-                    if not binding.get("placement_anchor", True):
-                        continue
-                    # Bind the selected Chimew channel's actual physical site
-                    # coordinate.  A lane number is only an electrical
-                    # identity and cannot be used as a placement coordinate.
-                    if electrical_binding.get("schema", "").endswith("/v2"):
-                        endpoint_key = (
-                            "pin_a_point"
-                            if fpga_id == binding["fpga_a"]
-                            else "pin_b_point"
-                        )
-                        point = binding.get(endpoint_key)
-                        bounds_by_fpga = {
-                            item["fpga"]: (item["y_min"], item["y_max"])
-                            for item in electrical_binding.get("fpga_y_bounds", [])
-                        }
-                        bounds = bounds_by_fpga.get(fpga_id)
-                        if not isinstance(point, dict) or bounds is None:
+                with _open_position_hint_lookup(position_hints) as has_hint:
+                    for endpoint in boundary_endpoints:
+                        entry_id = endpoint["schedule_entry"]
+                        binding = binding_by_entry.get(entry_id)
+                        if not has_hint(entry_id) or binding is None:
                             raise ValidationError(
-                                "Chimew physical channel coordinates are missing"
+                                "Chimew physical bindings do not cover every boundary endpoint"
                             )
-                        low, high = bounds
-                        target_y = (float(point["y"]) - low) / (high - low)
-                    else:
-                        link = next(
-                            item for item in platform.links
-                            if item.id == binding["link"]
+                        if not binding.get("placement_anchor", True):
+                            continue
+                        # Bind the selected Chimew channel's actual physical site
+                        # coordinate.  A lane number is only an electrical
+                        # identity and cannot be used as a placement coordinate.
+                        if electrical_binding.get("schema", "").endswith("/v2"):
+                            endpoint_key = (
+                                "pin_a_point"
+                                if fpga_id == binding["fpga_a"]
+                                else "pin_b_point"
+                            )
+                            point = binding.get(endpoint_key)
+                            bounds_by_fpga = {
+                                item["fpga"]: (item["y_min"], item["y_max"])
+                                for item in electrical_binding.get("fpga_y_bounds", [])
+                            }
+                            bounds = bounds_by_fpga.get(fpga_id)
+                            if not isinstance(point, dict) or bounds is None:
+                                raise ValidationError(
+                                    "Chimew physical channel coordinates are missing"
+                                )
+                            low, high = bounds
+                            target_y = (float(point["y"]) - low) / (high - low)
+                        else:
+                            link = next(
+                                item for item in platform.links
+                                if item.id == binding["link"]
+                            )
+                            lane_limit = (
+                                link.transport_bits_per_cycle_per_direction - 1
+                            )
+                            target_y = (
+                                0.5 if lane_limit == 0 else
+                                float(binding["physical_lane"]) / float(lane_limit)
+                            )
+                        merged = endpoint["merged_ir"]
+                        packed_name = port_map.get(
+                            (merged["external_port"], merged["external_port_bit"])
                         )
-                        lane_limit = (
-                            link.transport_bits_per_cycle_per_direction - 1
+                        if packed_name not in packed_io_names:
+                            raise ValidationError(
+                                f"Chimew boundary {endpoint['id']!r} has no packed I/O cluster"
+                            )
+                        _record_chimew_fixed_io_target(
+                            fixed_io_targets,
+                            packed_groups,
+                            group_packed_blocks,
+                            packed_name=packed_name,
+                            group=binding["group"],
+                            target_y=target_y,
                         )
-                        target_y = (
-                            0.5 if lane_limit == 0 else
-                            float(binding["physical_lane"]) / float(lane_limit)
-                        )
-                    merged = endpoint["merged_ir"]
-                    packed_name = port_map.get(
-                        (merged["external_port"], merged["external_port_bit"])
-                    )
-                    if packed_name not in packed_io_names:
-                        raise ValidationError(
-                            f"Chimew boundary {endpoint['id']!r} has no packed I/O cluster"
-                        )
-                    _record_chimew_fixed_io_target(
-                        fixed_io_targets,
-                        packed_groups,
-                        group_packed_blocks,
-                        packed_name=packed_name,
-                        group=binding["group"],
-                        target_y=target_y,
-                    )
             placement_report = run_packed_openparf_placement(
                 packed_contract,
                 architecture_db,

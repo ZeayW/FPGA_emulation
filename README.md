@@ -86,22 +86,22 @@ Capture endpoints are now resolved by replaying only the native analyzer's
 requested endpoint ordinals, so Phase 3 no longer retains a Python tuple for
 every sink. Contract construction also derives stable segment identities from
 ordered counters instead of keeping duplicate source, dependency and capture
-lookup maps. It transfers predecessor lists into final cut nodes and releases
-the analyzer's cut, dependency, launch and depth maps as each cut is emitted.
-The final cut-node relation is still resident once, but production publication
-now derives dependency edges, logic segments and capture requirements through
-repeatable typed record streams. Those three graph-scale relations feed the
-canonical digest and `assignment.exact.bin` writer without becoming retained
-Python dictionary lists. Native capture analysis still returns a transient
-token vector, but Python now replays it into a scratch ordered relation and
-encodes the canonical byte-backed stream in one cursor pass, without raw,
-set, and sorted capture populations coexisting. Direct native emission and
-the remaining cut-node relation are pending.
+lookup maps. It transfers predecessor lists into a byte-backed cut-node
+sequence and releases the analyzer's cut, dependency, launch and depth maps as
+each cut is encoded. Production publication derives cut nodes, dependency
+edges, logic segments and capture requirements through repeatable typed record
+streams. Those four graph-scale relations feed the canonical digest and
+`assignment.exact.bin` writer without becoming retained Python dictionary
+lists. Native capture analysis still returns a transient token vector, but
+Python now replays it into a scratch ordered relation and encodes the canonical
+byte-backed stream in one cursor pass, without raw, set, and sorted capture
+populations coexisting. Direct native binary emission, the analyzer's initial
+cut maps and the native capture vector remain migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
 publication. This is the W0 foundation rather than a claim that the full
-native production entry exists; Phase 5 exact scheduling, remaining Phase 6/7
+native production entry exists; Phase 5 validation I/O, remaining Phase 6/7
 data-plane loops, and global timing stitching are still migration work.
 For indexed Static Exact workloads with at least 100,000 routed cuts, Phase 5
 now runs dependency ordering, conservative source readiness, earliest legal
@@ -141,8 +141,14 @@ publishes the final selector and store only after generic and provider-specific
 checks pass. The indexed Chimew electrical validator also joins the sealed
 schedule and plan stores through a lifecycle-scoped SQLite membership relation,
 so it no longer rebuilds schedule, plan, or coverage maps per hop. Legacy
-logical pin-plan JSON remains readable. Chimew binding input and position-hint
-ingress are still full JSON lists and remain Phase 6 migration work.
+logical pin-plan JSON remains readable. Position hints now use the same compact
+selector plus indexed-SQLite pattern, and generic production and validation
+ordered-merge typed schedule, position and plan relations without a hop-sized
+hint dictionary. Pin-plan and position selectors publish content-addressed
+generations last, so an interrupted overwrite leaves the previous generation
+readable; record seals are also bound inside SQLite metadata. Chimew
+electrical-binding input is still a full JSON list and remains Phase 6
+migration work.
 Transport RTL is written atomically from slot-ordered cursors. Python still
 decodes records into the stores and emits adapter text, so native producer
 migration remains. ScheduleStore v2 also seals the historical
@@ -152,6 +158,14 @@ and qualification identities; v1 stores remain readable. Cross-layer timing
 certificate construction now merges a typed, ordered ScheduleStore hop cursor
 with routed-hop identities, avoiding per-hop JSON decoding and the former
 entry map plus duplicate coverage set/map.
+Static Exact validation now keeps ScheduleStore lazy and builds its typed hop
+relation in a file-backed temporary SQLite index. It checks route and hop
+coverage, ordering, readiness, arrival, collisions, bank allocation, baseline
+ratio/lane assignment, completions, domains, certificates, metrics and both
+logical seals without an H-sized Python hop or occupancy map. This is a memory
+fix; the temporary H-row copy and indexes remain an explicit NVDLA wall-time
+and I/O measurement target. Phase 6B also consumes the lazy ScheduleStore
+directly instead of expanding it through `read_json`.
 
 Phase 7 transport synthesis no longer writes `transport-synthesized.json` or
 loads a complete synthesized transport `EmuIR` into Python. Generic Yosys JSON
@@ -195,6 +209,11 @@ validation, and placement validation so large NVDLA runs identify the actual
 handoff bottleneck. The bridge now owns each cluster and assignment once;
 packing and placement are bounded generated views over that same tree, so the
 production handoff no longer retains a second million-instance placement tree.
+Single-cluster access renders only that cluster instead of expanding the full
+view, and certificate coverage uses validated owner cardinality rather than a
+duplicate expected-cell set. Fixed-I/O anchor preparation queries indexed
+position hints by schedule-entry key for the current partition instead of
+reconstructing a whole-design `hint_by_entry` dictionary.
 RWRoute TSV export likewise derives route-cell rows directly from the physical
 binding and no longer duplicates every cell in a second route-cell dictionary.
 Its report separates binding, cell/I/O

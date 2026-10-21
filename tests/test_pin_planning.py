@@ -11,6 +11,10 @@ from emuflow.pin_plan_storage import (
     PinPlanEntrySequence,
     write_pin_plan_storage,
 )
+from emuflow.position_hints_storage import (
+    PositionHintEntrySequence,
+    write_position_hints_storage,
+)
 from emuflow.pin_planning import (
     LEGACY_PIN_PLAN_PROVIDERS,
     PIN_PLAN_PROVIDER,
@@ -237,6 +241,24 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
             write_tdm_schedule_storage(schedule_path, schedule_document)
             indexed_schedule = read_tdm_schedule(schedule_path)
             indexed_plan = write_pin_plan_storage(plan_path, plan)
+            indexed_positions = write_position_hints_storage(
+                root / "positions.json", self.positions
+            )
+            with mock.patch.object(
+                PositionHintEntrySequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "pin-plan producer rebuilt indexed position hints"
+                ),
+            ):
+                produced_plan = build_pin_plan(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_positions,
+                    executable=str(self.executable),
+                    output_path=root / "produced-plan.json",
+                )
+            self.assertEqual(produced_plan.materialize(), plan)
             with mock.patch.object(
                 ScheduleRecordSequence,
                 "__iter__",
@@ -249,11 +271,17 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
                 side_effect=AssertionError(
                     "indexed validation scanned pin-plan entry objects"
                 ),
+            ), mock.patch.object(
+                PositionHintEntrySequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "indexed validation scanned position-hint objects"
+                ),
             ):
                 validation = validate_pin_plan(
                     indexed_schedule,
                     self.platform,
-                    self.positions,
+                    indexed_positions,
                     indexed_plan,
                 )
             self.assertEqual(validation["status"], "pass")
@@ -311,6 +339,22 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
                     self.platform,
                     self.positions,
                     indexed_wrong_metrics,
+                )
+
+            incomplete_positions = copy.deepcopy(self.positions)
+            incomplete_positions["entries"].pop()
+            incomplete_positions["metrics"]["signals"] -= 1
+            indexed_incomplete_positions = write_position_hints_storage(
+                root / "incomplete-positions.json", incomplete_positions
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "position hints must cover"
+            ):
+                validate_pin_plan(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_incomplete_positions,
+                    indexed_plan,
                 )
 
             malformed_schedule_document = copy.deepcopy(schedule_document)

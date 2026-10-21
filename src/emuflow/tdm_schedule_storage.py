@@ -83,6 +83,264 @@ class ScheduleTransportRecord(NamedTuple):
     route_source: str
 
 
+class ScheduleValidationRecord(NamedTuple):
+    """Typed ScheduleStore projection used by independent validators."""
+
+    entry_id: str
+    demand: str
+    net: str
+    hop: int
+    link: str
+    source: str
+    sink: str
+    capacity_key: str
+    slot: int
+    lane: int
+    ready_slot: int
+    arrival_slot: int
+    tdm_ratio: Optional[int]
+
+    def as_mapping(self) -> dict[str, Any]:
+        value: dict[str, Any] = {
+            "id": self.entry_id,
+            "demand": self.demand,
+            "net": self.net,
+            "hop": self.hop,
+            "link": self.link,
+            "from": self.source,
+            "to": self.sink,
+            "capacity_key": self.capacity_key,
+            "slot": self.slot,
+            "lane": self.lane,
+            "ready_slot": self.ready_slot,
+            "arrival_slot": self.arrival_slot,
+        }
+        if self.tdm_ratio is not None:
+            value["tdm_ratio"] = self.tdm_ratio
+        return value
+
+
+class ScheduleValidationIndex(Mapping[tuple[str, str, str, str], Mapping[str, Any]]):
+    """Disk-backed typed hop index over one sealed ScheduleStore.
+
+    The temporary relation avoids retaining a Python object and hash-table
+    entry for every scheduled hop.  It also gives validation a fail-closed
+    uniqueness boundary before any dependency or timing checks run.
+    """
+
+    def __init__(self, store_path: Path, expected_entries: int):
+        self._store_path = store_path
+        self._expected_entries = expected_entries
+        self._connection: sqlite3.Connection | None = None
+
+    def __enter__(self) -> "ScheduleValidationIndex":
+        connection = sqlite3.connect(
+            f"file:{self._store_path.resolve()}?mode=ro&immutable=1",
+            uri=True,
+        )
+        self._connection = connection
+        try:
+            connection.execute("PRAGMA temp_store=FILE")
+            malformed = connection.execute(
+                """
+                SELECT identity
+                FROM records
+                WHERE section='entries' AND NOT (
+                  json_valid(record_json) AND
+                  json_type(record_json,'$.id')='text' AND
+                  json_extract(record_json,'$.id')=identity AND
+                  length(json_extract(record_json,'$.id'))>0 AND
+                  json_type(record_json,'$.demand')='text' AND
+                  length(json_extract(record_json,'$.demand'))>0 AND
+                  json_type(record_json,'$.net')='text' AND
+                  length(json_extract(record_json,'$.net'))>0 AND
+                  json_type(record_json,'$.hop')='integer' AND
+                  json_type(record_json,'$.link')='text' AND
+                  length(json_extract(record_json,'$.link'))>0 AND
+                  json_type(record_json,'$.from')='text' AND
+                  length(json_extract(record_json,'$.from'))>0 AND
+                  json_type(record_json,'$.to')='text' AND
+                  length(json_extract(record_json,'$.to'))>0 AND
+                  json_type(record_json,'$.capacity_key')='text' AND
+                  length(json_extract(record_json,'$.capacity_key'))>0 AND
+                  json_type(record_json,'$.slot')='integer' AND
+                  json_type(record_json,'$.lane')='integer' AND
+                  json_type(record_json,'$.ready_slot')='integer' AND
+                  json_type(record_json,'$.arrival_slot')='integer' AND
+                  (json_type(record_json,'$.tdm_ratio') IS NULL OR
+                   json_type(record_json,'$.tdm_ratio')='integer')
+                )
+                LIMIT 1
+                """
+            ).fetchone()
+            if malformed is not None:
+                raise ValidationError(
+                    "typed schedule validation record is malformed"
+                )
+            connection.execute(
+                """
+                CREATE TEMP TABLE validation_entries(
+                  entry_id TEXT NOT NULL UNIQUE,
+                  demand TEXT NOT NULL,
+                  net TEXT NOT NULL,
+                  hop INTEGER NOT NULL,
+                  link_id TEXT NOT NULL,
+                  source_fpga TEXT NOT NULL,
+                  sink_fpga TEXT NOT NULL,
+                  capacity_key TEXT NOT NULL,
+                  slot INTEGER NOT NULL,
+                  lane INTEGER NOT NULL,
+                  ready_slot INTEGER NOT NULL,
+                  arrival_slot INTEGER NOT NULL,
+                  tdm_ratio INTEGER,
+                  PRIMARY KEY(demand,link_id,source_fpga,sink_fpga)
+                ) WITHOUT ROWID
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO validation_entries
+                SELECT identity,
+                       json_extract(record_json,'$.demand'),
+                       json_extract(record_json,'$.net'),
+                       json_extract(record_json,'$.hop'),
+                       json_extract(record_json,'$.link'),
+                       json_extract(record_json,'$.from'),
+                       json_extract(record_json,'$.to'),
+                       json_extract(record_json,'$.capacity_key'),
+                       json_extract(record_json,'$.slot'),
+                       json_extract(record_json,'$.lane'),
+                       json_extract(record_json,'$.ready_slot'),
+                       json_extract(record_json,'$.arrival_slot'),
+                       json_extract(record_json,'$.tdm_ratio')
+                FROM records
+                WHERE section='entries'
+                """
+            )
+            count = connection.execute(
+                "SELECT count(*) FROM validation_entries"
+            ).fetchone()[0]
+            if count != self._expected_entries:
+                raise ValidationError(
+                    "typed schedule validation coverage disagrees"
+                )
+            connection.execute(
+                "CREATE INDEX validation_entries_capacity_order "
+                "ON validation_entries(capacity_key,demand,link_id,"
+                "source_fpga,sink_fpga)"
+            )
+            connection.execute(
+                "CREATE INDEX validation_entries_collision "
+                "ON validation_entries(capacity_key,slot,lane)"
+            )
+        except (sqlite3.DatabaseError, sqlite3.IntegrityError) as error:
+            connection.close()
+            self._connection = None
+            raise ValidationError(
+                "typed schedule validation index is malformed"
+            ) from error
+        except Exception:
+            connection.close()
+            self._connection = None
+            raise
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
+
+    @property
+    def _db(self) -> sqlite3.Connection:
+        if self._connection is None:
+            raise RuntimeError("schedule validation index is not open")
+        return self._connection
+
+    @staticmethod
+    def _record(row: tuple[Any, ...]) -> ScheduleValidationRecord:
+        return ScheduleValidationRecord(*row)
+
+    def __len__(self) -> int:
+        return self._expected_entries
+
+    def __iter__(self) -> Iterator[tuple[str, str, str, str]]:
+        rows = self._db.execute(
+            "SELECT demand,link_id,source_fpga,sink_fpga "
+            "FROM validation_entries ORDER BY 1,2,3,4"
+        )
+        yield from rows
+
+    def __getitem__(
+        self, key: tuple[str, str, str, str]
+    ) -> Mapping[str, Any]:
+        row = self._db.execute(
+            "SELECT entry_id,demand,net,hop,link_id,source_fpga,sink_fpga,"
+            "capacity_key,slot,lane,ready_slot,arrival_slot,tdm_ratio "
+            "FROM validation_entries WHERE demand=? AND link_id=? AND "
+            "source_fpga=? AND sink_fpga=?",
+            key,
+        ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        return self._record(row).as_mapping()
+
+    def install_demand_order(self, demands: Iterator[str]) -> None:
+        self._db.execute(
+            "CREATE TEMP TABLE validation_demand_order("
+            "seq INTEGER PRIMARY KEY,demand TEXT NOT NULL UNIQUE)"
+        )
+        try:
+            self._db.executemany(
+                "INSERT INTO validation_demand_order(seq,demand) VALUES(?,?)",
+                enumerate(demands),
+            )
+        except sqlite3.IntegrityError as error:
+            raise ValidationError(
+                "schedule validation demand order is not unique"
+            ) from error
+
+    def iter_demand_order(self) -> Iterator[tuple[int, ScheduleValidationRecord]]:
+        rows = self._db.execute(
+            """
+            SELECT o.seq,e.entry_id,e.demand,e.net,e.hop,e.link_id,
+                   e.source_fpga,e.sink_fpga,e.capacity_key,e.slot,e.lane,
+                   e.ready_slot,e.arrival_slot,e.tdm_ratio
+            FROM validation_demand_order o
+            JOIN validation_entries e USING(demand)
+            ORDER BY o.seq,e.hop,e.link_id,e.source_fpga,e.sink_fpga
+            """
+        )
+        for row in rows:
+            yield int(row[0]), self._record(row[1:])
+
+    def iter_capacity_order(self) -> Iterator[ScheduleValidationRecord]:
+        rows = self._db.execute(
+            "SELECT entry_id,demand,net,hop,link_id,source_fpga,sink_fpga,"
+            "capacity_key,slot,lane,ready_slot,arrival_slot,tdm_ratio "
+            "FROM validation_entries ORDER BY capacity_key,demand,link_id,"
+            "source_fpga,sink_fpga"
+        )
+        for row in rows:
+            yield self._record(row)
+
+    def domain_counts(self) -> dict[str, int]:
+        return {
+            str(key): int(count)
+            for key, count in self._db.execute(
+                "SELECT capacity_key,count(*) FROM validation_entries "
+                "GROUP BY capacity_key"
+            )
+        }
+
+    def first_collision(self) -> tuple[str, int, int] | None:
+        row = self._db.execute(
+            "SELECT capacity_key,slot,lane FROM validation_entries "
+            "GROUP BY capacity_key,slot,lane HAVING count(*)>1 "
+            "ORDER BY capacity_key,slot,lane LIMIT 1"
+        ).fetchone()
+        return None if row is None else (str(row[0]), int(row[1]), int(row[2]))
+
+
 _CANONICAL_JSON_STRING = (
     r'"(?:[\x20-\x21\x23-\x5b\x5d-\x7f]|'
     r'\\(?:["\\bfnrt]|u[0-9a-f]{4}))*"'
@@ -705,6 +963,132 @@ class TDMScheduleView(Mapping[str, Any]):
         ):
             raise ValidationError("schedule logical digest disagrees")
         return result
+
+    def iter_canonical_section_records(
+        self, section: str
+    ) -> Iterator[str]:
+        """Stream sealed canonical records without building Python objects."""
+
+        if section not in self._sections:
+            raise ValidationError(f"unknown schedule section {section!r}")
+        connection = sqlite3.connect(
+            f"file:{self.store_path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        digest = hashlib.sha256()
+        count = 0
+        try:
+            for (encoded,) in connection.execute(
+                "SELECT record_json FROM records WHERE section=? ORDER BY seq",
+                (section,),
+            ):
+                count += 1
+                digest.update(encoded.encode("utf-8"))
+                digest.update(b"\n")
+                yield encoded
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                f"schedule {section} record cursor is unreadable"
+            ) from error
+        finally:
+            connection.close()
+        records = self._sections[section]
+        if count != len(records) or digest.hexdigest() != records.expected_sha256:
+            raise ValidationError(
+                f"schedule {section} logical seal disagrees"
+            )
+
+    def validate_logical_seals(self) -> None:
+        """Recompute compact/pretty logical seals without JSON expansion."""
+
+        compact_digest = hashlib.sha256()
+        pretty_digest = hashlib.sha256()
+        keys = sorted((*self._header, *TDM_SCHEDULE_SECTIONS))
+        _update_digest(compact_digest, "{")
+        _update_digest(pretty_digest, "{\n" if keys else "{}\n")
+        connection = sqlite3.connect(
+            f"file:{self.store_path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        try:
+            for key_index, key in enumerate(keys):
+                if key_index:
+                    _update_digest(compact_digest, ",")
+                encoded_key = _canonical(key)
+                _update_digest(compact_digest, f"{encoded_key}:")
+                _update_digest(pretty_digest, f"  {encoded_key}: ")
+                if key in TDM_SCHEDULE_SECTIONS:
+                    records = self._sections[key]
+                    count = len(records)
+                    section_digest = hashlib.sha256()
+                    _update_digest(compact_digest, "[")
+                    _update_digest(pretty_digest, "[\n" if count else "[]")
+                    observed = 0
+                    for seq, (encoded,) in enumerate(
+                        connection.execute(
+                            "SELECT record_json FROM records "
+                            "WHERE section=? ORDER BY seq",
+                            (key,),
+                        )
+                    ):
+                        observed += 1
+                        if seq:
+                            _update_digest(compact_digest, ",")
+                        _update_digest(compact_digest, encoded)
+                        _update_digest(section_digest, encoded)
+                        _update_digest(section_digest, "\n")
+                        pretty = _pretty_canonical_record(encoded)
+                        for line_index, line in enumerate(pretty):
+                            _update_digest(pretty_digest, f"    {line}")
+                            if line_index + 1 < len(pretty):
+                                _update_digest(pretty_digest, "\n")
+                        if seq + 1 < count:
+                            _update_digest(pretty_digest, ",\n")
+                    if (
+                        observed != count
+                        or section_digest.hexdigest()
+                        != records.expected_sha256
+                    ):
+                        raise ValidationError(
+                            f"schedule {key} logical seal disagrees"
+                        )
+                    _update_digest(compact_digest, "]")
+                    if count:
+                        _update_digest(pretty_digest, "\n  ]")
+                else:
+                    value = self._header[key]
+                    _update_digest(compact_digest, _canonical(value))
+                    pretty = json.dumps(
+                        value,
+                        ensure_ascii=True,
+                        indent=2,
+                        sort_keys=True,
+                    ).splitlines()
+                    _update_digest(pretty_digest, pretty[0])
+                    for line in pretty[1:]:
+                        _update_digest(pretty_digest, f"\n  {line}")
+                if key_index + 1 < len(keys):
+                    _update_digest(pretty_digest, ",\n")
+                else:
+                    _update_digest(pretty_digest, "\n}\n")
+            _update_digest(compact_digest, "}")
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "schedule logical seal records are unreadable"
+            ) from error
+        finally:
+            connection.close()
+        if compact_digest.hexdigest() != self.manifest["logical_sha256"]:
+            raise ValidationError("schedule compact logical seal disagrees")
+        expected_pretty = self.manifest.get("logical_pretty_sha256")
+        if (
+            expected_pretty is not None
+            and pretty_digest.hexdigest() != expected_pretty
+        ):
+            raise ValidationError("schedule pretty logical seal disagrees")
+
+    def open_validation_index(self) -> ScheduleValidationIndex:
+        return ScheduleValidationIndex(
+            self.store_path, len(self._sections["entries"])
+        )
 
     def iter_entry_route_records(
         self,

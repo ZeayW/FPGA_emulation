@@ -12,8 +12,10 @@ from emuflow.phase3_exact_binary import (
     write_phase3_exact_binary,
 )
 from emuflow.phase3_exact_records import (
+    StaticExactCutNodeSequence,
     StaticExactRecordSequence,
     build_static_exact_capture_stream,
+    build_static_exact_cut_node_stream,
     build_static_exact_record_streams,
 )
 
@@ -120,6 +122,9 @@ class Phase3ExactBinaryTest(unittest.TestCase):
         streamed["capture_requirements"] = (
             build_static_exact_capture_stream(iter(capture_relation))
         )
+        streamed["cut_nodes"] = build_static_exact_cut_node_stream(
+            iter(streamed["cut_nodes"])
+        )
         record_streams = build_static_exact_record_streams(
             streamed["cut_nodes"],
             streamed["capture_requirements"],
@@ -131,12 +136,18 @@ class Phase3ExactBinaryTest(unittest.TestCase):
             streamed["dependency_edges"], StaticExactRecordSequence
         )
         self.assertIsInstance(
+            streamed["cut_nodes"], StaticExactCutNodeSequence
+        )
+        self.assertIsInstance(
             streamed["capture_requirements"], StaticExactRecordSequence
         )
         self.assertEqual(
             list(streamed["capture_requirements"]),
             materialized["capture_requirements"],
         )
+        self.assertEqual(streamed["cut_nodes"][1], materialized["cut_nodes"][1])
+        self.assertEqual(streamed["cut_nodes"][-1], materialized["cut_nodes"][-1])
+        self.assertEqual(streamed["cut_nodes"][:1], materialized["cut_nodes"][:1])
         self.assertEqual(
             list(streamed["dependency_edges"]),
             materialized["dependency_edges"],
@@ -178,6 +189,15 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                 )["status"],
                 "pass",
             )
+
+    def test_cut_node_stream_rejects_noncanonical_and_incomplete_records(self):
+        nodes = _contract()["cut_nodes"]
+        with self.assertRaisesRegex(ValidationError, "cut-node stream"):
+            build_static_exact_cut_node_stream(reversed(nodes))
+        invalid = copy.deepcopy(nodes[0])
+        del invalid["capture_segment_ids"]
+        with self.assertRaisesRegex(ValidationError, "cut-node stream"):
+            build_static_exact_cut_node_stream([invalid])
 
     def test_record_stream_rejects_inconsistent_cut_relation(self):
         contract = _contract()

@@ -2,16 +2,17 @@
 
 The logical v3 semantic contract remains a mapping containing JSON arrays.
 Production Phase 3, however, does not need to retain a Python dictionary for
-every derived dependency edge and logic segment before publishing
-``assignment.exact.bin``.  These read-only list subclasses generate those
-records from the smaller cut-node/capture relations on each traversal, so the
-canonical JSON hasher and exact-binary writer can consume the same ordered
-record stream directly.
+every cut node, dependency edge, and logic segment before publishing
+``assignment.exact.bin``.  These read-only list subclasses retain canonical
+cut-node/capture relations in compact byte buffers and generate derived records
+on each traversal, so the canonical JSON hasher and exact-binary writer can
+consume the same ordered record stream directly.
 """
 
 from __future__ import annotations
 
 import struct
+from array import array
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any
 
@@ -20,6 +21,19 @@ from .errors import ValidationError
 
 STATIC_EXACT_RECORD_STREAM_SCHEMA = "emuflow.static-exact-record-stream/v1"
 _CAPTURE_HEADER = struct.Struct("<BIIIII")
+_CUT_COUNTS = struct.Struct("<6I")
+_STRING_LENGTH = struct.Struct("<I")
+_CUT_NODE_FIELDS = {
+    "net",
+    "cut_class",
+    "source_fpgas",
+    "sink_fpgas",
+    "dependency_level",
+    "combinational_dependency_depth",
+    "predecessor_cut_nets",
+    "source_segment_ids",
+    "capture_segment_ids",
+}
 
 
 class StaticExactRecordSequence(list):
@@ -73,6 +87,182 @@ class StaticExactRecordSequence(list):
     __setitem__ = _immutable
     __iadd__ = _immutable
     __imul__ = _immutable
+
+
+class StaticExactCutNodeSequence(StaticExactRecordSequence):
+    """A repeatable cut-node stream with direct indexed record decoding."""
+
+    def __init__(
+        self,
+        count: int,
+        factory: Callable[[], Iterator[dict[str, Any]]],
+        indexer: Callable[[int], dict[str, Any]],
+    ) -> None:
+        super().__init__("cut_nodes", count, factory)
+        self._indexer = indexer
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self._indexer(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("Static Exact record index must be an integer")
+        resolved = index if index >= 0 else len(self) + index
+        if resolved < 0 or resolved >= len(self):
+            raise IndexError("Static Exact record index out of range")
+        return self._indexer(resolved)
+
+
+def build_static_exact_cut_node_stream(
+    nodes: Iterable[Mapping[str, Any]],
+) -> StaticExactCutNodeSequence:
+    """Pack canonical v3 cut nodes with a compact random-access offset table."""
+
+    encoded = bytearray()
+    offsets = array("Q")
+    previous_net: str | None = None
+
+    def append_string(value: Any) -> None:
+        if not isinstance(value, str) or not value:
+            raise ValidationError("Static Exact cut-node stream is invalid")
+        try:
+            raw = value.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ValidationError(
+                "Static Exact cut-node identity is invalid"
+            ) from error
+        if len(raw) >= 2**32:
+            raise ValidationError("Static Exact cut-node identity is too large")
+        encoded.extend(_STRING_LENGTH.pack(len(raw)))
+        encoded.extend(raw)
+
+    def string_list(node: Mapping[str, Any], name: str) -> list[str]:
+        value = node.get(name)
+        if (
+            not isinstance(value, list)
+            or len(value) >= 2**32
+            or not all(isinstance(item, str) and item for item in value)
+        ):
+            raise ValidationError("Static Exact cut-node stream is invalid")
+        return value
+
+    for node in nodes:
+        if not isinstance(node, Mapping) or set(node) != _CUT_NODE_FIELDS:
+            raise ValidationError("Static Exact cut-node stream is invalid")
+        net = node.get("net")
+        cut_class = node.get("cut_class")
+        source_fpgas = string_list(node, "source_fpgas")
+        sink_fpgas = string_list(node, "sink_fpgas")
+        predecessors = string_list(node, "predecessor_cut_nets")
+        source_segments = string_list(node, "source_segment_ids")
+        capture_segments = string_list(node, "capture_segment_ids")
+        dependency_level = node.get("dependency_level")
+        combinational_depth = node.get("combinational_dependency_depth")
+        if (
+            not isinstance(net, str)
+            or not net
+            or not isinstance(cut_class, str)
+            or not cut_class
+            or len(source_fpgas) != 1
+            or isinstance(dependency_level, bool)
+            or not isinstance(dependency_level, int)
+            or dependency_level < 0
+            or dependency_level >= 2**32
+            or isinstance(combinational_depth, bool)
+            or not isinstance(combinational_depth, int)
+            or combinational_depth < 0
+            or combinational_depth >= 2**32
+            or (previous_net is not None and net <= previous_net)
+        ):
+            raise ValidationError("Static Exact cut-node stream is invalid")
+        previous_net = net
+        offsets.append(len(encoded))
+        append_string(net)
+        append_string(cut_class)
+        append_string(source_fpgas[0])
+        encoded.extend(
+            _CUT_COUNTS.pack(
+                dependency_level,
+                combinational_depth,
+                len(sink_fpgas),
+                len(predecessors),
+                len(source_segments),
+                len(capture_segments),
+            )
+        )
+        for values in (
+            sink_fpgas,
+            predecessors,
+            source_segments,
+            capture_segments,
+        ):
+            for value in values:
+                append_string(value)
+
+    count = len(offsets)
+
+    def decode(index: int) -> dict[str, Any]:
+        view = memoryview(encoded)
+        offset = offsets[index]
+        end = offsets[index + 1] if index + 1 < count else len(view)
+
+        def read_string() -> str:
+            nonlocal offset
+            if offset + _STRING_LENGTH.size > end:
+                raise ValidationError("Static Exact cut-node stream ended early")
+            (length,) = _STRING_LENGTH.unpack_from(view, offset)
+            offset += _STRING_LENGTH.size
+            value_end = offset + length
+            if value_end > end:
+                raise ValidationError("Static Exact cut-node stream ended early")
+            try:
+                value = bytes(view[offset:value_end]).decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise ValidationError(
+                    "Static Exact cut-node identity is invalid"
+                ) from error
+            offset = value_end
+            if not value:
+                raise ValidationError("Static Exact cut-node stream is invalid")
+            return value
+
+        net = read_string()
+        cut_class = read_string()
+        source_fpga = read_string()
+        if offset + _CUT_COUNTS.size > end:
+            raise ValidationError("Static Exact cut-node stream ended early")
+        (
+            dependency_level,
+            combinational_depth,
+            sink_count,
+            predecessor_count,
+            source_count,
+            capture_count,
+        ) = _CUT_COUNTS.unpack_from(view, offset)
+        offset += _CUT_COUNTS.size
+
+        def read_strings(size: int) -> list[str]:
+            return [read_string() for _ in range(size)]
+
+        result = {
+            "net": net,
+            "cut_class": cut_class,
+            "source_fpgas": [source_fpga],
+            "sink_fpgas": read_strings(sink_count),
+            "dependency_level": dependency_level,
+            "combinational_dependency_depth": combinational_depth,
+            "predecessor_cut_nets": read_strings(predecessor_count),
+            "source_segment_ids": read_strings(source_count),
+            "capture_segment_ids": read_strings(capture_count),
+        }
+        if offset != end:
+            raise ValidationError("Static Exact cut-node stream has trailing data")
+        return result
+
+    def cut_nodes() -> Iterator[dict[str, Any]]:
+        for index in range(count):
+            yield decode(index)
+
+    return StaticExactCutNodeSequence(count, cut_nodes, decode)
 
 
 def build_static_exact_capture_stream(

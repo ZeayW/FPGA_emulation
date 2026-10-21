@@ -47,7 +47,8 @@ def build_signal_position_hints(
     placements: Mapping[str, Mapping[str, Any]],
     *,
     region_count: int = 3,
-) -> Dict[str, Any]:
+    output_path: Optional[Path] = None,
+) -> Mapping[str, Any]:
     """Derive interface-signal centroids from lookahead placements."""
     if region_count <= 0 or region_count >= 32:
         raise ValueError("region_count must be in [1, 31]")
@@ -99,25 +100,28 @@ def build_signal_position_hints(
             return 0.5, False
         return (mean - y_min) / (y_max - y_min), False
 
-    hints = []
     fallbacks = 0
-    for entry in sorted(schedule["entries"], key=lambda item: item["id"]):
-        net = net_by_id[entry["net"]]
-        drivers = [
-            endpoint["instance"]
-            for endpoint in net["drivers"]
-            if endpoint.get("instance") is not None
-        ]
-        sinks = [
-            endpoint["instance"]
-            for endpoint in net["sinks"]
-            if endpoint.get("instance") is not None
-        ]
-        source_y, source_fallback = normalized_y(entry["from"], drivers)
-        sink_y, sink_fallback = normalized_y(entry["to"], sinks)
-        fallbacks += int(source_fallback) + int(sink_fallback)
-        hints.append(
-            {
+    signals = 0
+
+    def records() -> Iterable[Mapping[str, Any]]:
+        nonlocal fallbacks, signals
+        for entry in sorted(schedule["entries"], key=lambda item: item["id"]):
+            net = net_by_id[entry["net"]]
+            drivers = [
+                endpoint["instance"]
+                for endpoint in net["drivers"]
+                if endpoint.get("instance") is not None
+            ]
+            sinks = [
+                endpoint["instance"]
+                for endpoint in net["sinks"]
+                if endpoint.get("instance") is not None
+            ]
+            source_y, source_fallback = normalized_y(entry["from"], drivers)
+            sink_y, sink_fallback = normalized_y(entry["to"], sinks)
+            fallbacks += int(source_fallback) + int(sink_fallback)
+            signals += 1
+            yield {
                 "schedule_entry": entry["id"],
                 "source_y": source_y,
                 "sink_y": sink_y,
@@ -130,15 +134,26 @@ def build_signal_position_hints(
                 "source_fallback": source_fallback,
                 "sink_fallback": sink_fallback,
             }
-        )
-    return {
+    header = {
         "schema": SIGNAL_POSITION_HINTS_SCHEMA,
         "design": schedule["design"],
         "platform": schedule["platform"],
         "provider": "openparf-lookahead-centroid-v1",
         "region_count": region_count,
+    }
+    if output_path is not None:
+        from .position_hints_storage import write_position_hints_storage
+
+        return write_position_hints_storage(
+            output_path,
+            {**header, "entries": records()},
+            derive_metrics=True,
+        )
+    hints = list(records())
+    return {
+        **header,
         "metrics": {
-            "signals": len(hints),
+            "signals": signals,
             "endpoint_centroid_fallbacks": fallbacks,
         },
         "entries": hints,
@@ -148,6 +163,35 @@ def build_signal_position_hints(
 def _validate_positions(
     schedule: Mapping[str, Any], positions: Mapping[str, Any]
 ) -> Dict[str, Mapping[str, Any]]:
+    region_count = _validate_position_header(schedule, positions)
+    raw = positions.get("entries")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise ValidationError("positions.entries: expected an array")
+    result = {}
+    fallback_count = 0
+    for item in raw:
+        entry_id, item_fallbacks = _validate_position_item(item, region_count)
+        if entry_id in result:
+            raise ValidationError(
+                f"duplicate position hint for {entry_id!r}"
+            )
+        fallback_count += item_fallbacks
+        result[entry_id] = item
+    expected = {entry["id"] for entry in schedule["entries"]}
+    if set(result) != expected:
+        missing = sorted(expected - set(result))
+        extra = sorted(set(result) - expected)
+        raise ValidationError(
+            "position hints must cover schedule entries exactly; "
+            f"missing={missing[:5]}, extra={extra[:5]}"
+        )
+    _validate_position_metrics(positions, len(raw), fallback_count)
+    return result
+
+
+def _validate_position_header(
+    schedule: Mapping[str, Any], positions: Mapping[str, Any]
+) -> int:
     if positions.get("schema") != SIGNAL_POSITION_HINTS_SCHEMA:
         raise ValidationError(
             f"positions.schema: expected {SIGNAL_POSITION_HINTS_SCHEMA!r}"
@@ -197,65 +241,105 @@ def _validate_positions(
         or not 1 <= region_count <= 31
     ):
         raise ValidationError("position hints have an invalid region count")
-    raw = positions.get("entries")
-    if not isinstance(raw, list):
-        raise ValidationError("positions.entries: expected an array")
-    result = {}
-    fallback_count = 0
-    for item in raw:
-        if not isinstance(item, dict) or not isinstance(
-            item.get("schedule_entry"), str
+    return region_count
+
+
+def _validate_position_item(
+    item: Mapping[str, Any], region_count: int
+) -> tuple[str, int]:
+    if not isinstance(item, dict) or not isinstance(
+        item.get("schedule_entry"), str
+    ):
+        raise ValidationError("position hint is malformed")
+    entry_id = item["schedule_entry"]
+    for field in ("source_y", "sink_y"):
+        value = item.get(field)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not 0.0 <= float(value) <= 1.0
         ):
-            raise ValidationError("position hint is malformed")
-        entry_id = item["schedule_entry"]
-        if entry_id in result:
             raise ValidationError(
-                f"duplicate position hint for {entry_id!r}"
+                f"position {entry_id}.{field}: expected 0 <= value <= 1"
             )
-        for field in ("source_y", "sink_y"):
-            value = item.get(field)
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not 0.0 <= float(value) <= 1.0
-            ):
-                raise ValidationError(
-                    f"position {entry_id}.{field}: expected 0 <= value <= 1"
-                )
-        for field in ("source_region", "sink_region"):
-            value = item.get(field)
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, int)
-                or not 0 <= value < region_count
-            ):
-                raise ValidationError(
-                    f"position {entry_id}.{field}: expected integer "
-                    f"[0, {region_count - 1}]"
-                )
-        for field in ("source_fallback", "sink_fallback"):
-            if not isinstance(item.get(field), bool):
-                raise ValidationError(
-                    f"position {entry_id}.{field}: expected boolean"
-                )
-            fallback_count += int(item[field])
-        result[entry_id] = item
-    expected = {entry["id"] for entry in schedule["entries"]}
-    if set(result) != expected:
-        missing = sorted(expected - set(result))
-        extra = sorted(set(result) - expected)
-        raise ValidationError(
-            "position hints must cover schedule entries exactly; "
-            f"missing={missing[:5]}, extra={extra[:5]}"
-        )
+    for field in ("source_region", "sink_region"):
+        value = item.get(field)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 0 <= value < region_count
+        ):
+            raise ValidationError(
+                f"position {entry_id}.{field}: expected integer "
+                f"[0, {region_count - 1}]"
+            )
+    fallback_count = 0
+    for field in ("source_fallback", "sink_fallback"):
+        if not isinstance(item.get(field), bool):
+            raise ValidationError(
+                f"position {entry_id}.{field}: expected boolean"
+            )
+        fallback_count += int(item[field])
+    return entry_id, fallback_count
+
+
+def _validate_position_metrics(
+    positions: Mapping[str, Any], count: int, fallback_count: int
+) -> None:
     metrics = positions.get("metrics")
     if (
         not isinstance(metrics, dict)
-        or metrics.get("signals") != len(raw)
+        or metrics.get("signals") != count
         or metrics.get("endpoint_centroid_fallbacks") != fallback_count
     ):
         raise ValidationError("position hint metrics do not agree")
-    return result
+
+
+def _iter_position_pairs(
+    schedule: Mapping[str, Any],
+    positions: Mapping[str, Any],
+    entries: Sequence[Mapping[str, Any]],
+) -> Iterable[tuple[Mapping[str, Any], Mapping[str, Any]]]:
+    """Merge an indexed hint cursor with schedule IDs using bounded state."""
+
+    iterator_factory = getattr(positions, "iter_by_identity", None)
+    if not callable(iterator_factory):
+        hints = _validate_positions(schedule, positions)
+        return ((entry, hints[entry["id"]]) for entry in entries)
+    region_count = _validate_position_header(schedule, positions)
+
+    def records() -> Iterable[tuple[Mapping[str, Any], Mapping[str, Any]]]:
+        iterator = iter(iterator_factory())
+        count = 0
+        fallback_count = 0
+        for entry in entries:
+            try:
+                hint = next(iterator)
+            except StopIteration as error:
+                raise ValidationError(
+                    "position hints must cover schedule entries exactly"
+                ) from error
+            entry_id, item_fallbacks = _validate_position_item(
+                hint, region_count
+            )
+            if entry_id != entry["id"]:
+                raise ValidationError(
+                    "position hints must cover schedule entries exactly"
+                )
+            count += 1
+            fallback_count += item_fallbacks
+            yield entry, hint
+        try:
+            next(iterator)
+        except StopIteration:
+            pass
+        else:
+            raise ValidationError(
+                "position hints must cover schedule entries exactly"
+            )
+        _validate_position_metrics(positions, count, fallback_count)
+
+    return records()
 
 
 def _write_model(
@@ -268,7 +352,6 @@ def _write_model(
     crossing_weight: float,
     position_weight: float,
 ) -> Tuple[list[Mapping[str, Any]], list[Tuple[str, str, str]]]:
-    position_by_entry = _validate_positions(schedule, positions)
     domains = sorted({_domain_key(entry) for entry in schedule["entries"]})
     domain_index = {domain: index for index, domain in enumerate(domains)}
     link_by_id = {link.id: link for link in platform.links}
@@ -285,8 +368,9 @@ def _write_model(
             f"DOMAIN {index} "
             f"{link_by_id[domain[0]].transport_bits_per_cycle_per_direction}"
         )
-    for index, entry in enumerate(entries):
-        hint = position_by_entry[entry["id"]]
+    for index, (entry, hint) in enumerate(
+        _iter_position_pairs(schedule, positions, entries)
+    ):
         crossing = (
             (1 << hint["source_region"])
             | (1 << (32 + hint["sink_region"]))
@@ -342,31 +426,26 @@ def _assignment_metrics(
     crossing_weight: float,
     position_weight: float,
 ) -> Dict[str, float]:
-    hints = _validate_positions(schedule, positions)
-    by_group: Dict[int, list[Mapping[str, Any]]] = defaultdict(list)
-    for entry in schedule["entries"]:
-        by_group[assignment[entry["id"]][0]].append(entry)
+    entries = sorted(schedule["entries"], key=lambda item: item["id"])
+    group_stats: Dict[int, list[float | int]] = {}
     crossing_bits = 0
     position_sse = 0.0
     pin_distance = 0.0
     link_by_id = {link.id: link for link in platform.links}
-    for entries in by_group.values():
-        crossing = 0
-        values = []
-        for entry in entries:
-            hint = hints[entry["id"]]
-            crossing |= (
-                (1 << hint["source_region"])
-                | (1 << (32 + hint["sink_region"]))
-            )
-            values.extend((hint["source_y"], hint["sink_y"]))
-        mean = sum(values) / len(values)
-        crossing_bits += bin(crossing).count("1")
-        position_sse += sum(
-            (value - mean) ** 2 for value in values
+    for entry, hint in _iter_position_pairs(schedule, positions, entries):
+        group = assignment[entry["id"]][0]
+        stats = group_stats.setdefault(group, [0, 0, 0.0, 0.0])
+        stats[0] = int(stats[0]) | (
+            (1 << hint["source_region"])
+            | (1 << (32 + hint["sink_region"]))
         )
-    for entry in schedule["entries"]:
-        hint = hints[entry["id"]]
+        for value in (float(hint["source_y"]), float(hint["sink_y"])):
+            count = int(stats[1]) + 1
+            delta = value - float(stats[2])
+            mean = float(stats[2]) + delta / count
+            stats[3] = float(stats[3]) + delta * (value - mean)
+            stats[1] = count
+            stats[2] = mean
         pin = assignment[entry["id"]][1]
         lanes = link_by_id[
             entry["link"]
@@ -374,6 +453,9 @@ def _assignment_metrics(
         pin_y = 0.5 if lanes == 1 else pin / (lanes - 1)
         pin_distance += abs(hint["source_y"] - pin_y)
         pin_distance += abs(hint["sink_y"] - pin_y)
+    for crossing, _, _, group_sse in group_stats.values():
+        crossing_bits += bin(int(crossing)).count("1")
+        position_sse += float(group_sse)
     return {
         "objective": (
             crossing_weight * crossing_bits
@@ -726,80 +808,107 @@ def _stage_indexed_positions(
         or not 1 <= region_count <= 31
     ):
         raise ValidationError("position hints have an invalid region count")
-    raw = positions.get("entries")
-    if not isinstance(raw, list):
-        raise ValidationError("positions.entries: expected an array")
-    connection.execute(
-        """
-        CREATE TABLE position_rows(
-          entry_id TEXT PRIMARY KEY,
-          source_y REAL NOT NULL,
-          sink_y REAL NOT NULL,
-          source_region INTEGER NOT NULL,
-          sink_region INTEGER NOT NULL
-        ) WITHOUT ROWID
-        """
-    )
-    fallback_count = 0
-    pending: list[tuple[Any, ...]] = []
-    try:
-        for item in raw:
-            if not isinstance(item, dict) or not isinstance(
-                item.get("schedule_entry"), str
-            ):
-                raise ValidationError("position hint is malformed")
-            entry_id = item["schedule_entry"]
-            for field in ("source_y", "sink_y"):
-                value = item.get(field)
-                if (
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not 0.0 <= float(value) <= 1.0
-                ):
-                    raise ValidationError(
-                        f"position {entry_id}.{field}: "
-                        "expected 0 <= value <= 1"
-                    )
-            for field in ("source_region", "sink_region"):
-                value = item.get(field)
-                if (
-                    isinstance(value, bool)
-                    or not isinstance(value, int)
-                    or not 0 <= value < region_count
-                ):
-                    raise ValidationError(
-                        f"position {entry_id}.{field}: expected integer "
-                        f"[0, {region_count - 1}]"
-                    )
-            for field in ("source_fallback", "sink_fallback"):
-                if not isinstance(item.get(field), bool):
-                    raise ValidationError(
-                        f"position {entry_id}.{field}: expected boolean"
-                    )
-                fallback_count += int(item[field])
-            pending.append(
-                (
-                    entry_id,
-                    float(item["source_y"]),
-                    float(item["sink_y"]),
-                    item["source_region"],
-                    item["sink_region"],
-                )
+    attach_relation = getattr(positions, "attach_validation_relation", None)
+    if callable(attach_relation):
+        position_count, fallback_count = attach_relation(connection)
+        invalid = connection.execute(
+            """
+            SELECT entry_id FROM position_rows
+            WHERE source_y < 0.0 OR source_y > 1.0
+               OR sink_y < 0.0 OR sink_y > 1.0
+               OR source_region < 0 OR source_region >= ?
+               OR sink_region < 0 OR sink_region >= ?
+               OR source_fallback NOT IN (0,1)
+               OR sink_fallback NOT IN (0,1)
+            LIMIT 1
+            """,
+            (region_count, region_count),
+        ).fetchone()
+        if invalid is not None:
+            raise ValidationError(
+                f"position hint {invalid[0]!r} is malformed"
             )
-            if len(pending) >= 4096:
+    else:
+        raw = positions.get("entries")
+        if not isinstance(raw, list):
+            raise ValidationError("positions.entries: expected an array")
+        connection.execute(
+            """
+            CREATE TABLE position_rows(
+              entry_id TEXT PRIMARY KEY,
+              source_y REAL NOT NULL,
+              sink_y REAL NOT NULL,
+              source_region INTEGER NOT NULL,
+              sink_region INTEGER NOT NULL,
+              source_fallback INTEGER NOT NULL,
+              sink_fallback INTEGER NOT NULL
+            ) WITHOUT ROWID
+            """
+        )
+        fallback_count = 0
+        pending: list[tuple[Any, ...]] = []
+        try:
+            for item in raw:
+                if not isinstance(item, dict) or not isinstance(
+                    item.get("schedule_entry"), str
+                ):
+                    raise ValidationError("position hint is malformed")
+                entry_id = item["schedule_entry"]
+                for field in ("source_y", "sink_y"):
+                    value = item.get(field)
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not 0.0 <= float(value) <= 1.0
+                    ):
+                        raise ValidationError(
+                            f"position {entry_id}.{field}: "
+                            "expected 0 <= value <= 1"
+                        )
+                for field in ("source_region", "sink_region"):
+                    value = item.get(field)
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, int)
+                        or not 0 <= value < region_count
+                    ):
+                        raise ValidationError(
+                            f"position {entry_id}.{field}: expected integer "
+                            f"[0, {region_count - 1}]"
+                        )
+                for field in ("source_fallback", "sink_fallback"):
+                    if not isinstance(item.get(field), bool):
+                        raise ValidationError(
+                            f"position {entry_id}.{field}: expected boolean"
+                        )
+                    fallback_count += int(item[field])
+                pending.append(
+                    (
+                        entry_id,
+                        float(item["source_y"]),
+                        float(item["sink_y"]),
+                        item["source_region"],
+                        item["sink_region"],
+                        int(item["source_fallback"]),
+                        int(item["sink_fallback"]),
+                    )
+                )
+                if len(pending) >= 4096:
+                    connection.executemany(
+                        "INSERT INTO position_rows VALUES (?,?,?,?,?,?,?)",
+                        pending,
+                    )
+                    pending.clear()
+            if pending:
                 connection.executemany(
-                    "INSERT INTO position_rows VALUES (?,?,?,?,?)", pending
+                    "INSERT INTO position_rows VALUES (?,?,?,?,?,?,?)",
+                    pending,
                 )
-                pending.clear()
-        if pending:
-            connection.executemany(
-                "INSERT INTO position_rows VALUES (?,?,?,?,?)", pending
-            )
-    except sqlite3.IntegrityError as error:
-        raise ValidationError("duplicate position hint") from error
-    position_count = connection.execute(
-        "SELECT count(*) FROM position_rows"
-    ).fetchone()[0]
+        except sqlite3.IntegrityError as error:
+            raise ValidationError("duplicate position hint") from error
+        position_count = connection.execute(
+            "SELECT count(*) FROM position_rows"
+        ).fetchone()[0]
     covered_count = connection.execute(
         """
         SELECT count(*)
@@ -845,7 +954,7 @@ def _stage_indexed_positions(
     metrics = positions.get("metrics")
     if (
         not isinstance(metrics, dict)
-        or metrics.get("signals") != len(raw)
+        or metrics.get("signals") != position_count
         or metrics.get("endpoint_centroid_fallbacks") != fallback_count
     ):
         raise ValidationError("position hint metrics do not agree")
@@ -1482,7 +1591,8 @@ def build_pin_plan(
     refinement_iterations: int = 100,
     crossing_weight: float = 1.0,
     position_weight: float = 1.0,
-) -> Dict[str, Any]:
+    output_path: Optional[Path] = None,
+) -> Mapping[str, Any]:
     if refinement_iterations < 0:
         raise ValueError("refinement_iterations must be non-negative")
     if crossing_weight < 0.0 or position_weight < 0.0:
@@ -1580,5 +1690,11 @@ def build_pin_plan(
             for entry in entries
         ],
     }
+    if output_path is not None:
+        from .pin_plan_storage import write_pin_plan_storage
+
+        indexed_plan = write_pin_plan_storage(output_path, plan)
+        validate_pin_plan(schedule, platform, positions, indexed_plan)
+        return indexed_plan
     validate_pin_plan(schedule, platform, positions, plan)
     return plan

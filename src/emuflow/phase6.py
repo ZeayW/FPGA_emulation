@@ -22,6 +22,10 @@ from .netlist import (
 )
 from .platform import Platform
 from .pin_plan_storage import read_pin_plan, write_pin_plan_storage
+from .position_hints_storage import (
+    read_position_hints,
+    write_position_hints_storage,
+)
 from .pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
 from .ppro_calibrated_platform import (
     predict_transport_resources,
@@ -244,7 +248,7 @@ def run_phase6(
     platform = Platform.load(platform_path)
     pin_plan = read_pin_plan(pin_plan_path) if pin_plan_path is not None else None
     position_hints = (
-        read_json(position_hints_path)
+        read_position_hints(position_hints_path)
         if position_hints_path is not None
         else None
     )
@@ -268,10 +272,13 @@ def run_phase6(
                 raise ValueError(
                     "position_hints_path is required with pin_plan_path"
                 )
+            staged_position_hints = write_position_hints_storage(
+                temporary_root / "position_hints.json", position_hints
+            )
             pin_validation = validate_pin_plan(
                 schedule,
                 platform,
-                position_hints,
+                staged_position_hints,
                 staged_pin_plan,
             )
             if staged_pin_plan.get("provider") == CHIMEW_PIN_PLAN_PROVIDER:
@@ -292,15 +299,53 @@ def run_phase6(
                 raise ValueError(
                     "electrical_binding_path is supported only with a Chimew pin plan"
                 )
+            staged_pin_artifact = staged_pin_plan.manifest["artifact"]
+            staged_position_artifact = staged_position_hints.manifest[
+                "artifact"
+            ]
+            previous_sidecars = []
+            for selector_name in ("pin_plan.json", "position_hints.json"):
+                selector_path = output_dir / selector_name
+                if not selector_path.is_file():
+                    continue
+                try:
+                    previous = read_json(selector_path)
+                except (OSError, ValueError):
+                    continue
+                previous_artifact = previous.get("artifact")
+                if (
+                    isinstance(previous_artifact, str)
+                    and Path(previous_artifact).name == previous_artifact
+                    and Path(previous_artifact).suffix == ".sqlite"
+                ):
+                    previous_sidecars.append(output_dir / previous_artifact)
             os.replace(
-                temporary_root / "pin_plan.sqlite",
-                output_dir / "pin_plan.sqlite",
+                temporary_root / staged_pin_artifact,
+                output_dir / staged_pin_artifact,
+            )
+            os.replace(
+                temporary_root / staged_position_artifact,
+                output_dir / staged_position_artifact,
             )
             os.replace(
                 temporary_root / "pin_plan.json",
                 output_dir / "pin_plan.json",
             )
+            os.replace(
+                temporary_root / "position_hints.json",
+                output_dir / "position_hints.json",
+            )
+            current_sidecars = {
+                (output_dir / staged_pin_artifact).resolve(),
+                (output_dir / staged_position_artifact).resolve(),
+            }
+            for previous_sidecar in previous_sidecars:
+                if previous_sidecar.resolve() not in current_sidecars:
+                    previous_sidecar.unlink(missing_ok=True)
         pin_plan = read_pin_plan(output_dir / "pin_plan.json")
+        position_hints = read_position_hints(
+            output_dir / "position_hints.json"
+        )
     elif position_hints is not None:
         raise ValueError(
             "pin_plan_path is required with position_hints_path"
@@ -547,7 +592,6 @@ def run_phase6(
         compact=managed_storage,
     )
     if pin_plan is not None:
-        write_json(output_dir / "position_hints.json", position_hints)
         if electrical_binding_path is not None:
             write_json(
                 output_dir / "electrical_binding.json",
@@ -720,7 +764,7 @@ def validate_phase6(
         validate_pin_plan(
             schedule,
             platform,
-            read_json(resolved_positions),
+            read_position_hints(resolved_positions),
             pin_plan,
         )
         if pin_plan.get("provider") == CHIMEW_PIN_PLAN_PROVIDER:

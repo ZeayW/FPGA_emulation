@@ -5,6 +5,7 @@ from unittest import mock
 
 import pytest
 
+import emuflow.pin_plan_storage as pin_storage
 from emuflow.errors import ValidationError
 from emuflow.pin_plan_storage import (
     PIN_PLAN_STORAGE_SCHEMA,
@@ -112,4 +113,43 @@ def test_indexed_pin_plan_rejects_duplicate_or_tampered_records(tmp_path):
     with store.open("ab") as stream:
         stream.write(b"tamper")
     with pytest.raises(ValidationError, match="seal"):
+        read_pin_plan(path)
+
+
+def test_pin_plan_selector_failure_preserves_previous_generation(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "pin_plan.json"
+    expected = _plan()
+    original = write_pin_plan_storage(path, expected)
+    original_artifact = original.store_path
+    original_selector = path.read_bytes()
+
+    def fail_selector(*_args, **_kwargs):
+        raise OSError("injected selector failure")
+
+    monkeypatch.setattr(pin_storage, "write_json", fail_selector)
+    updated = copy.deepcopy(expected)
+    updated["design"] = "updated"
+    with pytest.raises(OSError, match="injected"):
+        write_pin_plan_storage(path, updated)
+
+    assert path.read_bytes() == original_selector
+    assert original_artifact.is_file()
+    assert read_pin_plan(path, materialize=True) == expected
+    assert list(tmp_path.glob("pin_plan.*.sqlite")) == [original_artifact]
+
+
+def test_pin_plan_manifest_record_seal_is_bound_to_store(tmp_path):
+    path = tmp_path / "pin_plan.json"
+    write_pin_plan_storage(path, _plan())
+    selector = json.loads(path.read_text(encoding="utf-8"))
+    selector["entries"]["sha256"] = "0" * 64
+    selector["logical_sha256"] = pin_storage._logical_sha256(
+        selector["header"],
+        selector["entries"]["records"],
+        selector["entries"]["sha256"],
+    )
+    path.write_text(json.dumps(selector), encoding="utf-8")
+    with pytest.raises(ValidationError, match="metadata disagrees"):
         read_pin_plan(path)

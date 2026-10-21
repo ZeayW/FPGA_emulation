@@ -56,6 +56,10 @@ from emuflow.pin_plan_storage import (
     read_pin_plan,
     write_pin_plan_storage,
 )
+from emuflow.position_hints_storage import (
+    POSITION_HINTS_STORAGE_SCHEMA,
+    read_position_hints,
+)
 from emuflow.platform import Platform
 from emuflow.open_transport_characterization import (
     BASE_FEATURE_NAMES,
@@ -1127,17 +1131,31 @@ class Phase6Test(unittest.TestCase):
             )
             self.assertEqual(report["artifacts"]["pin_plan"], "pin_plan.json")
             self.assertTrue((output / "pin_plan.json").is_file())
-            self.assertTrue((output / "pin_plan.sqlite").is_file())
-            self.assertEqual(
-                read_json(output / "pin_plan.json")["schema"],
-                PIN_PLAN_STORAGE_SCHEMA,
-            )
+            pin_selector = read_json(output / "pin_plan.json")
+            self.assertTrue((output / pin_selector["artifact"]).is_file())
+            self.assertEqual(pin_selector["schema"], PIN_PLAN_STORAGE_SCHEMA)
             self.assertLess((output / "pin_plan.json").stat().st_size, 4096)
             self.assertEqual(
                 read_pin_plan(output / "pin_plan.json", materialize=True),
                 plan,
             )
             self.assertTrue((output / "position_hints.json").is_file())
+            position_selector = read_json(output / "position_hints.json")
+            self.assertTrue(
+                (output / position_selector["artifact"]).is_file()
+            )
+            self.assertEqual(
+                position_selector["schema"], POSITION_HINTS_STORAGE_SCHEMA
+            )
+            self.assertLess(
+                (output / "position_hints.json").stat().st_size, 4096
+            )
+            self.assertEqual(
+                read_position_hints(
+                    output / "position_hints.json", materialize=True
+                ),
+                positions,
+            )
             chimew_plan, binding = self._chimew_certificate(
                 schedule, positions, plan
             )
@@ -1159,7 +1177,7 @@ class Phase6Test(unittest.TestCase):
                     position_hints_path=paths["positions"],
                 )
             self.assertFalse((invalid_output / "pin_plan.json").exists())
-            self.assertFalse((invalid_output / "pin_plan.sqlite").exists())
+            self.assertFalse(list(invalid_output.glob("pin_plan.*.sqlite")))
             chimew_report = run_phase6(
                 paths["ir"],
                 paths["assignment"],

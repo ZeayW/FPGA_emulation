@@ -170,7 +170,33 @@ class PinPlanView(Mapping[str, Any]):
                 for row in connection.execute("SELECT key,value FROM metadata")
             }
             count = connection.execute("SELECT count(*) FROM entries").fetchone()[0]
-            if metadata.get("header") != manifest["header"] or count != entries["records"]:
+            stored_entries_sha256 = metadata.get("entries_sha256")
+            stored_logical_sha256 = metadata.get("logical_sha256")
+            if (stored_entries_sha256 is None) != (
+                stored_logical_sha256 is None
+            ):
+                raise ValidationError("pin-plan SQLite metadata disagrees")
+            if stored_entries_sha256 is None:
+                legacy_digest = hashlib.sha256()
+                for (encoded,) in connection.execute(
+                    "SELECT record_json FROM entries ORDER BY seq"
+                ):
+                    legacy_digest.update(encoded.encode("utf-8"))
+                    legacy_digest.update(b"\n")
+                entries_bound = (
+                    legacy_digest.hexdigest() == entries["sha256"]
+                )
+            else:
+                entries_bound = (
+                    stored_entries_sha256 == entries["sha256"]
+                    and stored_logical_sha256
+                    == manifest["logical_sha256"]
+                )
+            if (
+                metadata.get("header") != manifest["header"]
+                or not entries_bound
+                or count != entries["records"]
+            ):
                 raise ValidationError("pin-plan SQLite metadata disagrees")
         except json.JSONDecodeError as error:
             raise ValidationError("pin-plan SQLite metadata is corrupt") from error
@@ -229,8 +255,23 @@ def write_pin_plan_storage(path: Path, plan: Mapping[str, Any]) -> PinPlanView:
         raise ValidationError("pin plan entries must be a sequence")
     header = {key: value for key, value in plan.items() if key != "entries"}
     path.parent.mkdir(parents=True, exist_ok=True)
-    artifact = path.with_suffix(".sqlite")
-    temporary = artifact.with_name(f".{artifact.name}.{uuid.uuid4().hex}.tmp")
+    previous_artifact: Path | None = None
+    if path.is_file():
+        try:
+            previous_manifest = read_json(path)
+        except (OSError, ValueError):
+            previous_manifest = {}
+        previous_name = previous_manifest.get("artifact")
+        if (
+            previous_manifest.get("schema") == PIN_PLAN_STORAGE_SCHEMA
+            and isinstance(previous_name, str)
+            and Path(previous_name).name == previous_name
+            and Path(previous_name).suffix == ".sqlite"
+        ):
+            previous_artifact = path.with_name(previous_name)
+    temporary = path.with_name(
+        f".{path.stem}.{uuid.uuid4().hex}.sqlite.tmp"
+    )
     connection = sqlite3.connect(temporary)
     digest = hashlib.sha256()
     count = 0
@@ -255,10 +296,6 @@ def write_pin_plan_storage(path: Path, plan: Mapping[str, Any]) -> PinPlanView:
               record_json TEXT NOT NULL
             ) WITHOUT ROWID;
             """
-        )
-        connection.execute(
-            "INSERT INTO metadata(key,value) VALUES ('header',?)",
-            (_canonical(header),),
         )
         for record in records:
             if not isinstance(record, Mapping):
@@ -288,11 +325,20 @@ def write_pin_plan_storage(path: Path, plan: Mapping[str, Any]) -> PinPlanView:
                 rows.clear()
         if rows:
             connection.executemany("INSERT INTO entries VALUES (?,?,?,?,?,?)", rows)
+        entries_sha256 = digest.hexdigest()
+        logical_sha256 = _logical_sha256(header, count, entries_sha256)
+        connection.executemany(
+            "INSERT INTO metadata(key,value) VALUES (?,?)",
+            (
+                ("header", _canonical(header)),
+                ("entries_sha256", _canonical(entries_sha256)),
+                ("logical_sha256", _canonical(logical_sha256)),
+            ),
+        )
         connection.commit()
         connection.close()
         with temporary.open("rb") as stream:
             os.fsync(stream.fileno())
-        os.replace(temporary, artifact)
     except sqlite3.IntegrityError as error:
         try:
             connection.close()
@@ -305,8 +351,17 @@ def write_pin_plan_storage(path: Path, plan: Mapping[str, Any]) -> PinPlanView:
         finally:
             temporary.unlink(missing_ok=True)
         raise
+    store_sha256 = file_sha256(temporary)
+    artifact = path.with_name(f"{path.stem}.{store_sha256}.sqlite")
+    created_artifact = not artifact.exists()
+    if created_artifact:
+        os.replace(temporary, artifact)
+    else:
+        if file_sha256(artifact) != store_sha256:
+            temporary.unlink(missing_ok=True)
+            raise ValidationError("pin-plan artifact digest collision")
+        temporary.unlink()
 
-    entries_sha256 = digest.hexdigest()
     manifest = {
         "schema": PIN_PLAN_STORAGE_SCHEMA,
         "logical_schema": PIN_PLAN_SCHEMA,
@@ -314,13 +369,21 @@ def write_pin_plan_storage(path: Path, plan: Mapping[str, Any]) -> PinPlanView:
         "application_id": PIN_PLAN_APPLICATION_ID,
         "user_version": PIN_PLAN_USER_VERSION,
         "store_bytes": artifact.stat().st_size,
-        "store_sha256": file_sha256(artifact),
+        "store_sha256": store_sha256,
         "header": header,
         "entries": {"records": count, "sha256": entries_sha256},
-        "logical_sha256": _logical_sha256(header, count, entries_sha256),
+        "logical_sha256": logical_sha256,
     }
-    write_json(path, manifest, compact=True)
-    return PinPlanView(path)
+    try:
+        write_json(path, manifest, compact=True)
+    except BaseException:
+        if created_artifact and artifact != previous_artifact:
+            artifact.unlink(missing_ok=True)
+        raise
+    view = PinPlanView(path)
+    if previous_artifact is not None and previous_artifact != artifact:
+        previous_artifact.unlink(missing_ok=True)
+    return view
 
 
 def read_pin_plan(

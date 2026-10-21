@@ -21,6 +21,7 @@ from emuflow.xilinx_openparf_atomic import (
     validate_xilinx_openparf_atomic_placement,
 )
 from emuflow.xilinx_openparf_bridge import (
+    _BridgeClusterSequence,
     _validate_certificate,
     materialize_xilinx_openparf_atomic_contract,
 )
@@ -100,6 +101,44 @@ def _native_certificate(
 
 
 class XilinxOpenparfBridgeTest(unittest.TestCase):
+    def test_bridge_cluster_random_access_does_not_expand_all_clusters(self):
+        class IndexedOnly(list):
+            def __iter__(self):
+                raise AssertionError("single cluster access expanded the tree")
+
+        clusters = IndexedOnly(
+            [
+                {
+                    "id": "cluster0",
+                    "kind": "slice",
+                    "site_templates": ["SLICEL"],
+                    "control_set": None,
+                    "assignments": [
+                        {
+                            "instance": "cell0",
+                            "cell_type": "LUT1",
+                            "bel": "A6LUT",
+                            "_placement_mode": "SLICEL",
+                            "_physical_site": "SLICE_X0Y0",
+                            "_placement_ordinal": 0,
+                        }
+                    ],
+                    "_placement": {
+                        "site": "SLICE_X0Y0",
+                        "site_type": "SLICEL",
+                        "x": 0,
+                        "y": 0,
+                        "fixed": False,
+                        "physical_region": None,
+                    },
+                }
+            ]
+        )
+        packed = _BridgeClusterSequence(clusters, placement=False)
+        placed = _BridgeClusterSequence(clusters, placement=True)
+        self.assertEqual(packed[0]["id"], "cluster0")
+        self.assertEqual(placed[0]["cluster"], "cluster0")
+
     def test_bram_tile_group_certificate_is_independently_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -278,6 +278,7 @@ from .pin_planning import (
     validate_pin_plan,
 )
 from .pin_plan_storage import read_pin_plan
+from .position_hints_storage import read_position_hints
 from .release import run_phase7d
 from .route_artifact import validate_vpr_route_artifacts
 from .routing_tdm_comparison import (
@@ -309,6 +310,7 @@ from .serial_phy_provider import validate_serial_phy_provider_file
 from .serial_phy_elaboration import run_serial_phy_elaboration
 from .serial_phy_recipe import materialize_serial_phy_recipe
 from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
+from .tdm_schedule_storage import read_tdm_schedule
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
@@ -6412,7 +6414,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 read_json(args.schedule),
                 read_json(args.crossings),
                 read_json(args.initial_grouping),
-                read_json(args.positions),
+                read_position_hints(args.positions),
                 read_json(args.refined_grouping),
                 read_json(args.rudy_input),
                 read_json(args.rudy_report),
@@ -6469,7 +6471,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             report = validate_chimew_vivado_correlation(args.input, args.report)
             _print_json(report)
             return 0
-        schedule = read_json(args.schedule)
+        schedule = read_tdm_schedule(args.schedule)
         platform = Platform.load(args.platform)
         if args.pin_plan_command == "build":
             ir = EmuIR.load(args.ir)
@@ -6484,6 +6486,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 schedule,
                 placements,
                 region_count=args.region_count,
+                output_path=args.positions_out,
             )
             plan = build_pin_plan(
                 schedule,
@@ -6493,9 +6496,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 refinement_iterations=args.refinement_iterations,
                 crossing_weight=args.crossing_weight,
                 position_weight=args.position_weight,
+                output_path=args.output,
             )
-            write_json(args.positions_out, positions)
-            write_json(args.output, plan)
             _print_json(
                 {
                     "status": "pass",
@@ -6507,7 +6509,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             report = validate_pin_plan(
                 schedule,
                 platform,
-                read_json(args.positions),
+                read_position_hints(args.positions),
                 read_pin_plan(args.plan),
             )
             _print_json(report)
@@ -6587,9 +6589,9 @@ def _dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "package-pin":
         platform = Platform.load(args.platform)
-        schedule = read_json(args.schedule)
+        schedule = read_tdm_schedule(args.schedule)
         positions = (
-            read_json(args.position_hints)
+            read_position_hints(args.position_hints)
             if args.position_hints is not None
             else None
         )

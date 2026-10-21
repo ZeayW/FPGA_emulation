@@ -53,6 +53,7 @@ from emuflow.phase3_assignment_index import (
     write_phase3_assignment_index,
 )
 from emuflow.phase3_exact_records import (
+    StaticExactCutNodeSequence,
     StaticExactRecordSequence,
     build_static_exact_capture_stream,
 )
@@ -878,7 +879,25 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                         "max_cross_fpga_dependency_depth"
                     ],
                 )
+                streamed = build_static_exact_semantic_contract(
+                    self.ir,
+                    self.platform.to_dict(),
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=expected[
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                    stream_records=True,
+                )
             self.assertEqual(actual, expected)
+            self.assertIsInstance(
+                streamed["cut_nodes"], StaticExactCutNodeSequence
+            )
+            self.assertEqual(list(streamed["cut_nodes"]), expected["cut_nodes"])
+            self.assertEqual(
+                semantic_contract_sha256(streamed),
+                semantic_contract_sha256(expected),
+            )
 
     def test_native_capture_resolution_only_materializes_requested_sinks(self):
         class UnrequestedEndpoint(dict):
@@ -1054,6 +1073,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         self.assertIsInstance(
             actual["dependency_edges"], StaticExactRecordSequence
         )
+        self.assertIsInstance(actual["cut_nodes"], StaticExactCutNodeSequence)
         self.assertIsInstance(
             actual["logic_segments"], StaticExactRecordSequence
         )

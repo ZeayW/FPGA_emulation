@@ -26,6 +26,7 @@ from .native_tools import resolve_native_executable
 from .phase3_exact_records import (
     StaticExactRecordSequence,
     build_static_exact_capture_stream,
+    build_static_exact_cut_node_stream,
     build_static_exact_record_streams,
 )
 from .resources import RESOURCE_FIELDS
@@ -1558,56 +1559,55 @@ def build_static_exact_semantic_contract(
                 )
     capture_segment_start = launch_segment_count + dependency_edge_count
     dependency_edges: List[Dict[str, Any]] = []
-    cut_nodes = []
-    launch_segment_number = 0
-    dependency_segment_number = launch_segment_count
-    capture_index = 0
-    capture_iterator = iter(capture_records)
-    next_capture = next(capture_iterator, None)
-    for sink in ordered_cut_ids:
-        cut = cut_by_net.pop(sink)
-        predecessor_cut_nets = dependencies.pop(sink)
-        local_launch = local_launches.pop(sink)
-        source_segments = []
-        if local_launch or not predecessor_cut_nets:
-            source_segments.append(
-                f"segment{launch_segment_number:06d}"
-            )
-            launch_segment_number += 1
-        for source in predecessor_cut_nets:
-            segment_id = f"segment{dependency_segment_number:06d}"
-            if not stream_records:
-                logic_segments.append(
-                    {
-                        "id": segment_id,
-                        "kind": "rx_to_tx",
-                        "fpga": cut["source_fpgas"][0],
-                        "source_cut_net": source,
-                        "sink_cut_net": sink,
-                    }
+    def generate_cut_nodes() -> Iterator[Dict[str, Any]]:
+        launch_segment_number = 0
+        dependency_segment_number = launch_segment_count
+        capture_index = 0
+        capture_iterator = iter(capture_records)
+        next_capture = next(capture_iterator, None)
+        for sink in ordered_cut_ids:
+            cut = cut_by_net.pop(sink)
+            predecessor_cut_nets = dependencies.pop(sink)
+            local_launch = local_launches.pop(sink)
+            source_segments = []
+            if local_launch or not predecessor_cut_nets:
+                source_segments.append(
+                    f"segment{launch_segment_number:06d}"
                 )
-                dependency_edges.append(
-                    {"from": source, "to": sink, "segment": segment_id}
+                launch_segment_number += 1
+            for source in predecessor_cut_nets:
+                segment_id = f"segment{dependency_segment_number:06d}"
+                if not stream_records:
+                    logic_segments.append(
+                        {
+                            "id": segment_id,
+                            "kind": "rx_to_tx",
+                            "fpga": cut["source_fpgas"][0],
+                            "source_cut_net": source,
+                            "sink_cut_net": sink,
+                        }
+                    )
+                    dependency_edges.append(
+                        {"from": source, "to": sink, "segment": segment_id}
+                    )
+                source_segments.append(
+                    f"segment{dependency_segment_number:06d}"
                 )
-            source_segments.append(
-                f"segment{dependency_segment_number:06d}"
-            )
-            dependency_segment_number += 1
-        capture_segments = []
-        while (
-            next_capture is not None
-            and next_capture["cut_net"] == sink
-        ):
-            capture_segments.append(
-                f"segment{capture_segment_start + capture_index:06d}"
-            )
-            capture_index += 1
-            next_capture = next(capture_iterator, None)
-        # Preserve the v3 canonical string ordering even after segment IDs
-        # grow beyond the six-digit minimum width.
-        capture_segments.sort()
-        cut_nodes.append(
-            {
+                dependency_segment_number += 1
+            capture_segments = []
+            while (
+                next_capture is not None
+                and next_capture["cut_net"] == sink
+            ):
+                capture_segments.append(
+                    f"segment{capture_segment_start + capture_index:06d}"
+                )
+                capture_index += 1
+                next_capture = next(capture_iterator, None)
+            # Preserve the v3 canonical string ordering even after segment IDs
+            # grow beyond the six-digit minimum width.
+            capture_segments.sort()
+            yield {
                 "net": sink,
                 "cut_class": cut["cut_class"],
                 "source_fpgas": list(cut["source_fpgas"]),
@@ -1618,18 +1618,27 @@ def build_static_exact_semantic_contract(
                 "source_segment_ids": source_segments,
                 "capture_segment_ids": capture_segments,
             }
-        )
-    if next_capture is not None:
-        raise ValidationError("Static Exact capture ordering is inconsistent")
-    if not stream_records and len(logic_segments) != capture_segment_start:
-        raise ValidationError("Static Exact dependency numbering is inconsistent")
+        if next_capture is not None or capture_index != len(capture_records):
+            raise ValidationError("Static Exact capture ordering is inconsistent")
+        if (
+            launch_segment_number != launch_segment_count
+            or dependency_segment_number != capture_segment_start
+        ):
+            raise ValidationError("Static Exact segment numbering is inconsistent")
+        if not stream_records and len(logic_segments) != capture_segment_start:
+            raise ValidationError(
+                "Static Exact dependency numbering is inconsistent"
+            )
+
     if stream_records:
+        cut_nodes = build_static_exact_cut_node_stream(generate_cut_nodes())
         record_streams = build_static_exact_record_streams(
             cut_nodes, capture_records, launch_flags
         )
         dependency_edges = record_streams["dependency_edges"]
         logic_segments = record_streams["logic_segments"]
     else:
+        cut_nodes = list(generate_cut_nodes())
         for capture in capture_records:
             segment_id = f"segment{len(logic_segments):06d}"
             logic_segments.append(
@@ -1642,10 +1651,7 @@ def build_static_exact_semantic_contract(
                 }
             )
     if (
-        launch_segment_number != launch_segment_count
-        or dependency_segment_number
-        != capture_segment_start
-        or capture_index != len(capture_records)
+        len(cut_nodes) != len(ordered_cut_ids)
         or len(logic_segments) != capture_segment_start + len(capture_records)
         or len(dependency_edges) != dependency_edge_count
     ):

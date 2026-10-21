@@ -2217,6 +2217,422 @@ def _independently_reconstruct_exact_captures(
     return records, minimum
 
 
+def _validate_indexed_schedule_section(
+    schedule: Mapping[str, Any],
+    section: str,
+    expected_records: Sequence[Mapping[str, Any]] | Iterator[Mapping[str, Any]],
+) -> None:
+    """Compare one ScheduleStore section without decoding it into a list."""
+
+    cursor = getattr(schedule, "iter_canonical_section_records", None)
+    if not callable(cursor):
+        raise ValidationError("indexed schedule section cursor is unavailable")
+    actual = iter(cursor(section))
+    expected = iter(expected_records)
+    sentinel = object()
+    index = 0
+    while True:
+        actual_record = next(actual, sentinel)
+        expected_record = next(expected, sentinel)
+        if actual_record is sentinel and expected_record is sentinel:
+            return
+        if actual_record is sentinel or expected_record is sentinel:
+            raise ValidationError(
+                f"schedule.{section} record coverage disagrees"
+            )
+        encoded = json.dumps(
+            expected_record,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if actual_record != encoded:
+            raise ValidationError(
+                f"schedule.{section}[{index}] does not match recomputed value"
+            )
+        index += 1
+
+
+def _domain_schedule_records_from_counts(
+    platform: Platform,
+    constraints: Mapping[str, Any],
+    counts: Mapping[str, int],
+) -> List[Dict[str, Any]]:
+    _, _, capacities = build_directed_graph(platform, constraints)
+    links = _link_by_id(platform)
+    unknown = sorted(set(counts) - set(capacities))
+    if unknown:
+        raise ValidationError(
+            f"schedule entries reference unknown capacities {unknown[:8]}"
+        )
+    records = []
+    for key in sorted(capacities):
+        capacity = capacities[key]
+        lanes = links[
+            capacity["link"]
+        ].transport_bits_per_cycle_per_direction
+        scheduled = counts.get(key, 0)
+        records.append(
+            {
+                "key": key,
+                "link": capacity["link"],
+                "direction": capacity["direction"],
+                "lanes": lanes,
+                "frame_slots": constraints["frame_slots"],
+                "scheduled_bit_hops": scheduled,
+                "capacity_bit_hops": lanes * constraints["frame_slots"],
+                "utilization": (
+                    scheduled / (lanes * constraints["frame_slots"])
+                ),
+            }
+        )
+    return records
+
+
+def _validate_indexed_exact_tdm_schedule(
+    routes: Mapping[str, Any],
+    platform: Platform,
+    schedule: Mapping[str, Any],
+    exact_contract: Mapping[str, Any],
+    constraints: Mapping[str, Any],
+    sampled_timing_constraints: Mapping[str, Any],
+    arcs: Mapping[Tuple[str, str, str], Mapping[str, Any]],
+    links: Mapping[str, Any],
+    bank_allocations: Mapping[
+        Tuple[str, str, str], Mapping[str, int]
+    ],
+) -> Dict[str, Any]:
+    """Validate indexed Static Exact data without hop-sized Python maps."""
+
+    validate_seals = getattr(schedule, "validate_logical_seals", None)
+    if not callable(validate_seals):
+        raise ValidationError("indexed schedule logical seal validator is unavailable")
+    validate_seals()
+    raw_routes = routes.get("routes")
+    if not isinstance(raw_routes, list):
+        raise ValidationError("routes.routes: expected an array")
+    expected_route_metadata = (
+        {
+            "id": route["id"],
+            "net": route["net"],
+            "source": route["source"],
+            "sinks": list(route["sinks"]),
+            "tree_edges": list(route["tree_edges"]),
+        }
+        for route in sorted(raw_routes, key=lambda item: item["id"])
+    )
+    _validate_indexed_schedule_section(
+        schedule, "routes", expected_route_metadata
+    )
+
+    exact_nodes = _indexed_exact_nodes(raw_routes)
+    ordered_routes = _exact_dependency_order(
+        exact_nodes, raw_routes, None
+    )
+    open_index = getattr(schedule, "open_validation_index", None)
+    if not callable(open_index):
+        raise ValidationError("indexed schedule validation index is unavailable")
+    exact_arrivals: Dict[Tuple[str, str], int] = {}
+    completions: List[Dict[str, Any]] = []
+    bank_directions: Dict[Tuple[str, int], Tuple[str, str]] = {}
+    expected_hop_count = 0
+    frame_slots = constraints["frame_slots"]
+    with open_index() as entry_index:
+        collision = entry_index.first_collision()
+        if collision is not None:
+            capacity_key, slot, lane = collision
+            raise ValidationError(
+                f"schedule collision in {capacity_key!r} at "
+                f"slot={slot}, lane={lane}"
+            )
+        entry_index.install_demand_order(
+            iter(route["id"] for route in ordered_routes)
+        )
+        ordered_entries = iter(entry_index.iter_demand_order())
+        current = next(ordered_entries, None)
+        for route_index, route in enumerate(ordered_routes):
+            source_ready_slot, _source_evidence = _indexed_source_readiness(
+                route, exact_arrivals, sampled_timing_constraints
+            )
+            arrival_by_node = {route["source"]: source_ready_slot - 1}
+            route_hops = sorted(
+                _route_hops(route),
+                key=lambda item: (
+                    item[0],
+                    item[1]["link"],
+                    item[1]["from"],
+                    item[1]["to"],
+                ),
+            )
+            expected_hop_count += len(route_hops)
+            for depth, edge in route_hops:
+                if current is None or current[0] != route_index:
+                    raise ValidationError(
+                        "schedule.entries: route-hop coverage is incomplete"
+                    )
+                _sequence, entry = current
+                current = next(ordered_entries, None)
+                expected_key = (
+                    route["id"], edge["link"], edge["from"], edge["to"]
+                )
+                actual_key = (
+                    entry.demand, entry.link, entry.source, entry.sink
+                )
+                if actual_key != expected_key:
+                    raise ValidationError(
+                        f"schedule entry has unexpected route hop {actual_key}"
+                    )
+                if entry.net != route["net"] or entry.hop != depth:
+                    raise ValidationError(
+                        "schedule entry net/hop does not match route"
+                    )
+                try:
+                    arc = arcs[(entry.link, entry.source, entry.sink)]
+                    link = links[entry.link]
+                except KeyError as error:
+                    raise ValidationError(
+                        f"schedule entry uses an unknown routed arc {actual_key}"
+                    ) from error
+                if entry.capacity_key != arc["capacity_key"]:
+                    raise ValidationError(
+                        "schedule entry capacity_key is incorrect"
+                    )
+                if entry.slot < 0 or entry.slot >= frame_slots:
+                    raise ValidationError("schedule entry slot is out of range")
+                if (
+                    entry.lane < 0
+                    or entry.lane
+                    >= link.transport_bits_per_cycle_per_direction
+                ):
+                    raise ValidationError("schedule entry lane is out of range")
+                bank_budget = bank_allocations.get(
+                    (entry.link, entry.source, entry.sink)
+                )
+                if bank_budget is not None:
+                    offset = bank_budget["lane_offset"]
+                    if not offset <= entry.lane < offset + bank_budget["lanes"]:
+                        raise ValidationError(
+                            "schedule entry wire lies outside its allocated "
+                            "direction banks"
+                        )
+                    bank_key = (
+                        entry.link,
+                        entry.lane // bank_budget["wires_per_bank"],
+                    )
+                    direction = (entry.source, entry.sink)
+                    if bank_directions.setdefault(bank_key, direction) != direction:
+                        raise ValidationError(
+                            "schedule bank is assigned to both directions"
+                        )
+                if link.tdm_delay_model is not None:
+                    quantum = int(constraints["tdm_ratio_quantum"])
+                    minimum = int(constraints.get("tdm_min_ratio", 1))
+                    if (
+                        entry.tdm_ratio is None
+                        or entry.tdm_ratio < minimum
+                        or entry.tdm_ratio > frame_slots
+                        or (
+                            entry.tdm_ratio != 1
+                            and entry.tdm_ratio % quantum
+                        )
+                    ):
+                        raise ValidationError(
+                            "schedule entry tdm_ratio is invalid for the net "
+                            "delay model"
+                        )
+                base, _slope = route_link_delay_coefficients_ns(
+                    platform,
+                    entry.link,
+                    entry.source,
+                    entry.sink,
+                    constraints,
+                )
+                expected_arrival = entry.slot + tdm_hop_latency_cycles(
+                    link,
+                    entry.tdm_ratio if entry.tdm_ratio is not None else 1,
+                    base_delay_ns=base,
+                )
+                if entry.arrival_slot != expected_arrival:
+                    raise ValidationError(
+                        "schedule entry arrival_slot does not match link delay"
+                    )
+                if expected_arrival >= frame_slots - RUNTIME_BARRIER_SLOTS:
+                    raise ValidationError(
+                        "schedule entry arrival reaches reserved runtime "
+                        "barrier slot"
+                    )
+                ready = (
+                    source_ready_slot
+                    if edge["from"] == route["source"]
+                    else arrival_by_node[edge["from"]] + 1
+                )
+                if entry.ready_slot != ready:
+                    raise ValidationError(
+                        f"schedule demand {route['id']!r}: ready-slot mismatch"
+                    )
+                if entry.slot < ready:
+                    raise ValidationError(
+                        f"schedule demand {route['id']!r}: precedence violation"
+                    )
+                arrival_by_node[edge["to"]] = entry.arrival_slot
+            if current is not None and current[0] == route_index:
+                raise ValidationError(
+                    "schedule entry has an unexpected route hop"
+                )
+            missing_sinks = sorted(set(route["sinks"]) - set(arrival_by_node))
+            if missing_sinks:
+                raise ValidationError(
+                    f"schedule demand {route['id']!r}: missing sinks "
+                    f"{missing_sinks}"
+                )
+            completion_slot = max(
+                arrival_by_node[sink] for sink in route["sinks"]
+            )
+            sink_arrivals = {
+                sink: arrival_by_node[sink] for sink in sorted(route["sinks"])
+            }
+            completions.append(
+                {
+                    "demand": route["id"],
+                    "net": route["net"],
+                    "completion_slot": completion_slot,
+                    "source_ready_slot": source_ready_slot,
+                    "sink_arrival_slots": sink_arrivals,
+                }
+            )
+            for sink, arrival in sink_arrivals.items():
+                exact_arrivals[(route["net"], sink)] = arrival
+        if current is not None or expected_hop_count != len(entry_index):
+            raise ValidationError(
+                "schedule.entries: route-hop coverage is incomplete"
+            )
+
+        counts = entry_index.domain_counts()
+        # Recompute the fixed baseline ratio/lane assignment in capacity order
+        # without retaining one expected record per hop.
+        current_capacity = None
+        capacity_index = 0
+        capacity_lanes = 0
+        capacity_offset = 0
+        for entry in entry_index.iter_capacity_order():
+            link = links[entry.link]
+            if link.tdm_delay_model is None:
+                continue
+            if entry.capacity_key != current_capacity:
+                current_capacity = entry.capacity_key
+                capacity_index = 0
+                budget = bank_allocations.get(
+                    (entry.link, entry.source, entry.sink)
+                )
+                capacity_lanes = (
+                    budget["lanes"]
+                    if budget is not None
+                    else link.transport_bits_per_cycle_per_direction
+                )
+                capacity_offset = (
+                    budget["lane_offset"] if budget is not None else 0
+                )
+                if capacity_lanes <= 0:
+                    raise ValidationError(
+                        "active schedule direction has no allocated bank"
+                    )
+            local_lane = capacity_index % capacity_lanes
+            group_count = counts[entry.capacity_key]
+            lane_count = (
+                (group_count - 1 - local_lane) // capacity_lanes + 1
+            )
+            raw_ratio = max(
+                lane_count, int(constraints.get("tdm_min_ratio", 1))
+            )
+            quantum = int(constraints["tdm_ratio_quantum"])
+            ratio = (
+                1
+                if raw_ratio == 1
+                else math.ceil(raw_ratio / quantum) * quantum
+            )
+            if (
+                entry.lane != capacity_offset + local_lane
+                or entry.tdm_ratio != ratio
+            ):
+                raise ValidationError(
+                    "baseline schedule wire/ratio differs from fixed group"
+                )
+            if entry.slot - entry.ready_slot >= ratio:
+                raise ValidationError(
+                    "baseline schedule wait exceeds its ratio window"
+                )
+            capacity_index += 1
+
+    completions.sort(key=lambda item: item["demand"])
+    _validate_indexed_schedule_section(
+        schedule, "demand_completions", completions
+    )
+    expected_domains = _domain_schedule_records_from_counts(
+        platform, constraints, counts
+    )
+    _validate_indexed_schedule_section(
+        schedule, "domain_schedules", expected_domains
+    )
+    expected_certificate = _indexed_certificate(
+        ordered_routes, exact_arrivals, sampled_timing_constraints
+    )
+    minimum_capture_slack = expected_certificate[
+        "minimum_sink_slack_slots"
+    ]
+    if (
+        schedule.get("qualification")
+        != "dependency-schedule-readiness-pass"
+        or schedule.get("transport_semantics") != "sampled-virtual-wire"
+        or schedule.get("semantic_contract_schema")
+        != exact_contract.get("schema")
+        or schedule.get("semantic_contract_sha256")
+        != routes.get("semantic_contract_sha256")
+    ):
+        raise ValidationError("cross-layer timing schedule binding is invalid")
+    if schedule.get("schedule_dependency_certificate") != expected_certificate:
+        raise ValidationError(
+            "cross-layer timing readiness certificate does not match "
+            "independent reconstruction"
+        )
+    expected_metrics = {
+        "demands": len(raw_routes),
+        "scheduled_bit_hops": expected_hop_count,
+        "frame_slots": frame_slots,
+        "completion_slot": max(
+            (item["completion_slot"] for item in completions), default=0
+        ),
+        "max_domain_utilization": max(
+            (domain["utilization"] for domain in expected_domains),
+            default=0.0,
+        ),
+        "collisions": 0,
+        "transport_ordering_policy": "path-local-dependency-dag-v1",
+        "commit_slot": sampled_timing_constraints["commit_slot"],
+        "dependency_edges": expected_certificate["dependency_edges"],
+        "maximum_combinational_dependency_depth": max(
+            (
+                route["combinational_dependency_depth"]
+                for route in ordered_routes
+            ),
+            default=0,
+        ),
+        "conservative_sink_readiness_checks": expected_certificate[
+            "sink_readiness_checks"
+        ],
+        "minimum_capture_slack_slots": minimum_capture_slack,
+    }
+    if schedule.get("metrics") != expected_metrics:
+        raise ValidationError(
+            "schedule.metrics does not match independently recomputed metrics"
+        )
+    return {
+        "status": "pass",
+        "qualification": "dependency-schedule-readiness-pass",
+        **expected_metrics,
+        "routed_sinks": sum(len(route["sinks"]) for route in raw_routes),
+    }
+
+
 def validate_tdm_schedule(
     routes: Mapping[str, Any],
     platform: Platform,
@@ -2266,6 +2682,41 @@ def validate_tdm_schedule(
     bank_allocations = _bank_direction_allocations(routes, platform, constraints)
     if bank_allocations and schedule.get("bank_allocations") != _bank_allocation_records(bank_allocations):
         raise ValidationError("schedule.bank_allocations does not match routed bank allocation")
+    indexed_store = callable(
+        getattr(schedule, "open_validation_index", None)
+    )
+    indexed_exact_store = bool(
+        indexed_store
+        and exact_contract is not None
+        and exact_contract.get("indexed") is True
+        and schedule.get("provider") == TDM_EXACT_DEPENDENCY_PROVIDER
+        and ratio_plan is None
+    )
+    if indexed_exact_store:
+        return _validate_indexed_exact_tdm_schedule(
+            routes,
+            platform,
+            schedule,
+            exact_contract,
+            constraints,
+            sampled_timing_constraints,
+            arcs,
+            links,
+            bank_allocations,
+        )
+    if indexed_store:
+        materialize = getattr(schedule, "materialize", None)
+        if not callable(materialize):
+            raise ValidationError(
+                "indexed schedule compatibility materializer is unavailable"
+            )
+        return validate_tdm_schedule(
+            routes,
+            platform,
+            materialize(),
+            ratio_plan,
+            prepared_ratio_model=prepared_ratio_model,
+        )
     bank_directions: Dict[Tuple[str, int], Tuple[str, str]] = {}
     expected = _expected_hops(routes)
     academic_schedule = schedule.get("provider") in {
@@ -3082,6 +3533,8 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
     routes: Mapping[str, Any],
     platform: Platform,
     schedule: Mapping[str, Any],
+    *,
+    _indexed_entries: Optional[Mapping[HopKey, Mapping[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Reconstruct concrete timing without the optimizer's dense model.
 
@@ -3110,19 +3563,34 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
     constraints = normalize_route_constraints(
         routes.get("constraints"), platform
     )
-    entries = {}
-    for entry in schedule["entries"]:
-        key = _hop_key(
-            entry["demand"],
-            entry["link"],
-            entry["from"],
-            entry["to"],
-        )
-        if key in entries:
-            raise ValidationError(
-                f"schedule timing reconstruction found duplicate hop {key}"
+    if _indexed_entries is None:
+        open_index = getattr(schedule, "open_validation_index", None)
+        if callable(open_index):
+            with open_index() as indexed_entries:
+                return reconstruct_tdm_schedule_timing_paths_from_routes(
+                    routes,
+                    platform,
+                    schedule,
+                    _indexed_entries=indexed_entries,
+                )
+        entries: Mapping[HopKey, Mapping[str, Any]] = {}
+        materialized_entries: Dict[HopKey, Mapping[str, Any]] = {}
+        for entry in schedule["entries"]:
+            key = _hop_key(
+                entry["demand"],
+                entry["link"],
+                entry["from"],
+                entry["to"],
             )
-        entries[key] = entry
+            if key in materialized_entries:
+                raise ValidationError(
+                    "schedule timing reconstruction found duplicate hop "
+                    f"{key}"
+                )
+            materialized_entries[key] = entry
+        entries = materialized_entries
+    else:
+        entries = _indexed_entries
     links = _link_by_id(platform)
     route_by_net = {}
     route_paths = {}

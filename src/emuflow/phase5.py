@@ -34,7 +34,7 @@ from .tdm_ratio import (
     validate_tdm_ratio_plan,
 )
 from .tdm_slot import refine_tdm_schedule_native
-from .tdm_schedule_storage import write_tdm_schedule_storage
+from .tdm_schedule_storage import read_tdm_schedule, write_tdm_schedule_storage
 from .tdm_timing_dag import build_timing_dag_ratio_plan
 from .tdm_feedback import build_tdm_feedback, validate_tdm_feedback
 
@@ -511,7 +511,7 @@ def validate_phase5(
         persisted_routes, assignment_path
     )
     platform = Platform.load(platform_path)
-    schedule = read_json(schedule_path)
+    schedule = read_tdm_schedule(schedule_path)
     ratio_plan = (
         read_json(ratio_plan_path)
         if ratio_plan_path is not None
