@@ -1,10 +1,12 @@
 import copy
 import hashlib
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
@@ -31,9 +33,14 @@ from emuflow.cli import main
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
-from emuflow.pin_plan_storage import write_pin_plan_storage
+from emuflow.pin_plan_storage import (
+    PinPlanEntrySequence,
+    write_pin_plan_storage,
+)
 from emuflow.platform import Platform
 from emuflow.tdm_schedule_storage import (
+    ScheduleRecordSequence,
+    canonical_tdm_schedule_sha256,
     read_tdm_schedule,
     write_tdm_schedule_storage,
 )
@@ -355,29 +362,6 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             )["status"],
             "pass",
         )
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            schedule_document = {
-                **self.schedule,
-                "routes": [],
-                "demand_completions": [],
-                "domain_schedules": [],
-            }
-            schedule_path = root / "schedule.json"
-            write_tdm_schedule_storage(schedule_path, schedule_document)
-            indexed_schedule = read_tdm_schedule(schedule_path)
-            indexed_plan = write_pin_plan_storage(
-                root / "pin_plan.json", result["pin_plan"]
-            )
-            self.assertEqual(
-                validate_pin_plan(
-                    indexed_schedule,
-                    self.platform,
-                    result["position_hints"],
-                    indexed_plan,
-                )["status"],
-                "pass",
-            )
         self.assertEqual(
             validate_chimew_phase6_binding(
                 self.schedule,
@@ -395,6 +379,147 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 plan_by_id[schedule_entry["id"]]["logical_lane"],
                 schedule_entry["lane"],
             )
+
+    def test_indexed_binding_validation_uses_relational_join(self) -> None:
+        result = build_chimew_phase6_pin_plan(
+            self.schedule,
+            self.platform,
+            self.assignment_input,
+            self.electrical_map,
+            executable=str(self.executable),
+            region_count=4,
+        )
+        schedule_document = {
+            **self.schedule,
+            "routes": [],
+            "demand_completions": [],
+            "domain_schedules": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            schedule_path = root / "schedule.json"
+            write_tdm_schedule_storage(schedule_path, schedule_document)
+            indexed_schedule = read_tdm_schedule(schedule_path)
+            schedule_sha256 = canonical_tdm_schedule_sha256(indexed_schedule)
+            plan_document = copy.deepcopy(result["pin_plan"])
+            plan_document["configuration"]["schedule_sha256"] = (
+                schedule_sha256
+            )
+            binding = copy.deepcopy(result["electrical_binding"])
+            binding["provenance"]["schedule_sha256"] = schedule_sha256
+            indexed_plan = write_pin_plan_storage(
+                root / "pin_plan.json", plan_document
+            )
+            legacy_validation = validate_chimew_phase6_binding(
+                schedule_document,
+                self.platform,
+                plan_document,
+                binding,
+            )
+            with mock.patch.object(
+                ScheduleRecordSequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "Chimew indexed validation scanned schedule objects"
+                ),
+            ), mock.patch.object(
+                PinPlanEntrySequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "Chimew indexed validation scanned pin-plan objects"
+                ),
+            ):
+                indexed_validation = validate_chimew_phase6_binding(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_plan,
+                    binding,
+                )
+            self.assertEqual(indexed_validation, legacy_validation)
+
+            incomplete = copy.deepcopy(binding)
+            incomplete["entries"].pop()
+            with self.assertRaisesRegex(
+                ValidationError, "coverage is incomplete"
+            ):
+                validate_chimew_phase6_binding(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_plan,
+                    incomplete,
+                )
+
+            conflicting = copy.deepcopy(binding)
+            conflicting["entries"][0]["physical_lane"] = 1
+            with self.assertRaisesRegex(
+                ValidationError, "conflicts with pin plan"
+            ):
+                validate_chimew_phase6_binding(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_plan,
+                    conflicting,
+                )
+
+            duplicate = copy.deepcopy(binding)
+            duplicate["entries"][1]["schedule_entries"] = list(
+                duplicate["entries"][0]["schedule_entries"]
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "duplicates schedule entries"
+            ):
+                validate_chimew_phase6_binding(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_plan,
+                    duplicate,
+                )
+
+            wrong_direction = copy.deepcopy(binding)
+            wrong_direction["entries"][0]["direction"] = "b_to_a"
+            with self.assertRaisesRegex(
+                ValidationError, "TDM bundle is invalid"
+            ):
+                validate_chimew_phase6_binding(
+                    indexed_schedule,
+                    self.platform,
+                    indexed_plan,
+                    wrong_direction,
+                )
+
+            original_connect = sqlite3.connect
+            observed_connections = []
+
+            class ObservedConnection(sqlite3.Connection):
+                close_calls = 0
+
+                def close(self):
+                    self.close_calls += 1
+                    return super().close()
+
+            def observed_connect(*args, **kwargs):
+                kwargs["factory"] = ObservedConnection
+                connection = original_connect(*args, **kwargs)
+                observed_connections.append(connection)
+                return connection
+
+            malformed_group = copy.deepcopy(binding)
+            malformed_group["entries"][0]["group"] = None
+            with mock.patch(
+                "emuflow.chimew_phase6.sqlite3.connect",
+                side_effect=observed_connect,
+            ):
+                with self.assertRaisesRegex(
+                    ValidationError, r"electrical_binding\[0\].group"
+                ):
+                    validate_chimew_phase6_binding(
+                        indexed_schedule,
+                        self.platform,
+                        indexed_plan,
+                        malformed_group,
+                    )
+            self.assertEqual(len(observed_connections), 1)
+            self.assertEqual(observed_connections[0].close_calls, 1)
 
     def test_duplicate_concrete_lane_is_rejected(self) -> None:
         electrical_map = copy.deepcopy(self.electrical_map)

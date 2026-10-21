@@ -93,8 +93,10 @@ now derives dependency edges, logic segments and capture requirements through
 repeatable typed record streams. Those three graph-scale relations feed the
 canonical digest and `assignment.exact.bin` writer without becoming retained
 Python dictionary lists. Native capture analysis still returns a transient
-sorted tuple relation before it is packed into the byte-backed stream; direct
-native emission of that relation and the remaining cut nodes is pending.
+token vector, but Python now replays it into a scratch ordered relation and
+encodes the canonical byte-backed stream in one cursor pass, without raw,
+set, and sorted capture populations coexisting. Direct native emission and
+the remaining cut-node relation are pending.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
@@ -136,15 +138,20 @@ typed lane cursor with schedule entries instead of building another hop-sized
 lane dictionary and coverage set. Its first generic validation joins sealed
 schedule, plan and position relations in a file-backed SQLite workspace, then
 publishes the final selector and store only after generic and provider-specific
-checks pass. Legacy logical pin-plan JSON remains readable. The Chimew
-electrical validator and position-hint ingress still retain hop-sized Python
-state and remain Phase 6 migration work.
+checks pass. The indexed Chimew electrical validator also joins the sealed
+schedule and plan stores through a lifecycle-scoped SQLite membership relation,
+so it no longer rebuilds schedule, plan, or coverage maps per hop. Legacy
+logical pin-plan JSON remains readable. Chimew binding input and position-hint
+ingress are still full JSON lists and remain Phase 6 migration work.
 Transport RTL is written atomically from slot-ordered cursors. Python still
 decodes records into the stores and emits adapter text, so native producer
 migration remains. ScheduleStore v2 also seals the historical
 indented logical digest, allowing physical orchestration, logic-segment query
 preparation and Phase 7C to keep a lazy view while preserving existing timing
-and qualification identities; v1 stores remain readable.
+and qualification identities; v1 stores remain readable. Cross-layer timing
+certificate construction now merges a typed, ordered ScheduleStore hop cursor
+with routed-hop identities, avoiding per-hop JSON decoding and the former
+entry map plus duplicate coverage set/map.
 
 Phase 7 transport synthesis no longer writes `transport-synthesized.json` or
 loads a complete synthesized transport `EmuIR` into Python. Generic Yosys JSON

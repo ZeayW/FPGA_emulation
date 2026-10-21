@@ -6,6 +6,7 @@ import subprocess
 import sqlite3
 import tempfile
 from collections import defaultdict
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
@@ -398,14 +399,12 @@ def _baseline_assignment(
     }
 
 
-def validate_bank_pin_assignment(
-    schedule: Mapping[str, Any], platform: Platform,
-    physical_lane_by_entry: Mapping[str, int],
-) -> None:
-    """Preserve Phase 5's whole-bank direction allocation through pin mapping."""
+def _bank_pin_budgets(
+    schedule: Mapping[str, Any], platform: Platform
+) -> tuple[Dict[str, Any], Dict[Tuple[str, str, str], Tuple[int, int]]]:
     links = {link.id: link for link in platform.links if link.bank_count is not None}
     if not links:
-        return
+        return links, {}
     expected = {(link.id, source, sink) for link in links.values()
                 for source, sink in (link.endpoints, tuple(reversed(link.endpoints)))}
     raw = schedule.get("bank_allocations")
@@ -438,20 +437,52 @@ def validate_bank_pin_assignment(
         budgets[key] = (offset, offset + lanes)
     if set(budgets) != expected:
         raise ValidationError("bank pin allocation direction coverage is incomplete")
-    for entry in schedule.get("entries", []):
-        if entry.get("link") not in links:
+    return links, budgets
+
+
+def _validate_bank_pin_rows(
+    schedule: Mapping[str, Any],
+    platform: Platform,
+    rows: Iterable[Tuple[str, str, str, Any, Any]],
+) -> None:
+    links, budgets = _bank_pin_budgets(schedule, platform)
+    if not links:
+        return
+    for link_id, source, sink, logical_lane, physical_lane in rows:
+        if link_id not in links:
             continue
-        key = (entry["link"], entry.get("from"), entry.get("to"))
+        key = (link_id, source, sink)
         if key not in budgets:
             raise ValidationError("bank pin assignment has an unknown direction")
         low, high = budgets[key]
-        for lane in (entry.get("lane"),
-                     physical_lane_by_entry.get(entry["id"], entry.get("lane"))):
+        for lane in (logical_lane, physical_lane):
             if (isinstance(lane, bool) or not isinstance(lane, int)
                     or not low <= lane < high):
                 raise ValidationError(
                     "pin assignment leaves the schedule's allocated direction banks"
                 )
+
+
+def validate_bank_pin_assignment(
+    schedule: Mapping[str, Any], platform: Platform,
+    physical_lane_by_entry: Mapping[str, int],
+) -> None:
+    """Preserve Phase 5's whole-bank direction allocation through pin mapping."""
+
+    _validate_bank_pin_rows(
+        schedule,
+        platform,
+        (
+            (
+                entry.get("link"),
+                entry.get("from"),
+                entry.get("to"),
+                entry.get("lane"),
+                physical_lane_by_entry.get(entry["id"], entry.get("lane")),
+            )
+            for entry in schedule.get("entries", [])
+        ),
+    )
 
 
 def _indexed_pin_plan_validation_available(
@@ -935,86 +966,17 @@ def _validate_indexed_bank_pin_assignment(
     schedule: Mapping[str, Any],
     platform: Platform,
 ) -> None:
-    links = {
-        link.id: link for link in platform.links if link.bank_count is not None
-    }
-    if not links:
-        return
-    expected = {
-        (link.id, source, sink)
-        for link in links.values()
-        for source, sink in (link.endpoints, tuple(reversed(link.endpoints)))
-    }
-    raw = schedule.get("bank_allocations")
-    if not isinstance(raw, list):
-        raise ValidationError(
-            "bank pin assignment requires Phase 5 bank_allocations"
-        )
-    budgets = {}
-    owners = {}
-    for item in raw:
-        if not isinstance(item, dict):
-            raise ValidationError("bank pin allocation is malformed")
-        key = (item.get("link"), item.get("from"), item.get("to"))
-        if key not in expected or key in budgets:
-            raise ValidationError(
-                "bank pin allocation direction coverage is invalid"
-            )
-        link = links[key[0]]
-        count, offset, lanes = (
-            item.get(field)
-            for field in ("bank_count", "lane_offset", "lanes")
-        )
-        if any(
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or value < 0
-            for value in (count, offset, lanes)
-        ):
-            raise ValidationError(
-                "bank pin allocation requires nonnegative integers"
-            )
-        width = link.wires_per_bank
-        if (
-            item.get("wires_per_bank") != width
-            or offset % width
-            or lanes != count * width
-            or offset + lanes
-            > link.transport_bits_per_cycle_per_direction
-        ):
-            raise ValidationError(
-                "bank pin allocation disagrees with BoardDB capacity"
-            )
-        for bank in range(offset // width, (offset + lanes) // width):
-            bank_key = (link.id, bank)
-            if bank_key in owners:
-                raise ValidationError(
-                    "bank pin allocation assigns one bank to both directions"
-                )
-            owners[bank_key] = key
-        budgets[key] = (offset, offset + lanes)
-    if set(budgets) != expected:
-        raise ValidationError(
-            "bank pin allocation direction coverage is incomplete"
-        )
-    for row in connection.execute(
-        """
-        SELECT link_id,source_fpga,sink_fpga,schedule_lane,physical_lane
-        FROM validation_rows ORDER BY entry_id
-        """
-    ):
-        if row[0] not in links:
-            continue
-        key = (row[0], row[1], row[2])
-        if key not in budgets:
-            raise ValidationError(
-                "bank pin assignment has an unknown direction"
-            )
-        low, high = budgets[key]
-        if any(not low <= int(lane) < high for lane in (row[3], row[4])):
-            raise ValidationError(
-                "pin assignment leaves the schedule's allocated direction banks"
-            )
+    _validate_bank_pin_rows(
+        schedule,
+        platform,
+        connection.execute(
+            """
+            SELECT link_id,source_fpga,sink_fpga,
+                   schedule_lane,physical_lane
+            FROM validation_rows ORDER BY entry_id
+            """
+        ),
+    )
 
 
 def _validate_indexed_pin_plan(

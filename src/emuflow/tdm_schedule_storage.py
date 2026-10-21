@@ -879,6 +879,64 @@ class TDMScheduleView(Mapping[str, Any]):
         finally:
             connection.close()
 
+    def iter_hop_identity_records(
+        self,
+    ) -> Iterator[tuple[str, str, str, str, str]]:
+        """Stream canonical hop keys and entry identities for certificates."""
+
+        connection = sqlite3.connect(
+            f"file:{self.store_path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        try:
+            rows = connection.execute(
+                """
+                SELECT json_extract(record_json,'$.demand'),
+                       json_extract(record_json,'$.link'),
+                       json_extract(record_json,'$.from'),
+                       json_extract(record_json,'$.to'),
+                       identity,
+                       json_extract(record_json,'$.id'),
+                       CASE WHEN
+                         json_type(record_json,'$.demand')='text' AND
+                         json_type(record_json,'$.link')='text' AND
+                         json_type(record_json,'$.from')='text' AND
+                         json_type(record_json,'$.to')='text' AND
+                         json_type(record_json,'$.id')='text'
+                       THEN 1 ELSE 0 END
+                FROM records
+                WHERE section='entries'
+                ORDER BY 1,2,3,4,5
+                """
+            )
+            count = 0
+            for row in rows:
+                count += 1
+                demand, link, source, target, identity, record_id, valid = row
+                if (
+                    valid != 1
+                    or record_id != identity
+                    or not all(
+                        isinstance(value, str) and value
+                        for value in (
+                            demand,
+                            link,
+                            source,
+                            target,
+                            identity,
+                        )
+                    )
+                ):
+                    raise ValidationError(
+                        "schedule hop identity record is malformed"
+                    )
+                yield demand, link, source, target, identity
+            if count != len(self._sections["entries"]):
+                raise ValidationError(
+                    "schedule hop identity coverage disagrees"
+                )
+        finally:
+            connection.close()
+
     def iter_incoming_records(self) -> Iterator[tuple[str, str, str]]:
         """Stream (net, target FPGA, entry id) for Phase 6 cut joins."""
 

@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from emuflow.cross_layer_timing import (
     CROSS_LAYER_PHYSICAL_BINDING_SCHEMA,
@@ -19,6 +20,11 @@ from emuflow.errors import ValidationError
 from emuflow.platform import Platform
 from emuflow.phase3_assignment_index import (
     ASSIGNMENT_INDEX_APPLICATION_ID,
+)
+from emuflow.tdm_schedule_storage import (
+    ScheduleRecordSequence,
+    read_tdm_schedule,
+    write_tdm_schedule_storage,
 )
 
 
@@ -104,6 +110,65 @@ def _schedule(*, exact=False):
 
 
 class CrossLayerTimingContractTest(unittest.TestCase):
+    def test_indexed_schedule_hop_binding_avoids_record_decode(self):
+        routes = _routes()
+        schedule = {
+            **_schedule(),
+            "routes": [],
+            "demand_completions": [],
+            "domain_schedules": [],
+        }
+        expected = build_cross_layer_timing_contract(routes, schedule)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "schedule.json"
+            write_tdm_schedule_storage(path, schedule)
+            indexed = read_tdm_schedule(path)
+            with mock.patch.object(
+                ScheduleRecordSequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "indexed certificate decoded schedule record objects"
+                ),
+            ):
+                actual = build_cross_layer_timing_contract(routes, indexed)
+                validation = validate_cross_layer_timing_contract(
+                    routes, actual, indexed
+                )
+        self.assertEqual(actual, expected)
+        self.assertEqual(validation["status"], "pass")
+
+    def test_indexed_schedule_hop_binding_fails_closed(self):
+        routes = _routes()
+        schedule = {
+            **_schedule(),
+            "routes": [],
+            "demand_completions": [],
+            "domain_schedules": [],
+        }
+        schedule["entries"][1]["from"] = "wrong"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "schedule.json"
+            write_tdm_schedule_storage(path, schedule)
+            indexed = read_tdm_schedule(path)
+            with self.assertRaisesRegex(ValidationError, "does not cover"):
+                build_cross_layer_timing_contract(routes, indexed)
+
+    def test_indexed_schedule_hop_binding_rejects_malformed_record(self):
+        routes = _routes()
+        schedule = {
+            **_schedule(),
+            "routes": [],
+            "demand_completions": [],
+            "domain_schedules": [],
+        }
+        del schedule["entries"][1]["from"]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "schedule.json"
+            write_tdm_schedule_storage(path, schedule)
+            indexed = read_tdm_schedule(path)
+            with self.assertRaisesRegex(ValidationError, "malformed"):
+                build_cross_layer_timing_contract(routes, indexed)
+
     def test_indexed_semantic_contract_stays_compact(self):
         semantic = {
             "schema": "emuflow.static-exact-combinational-cut/v3",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -28,6 +29,7 @@ from .pin_planning import (
     SIGNAL_POSITION_HINTS_SCHEMA,
     _assignment_metrics,
     _baseline_assignment,
+    _validate_bank_pin_rows,
     validate_bank_pin_assignment,
     validate_pin_plan,
 )
@@ -51,6 +53,308 @@ _IOSTANDARD_VOLTAGES = {
     "LVCMOS25": 2.5,
     "LVCMOS33": 3.3,
 }
+
+
+def _indexed_chimew_validation_available(
+    schedule: Mapping[str, Any], pin_plan: Mapping[str, Any]
+) -> bool:
+    return all(
+        isinstance(getattr(value, "store_path", None), Path)
+        for value in (schedule, pin_plan)
+    )
+
+
+def _open_indexed_chimew_validation(
+    schedule: Mapping[str, Any],
+    pin_plan: Mapping[str, Any],
+    platform: Platform,
+) -> tuple[sqlite3.Connection, int]:
+    """Open sealed schedule/plan relations and validate exact coverage."""
+
+    connection = sqlite3.connect("")
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA temp_store=FILE")
+    try:
+        connection.execute(
+            "ATTACH DATABASE ? AS schedule_store",
+            (
+                f"file:{schedule.store_path.resolve()}"
+                "?mode=ro&immutable=1",
+            ),
+        )
+        connection.execute(
+            "ATTACH DATABASE ? AS pin_store",
+            (
+                f"file:{pin_plan.store_path.resolve()}"
+                "?mode=ro&immutable=1",
+            ),
+        )
+        schedule_count = connection.execute(
+            "SELECT count(*) FROM schedule_store.records "
+            "WHERE section='entries'"
+        ).fetchone()[0]
+        plan_count = connection.execute(
+            "SELECT count(*) FROM pin_store.entries"
+        ).fetchone()[0]
+        joined_count = connection.execute(
+            """
+            SELECT count(*)
+            FROM schedule_store.records AS schedule
+            JOIN pin_store.entries AS pin
+              ON pin.schedule_entry=schedule.identity
+            WHERE schedule.section='entries'
+            """
+        ).fetchone()[0]
+        if schedule_count != plan_count or joined_count != schedule_count:
+            raise ValidationError(
+                "Chimew Phase 6 electrical schedule coverage is invalid"
+            )
+        mismatch = connection.execute(
+            """
+            SELECT schedule.identity
+            FROM schedule_store.records AS schedule
+            JOIN pin_store.entries AS pin
+              ON pin.schedule_entry=schedule.identity
+            WHERE schedule.section='entries'
+              AND (
+                pin.schedule_entry IS NOT json_extract(
+                  pin.record_json,'$.schedule_entry'
+                )
+                OR pin.physical_lane IS NOT json_extract(
+                  pin.record_json,'$.physical_lane'
+                )
+              )
+            LIMIT 1
+            """
+        ).fetchone()
+        if mismatch is not None:
+            raise ValidationError(
+                "Chimew Phase 6 electrical schedule coverage is invalid"
+            )
+        _validate_bank_pin_rows(
+            schedule,
+            platform,
+            connection.execute(
+                """
+                SELECT json_extract(schedule.record_json,'$.link'),
+                       json_extract(schedule.record_json,'$.from'),
+                       json_extract(schedule.record_json,'$.to'),
+                       json_extract(schedule.record_json,'$.lane'),
+                       pin.physical_lane
+                FROM schedule_store.records AS schedule
+                JOIN pin_store.entries AS pin
+                  ON pin.schedule_entry=schedule.identity
+                WHERE schedule.section='entries'
+                ORDER BY schedule.identity
+                """
+            ),
+        )
+        connection.execute(
+            """
+            CREATE TABLE binding_members(
+              member TEXT PRIMARY KEY,
+              group_index INTEGER NOT NULL,
+              declared_direction TEXT NOT NULL,
+              link_id TEXT NOT NULL,
+              fpga_a TEXT NOT NULL,
+              fpga_b TEXT NOT NULL,
+              physical_lane INTEGER NOT NULL
+            ) WITHOUT ROWID
+            """
+        )
+        return connection, int(schedule_count)
+    except BaseException:
+        connection.close()
+        raise
+
+
+def _stage_indexed_chimew_members(
+    connection: sqlite3.Connection,
+    *,
+    group_index: int,
+    members: list[str],
+    direction: str,
+    link: str,
+    fpga_a: str,
+    fpga_b: str,
+    physical_lane: int,
+) -> None:
+    try:
+        connection.executemany(
+            "INSERT INTO binding_members VALUES (?,?,?,?,?,?,?)",
+            (
+                (
+                    member,
+                    group_index,
+                    direction,
+                    link,
+                    fpga_a,
+                    fpga_b,
+                    physical_lane,
+                )
+                for member in members
+            ),
+        )
+    except sqlite3.IntegrityError as error:
+        raise ValidationError(
+            "Chimew electrical binding duplicates schedule entries"
+        ) from error
+
+
+def _validate_indexed_chimew_members(
+    connection: sqlite3.Connection, schedule_count: int
+) -> None:
+    """Validate all members with ordered SQL joins and bounded state."""
+
+    member_count = connection.execute(
+        "SELECT count(*) FROM binding_members"
+    ).fetchone()[0]
+    unknown_member = connection.execute(
+        """
+        SELECT member.member
+        FROM binding_members AS member
+        LEFT JOIN schedule_store.records AS schedule
+          ON schedule.section='entries'
+         AND schedule.identity=member.member
+        LEFT JOIN pin_store.entries AS pin
+          ON pin.schedule_entry=member.member
+        WHERE schedule.identity IS NULL OR pin.schedule_entry IS NULL
+        LIMIT 1
+        """
+    ).fetchone()
+    if unknown_member is not None:
+        raise ValidationError(
+            "Chimew electrical binding conflicts with pin plan"
+        )
+    if member_count != schedule_count:
+        raise ValidationError("Chimew electrical binding coverage is incomplete")
+    invalid_direction = connection.execute(
+        """
+        SELECT member.member
+        FROM binding_members AS member
+        JOIN schedule_store.records AS schedule
+          ON schedule.section='entries'
+         AND schedule.identity=member.member
+        JOIN pin_store.entries AS pin
+          ON pin.schedule_entry=member.member
+        WHERE NOT (
+             (
+               json_extract(schedule.record_json,'$.from')=member.fpga_a
+               AND json_extract(schedule.record_json,'$.to')=member.fpga_b
+             ) OR (
+               json_extract(schedule.record_json,'$.from')=member.fpga_b
+               AND json_extract(schedule.record_json,'$.to')=member.fpga_a
+             )
+           )
+        LIMIT 1
+        """
+    ).fetchone()
+    if invalid_direction is not None:
+        raise ValidationError(
+            "Chimew electrical binding direction is invalid"
+        )
+    conflict = connection.execute(
+        """
+        SELECT member.member
+        FROM binding_members AS member
+        JOIN schedule_store.records AS schedule
+          ON schedule.section='entries'
+         AND schedule.identity=member.member
+        JOIN pin_store.entries AS pin
+          ON pin.schedule_entry=member.member
+        WHERE json_extract(schedule.record_json,'$.link') != member.link_id
+           OR pin.physical_lane != member.physical_lane
+           OR json_type(schedule.record_json,'$.slot') != 'integer'
+           OR json_extract(schedule.record_json,'$.slot') < 0
+        LIMIT 1
+        """
+    ).fetchone()
+    if conflict is not None:
+        raise ValidationError(
+            "Chimew electrical binding conflicts with pin plan"
+        )
+    duplicate_slot = connection.execute(
+        """
+        SELECT member.group_index
+        FROM binding_members AS member
+        JOIN schedule_store.records AS schedule
+          ON schedule.section='entries'
+         AND schedule.identity=member.member
+        GROUP BY member.group_index,
+                 json_extract(schedule.record_json,'$.slot')
+        HAVING count(*) > 1 LIMIT 1
+        """
+    ).fetchone()
+    if duplicate_slot is not None:
+        raise ValidationError(
+            "Chimew electrical binding conflicts with pin plan"
+        )
+    invalid_ratio = connection.execute(
+        """
+        SELECT member.group_index
+        FROM binding_members AS member
+        JOIN schedule_store.records AS schedule
+          ON schedule.section='entries'
+         AND schedule.identity=member.member
+        GROUP BY member.group_index,
+          CASE
+            WHEN json_extract(schedule.record_json,'$.from')=member.fpga_a
+             AND json_extract(schedule.record_json,'$.to')=member.fpga_b
+            THEN 'a_to_b' ELSE 'b_to_a'
+          END
+        HAVING min(coalesce(
+                 json_extract(schedule.record_json,'$.tdm_ratio'),1
+               )) != max(coalesce(
+                 json_extract(schedule.record_json,'$.tdm_ratio'),1
+               ))
+            OR min(coalesce(
+                 json_extract(schedule.record_json,'$.tdm_ratio'),1
+               )) < 1
+            OR count(*) > min(coalesce(
+                 json_extract(schedule.record_json,'$.tdm_ratio'),1
+               ))
+        LIMIT 1
+        """
+    ).fetchone()
+    if invalid_ratio is not None:
+        raise ValidationError("Chimew electrical binding TDM bundle is invalid")
+    invalid_direction = connection.execute(
+        """
+        SELECT member.group_index
+        FROM binding_members AS member
+        JOIN schedule_store.records AS schedule
+          ON schedule.section='entries'
+         AND schedule.identity=member.member
+        GROUP BY member.group_index,member.declared_direction
+        HAVING (
+          member.declared_direction='bidirectional'
+          AND (
+            count(DISTINCT CASE
+              WHEN json_extract(schedule.record_json,'$.from')=member.fpga_a
+               AND json_extract(schedule.record_json,'$.to')=member.fpga_b
+              THEN 'a_to_b' ELSE 'b_to_a' END
+            ) != 2
+          )
+        ) OR (
+          member.declared_direction!='bidirectional'
+          AND (
+            count(DISTINCT CASE
+              WHEN json_extract(schedule.record_json,'$.from')=member.fpga_a
+               AND json_extract(schedule.record_json,'$.to')=member.fpga_b
+              THEN 'a_to_b' ELSE 'b_to_a' END
+            ) != 1
+            OR min(CASE
+              WHEN json_extract(schedule.record_json,'$.from')=member.fpga_a
+               AND json_extract(schedule.record_json,'$.to')=member.fpga_b
+              THEN 'a_to_b' ELSE 'b_to_a' END
+            ) != member.declared_direction
+          )
+        )
+        LIMIT 1
+        """
+    ).fetchone()
+    if invalid_direction is not None:
+        raise ValidationError("Chimew electrical binding TDM bundle is invalid")
 
 
 def _string(value: Any, label: str) -> str:
@@ -653,11 +957,12 @@ def build_chimew_phase6_pin_plan(
     }
 
 
-def validate_chimew_phase6_binding(
+def _validate_chimew_phase6_binding(
     schedule: Mapping[str, Any],
     platform: Platform,
     pin_plan: Mapping[str, Any],
     binding: Mapping[str, Any],
+    connection_owner: list[sqlite3.Connection],
 ) -> Dict[str, Any]:
     """Independently bind a Chimew pin plan to its electrical certificate."""
 
@@ -762,17 +1067,38 @@ def validate_chimew_phase6_binding(
     else:
         raise ValidationError("Chimew lookahead qualification status is invalid")
 
-    schedule_by_id = {entry["id"]: entry for entry in schedule.get("entries", [])}
-    plan_by_id = {
-        entry["schedule_entry"]: entry for entry in pin_plan.get("entries", [])
-    }
-    if len(schedule_by_id) != len(schedule.get("entries", [])) or set(plan_by_id) != set(
-        schedule_by_id
-    ):
-        raise ValidationError("Chimew Phase 6 electrical schedule coverage is invalid")
-    validate_bank_pin_assignment(schedule, platform, {
-        entry_id: item.get("physical_lane") for entry_id, item in plan_by_id.items()
-    })
+    indexed_connection = None
+    indexed_schedule_count = 0
+    schedule_by_id = None
+    plan_by_id = None
+    if _indexed_chimew_validation_available(schedule, pin_plan):
+        indexed_connection, indexed_schedule_count = (
+            _open_indexed_chimew_validation(schedule, pin_plan, platform)
+        )
+        connection_owner.append(indexed_connection)
+    else:
+        schedule_by_id = {
+            entry["id"]: entry for entry in schedule.get("entries", [])
+        }
+        plan_by_id = {
+            entry["schedule_entry"]: entry
+            for entry in pin_plan.get("entries", [])
+        }
+        if (
+            len(schedule_by_id) != len(schedule.get("entries", []))
+            or set(plan_by_id) != set(schedule_by_id)
+        ):
+            raise ValidationError(
+                "Chimew Phase 6 electrical schedule coverage is invalid"
+            )
+        validate_bank_pin_assignment(
+            schedule,
+            platform,
+            {
+                entry_id: item.get("physical_lane")
+                for entry_id, item in plan_by_id.items()
+            },
+        )
     raw_entries = binding.get("entries")
     if not isinstance(raw_entries, list):
         raise ValidationError("Chimew Phase 6 electrical entries are missing")
@@ -808,8 +1134,13 @@ def validate_chimew_phase6_binding(
             isinstance(member, str) and member for member in members
         ):
             raise ValidationError("Chimew electrical binding group is empty")
-        if len(set(members)) != len(members) or any(member in covered for member in members):
-            raise ValidationError("Chimew electrical binding duplicates schedule entries")
+        if indexed_connection is None:
+            if len(set(members)) != len(members) or any(
+                member in covered for member in members
+            ):
+                raise ValidationError(
+                    "Chimew electrical binding duplicates schedule entries"
+                )
         link = _string(record.get("link"), f"electrical_binding[{index}].link")
         fpga_a = _string(record.get("fpga_a"), f"electrical_binding[{index}].fpga_a")
         fpga_b = _string(record.get("fpga_b"), f"electrical_binding[{index}].fpga_b")
@@ -851,54 +1182,80 @@ def validate_chimew_phase6_binding(
             raise ValidationError("Chimew electrical binding reuses a concrete lane")
         existing_directions.add(direction)
         lanes.add(lane_key)
-        member_directions = set()
-        slots = set()
-        ratios_by_direction = {"a_to_b": set(), "b_to_a": set()}
-        count_by_direction = {"a_to_b": 0, "b_to_a": 0}
-        for member in members:
-            scheduled = schedule_by_id.get(member)
-            planned = plan_by_id.get(member)
-            if scheduled is None:
-                raise ValidationError("Chimew electrical binding conflicts with pin plan")
-            if (scheduled.get("from"), scheduled.get("to")) == (fpga_a, fpga_b):
-                member_direction = "a_to_b"
-            elif (scheduled.get("from"), scheduled.get("to")) == (fpga_b, fpga_a):
-                member_direction = "b_to_a"
-            else:
-                raise ValidationError("Chimew electrical binding direction is invalid")
-            ratio = _tdm_ratio(scheduled)
-            slot = scheduled.get("slot")
+        if indexed_connection is not None:
+            _stage_indexed_chimew_members(
+                indexed_connection,
+                group_index=index,
+                members=members,
+                direction=direction,
+                link=link,
+                fpga_a=fpga_a,
+                fpga_b=fpga_b,
+                physical_lane=physical_lane,
+            )
+        else:
+            member_directions = set()
+            slots = set()
+            ratios_by_direction = {"a_to_b": set(), "b_to_a": set()}
+            count_by_direction = {"a_to_b": 0, "b_to_a": 0}
+            for member in members:
+                scheduled = schedule_by_id.get(member)
+                planned = plan_by_id.get(member)
+                if scheduled is None:
+                    raise ValidationError(
+                        "Chimew electrical binding conflicts with pin plan"
+                    )
+                if (scheduled.get("from"), scheduled.get("to")) == (
+                    fpga_a,
+                    fpga_b,
+                ):
+                    member_direction = "a_to_b"
+                elif (scheduled.get("from"), scheduled.get("to")) == (
+                    fpga_b,
+                    fpga_a,
+                ):
+                    member_direction = "b_to_a"
+                else:
+                    raise ValidationError(
+                        "Chimew electrical binding direction is invalid"
+                    )
+                ratio = _tdm_ratio(scheduled)
+                slot = scheduled.get("slot")
+                if (
+                    planned is None
+                    or scheduled.get("link") != link
+                    or planned.get("physical_lane") != physical_lane
+                    or isinstance(slot, bool)
+                    or not isinstance(slot, int)
+                    or slot < 0
+                    or slot in slots
+                ):
+                    raise ValidationError(
+                        "Chimew electrical binding conflicts with pin plan"
+                    )
+                member_directions.add(member_direction)
+                ratios_by_direction[member_direction].add(ratio)
+                count_by_direction[member_direction] += 1
+                slots.add(slot)
             if (
-                planned is None
-                or scheduled.get("link") != link
-                or planned.get("physical_lane") != physical_lane
-                or isinstance(slot, bool)
-                or not isinstance(slot, int)
-                or slot < 0
-                or slot in slots
+                any(
+                    len(ratios_by_direction[member_direction]) != 1
+                    or count_by_direction[member_direction]
+                    > next(iter(ratios_by_direction[member_direction]))
+                    for member_direction in member_directions
+                )
+                or (
+                    direction == "bidirectional"
+                    and member_directions != {"a_to_b", "b_to_a"}
+                )
+                or (
+                    direction != "bidirectional"
+                    and member_directions != {direction}
+                )
             ):
-                raise ValidationError("Chimew electrical binding conflicts with pin plan")
-            member_directions.add(member_direction)
-            ratios_by_direction[member_direction].add(ratio)
-            count_by_direction[member_direction] += 1
-            slots.add(slot)
-        if (
-            any(
-                len(ratios_by_direction[member_direction]) != 1
-                or count_by_direction[member_direction]
-                > next(iter(ratios_by_direction[member_direction]))
-                for member_direction in member_directions
-            )
-            or (
-                direction == "bidirectional"
-                and member_directions != {"a_to_b", "b_to_a"}
-            )
-            or (
-                direction != "bidirectional"
-                and member_directions != {direction}
-            )
-        ):
-            raise ValidationError("Chimew electrical binding TDM bundle is invalid")
+                raise ValidationError(
+                    "Chimew electrical binding TDM bundle is invalid"
+                )
         pin_keys = (
             (fpga_a, _string(record.get("package_pin_a"), "package_pin_a")),
             (fpga_b, _string(record.get("package_pin_b"), "package_pin_b")),
@@ -945,12 +1302,22 @@ def validate_chimew_phase6_binding(
                     )
         if not isinstance(record.get("placement_anchor", True), bool):
             raise ValidationError("Chimew electrical placement anchor is invalid")
-        covered.update(members)
-    if covered != set(schedule_by_id):
-        raise ValidationError("Chimew electrical binding coverage is incomplete")
+        if indexed_connection is None:
+            covered.update(members)
+    if indexed_connection is not None:
+        _validate_indexed_chimew_members(
+            indexed_connection, indexed_schedule_count
+        )
+        signal_count = indexed_schedule_count
+    else:
+        if covered != set(schedule_by_id):
+            raise ValidationError(
+                "Chimew electrical binding coverage is incomplete"
+            )
+        signal_count = len(covered)
     metrics = binding.get("metrics")
     expected = {
-        "signals": len(covered),
+        "signals": signal_count,
         "groups": len(groups),
         "channels": len(raw_entries),
         "package_pins": len(pins),
@@ -963,12 +1330,34 @@ def validate_chimew_phase6_binding(
         raise ValidationError("Chimew Phase 6 electrical metrics do not agree")
     return {
         "status": "pass",
-        "signals": len(covered),
+        "signals": signal_count,
         "groups": len(groups),
         "concrete_lanes": len(lanes),
         "package_pins": len(pins),
         "binding_sha256": _canonical_sha256(binding),
     }
+
+
+def validate_chimew_phase6_binding(
+    schedule: Mapping[str, Any],
+    platform: Platform,
+    pin_plan: Mapping[str, Any],
+    binding: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Validate the electrical certificate and close every indexed scratch DB."""
+
+    connections: list[sqlite3.Connection] = []
+    try:
+        return _validate_chimew_phase6_binding(
+            schedule,
+            platform,
+            pin_plan,
+            binding,
+            connections,
+        )
+    finally:
+        for connection in reversed(connections):
+            connection.close()
 
 
 def run_chimew_phase6_adapter(

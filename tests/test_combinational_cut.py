@@ -17,6 +17,7 @@ from emuflow.combinational_cut import (
     STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
     _analyze_static_exact_dependencies,
     _build_combinational_cut_candidate_index,
+    _resolve_native_capture_stream,
     _resolve_native_capture_requests,
     build_static_exact_semantic_contract,
     characterize_combinational_cuts,
@@ -51,7 +52,10 @@ from emuflow.phase3_assignment_index import (
     read_phase3_exact_semantic_partition,
     write_phase3_assignment_index,
 )
-from emuflow.phase3_exact_records import StaticExactRecordSequence
+from emuflow.phase3_exact_records import (
+    StaticExactRecordSequence,
+    build_static_exact_capture_stream,
+)
 from emuflow.phase3_storage import (
     pack_phase3_assignment,
     pack_phase3_clusters,
@@ -925,6 +929,77 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 [(129, 0, 0)],
                 ["net0"],
                 ["fpga0"],
+            )
+
+    def test_native_capture_stream_canonicalizes_without_tuple_population(self):
+        nets = [
+            {
+                "sinks": [
+                    {"instance": "state_z", "port": "D", "bit": 3},
+                    {"instance": None, "port": "out", "bit": 0},
+                ]
+            }
+        ]
+        requests = [(0, 1, 0), (1, 0, 1), (0, 1, 0)]
+        materialized_relation = sorted(
+            set(
+                _resolve_native_capture_requests(
+                    nets,
+                    requests,
+                    ["net_a", "net_z"],
+                    ["fpga_a", "fpga_z"],
+                )
+            )
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            streamed = _resolve_native_capture_stream(
+                nets,
+                requests,
+                ["net_a", "net_z"],
+                ["fpga_a", "fpga_z"],
+                Path(temporary) / "captures.sqlite3",
+            )
+
+        self.assertIsInstance(streamed, StaticExactRecordSequence)
+        self.assertEqual(
+            list(streamed),
+            list(build_static_exact_capture_stream(materialized_relation)),
+        )
+        self.assertEqual(len(streamed), len(materialized_relation))
+        self.assertEqual(requests, [])
+
+    def test_native_capture_stream_rejects_invalid_architectural_bit(self):
+        nets = [
+            {"sinks": [{"instance": "state0", "port": "D", "bit": True}]}
+        ]
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
+            ValidationError, "capture relation is invalid"
+        ):
+            _resolve_native_capture_stream(
+                nets,
+                [(0, 0, 0)],
+                ["net0"],
+                ["fpga0"],
+                Path(temporary) / "captures.sqlite3",
+            )
+
+    def test_native_capture_stream_rejects_non_utf8_before_sqlite(self):
+        nets = [
+            {
+                "sinks": [
+                    {"instance": "state\ud800", "port": "D", "bit": 0}
+                ]
+            }
+        ]
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
+            ValidationError, "capture identity is invalid"
+        ):
+            _resolve_native_capture_stream(
+                nets,
+                [(0, 0, 0)],
+                ["net0"],
+                ["fpga0"],
+                Path(temporary) / "captures.sqlite3",
             )
 
     def test_semantic_builder_transfers_owned_analysis_maps(self):

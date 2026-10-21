@@ -22,6 +22,7 @@ from emuflow.pin_plan_storage import write_pin_plan_storage
 from emuflow.platform import Platform
 from emuflow.tdm import TDM_SCHEDULE_SCHEMA
 from emuflow.tdm_schedule_storage import (
+    canonical_tdm_schedule_sha256,
     read_tdm_schedule,
     write_tdm_schedule_storage,
 )
@@ -73,6 +74,33 @@ def fixture():
 def test_valid_remapping_stays_inside_the_phase5_direction_banks():
     platform, schedule, positions, plan = fixture()
     assert validate_pin_plan(schedule, platform, positions, plan)["status"] == "pass"
+
+
+def test_legacy_bank_validator_streams_schedule_rows_once():
+    platform, schedule, _, plan = fixture()
+
+    class SinglePassEntries(list):
+        def __init__(self, values):
+            super().__init__(values)
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            if self.iterations > 1:
+                raise AssertionError("bank validation rescanned schedule rows")
+            yield from super().__iter__()
+
+    entries = SinglePassEntries(schedule["entries"])
+    schedule["entries"] = entries
+    validate_bank_pin_assignment(
+        schedule,
+        platform,
+        {
+            item["schedule_entry"]: item["physical_lane"]
+            for item in plan["entries"]
+        },
+    )
+    assert entries.iterations == 1
 
 
 def test_indexed_validation_preserves_phase5_direction_banks(tmp_path):
@@ -161,6 +189,49 @@ def test_chimew_electrical_validator_rejects_bidirectional_bank_bundle():
     }
     with pytest.raises(ValidationError, match="one direction"):
         validate_chimew_phase6_binding(schedule, platform, plan, binding)
+
+
+def test_indexed_chimew_electrical_validator_preserves_bank_budget(tmp_path):
+    platform, schedule, _, plan = fixture()
+    schedule_document = {
+        **schedule,
+        "routes": [],
+        "demand_completions": [],
+        "domain_schedules": [],
+    }
+    schedule_path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(schedule_path, schedule_document)
+    indexed_schedule = read_tdm_schedule(schedule_path)
+    digest = canonical_tdm_schedule_sha256(indexed_schedule)
+    plan["provider"] = CHIMEW_PIN_PLAN_PROVIDER
+    plan["configuration"].update(
+        schedule_sha256=digest, electrical_map_sha256="a" * 64
+    )
+    plan["entries"][1]["physical_lane"] = 18
+    indexed_plan = write_pin_plan_storage(tmp_path / "pin_plan.json", plan)
+    binding = {
+        "schema": CHIMEW_PHASE6_BINDING_SCHEMA_V1,
+        "status": "pass",
+        "integration_status": "phase6-pin-plan",
+        "provider": CHIMEW_PHASE6_BINDING_PROVIDER,
+        "design": "banks",
+        "platform": platform.name,
+        "paper_provider": "test",
+        "provenance": {
+            "producer": "test",
+            "producer_version": "1",
+            "schedule_sha256": digest,
+            "electrical_map_sha256": "a" * 64,
+            "boarddb_sha256": "b" * 64,
+            "package_pin_inventory_sha256": "c" * 64,
+            "assignment_input_sha256": "d" * 64,
+        },
+        "entries": [],
+    }
+    with pytest.raises(ValidationError, match="allocated direction banks"):
+        validate_chimew_phase6_binding(
+            indexed_schedule, platform, indexed_plan, binding
+        )
 
 
 def test_phase8a_refuses_independent_direction_pin_requirements_for_shared_banks():

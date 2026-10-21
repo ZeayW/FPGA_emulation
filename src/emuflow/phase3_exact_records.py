@@ -12,7 +12,7 @@ record stream directly.
 from __future__ import annotations
 
 import struct
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any
 
 from .errors import ValidationError
@@ -76,7 +76,7 @@ class StaticExactRecordSequence(list):
 
 
 def build_static_exact_capture_stream(
-    capture_relation: Sequence[tuple[Any, ...]],
+    capture_relation: Iterable[tuple[Any, ...]],
 ) -> StaticExactRecordSequence:
     """Pack the canonical native capture relation behind a typed record stream.
 
@@ -88,6 +88,7 @@ def build_static_exact_capture_stream(
 
     encoded = bytearray()
     previous_key: tuple[Any, ...] | None = None
+    count = 0
     for item in capture_relation:
         if not isinstance(item, tuple) or len(item) != 6:
             raise ValidationError("Static Exact capture relation is invalid")
@@ -148,8 +149,7 @@ def build_static_exact_capture_stream(
         )
         for field in fields:
             encoded.extend(field)
-
-    count = len(capture_relation)
+        count += 1
 
     def capture_requirements() -> Iterator[dict[str, Any]]:
         view = memoryview(encoded)

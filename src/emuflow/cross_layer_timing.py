@@ -9,6 +9,7 @@ identities without copying either large artifact into another hot-path JSON.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 from collections import defaultdict, deque
@@ -105,6 +106,23 @@ def _route_path_to_sink(
         reversed_hops.append((link, parent, node))
         node = parent
     return list(reversed(reversed_hops))
+
+
+def _ordered_route_hop_keys(
+    route_by_demand: Mapping[str, Mapping[str, Any]],
+):
+    """Yield unique routed hops in cross-layer contract order."""
+
+    for demand_id, route in sorted(route_by_demand.items()):
+        route_hops = set()
+        sinks = route.get("sinks")
+        if not isinstance(sinks, list):
+            raise ValidationError("cross-layer route metadata is malformed")
+        for sink in sorted(sinks):
+            for link, source, target in _route_path_to_sink(route, sink):
+                route_hops.add((link, source, target))
+        for link, source, target in sorted(route_hops):
+            yield demand_id, link, source, target
 
 
 def _build_contract(
@@ -330,50 +348,74 @@ def _build_contract(
             entries, (str, bytes)
         ):
             raise ValidationError("cross-layer schedule entries must be an array")
-        entry_by_hop = {}
-        for entry in entries:
-            if not isinstance(entry, Mapping) or not isinstance(
-                entry.get("id"), str
+        indexed_hops = getattr(schedule, "iter_hop_identity_records", None)
+        if callable(indexed_hops):
+            missing = object()
+            for expected, actual in itertools.zip_longest(
+                _ordered_route_hop_keys(route_by_demand),
+                indexed_hops(),
+                fillvalue=missing,
             ):
-                raise ValidationError("cross-layer schedule entry is malformed")
-            key = (
-                entry.get("demand"),
-                entry.get("link"),
-                entry.get("from"),
-                entry.get("to"),
-            )
-            if key in entry_by_hop:
-                raise ValidationError("cross-layer schedule hop is duplicated")
-            entry_by_hop[key] = entry["id"]
-        for demand_id, route in sorted(route_by_demand.items()):
-            for sink in sorted(route.get("sinks", [])):
-                for link, source, target in _route_path_to_sink(route, sink):
-                    key = (demand_id, link, source, target)
-                    entry_id = entry_by_hop.get(key)
-                    if entry_id is None:
-                        raise ValidationError(
-                            "cross-layer schedule does not cover routed hop"
-                        )
-                    hop_bindings.append(
-                        {
-                            "demand": demand_id,
-                            "link": link,
-                            "from": source,
-                            "to": target,
-                            "entry": entry_id,
-                        }
+                if actual is missing or (
+                    expected is not missing and expected < actual[:4]
+                ):
+                    raise ValidationError(
+                        "cross-layer schedule does not cover routed hop"
                     )
-        unique_hops = {
-            (item["demand"], item["link"], item["from"], item["to"])
-            for item in hop_bindings
-        }
-        if unique_hops != set(entry_by_hop):
-            raise ValidationError("cross-layer schedule coverage is not exact")
-        unique_hops = {
-            (item["demand"], item["link"], item["from"], item["to"]): item
-            for item in hop_bindings
-        }
-        hop_bindings = [unique_hops[key] for key in sorted(unique_hops)]
+                if expected is missing or actual[:4] != expected:
+                    raise ValidationError(
+                        "cross-layer schedule coverage is not exact"
+                    )
+                demand_id, link, source, target = expected
+                hop_bindings.append(
+                    {
+                        "demand": demand_id,
+                        "link": link,
+                        "from": source,
+                        "to": target,
+                        "entry": actual[4],
+                    }
+                )
+        else:
+            entry_by_hop = {}
+            for entry in entries:
+                if not isinstance(entry, Mapping) or not isinstance(
+                    entry.get("id"), str
+                ):
+                    raise ValidationError(
+                        "cross-layer schedule entry is malformed"
+                    )
+                key = (
+                    entry.get("demand"),
+                    entry.get("link"),
+                    entry.get("from"),
+                    entry.get("to"),
+                )
+                if key in entry_by_hop:
+                    raise ValidationError(
+                        "cross-layer schedule hop is duplicated"
+                    )
+                entry_by_hop[key] = entry["id"]
+            for key in _ordered_route_hop_keys(route_by_demand):
+                entry_id = entry_by_hop.get(key)
+                if entry_id is None:
+                    raise ValidationError(
+                        "cross-layer schedule does not cover routed hop"
+                    )
+                demand_id, link, source, target = key
+                hop_bindings.append(
+                    {
+                        "demand": demand_id,
+                        "link": link,
+                        "from": source,
+                        "to": target,
+                        "entry": entry_id,
+                    }
+                )
+            if len(hop_bindings) != len(entry_by_hop):
+                raise ValidationError(
+                    "cross-layer schedule coverage is not exact"
+                )
         schedule_binding = {
             "provider": schedule.get("provider"),
             "sha256": _canonical_sha256(schedule),

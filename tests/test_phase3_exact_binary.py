@@ -118,7 +118,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
             for item in streamed["capture_requirements"]
         ]
         streamed["capture_requirements"] = (
-            build_static_exact_capture_stream(capture_relation)
+            build_static_exact_capture_stream(iter(capture_relation))
         )
         record_streams = build_static_exact_record_streams(
             streamed["cut_nodes"],
