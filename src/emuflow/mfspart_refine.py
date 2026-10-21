@@ -653,8 +653,22 @@ def validate_mfspart_native_certificate(
         input_evidence["timing_path_guard_sha256"] = (
             timing_path_guard_digest.hexdigest()
         )
+    initial_assignment = {}
+    for line in input_lines[2:]:
+        record = line.split()
+        if not record or record[0] != "ASSIGN":
+            continue
+        try:
+            if len(record) != 3 or int(record[1]) in initial_assignment:
+                raise ValueError("malformed/duplicate ASSIGN")
+            initial_assignment[int(record[1])] = int(record[2])
+        except (ValueError, IndexError) as error:
+            raise ValidationError("invalid MFSPart native initial assignment") from error
+    if set(initial_assignment) != set(range(node_count)):
+        raise ValidationError("incomplete MFSPart native initial assignment")
     return {
         "parsed": parsed,
+        "initial_assignment": [initial_assignment[index] for index in range(node_count)],
         "checker_metrics": checker_metrics,
         "input_evidence": input_evidence,
     }

@@ -494,10 +494,11 @@ def _exact_dependency_order(
     successors: Dict[str, List[str]] = {
         net: [] for net in exact_nodes
     }
+    known_nets = set(exact_nodes)
     indegree: Dict[str, int] = {}
     for net, node in exact_nodes.items():
         predecessors = list(node.get("predecessor_cut_nets", []))
-        unknown = sorted(set(predecessors) - set(exact_nodes))
+        unknown = sorted(set(predecessors) - known_nets)
         if unknown:
             raise ValidationError(
                 f"cross-layer timing cut {net!r} has unknown predecessors "
@@ -2388,8 +2389,25 @@ def reconstruct_tdm_schedule_timing(
     normalized = sorted(
         record["normalized_slack"] for record in records
     )
+    # Aggregate after output-copy selection, so each original constraint is
+    # counted once. Do not infer a clock from its numerical period.
+    per_clock: Dict[str, Dict[str, Any]] = {}
+    for record in records:
+        clock = record.get("clock_domain")
+        if not isinstance(clock, str) or not clock:
+            raise ValidationError("schedule timing record lacks its original clock domain")
+        slack = record["slack_ns"]
+        metrics = per_clock.setdefault(clock, {
+            "timing_paths": 0, "worst_slack_ns": slack,
+            "total_negative_slack_ns": 0.0, "negative_slack_paths": 0,
+        })
+        metrics["timing_paths"] += 1
+        metrics["worst_slack_ns"] = min(metrics["worst_slack_ns"], slack)
+        metrics["total_negative_slack_ns"] += min(0.0, slack)
+        metrics["negative_slack_paths"] += int(slack < 0.0)
     return {
         "status": "pass",
+        "per_clock": dict(sorted(per_clock.items())),
         "timing_model": ("per-hop-ratio-delay-v1" if any(link.tdm_delay_model is not None for link in platform.links) else "projected-fixed-slot-event-v1"),
         "timing_paths": len(records),
         "worst_path": worst["path"],

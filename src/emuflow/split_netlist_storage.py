@@ -985,6 +985,25 @@ class SplitNetlistView:
             (self.part_index, original_net),
         ).fetchone() is not None
 
+    def net_ids(self) -> set[str]:
+        """Return the logical net identities present in this partition.
+
+        Large transport overlays need to test hundreds of thousands of net
+        identities while lowering a partition.  Materializing this compact
+        identity set once avoids one indexed SQLite statement per crossing.
+        """
+
+        return {
+            str(row[0])
+            for row in self.connection.execute(
+                """SELECT n.original_net
+                FROM net_segments s
+                JOIN source_nets n ON n.source_net_seq=s.source_net_seq
+                WHERE s.part_index=?""",
+                (self.part_index,),
+            )
+        }
+
     def counts(self) -> dict[str, int]:
         return {
             "instances": int(self.connection.execute(

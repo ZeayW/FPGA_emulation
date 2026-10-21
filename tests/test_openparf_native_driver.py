@@ -29,6 +29,7 @@ def _engine(*, patience=2, minimum=3):
             gp_adjust_area=True,
             gp_max_adjust_area_iters=6,
             stop_overflow=0.1,
+            logic_area_type_names=["LUT", "FF"],
             io_legalization_flag=False,
             emuflow_relative_hpwl_improvement=0.0,
             emuflow_min_feasible_iterations=minimum,
@@ -42,6 +43,9 @@ def _engine(*, patience=2, minimum=3):
         num_gp_adjust_area=1,
         gp_adjust_area=False,
         last_area_inflation_iter=10,
+        placedb=SimpleNamespace(
+            getAreaTypeIndexFromName=lambda name: {"LUT": 0, "FF": 1}[name]
+        ),
     )
 
 
@@ -83,6 +87,16 @@ class OpenparfNativeDriverTest(unittest.TestCase):
         ))
         self.assertFalse(stable_native_stop_condition(engine, [_metric(13, [2, 2])]))
         self.assertTrue(stable_native_stop_condition(engine, [_metric(14, [2, 2])]))
+
+    def test_sparse_exact_resources_do_not_block_logic_convergence(self):
+        engine = _engine(patience=0, minimum=1)
+        self.assertTrue(stable_native_stop_condition(
+            engine, [_metric(20, [2, 2], overflow=(0.05, 0.04, 0.99))]
+        ))
+        self.assertEqual(
+            engine._emuflow_stable_convergence["terminal_logic_overflow"],
+            {"LUT": 0.05, "FF": 0.04},
+        )
 
     def test_maximum_iteration_restores_best_feasible_position(self):
         engine = _engine(patience=100, minimum=100)

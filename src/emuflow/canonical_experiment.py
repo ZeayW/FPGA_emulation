@@ -661,7 +661,7 @@ def compile_canonical_experiment_spec(
             "partition_seed_attempts=1"
         )
     partition_repair_balance = config.get(
-        "partition_repair_balance", False
+        "partition_repair_balance", True
     )
     if not isinstance(partition_repair_balance, bool):
         raise ValidationError(
@@ -1040,8 +1040,18 @@ def compile_canonical_experiment_spec(
         partition_validator.extend(
             ("--tritonpart-solution", str(tritonpart_solution))
         )
-    if partition_repair_balance:
-        partition_command.insert(-2, "--repair-balance")
+    partition_command.insert(
+        -2, "--repair-balance" if partition_repair_balance else "--no-repair-balance"
+    )
+    partition_repair_min_used = config.get("partition_repair_min_used_fpgas", True)
+    if not isinstance(partition_repair_min_used, bool):
+        raise ValidationError("canonical experiment partition_repair_min_used_fpgas must be boolean")
+    minimum_used_flag = (
+        "--repair-min-used-fpgas" if partition_repair_min_used
+        else "--no-repair-min-used-fpgas"
+    )
+    partition_command.insert(-2, minimum_used_flag)
+    partition_validator.append(minimum_used_flag)
     partition_validator.append(
         "--repair-balance"
         if partition_repair_balance
@@ -1102,6 +1112,7 @@ def compile_canonical_experiment_spec(
                     "seed": partition_seed,
                     "seed_attempts": partition_seed_attempts,
                     "repair_balance": partition_repair_balance,
+                    "repair_min_used_fpgas": partition_repair_min_used,
                     "mfspart_post_refinement": False,
                     "route_constraints": contract["route_constraints"],
                     "partition_constraints_sha256": base_inputs.get(
@@ -1262,6 +1273,7 @@ def compile_canonical_experiment_spec(
             "seed": partition_seed,
             "seed_attempts": partition_seed_attempts,
             "repair_balance": partition_repair_balance,
+            "repair_min_used_fpgas": partition_repair_min_used,
             "mfspart_post_refinement": mfspart_post_refinement,
             "mfspart_post_refinement_early_stop": (
                 mfspart_post_refinement_early_stop

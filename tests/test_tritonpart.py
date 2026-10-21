@@ -69,7 +69,7 @@ class TritonPartTest(unittest.TestCase):
         )
         artifact = {
             "cluster_order": [f"c{index}" for index in range(len(weights))],
-            "fpga_order": ["fpga0", "fpga1"],
+            "fpga_order": [f"fpga{i}" for i in range(len(allowed))],
             "vertex_dimensions": dimensions,
             "vertex_weights": weights,
             "balance_allowed_loads": {
@@ -87,6 +87,18 @@ class TritonPartTest(unittest.TestCase):
             for cluster, part in zip(artifact["cluster_order"], initial)
         }
         return artifact, candidate, solution
+
+    def test_native_capacity_legalizer_keeps_40_percent_share(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact, candidate, solution = self._write_native_balance_case(
+                root, [[40, 40], [20, 20], [20, 20], [20, 20]],
+                [0, 1, 2, 3], [[100, 100]] * 4)
+            repaired, report = _run_native_balance_legalizer(
+                candidate, artifact, root, solution, root / "repaired.part.4",
+                executable=str(tritonpart_balance_legalizer()), timeout_seconds=30)
+            self.assertEqual(repaired, candidate)
+            self.assertEqual(report["moves"], 0)
 
     def test_native_balance_legalizer_executes_direct_move(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -650,6 +662,7 @@ class TritonPartTest(unittest.TestCase):
                 output,
                 seed=1,
                 solution_input=solution,
+                balance_legalizer=str(tritonpart_balance_legalizer()),
                 persist_input_manifest=False,
             )
             self.assertFalse((output / "tritonpart_input.json").exists())
@@ -687,15 +700,60 @@ class TritonPartTest(unittest.TestCase):
                 root / "run",
                 seed=1,
                 solution_input=solution,
+                balance_legalizer=str(tritonpart_balance_legalizer()),
                 defer_semantic_contract=True,
                 persist_input_manifest=False,
             )
             self.assertNotIn("semantic_contract", assignment)
 
-    def test_balance_tolerance_translates_to_target_percentage_points(self) -> None:
-        self.assertAlmostEqual(
-            _tritonpart_ubfactor_percent_points([0.25] * 4, 10.0), 2.5
-        )
+    def test_default_min_used_repair_checks_post_capacity_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            solution = root / "input.part.2"
+            solution.write_text("\n".join(str(i % 2) for i in range(len(self.clusters["clusters"]))) + "\n")
+            collapsed = {cluster["id"]: "fpga0" for cluster in self.clusters["clusters"]}
+            with mock.patch("emuflow.tritonpart._run_native_balance_legalizer",
+                            return_value=(collapsed, {"moves": 1})) as native:
+                assignment = run_tritonpart(
+                    self.ir, self.platform, self.clusters, self.constraints,
+                    root / "out", seed=1, solution_input=solution,
+                )
+            native.assert_called_once()
+            with mock.patch("emuflow.tritonpart._run_native_balance_legalizer",
+                            side_effect=ValidationError("no feasible capacity repair")):
+                with self.assertRaisesRegex(ValidationError, "no independently acceptable assignment"):
+                    run_tritonpart(
+                        self.ir, self.platform, self.clusters, self.constraints,
+                        root / "infeasible", seed=1, solution_input=solution,
+                    )
+            self.assertEqual(len(set(assignment["cluster_assignment"].values())), 2)
+            evidence = assignment["provider_metadata"]
+            self.assertTrue(evidence["balance_repair"]["enabled"])
+            self.assertTrue(evidence["min_used_fpgas_repair"]["enabled"])
+            self.assertEqual(evidence["seed_attempts"][0]["raw_used_fpgas"], 2)
+            self.assertEqual(len(evidence["min_used_fpgas_repair"]["moves"]), 1)
+            with mock.patch("emuflow.tritonpart._run_native_balance_legalizer",
+                            return_value=(collapsed, {"moves": 1})):
+                with self.assertRaisesRegex(ValidationError, "no independently acceptable assignment"):
+                    run_tritonpart(
+                        self.ir, self.platform, self.clusters, self.constraints,
+                        root / "disabled", seed=1, solution_input=solution,
+                        repair_min_used_fpgas=False,
+                    )
+
+    def test_initializer_envelope_has_no_hidden_design_share_bound(self) -> None:
+        ids = [f"fpga{i}" for i in range(4)]
+        limits = {fpga: {"cells": 100, "lut": 100} for fpga in ids}
+        self.assertEqual(_tritonpart_ubfactor_percent_points(
+            [0.25] * 4, ids, {"cells": 100, "lut": 100}, limits), 75.0)
+
+    def test_initializer_envelope_does_not_add_an_unrequested_lower_bound(self) -> None:
+        ids = [f"fpga{i}" for i in range(4)]
+        # The integer upper bound is 27%; the smallest feasible part has 19%.
+        limits = {fpga: {"cells": 27} for fpga in ids}
+        ub = _tritonpart_ubfactor_percent_points([0.25] * 4, ids, {"cells": 100}, limits)
+        self.assertGreaterEqual(ub, 6.0)
+        self.assertLessEqual(ub, 6.000001)
 
     def test_balance_repair_uses_two_move_exchange_when_parts_are_full(self) -> None:
         clusters = {
@@ -723,6 +781,7 @@ class TritonPartTest(unittest.TestCase):
             self.platform,
             {
                 "balance_tolerance": 0.0,
+                "balance_dimensions": ["cells", "lut"],
                 "balance_tolerance_by_dimension": {},
             },
             {
@@ -783,6 +842,7 @@ class TritonPartTest(unittest.TestCase):
             platform,
             {
                 "balance_tolerance": 0.0,
+                "balance_dimensions": ["cells", "lut"],
                 "balance_tolerance_by_dimension": {},
             },
             {
@@ -827,6 +887,7 @@ class TritonPartTest(unittest.TestCase):
             self.platform,
             {
                 "balance_tolerance": 0.0,
+                "balance_dimensions": ["cells", "lut"],
                 "balance_tolerance_by_dimension": {},
             },
             {
@@ -904,6 +965,7 @@ class TritonPartTest(unittest.TestCase):
             platform,
             {
                 "balance_tolerance": 2.0 / 3.0,
+                "balance_dimensions": ["cells", "lut", "ff", "bram"],
                 "balance_tolerance_by_dimension": {},
             },
             {
@@ -928,7 +990,7 @@ class TritonPartTest(unittest.TestCase):
         self.assertEqual(report["max_ejection_chain_moves"], 3)
         self.assertEqual(report["moves"], 3)
 
-    def test_export_translates_relative_tolerance_to_ubfactor_points(
+    def test_export_capacity_only_envelope_reaches_full_design_share(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -940,10 +1002,8 @@ class TritonPartTest(unittest.TestCase):
                 self.constraints,
                 output,
             )
-            expected = (
-                max(artifact["base_balance"])
-                * artifact["effective_balance_percent"]
-            )
+            expected = 100.0 * (1.0 - min(artifact["base_balance"]))
+            self.assertEqual(artifact["strict_balance_dimensions"], [])
             self.assertAlmostEqual(
                 artifact["tritonpart_ubfactor_percent_points"],
                 expected,
@@ -1077,6 +1137,7 @@ class TritonPartTest(unittest.TestCase):
             )
 
     def test_balance_repair_legalizes_best_effort_solution(self) -> None:
+        self.constraints["balance_dimensions"] = ["cells", "lut", "ff"]
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = export_tritonpart_inputs(
                 self.ir,
@@ -1150,6 +1211,11 @@ class TritonPartTest(unittest.TestCase):
     def test_phase3_executes_provider_and_independently_validates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)
+            constraints_path = output / "strict-constraints.json"
+            constraints_path.write_text(json.dumps({
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_dimensions": ["cells", "lut", "ff"],
+            }))
             ir_path = output / "design.emuir.json"
             ir_path.write_text(
                 json.dumps(self.ir.to_dict()), encoding="utf-8"
@@ -1193,9 +1259,11 @@ class TritonPartTest(unittest.TestCase):
                 report = run_phase3(
                     ir_path=ir_path,
                     platform_path=PLATFORM_PATH,
+                    constraints_path=constraints_path,
                     output_dir=output / "phase3",
                     seed=19,
                     provider="tritonpart",
+                    tritonpart_repair_balance=False,
                     cut_mode="sequential-only",
                     openroad="/fake/openroad",
                     tritonpart_seed_attempts=2,
@@ -1242,7 +1310,7 @@ class TritonPartTest(unittest.TestCase):
             )
             self.assertEqual(
                 assignment["provider_metadata"]["min_used_fpgas_repair"],
-                {"enabled": False, "moves": []},
+                {"enabled": True, "moves": []},
             )
             self.assertTrue(
                 (
@@ -1315,6 +1383,7 @@ class TritonPartTest(unittest.TestCase):
                     output_dir=output / "phase3-default",
                     seed=7,
                     provider="tritonpart",
+                    tritonpart_repair_balance=False,
                     cut_mode="sequential-only",
                     openroad="/fake/openroad",
                     net_weights_path=weights_path,
@@ -1332,6 +1401,7 @@ class TritonPartTest(unittest.TestCase):
                     output_dir=output / "phase3",
                     seed=7,
                     provider="tritonpart",
+                    tritonpart_repair_balance=False,
                     cut_mode="sequential-only",
                     openroad="/fake/openroad",
                     net_weights_path=weights_path,
@@ -1441,6 +1511,11 @@ class TritonPartTest(unittest.TestCase):
     def test_phase3_balance_repair_is_audited_and_reproducible(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory)
+            constraints_path = output / "strict-constraints.json"
+            constraints_path.write_text(json.dumps({
+                "schema": "emuflow.partition-constraints/v1",
+                "balance_dimensions": ["cells", "lut", "ff"],
+            }))
             ir_path = output / "design.emuir.json"
             ir_path.write_text(
                 json.dumps(self.ir.to_dict()), encoding="utf-8"
@@ -1472,6 +1547,7 @@ class TritonPartTest(unittest.TestCase):
                 report = run_phase3(
                     ir_path=ir_path,
                     platform_path=PLATFORM_PATH,
+                    constraints_path=constraints_path,
                     output_dir=output / "phase3",
                     seed=31,
                     provider="tritonpart",
@@ -1480,7 +1556,6 @@ class TritonPartTest(unittest.TestCase):
                     tritonpart_balance_legalizer=(
                         str(tritonpart_balance_legalizer())
                     ),
-                    tritonpart_repair_balance=True,
                     retain_diagnostics=True,
                 )
 

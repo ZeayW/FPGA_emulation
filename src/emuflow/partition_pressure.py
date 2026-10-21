@@ -725,12 +725,14 @@ def _endpoint_exact_path_transport(
     *,
     include_tdm_wait: bool,
     physical_hop_guard_scale_ns: float = 0.0,
-) -> Tuple[float, List[str], int]:
+) -> Tuple[float, List[str], int, int, int]:
     """Recover the concrete fanout branch used by one timing path."""
 
     target = cluster_parts[path["end_cluster"]]
     reverse_transitions: List[Tuple[str, str]] = []
     transport = 0.0
+    path_hops = 0
+    path_ratio_sum = 0
     max_hops = model["configuration"]["max_route_hops"]
     for net_id in reversed(path["path_nets"]):
         net = net_by_id.get(net_id)
@@ -774,6 +776,13 @@ def _endpoint_exact_path_transport(
         transport += _boundary_fanout_penalty(
             model, remote_sink_clusters
         )
+        path_hops += len(route)
+        path_ratio_sum += max(
+            domain_ratios[
+                domain_by_arc[(arc["link"], arc["from"], arc["to"])]
+            ]
+            for arc in route
+        )
         reverse_transitions.append((source, target))
         target = source
     if cluster_parts[path["start_cluster"]] != target:
@@ -786,7 +795,13 @@ def _endpoint_exact_path_transport(
         for part in (source, sink):
             if not partition_sequence or partition_sequence[-1] != part:
                 partition_sequence.append(part)
-    return transport, partition_sequence, len(reverse_transitions)
+    return (
+        transport,
+        partition_sequence,
+        len(reverse_transitions),
+        path_hops,
+        path_ratio_sum,
+    )
 
 
 def evaluate_partition_pressure(
@@ -983,8 +998,16 @@ def evaluate_partition_pressure(
     net_by_id = {net["net"]: net for net in model["nets"]}
     path_records = []
     for path in model["paths"]:
+        path_hops = 0
+        path_ratio_sum = 0
         if path["transition_model"] == "endpoint-exact-reverse-chain-v1":
-            transport, partition_sequence, transitions = (
+            (
+                transport,
+                partition_sequence,
+                transitions,
+                path_hops,
+                path_ratio_sum,
+            ) = (
                 _endpoint_exact_path_transport(
                     path,
                     net_by_id,
@@ -1009,6 +1032,21 @@ def evaluate_partition_pressure(
                 transition = net_worst_transition.get(net)
                 if transition is None:
                     continue
+                route = model["shortest_routes"][transition[0]][transition[1]]
+                if route is None:
+                    raise ValidationError(
+                        "partition pressure path has an unreachable worst "
+                        f"transition {transition!r}"
+                    )
+                path_hops += len(route)
+                path_ratio_sum += max(
+                    domain_ratios[
+                        domain_by_arc[
+                            (arc["link"], arc["from"], arc["to"])
+                        ]
+                    ]
+                    for arc in route
+                )
                 for part in transition:
                     if (
                         not partition_sequence
@@ -1053,6 +1091,8 @@ def evaluate_partition_pressure(
                 "predicted_slack_ns": predicted_slack,
                 "normalized_slack": normalized,
                 "partition_transitions": transitions,
+                "physical_hops": path_hops,
+                "tdm_ratio_sum": path_ratio_sum,
                 "snaking": snaking,
                 "partition_sequence": partition_sequence,
             }
@@ -1066,6 +1106,12 @@ def evaluate_partition_pressure(
     total_transitions = sum(
         record["partition_transitions"] for record in path_records
     )
+    maximum_path_hops = max(
+        (record["physical_hops"] for record in path_records), default=0
+    )
+    maximum_path_tdm_ratio_sum = max(
+        (record["tdm_ratio_sum"] for record in path_records), default=0
+    )
     cut_bits = sum(len(routes) for routes in routes_by_net.values())
     metrics = {
         "worst_normalized_slack": worst,
@@ -1077,6 +1123,8 @@ def evaluate_partition_pressure(
         "maximum_capacity_domain_load": max(domain_loads.values(), default=0),
         "total_path_snaking": total_snaking,
         "total_path_partition_transitions": total_transitions,
+        "maximum_path_hops": maximum_path_hops,
+        "maximum_path_tdm_ratio_sum": maximum_path_tdm_ratio_sum,
         "total_bit_hops": total_bit_hops,
         "cut_bits": cut_bits,
         "transport_capacity_violations": transport_capacity_violations,
@@ -1111,8 +1159,8 @@ def _ranked_key(evaluation: Mapping[str, Any]) -> Tuple[int, ...]:
     metrics = evaluation["metrics"]
     objective = metrics["objective_key"]
     return (
-        int(metrics["transport_capacity_violations"]),
-        int(metrics["transport_capacity_excess_bits"]),
+        int(metrics["maximum_path_hops"]),
+        int(metrics["maximum_path_tdm_ratio_sum"]),
         round(float(objective[0]) / GAIN_QUANTUM),
         round(float(objective[1]) / GAIN_QUANTUM),
         int(objective[2]),
@@ -1523,7 +1571,7 @@ def _write_patron_native_input(
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
-        constraints.get("balance_dimensions"),
+        constraints.get("balance_dimensions", ()),
     )
     fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
     domains = sorted(model["capacities"], key=lambda item: item["key"])
@@ -1776,6 +1824,7 @@ def _parse_patron_native_output(
     mode = None
     summary = None
     capacity_summary = None
+    path_max_summary = None
     for line in lines[1:]:
         fields = line.split()
         if not fields:
@@ -1918,12 +1967,19 @@ def _parse_patron_native_output(
                     "native PATRON returned duplicate CAPACITY"
                 )
             capacity_summary = [int(item) for item in fields[1:]]
-            if (
-                any(value < 0 for value in capacity_summary)
-                or capacity_summary[2:] != [0, 0]
-            ):
+            if any(value < 0 for value in capacity_summary):
                 raise ValidationError(
                     "native PATRON transport capacity summary is invalid"
+                )
+        elif fields[0] == "PATH_MAX" and len(fields) == 5:
+            if path_max_summary is not None:
+                raise ValidationError(
+                    "native PATRON returned duplicate PATH_MAX"
+                )
+            path_max_summary = [int(item) for item in fields[1:]]
+            if any(value < 0 for value in path_max_summary):
+                raise ValidationError(
+                    "native PATRON path maximum summary is invalid"
                 )
         elif fields[0] == "SUMMARY" and len(fields) == 5:
             if summary is not None:
@@ -2003,6 +2059,19 @@ def _parse_patron_native_output(
             {
                 "transport_capacity_violations": capacity_summary[2],
                 "transport_capacity_excess_bits": capacity_summary[3],
+            }
+        )
+    if path_max_summary is not None:
+        initial_metrics.update(
+            {
+                "maximum_path_hops": path_max_summary[0],
+                "maximum_path_tdm_ratio_sum": path_max_summary[1],
+            }
+        )
+        final_metrics.update(
+            {
+                "maximum_path_hops": path_max_summary[2],
+                "maximum_path_tdm_ratio_sum": path_max_summary[3],
             }
         )
     summary["output_bytes"] = path.stat().st_size

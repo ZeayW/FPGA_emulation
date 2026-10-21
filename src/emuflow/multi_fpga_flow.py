@@ -6,6 +6,7 @@ import hashlib
 import math
 import os
 import shutil
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -1294,6 +1295,7 @@ def run_multi_fpga_flow(
     yosys_json: Optional[Path] = None,
     prepared_frontend: Optional[Path] = None,
     prepared_timing: Optional[Path] = None,
+    stop_after: Optional[str] = None,
     yosys: Optional[str] = None,
     mapping_profile: str = XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     xilinx_mapping_strategy: Optional[str] = None,
@@ -1313,8 +1315,8 @@ def run_multi_fpga_flow(
     partition_seed_attempts: int = 1,
     partition_num_initial_solutions: int = 50,
     partition_num_best_initial_solutions: int = 10,
-    partition_repair_min_used_fpgas: bool = False,
-    partition_repair_balance: bool = False,
+    partition_repair_min_used_fpgas: bool = True,
+    partition_repair_balance: bool = True,
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
@@ -1331,6 +1333,7 @@ def run_multi_fpga_flow(
     opensta: Optional[str] = None,
     timing_vivado: Optional[str] = None,
     sta_max_paths: int = 200000,
+    sta_require_complete: bool = False,
     timing_criticality_scale: float = 9.0,
     timing_criticality_exponent: float = 2.0,
     route_constraints: Optional[Path] = None,
@@ -1406,6 +1409,21 @@ def run_multi_fpga_flow(
     serial_bsp_ready_stable_cycles: int = 4,
 ) -> Dict[str, Any]:
     """Compile RTL/EmuIR, using the bundled research BoardDB when omitted."""
+
+    if stop_after not in {None, "phase3", "phase5"}:
+        raise EmuFlowError("stop_after must be phase3, phase5, or None")
+    if stop_after is not None and (physical or serial_bsp_phy_provider is not None):
+        raise EmuFlowError("--stop-after cannot request physical implementation or a hardware BSP")
+    if stop_after == "phase3" and cross_stage_iterations:
+        raise EmuFlowError("--stop-after phase3 cannot use downstream cross-stage feedback")
+
+    def boundary_producer_identity():
+        package = Path(__file__).resolve().parent
+        return ({"src/emuflow/" + str(path.relative_to(package)): _sha256(path)
+                 for path in sorted(package.rglob("*.py"))},
+                {"version": sys.version, "executable_sha256": _sha256(Path(sys.executable))})
+
+    producer_identity = boundary_producer_identity() if stop_after is not None else None
 
     route_provider, author_cost_policy, author_order_policy = resolve_author_flow_policy(
         route_provider, author_cost_policy, author_order_policy,
@@ -1493,6 +1511,8 @@ def run_multi_fpga_flow(
             mapping_profile, architecture_timing_db
         )
     internal_timing_database = timing_paths is None
+    if sta_require_complete and not internal_timing_database:
+        raise EmuFlowError("--sta-require-complete requires internally generated timing paths")
     if internal_timing_database and not timing_driven and (
         author_order_policy == "sta-incidence-v1" or author_cost_policy == "best-of-two-v1"
     ):
@@ -1828,6 +1848,14 @@ def run_multi_fpga_flow(
     path_database_path = timing_root / "path-database.json"
     cut_segment_qualification_path = None
     net_weights_path = timing_root / "partition-net-weights.json"
+    def require_complete_sta(report):
+        if sta_require_complete and report.get("path_limit_reached") is not False:
+            raise ValidationError(
+                "complete STA population required: path limit reached or completeness unknown"
+            )
+
+    if prepared_timing is not None:
+        require_complete_sta(timing_report.get("sta", {}))
     if prepared_timing is None:
         timing_report = None
     if internal_timing_database and prepared_timing is None:
@@ -1862,6 +1890,7 @@ def run_multi_fpga_flow(
                 max_paths=sta_max_paths,
             )
             timing_mode = "vivado-post-synthesis"
+        require_complete_sta(sta_report)
         weights_report = None
         if timing_driven:
             weights_report = derive_partition_net_weights(
@@ -2113,6 +2142,62 @@ def run_multi_fpga_flow(
                 "uncovered_cut_nets": 0,
             }
         timing_report["cut_path_projection"] = projection_report
+
+    def finish_requested_stage(boundary, extra_stages=None, extra_artifacts=None):
+        # A stage boundary is not a full-flow pass. Keep paths for direct
+        # consumers without reconstructing or rehashing graph-sized payloads.
+        stages = {"frontend": _stage_summary("frontend", frontend_report),
+                  "partition": _stage_summary("partition", phase3_report)}
+        stages.update(extra_stages or {})
+        for name, stage in stages.items():
+            if stage.get("status") != "pass":
+                raise ValidationError(f"cannot publish {boundary}: {name} did not pass")
+        paths = {"platform": platform_path, "ir": ir_path,
+                 "assignment": assignment_path,
+                 "route_constraints": effective_route_constraints}
+        if internal_timing_database:
+            paths["timing_path_database"] = path_database_path
+        if projected_timing_paths is not None:
+            paths["timing_paths"] = projected_timing_paths
+        paths.update(extra_artifacts or {})
+        artifacts = {}
+        for name, path in paths.items():
+            if path is None:
+                continue
+            path = Path(path)
+            if not path.is_file():
+                raise ValidationError(f"missing {boundary} artifact: {name}")
+            try:
+                value = str(path.relative_to(output_dir))
+            except ValueError:
+                value = str(path.resolve())
+            artifacts[name] = {"path": value}
+        if boundary_producer_identity() != producer_identity:
+            raise ValidationError("stage producer changed during execution")
+        report = {
+            "schema": "emuflow.multi-fpga-stage-run/v1",
+            "producer_source_sha256": producer_identity[0],
+            "producer_python": producer_identity[1],
+            "status": "partial",
+            "completed_through": boundary,
+            "validation": {"status": "pass", "scope": boundary},
+            "scope": "requested stage validation only; no Phase 6/7 or physical timing qualification",
+            "configuration": {
+                "mapping_profile": mapping_profile, "clock_periods": clock_periods,
+                "cut_mode": cut_mode, "frame_slots": frame_slots,
+                "sta_require_complete": sta_require_complete, "sta_max_paths": sta_max_paths,
+                "partition_provider": partition_provider,
+                "patron_algorithm_version": patron_algorithm_version, "seed": seed,
+            },
+            "stages": stages,
+            "timing": _timing_report_summary(timing_report) if timing_report else {},
+            "artifacts": artifacts,
+        }
+        write_json(output_dir / "multi-fpga-stage-report.json", report)
+        return report
+
+    if stop_after == "phase3":
+        return finish_requested_stage("phase3")
 
     effective_route_provider = route_provider
     effective_tdm_provider = tdm_provider
@@ -2386,6 +2471,14 @@ def run_multi_fpga_flow(
         elif frame_search_report is not None:
             selection_root = output_dir / "frame-search" / frame_search_report["selected_candidate"]
         author_selection_path = selection_root / "author-route-tdm/selection.json"
+
+    if stop_after == "phase5":
+        return finish_requested_stage(
+            "phase5",
+            {"system_route": _stage_summary("system_route", phase4_report),
+             "tdm": _stage_summary("tdm", phase5_report)},
+            {"routes": routes_path, "schedule": schedule_path},
+        )
 
     phase6_root = output_dir / "split"
     schedule_document = read_json(schedule_path)

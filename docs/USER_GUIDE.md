@@ -43,6 +43,35 @@ This is not a complete emulation installation. GitHub Codespaces development
 helpers are in `scripts/codespaces/`; they also provide partial profiles rather
 than a substitute for the complete root build.
 
+## Paired Phase 4 validation
+
+`multi-fpga compile --stop-after phase3` stops after partitioning and timing
+projection; `--stop-after phase5` includes routing and schedule validation.
+Both publish `multi-fpga-stage-report.json` with `status: partial` and an explicit
+validated boundary. They do not imply Phase 6/7 completion. Add
+`--sta-require-complete` to reject an exhausted or unknown STA export limit
+before partitioning. Physical execution and full-flow archival cannot be
+combined with these intermediate boundaries.
+
+For a paired full NV_nvdla routing study, prepare the pinned design using
+`scripts/benchmarks/prepare_nvdla_holdout.py` with the explicit
+`physically-implementable-shared-memory-model-v1` policy. The portable
+`scripts/phase4_nvdla_prefix.py` command captures provenance and produces one
+PATRON v14 Static Exact prefix on the four-XCVU19P mesh, preserving both 10 ns
+clocks and the fixed 1024-slot frame. Inspect its `--help` for tool/input paths.
+`scripts/phase4_nvdla_compare.py --contract ... --common-run ... --platform ...
+--output ...` runs the explicit old and author routers against this same prefix
+and identical Phase 5 settings; its `--help` lists the required native tools.
+Reports distinguish projected inter-FPGA Phase 5 timing from whole-design
+physical timing. Phase 5 includes per-clock WNS/TNS and path counts, preserving
+original clock identities and counting each original path after output-copy
+aggregation. Successful preparation alone is not qualification evidence.
+
+The contest comparison tool separately reuses a baseline only when its Python
+producer/evaluator, runtime, native tools, settings, inputs and sealed outputs
+match. Legacy summaries without these seals require a fresh control run;
+reusable imported inputs do not establish reusable metrics.
+
 ## Input configuration
 
 A compile needs RTL sources, a top module, clock identities and periods, and
@@ -53,14 +82,32 @@ models.
 ```bash
 emuflow multi-fpga compile examples/rtl/counter.v \
   --top counter --clock clk --clock-period clk=10 \
-  --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
   --out build/counter-flow
 emuflow multi-fpga validate --flow build/counter-flow
 ```
 
-This is board-independent generation through Phase 6. A successful
-`multi-fpga-flow-report.json` without physical results does not establish
-routed timing closure.
+This command intentionally exercises the current defaults: the bundled
+four-XCVU19P research BoardDB and `xilinx-ultrascaleplus-open-v1` mapping. It
+runs through Phase 6 and emits the fixed virtual-board inventory, scheduled
+pin binding, per-FPGA XDC and differential-I/O adapters, and transport RTL.
+The small counter is a smoke input; it is not a representative multi-FPGA QoR
+workload. A successful `multi-fpga-flow-report.json` without physical results
+does not establish routed timing closure.
+
+Select another BoardDB with `--platform`. The alternative VTR flow must be
+requested consistently rather than mixed with the Xilinx default:
+
+```bash
+emuflow arch fetch-default-vtr \
+  --output build/architectures/vtr-flagship.xml
+
+emuflow multi-fpga compile examples/rtl/counter.v \
+  --top counter --clock clk --clock-period clk=10 \
+  --mapping-profile vtr-hard-blocks \
+  --physical-backend open \
+  --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
+  --out build/counter-vtr-flow
+```
 
 Mapping profiles are explicit:
 

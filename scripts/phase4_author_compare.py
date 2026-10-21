@@ -33,7 +33,11 @@ def now():
 
 
 def digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    hasher = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(block)
+    return hasher.hexdigest()
 
 
 def write(path, value):
@@ -152,6 +156,16 @@ def worker(manifest_path):
         result["stage_seconds"]["evaluation"] = time.monotonic() - stamp
         if result["evaluation"].get("status") != "pass":
             raise RuntimeError("independent contest evaluation reported a non-pass result")
+        evaluation_path = output / "evaluation.json"
+        write(evaluation_path, result["evaluation"])
+        result["output_artifact_sha256"] = {
+            name: {"path": str(path.resolve()), "sha256": digest(path)}
+            for name, path in {
+                "routes": output / "phase4/routes.json",
+                "tdm_plan": Path(result["tdm"]["artifacts"]["tdm_plan"]),
+                "evaluation": evaluation_path,
+            }.items()
+        }
         result["status"] = "pass"
         progress("done")
         code = 0
@@ -265,12 +279,15 @@ def run_arm(manifest, timeout, sample_interval, rss_limit_gib=24):
 
 
 def reuse_baseline(baseline_path, baseline, case, current, summary, provider):
-    """Validate the scientific inputs and reuse A without launching its worker.
+    """Reuse metrics only when producer, evaluator, inputs and outputs match.
 
-    A source commit can change while the baseline native implementation and
-    normalized problem remain identical. Compare those identities explicitly,
-    rather than requiring an unrelated author-router edit to rerun baseline A.
+    Python dependencies are intentionally conservative: all emuflow modules
+    must match. Native author-only edits and documentation edits can still
+    reuse A. Normalized input reuse is a separate decision in main().
     """
+    for key in ("python_source_sha256", "runner_sha256", "python", "python_executable_sha256"):
+        if not baseline.get(key) or baseline[key] != summary.get(key):
+            raise RuntimeError(f"baseline result identity mismatch or missing: {key}")
     previous = baseline.get("cases", {}).get(case)
     if not previous or "A" not in previous.get("arms", {}):
         raise RuntimeError(f"baseline has no arm A for {case}")
@@ -299,10 +316,20 @@ def reuse_baseline(baseline_path, baseline, case, current, summary, provider):
             raise RuntimeError(f"baseline artifact path must be absolute: {path}")
         hashes[key] = digest(path)
     sealed = previous.get("normalized_artifact_sha256")
-    if sealed is not None and sealed != hashes:
+    if not sealed or sealed != hashes:
         raise RuntimeError(f"baseline normalized artifacts changed after sealing for {case}")
     if hashes != current["normalized_artifact_sha256"]:
         raise RuntimeError(f"baseline normalized model differs from current import for {case}")
+    outputs = arm.get("output_artifact_sha256", {})
+    if set(outputs) != {"routes", "tdm_plan", "evaluation"}:
+        raise RuntimeError(f"baseline output seals missing for {case}/A")
+    for name, seal in outputs.items():
+        path = Path(seal.get("path", ""))
+        if not path.is_absolute() or not path.is_file() or seal.get("sha256") != digest(path):
+            raise RuntimeError(f"baseline sealed output changed or missing: {name}")
+    evaluation = json.loads(Path(outputs["evaluation"]["path"]).read_text())
+    if evaluation.get("status") != "pass" or evaluation != arm.get("evaluation"):
+        raise RuntimeError(f"baseline evaluation differs from sealed metrics for {case}/A")
     # Keep B bound to the original normalized input files. The newly generated
     # files are verification evidence only and never replace the baseline.
     current["import"] = original_import
@@ -316,10 +343,11 @@ def reuse_baseline(baseline_path, baseline, case, current, summary, provider):
         "tools": {name: {key: baseline["tools"][name][key]
                          for key in ("sha256", "cache_key", "identity")}
                   for name in ("tlr_router", "tdm_ratio_optimizer")},
-        "validation": "raw hashes, current normalized bytes, sealed hashes if present, native tools and TDM settings matched",
+        "validation": "Python producer/evaluator/runtime, native tools, settings, raw inputs, sealed normalized inputs and outputs matched",
     }
     reused = {key: arm[key] for key in
-              ("status", "provider", "stage_seconds", "evaluation", "started_at", "finished_at")
+              ("status", "provider", "stage_seconds", "evaluation", "started_at", "finished_at",
+               "output_artifact_sha256", "process")
               if key in arm}
     if "evaluation" in reused:
         reused["evaluation"] = {key: reused["evaluation"][key] for key in
@@ -385,7 +413,8 @@ def main():
                "arms_requested": arms,
                "author_cost_policy": args.author_cost_policy,
                "baseline_summary": str(args.baseline_summary.resolve()) if args.baseline_summary else None,
-               "python": sys.version, "runner_sha256": digest(__file__),
+               "python": sys.version, "python_executable_sha256": digest(sys.executable),
+               "runner_sha256": digest(__file__),
                "python_source_sha256": {str(p.relative_to(ROOT)): digest(p)
                                         for p in sorted((ROOT / "src/emuflow").rglob("*.py"))},
                "fetcher_sha256": digest(ROOT / "scripts/fetch_eda2023_benchmarks.py"),

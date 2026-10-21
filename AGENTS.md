@@ -11,9 +11,11 @@ These requirements apply to all work in this repository.
   completion status, artifact locations, limitations, or recommended commands
   must update `README.md` in the same push.  Do not push the implementation
   first and leave documentation for a later milestone.
-- README status and QoR statements must describe only evidence that actually
-  exists.  Mark incomplete validation as pending or blocked; never infer final
-  Phase 7 results from an intermediate artifact.
+- Do not put run-specific status, QoR numbers, failure progress, benchmark
+  results, or experiment history in README. Stable capability/qualification
+  statements are allowed only when matching evidence exists; never infer a
+  final Phase 7 result from an intermediate artifact. Keep experiment records
+  outside the public source tree.
 - If the review concludes that a push has no README impact, state
   `README reviewed: no user-visible change` in the handoff or push summary.
   This exception is for genuinely internal or mechanically equivalent changes,
@@ -22,6 +24,73 @@ These requirements apply to all work in this repository.
   implementation commits and the required README update.  If concurrent work
   advanced the branch, rebase safely and repeat the verification; never force
   push over unrelated work.
+
+## README is a project entry point, not a design notebook
+
+- Keep `README.md` concise and scannable. Its stable responsibilities are:
+  project purpose and claim boundary; the Phase 1--7 overview; links to design
+  documentation; build prerequisites; one current Quick start; configuration
+  and limitations; benchmark catalog links; repository layout; contribution,
+  license, and provenance links. Do not append implementation diaries,
+  debugging narratives, historical decisions, or repeated design details.
+- Treat 250 lines as the normal README size ceiling. Before exceeding it, move
+  detailed material to the canonical document below and leave a short summary
+  plus one link. Exceed the ceiling only when the README itself is the only
+  sensible location for user-visible entry-point information.
+- Maintain one canonical location for each subject:
+  - `docs/FLOW_PLAN.md`: architecture and phase contracts;
+  - `docs/ALGORITHMS.md`: detailed algorithms, provider relationships,
+    implementation map, and research references;
+  - `docs/HARDWARE_PLATFORM.md`: device capacity policy, board topology,
+    inter-FPGA capacity/delay, fixed wiring, package pins, and XDC generation;
+  - `docs/XILINX_PHYSICAL_FLOW.md`: placement, routing, fixed-I/O consumption,
+    and physical acceptance criteria;
+  - `docs/global-opensta-qualification.md`: global timing semantics and metric
+    scope;
+  - `docs/USER_GUIDE.md`: detailed commands, provider inputs, continuation,
+    artifact interpretation, and troubleshooting;
+  - `docs/VALIDATION.md`: reusable validation requirements.
+  Do not duplicate these documents in README. Update the canonical document
+  and adjust the README summary/link when its entry-point meaning changes.
+- Do not publish internal compute or operations information in README or public
+  docs: hostnames, SSH commands, scheduler details, user-specific paths,
+  scratch locations, storage cleanup procedures, credentials, or machine-sized
+  tuning values. Public documentation may describe portable tool requirements
+  and reproducible repository-relative commands.
+- Do not publish individual experiment outputs or workload-specific completion
+  status in README or public design docs. Checked-in benchmark catalogs and
+  validation contracts may identify workloads and required acceptance gates;
+  logs, run directories, WNS/TNS observations, failure traces, and progress
+  reports remain external experiment records.
+
+## README flow and Quick start maintenance
+
+- The Flow table must remain a seven-row overview. Each phase must link its
+  principal open-source tool and/or method paper, and must distinguish an
+  upstream implementation from an EmuFlow integration or extension. Put full
+  attribution, equations, alternatives, and source entry points in
+  `docs/ALGORITHMS.md`, not in extra README subsections.
+- Quick start must exercise the current CLI defaults with a checked-in, small,
+  public RTL input. Omitting a default option must be intentional and explained.
+  An alternative backend example must name every option needed to avoid mixing
+  it with the defaults. Never leave a historical VTR, provider, platform, or
+  mapping example presented as the current default after defaults change.
+- A Quick start command must be checked against the current argument parser,
+  checked-in paths, default platform, and mapping profile. Validate its BoardDB
+  and state precisely which phase boundary it reaches. Do not imply physical
+  WNS/TNS when `--physical` was not executed. When physical execution requires
+  external provider/device data, link to the user guide instead of inventing
+  machine-specific placeholder paths.
+- When moving a README section into `docs/`, preserve the useful technical
+  content, remove duplicated or run-specific material, update every inbound
+  anchor/link in the repository, and add the new canonical document to the
+  README documentation index. Do not merely delete detail or leave dead
+  anchors.
+- Before pushing a README change, run `git diff --check`, verify all changed
+  local Markdown links and anchors, search the repository for links to removed
+  README headings, and compare documented defaults/options with current CLI
+  help or parser definitions. Review the rendered Flow table and Quick start
+  for readability. Report which checks ran in the push summary.
 
 ## Versioned defaults must not preserve implicit legacy behavior
 

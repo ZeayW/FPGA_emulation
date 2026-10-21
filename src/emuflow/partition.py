@@ -26,7 +26,8 @@ from .combinational_cut import (
 CLUSTERS_SCHEMA = "emuflow.clusters/v1"
 PARTITION_ASSIGNMENT_SCHEMA = "emuflow.partition-assignment/v1"
 PARTITION_CONSTRAINTS_SCHEMA = "emuflow.partition-constraints/v1"
-DEFAULT_BALANCE_DIMENSIONS = ("cells", "lut", "ff")
+# Design-share limits are opt-in; device capacities remain mandatory.
+DEFAULT_BALANCE_DIMENSIONS: Tuple[str, ...] = ()
 TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
 LEGAL_CUT_CLASSES = {*TRANSPORTED_CUT_CLASSES, "primary_input"}
 REPLICATED_NET_CLASSES = {"clock", "reset", "primary_input"}
@@ -577,6 +578,7 @@ def normalize_partition_constraints(
     if (
         isinstance(raw_tolerance, bool)
         or not isinstance(raw_tolerance, (int, float))
+        or not math.isfinite(float(raw_tolerance))
         or float(raw_tolerance) < 0.0
     ):
         raise ValidationError(
@@ -601,6 +603,7 @@ def normalize_partition_constraints(
         if (
             isinstance(value, bool)
             or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
             or float(value) < 0.0
         ):
             raise ValidationError(
@@ -1619,6 +1622,30 @@ def _remove_static_exact_global_rounds(
     metrics["transport_ordering_policy"] = "path-local-dependency-dag-v1"
 
 
+def summarize_balance_observation(
+    loads: Mapping[str, Mapping[str, int]],
+    strict_dimensions: Iterable[str],
+) -> Dict[str, Any]:
+    """Describe the load distribution without imposing another upper bound."""
+    fields = tuple(next(iter(loads.values()), {}))
+    totals = {field: sum(row[field] for row in loads.values()) for field in fields}
+    hard_dimensions = sorted(strict_dimensions)
+    return {
+        "diagnostic_only": not hard_dimensions,
+        "hard_constraint_dimensions": hard_dimensions,
+        "design_share_by_fpga": {
+            fpga: {field: row[field] / totals[field] if totals[field] else 0.0
+                   for field in fields}
+            for fpga, row in loads.items()
+        },
+        "max_to_mean_by_dimension": {
+            field: (len(loads) * max(row[field] for row in loads.values()) / totals[field]
+                    if totals[field] else 0.0)
+            for field in fields
+        },
+    }
+
+
 def validate_cluster_assignment_balance(
     platform: Platform,
     clusters: Sequence[Mapping[str, Any]],
@@ -1626,8 +1653,9 @@ def validate_cluster_assignment_balance(
     requested_tolerance: float,
     requested_tolerance_by_dimension: Optional[Mapping[str, float]] = None,
     active_fpgas: Optional[Sequence[str]] = None,
-    requested_balance_dimensions: Optional[Sequence[str]] = None,
+    requested_balance_dimensions: Optional[Sequence[str]] = (),
 ) -> Dict[str, Any]:
+    """Check capacities and opt-in share limits; explicit None is legacy all-fields."""
     active_set = (
         set(active_fpgas)
         if active_fpgas is not None
@@ -1772,6 +1800,7 @@ def validate_cluster_assignment_balance(
             }
             for fpga in partition_fpgas
         },
+        "balance_observation": summarize_balance_observation(loads, strict_dimensions),
         "balance_loads": loads,
         "balance_allowed_loads": allowed_loads,
         "max_balance_limit_ratio": maximum_ratio,
@@ -1885,11 +1914,16 @@ def validate_partition_artifacts(
             f"extra={sorted(cluster_members - instance_ids)[:8]}"
         )
 
-    constraints = normalize_partition_constraints(
-        assignment_artifact.get("constraints"),
-        ir,
-        platform,
-    )
+    sealed_constraints = assignment_artifact.get("constraints")
+    if (isinstance(sealed_constraints, dict)
+        and sealed_constraints.get("schema") == PARTITION_CONSTRAINTS_SCHEMA
+        and "balance_dimensions" not in sealed_constraints):
+        # Historical v1 artifacts predate selective balance dimensions. Rebuild
+        # their sealed all-dimension contract, never today's producer defaults.
+        sealed_constraints = {
+            **sealed_constraints, "balance_dimensions": ["cells", *RESOURCE_FIELDS]
+        }
+    constraints = normalize_partition_constraints(sealed_constraints, ir, platform)
     inactive_assignment = sorted(
         set(raw_assignment.values()) - set(constraints["active_fpgas"])
     )
@@ -2006,7 +2040,7 @@ def validate_partition_artifacts(
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
-        constraints.get("balance_dimensions"),
+        constraints.get("balance_dimensions", DEFAULT_BALANCE_DIMENSIONS),
     )
 
     legal_cut_classes = set(LEGAL_CUT_CLASSES)

@@ -680,7 +680,11 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--constraints", type=Path)
     partition_run.add_argument("--route-constraints", type=Path)
     partition_run.add_argument("--min-used-fpgas", type=int)
-    partition_run.add_argument("--balance-tolerance", type=float)
+    partition_run.add_argument(
+        "--balance-tolerance", type=float,
+        help=("Relative tolerance for explicitly configured balance_dimensions; "
+              "omitted dimensions impose only device capacity limits"),
+    )
     partition_run.add_argument("--openroad")
     partition_run.add_argument(
         "--tritonpart-solution",
@@ -741,11 +745,15 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--seed-attempts", type=int, default=1)
     partition_run.add_argument(
         "--repair-balance",
-        action="store_true",
+        action=_BooleanOptionalAction, default=True,
         help=(
             "deterministically legalize a TritonPart candidate against "
             "the independently checked multi-resource upper bounds"
         ),
+    )
+    partition_run.add_argument(
+        "--repair-min-used-fpgas", action=_BooleanOptionalAction, default=True,
+        help="Populate required FPGAs after capacity legalization",
     )
     partition_run.add_argument("--num-initial-solutions", type=int, default=50)
     partition_run.add_argument("--num-best-initial-solutions", type=int, default=10)
@@ -831,6 +839,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--repair-balance",
         action=_BooleanOptionalAction,
         default=None,
+    )
+    partition_validate.add_argument(
+        "--repair-min-used-fpgas", action=_BooleanOptionalAction, default=None,
     )
     partition_validate.add_argument(
         "--cut-mode",
@@ -1932,6 +1943,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--out", type=Path, required=True)
     multi_fpga_compile.add_argument(
+        "--stop-after", choices=("phase3", "phase5"),
+        help="stop at a validated stage boundary; does not qualify the full flow",
+    )
+    multi_fpga_compile.add_argument(
         "--archive-out",
         type=Path,
         help="archive a successful full-flow run to this separate directory",
@@ -2004,7 +2019,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--seed", type=int, default=0)
     multi_fpga_compile.add_argument("--min-used-fpgas", type=int)
-    multi_fpga_compile.add_argument("--balance-tolerance", type=float)
+    multi_fpga_compile.add_argument(
+        "--balance-tolerance", type=float,
+        help=("Relative tolerance for explicitly configured balance_dimensions; "
+              "omitted dimensions impose only device capacity limits"),
+    )
     multi_fpga_compile.add_argument("--openroad")
     multi_fpga_compile.add_argument(
         "--tritonpart-solution",
@@ -2040,7 +2059,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument(
         "--partition-repair-min-used-fpgas",
-        action="store_true",
+        action=_BooleanOptionalAction, default=True,
         help=(
             "minimally move legal atomic clusters if the partitioner "
             "leaves required FPGAs empty"
@@ -2049,9 +2068,9 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--partition-repair-balance",
         action=_BooleanOptionalAction,
-        default=False,
+        default=True,
         help=(
-            "explicit fallback that legalizes a best-effort assignment "
+            "legalize a best-effort assignment "
             "against independently checked multi-resource balance bounds"
         ),
     )
@@ -2145,6 +2164,10 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--timing-vivado")
     multi_fpga_compile.add_argument(
         "--sta-max-paths", type=int, default=200000
+    )
+    multi_fpga_compile.add_argument(
+        "--sta-require-complete", action="store_true",
+        help="reject capped or unknown STA path populations before partitioning",
     )
     multi_fpga_compile.add_argument(
         "--timing-criticality-scale", type=float, default=9.0
@@ -3178,7 +3201,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     )
     phase3.add_argument("--min-used-fpgas", type=int)
-    phase3.add_argument("--balance-tolerance", type=float)
+    phase3.add_argument(
+        "--balance-tolerance", type=float,
+        help=("Relative tolerance for explicitly configured balance_dimensions; "
+              "omitted dimensions impose only device capacity limits"),
+    )
     phase3.add_argument(
         "--provider",
         choices=(
@@ -3231,7 +3258,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase3.add_argument(
         "--tritonpart-repair-min-used-fpgas",
-        action="store_true",
+        action=_BooleanOptionalAction, default=True,
         help=(
             "minimally move the smallest legal atomic clusters when the "
             "provider leaves required partitions empty"
@@ -3240,9 +3267,9 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--tritonpart-repair-balance",
         action=_BooleanOptionalAction,
-        default=False,
+        default=True,
         help=(
-            "explicit fallback that legalizes a best-effort TritonPart "
+            "legalize a best-effort TritonPart "
             "solution against EmuFlow's independently checked "
             "multi-resource upper bounds"
         ),
@@ -3781,7 +3808,9 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument("--seed", type=int, default=0)
     cross_stage_optimize.add_argument("--min-used-fpgas", type=int)
     cross_stage_optimize.add_argument(
-        "--balance-tolerance", type=float
+        "--balance-tolerance", type=float,
+        help=("Relative tolerance for explicitly configured balance_dimensions; "
+              "omitted dimensions impose only device capacity limits"),
     )
     cross_stage_optimize.add_argument("--openroad")
     cross_stage_optimize.add_argument("--repart")
@@ -3809,10 +3838,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--partition-num-best-initial-solutions", type=int, default=10
     )
     cross_stage_optimize.add_argument(
-        "--partition-repair-min-used-fpgas", action="store_true"
+        "--partition-repair-min-used-fpgas", action=_BooleanOptionalAction, default=True
     )
     cross_stage_optimize.add_argument(
-        "--partition-repair-balance", action="store_true"
+        "--partition-repair-balance", action=_BooleanOptionalAction, default=True
     )
     cross_stage_optimize.add_argument("--router")
     cross_stage_optimize.add_argument(
@@ -4338,6 +4367,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                     timeout_seconds=args.timeout_seconds,
                     seed_attempts=args.seed_attempts,
                     repair_balance=args.repair_balance,
+                    repair_min_used_fpgas=args.repair_min_used_fpgas,
                     num_initial_solutions=args.num_initial_solutions,
                     num_best_initial_solutions=args.num_best_initial_solutions,
                     cut_mode=args.cut_mode,
@@ -4385,6 +4415,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_seed=args.seed,
                 expected_seed_attempts=args.seed_attempts,
                 expected_repair_balance=args.repair_balance,
+                expected_repair_min_used_fpgas=args.repair_min_used_fpgas,
                 expected_mfspart_post_refinement=(
                     args.mfspart_post_refinement
                 ),
@@ -5895,6 +5926,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             mapping_profile = args.mapping_profile or XILINX_ULTRASCALEPLUS_OPEN_PROFILE
             timing_io = None
+        if args.stop_after is not None and args.archive_out is not None:
+            raise EmuFlowError("--stop-after cannot create a full-flow validation archive")
         if args.archive_cleanup and args.archive_out is None:
             raise EmuFlowError("--archive-cleanup requires --archive-out")
         if args.slot_refinement_iterations is None:
@@ -5904,6 +5937,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             output_dir=args.out,
             prepared_frontend=args.prepared_frontend,
             prepared_timing=args.prepared_timing,
+            stop_after=args.stop_after,
             sources=sources,
             include_dirs=include_dirs,
             defines=defines,
@@ -5959,6 +5993,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             opensta=args.opensta,
             timing_vivado=args.timing_vivado,
             sta_max_paths=args.sta_max_paths,
+            sta_require_complete=args.sta_require_complete,
             timing_criticality_scale=args.timing_criticality_scale,
             timing_criticality_exponent=(
                 args.timing_criticality_exponent
@@ -6091,7 +6126,14 @@ def _dispatch(args: argparse.Namespace) -> int:
             _print_json(result)
         else:
             _print_json(report.get("summary", report))
-        return 0 if report["status"] == "pass" else 2
+        completed_requested_stage = (
+            args.stop_after is not None
+            and report.get("schema") == "emuflow.multi-fpga-stage-run/v1"
+            and report.get("status") == "partial"
+            and report.get("completed_through") == args.stop_after
+            and report.get("validation", {}).get("status") == "pass"
+        )
+        return 0 if report["status"] == "pass" or completed_requested_stage else 2
 
     if args.command == "partition":
         report = validate_phase3(

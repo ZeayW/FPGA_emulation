@@ -394,7 +394,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             {"clk": 40.0, "fabric_clk": 4.0},
         )
 
-    def test_slr_window_uses_smallest_central_window_with_headroom(self):
+    def test_slr_window_uses_complete_device_with_headroom(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             arch = root / "arch.json"
@@ -430,10 +430,10 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             }), encoding="utf-8")
             self.assertEqual(
                 _select_xilinx_slr_window(packed, arch),
-                ("SLR1", "SLR2"),
+                ("SLR0", "SLR1", "SLR2", "SLR3"),
             )
 
-    def test_slr_window_uses_one_central_slr_for_sparse_partition(self):
+    def test_sparse_partition_still_uses_complete_device(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             arch = root / "arch.json"
@@ -468,7 +468,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             }), encoding="utf-8")
             self.assertEqual(
                 _select_xilinx_slr_window(packed, arch),
-                ("SLR1",),
+                ("SLR0", "SLR1", "SLR2", "SLR3"),
             )
 
     def test_atomic_slr_window_counts_slice_site_equivalents_not_atoms(self):
@@ -518,14 +518,14 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 "schema": "emuflow.openparf-atomic-source/v1",
                 "clusters": clusters,
             }), encoding="utf-8")
-            # 64 LUTs and 64 FFs require eight slice sites, not 128 sites;
-            # one 16-site SLR therefore has the required 1.5x headroom.
+            # Capacity admission still counts slice-site equivalents, while
+            # the legal placement region remains the complete device.
             self.assertEqual(
                 _select_xilinx_slr_window(packed, arch),
-                ("SLR1",),
+                ("SLR0", "SLR1", "SLR2"),
             )
 
-    def test_production_backend_uses_compact_two_slr_window(self):
+    def test_production_backend_uses_complete_device_region(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             guidance = root / "physical" / "openparf-guidance" / "guidance.json"
@@ -561,12 +561,12 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend._select_xilinx_slr_window",
-                    return_value=("SLR1", "SLR2"),
+                    return_value=("SLR0", "SLR1", "SLR2", "SLR3"),
                 ),
                 mock.patch(
                     "emuflow.xilinx_physical_backend.run_xilinx_openparf_guidance",
                     side_effect=lambda *_args, **kwargs: self.assertEqual(
-                        kwargs["slrs"], ("SLR1", "SLR2")
+                        kwargs["slrs"], ("SLR0", "SLR1", "SLR2", "SLR3")
                     ),
                 ),
                 mock.patch(

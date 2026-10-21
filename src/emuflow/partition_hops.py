@@ -245,7 +245,7 @@ def _write_native_input(
         partition_constraints["balance_tolerance"],
         partition_constraints.get("balance_tolerance_by_dimension", {}),
         partition_constraints.get("active_fpgas"),
-        partition_constraints.get("balance_dimensions"),
+        partition_constraints.get("balance_dimensions", ()),
     )
     dimensions = balance["balance_dimensions"]
     nets = _primary_net_records(ir, clusters_artifact, net_weights)

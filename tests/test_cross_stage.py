@@ -574,12 +574,12 @@ class CrossStageCandidateTest(unittest.TestCase):
                     report["configuration"]["partition_seed_attempts"],
                     1,
                 )
-                self.assertFalse(
+                self.assertTrue(
                     report["configuration"][
                         "partition_repair_min_used_fpgas"
                     ]
                 )
-                self.assertFalse(
+                self.assertTrue(
                     report["configuration"][
                         "partition_repair_balance"
                     ]

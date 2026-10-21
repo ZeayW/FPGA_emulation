@@ -114,6 +114,8 @@ struct Evaluation {
   bool feasible = false;
   std::vector<double> objective;
   std::vector<long long> ranked;
+  int capacity_violations = 0;
+  long long capacity_excess_bits = 0;
 };
 
 struct ProxyNetState {
@@ -132,6 +134,8 @@ struct ProxyPathState {
   bool negative = false;
   long long snaking = 0;
   long long transitions = 0;
+  long long hops = 0;
+  long long ratio_sum = 0;
   std::vector<int> dependency_domains;
 };
 
@@ -147,6 +151,9 @@ struct ProxyState {
   std::vector<std::set<int>> domain_paths;
   std::set<std::pair<double, int>> slack_path_order;
   std::set<std::pair<long long, int>> ranked_path_order;
+  std::set<std::pair<long long, int>> hop_path_order;
+  std::set<std::pair<long long, int>> ratio_sum_path_order;
+  std::set<std::tuple<long long, long long, int>> objective_path_order;
   double total_negative = 0.0;
   long long negative_paths = 0;
   long long snaking = 0;
@@ -360,38 +367,6 @@ std::pair<int, long long> transport_capacity_pressure(
     }
   }
   return {violations, excess_bits};
-}
-
-int most_overloaded_transport_domain(
-    const Model& model, const std::vector<int>& loads) {
-  int selected = -1;
-  long long selected_excess = 0;
-  for (int domain = 0; domain < model.domains; ++domain) {
-    const Domain& record = model.domain[domain];
-    if (record.is_sll) {
-      continue;
-    }
-    const long long directed_excess = std::max(
-        0LL,
-        static_cast<long long>(loads[domain]) - record.capacity_bits);
-    long long shared_excess = 0;
-    if (record.banks > 0) {
-      shared_excess = std::max(
-          0LL,
-          static_cast<long long>(loads[domain])
-              + loads[record.opposite]
-              - static_cast<long long>(record.banks) * record.wires
-                    * model.frame_slots);
-    }
-    const long long excess = std::max(directed_excess, shared_excess);
-    if (excess > selected_excess
-        || (excess == selected_excess && excess > 0
-            && (selected < 0 || domain < selected))) {
-      selected = domain;
-      selected_excess = excess;
-    }
-  }
-  return selected;
 }
 
 double predicted_route_delay(const Model& model,
@@ -767,8 +742,12 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
   double total_negative = 0.0;
   long long negative_paths = 0;
   long long total_snaking = 0;
+  long long maximum_path_hops = 0;
+  long long maximum_path_ratio_sum = 0;
   for (const Path& path : model.path) {
     double transport = 0.0;
+    long long path_hops = 0;
+    long long path_ratio_sum = 0;
     std::vector<int> sequence;
     if (path.start_cluster >= 0) {
       int target = assignment[path.end_cluster];
@@ -801,6 +780,12 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
         }
         transport += predicted_transition_delay(
             model, route, ratios, sink_clusters);
+        path_hops += static_cast<long long>(route.arcs.size());
+        int net_ratio = 1;
+        for (const Arc& arc : route.arcs) {
+          net_ratio = std::max(net_ratio, ratios[arc.domain]);
+        }
+        path_ratio_sum += net_ratio;
         reverse_transitions.emplace_back(source, target);
         target = source;
       }
@@ -822,6 +807,13 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
         if (transition.first < 0) {
           continue;
         }
+        const Route& route = model.route[transition.first][transition.second];
+        path_hops += static_cast<long long>(route.arcs.size());
+        int net_ratio = 1;
+        for (const Arc& arc : route.arcs) {
+          net_ratio = std::max(net_ratio, ratios[arc.domain]);
+        }
+        path_ratio_sum += net_ratio;
         for (int part : {transition.first, transition.second}) {
           if (sequence.empty() || sequence.back() != part) {
             sequence.push_back(part);
@@ -849,6 +841,9 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
     if (normalized < 0.0) {
       ++negative_paths;
     }
+    maximum_path_hops = std::max(maximum_path_hops, path_hops);
+    maximum_path_ratio_sum = std::max(
+        maximum_path_ratio_sum, path_ratio_sum);
   }
   result.feasible = true;
   result.objective = {
@@ -863,8 +858,8 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
   };
   const auto pressure = transport_capacity_pressure(model, domain_load);
   result.ranked = {
-      pressure.first,
-      pressure.second,
+      maximum_path_hops,
+      maximum_path_ratio_sum,
       rank_float(result.objective[0]),
       rank_float(result.objective[1]),
       negative_paths,
@@ -874,6 +869,8 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
       total_hops,
       cut_bits,
   };
+  result.capacity_violations = pressure.first;
+  result.capacity_excess_bits = pressure.second;
   return result;
 }
 
@@ -963,6 +960,8 @@ ProxyPathState build_proxy_path(
     int path_index) {
   const Path& path = model.path[path_index];
   double transport = 0.0;
+  long long path_hops = 0;
+  long long path_ratio_sum = 0;
   std::vector<int> sequence;
   sequence.reserve(path.nets.size() * 2);
   std::vector<int> dependency_domains;
@@ -991,9 +990,13 @@ ProxyPathState build_proxy_path(
               "endpoint-exact scalable path chain is invalid");
       transport += predicted_transition_delay(
           model, route, ratios, sink_clusters);
+      int net_ratio = 1;
       for (const Arc& arc : route.arcs) {
         dependency_domains.push_back(arc.domain);
+        ++path_hops;
+        net_ratio = std::max(net_ratio, ratios[arc.domain]);
       }
+      path_ratio_sum += net_ratio;
       reverse_transitions.emplace_back(source, target);
       target = source;
     }
@@ -1012,6 +1015,8 @@ ProxyPathState build_proxy_path(
       const ProxyNetState& net_state = selected_proxy_net(
           state, replacements, net);
       double worst_delay = 0.0;
+      long long worst_hops = 0;
+      long long worst_ratio_sum = 0;
       std::pair<int, int> worst = {-1, -1};
       for (const auto& transition : net_state.transitions) {
         const Route& route = model.route[transition.source][transition.sink];
@@ -1027,9 +1032,17 @@ ProxyPathState build_proxy_path(
                 && (worst.first < 0 || identity < worst))) {
           worst_delay = delay;
           worst = identity;
+          worst_hops = static_cast<long long>(route.arcs.size());
+          worst_ratio_sum = 1;
+          for (const Arc& arc : route.arcs) {
+            worst_ratio_sum = std::max(
+                worst_ratio_sum, static_cast<long long>(ratios[arc.domain]));
+          }
         }
       }
       transport += worst_delay;
+      path_hops += worst_hops;
+      path_ratio_sum += worst_ratio_sum;
       if (worst.first < 0) {
         continue;
       }
@@ -1064,6 +1077,8 @@ ProxyPathState build_proxy_path(
       slack < 0.0,
       snaking,
       static_cast<long long>(sequence.empty() ? 0 : sequence.size() - 1),
+      path_hops,
+      path_ratio_sum,
       std::move(dependency_domains),
   };
 }
@@ -1074,6 +1089,9 @@ Evaluation proxy_evaluation(const Model& model, const ProxyState& state) {
   const int maximum_ratio = *state.ratio_order.rbegin();
   const int maximum_load = *std::max_element(
       state.domain_load.begin(), state.domain_load.end());
+  const long long maximum_path_hops = state.hop_path_order.rbegin()->first;
+  const long long maximum_path_ratio_sum
+      = state.ratio_sum_path_order.rbegin()->first;
   result.objective = {
       -worst,
       -state.total_negative,
@@ -1089,8 +1107,8 @@ Evaluation proxy_evaluation(const Model& model, const ProxyState& state) {
   const auto pressure = transport_capacity_pressure(
       model, state.domain_load);
   result.ranked = {
-      pressure.first,
-      pressure.second,
+      maximum_path_hops,
+      maximum_path_ratio_sum,
       rank_float(result.objective[0]),
       rank_float(result.objective[1]),
       state.negative_paths,
@@ -1100,6 +1118,8 @@ Evaluation proxy_evaluation(const Model& model, const ProxyState& state) {
       state.hops,
       state.cuts,
   };
+  result.capacity_violations = pressure.first;
+  result.capacity_excess_bits = pressure.second;
   result.feasible = true;
   return result;
 }
@@ -1160,12 +1180,19 @@ ProxyState build_proxy_state(
         state.path[path].normalized_slack, path);
     state.ranked_path_order.emplace(
         rank_float(state.path[path].normalized_slack), path);
+    state.hop_path_order.emplace(state.path[path].hops, path);
+    state.ratio_sum_path_order.emplace(state.path[path].ratio_sum, path);
+    state.objective_path_order.emplace(
+        state.path[path].hops, state.path[path].ratio_sum, path);
     state.total_negative += std::min(0.0, state.path[path].normalized_slack);
     state.negative_paths += state.path[path].negative ? 1 : 0;
     state.snaking += state.path[path].snaking;
     state.transitions += state.path[path].transitions;
   }
   require(!state.slack_path_order.empty() && !state.ranked_path_order.empty()
+              && !state.hop_path_order.empty()
+              && !state.ratio_sum_path_order.empty()
+              && !state.objective_path_order.empty()
               && !state.ratio_order.empty(),
           "scalable state is empty");
   state.evaluation = proxy_evaluation(model, state);
@@ -1224,6 +1251,7 @@ std::vector<int> diagnose_flow_corridors(
     int cover_domain) {
   std::vector<int> selected_assignment;
   std::vector<long long> selected_rank;
+  int improving_candidate_generation = 0;
   int edge_left = -1;
   int edge_right = -1;
   for (int source = 0; source < model.parts && edge_left < 0; ++source) {
@@ -1272,11 +1300,13 @@ std::vector<int> diagnose_flow_corridors(
             return;
           }
           ProxyState candidate = build_proxy_state(model, &assignment);
-          if (less_ranked(candidate.evaluation.ranked,
-                          state.evaluation.ranked)
-              && (selected_assignment.empty()
-                  || less_ranked(candidate.evaluation.ranked,
-                                 selected_rank))) {
+          if (!less_ranked(candidate.evaluation.ranked,
+                           state.evaluation.ranked)) {
+            return;
+          }
+          ++improving_candidate_generation;
+          if (selected_assignment.empty()
+              || less_ranked(candidate.evaluation.ranked, selected_rank)) {
             selected_assignment = candidate.assignment;
             selected_rank = candidate.evaluation.ranked;
           }
@@ -1292,6 +1322,16 @@ std::vector<int> diagnose_flow_corridors(
       = model.flow_refinement ? model.flow_max_legal_candidates : 8;
   const int maximum_polish_moves
       = model.flow_refinement ? model.flow_max_polish_moves : 512;
+  // Keep the already resource-legal assignment as the deterministic
+  // secondary objective.  A zero-cost side preference lets an otherwise
+  // equivalent net cut move millions of clusters onto one topology side;
+  // the later per-FPGA legalizer then cannot recover the original balance.
+  // Try every endpoint with the unit displacement cost first.  Only if that
+  // complete pass finds no legal improvement do later passes progressively
+  // prefer smaller cuts, so the normal search pays no fallback overhead.
+  constexpr std::array<long long, 4> movement_costs = {1, 2, 4, 8};
+  for (long long movement_cost : movement_costs) {
+  const int generation_before_pass = improving_candidate_generation;
   for (int pair_target = 0; pair_target < model.parts; ++pair_target) {
     if (!opposite_side[pair_target]) {
       continue;
@@ -1394,13 +1434,6 @@ std::vector<int> diagnose_flow_corridors(
       next_node += 2;
     }
     DinicFlow flow(next_node);
-    // Keep the already resource-legal assignment as the deterministic
-    // secondary objective.  A zero-cost side preference lets an otherwise
-    // equivalent net cut move millions of clusters onto one topology side;
-    // the later per-FPGA legalizer then cannot recover the original balance.
-    // Unit movement cost charges one cut-net equivalent per moved cluster,
-    // while also resolving exactly degenerate cuts toward fewer moves.
-    constexpr long long movement_cost = 1;
     const long long infinity
         = static_cast<long long>(corridor_nets.size())
           + static_cast<long long>(corridor.size()) * movement_cost + 1;
@@ -1492,6 +1525,10 @@ std::vector<int> diagnose_flow_corridors(
     }
     const std::vector<int> raw_candidate_assignment = candidate_assignment;
     const std::vector<std::vector<double>> raw_candidate_load = candidate_load;
+    const bool minimum_parts_compatible
+        = std::count_if(candidate_counts.begin(), candidate_counts.end(),
+                        [](int count) { return count > 0; })
+          >= model.min_used_parts;
     const bool transport_compatible
         = proxy_transport_feasible(model, candidate_assignment);
     std::cerr << "PATRON_FLOW_CORRIDOR pair=" << edge_left << ':'
@@ -1501,13 +1538,16 @@ std::vector<int> diagnose_flow_corridors(
               << " cluster_limit=" << maximum_corridor_clusters
               << " distance_limit=" << corridor_distance
               << " nets=" << corridor_nets.size()
+              << " movement_cost=" << movement_cost
               << " mincut=" << cut
               << " moved_to_left=" << moved_to_left
               << " moved_to_target=" << moved_to_target
               << " capacity_compatible=" << (capacity_compatible ? 1 : 0)
+              << " minimum_parts_compatible="
+              << (minimum_parts_compatible ? 1 : 0)
               << " transport_compatible="
               << (transport_compatible ? 1 : 0);
-    if (transport_compatible) {
+    if (transport_compatible && minimum_parts_compatible) {
       ProxyState candidate = build_proxy_state(model, &candidate_assignment);
       std::cerr << " domain_load=" << candidate.domain_load[cover_domain]
                 << " improving="
@@ -3011,16 +3051,32 @@ std::vector<int> diagnose_flow_corridors(
             }
             std::cerr << '\n';
             if (less_ranked(polished.evaluation.ranked,
-                            state.evaluation.ranked)
-                && (selected_assignment.empty()
-                    || less_ranked(polished.evaluation.ranked,
-                                   selected_rank))) {
-              selected_assignment = polished.assignment;
-              selected_rank = polished.evaluation.ranked;
+                            state.evaluation.ranked)) {
+              ++improving_candidate_generation;
+              if (selected_assignment.empty()
+                  || less_ranked(polished.evaluation.ranked,
+                                 selected_rank)) {
+                selected_assignment = polished.assignment;
+                selected_rank = polished.evaluation.ranked;
+              }
             }
           }
         }
       }
+    }
+    if (!selected_assignment.empty()
+        && selected_rank[0] < state.evaluation.ranked[0]) {
+      std::cerr << "PATRON_FLOW_PRIMARY_IMPROVEMENT pair="
+                << edge_left << ':' << pair_target
+                << " maximum_path_hops=" << selected_rank[0]
+                << " previous_maximum_path_hops="
+                << state.evaluation.ranked[0]
+                << " action=accept-before-next-board-edge\n";
+      return selected_assignment;
+    }
+    }
+    if (improving_candidate_generation != generation_before_pass) {
+      break;
     }
   }
   return selected_assignment;
@@ -3234,6 +3290,30 @@ ProxyDelta evaluate_proxy_changes(
     }
   }
   require(std::isfinite(worst), "empty scalable candidate path order");
+  long long maximum_path_hops = 0;
+  long long maximum_path_ratio_sum = 0;
+  for (const auto& item : delta.paths) {
+    maximum_path_hops = std::max(maximum_path_hops, item.second.hops);
+    maximum_path_ratio_sum = std::max(
+        maximum_path_ratio_sum, item.second.ratio_sum);
+  }
+  for (auto item = state.hop_path_order.rbegin();
+       item != state.hop_path_order.rend(); ++item) {
+    if (!std::binary_search(
+            affected_paths.begin(), affected_paths.end(), item->second)) {
+      maximum_path_hops = std::max(maximum_path_hops, item->first);
+      break;
+    }
+  }
+  for (auto item = state.ratio_sum_path_order.rbegin();
+       item != state.ratio_sum_path_order.rend(); ++item) {
+    if (!std::binary_search(
+            affected_paths.begin(), affected_paths.end(), item->second)) {
+      maximum_path_ratio_sum = std::max(
+          maximum_path_ratio_sum, item->first);
+      break;
+    }
+  }
   const int maximum_ratio = *std::max_element(
       projected_ratios.begin(), projected_ratios.end());
   const int maximum_load = *std::max_element(
@@ -3253,8 +3333,8 @@ ProxyDelta evaluate_proxy_changes(
   };
   const auto pressure = transport_capacity_pressure(model, projected_loads);
   delta.evaluation.ranked = {
-      pressure.first,
-      pressure.second,
+      maximum_path_hops,
+      maximum_path_ratio_sum,
       rank_float(delta.evaluation.objective[0]),
       rank_float(delta.evaluation.objective[1]),
       candidate_negative_paths,
@@ -3264,6 +3344,8 @@ ProxyDelta evaluate_proxy_changes(
       candidate_hops,
       candidate_cuts,
   };
+  delta.evaluation.capacity_violations = pressure.first;
+  delta.evaluation.capacity_excess_bits = pressure.second;
   delta.feasible = true;
 
   return delta;
@@ -3375,6 +3457,17 @@ void apply_proxy_delta(const Model& model,
     const std::size_t ranked_erased = state.ranked_path_order.erase(
         {rank_float(old.normalized_slack), item.first});
     require(ranked_erased == 1, "missing scalable ranked path");
+    const std::size_t hop_erased = state.hop_path_order.erase(
+        {old.hops, item.first});
+    require(hop_erased == 1, "missing scalable hop/path record");
+    const std::size_t ratio_sum_erased = state.ratio_sum_path_order.erase(
+        {old.ratio_sum, item.first});
+    require(ratio_sum_erased == 1,
+            "missing scalable ratio-sum/path record");
+    const std::size_t objective_erased = state.objective_path_order.erase(
+        {old.hops, old.ratio_sum, item.first});
+    require(objective_erased == 1,
+            "missing scalable objective/path record");
     const std::size_t slack_erased = state.slack_path_order.erase(
         {old.normalized_slack, item.first});
     require(slack_erased == 1, "missing scalable slack/path record");
@@ -3391,6 +3484,10 @@ void apply_proxy_delta(const Model& model,
     state.slack_path_order.emplace(old.normalized_slack, item.first);
     state.ranked_path_order.emplace(
         rank_float(old.normalized_slack), item.first);
+    state.hop_path_order.emplace(old.hops, item.first);
+    state.ratio_sum_path_order.emplace(old.ratio_sum, item.first);
+    state.objective_path_order.emplace(
+        old.hops, old.ratio_sum, item.first);
   }
   state.evaluation = proxy_evaluation(model, state);
   require(state.evaluation.ranked == delta.evaluation.ranked,
@@ -3498,8 +3595,12 @@ void write_output(const std::string& output_path,
   write_vector(output, final.objective);
   output << '\n';
   require(initial.ranked.size() == 10 && final.ranked.size() == 10,
-          "transport capacity rank is missing");
-  output << "CAPACITY " << initial.ranked[0] << ' ' << initial.ranked[1]
+          "path objective rank is missing");
+  output << "CAPACITY " << initial.capacity_violations << ' '
+         << initial.capacity_excess_bits << ' '
+         << final.capacity_violations << ' '
+         << final.capacity_excess_bits << '\n';
+  output << "PATH_MAX " << initial.ranked[0] << ' ' << initial.ranked[1]
          << ' ' << final.ranked[0] << ' ' << final.ranked[1] << '\n';
   for (int cluster = 0; cluster < static_cast<int>(assignment.size()); ++cluster) {
     output << "ASSIGN " << cluster << ' ' << assignment[cluster] << '\n';
@@ -3642,9 +3743,8 @@ void run_exact(const Model& model,
     current = best;
   }
 
-  require(current.ranked.size() == 10 && current.ranked[0] == 0
-              && current.ranked[1] == 0,
-          "final assignment violates transport capacity");
+  require(current.ranked.size() == 10,
+          "final assignment objective rank is invalid");
   write_output(output_path,
                "endpoint-exact-global-best-v6",
                initial,
@@ -3665,6 +3765,8 @@ void run_scalable(const Model& model,
   const auto net_paths = build_net_paths(model);
 
   std::vector<double> exposure(model.clusters, 0.0);
+  std::vector<long long> hop_exposure(model.clusters, 0);
+  std::vector<long long> ratio_sum_exposure(model.clusters, 0);
   for (int path = 0; path < model.paths; ++path) {
     const double criticality = std::max(
         0.0,
@@ -3678,13 +3780,22 @@ void run_scalable(const Model& model,
     }
     for (int cluster : touched) {
       exposure[cluster] += weight;
+      if (state.path[path].hops > hop_exposure[cluster]) {
+        hop_exposure[cluster] = state.path[path].hops;
+        ratio_sum_exposure[cluster] = state.path[path].ratio_sum;
+      } else if (state.path[path].hops == hop_exposure[cluster]) {
+        ratio_sum_exposure[cluster] = std::max(
+            ratio_sum_exposure[cluster], state.path[path].ratio_sum);
+      }
     }
   }
   std::vector<int> order(model.clusters);
   std::iota(order.begin(), order.end(), 0);
   std::sort(order.begin(), order.end(), [&](int left, int right) {
-    return std::tie(exposure[right], left)
-           < std::tie(exposure[left], right);
+    return std::tie(hop_exposure[right], ratio_sum_exposure[right],
+                    exposure[right], left)
+           < std::tie(hop_exposure[left], ratio_sum_exposure[left],
+                      exposure[left], right);
   });
 
   std::vector<NativeMove> moves;
@@ -3741,8 +3852,10 @@ void run_scalable(const Model& model,
   std::vector<int> donor_order(model.clusters);
   std::iota(donor_order.begin(), donor_order.end(), 0);
   std::sort(donor_order.begin(), donor_order.end(), [&](int left, int right) {
-    return std::tie(exposure[left], left)
-           < std::tie(exposure[right], right);
+    return std::tie(hop_exposure[left], ratio_sum_exposure[left],
+                    exposure[left], left)
+           < std::tie(hop_exposure[right], ratio_sum_exposure[right],
+                      exposure[right], right);
   });
   std::vector<std::vector<int>> donors(model.parts);
   for (int cluster : donor_order) {
@@ -3960,65 +4073,6 @@ void run_scalable(const Model& model,
             << " wns_improving=" << wns_improving_comoves
             << " accepted=" << accepted_comoves << '\n';
 
-  // Capacity closure is a hard Phase-3 contract.  A single topology-side
-  // cut can relieve one overloaded physical link while exposing another, so
-  // repeat the balanced corridor refinement until every directed and shared
-  // bank capacity is legal or no lexicographic improvement exists.
-  for (int iteration = 0;
-       state.evaluation.ranked.size() == 10
-           && (state.evaluation.ranked[0] > 0
-               || state.evaluation.ranked[1] > 0)
-           && iteration < std::max(4, model.parts * 2);
-       ++iteration) {
-    const int capacity_domain = most_overloaded_transport_domain(
-        model, state.domain_load);
-    if (capacity_domain < 0) {
-      break;
-    }
-    std::vector<int> repaired_assignment = diagnose_flow_corridors(
-        model,
-        state,
-        cluster_nets,
-        net_paths,
-        exposure,
-        capacity_domain);
-    if (repaired_assignment.empty()) {
-      std::cerr << "PATRON_CAPACITY_REPAIR iteration=" << iteration
-                << " domain=" << capacity_domain
-                << " status=stalled rank=";
-      for (long long value : state.evaluation.ranked) {
-        std::cerr << value << ',';
-      }
-      std::cerr << '\n';
-      break;
-    }
-    ProxyState repaired = build_proxy_state(model, &repaired_assignment);
-    require(less_ranked(repaired.evaluation.ranked,
-                        state.evaluation.ranked),
-            "capacity repair did not improve the ranked objective");
-    NativeBatch batch;
-    batch.before = state.evaluation;
-    batch.after = repaired.evaluation;
-    for (int cluster = 0; cluster < model.clusters; ++cluster) {
-      if (state.assignment[cluster] != repaired.assignment[cluster]) {
-        batch.changes.emplace_back(cluster,
-                                   state.assignment[cluster],
-                                   repaired.assignment[cluster]);
-      }
-    }
-    require(!batch.changes.empty(), "capacity repair batch is empty");
-    std::cerr << "PATRON_CAPACITY_REPAIR iteration=" << iteration
-              << " domain=" << capacity_domain
-              << " changes=" << batch.changes.size()
-              << " rank=";
-    for (long long value : repaired.evaluation.ranked) {
-      std::cerr << value << ',';
-    }
-    std::cerr << '\n';
-    batches.push_back(std::move(batch));
-    state = std::move(repaired);
-  }
-
   long long evaluated_corridors = 0;
   long long feasible_corridors = 0;
   long long improving_corridors = 0;
@@ -4029,29 +4083,41 @@ void run_scalable(const Model& model,
   std::vector<int> current_paths(model.paths);
   std::iota(current_paths.begin(), current_paths.end(), 0);
   std::sort(current_paths.begin(), current_paths.end(), [&](int left, int right) {
-    return std::tie(state.path[left].normalized_slack, left)
-           < std::tie(state.path[right].normalized_slack, right);
+    return std::make_tuple(-state.path[left].hops,
+                           -state.path[left].ratio_sum,
+                           state.path[left].normalized_slack,
+                           left)
+           < std::make_tuple(-state.path[right].hops,
+                             -state.path[right].ratio_sum,
+                             state.path[right].normalized_slack,
+                             right);
   });
   if (!current_paths.empty()) {
-    std::cerr << "PATRON_CURRENT_WORST path=" << current_paths.front()
-              << " normalized_slack="
-              << state.path[current_paths.front()].normalized_slack
-              << " nets=" << model.path[current_paths.front()].nets.size()
-              << '\n';
-    const long long worst_rank = rank_float(
-        state.path[current_paths.front()].normalized_slack);
-    int tied_paths = 0;
+    const long long maximum_hops = state.hop_path_order.rbegin()->first;
+    const long long maximum_ratio_sum
+        = state.ratio_sum_path_order.rbegin()->first;
+    int maximum_hop_paths = 0;
+    int maximum_ratio_sum_paths = 0;
     std::set<int> critical_domains;
     for (int path : current_paths) {
-      if (rank_float(state.path[path].normalized_slack) != worst_rank) {
-        break;
+      if (state.path[path].hops == maximum_hops) {
+        ++maximum_hop_paths;
       }
-      ++tied_paths;
-      critical_domains.insert(
-          state.path[path].dependency_domains.begin(),
-          state.path[path].dependency_domains.end());
+      if (state.path[path].ratio_sum == maximum_ratio_sum) {
+        ++maximum_ratio_sum_paths;
+      }
+      if (state.path[path].hops == maximum_hops
+          || state.path[path].ratio_sum == maximum_ratio_sum) {
+        critical_domains.insert(
+            state.path[path].dependency_domains.begin(),
+            state.path[path].dependency_domains.end());
+      }
     }
-    std::cerr << "PATRON_CURRENT_FRONTIER tied_paths=" << tied_paths
+    std::cerr << "PATRON_CURRENT_MAXIMA maximum_path_hops="
+              << maximum_hops
+              << " maximum_path_tdm_ratio_sum=" << maximum_ratio_sum
+              << " maximum_hop_paths=" << maximum_hop_paths
+              << " maximum_ratio_sum_paths=" << maximum_ratio_sum_paths
               << " domains=";
     for (int domain : critical_domains) {
       const int ratio = state.domain_ratio[domain];
@@ -4152,82 +4218,86 @@ void run_scalable(const Model& model,
     long long tns_cost = 0;
   };
   std::set<int> frontier_domains;
-  const long long frontier_rank = current_paths.empty()
-                                      ? 0
-                                      : rank_float(state.path[
-                                            current_paths.front()]
-                                                        .normalized_slack);
+  const long long frontier_hops = state.hop_path_order.rbegin()->first;
+  const long long frontier_ratio_sum
+      = state.ratio_sum_path_order.rbegin()->first;
+  std::vector<int> hop_frontier_domain_paths(model.domains, 0);
+  std::vector<int> ratio_frontier_domain_paths(model.domains, 0);
   for (int path : current_paths) {
-    if (rank_float(state.path[path].normalized_slack) != frontier_rank) {
-      break;
+    if (state.path[path].hops == frontier_hops
+        || state.path[path].ratio_sum == frontier_ratio_sum) {
+      frontier_domains.insert(state.path[path].dependency_domains.begin(),
+                              state.path[path].dependency_domains.end());
     }
-    frontier_domains.insert(state.path[path].dependency_domains.begin(),
-                            state.path[path].dependency_domains.end());
+    for (int domain : state.path[path].dependency_domains) {
+      if (state.path[path].hops == frontier_hops) {
+        ++hop_frontier_domain_paths[domain];
+      }
+      if (state.path[path].ratio_sum == frontier_ratio_sum) {
+        ++ratio_frontier_domain_paths[domain];
+      }
+    }
   }
   int cover_domain = -1;
   int cover_threshold = 0;
   int cover_deficit = std::numeric_limits<int>::max();
-  const bool repair_transport_capacity =
-      state.evaluation.ranked.size() == 10
-      && (state.evaluation.ranked[0] > 0
-          || state.evaluation.ranked[1] > 0);
-  if (repair_transport_capacity) {
-    long long largest_excess = 0;
-    for (int domain = 0; domain < model.domains; ++domain) {
-      const Domain& record = model.domain[domain];
-      if (record.is_sll) {
-        continue;
-      }
-      const long long directed_excess = std::max(
-          0LL,
-          static_cast<long long>(state.domain_load[domain])
-              - record.capacity_bits);
-      long long shared_excess = 0;
-      if (record.banks > 0) {
-        shared_excess = std::max(
-            0LL,
-            static_cast<long long>(state.domain_load[domain])
-                + state.domain_load[record.opposite]
-                - static_cast<long long>(record.banks) * record.wires
-                      * model.frame_slots);
-      }
-      const long long excess = std::max(directed_excess, shared_excess);
-      if (excess > largest_excess
-          || (excess == largest_excess && excess > 0
-              && domain < cover_domain)) {
-        largest_excess = excess;
-        cover_domain = domain;
-      }
+  for (int domain : frontier_domains) {
+    if (model.domain[domain].is_sll || state.domain_ratio[domain] <= 1) {
+      continue;
     }
-    if (cover_domain >= 0) {
-      cover_deficit = static_cast<int>(std::min<long long>(
-          largest_excess, std::numeric_limits<int>::max()));
-      cover_threshold = std::max(
-          0, state.domain_load[cover_domain] - cover_deficit);
-    }
-  } else {
-    for (int domain : frontier_domains) {
-      if (model.domain[domain].is_sll || state.domain_ratio[domain] <= 1) {
-        continue;
-      }
-      const int lower_ratio = std::max(
-          1, state.domain_ratio[domain] - model.ratio_quantum);
-      const int threshold = model.domain[domain].lanes * lower_ratio;
-      const int deficit = state.domain_load[domain] - threshold;
-      if (deficit > 0
-          && std::tie(deficit, domain)
-                 < std::tie(cover_deficit, cover_domain)) {
-        cover_domain = domain;
-        cover_threshold = threshold;
-        cover_deficit = deficit;
-      }
+    const int lower_ratio = std::max(
+        1, state.domain_ratio[domain] - model.ratio_quantum);
+    const int threshold = model.domain[domain].lanes * lower_ratio;
+    const int deficit = state.domain_load[domain] - threshold;
+    if (deficit > 0
+        && std::tie(deficit, domain)
+               < std::tie(cover_deficit, cover_domain)) {
+      cover_domain = domain;
+      cover_threshold = threshold;
+      cover_deficit = deficit;
     }
   }
-  if ((cover_diagnostic || flow_apply) && cover_domain >= 0) {
-    std::vector<int> flow_assignment = diagnose_flow_corridors(
-        model, state, cluster_nets, net_paths, exposure, cover_domain);
+  int flow_domain = -1;
+  const bool path_objective_can_improve
+      = frontier_hops > 1 || frontier_ratio_sum > 1;
+  for (int domain : frontier_domains) {
+    if (!path_objective_can_improve) {
+      break;
+    }
+    if (flow_domain < 0
+        || std::tie(hop_frontier_domain_paths[flow_domain],
+                    ratio_frontier_domain_paths[flow_domain],
+                    state.domain_ratio[flow_domain],
+                    state.domain_load[flow_domain])
+               < std::tie(hop_frontier_domain_paths[domain],
+                          ratio_frontier_domain_paths[domain],
+                          state.domain_ratio[domain],
+                          state.domain_load[domain])) {
+      flow_domain = domain;
+    }
+  }
+  const int refinement_domain = flow_apply ? flow_domain : cover_domain;
+  if ((cover_diagnostic || flow_apply) && refinement_domain >= 0) {
     if (flow_apply) {
+      std::cerr << "PATRON_PATH_REFINEMENT_DOMAIN domain="
+                << refinement_domain
+                << " maximum_hop_path_count="
+                << hop_frontier_domain_paths[refinement_domain]
+                << " maximum_ratio_sum_path_count="
+                << ratio_frontier_domain_paths[refinement_domain]
+                << " ratio=" << state.domain_ratio[refinement_domain]
+                << " load=" << state.domain_load[refinement_domain]
+                << '\n';
+    }
+    std::vector<int> flow_assignment = diagnose_flow_corridors(
+        model, state, cluster_nets, net_paths, exposure, refinement_domain);
+    if (flow_apply) {
+      const int used_parts = static_cast<int>([&]() {
+        std::set<int> parts(flow_assignment.begin(), flow_assignment.end());
+        return parts.size();
+      }());
       if (!flow_assignment.empty()
+          && used_parts >= model.min_used_parts
           && proxy_transport_feasible(model, flow_assignment)) {
         ProxyState refined = build_proxy_state(model, &flow_assignment);
         long long evaluated_tail_moves = 0;
@@ -4237,8 +4307,8 @@ void run_scalable(const Model& model,
              model.flow_version >= 8
                  && iteration < model.flow_max_tail_moves;
              ++iteration) {
-          require(!refined.slack_path_order.empty(),
-                  "flow tail repair has no timing paths");
+          require(!refined.objective_path_order.empty(),
+                  "flow tail repair has no objective paths");
           std::set<int> candidate_clusters;
           const auto add_path_candidates = [&](int path) {
             if (model.path[path].start_cluster >= 0) {
@@ -4254,16 +4324,34 @@ void run_scalable(const Model& model,
                                         model.net[net].sinks.end());
             }
           };
-          const long long worst_rank = refined.ranked_path_order.begin()->first;
-          int exact_frontier_paths = 0;
-          for (const auto& ranked_path : refined.ranked_path_order) {
-            if (ranked_path.first != worst_rank
-                || exact_frontier_paths
+          const long long maximum_hops
+              = refined.hop_path_order.rbegin()->first;
+          const long long maximum_ratio_sum
+              = refined.ratio_sum_path_order.rbegin()->first;
+          std::set<int> exact_frontier_paths;
+          int selected_hop_paths = 0;
+          for (auto item = refined.hop_path_order.rbegin();
+               item != refined.hop_path_order.rend(); ++item) {
+            if (item->first != maximum_hops
+                || selected_hop_paths >= model.flow_max_frontier_paths) {
+              break;
+            }
+            exact_frontier_paths.insert(item->second);
+            ++selected_hop_paths;
+          }
+          int selected_ratio_sum_paths = 0;
+          for (auto item = refined.ratio_sum_path_order.rbegin();
+               item != refined.ratio_sum_path_order.rend(); ++item) {
+            if (item->first != maximum_ratio_sum
+                || selected_ratio_sum_paths
                        >= model.flow_max_frontier_paths) {
               break;
             }
-            ++exact_frontier_paths;
-            add_path_candidates(ranked_path.second);
+            exact_frontier_paths.insert(item->second);
+            ++selected_ratio_sum_paths;
+          }
+          for (int path : exact_frontier_paths) {
+            add_path_candidates(path);
           }
           bool found = false;
           ProxyDelta best;
@@ -4307,19 +4395,18 @@ void run_scalable(const Model& model,
           };
           evaluate_candidates();
           if (!found && model.flow_version >= 9) {
-            // A locally immovable exact-worst path must not terminate timing
-            // closure while another near-critical path can still improve the
-            // global TNS without degrading WNS.  Expand deterministically to
-            // the ranked path window only after the exact frontier stalls.
+            // Expand from the union of the independent maximum-hop and
+            // maximum-ratio-sum frontiers only after that union stalls.
             candidate_clusters.clear();
             const int frontier_paths = std::min(
                 model.flow_max_frontier_paths, model.paths);
             int ranked_count = 0;
-            for (const auto& ranked_path : refined.ranked_path_order) {
+            for (auto item = refined.objective_path_order.rbegin();
+                 item != refined.objective_path_order.rend(); ++item) {
               if (ranked_count >= frontier_paths) {
                 break;
               }
-              add_path_candidates(ranked_path.second);
+              add_path_candidates(std::get<2>(*item));
               ++ranked_count;
             }
             evaluate_candidates();
@@ -4883,10 +4970,8 @@ void run_scalable(const Model& model,
   const ProxyState endpoint = build_proxy_state(model, &state.assignment);
   require(endpoint.evaluation.feasible,
           "final scalable assignment is infeasible");
-  require(endpoint.evaluation.ranked.size() == 10
-              && endpoint.evaluation.ranked[0] == 0
-              && endpoint.evaluation.ranked[1] == 0,
-          "final scalable assignment violates transport capacity");
+  require(endpoint.evaluation.ranked.size() == 10,
+          "final scalable assignment objective rank is invalid");
   std::string mode = "endpoint-exact-critical-ejection-v6";
   if (model.flow_version == 14) {
     mode = "endpoint-exact-critical-flow-v14";

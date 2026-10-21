@@ -1,4 +1,5 @@
 import json
+import copy
 import os
 import shutil
 import subprocess
@@ -9,7 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
-from emuflow.experiment_partition import _rebuild_timing_path_objective
+from emuflow.experiment_partition import _rebuild_timing_path_objective, _validate_post_refinement_selection
+from emuflow.mfspart_refine import validate_mfspart_native_certificate
+from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.mfspart_provider import (
     _partition_graph,
@@ -235,9 +238,27 @@ class MFSPartPhase3Test(unittest.TestCase):
                 refiner=self.executables["refiner"],
                 refiner_checker=self.executables["refiner_checker"],
             )
+            certificate = validate_mfspart_native_certificate(
+                root / "post-refinement/mfspart_refiner.in",
+                root / "post-refinement/mfspart_refiner.out",
+                checker=self.executables["refiner_checker"],
+            )
+            metadata = refined["provider_metadata"]["directional_mfspart_post_refinement"]
+            selected = _validate_post_refinement_selection(report, metadata, certificate, 2)
+            self.assertEqual(selected, certificate["initial_assignment"])
+            tampered = copy.deepcopy(report)
+            tampered["assignment_selection"]["selected"] = "refined-candidate"
+            with self.assertRaisesRegex(ValidationError, "selection disagrees"):
+                _validate_post_refinement_selection(tampered, metadata, certificate, 2)
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["direction_source"], "EmuIR net drivers/sinks")
         self.assertEqual(refined["provider"], initial["provider"])
+        self.assertEqual(refined["cluster_assignment"], initial["cluster_assignment"])
+        self.assertEqual(report["assignment_selection"]["selected"], "initialization")
+        self.assertEqual(report["assignment_selection"]["candidate_used_fpgas"], 1)
+        self.assertEqual(report["assignment_selection"]["selected_used_fpgas"], 2)
+        self.assertEqual(report["assignment_selection"]["selected_prefix"], 0)
+        self.assertEqual(report["assignment_selection"]["selected_cumulative_gain"], 0.0)
         self.assertEqual(
             refined["provider_metadata"][
                 "directional_mfspart_post_refinement"

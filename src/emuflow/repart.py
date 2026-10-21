@@ -164,7 +164,7 @@ def _balanced_repart_capacities(
     resource_dimensions: Sequence[str],
     requested_tolerance: float,
     tolerance_overrides: Optional[Mapping[str, float]] = None,
-    balance_dimensions: Optional[Sequence[str]] = None,
+    balance_dimensions: Optional[Sequence[str]] = (),
 ) -> Tuple[List[str], List[List[int]], float]:
     dimensions = ["cells", *resource_dimensions]
     weights = [
@@ -237,7 +237,7 @@ def export_repart_inputs(
             resource_dimensions,
             float(constraints["balance_tolerance"]),
             constraints.get("balance_tolerance_by_dimension", {}),
-            constraints.get("balance_dimensions"),
+            constraints.get("balance_dimensions", ()),
         )
     )
     padded_dimensions = [

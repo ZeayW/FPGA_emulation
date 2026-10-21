@@ -10,7 +10,7 @@ diff --git a/openparf/ops/direct_lg/src/dl_solver.cpp b/openparf/ops/direct_lg/s
          return false;
        }
      }
-@@ -1617,41 +1617,25 @@ bool DLSolver::greedyLegalizeInst(DLInstance &inst) {
+@@ -1638,46 +1638,30 @@ bool DLSolver::greedyLegalizeInst(DLInstance &inst) {
    auto         end = _spiralAccessor.end();
    XY<RealType> initXY(computeInstCentroid(inst.precluster));
  
@@ -21,7 +21,11 @@ diff --git a/openparf/ops/direct_lg/src/dl_solver.cpp b/openparf/ops/direct_lg/s
      if (!_bndBox.contain(xy)) {
        continue;
      }
-     auto     &site = _siteMap(xy.x(), xy.y());
+     auto site_id = siteIdAtSearchCoordinate(xy.x(), xy.y());
+     if (site_id == kIndexTypeMax) {
+       continue;
+     }
+     auto     &site = _siteMap[site_id];
      Candidate cand(site.det);
      if (instAndSiteAreCompatible(inst, site) && instAndSiteClockCompatible(inst, site) &&
          addInstToCandidateImpl(inst, cand) && addInstToSignature(inst, cand.sig)) {
