@@ -403,8 +403,16 @@ def build_xilinx_logic_segment_timing(
     output_path: Path,
     *,
     _timing_graph: Optional[_TimingGraph] = None,
+    allow_legacy_identity: bool = False,
 ) -> Dict[str, Any]:
-    identity = read_json(identity_path)
+    from .logic_segment_identity_storage import (
+        LogicSegmentIdentityView,
+        read_logic_segment_identity_storage,
+    )
+
+    identity = read_logic_segment_identity_storage(
+        identity_path, allow_legacy=allow_legacy_identity
+    )
     validate_logic_segment_identity(identity)
     graph = (
         _timing_graph
@@ -432,7 +440,12 @@ def build_xilinx_logic_segment_timing(
         ),
     }
     def records():
-        for segment in identity["segments"]:
+        source = (
+            identity.canonical_segments()
+            if isinstance(identity, LogicSegmentIdentityView)
+            else identity["segments"]
+        )
+        for segment in source:
             delay, actual_start = graph.longest(
                 [segment["start_pin"]], segment["end_pin"]
             )
@@ -446,16 +459,21 @@ def build_xilinx_logic_segment_timing(
 
     from .logic_segment_timing_storage import write_logic_segment_timing_storage
 
-    view = write_logic_segment_timing_storage(
-        output_path,
-        header=header,
-        segments=records(),
-        unsupported_member_paths=identity["unsupported_member_paths"],
-    )
     try:
-        validation = view.validate_timing()
+        view = write_logic_segment_timing_storage(
+            output_path,
+            header=header,
+            segments=records(),
+            unsupported_member_paths=identity["unsupported_member_paths"],
+        )
+        try:
+            validation = view.validate_timing()
+        finally:
+            view.close()
     finally:
-        view.close()
+        close = getattr(identity, "close", None)
+        if callable(close):
+            close()
     return {**validation, "output": str(output_path)}
 
 

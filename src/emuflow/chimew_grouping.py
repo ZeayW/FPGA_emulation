@@ -11,8 +11,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import struct
 import subprocess
 import tempfile
+import zlib
+from array import array
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
@@ -32,6 +35,12 @@ CHIMEW_SCHEDULE_RATIO_PROVIDER = (
     "emuflow-lane-occupancy-ratio-materializer-v1"
 )
 CHIMEW_TIMING_GUARD_PROVIDER = "emuflow-chimew-critical-lane-guard-v1"
+
+_TYPED_INPUT_MAGIC = b"EMCHGR3\0"
+_TYPED_INPUT_END_MAGIC = b"EMCHGRE\0"
+_TYPED_INPUT_VERSION = 1
+_TYPED_INPUT_ENDIAN_MARKER = 0x01020304
+_NATIVE_I32_MAX = (1 << 31) - 1
 
 
 def _popcount(value: int) -> int:
@@ -248,9 +257,53 @@ def _nearest_key(
     )
 
 
+class _GuardedLaneDomains(Sequence[Optional[Tuple[str, str, str, int]]]):
+    """Lazy parallel guard column; no signal-sized dictionary is retained."""
+
+    def __init__(
+        self,
+        entries: Sequence[Mapping[str, Any]],
+        protected_lanes: set[Tuple[str, str, str, int]],
+    ) -> None:
+        self._entries = entries
+        self._protected_lanes = protected_lanes
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __getitem__(
+        self, index: int | slice
+    ) -> Any:
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < -len(self._entries) or index >= len(self._entries):
+            raise IndexError(index)
+        if not self._protected_lanes:
+            return None
+        entry = self._entries[index]
+        lane = (
+            entry["link"],
+            entry["from"],
+            entry["to"],
+            _integer(entry.get("lane"), f"{entry['id']}.lane"),
+        )
+        return lane if lane in self._protected_lanes else None
+
+
+def _guard_at(
+    guarded_lanes: Sequence[Optional[Tuple[str, str, str, int]]]
+    | Mapping[str, Optional[Tuple[str, str, str, int]]],
+    entries: Sequence[Mapping[str, Any]],
+    index: int,
+) -> Optional[Tuple[str, str, str, int]]:
+    if isinstance(guarded_lanes, Mapping):
+        return guarded_lanes.get(entries[index]["id"])
+    return guarded_lanes[index]
+
+
 def _guarded_lane_domains(
     entries: Sequence[Mapping[str, Any]], protected_entries: set[str]
-) -> Dict[str, Optional[Tuple[str, str, str, int]]]:
+) -> _GuardedLaneDomains:
     """Keep every member of a protected entry's frozen lane together.
 
     This is an EmuFlow timing extension around Chimew Algorithm 1.  Protecting
@@ -258,9 +311,9 @@ def _guarded_lane_domains(
     Phase 5 mux membership seen by the timing prepass.
     """
 
-    if not protected_entries:
-        return {entry["id"]: None for entry in entries}
-    unknown = protected_entries - {entry["id"] for entry in entries}
+    unknown = set(protected_entries)
+    for entry in entries:
+        unknown.discard(entry["id"])
     if unknown:
         raise ValidationError(
             "Chimew timing guard references unknown schedule entries: "
@@ -276,19 +329,7 @@ def _guarded_lane_domains(
         for entry in entries
         if entry["id"] in protected_entries
     }
-    return {
-        entry["id"]: (
-            lane
-            if (lane := (
-                entry["link"],
-                entry["from"],
-                entry["to"],
-                _integer(entry.get("lane"), f"{entry['id']}.lane"),
-            )) in protected_lanes
-            else None
-        )
-        for entry in entries
-    }
+    return _GuardedLaneDomains(entries, protected_lanes)
 
 
 def _schedule_timing_guard(schedule: Mapping[str, Any]) -> Optional[set[str]]:
@@ -311,31 +352,37 @@ def _schedule_timing_guard(schedule: Mapping[str, Any]) -> Optional[set[str]]:
     return set(entries)
 
 
-def _oracle_groups(
+def _oracle_group_array(
     entries: Sequence[Mapping[str, Any]],
     encodings: Mapping[str, int],
     guarded_lanes: Optional[
-        Mapping[str, Optional[Tuple[str, str, str, int]]]
+        Sequence[Optional[Tuple[str, str, str, int]]]
+        | Mapping[str, Optional[Tuple[str, str, str, int]]]
     ] = None,
-) -> tuple[Dict[str, int], int, int]:
-    guarded_lanes = guarded_lanes or {}
+) -> tuple[array, int, int]:
+    # Independent replay remains linear in signal count by design.  Fixed-width
+    # assignments and bucket ordinals remove dict/object amplification, but the
+    # qualification oracle still has to visit and retain every live signal.
+    guarded_lanes = guarded_lanes or ()
     buckets: Dict[
         tuple[
             Tuple[str, str, str],
             int,
             Optional[Tuple[str, str, str, int]],
         ],
-        list[int],
-    ] = defaultdict(list)
+        array,
+    ] = defaultdict(lambda: array("q"))
     for index, entry in enumerate(entries):
         buckets[
             (
                 _domain(entry),
                 _tdm_ratio(entry),
-                guarded_lanes.get(entry["id"]),
+                _guard_at(guarded_lanes, entries, index)
+                if guarded_lanes
+                else None,
             )
         ].append(index)
-    assignment: Dict[str, int] = {}
+    assignment = array("q", [-1]) * len(entries)
     group_count = 0
     crossing_bits = 0
     guard_sentinel = ("", "", "", -1)
@@ -407,73 +454,355 @@ def _oracle_groups(
                 multiplicity[selected_encoding] -= 1
                 remaining_count -= 1
             for index in members:
-                assignment[entries[index]["id"]] = group_count
+                assignment[index] = group_count
             crossing_bits += _popcount(target)
             group_count += 1
     return assignment, group_count, crossing_bits
 
 
-def _run_native(
+def _oracle_groups(
     entries: Sequence[Mapping[str, Any]],
     encodings: Mapping[str, int],
-    guarded_lanes: Mapping[str, Optional[Tuple[str, str, str, int]]],
-    executable: Optional[str],
+    guarded_lanes: Optional[
+        Sequence[Optional[Tuple[str, str, str, int]]]
+        | Mapping[str, Optional[Tuple[str, str, str, int]]]
+    ] = None,
 ) -> tuple[Dict[str, int], int, int]:
+    """Compatibility view for small reference tests.
+
+    Production uses the fixed-width assignment returned by
+    :func:`_oracle_group_array`; only explicit reference callers pay for the
+    historical string-keyed dictionary.
+    """
+
+    assignment, group_count, crossing_bits = _oracle_group_array(
+        entries, encodings, guarded_lanes
+    )
+    return (
+        {entry["id"]: assignment[index] for index, entry in enumerate(entries)},
+        group_count,
+        crossing_bits,
+    )
+
+
+def _native_i32(value: int, label: str, *, minimum: int = 0) -> int:
+    value = _integer(value, label, minimum=minimum)
+    if value > _NATIVE_I32_MAX:
+        raise ValidationError(f"{label}: exceeds the native 32-bit limit")
+    return value
+
+
+def _typed_signal_records(
+    entries: Sequence[Mapping[str, Any]],
+    encodings: Mapping[str, int],
+    guarded_lanes: Sequence[Optional[Tuple[str, str, str, int]]]
+    | Mapping[str, Optional[Tuple[str, str, str, int]]],
+    domain_rank: Optional[Mapping[Tuple[str, str, str], int]] = None,
+):
+    """Yield deterministic fixed-width records in schedule-entry order.
+
+    The native kernel needs lexical domain order, not the domain strings.
+    Guard lanes remain fixed-width fields and never expand the domain-rank map;
+    a guard lane always belongs to the entry's own direction-qualified domain.
+    """
+
+    if domain_rank is None:
+        domains = sorted({_domain(entry) for entry in entries})
+        domain_rank = {value: index for index, value in enumerate(domains)}
+    for index, entry in enumerate(entries):
+        guard = _guard_at(guarded_lanes, entries, index)
+        guard_lane = -1
+        if guard is not None:
+            if guard[:3] != _domain(entry):
+                raise ValidationError("Chimew timing guard domain disagrees")
+            guard_lane = _native_i32(guard[3], f"{entry['id']}.guard_lane")
+        encoding = _integer(
+            encodings[entry["id"]], f"{entry['id']}.encoding"
+        )
+        if encoding >= 1 << 64:
+            raise ValidationError(
+                f"{entry['id']}.encoding: exceeds the native 64-bit limit"
+            )
+        yield struct.pack(
+            "<B4iQ",
+            ord("S"),
+            domain_rank[_domain(entry)],
+            guard_lane,
+            _native_i32(_tdm_ratio(entry), f"{entry['id']}.tdm_ratio", minimum=1),
+            _native_i32(_tdm_slot(entry, index), f"{entry['id']}.slot"),
+            encoding,
+        )
+
+
+def _serialize_typed(
+    entries: Sequence[Mapping[str, Any]],
+    encodings: Mapping[str, int],
+    guarded_lanes: Sequence[Optional[Tuple[str, str, str, int]]]
+    | Mapping[str, Optional[Tuple[str, str, str, int]]],
+    stream: Any,
+    *,
+    logical_sha256: Optional[str] = None,
+) -> Mapping[str, Any]:
+    """Stream a sealed fixed-width native input without scratch publication."""
+
+    if not entries or len(entries) > _NATIVE_I32_MAX:
+        raise ValidationError("Chimew typed input signal count is invalid")
+    domains = sorted({_domain(entry) for entry in entries})
+    domain_rank = {value: index for index, value in enumerate(domains)}
+    if logical_sha256 is None:
+        logical_sha256 = _typed_logical_sha256(
+            entries, encodings, guarded_lanes, domain_rank=domain_rank
+        )
+    if (
+        not isinstance(logical_sha256, str)
+        or len(logical_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in logical_sha256)
+    ):
+        raise ValidationError("Chimew typed input logical digest is invalid")
+    logical_digest = bytes.fromhex(logical_sha256)
+    # CRC-32 covers the exact header and record bytes.  The two-pass SHA costs
+    # more CPU than the historical one-pass text builder, but avoids its joined
+    # graph-sized text and scratch publication.  The second-pass SHA is
+    # computed from bytes actually handed to the pipe and must still equal the
+    # first-pass digest before a trailer is emitted.  This makes a mutable
+    # source mapping fail closed instead of publishing a mixed-generation
+    # stream.
+    header = struct.pack(
+        "<8sIIQ32s",
+        _TYPED_INPUT_MAGIC,
+        _TYPED_INPUT_VERSION,
+        _TYPED_INPUT_ENDIAN_MARKER,
+        len(entries),
+        logical_digest,
+    )
+    stream.write(header)
+    checksum = zlib.crc32(header)
+    emitted_digest = hashlib.sha256()
+    observed = 0
+    batch = bytearray()
+    for payload in _typed_signal_records(
+        entries, encodings, guarded_lanes, domain_rank
+    ):
+        batch.extend(payload)
+        observed += 1
+        if len(batch) >= 1 << 20:
+            emitted_digest.update(batch)
+            stream.write(batch)
+            checksum = zlib.crc32(batch, checksum)
+            batch.clear()
+    if batch:
+        emitted_digest.update(batch)
+        stream.write(batch)
+        checksum = zlib.crc32(batch, checksum)
+    if observed != len(entries):
+        raise ValidationError("Chimew typed input record count disagrees")
+    if emitted_digest.digest() != logical_digest:
+        raise ValidationError("Chimew typed input changed while streaming")
+    stream.write(
+        struct.pack(
+            "<8sQ32s", _TYPED_INPUT_END_MAGIC, checksum, logical_digest
+        )
+    )
+    return {
+        "records": observed,
+        "logical_sha256": logical_digest.hex(),
+        "stream_checksum": checksum,
+    }
+
+
+def _typed_logical_sha256(
+    entries: Sequence[Mapping[str, Any]],
+    encodings: Mapping[str, int],
+    guarded_lanes: Sequence[Optional[Tuple[str, str, str, int]]]
+    | Mapping[str, Optional[Tuple[str, str, str, int]]],
+    *,
+    domain_rank: Optional[Mapping[Tuple[str, str, str], int]] = None,
+) -> str:
+    """Hash exactly the canonical record bytes accepted by the C++ parser."""
+
+    logical = hashlib.sha256()
+    batch = bytearray()
+    for payload in _typed_signal_records(
+        entries, encodings, guarded_lanes, domain_rank
+    ):
+        batch.extend(payload)
+        if len(batch) >= 1 << 20:
+            logical.update(batch)
+            batch.clear()
+    if batch:
+        logical.update(batch)
+    return logical.hexdigest()
+
+
+def _serialize_legacy_text(
+    entries: Sequence[Mapping[str, Any]],
+    encodings: Mapping[str, int],
+    guarded_lanes: Sequence[Optional[Tuple[str, str, str, int]]]
+    | Mapping[str, Optional[Tuple[str, str, str, int]]],
+    path: Path,
+) -> None:
+    """Write the historical text protocol for explicit differential tests."""
+
     guard_sentinel = ("", "", "", -1)
     domains = sorted(
         {
-            (_domain(entry), guarded_lanes.get(entry["id"]))
-            for entry in entries
+            (_domain(entry), _guard_at(guarded_lanes, entries, index))
+            for index, entry in enumerate(entries)
         },
         key=lambda item: (
             item[0], item[1] is not None, item[1] or guard_sentinel
         ),
     )
     domain_index = {domain: index for index, domain in enumerate(domains)}
+    with path.open("w", encoding="utf-8") as stream:
+        stream.write("EMUFLOW_CHIMEW_GROUPER_INPUT_V2\n")
+        for index, entry in enumerate(entries):
+            guard = _guard_at(guarded_lanes, entries, index)
+            stream.write(
+                f"SIGNAL {index} {domain_index[(_domain(entry), guard)]} "
+                f"{_tdm_ratio(entry)} {_tdm_slot(entry, index)} "
+                f"{encodings[entry['id']]}\n"
+            )
+
+
+def _parse_native_output(stream: Any, signal_count: int) -> tuple[array, int, int]:
+    def read_fields(expected: bytes, size: int) -> list[bytes]:
+        raw = stream.readline()
+        fields = raw.split()
+        if len(fields) != size or fields[:1] != [expected]:
+            raise EmuFlowError("Chimew signal grouper output is malformed")
+        return fields
+
+    header = stream.readline().rstrip(b"\r\n")
+    if header != b"EMUFLOW_CHIMEW_GROUPER_OUTPUT_V2":
+        raise EmuFlowError("Chimew signal grouper output header is invalid")
+    fields = read_fields(b"METRIC", 3)
+    try:
+        group_count, crossing_bits = int(fields[1]), int(fields[2])
+    except ValueError as error:
+        raise EmuFlowError("Chimew signal grouper metric is malformed") from error
+    if not 0 < group_count <= signal_count or crossing_bits < 0:
+        raise EmuFlowError("Chimew signal grouper metric is invalid")
+    assignment = array("q", [-1]) * signal_count
+    for expected_index in range(signal_count):
+        fields = read_fields(b"ASSIGN", 3)
+        try:
+            index, group = int(fields[1]), int(fields[2])
+        except ValueError as error:
+            raise EmuFlowError(
+                "Chimew signal grouper assignment is malformed"
+            ) from error
+        if index != expected_index or not 0 <= group < group_count:
+            raise EmuFlowError(
+                "Chimew grouper returned an invalid signal assignment"
+            )
+        assignment[index] = group
+    if stream.read(1):
+        raise EmuFlowError("Chimew signal grouper output has trailing data")
+    return assignment, group_count, crossing_bits
+
+
+def _raise_after_native_parse_error(
+    process: subprocess.Popen[Any], stderr_stream: Any, grammar_error: EmuFlowError
+) -> None:
+    if process.stdout is not None:
+        process.stdout.close()
+    try:
+        returncode = process.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        returncode = process.wait()
+    stderr_stream.flush()
+    stderr_stream.seek(0)
+    detail = stderr_stream.read().strip()
+    if returncode != 0:
+        raise EmuFlowError(
+            "Chimew signal grouper failed "
+            f"with exit status {returncode}"
+            + (f": {detail}" if detail else "")
+        ) from grammar_error
+    raise grammar_error
+
+
+def _run_native(
+    entries: Sequence[Mapping[str, Any]],
+    encodings: Mapping[str, int],
+    guarded_lanes: Sequence[Optional[Tuple[str, str, str, int]]]
+    | Mapping[str, Optional[Tuple[str, str, str, int]]],
+    executable: Optional[str],
+) -> tuple[array, int, int]:
     with tempfile.TemporaryDirectory(prefix="emuflow-chimew-grouping-") as temporary:
         root = Path(temporary)
-        input_path = root / "input.txt"
-        output_path = root / "output.txt"
-        lines = ["EMUFLOW_CHIMEW_GROUPER_INPUT_V2"]
-        for index, entry in enumerate(entries):
-            lines.append(
-                f"SIGNAL {index} "
-                f"{domain_index[(_domain(entry), guarded_lanes.get(entry['id']))]} "
-                f"{_tdm_ratio(entry)} {_tdm_slot(entry, index)} "
-                f"{encodings[entry['id']]}"
-            )
-        input_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        stderr_path = root / "stderr.txt"
+        logical_sha256 = _typed_logical_sha256(
+            entries, encodings, guarded_lanes
+        )
         command = resolve_native_executable(
             "emuflow_chimew_signal_grouper", executable
         )
-        completed = subprocess.run(
-            [command, str(input_path), str(output_path)],
-            text=True,
-            capture_output=True,
-        )
-        if completed.returncode != 0:
-            raise EmuFlowError(
-                "Chimew signal grouper failed: "
-                + (completed.stderr.strip() or completed.stdout.strip())
+        with stderr_path.open("w+", encoding="utf-8") as stderr_stream:
+            process = subprocess.Popen(
+                [command, "--typed-input", "-", "-", logical_sha256],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr_stream,
             )
-        lines = output_path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_CHIMEW_GROUPER_OUTPUT_V2":
-        raise EmuFlowError("Chimew signal grouper output header is invalid")
-    assignment: Dict[str, int] = {}
-    group_count = crossing_bits = None
-    for line in lines[1:]:
-        fields = line.split()
-        if fields[:1] == ["METRIC"] and len(fields) == 3:
-            group_count, crossing_bits = int(fields[1]), int(fields[2])
-        elif fields[:1] == ["ASSIGN"] and len(fields) == 3:
-            index = int(fields[1])
-            if not 0 <= index < len(entries):
-                raise EmuFlowError("Chimew grouper returned an invalid signal")
-            assignment[entries[index]["id"]] = int(fields[2])
-        else:
-            raise EmuFlowError("Chimew signal grouper output is malformed")
-    if len(assignment) != len(entries) or group_count is None or crossing_bits is None:
-        raise EmuFlowError("Chimew signal grouper output is incomplete")
+            if process.stdin is None or process.stdout is None:
+                raise EmuFlowError("Chimew signal grouper pipe is unavailable")
+            try:
+                _serialize_typed(
+                    entries,
+                    encodings,
+                    guarded_lanes,
+                    process.stdin,
+                    logical_sha256=logical_sha256,
+                )
+                process.stdin.close()
+                process.stdin = None
+            except BrokenPipeError as error:
+                try:
+                    process.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+                process.stdin = None
+                returncode = process.wait()
+                process.stdout.close()
+                stderr_stream.flush()
+                stderr_stream.seek(0)
+                detail = stderr_stream.read().strip()
+                raise EmuFlowError(
+                    "Chimew signal grouper rejected typed input "
+                    f"with exit status {returncode}"
+                    + (f": {detail}" if detail else "")
+                ) from error
+            except BaseException:
+                try:
+                    process.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+                process.stdin = None
+                process.stdout.close()
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+                raise
+            try:
+                assignment, group_count, crossing_bits = _parse_native_output(
+                    process.stdout, len(entries)
+                )
+            except EmuFlowError as error:
+                _raise_after_native_parse_error(process, stderr_stream, error)
+            process.stdout.close()
+            returncode = process.wait()
+            if returncode != 0:
+                stderr_stream.flush()
+                stderr_stream.seek(0)
+                detail = stderr_stream.read().strip()
+                raise EmuFlowError(
+                    "Chimew signal grouper failed "
+                    f"with exit status {returncode}"
+                    + (f": {detail}" if detail else "")
+                )
     return assignment, group_count, crossing_bits
 
 
@@ -502,7 +831,7 @@ def build_chimew_initial_groups(
     )
     guarded_lanes = _guarded_lane_domains(entries, effective_guard)
     native = _run_native(entries, encodings, guarded_lanes, executable)
-    oracle = _oracle_groups(entries, encodings, guarded_lanes)
+    oracle = _oracle_group_array(entries, encodings, guarded_lanes)
     if native != oracle:
         raise EmuFlowError("native Chimew grouping disagrees with Python replay")
     assignment, group_count, crossing_bits = native
@@ -519,10 +848,10 @@ def build_chimew_initial_groups(
         "timing_guard": {
             "scope": "EmuFlow extension, not a Chimew paper claim",
             "protected_entries": sum(
-                guarded_lanes[entry["id"]] is not None for entry in entries
+                guard is not None for guard in guarded_lanes
             ),
             "protected_lane_groups": len(
-                {guard for guard in guarded_lanes.values() if guard is not None}
+                {guard for guard in guarded_lanes if guard is not None}
             ),
         },
         "metrics": {
@@ -534,14 +863,14 @@ def build_chimew_initial_groups(
         "entries": [
             {
                 "schedule_entry": entry["id"],
-                "group": assignment[entry["id"]],
+                "group": assignment[index],
                 "encoding": encodings[entry["id"]],
                 **(
-                    {"timing_guard_lane": list(guarded_lanes[entry["id"]])}
-                    if guarded_lanes[entry["id"]] is not None
+                    {"timing_guard_lane": list(guarded_lanes[index])}
+                    if guarded_lanes[index] is not None
                     else {}
                 ),
             }
-            for entry in entries
+            for index, entry in enumerate(entries)
         ],
     }

@@ -762,6 +762,15 @@ def run_phase3(
             pressure_nets=len(model.get("nets", [])),
             pressure_paths=len(model.get("paths", [])),
         )
+        if hasattr(model.get("nets"), "payload_bytes"):
+            phase3_runtime_observe(
+                # Packed net identity/member/ordinal storage only.  This does
+                # not include final cluster/path records or Python overhead.
+                pressure_compact_net_payload_bytes=model["nets"].payload_bytes,
+                pressure_construction_identity_bytes=(
+                    model["nets"].construction_identity_bytes
+                ),
+            )
         patron_physical_feedback = None
         patron_physical_feedback_validation = None
         if patron_physical_system_timing_path is not None:

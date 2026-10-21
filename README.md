@@ -98,8 +98,9 @@ the native analyzer result has stopped rebuilding dependency, launch, level,
 and depth dictionaries in Python: those relations now remain in fixed-width
 integer arrays/CSR and expand only the current cut while byte-backed semantic
 records are emitted. A fresh NVDLA replay is still required to measure the new
-peak and attribute the remaining candidate characterization, pressure-model,
-semantic-record, exact-binary and native internal graph/capture costs.
+peak and attribute the remaining final cluster/path objects, eligible-candidate
+identity set, semantic-record, exact-binary and native internal graph/capture
+costs.
 `assignment.json` contains only the contract schema and SHA-256 identity;
 explicit legacy-style reads reconstruct and verify the same logical contract.
 Completed assignment-index v1/v2 artifacts remain readable.
@@ -162,9 +163,21 @@ are not substitutes for the required NVDLA run. On a separate synthetic
 changed from 0.832--0.847 seconds with logical dictionary replay to
 0.736--0.762 seconds with the typed cursor; traced peak allocation remained
 bounded at 0.039 MiB. This is isolated adapter evidence. Canonical hashing is
-still linear in the logical record count; combinational-candidate
-characterization, pressure-model construction and the C++ capture vector
-remain migration work.
+still linear in the logical record count. Compact combinational-candidate
+characterization now reads ordered integer endpoints, deduplicates arcs in a
+temporary relation and runs SCC over fixed-width CSR. PATRON pressure-model
+construction likewise reads the compact EmuIR store through ordered joins,
+interns UTF-8 identities once, and keeps cluster/net membership and driver/sink
+relations in ordinal arrays. Native PATRON input is written record by record
+through a synchronized same-directory temporary file; the previous `lines`
+plus `join` copy is gone. Its strict reader checks logical schema, ownership,
+bit ordinals, endpoint order and counts before any native search. A
+million-sink synthetic membership comparison reduced process RSS from about
+84 MiB to 28 MiB while changing construction time from 0.101 to 0.110 seconds;
+the compact net identity/member/ordinal payload was 8,000,087 bytes. This is
+isolated representation evidence rather than NVDLA qualification. Final
+cluster/path objects, the eligible candidate-name set and the C++ analyzer's
+graph/capture vectors remain graph-scale migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
@@ -399,9 +412,20 @@ MiB to 2.99 MiB; 15,156,114 bytes of JSON became a 1,068-byte selector plus a
 10,211,328-byte sidecar. Full typed publication and validation took 7.043
 seconds versus 0.961 seconds for list construction and JSON writing. These are
 memory, contract and temporary-I/O measurements, not runtime or NVDLA
-qualification. Initial lookahead grouping and the native C++ kernel's internal
-candidate/group vectors remain graph-scale work. The Python-wide bank list and
-global `flat_channels` map have been removed; one bank's normalized channel
+qualification. Chimew lookahead grouping now sends a versioned fixed-width
+little-endian stream directly to the native kernel and streams assignment rows
+back into fixed-width arrays. The producer recomputes the complete SHA-256
+while emitting and the native consumer independently checks header, trailer,
+command-line identity, record counts/tags and CRC before accepting the stream.
+The native kernel assigns directly from sorted signal indices and no longer
+retains a `vector<vector<int>>` group population. A 100,000-signal differential
+benchmark produced byte-identical assignments; removing the text handoff
+reduced Python traced peak from 12.923 to 1.091 MiB and native peak RSS from
+about 8.04 to 5.23 MiB in that run, while serialization rose from roughly 0.18
+to 0.31 seconds. This is a memory and contract improvement, not a CPU or NVDLA
+claim. Native signal/order/assignment/candidate arrays and the Python
+qualification oracle remain linear in signal count. The Python-wide bank list
+and global `flat_channels` map have been removed; one bank's normalized channel
 record remains live while it is checked, and qualification writes channel
 lookup rows in batches of at most 4,096 even when one bank is much larger.
 Native bank/channel assignment now consumes an explicit versioned little-endian
@@ -948,6 +972,22 @@ keys are globally disjoint. On 50,000 records, typed read plus validation took
 with 0.334 seconds, 53.75 MB and a 14.43 MB legacy JSON file. The memory and
 size reduction is established; the higher isolated validation time and full
 NVDLA Phase 7C result remain qualification targets.
+
+Logic-segment query preparation and measurement import now use the same
+content-addressed typed identity owner. Query TSV generation spools ordered
+rows on disk, publishes the query and selector as one recoverable generation,
+and does not build a graph-sized segment list or identity JSON document.
+Measurement import streams the TSV into a temporary typed relation, proves
+exact coverage and equations with set joins, and writes the final timing store
+directly; the production eight-column format is mandatory unless the separate
+legacy option is explicitly enabled. On a 100,000-row synthetic run, identity
+and query publication took 2.388 seconds, measurement import took 6.444
+seconds, traced Python peak was 7.962 MiB, and the importer executed 15 SQL
+queries with no per-row identity lookup. The identity store was 22,040,576
+bytes, query TSV 4,700,032 bytes, input measurements 5,200,041 bytes and final
+timing store 27,766,784 bytes. Boundary/local-path evidence and unique
+event/check identity tables remain W6 migration work; formal NVDLA Phase 7C
+wall/RSS/I/O and complete original-path coverage are still pending.
 
 ### Selected research references
 

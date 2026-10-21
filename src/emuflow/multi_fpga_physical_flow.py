@@ -251,7 +251,11 @@ def _inactive_transport_ir(transport: Mapping[str, Any]) -> EmuIR:
 def _write_inactive_logic_timing(
     identity_path: Path, output_path: Path
 ) -> Dict[str, Any]:
-    identity = read_json(identity_path)
+    from .logic_segment_identity_storage import (
+        read_logic_segment_identity_storage,
+    )
+
+    identity = read_logic_segment_identity_storage(identity_path)
     header = {
         "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
         "status": "pass",
@@ -275,16 +279,21 @@ def _write_inactive_logic_timing(
     }
     from .logic_segment_timing_storage import write_logic_segment_timing_storage
 
-    view = write_logic_segment_timing_storage(
-        output_path,
-        header=header,
-        segments=(),
-        unsupported_member_paths=identity["unsupported_member_paths"],
-    )
     try:
-        validation = view.validate_timing()
+        view = write_logic_segment_timing_storage(
+            output_path,
+            header=header,
+            segments=(),
+            unsupported_member_paths=identity["unsupported_member_paths"],
+        )
+        try:
+            validation = view.validate_timing()
+        finally:
+            view.close()
     finally:
-        view.close()
+        close = getattr(identity, "close", None)
+        if callable(close):
+            close()
     return {**validation, "output": str(output_path)}
 
 

@@ -1,12 +1,18 @@
 import tempfile
+import tracemalloc
 import unittest
+import hashlib
+import os
+import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.errors import ValidationError
 from emuflow.logic_segment_timing import (
+    LogicSegmentQueryInputs,
     _architectural_launch_endpoints,
     _boundary_tx_port,
     _index_exact_logic_segments,
@@ -21,6 +27,13 @@ from emuflow.logic_segment_timing import (
 from emuflow.logic_segment_timing_storage import (
     read_logic_segment_timing_storage,
 )
+from emuflow.logic_segment_identity_storage import (
+    LogicSegmentIdentitySpool,
+    read_logic_segment_identity_storage,
+    write_logic_segment_identity_storage,
+)
+import emuflow.logic_segment_identity_storage as identity_storage
+import emuflow.logic_segment_timing as logic_segment_timing
 from emuflow.local_path_timing import (
     _explicit_vpr_path_pins,
     _resolve_local_path_fpga,
@@ -136,7 +149,8 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 side_effect=AssertionError("whole-graph loading forbidden"),
             ):
                 logic = prepare_logic_segment_query_inputs(
-                    ir_path, assignment, paths, routes, schedule, platform
+                    ir_path, assignment, paths, routes, schedule, platform,
+                    allow_legacy_schedule=True,
                 )
         self.assertIsNone(prepared.original_ir)
         self.assertEqual(set(prepared.original_nets), {"n0", "n1"})
@@ -1086,7 +1100,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
             )
             output = root / "timing.json"
             report = import_vpr_logic_segment_timing(
-                raw, identity_path, output
+                raw, identity_path, output, allow_legacy_identity=True
             )
             self.assertEqual(report["segments"], 1)
             self.assertEqual(report["maximum_delay_ns"], 2.5)
@@ -1147,7 +1161,8 @@ class LogicSegmentTimingTest(unittest.TestCase):
             )
             output = root / "timing.json"
             report = import_vivado_logic_segment_timing(
-                raw, identity_path, output
+                raw, identity_path, output, allow_legacy_identity=True,
+                allow_legacy_timing_format=True,
             )
             self.assertEqual(report["segments"], 1)
             self.assertEqual(report["maximum_delay_ns"], 3.25)
@@ -1163,6 +1178,8 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 root / "partial.json",
                 qualification="routed-board-integrated-endpoint-chain",
                 allow_missing=True,
+                allow_legacy_identity=True,
+                allow_legacy_timing_format=True,
             )
             self.assertEqual(partial["segments"], 0)
             self.assertEqual(partial["missing_segments"], 1)
@@ -1235,7 +1252,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
             )
             output = root / "timing.json"
             report = import_vivado_logic_segment_timing(
-                raw, identity_path, output
+                raw, identity_path, output, allow_legacy_identity=True
             )
             self.assertEqual(report["cone_bound_segments"], 1)
             with read_logic_segment_timing_storage(output) as database:
@@ -1247,6 +1264,554 @@ class LogicSegmentTimingTest(unittest.TestCase):
                     database["segments"][0]["actual_start_object"],
                     "real_ff/C",
                 )
+
+    @staticmethod
+    def _typed_identity(root, count=3):
+        path = root / "identity.json"
+        header = {
+            "schema": "emuflow.logic-segment-identity/v1",
+            "status": "pass",
+            "design": "dut",
+            "platform": "board",
+            "fpga": "fpga0",
+            "provider": "test",
+            "coverage": {},
+            "system_routes_sha256": "a" * 64,
+            "tdm_schedule_sha256": "b" * 64,
+            "semantic_contract_sha256": "c" * 64,
+        }
+
+        def records():
+            for index in range(count):
+                yield {
+                    "id": f"logic{index:08d}",
+                    "kind": "launch",
+                    "system_path": f"path{index:08d}",
+                    "member_path": f"member{index:08d}",
+                    "cut_index": 0,
+                    "fpga": "fpga0",
+                    "replace_tx_endpoint": f"tx{index:08d}",
+                    "start_pin": f"start{index:08d}",
+                    "end_pin": f"end{index:08d}",
+                    "static_exact_segment_id": f"segment{index:08d}",
+                }
+
+        view = write_logic_segment_identity_storage(
+            path, header=header, segments=records()
+        )
+        view.close()
+        return path, header
+
+    def test_typed_identity_import_matches_explicit_legacy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            typed, _header = self._typed_identity(root)
+            raw = root / "timing.tsv"
+            with raw.open("w", encoding="utf-8") as stream:
+                stream.write("endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n")
+                for index in range(3):
+                    stream.write(
+                        f"logic{index:08d}\tlaunch\t{index + 0.25}\t"
+                        f"start{index:08d}\tend{index:08d}\n"
+                    )
+            typed_output = root / "typed-timing.json"
+            import_vpr_logic_segment_timing(raw, typed, typed_output)
+            with read_logic_segment_identity_storage(typed) as view:
+                legacy_value = {
+                    key: view[key] for key in view
+                    if key not in {"segments", "unsupported_member_paths"}
+                }
+                legacy_value["segments"] = list(view["segments"])
+                legacy_value["unsupported_member_paths"] = []
+            legacy = root / "legacy.json"
+            write_json(legacy, legacy_value)
+            legacy_output = root / "legacy-timing.json"
+            import_vpr_logic_segment_timing(
+                raw, legacy, legacy_output, allow_legacy_identity=True
+            )
+            typed_selector = read_json(typed_output)
+            legacy_selector = read_json(legacy_output)
+            self.assertEqual(
+                typed_selector["logical_sha256"],
+                legacy_selector["logical_sha256"],
+            )
+            with (
+                read_logic_segment_timing_storage(typed_output) as left,
+                read_logic_segment_timing_storage(legacy_output) as right,
+            ):
+                self.assertEqual(list(left["segments"]), list(right["segments"]))
+
+    def test_typed_identity_import_rejects_duplicate_missing_and_order(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity, _header = self._typed_identity(root)
+            header = "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n"
+
+            def row(index):
+                return (
+                    f"logic{index:08d}\tlaunch\t1.0\t"
+                    f"start{index:08d}\tend{index:08d}\n"
+                )
+
+            for name, body in (
+                ("duplicate", header + row(0) + row(0) + row(2)),
+                ("missing", header + row(0) + row(2)),
+                ("order", header + row(1) + row(0) + row(2)),
+                ("truncated", header + row(0) + "logic00000001\tlaunch\t"),
+            ):
+                raw = root / f"{name}.tsv"
+                raw.write_text(body, encoding="utf-8")
+                with self.assertRaises(ValidationError, msg=name):
+                    import_vpr_logic_segment_timing(
+                        raw, identity, root / f"{name}-out.json"
+                    )
+
+    def test_typed_identity_is_source_sealed_and_legacy_is_explicit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity, header = self._typed_identity(root, 1)
+            with self.assertRaisesRegex(ValidationError, "source seal"):
+                read_logic_segment_identity_storage(
+                    identity, expected_system_routes_sha256="d" * 64
+                )
+            with read_logic_segment_identity_storage(
+                identity,
+                expected_system_routes_sha256=header["system_routes_sha256"],
+                expected_tdm_schedule_sha256=header["tdm_schedule_sha256"],
+                expected_semantic_contract_sha256=header[
+                    "semantic_contract_sha256"
+                ],
+            ) as view:
+                self.assertEqual(len(view["segments"]), 1)
+            legacy = root / "legacy.json"
+            write_json(legacy, {
+                **header,
+                "coverage": {
+                    "segments": 0, "system_paths": 0, "member_paths": 0,
+                    "unsupported_member_paths": 0,
+                },
+                "segments": [], "unsupported_member_paths": [],
+            })
+            with self.assertRaisesRegex(ValidationError, "explicit compatibility"):
+                read_logic_segment_identity_storage(legacy)
+
+    def test_typed_identity_rejects_truncated_generation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity, _header = self._typed_identity(root, 4)
+            selector = read_json(identity)
+            store = identity.parent / selector["artifact"]
+            store.write_bytes(store.read_bytes()[:-64])
+            with self.assertRaisesRegex(ValidationError, "seal disagrees"):
+                read_logic_segment_identity_storage(identity)
+
+    def test_typed_identity_large_import_has_bounded_python_memory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            count = 100_000
+            identity, _header = self._typed_identity(root, count)
+            raw = root / "timing.tsv"
+            with raw.open("w", encoding="utf-8") as stream:
+                stream.write("endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n")
+                for index in range(count):
+                    stream.write(
+                        f"logic{index:08d}\tlaunch\t1.25\t"
+                        f"start{index:08d}\tend{index:08d}\n"
+                    )
+            tracemalloc.start()
+            report = import_vpr_logic_segment_timing(
+                raw, identity, root / "timing.json"
+            )
+            _current, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            self.assertEqual(report["segments"], count)
+            self.assertLess(peak, 16 * 1024 * 1024)
+
+    def test_typed_identity_rejects_lock_symlink_and_uri_metacharacters_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bad = root / "bad.json"
+            lock = root / ".bad.json.lock"
+            lock.symlink_to(root / "attacker-lock")
+            with self.assertRaisesRegex(ValidationError, "symbolic link"):
+                read_logic_segment_identity_storage(bad)
+            special = root / "hash?# directory"
+            identity, _header = self._typed_identity(special, 2)
+            with read_logic_segment_identity_storage(identity) as view:
+                self.assertEqual(len(view["segments"]), 2)
+
+    def test_typed_identity_selector_rejects_bool_versions_and_bad_coverage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity, _header = self._typed_identity(root, 2)
+            original = read_json(identity)
+            attacks = []
+            for field in ("application_id", "user_version"):
+                value = {**original, field: True}
+                attacks.append(value)
+            value = {**original, "counts": {**original["counts"], "segments": True}}
+            attacks.append(value)
+            value = {
+                **original,
+                "header": {
+                    **original["header"],
+                    "coverage": {**original["header"]["coverage"], "extra": 0},
+                },
+            }
+            attacks.append(value)
+            value = {
+                **original,
+                "header": {
+                    **original["header"],
+                    "coverage": {
+                        **original["header"]["coverage"], "segments": 999,
+                    },
+                },
+            }
+            attacks.append(value)
+            for attack in attacks:
+                write_json(identity, attack, compact=True)
+                with self.assertRaises(ValidationError):
+                    read_logic_segment_identity_storage(identity)
+            write_json(identity, original, compact=True)
+
+    def test_typed_identity_rejects_resealed_sqlite_schema_attack(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity, _header = self._typed_identity(root, 2)
+            selector = read_json(identity)
+            old_store = root / selector["artifact"]
+            with sqlite3.connect(old_store) as connection:
+                connection.execute("CREATE TABLE injected(value TEXT)")
+            digest = hashlib.sha256(old_store.read_bytes()).hexdigest()
+            new_store = root / f"{identity.name}.store.{digest}.sqlite"
+            old_store.replace(new_store)
+            selector.update({
+                "artifact": new_store.name,
+                "store_sha256": digest,
+                "store_bytes": new_store.stat().st_size,
+            })
+            write_json(identity, selector, compact=True)
+            with self.assertRaisesRegex(ValidationError, "objects are invalid"):
+                read_logic_segment_identity_storage(identity)
+
+    def test_query_spool_is_removed_on_every_early_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / f"p{index}" for index in range(10)]
+            with mock.patch.object(
+                logic_segment_timing,
+                "_write_logic_segment_query_impl",
+                side_effect=ValidationError("injected early failure"),
+            ):
+                with self.assertRaisesRegex(ValidationError, "injected"):
+                    logic_segment_timing._write_logic_segment_query(
+                        *paths[:5], None, paths[5], paths[6], "fpga0", paths[7],
+                        paths[8], object_provider="vpr",
+                    )
+            self.assertEqual(
+                list(root.glob(".logic-segment-identity.*.spool.sqlite")), []
+            )
+
+    @staticmethod
+    def _empty_query_inputs():
+        return LogicSegmentQueryInputs(
+            original_ir=None,
+            assignment={"design": "dut", "instance_assignment": {}},
+            path_database={},
+            routes={},
+            schedule={},
+            object_index=None,
+            path_endpoints={},
+            database_paths={},
+            route_timing={},
+            route_by_net={},
+            timing_records=[],
+            original_nets={},
+            original_instances={},
+            incoming_nets_by_instance={},
+            exact_contract=None,
+            exact_contract_sha256=None,
+            exact_segment_by_key={},
+            exact_captures={},
+            exact_launches={},
+            exact_index_path=None,
+        )
+
+    def test_indexed_query_reader_closes_on_merged_design_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            boundary = root / "boundary.json"
+            write_json(boundary, {
+                "schema": "emuflow.boundary-identity/v1",
+                "endpoints": [],
+            })
+
+            class FakeIndexedPhysicalIR:
+                def __init__(self, _path):
+                    self.value = {"design": {"name": "wrong"}}
+                    self.closed = False
+                    FakeIndexedPhysicalIR.last = self
+
+                def close(self):
+                    self.closed = True
+
+            with (
+                mock.patch.object(
+                    logic_segment_timing, "IndexedPhysicalIR",
+                    FakeIndexedPhysicalIR,
+                ),
+                mock.patch.object(
+                    logic_segment_timing, "is_emuir_sqlite", return_value=True,
+                ),
+                mock.patch.object(
+                    logic_segment_timing, "is_compact_emuir", return_value=True,
+                ),
+                self.assertRaisesRegex(ValidationError, "merged IR target"),
+            ):
+                logic_segment_timing._write_logic_segment_query(
+                    root / "original.sqlite",
+                    root / "assignment.json",
+                    root / "paths.json",
+                    root / "routes.json",
+                    root / "schedule.json",
+                    SimpleNamespace(name="board"),
+                    root / "merged.sqlite",
+                    boundary,
+                    "fpga0",
+                    root / "query.tsv",
+                    root / "identity.json",
+                    object_provider="vpr",
+                    prepared_inputs=self._empty_query_inputs(),
+                )
+            self.assertTrue(FakeIndexedPhysicalIR.last.closed)
+            self.assertEqual(
+                list(root.glob(".logic-segment-identity.*.spool.sqlite")), []
+            )
+            self.assertEqual(list(root.glob(".query.tsv.*.publish.tmp")), [])
+
+    def test_indexed_query_reader_closes_on_publication_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            boundary = root / "boundary.json"
+            write_json(boundary, {
+                "schema": "emuflow.boundary-identity/v1",
+                "endpoints": [],
+            })
+
+            class FakeIndexedPhysicalIR:
+                def __init__(self, _path):
+                    self.value = {"design": {"name": "dut__fpga0"}}
+                    self.instance_indices = {}
+                    self.instances = {}
+                    self.net_indices = {}
+                    self.pins = {}
+                    self.closed = False
+                    FakeIndexedPhysicalIR.last = self
+
+                def close(self):
+                    self.closed = True
+
+            with (
+                mock.patch.object(
+                    logic_segment_timing, "IndexedPhysicalIR",
+                    FakeIndexedPhysicalIR,
+                ),
+                mock.patch.object(
+                    logic_segment_timing, "is_emuir_sqlite", return_value=True,
+                ),
+                mock.patch.object(
+                    logic_segment_timing, "is_compact_emuir", return_value=True,
+                ),
+                mock.patch.object(
+                    logic_segment_timing,
+                    "pretty_system_routes_sha256",
+                    return_value="a" * 64,
+                ),
+                mock.patch.object(
+                    logic_segment_timing,
+                    "canonical_tdm_schedule_sha256",
+                    return_value="b" * 64,
+                ),
+                mock.patch.object(
+                    identity_storage,
+                    "write_logic_segment_identity_storage",
+                    side_effect=OSError("injected publication failure"),
+                ),
+                self.assertRaisesRegex(OSError, "publication failure"),
+            ):
+                logic_segment_timing._write_logic_segment_query(
+                    root / "original.sqlite",
+                    root / "assignment.json",
+                    root / "paths.json",
+                    root / "routes.json",
+                    root / "schedule.json",
+                    SimpleNamespace(name="board"),
+                    root / "merged.sqlite",
+                    boundary,
+                    "fpga0",
+                    root / "query.tsv",
+                    root / "identity.json",
+                    object_provider="vpr",
+                    prepared_inputs=self._empty_query_inputs(),
+                )
+            self.assertTrue(FakeIndexedPhysicalIR.last.closed)
+            self.assertEqual(
+                list(root.glob(".logic-segment-identity.*.spool.sqlite")), []
+            )
+            self.assertEqual(list(root.glob(".query.tsv.*.publish.tmp")), [])
+            self.assertFalse((root / "query.tsv").exists())
+            self.assertFalse((root / "identity.json").exists())
+
+    def test_identity_and_query_publication_roll_back_together(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity, header = self._typed_identity(root, 1)
+            query = root / "query.tsv"
+            query.write_text("old-query\n", encoding="utf-8")
+            old_selector = identity.read_bytes()
+            descriptor, name = tempfile.mkstemp(
+                prefix=".query.tsv.", suffix=".publish.tmp", dir=root
+            )
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write("new-query\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            sidecar = Path(name)
+            real_replace = os.replace
+
+            def fail_selector(source, target):
+                if Path(target) == identity and str(source).endswith(".selector.tmp"):
+                    raise OSError("injected selector failure")
+                return real_replace(source, target)
+
+            with mock.patch.object(identity_storage.os, "replace", side_effect=fail_selector):
+                with self.assertRaisesRegex(OSError, "injected selector"):
+                    view = write_logic_segment_identity_storage(
+                        identity,
+                        header=header,
+                        segments=({
+                            "id": "logic00000000", "kind": "launch",
+                            "system_path": "path00000000",
+                            "member_path": "member00000000", "cut_index": 0,
+                            "fpga": "fpga0", "replace_tx_endpoint": "tx00000000",
+                            "start_pin": "start00000000", "end_pin": "end00000000",
+                            "static_exact_segment_id": "segment00000000",
+                        },),
+                        sidecar_publication=(sidecar, query),
+                    )
+                    view.close()
+            self.assertEqual(identity.read_bytes(), old_selector)
+            self.assertEqual(query.read_text(encoding="utf-8"), "old-query\n")
+            self.assertFalse(sidecar.exists())
+            self.assertEqual(list(root.glob(".*.rollback.tmp")), [])
+
+    def test_measurement_import_uses_set_join_without_per_row_lookup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity, _header = self._typed_identity(root, 256)
+            raw = root / "timing.tsv"
+            with raw.open("w", encoding="utf-8") as stream:
+                stream.write("endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n")
+                for index in range(256):
+                    stream.write(
+                        f"logic{index:08d}\tlaunch\t1.0\t"
+                        f"start{index:08d}\tend{index:08d}\n"
+                    )
+            statements = []
+            real_connect = sqlite3.connect
+
+            def traced_connect(*args, **kwargs):
+                connection = real_connect(*args, **kwargs)
+                connection.set_trace_callback(statements.append)
+                return connection
+
+            with mock.patch.object(
+                logic_segment_timing.sqlite3, "connect", side_effect=traced_connect
+            ):
+                report = import_vpr_logic_segment_timing(
+                    raw, identity, root / "timing-output.json"
+                )
+            self.assertEqual(report["segments"], 256)
+            normalized = [statement.lower().replace(" ", "") for statement in statements]
+            self.assertFalse(any(
+                "fromidentity.segmentswheresegment_id=" in statement
+                for statement in normalized
+            ))
+            self.assertTrue(any("leftjoinidentity.segments" in statement for statement in normalized))
+
+    def test_spool_indexes_schedule_and_exact_candidates_without_graph_maps(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trace = []
+            with LogicSegmentIdentitySpool(root) as spool:
+                spool.connection.set_trace_callback(trace.append)
+                count = spool.index_schedule_entries(
+                    {
+                        "id": f"entry{index:08d}", "net": f"net{index // 2:08d}",
+                        "from": "fpga0", "to": "fpga1",
+                    }
+                    for index in range(100_000)
+                )
+                self.assertEqual(count, 100_000)
+                self.assertEqual(
+                    [item["id"] for item in spool.schedule_from("net00000000", "fpga0")],
+                    ["entry00000000", "entry00000001"],
+                )
+                record = {
+                    "id": "exact0", "kind": "launch", "system_path": "p",
+                    "member_path": "m", "cut_index": 0, "fpga": "fpga0",
+                    "replace_tx_endpoint": "tx0", "start_pin": "s",
+                    "end_pin": "e", "static_exact_segment_id": "seg0",
+                }
+                self.assertTrue(spool.append_if_new_exact(record))
+                self.assertFalse(spool.append_if_new_exact({**record, "id": "exact1"}))
+                spool.index_exact_contract(
+                    ({
+                        "id": "capture0", "cut_net": "net0", "fpga": "fpga0",
+                        "kind": "architectural-state", "endpoint": "reg0",
+                        "port": "D", "bit": 0,
+                    },),
+                    ({
+                        "id": "segment0", "kind": "rx_to_capture",
+                        "fpga": "fpga0", "source_cut_net": "net0",
+                        "capture_requirement": "capture0",
+                    },),
+                )
+                self.assertEqual(
+                    spool.exact_segment_id(
+                        ("capture", "net0", None, "fpga0", ("reg0", "D", 0))
+                    ),
+                    "segment0",
+                )
+                self.assertEqual(spool.exact_capture("capture0")["bit"], 0)
+            self.assertFalse(any(
+                statement.lstrip().upper().startswith("SELECT 1 FROM SEGMENTS")
+                for statement in trace
+            ))
+
+    def test_vivado_five_column_timing_requires_explicit_compatibility(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            identity, _header = self._typed_identity(root, 1)
+            raw = root / "legacy.tsv"
+            raw.write_text(
+                "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex\n"
+                + "\t".join((
+                    "logic00000000".encode().hex(), "launch", "1.0",
+                    "start00000000".encode().hex(), "end00000000".encode().hex(),
+                )) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValidationError, "explicit compatibility"):
+                import_vivado_logic_segment_timing(
+                    raw, identity, root / "strict.json"
+                )
+            report = import_vivado_logic_segment_timing(
+                raw, identity, root / "compatible.json",
+                allow_legacy_timing_format=True,
+            )
+            self.assertEqual(report["segments"], 1)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,19 @@
 import copy
+import gc
+import hashlib
+import io
 import random
 import shutil
+import struct
 import subprocess
 import tempfile
 import unittest
+import warnings
+import zlib
 from pathlib import Path
+from unittest import mock
 
+from emuflow import chimew_grouping as grouping_module
 from emuflow.chimew_grouping import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
@@ -17,7 +25,7 @@ from emuflow.chimew_grouping import (
     materialize_chimew_schedule_ratios,
     validate_chimew_crossings,
 )
-from emuflow.errors import ValidationError
+from emuflow.errors import EmuFlowError, ValidationError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -398,6 +406,321 @@ class ChimewGroupingTest(unittest.TestCase):
         self.assertEqual(result["metrics"]["signals"], count)
         self.assertEqual(result["metrics"]["groups"], (count + 63) // 64)
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
+
+    def test_typed_and_explicit_legacy_inputs_are_byte_exact(self) -> None:
+        schedule = copy.deepcopy(self.schedule)
+        for index, entry in enumerate(schedule["entries"]):
+            entry.update({"lane": index // 2, "slot": index % 2})
+        schedule["entries"][4].update({"from": "fpga1", "to": "fpga0"})
+        entries = sorted(schedule["entries"], key=lambda entry: entry["id"])
+        encodings = grouping_module.validate_chimew_crossings(
+            schedule, self.crossings
+        )
+        guarded = grouping_module._guarded_lane_domains(entries, {"s0"})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legacy_input = root / "legacy.txt"
+            typed_input = root / "typed.bin"
+            legacy_output = root / "legacy.out"
+            typed_output = root / "typed.out"
+            grouping_module._serialize_legacy_text(
+                entries, encodings, guarded, legacy_input
+            )
+            with typed_input.open("wb") as stream:
+                typed_metadata = grouping_module._serialize_typed(
+                    entries, encodings, guarded, stream
+                )
+            subprocess.run(
+                [
+                    str(self.executable),
+                    "--legacy-text",
+                    str(legacy_input),
+                    str(legacy_output),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    str(self.executable),
+                    "--typed-input",
+                    str(typed_input),
+                    str(typed_output),
+                    typed_metadata["logical_sha256"],
+                ],
+                check=True,
+            )
+            self.assertEqual(typed_output.read_bytes(), legacy_output.read_bytes())
+
+    def test_production_grouping_does_not_publish_legacy_text(self) -> None:
+        with mock.patch.object(
+            grouping_module,
+            "_serialize_legacy_text",
+            side_effect=AssertionError("legacy text producer was called"),
+        ):
+            result = build_chimew_initial_groups(
+                self.schedule, self.crossings, executable=str(self.executable)
+            )
+        self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
+
+    def test_typed_input_rejects_truncation_corruption_and_mixed_seals(self) -> None:
+        entries = sorted(self.schedule["entries"], key=lambda entry: entry["id"])
+        encodings = grouping_module.validate_chimew_crossings(
+            self.schedule, self.crossings
+        )
+        guarded = grouping_module._guarded_lane_domains(entries, set())
+        stream = io.BytesIO()
+        typed_metadata = grouping_module._serialize_typed(
+            entries, encodings, guarded, stream
+        )
+        valid = stream.getvalue()
+        variants = {
+            "truncated": valid[:-1],
+            "bad-record-tag": valid[:56] + b"X" + valid[57:],
+            # First record encoding begins after the 56-byte header, tag and
+            # four int32 fields.  Keep the record parseable so CRC validation
+            # is what rejects this mutation.
+            "mutated-encoding": valid[:73] + bytes([valid[73] ^ 1]) + valid[74:],
+            "mixed-source-seal": valid[:-32] + bytes.fromhex("ab" * 32),
+            "trailing-byte": valid + b"X",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, payload in variants.items():
+                with self.subTest(name=name):
+                    input_path = root / f"{name}.bin"
+                    input_path.write_bytes(payload)
+                    completed = subprocess.run(
+                        [
+                            str(self.executable),
+                            "--typed-input",
+                            str(input_path),
+                            "-",
+                            typed_metadata["logical_sha256"],
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn("typed input", completed.stderr)
+
+    def test_typed_input_rejects_oversize_count_and_protocol_mixing(self) -> None:
+        entries = sorted(self.schedule["entries"], key=lambda entry: entry["id"])
+        encodings = grouping_module.validate_chimew_crossings(
+            self.schedule, self.crossings
+        )
+        guarded = grouping_module._guarded_lane_domains(entries, set())
+        stream = io.BytesIO()
+        typed_metadata = grouping_module._serialize_typed(
+            entries, encodings, guarded, stream
+        )
+        valid = stream.getvalue()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            typed = root / "typed.bin"
+            oversized = root / "oversized.bin"
+            legacy = root / "legacy.txt"
+            typed.write_bytes(valid)
+            oversized.write_bytes(
+                valid[:16] + struct.pack("<Q", (1 << 64) - 1) + valid[24:]
+            )
+            grouping_module._serialize_legacy_text(
+                entries, encodings, guarded, legacy
+            )
+            commands = (
+                [
+                    str(self.executable),
+                    "--typed-input",
+                    str(oversized),
+                    "-",
+                    typed_metadata["logical_sha256"],
+                ],
+                [
+                    str(self.executable),
+                    "--typed-input",
+                    str(legacy),
+                    "-",
+                    typed_metadata["logical_sha256"],
+                ],
+                [str(self.executable), "--legacy-text", str(typed), "-"],
+                [str(self.executable), str(legacy), "-"],
+            )
+            for command in commands:
+                completed = subprocess.run(
+                    command, capture_output=True, text=True
+                )
+                self.assertNotEqual(completed.returncode, 0)
+            self.assertIn(
+                "typed input signal count",
+                subprocess.run(
+                    commands[0], capture_output=True, text=True
+                ).stderr,
+            )
+
+    def test_typed_stream_rejects_source_mutation_between_passes(self) -> None:
+        entries = sorted(self.schedule["entries"], key=lambda entry: entry["id"])
+        encodings = grouping_module.validate_chimew_crossings(
+            self.schedule, self.crossings
+        )
+        guarded = grouping_module._guarded_lane_domains(entries, set())
+        logical_sha256 = grouping_module._typed_logical_sha256(
+            entries, encodings, guarded
+        )
+        encodings[entries[0]["id"]] ^= 1
+        stream = io.BytesIO()
+        with self.assertRaisesRegex(ValidationError, "changed while streaming"):
+            grouping_module._serialize_typed(
+                entries,
+                encodings,
+                guarded,
+                stream,
+                logical_sha256=logical_sha256,
+            )
+        self.assertEqual(len(stream.getvalue()), 56 + len(entries) * 25)
+
+    def test_typed_input_rejects_fully_resealed_payload_and_digest_relabel(self) -> None:
+        entries = sorted(self.schedule["entries"], key=lambda entry: entry["id"])
+        encodings = grouping_module.validate_chimew_crossings(
+            self.schedule, self.crossings
+        )
+        guarded = grouping_module._guarded_lane_domains(entries, set())
+        stream = io.BytesIO()
+        metadata = grouping_module._serialize_typed(
+            entries, encodings, guarded, stream
+        )
+        valid = stream.getvalue()
+        record_end = 56 + len(entries) * 25
+        records = bytearray(valid[56:record_end])
+        records[17] ^= 1
+
+        def reseal(record_bytes: bytes, digest: bytes) -> bytes:
+            header = valid[:24] + digest
+            checksum = zlib.crc32(header)
+            checksum = zlib.crc32(record_bytes, checksum)
+            return (
+                header
+                + record_bytes
+                + grouping_module._TYPED_INPUT_END_MAGIC
+                + struct.pack("<Q", checksum)
+                + digest
+            )
+
+        payload_digest = hashlib.sha256(records).digest()
+        relabel_digest = bytes.fromhex("ab" * 32)
+        variants = {
+            "payload-crc-resealed": (
+                reseal(records, bytes.fromhex(metadata["logical_sha256"])),
+                metadata["logical_sha256"],
+                "seal disagrees",
+            ),
+            "payload-digest-crc-resealed": (
+                reseal(records, payload_digest),
+                metadata["logical_sha256"],
+                "logical digest disagrees",
+            ),
+            # Even if the caller repeats the arbitrary relabel out of band,
+            # the C++ SHA-256 replay over canonical record bytes disagrees.
+            "arbitrary-digest-relabel": (
+                reseal(valid[56:record_end], relabel_digest),
+                relabel_digest.hex(),
+                "seal disagrees",
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, (payload, expected_digest, expected_error) in variants.items():
+                with self.subTest(name=name):
+                    path = root / f"{name}.bin"
+                    path.write_bytes(payload)
+                    completed = subprocess.run(
+                        [
+                            str(self.executable),
+                            "--typed-input",
+                            str(path),
+                            "-",
+                            expected_digest,
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn(expected_error, completed.stderr)
+
+    def test_native_failure_status_precedes_malformed_stdout_without_leaks(self) -> None:
+        entries = sorted(self.schedule["entries"], key=lambda entry: entry["id"])
+        encodings = grouping_module.validate_chimew_crossings(
+            self.schedule, self.crossings
+        )
+        guarded = grouping_module._guarded_lane_domains(entries, set())
+        scripts = {
+            "immediate": (
+                "import sys\n"
+                "sys.stderr.write('intentional immediate rejection\\n')\n"
+                "raise SystemExit(23)\n",
+                "exit status 23: intentional immediate rejection",
+            ),
+            "consume-malformed": (
+                "import sys\n"
+                "sys.stdin.buffer.read()\n"
+                "sys.stdout.write('MALFORMED\\n')\n"
+                "sys.stdout.flush()\n"
+                "sys.stderr.write('intentional malformed rejection\\n')\n"
+                "raise SystemExit(24)\n",
+                "exit status 24: intentional malformed rejection",
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, (source, expected) in scripts.items():
+                with self.subTest(name=name):
+                    executable = root / name
+                    executable.write_text(
+                        "#!/usr/bin/env python3\n" + source, encoding="utf-8"
+                    )
+                    executable.chmod(0o755)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", ResourceWarning)
+                        with self.assertRaisesRegex(EmuFlowError, expected):
+                            grouping_module._run_native(
+                                entries, encodings, guarded, str(executable)
+                            )
+                        gc.collect()
+
+    def test_zero_exit_preserves_native_output_grammar_error(self) -> None:
+        entries = sorted(self.schedule["entries"], key=lambda entry: entry["id"])
+        encodings = grouping_module.validate_chimew_crossings(
+            self.schedule, self.crossings
+        )
+        guarded = grouping_module._guarded_lane_domains(entries, set())
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "malformed-success"
+            executable.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "sys.stdin.buffer.read()\n"
+                "sys.stdout.write('MALFORMED\\n')\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            with self.assertRaisesRegex(EmuFlowError, "output header is invalid"):
+                grouping_module._run_native(
+                    entries, encodings, guarded, str(executable)
+                )
+
+    def test_native_i32_limits_fail_before_struct_packing(self) -> None:
+        entries = [
+            {
+                "id": "overflow",
+                "link": "link0",
+                "from": "fpga0",
+                "to": "fpga1",
+                "tdm_ratio": 1 << 31,
+            }
+        ]
+        guarded = grouping_module._guarded_lane_domains(entries, set())
+        with self.assertRaisesRegex(ValidationError, "32-bit limit"):
+            grouping_module._serialize_typed(
+                entries, {"overflow": 1}, guarded, io.BytesIO()
+            )
 
     def test_lane_occupancy_materializes_explicit_adapter_ratios(self) -> None:
         schedule = {
