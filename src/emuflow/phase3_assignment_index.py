@@ -32,6 +32,11 @@ from .phase3_exact_binary import (
     write_phase3_exact_binary,
 )
 from .phase3_runtime import phase3_runtime_call
+from .phase3_exact_records import (
+    STATIC_EXACT_CAPTURE_BIT_ERROR,
+    STATIC_EXACT_CAPTURE_BIT_MAX_BYTES,
+    validate_static_exact_capture_bit,
+)
 from .routing import static_exact_contract_from_assignment
 
 
@@ -41,6 +46,7 @@ ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v3"
 ASSIGNMENT_INDEX_APPLICATION_ID = 0x454D5541  # ASCII "EMUA"
 ASSIGNMENT_INDEX_USER_VERSION = 3
 SUPPORTED_ASSIGNMENT_INDEX_USER_VERSIONS = {1, 2, 3}
+_SQLITE_SIGNED_INTEGER_MAX = (1 << 63) - 1
 
 
 CORE_DDL = """
@@ -121,6 +127,85 @@ def _json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
 
+def _decode_legacy_capture_bit(value: Any) -> int:
+    """Decode v2's INTEGER/BLOB capture-bit compatibility column."""
+
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        encoded = bytes(value)
+        if len(encoded) > STATIC_EXACT_CAPTURE_BIT_MAX_BYTES:
+            raise ValidationError(STATIC_EXACT_CAPTURE_BIT_ERROR)
+        if not encoded or (len(encoded) > 1 and encoded[0] == 0):
+            raise ValidationError(
+                "legacy Static Exact capture bit encoding is invalid"
+            )
+        value = int.from_bytes(encoded, "big")
+        if value <= _SQLITE_SIGNED_INTEGER_MAX:
+            raise ValidationError(
+                "legacy Static Exact capture bit encoding is invalid"
+            )
+    return validate_static_exact_capture_bit(value)
+
+
+def _encode_legacy_capture_bit(value: Any) -> Any:
+    bit = validate_static_exact_capture_bit(value)
+    if bit <= _SQLITE_SIGNED_INTEGER_MAX:
+        return bit
+    return sqlite3.Binary(
+        bit.to_bytes(max(1, (bit.bit_length() + 7) // 8), "big")
+    )
+
+
+def _validate_legacy_capture_mapping(capture: Any) -> None:
+    if not isinstance(capture, Mapping):
+        raise ValidationError("legacy Static Exact capture is invalid")
+    kind = capture.get("kind")
+    if kind == "architectural-state":
+        validate_static_exact_capture_bit(capture.get("bit"))
+    elif kind == "top-output":
+        if capture.get("bit") is not None:
+            raise ValidationError("legacy Static Exact capture is invalid")
+    else:
+        raise ValidationError("legacy Static Exact capture is invalid")
+
+
+def _validate_exact_contract_capture_bits(
+    exact_contract: Mapping[str, Any],
+) -> None:
+    captures = exact_contract.get("capture_requirements")
+    if not isinstance(captures, list):
+        raise ValidationError("Static Exact capture requirements are invalid")
+    for capture in captures:
+        _validate_legacy_capture_mapping(capture)
+
+
+def _validate_legacy_sqlite_capture_bits(
+    connection: sqlite3.Connection, version: int
+) -> None:
+    if version == 1:
+        for row in connection.execute(
+            "SELECT payload_json FROM exact_capture_requirements"
+        ):
+            try:
+                capture = json.loads(row[0])
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValidationError(
+                    "legacy Static Exact capture JSON is invalid"
+                ) from error
+            _validate_legacy_capture_mapping(capture)
+        return
+    for row in connection.execute(
+        "SELECT kind,bit FROM exact_capture_requirements"
+    ):
+        kind = int(row[0])
+        if kind == 1:
+            _decode_legacy_capture_bit(row[1])
+        elif kind == 0:
+            if row[1] is not None:
+                raise ValidationError("legacy Static Exact capture is invalid")
+        else:
+            raise ValidationError("legacy Static Exact capture is invalid")
+
+
 def _exact_binding_rows(
     exact_contract: Mapping[str, Any], part_index: Mapping[str, int]
 ):
@@ -194,14 +279,16 @@ def _exact_capture_rows(
                 kind == "architectural-state"
                 and (
                     not isinstance(port, str)
-                    or isinstance(bit, bool)
-                    or not isinstance(bit, int)
-                    or bit < 0
                 )
             )
             or (kind == "top-output" and (port is not None or bit is not None))
         ):
             raise ValidationError("exact capture requirement payload is invalid")
+        stored_bit = (
+            _encode_legacy_capture_bit(bit)
+            if kind == "architectural-state"
+            else None
+        )
         yield (
             capture_id,
             cut_net,
@@ -209,7 +296,7 @@ def _exact_capture_rows(
             0 if kind == "top-output" else 1,
             endpoint,
             port,
-            bit,
+            stored_bit,
         )
 
 
@@ -475,7 +562,12 @@ def migrate_phase3_assignment_index(
     directly and never call this function.
     """
 
-    assignment = read_json(assignment_path)
+    try:
+        assignment = read_json(assignment_path)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValidationError(
+            "legacy Phase 3 assignment JSON is invalid"
+        ) from error
     instance_assignment = assignment.get("instance_assignment")
     partitions = assignment.get("partitions")
     if not isinstance(instance_assignment, Mapping) or not isinstance(
@@ -493,6 +585,10 @@ def migrate_phase3_assignment_index(
     part_index = {fpga: index for index, fpga in enumerate(part_ids)}
 
     exact_contract = static_exact_contract_from_assignment(assignment)
+    if exact_contract is not None:
+        # Detached legacy JSON is untrusted. Validate every capture before the
+        # canonical digest formats any integer or SQLite binds an INTEGER.
+        _validate_exact_contract_capture_bits(exact_contract)
     exact_digest = (
         semantic_contract_sha256(exact_contract)
         if exact_contract is not None
@@ -773,14 +869,20 @@ def read_phase3_exact_semantic_partition(
                     (part_index,),
                 )
             ]
-            captures = [
-                json.loads(row[0])
-                for row in connection.execute(
-                    "SELECT payload_json FROM exact_capture_requirements "
-                    "WHERE part_index=? ORDER BY capture_id",
-                    (part_index,),
-                )
-            ]
+            captures = []
+            for row in connection.execute(
+                "SELECT payload_json FROM exact_capture_requirements "
+                "WHERE part_index=? ORDER BY capture_id",
+                (part_index,),
+            ):
+                try:
+                    capture = json.loads(row[0])
+                except (TypeError, ValueError, json.JSONDecodeError) as error:
+                    raise ValidationError(
+                        "legacy Static Exact capture JSON is invalid"
+                    ) from error
+                _validate_legacy_capture_mapping(capture)
+                captures.append(capture)
         else:
             segment_kinds = ("launch_to_tx", "rx_to_tx", "rx_to_capture")
             segments = []
@@ -831,8 +933,12 @@ def read_phase3_exact_semantic_partition(
                 }
                 if row[4] is not None:
                     capture["port"] = str(row[4])
-                if row[5] is not None:
-                    capture["bit"] = int(row[5])
+                if int(row[2]) == 1:
+                    capture["bit"] = _decode_legacy_capture_bit(row[5])
+                elif row[5] is not None:
+                    raise ValidationError(
+                        "legacy Static Exact capture is invalid"
+                    )
                 captures.append(capture)
         return {
             "schema": metadata.get("semantic_contract_schema"),
@@ -954,8 +1060,10 @@ def read_phase3_exact_semantic_contract(
             }
             if row[5] is not None:
                 capture["port"] = str(row[5])
-            if row[6] is not None:
-                capture["bit"] = int(row[6])
+            if kind == 1:
+                capture["bit"] = _decode_legacy_capture_bit(row[6])
+            elif row[6] is not None:
+                raise ValidationError("legacy Static Exact capture is invalid")
             capture_requirements.append(capture)
 
         cut_by_net = {
@@ -1295,6 +1403,10 @@ def validate_phase3_assignment_index(
             exact_capture_requirements = binary_validation["capture_requirements"]
             has_exact_payloads = True
         elif has_exact_payloads:
+            version = int(
+                connection.execute("PRAGMA user_version").fetchone()[0]
+            )
+            _validate_legacy_sqlite_capture_bits(connection, version)
             exact_segment_bindings = int(
                 connection.execute(
                     "SELECT count(*) FROM exact_segment_bindings"

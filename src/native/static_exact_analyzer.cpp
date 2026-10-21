@@ -2,7 +2,6 @@
 #include <array>
 #include <cstdint>
 #include <iostream>
-#include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -15,7 +14,7 @@ namespace {
 
 constexpr std::uint64_t kInputMagic = 0x31584553464d5545ULL;
 constexpr std::uint64_t kOutputMagic = 0x315845534f4d5545ULL;
-constexpr std::uint32_t kVersion = 2;
+constexpr std::uint32_t kVersion = 3;
 
 struct Instance {
   bool state = false;
@@ -24,7 +23,6 @@ struct Instance {
 
 struct Sink {
   std::int32_t instance = -1;
-  std::uint32_t endpoint = 0;
 };
 
 struct Net {
@@ -36,6 +34,18 @@ struct Cut {
   std::uint32_t net = 0;
   std::uint32_t source_part = 0;
   std::vector<std::uint32_t> sink_parts;
+};
+
+struct Capture {
+  std::uint32_t cut = 0;
+  std::uint32_t part = 0;
+  std::uint32_t net = 0;
+  std::uint32_t sink = 0;
+};
+
+struct EndpointRef {
+  std::uint32_t net = 0;
+  std::uint32_t sink = 0;
 };
 
 class GenerationMarks {
@@ -61,6 +71,13 @@ class GenerationMarks {
   std::uint32_t generation_ = 0;
 };
 
+void RequireCount(std::uint64_t count, std::size_t minimum_bytes,
+                  std::size_t remaining, const char* context) {
+  if (minimum_bytes == 0 || count > remaining / minimum_bytes) {
+    throw std::runtime_error(std::string(context) + " count is invalid");
+  }
+}
+
 void Analyze(const std::string& input_path, const std::string& output_path) {
   emuflow::core::BinaryReader reader(input_path);
   if (reader.Read<std::uint64_t>() != kInputMagic ||
@@ -73,6 +90,14 @@ void Analyze(const std::string& input_path, const std::string& output_path) {
   const auto part_count = reader.Read<std::uint32_t>();
   const auto endpoint_count = reader.Read<std::uint32_t>();
   if (part_count == 0) throw std::runtime_error("native input has no parts");
+  RequireCount(instance_count, sizeof(std::uint8_t) + sizeof(std::uint32_t),
+               reader.remaining(), "native instance");
+  RequireCount(net_count, 2 * sizeof(std::uint32_t), reader.remaining(),
+               "native net");
+  RequireCount(cut_count, 3 * sizeof(std::uint32_t), reader.remaining(),
+               "native cut");
+  RequireCount(endpoint_count, sizeof(std::int32_t), reader.remaining(),
+               "native endpoint");
 
   std::vector<Instance> instances(instance_count);
   for (auto& instance : instances) {
@@ -84,9 +109,15 @@ void Analyze(const std::string& input_path, const std::string& output_path) {
     instance.state = state != 0;
   }
 
+  RequireCount(net_count, 2 * sizeof(std::uint32_t), reader.remaining(),
+               "native net");
   std::vector<Net> nets(net_count);
-  for (auto& net : nets) {
+  std::uint64_t observed_endpoints = 0;
+  for (std::uint32_t index = 0; index < net_count; ++index) {
+    auto& net = nets[index];
     const auto drivers = reader.Read<std::uint32_t>();
+    RequireCount(drivers, sizeof(std::int32_t), reader.remaining(),
+                 "native net driver");
     net.drivers.resize(drivers);
     for (auto& driver : net.drivers) {
       driver = reader.Read<std::int32_t>();
@@ -96,19 +127,27 @@ void Analyze(const std::string& input_path, const std::string& output_path) {
       }
     }
     const auto sinks = reader.Read<std::uint32_t>();
+    observed_endpoints += sinks;
+    if (observed_endpoints > endpoint_count ||
+        sinks > reader.remaining() / sizeof(std::int32_t)) {
+      throw std::runtime_error("native endpoint count is invalid");
+    }
     net.sinks.resize(sinks);
     for (auto& sink : net.sinks) {
       sink.instance = reader.Read<std::int32_t>();
-      sink.endpoint = reader.Read<std::uint32_t>();
       if (sink.instance < -1 ||
           (sink.instance >= 0 &&
-           static_cast<std::uint32_t>(sink.instance) >= instance_count) ||
-          sink.endpoint >= endpoint_count) {
+           static_cast<std::uint32_t>(sink.instance) >= instance_count)) {
         throw std::runtime_error("native net sink is invalid");
       }
     }
   }
+  if (observed_endpoints != endpoint_count) {
+    throw std::runtime_error("native endpoint count is invalid");
+  }
 
+  RequireCount(cut_count, 3 * sizeof(std::uint32_t), reader.remaining(),
+               "native cut");
   std::vector<Cut> cuts(cut_count);
   std::vector<std::int32_t> cut_by_net(net_count, -1);
   for (std::uint32_t index = 0; index < cut_count; ++index) {
@@ -116,22 +155,24 @@ void Analyze(const std::string& input_path, const std::string& output_path) {
     cut.net = reader.Read<std::uint32_t>();
     cut.source_part = reader.Read<std::uint32_t>();
     const auto sinks = reader.Read<std::uint32_t>();
+    RequireCount(sinks, sizeof(std::uint32_t), reader.remaining(),
+                 "native cut sink");
     cut.sink_parts.resize(sinks);
     if (cut.net >= net_count || cut.source_part >= part_count ||
         cut_by_net[cut.net] != -1) {
       throw std::runtime_error("native cut record is invalid");
     }
     cut_by_net[cut.net] = static_cast<std::int32_t>(index);
+    std::uint32_t previous_sink = 0;
+    bool have_sink = false;
     for (auto& sink : cut.sink_parts) {
       sink = reader.Read<std::uint32_t>();
-      if (sink >= part_count) {
+      if (sink >= part_count || (have_sink && sink <= previous_sink)) {
         throw std::runtime_error("native cut sink is invalid");
       }
+      previous_sink = sink;
+      have_sink = true;
     }
-    std::sort(cut.sink_parts.begin(), cut.sink_parts.end());
-    cut.sink_parts.erase(
-        std::unique(cut.sink_parts.begin(), cut.sink_parts.end()),
-        cut.sink_parts.end());
   }
   reader.RequireEnd();
 
@@ -204,35 +245,43 @@ void Analyze(const std::string& input_path, const std::string& output_path) {
     dependencies[cut_index].assign(found.begin(), found.end());
   }
 
-  std::vector<std::array<std::uint32_t, 3>> captures;
+  std::vector<Capture> captures;
   GenerationMarks capture_marks(instance_count);
-  std::vector<Sink> endpoint_work;
+  std::vector<EndpointRef> endpoint_work;
   for (std::uint32_t cut_index = 0; cut_index < cut_count; ++cut_index) {
     const auto& cut = cuts[cut_index];
     const auto& cut_net = nets[cut.net];
     for (const auto sink_part : cut.sink_parts) {
       endpoint_work.clear();
-      for (const auto& endpoint : cut_net.sinks) {
+      for (std::uint32_t sink_index = 0;
+           sink_index < cut_net.sinks.size(); ++sink_index) {
+        const auto& endpoint = cut_net.sinks[sink_index];
         if (endpoint.instance < 0) {
-          captures.push_back({cut_index, sink_part, endpoint.endpoint});
+          captures.push_back({cut_index, sink_part, cut.net, sink_index});
         } else if (instances[static_cast<std::uint32_t>(endpoint.instance)].part ==
                    sink_part) {
-          endpoint_work.push_back(endpoint);
+          endpoint_work.push_back({cut.net, sink_index});
         }
       }
       capture_marks.Next();
       while (!endpoint_work.empty()) {
-        const auto endpoint = endpoint_work.back();
+        const auto endpoint_ref = endpoint_work.back();
         endpoint_work.pop_back();
+        const auto& endpoint =
+            nets[endpoint_ref.net].sinks[endpoint_ref.sink];
         const auto instance_index = static_cast<std::uint32_t>(endpoint.instance);
         if (instances[instance_index].state) {
-          captures.push_back({cut_index, sink_part, endpoint.endpoint});
+          captures.push_back(
+              {cut_index, sink_part, endpoint_ref.net, endpoint_ref.sink});
           continue;
         }
         if (!capture_marks.Insert(instance_index)) continue;
         for (const auto outgoing_net : outgoing[instance_index]) {
           const auto downstream = cut_by_net[outgoing_net];
-          for (const auto& sink : nets[outgoing_net].sinks) {
+          const auto& outgoing_sinks = nets[outgoing_net].sinks;
+          for (std::uint32_t sink_index = 0;
+               sink_index < outgoing_sinks.size(); ++sink_index) {
+            const auto& sink = outgoing_sinks[sink_index];
             if (downstream >= 0 &&
                 cuts[static_cast<std::uint32_t>(downstream)].source_part ==
                     sink_part &&
@@ -242,27 +291,35 @@ void Analyze(const std::string& input_path, const std::string& output_path) {
               continue;
             }
             if (sink.instance < 0) {
-              captures.push_back({cut_index, sink_part, sink.endpoint});
+              captures.push_back(
+                  {cut_index, sink_part, outgoing_net, sink_index});
             } else if (instances[static_cast<std::uint32_t>(sink.instance)].part ==
                        sink_part) {
-              endpoint_work.push_back(sink);
+              endpoint_work.push_back({outgoing_net, sink_index});
             }
           }
         }
       }
     }
   }
-  // Protocol v2 emits endpoint-token order so the Python adapter can replay
-  // EmuIR endpoints once while retaining capture requests as fixed-width
-  // integer columns. Cut and part ordinals provide a deterministic total
-  // order and keep exact duplicates adjacent for removal.
+  // Protocol v3 returns stable EmuIR coordinates rather than asserting final
+  // string identity. The Python parent resolves only these C capture records
+  // against authoritative EmuIR and independently checks endpoint semantics.
   std::sort(captures.begin(), captures.end(),
             [](const auto& left, const auto& right) {
-              if (left[2] != right[2]) return left[2] < right[2];
-              if (left[0] != right[0]) return left[0] < right[0];
-              return left[1] < right[1];
+              if (left.net != right.net) return left.net < right.net;
+              if (left.sink != right.sink) return left.sink < right.sink;
+              if (left.cut != right.cut) return left.cut < right.cut;
+              return left.part < right.part;
             });
-  captures.erase(std::unique(captures.begin(), captures.end()), captures.end());
+  captures.erase(std::unique(captures.begin(), captures.end(),
+                             [](const auto& left, const auto& right) {
+                               return left.cut == right.cut &&
+                                      left.part == right.part &&
+                                      left.net == right.net &&
+                                      left.sink == right.sink;
+                             }),
+                 captures.end());
 
   emuflow::core::AtomicBinaryWriter output(output_path);
   output.Write(kOutputMagic);
@@ -278,9 +335,10 @@ void Analyze(const std::string& input_path, const std::string& output_path) {
     }
   }
   for (const auto& capture : captures) {
-    output.Write(capture[0]);
-    output.Write(capture[1]);
-    output.Write(capture[2]);
+    output.Write(capture.cut);
+    output.Write(capture.part);
+    output.Write(capture.net);
+    output.Write(capture.sink);
   }
   output.Commit();
 }

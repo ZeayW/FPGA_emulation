@@ -18,6 +18,10 @@ from .boundary_timing import (
     validate_boundary_identity_database,
     validate_boundary_timing_database,
 )
+from .chimew_binding_storage import (
+    open_chimew_binding_schedule_entry_lookup,
+    read_chimew_binding,
+)
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .logic_segment_timing import (
@@ -872,7 +876,9 @@ def run_multi_fpga_physical_flow(
             split_root / manifest["position_hints"]
         )
     if "electrical_binding" in manifest:
-        electrical_binding = read_json(split_root / manifest["electrical_binding"])
+        electrical_binding = read_chimew_binding(
+            split_root / manifest["electrical_binding"]
+        )
     if electrical_binding is not None and position_hints is None:
         raise ValidationError(
             "physical Chimew anchors require position hints with electrical binding"
@@ -1521,14 +1527,6 @@ def run_multi_fpga_physical_flow(
             )
             fixed_io_targets = None
             if position_hints is not None and electrical_binding is not None:
-                binding_by_entry = {}
-                for binding in electrical_binding.get("entries", []):
-                    for entry_id in binding.get("schedule_entries", []):
-                        if entry_id in binding_by_entry:
-                            raise ValidationError(
-                                "Chimew electrical binding duplicates a schedule entry"
-                            )
-                        binding_by_entry[entry_id] = binding
                 packed = read_json(packed_contract)
                 packed_io_names = {
                     cluster["name"]
@@ -1543,10 +1541,21 @@ def run_multi_fpga_physical_flow(
                 boundary_endpoints = read_json(boundary_identity_path)["endpoints"]
                 packed_groups: Dict[str, str] = {}
                 group_packed_blocks: Dict[str, str] = {}
-                with _open_position_hint_lookup(position_hints) as has_hint:
+                binding_schema = electrical_binding.get("schema", "")
+                bounds_by_fpga = {
+                    item["fpga"]: (item["y_min"], item["y_max"])
+                    for item in electrical_binding.get("fpga_y_bounds", [])
+                }
+                links_by_id = {item.id: item for item in platform.links}
+                with (
+                    _open_position_hint_lookup(position_hints) as has_hint,
+                    open_chimew_binding_schedule_entry_lookup(
+                        electrical_binding
+                    ) as lookup_binding,
+                ):
                     for endpoint in boundary_endpoints:
                         entry_id = endpoint["schedule_entry"]
-                        binding = binding_by_entry.get(entry_id)
+                        binding = lookup_binding(entry_id)
                         if not has_hint(entry_id) or binding is None:
                             raise ValidationError(
                                 "Chimew physical bindings do not cover every boundary endpoint"
@@ -1556,17 +1565,13 @@ def run_multi_fpga_physical_flow(
                         # Bind the selected Chimew channel's actual physical site
                         # coordinate.  A lane number is only an electrical
                         # identity and cannot be used as a placement coordinate.
-                        if electrical_binding.get("schema", "").endswith("/v2"):
+                        if binding_schema.endswith("/v2"):
                             endpoint_key = (
                                 "pin_a_point"
                                 if fpga_id == binding["fpga_a"]
                                 else "pin_b_point"
                             )
                             point = binding.get(endpoint_key)
-                            bounds_by_fpga = {
-                                item["fpga"]: (item["y_min"], item["y_max"])
-                                for item in electrical_binding.get("fpga_y_bounds", [])
-                            }
                             bounds = bounds_by_fpga.get(fpga_id)
                             if not isinstance(point, dict) or bounds is None:
                                 raise ValidationError(
@@ -1575,10 +1580,11 @@ def run_multi_fpga_physical_flow(
                             low, high = bounds
                             target_y = (float(point["y"]) - low) / (high - low)
                         else:
-                            link = next(
-                                item for item in platform.links
-                                if item.id == binding["link"]
-                            )
+                            link = links_by_id.get(binding["link"])
+                            if link is None:
+                                raise ValidationError(
+                                    "Chimew physical binding names an unknown link"
+                                )
                             lane_limit = (
                                 link.transport_bits_per_cycle_per_direction - 1
                             )

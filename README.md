@@ -86,29 +86,29 @@ For designs with at least 100,000 instances, Static Exact dependency-cone and
 capture-cone traversal runs in `emuflow_static_exact_analyzer`. The boundary is
 a versioned integer-only binary graph, and Python reconstructs the same v3
 semantic contract after validating all returned indices and graph coverage.
-Capture endpoints are now resolved by replaying only the native analyzer's
-requested endpoint ordinals, so Phase 3 no longer retains a Python tuple for
-every sink. Native dependencies use predecessor CSR plus fixed-width launch,
-level, and depth arrays; a transient successor CSR performs independent
-topological validation and is released before contract publication. Contract
-construction derives stable segment identities from ordered counters and
-expands predecessor names for only the current cut. It transfers each result
-into a byte-backed cut-node sequence instead of retaining dependency, launch,
-level, and depth dictionaries. Production publication derives cut nodes, dependency
-edges, logic segments and capture requirements through repeatable typed record
-streams. Those four graph-scale relations feed the canonical digest and
-`assignment.exact.bin` writer without becoming retained Python dictionary
-lists. Native capture analysis still returns a transient token vector, but
-Python now replays it into a scratch ordered relation and encodes the canonical
-byte-backed stream in one cursor pass, without raw, set, and sorted capture
-populations coexisting. Capture protocol v2 returns endpoint-token, cut and
-sink-partition records in canonical order; Python keeps those columns in three
-fixed-width arrays and no longer builds a tuple list or sorts it again. A
-200,000-record synthetic adapter benchmark reduced traced peak allocation from
-25,601,772 to 2,537,274 bytes (-90.1%). This is boundary evidence, not a
-replacement for the required NVDLA run. Direct native binary emission, the
-analyzer's initial cut-name map and native input/capture vectors remain
-migration work.
+Capture protocol v3 contains fixed-width integer ordinals only. It preserves
+the original EmuIR instance and net ordinals in the native input and returns
+`(cut, partition, net ordinal, sink ordinal)` records. Python dereferences only
+the returned capture population, independently checking the sink FPGA, state
+type and assignment before constructing the authoritative capture identity.
+This removes the ordered instance/net copies, graph-sized net-index map and
+full post-native endpoint replay. Native dependencies use predecessor CSR plus
+fixed-width launch, level, and depth arrays; a transient successor CSR performs
+independent topological validation and is released before contract publication.
+Contract construction derives stable segment identities from ordered counters
+and expands predecessor names for only the current cut. Production publication
+derives cut nodes, dependency edges, logic segments and capture requirements
+through repeatable typed record streams. Those four graph-scale relations feed
+the canonical digest and `assignment.exact.bin` writer without becoming
+retained Python dictionary lists. Exact-binary v2 stores capture bits as
+canonical unsigned big-endian byte strings, permits at most 8192 bits and still
+reads v1 artifacts. Readers validate every section count against remaining
+bytes before allocating from it. A 300,000-record synthetic adapter benchmark
+reduced measured transient allocation from 44,295,916 to 20,615,888 bytes
+(-53.5%); a sparse 100-capture parse fell from 89.9 ms and 22,222 bytes to
+1.61 ms and 13,464 bytes. These measurements cover the adapter boundary, not
+the required NVDLA run. Direct native binary emission, the analyzer's initial
+cut-name map and native input/capture vectors remain migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
@@ -177,8 +177,14 @@ ordered-merge typed schedule, position and plan relations without a hop-sized
 hint dictionary. Pin-plan and position selectors publish content-addressed
 generations last, so an interrupted overwrite leaves the previous generation
 readable; record seals are also bound inside SQLite metadata. Chimew
-electrical-binding input is still a full JSON list and remains Phase 6
-migration work.
+electrical binding now uses a small `emuflow.chimew-binding-storage/v1`
+selector plus a sealed SQLite store of normalized group and member relations.
+The Phase 7 physical consumer performs indexed per-schedule-entry lookups
+without constructing another hop-sized binding map, and Phase 6 reports carry
+the selector and sidecar as an explicit artifact inventory so relocation does
+not strand the store. Legacy logical JSON remains readable. Chimew plan
+assignment, entry production and some validator coverage sets still scale with
+the hop population and remain Phase 6 migration work.
 Transport RTL is written atomically from slot-ordered cursors. Python still
 decodes records into the stores and emits adapter text, so native producer
 migration remains. ScheduleStore v4 keeps Static Exact hop, route and
@@ -580,7 +586,13 @@ second entry-keyed ScheduleStore dictionary. Measurement import validates
 canonical endpoint order and the independent arc equations while streaming
 directly into result records; it no longer retains a second endpoint-keyed
 measurement dictionary. Check validation likewise keeps one per-path
-target/runtime state instead of several duplicate path populations. Canonical
+target/runtime state instead of several duplicate path populations. Production
+event/check construction stores interned strings, fixed-width columns and
+representative indices in `_IndexedEventChecks`; it validates target/runtime
+coverage and TX/commit semantics while appending instead of retaining an
+`EventCheck` object and arc tuple per check or scanning the complete set again
+for compression. Hashes only select collision candidates and full values are
+compared before sharing an identity. Canonical
 report stitching consumes one contiguous path bundle at a time, retaining
 only the active identities and target/runtime rows; the expanded TSV writer
 returns final path records in the same pass instead of rereading the file.
@@ -590,7 +602,9 @@ check-sized dictionary list. A 400,000-check synthetic benchmark reduced the
 membership map's shallow size by 50% and replaced a 147,293,552-byte eager
 overlay with a 592-byte lazy object; full original-check order and WNS/TNS
 accounting are unchanged. Interleaved legacy input uses an explicit checked
-compatibility fallback. See
+compatibility fallback. Separate 200,000-check and 100,000-unique-check
+synthetic measurements reduced traced peak allocation by 52.8% and 49.4%,
+respectively. They do not replace NVDLA Global STA qualification. See
 [timing scope and metric definitions](docs/global-opensta-qualification.md).
 
 ### Selected research references

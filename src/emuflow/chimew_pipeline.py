@@ -11,6 +11,7 @@ from .chimew_bank_channel import (
     evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
+from .chimew_binding_storage import read_chimew_binding
 from .chimew_grouping import build_chimew_initial_groups
 from .chimew_phase6 import (
     CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA,
@@ -364,6 +365,8 @@ def validate_chimew_phase6_pipeline(output_dir: Path) -> Dict[str, Any]:
     expected_labels = set(_BASE_ARTIFACTS)
     if "schedule_store" in artifacts:
         expected_labels.add("schedule_store")
+    if "adapter_electrical_binding_store" in artifacts:
+        expected_labels.add("adapter_electrical_binding_store")
     if source_bound:
         expected_labels.update(f"source_{label}" for label in _SOURCE_LABELS)
         if "source_timing_paths" in artifacts:
@@ -450,7 +453,9 @@ def validate_chimew_phase6_pipeline(output_dir: Path) -> Dict[str, Any]:
         raise ValidationError("Chimew adapter qualification certificate differs")
     pin_plan = read_json(paths["adapter_pin_plan"])
     position_hints = read_json(paths["adapter_position_hints"])
-    electrical_binding = read_json(paths["adapter_electrical_binding"])
+    electrical_binding = read_chimew_binding(
+        paths["adapter_electrical_binding"]
+    )
     pin_validation = validate_pin_plan(
         schedule, platform, position_hints, pin_plan
     )
@@ -458,6 +463,17 @@ def validate_chimew_phase6_pipeline(output_dir: Path) -> Dict[str, Any]:
         schedule, platform, pin_plan, electrical_binding
     )
     adapter_report = read_json(paths["adapter_report"])
+    expected_adapter_artifacts = {
+        "bank_channel_report": "bank_channel_report.json",
+        "position_hints": "position_hints.json",
+        "pin_plan": "pin_plan.json",
+        "electrical_binding": "electrical_binding.json",
+        "qualification_certificate": "qualification_certificate.json",
+    }
+    if hasattr(electrical_binding, "manifest"):
+        expected_adapter_artifacts["electrical_binding_store"] = (
+            electrical_binding.manifest["artifact"]
+        )
     expected_adapter_report = {
         "schema": CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA,
         "status": "pass",
@@ -477,13 +493,7 @@ def validate_chimew_phase6_pipeline(output_dir: Path) -> Dict[str, Any]:
             if legacy_pre_scope
             else qualification_validation
         ),
-        "artifacts": {
-            "bank_channel_report": "bank_channel_report.json",
-            "position_hints": "position_hints.json",
-            "pin_plan": "pin_plan.json",
-            "electrical_binding": "electrical_binding.json",
-            "qualification_certificate": "qualification_certificate.json",
-        },
+        "artifacts": expected_adapter_artifacts,
     }
     if adapter_report != expected_adapter_report:
         raise ValidationError("Chimew pipeline adapter report does not agree")

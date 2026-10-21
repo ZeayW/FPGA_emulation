@@ -14,6 +14,10 @@ from emuflow.chimew_phase6 import (
     CHIMEW_PHASE6_BINDING_PROVIDER,
     CHIMEW_PHASE6_BINDING_SCHEMA_V1,
 )
+from emuflow.chimew_binding_storage import (
+    CHIMEW_BINDING_STORAGE_SCHEMA,
+    read_chimew_binding,
+)
 from emuflow.errors import ValidationError
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
@@ -1203,6 +1207,10 @@ class Phase6Test(unittest.TestCase):
             pin_selector = read_json(output / "pin_plan.json")
             self.assertTrue((output / pin_selector["artifact"]).is_file())
             self.assertEqual(pin_selector["schema"], PIN_PLAN_STORAGE_SCHEMA)
+            self.assertEqual(
+                report["artifacts"]["pin_plan_store"],
+                pin_selector["artifact"],
+            )
             self.assertLess((output / "pin_plan.json").stat().st_size, 4096)
             self.assertEqual(
                 read_pin_plan(output / "pin_plan.json", materialize=True),
@@ -1215,6 +1223,10 @@ class Phase6Test(unittest.TestCase):
             )
             self.assertEqual(
                 position_selector["schema"], POSITION_HINTS_STORAGE_SCHEMA
+            )
+            self.assertEqual(
+                report["artifacts"]["position_hints_store"],
+                position_selector["artifact"],
             )
             self.assertLess(
                 (output / "position_hints.json").stat().st_size, 4096
@@ -1264,6 +1276,28 @@ class Phase6Test(unittest.TestCase):
             self.assertEqual(
                 read_json(chimew_output / "manifest.json")["electrical_binding"],
                 "electrical_binding.json",
+            )
+            binding_selector = read_json(
+                chimew_output / chimew_report["artifacts"]["electrical_binding"]
+            )
+            self.assertEqual(
+                binding_selector["schema"], CHIMEW_BINDING_STORAGE_SCHEMA
+            )
+            self.assertEqual(
+                chimew_report["artifacts"]["electrical_binding_store"],
+                binding_selector["artifact"],
+            )
+            relocated_binding = root / "relocated-binding"
+            relocated_binding.mkdir()
+            for role in ("electrical_binding", "electrical_binding_store"):
+                source = chimew_output / chimew_report["artifacts"][role]
+                shutil.copy2(source, relocated_binding / source.name)
+            self.assertEqual(
+                read_chimew_binding(
+                    relocated_binding / "electrical_binding.json",
+                    materialize=True,
+                ),
+                binding,
             )
             self.assertEqual(
                 validate_phase6(

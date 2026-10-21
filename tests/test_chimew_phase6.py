@@ -14,6 +14,14 @@ from emuflow.chimew_bank_channel import (
     evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
+from emuflow.chimew_binding_storage import (
+    CHIMEW_BINDING_STORAGE_SCHEMA,
+    ChimewBindingEntrySequence,
+    ChimewBindingView,
+    open_chimew_binding_schedule_entry_lookup,
+    read_chimew_binding,
+    write_chimew_binding_storage,
+)
 from emuflow.chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_PROVIDER,
     CHIMEW_ELECTRICAL_MAP_SCHEMA,
@@ -572,6 +580,9 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             )
             binding = copy.deepcopy(result["electrical_binding"])
             binding["provenance"]["schedule_sha256"] = schedule_sha256
+            indexed_binding = write_chimew_binding_storage(
+                root / "electrical_binding.json", binding
+            )
             with mock.patch.object(
                 TypedScheduleEntrySequence,
                 "__iter__",
@@ -579,14 +590,107 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                     "Chimew v3 validation expanded typed schedule entries"
                 ),
             ):
-                validation = validate_chimew_phase6_binding(
-                    indexed_schedule,
-                    self.platform,
-                    indexed_plan,
-                    binding,
-                )
+                with mock.patch.object(
+                    ChimewBindingEntrySequence,
+                    "__iter__",
+                    side_effect=AssertionError(
+                        "Chimew validation expanded typed binding members"
+                    ),
+                ):
+                    validation = validate_chimew_phase6_binding(
+                        indexed_schedule,
+                        self.platform,
+                        indexed_plan,
+                        indexed_binding,
+                    )
             self.assertEqual(validation["status"], "pass")
             self.assertEqual(validation["signals"], len(entries))
+
+    def test_indexed_binding_round_trip_and_tamper_rejection(self) -> None:
+        result = build_chimew_phase6_pin_plan(
+            self.schedule,
+            self.platform,
+            self.assignment_input,
+            self.electrical_map,
+            executable=str(self.executable),
+            region_count=4,
+        )
+        legacy_validation = validate_chimew_phase6_binding(
+            self.schedule,
+            self.platform,
+            result["pin_plan"],
+            result["electrical_binding"],
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector = root / "electrical_binding.json"
+            indexed = write_chimew_binding_storage(
+                selector, result["electrical_binding"]
+            )
+            self.assertEqual(
+                read_json(selector)["schema"], CHIMEW_BINDING_STORAGE_SCHEMA
+            )
+            self.assertEqual(
+                indexed.materialize(), result["electrical_binding"]
+            )
+            repeated = write_chimew_binding_storage(
+                root / "repeated" / "electrical_binding.json",
+                result["electrical_binding"],
+            )
+            self.assertEqual(
+                repeated.manifest["store_sha256"],
+                indexed.manifest["store_sha256"],
+            )
+            self.assertEqual(
+                repeated.store_path.read_bytes(), indexed.store_path.read_bytes()
+            )
+            indexed_validation = validate_chimew_phase6_binding(
+                self.schedule,
+                self.platform,
+                result["pin_plan"],
+                read_chimew_binding(selector),
+            )
+            self.assertEqual(indexed_validation, legacy_validation)
+
+            class EntriesMustStayLazy:
+                def __iter__(self):
+                    raise AssertionError("typed Chimew members were expanded")
+
+            indexed._entries = EntriesMustStayLazy()
+            with open_chimew_binding_schedule_entry_lookup(
+                indexed
+            ) as lookup_binding:
+                first = lookup_binding("s0")
+                self.assertIsNotNone(first)
+                self.assertEqual(first["group"], "group_ab")
+                self.assertNotIn("schedule_entries", first)
+                self.assertIsNone(lookup_binding("missing-entry"))
+
+            manifest = read_json(selector)
+            malformed = copy.deepcopy(manifest)
+            malformed["members"]["records"] += 1
+            write_json(selector, malformed, compact=True)
+            with self.assertRaisesRegex(ValidationError, "logical seal"):
+                ChimewBindingView(selector)
+
+            write_json(selector, manifest, compact=True)
+            with sqlite3.connect(indexed.store_path) as connection:
+                connection.execute(
+                    "UPDATE members SET member='tampered' WHERE member='s0'"
+                )
+            with self.assertRaisesRegex(ValidationError, "store seal"):
+                ChimewBindingView(selector)
+
+        duplicate = copy.deepcopy(result["electrical_binding"])
+        duplicate["entries"][1]["schedule_entries"] = ["s0"]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaisesRegex(
+                ValidationError, "repeats a group or schedule entry"
+            ):
+                write_chimew_binding_storage(
+                    Path(temporary_directory) / "electrical_binding.json",
+                    duplicate,
+                )
 
     def test_duplicate_concrete_lane_is_rejected(self) -> None:
         electrical_map = copy.deepcopy(self.electrical_map)
@@ -808,6 +912,12 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 executable=str(self.executable),
             )
             self.assertEqual(report["status"], "pass")
+            selector = read_json(root / "out" / "electrical_binding.json")
+            self.assertEqual(selector["schema"], CHIMEW_BINDING_STORAGE_SCHEMA)
+            self.assertEqual(
+                report["artifacts"]["electrical_binding_store"],
+                selector["artifact"],
+            )
             self.assertEqual(
                 read_json(root / "out" / "adapter_report.json"), report
             )

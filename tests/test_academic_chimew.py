@@ -17,6 +17,7 @@ from emuflow.chimew_pipeline import (
     run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
 )
+from emuflow.chimew_binding_storage import read_chimew_binding
 from emuflow.cli import _build_parser
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
@@ -471,7 +472,7 @@ class AcademicChimewTest(unittest.TestCase):
                 assigner=self.executables["assigner"],
                 region_count=4,
             )
-            binding = read_json(
+            binding = read_chimew_binding(
                 root
                 / "chimew"
                 / report["artifacts"]["adapter_electrical_binding"]["path"]
@@ -861,7 +862,7 @@ class AcademicChimewTest(unittest.TestCase):
                 planned[critical_entry["id"]]["physical_lane"],
                 critical_entry["lane"],
             )
-            electrical_binding = read_json(
+            electrical_binding = read_chimew_binding(
                 root
                 / "timing-chimew"
                 / report["artifacts"]["adapter_electrical_binding"]["path"]

@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import io
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -8,6 +9,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
+from emuflow.chimew_binding_storage import (
+    ChimewBindingEntrySequence,
+    write_chimew_binding_storage,
+)
 from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.multi_fpga_physical_flow import (
@@ -1040,6 +1045,72 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     PLATFORM,
                     root / "schedule.json",
                     root / "physical",
+                    backend="open",
+                )
+
+    def test_indexed_chimew_selector_is_read_lazily_and_tamper_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            split = root / "split"
+            split.mkdir()
+            write_json(
+                split / "manifest.json",
+                {
+                    "schema": "emuflow.split-manifest/v1",
+                    "electrical_binding": "electrical_binding.json",
+                },
+            )
+            indexed = write_chimew_binding_storage(
+                split / "electrical_binding.json",
+                {
+                    "schema": "emuflow.chimew-phase6-electrical-binding/v2",
+                    "design": "design",
+                    "platform": "academic_vtr_2fpga_p2p",
+                    "fpga_y_bounds": [
+                        {"fpga": "fpga0", "y_min": 0.0, "y_max": 1.0},
+                        {"fpga": "fpga1", "y_min": 0.0, "y_max": 1.0},
+                    ],
+                    "entries": [
+                        {
+                            "group": "group0",
+                            "link": "link0",
+                            "fpga_a": "fpga0",
+                            "fpga_b": "fpga1",
+                            "physical_lane": 0,
+                            "direction": "a_to_b",
+                            "package_pin_a": "A1",
+                            "package_pin_b": "B1",
+                            "pin_a_point": {"x": 0.0, "y": 0.25},
+                            "pin_b_point": {"x": 1.0, "y": 0.75},
+                            "schedule_entries": ["entry0"],
+                        }
+                    ],
+                },
+            )
+            write_json(root / "schedule.json", {})
+            with patch.object(
+                ChimewBindingEntrySequence,
+                "__iter__",
+                side_effect=AssertionError("physical flow expanded typed binding"),
+            ), self.assertRaisesRegex(ValidationError, "position hints"):
+                run_multi_fpga_physical_flow(
+                    split,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical",
+                    backend="open",
+                )
+
+            with sqlite3.connect(indexed.store_path) as connection:
+                connection.execute(
+                    "UPDATE members SET member='tampered' WHERE member='entry0'"
+                )
+            with self.assertRaisesRegex(ValidationError, "store seal"):
+                run_multi_fpga_physical_flow(
+                    split,
+                    PLATFORM,
+                    root / "schedule.json",
+                    root / "physical-tampered",
                     backend="open",
                 )
 

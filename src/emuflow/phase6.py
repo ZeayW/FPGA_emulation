@@ -14,6 +14,10 @@ from .equivalence import (
 )
 from .errors import ValidationError
 from .io import read_json, write_json
+from .chimew_binding_storage import (
+    read_chimew_binding,
+    write_chimew_binding_storage,
+)
 from .managed_json_storage import pack_managed_json
 from .ir import EmuIR
 from .netlist import (
@@ -256,6 +260,9 @@ def run_phase6(
     pin_validation = None
     electrical_validation = None
     electrical_binding = None
+    electrical_binding_view = None
+    pin_plan_store_artifact = None
+    position_hints_store_artifact = None
     if pin_plan is not None:
         # Normalize legacy input into an indexed relation before its first
         # full validation, but do not publish an invalid plan into the phase
@@ -288,7 +295,9 @@ def run_phase6(
                     )
                 from .chimew_phase6 import validate_chimew_phase6_binding
 
-                electrical_binding = read_json(electrical_binding_path)
+                electrical_binding = read_chimew_binding(
+                    electrical_binding_path
+                )
                 electrical_validation = validate_chimew_phase6_binding(
                     schedule,
                     platform,
@@ -303,6 +312,8 @@ def run_phase6(
             staged_position_artifact = staged_position_hints.manifest[
                 "artifact"
             ]
+            pin_plan_store_artifact = staged_pin_artifact
+            position_hints_store_artifact = staged_position_artifact
             previous_sidecars = []
             for selector_name in ("pin_plan.json", "position_hints.json"):
                 selector_path = output_dir / selector_name
@@ -593,7 +604,7 @@ def run_phase6(
     )
     if pin_plan is not None:
         if electrical_binding_path is not None:
-            write_json(
+            electrical_binding_view = write_chimew_binding_storage(
                 output_dir / "electrical_binding.json",
                 electrical_binding,
             )
@@ -693,8 +704,27 @@ def run_phase6(
                 else {}
             ),
             **(
+                {"pin_plan_store": pin_plan_store_artifact}
+                if pin_plan_store_artifact is not None
+                else {}
+            ),
+            **(
+                {"position_hints_store": position_hints_store_artifact}
+                if position_hints_store_artifact is not None
+                else {}
+            ),
+            **(
                 {"electrical_binding": "electrical_binding.json"}
                 if electrical_validation is not None
+                else {}
+            ),
+            **(
+                {
+                    "electrical_binding_store": (
+                        electrical_binding_view.manifest["artifact"]
+                    )
+                }
+                if electrical_binding_view is not None
                 else {}
             ),
             **(
@@ -780,7 +810,10 @@ def validate_phase6(
             from .chimew_phase6 import validate_chimew_phase6_binding
 
             validate_chimew_phase6_binding(
-                schedule, platform, pin_plan, read_json(resolved_binding)
+                schedule,
+                platform,
+                pin_plan,
+                read_chimew_binding(resolved_binding),
             )
         elif electrical_binding_path is not None:
             raise ValueError(

@@ -34,6 +34,489 @@ class EventCheck:
     required_ns: float
 
 
+_EVENT_CHECK_ROLES = ("target", "runtime", "tx", "commit")
+_EVENT_CHECK_ROLE_INDEX = {
+    role: index for index, role in enumerate(_EVENT_CHECK_ROLES)
+}
+_UINT32_MAX = (1 << 32) - 1
+_UINT64_MASK = (1 << 64) - 1
+
+
+def _event_check_values_hash(
+    role: str,
+    launch_ns: float,
+    arcs_ns: tuple[float, ...],
+    required_ns: float,
+) -> int:
+    """Return a compact candidate key; callers still compare exact values."""
+
+    return hash((role, launch_ns, arcs_ns, required_ns)) & _UINT64_MASK
+
+
+def _event_check_row_hash(row: EventCheck) -> int:
+    return _event_check_values_hash(
+        row.role, row.launch_ns, row.arcs_ns, row.required_ns
+    )
+
+
+class _RepresentativeBundle:
+    __slots__ = ("start", "count", "numerical_key", "collision")
+
+    def __init__(
+        self,
+        start: int,
+        count: int,
+        numerical_key: tuple | None,
+        collision: _RepresentativeBundle | None = None,
+    ):
+        self.start = start
+        self.count = count
+        self.numerical_key = numerical_key
+        self.collision = collision
+
+
+class _IndexedEventChecks(Sequence[EventCheck]):
+    """Fixed-width, string-interned storage for the production check stream.
+
+    A transported original path produces several TX/commit checks in addition
+    to its target/runtime observations.  Keeping each row as a Python
+    dataclass with a separate arc tuple made that hop-sized relation one of the
+    last large in-process Global STA populations.  This view owns each path and
+    event string once and stores the relation and arc payload in typed arrays.
+    ``EventCheck`` objects are materialized only for the row currently being
+    exported, validated, or stitched.
+    """
+
+    def __init__(
+        self,
+        paths: list[str],
+        events: list[str],
+        path_indices: array,
+        roles: array,
+        event_indices: array,
+        launches: array,
+        required: array,
+        arc_offsets: array,
+        arcs: array,
+        numerical_hashes: array,
+        original_to_representative: array | None = None,
+        representative_indices: array | None = None,
+        *,
+        validated: bool = False,
+    ):
+        count = len(roles)
+        if (
+            len(path_indices) != count
+            or len(event_indices) != count
+            or len(launches) != count
+            or len(required) != count
+            or len(numerical_hashes) != count
+            or (
+                original_to_representative is not None
+                and len(original_to_representative) != count
+            )
+            or (original_to_representative is None)
+            != (representative_indices is None)
+            or len(arc_offsets) != count + 1
+            or arc_offsets[0] != 0
+            or arc_offsets[-1] != len(arcs)
+        ):
+            raise ValidationError("global STA indexed check storage is malformed")
+        self._paths = paths
+        self._events = events
+        self._path_indices = path_indices
+        self._roles = roles
+        self._event_indices = event_indices
+        self._launches = launches
+        self._required = required
+        self._arc_offsets = arc_offsets
+        self._arcs = arcs
+        self._numerical_hashes = numerical_hashes
+        self._original_to_representative = original_to_representative
+        self._representative_indices = representative_indices
+        self._validated = validated
+
+    def __len__(self) -> int:
+        return len(self._roles)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        path_index = self._path_indices[index]
+        event_index = self._event_indices[index]
+        role_index = self._roles[index]
+        if (
+            path_index >= len(self._paths)
+            or event_index >= len(self._events)
+            or role_index >= len(_EVENT_CHECK_ROLES)
+        ):
+            raise ValidationError("global STA indexed check identity is malformed")
+        begin = self._arc_offsets[index]
+        end = self._arc_offsets[index + 1]
+        if begin > end or end > len(self._arcs):
+            raise ValidationError("global STA indexed check arcs are malformed")
+        return EventCheck(
+            self._paths[path_index],
+            _EVENT_CHECK_ROLES[role_index],
+            self._events[event_index],
+            self._launches[index],
+            tuple(self._arcs[begin:end]),
+            self._required[index],
+        )
+
+    def __iter__(self):
+        for index in range(len(self)):
+            yield self[index]
+
+    def __eq__(self, other):
+        if not isinstance(other, Sequence) or len(self) != len(other):
+            return False
+        return all(left == right for left, right in zip(self, other))
+
+    def _numerical_hash(self, index: int) -> int:
+        return self._numerical_hashes[index]
+
+    def _numerical_key(self, index: int) -> tuple:
+        begin = self._arc_offsets[index]
+        end = self._arc_offsets[index + 1]
+        return (
+            self._roles[index],
+            self._launches[index],
+            tuple(self._arcs[begin:end]),
+            self._required[index],
+        )
+
+    def _validate_row(self, index: int) -> None:
+        path_index = self._path_indices[index]
+        event_index = self._event_indices[index]
+        role_index = self._roles[index]
+        if (
+            path_index >= len(self._paths)
+            or event_index >= len(self._events)
+            or role_index >= len(_EVENT_CHECK_ROLES)
+            or not self._paths[path_index]
+            or not self._events[event_index]
+        ):
+            raise ValidationError("global STA indexed check identity is malformed")
+        begin = self._arc_offsets[index]
+        end = self._arc_offsets[index + 1]
+        if begin > end or end > len(self._arcs):
+            raise ValidationError("global STA indexed check arcs are malformed")
+        launch = self._launches[index]
+        required = self._required[index]
+        if (
+            not math.isfinite(launch)
+            or not math.isfinite(required)
+        ):
+            raise ValidationError("global STA times must be finite numbers")
+        if launch < 0:
+            raise ValidationError(
+                "global STA launch/arc delay must be nonnegative"
+            )
+        for offset in range(begin, end):
+            value = self._arcs[offset]
+            if not math.isfinite(value):
+                raise ValidationError("global STA times must be finite numbers")
+            if value < 0:
+                raise ValidationError(
+                    "global STA launch/arc delay must be nonnegative"
+                )
+
+    def _physical_chain_equal(self, left: int, right: int) -> bool:
+        if self._launches[left] != self._launches[right]:
+            return False
+        left_begin = self._arc_offsets[left]
+        left_end = self._arc_offsets[left + 1]
+        right_begin = self._arc_offsets[right]
+        right_end = self._arc_offsets[right + 1]
+        return (
+            left_end - left_begin == right_end - right_begin
+            and all(
+                self._arcs[left_begin + offset]
+                == self._arcs[right_begin + offset]
+                for offset in range(left_end - left_begin)
+            )
+        )
+
+    @property
+    def typed_payload_bytes(self) -> int:
+        """Bytes in fixed-width relation buffers, excluding interned strings."""
+
+        return sum(
+            values.itemsize * len(values)
+            for values in (
+                self._path_indices,
+                self._roles,
+                self._event_indices,
+                self._launches,
+                self._required,
+                self._arc_offsets,
+                self._arcs,
+                self._numerical_hashes,
+                *(
+                    (self._original_to_representative,)
+                    if self._original_to_representative is not None
+                    else ()
+                ),
+                *(
+                    (self._representative_indices,)
+                    if self._representative_indices is not None
+                    else ()
+                ),
+            )
+        )
+
+
+class _EventCheckBuilder:
+    """Append-only builder which releases its string dictionaries at seal."""
+
+    def __init__(self):
+        self._finished = False
+        self._paths: list[str] = []
+        self._events: list[str] = []
+        self._path_ids: dict[str, int] = {}
+        self._event_ids: dict[str, int] = {}
+        self._path_indices = array("I")
+        self._roles = array("B")
+        self._event_indices = array("I")
+        self._launches = array("d")
+        self._required = array("d")
+        self._arc_offsets = array("Q", [0])
+        self._arcs = array("d")
+        self._numerical_hashes = array("Q")
+        self._original_to_representative = array("I")
+        self._representative_indices = array("I")
+        self._representative_bundles: dict[int, _RepresentativeBundle] = {}
+        self._current_path_index: int | None = None
+        self._current_bundle_start = 0
+        self._current_identities: set[tuple[int, int]] = set()
+        self._target_chain: tuple[float, tuple[float, ...]] | None = None
+        self._runtime_chain: tuple[float, tuple[float, ...]] | None = None
+
+    def _finish_bundle(self) -> None:
+        if self._current_path_index is None:
+            return
+        if self._target_chain is None or self._runtime_chain is None:
+            raise ValidationError("global STA target/runtime population disagrees")
+        if self._target_chain != self._runtime_chain:
+            raise ValidationError(
+                "global STA target/runtime physical chains disagree"
+            )
+        begin = self._current_bundle_start
+        end = len(self._roles)
+        bundle_hash = end - begin
+        for index in range(begin, end):
+            bundle_hash = (
+                (bundle_hash * 1_000_003) ^ self._numerical_hashes[index]
+            ) & _UINT64_MASK
+
+        def numerical_key(index: int) -> tuple:
+            arc_begin = self._arc_offsets[index]
+            arc_end = self._arc_offsets[index + 1]
+            return (
+                self._roles[index],
+                self._launches[index],
+                tuple(self._arcs[arc_begin:arc_end]),
+                self._required[index],
+            )
+
+        start = None
+        current_key = None
+        candidate = self._representative_bundles.get(bundle_hash)
+        while candidate is not None:
+            if candidate.count != end - begin:
+                candidate = candidate.collision
+                continue
+            if candidate.numerical_key is None:
+                representative_key = tuple(
+                    numerical_key(
+                        self._representative_indices[
+                            candidate.start + offset
+                        ]
+                    )
+                    for offset in range(candidate.count)
+                )
+                candidate.numerical_key = representative_key
+            else:
+                representative_key = candidate.numerical_key
+            if current_key is None:
+                current_key = tuple(
+                    numerical_key(index) for index in range(begin, end)
+                )
+            if current_key == representative_key:
+                start = candidate.start
+                break
+            candidate = candidate.collision
+        if start is None:
+            start = len(self._representative_indices)
+            if start + end - begin >= _UINT32_MAX:
+                raise ValidationError(
+                    "global STA representative population exceeds indexed storage"
+                )
+            self._representative_indices.extend(range(begin, end))
+            self._representative_bundles[bundle_hash] = _RepresentativeBundle(
+                start,
+                end - begin,
+                current_key,
+                self._representative_bundles.get(bundle_hash),
+            )
+        for offset, index in enumerate(range(begin, end)):
+            self._original_to_representative[index] = start + offset
+
+    @staticmethod
+    def _intern(value: str, values: list[str], ids: dict[str, int]) -> int:
+        identity = ids.get(value)
+        if identity is None:
+            identity = len(values)
+            if identity >= _UINT32_MAX:
+                raise ValidationError("global STA indexed identity population is too large")
+            ids[value] = identity
+            values.append(value)
+        return identity
+
+    def append(self, row: EventCheck) -> None:
+        self.append_values(
+            row.path,
+            row.role,
+            row.event,
+            row.launch_ns,
+            row.arcs_ns,
+            row.required_ns,
+        )
+
+    def append_values(
+        self,
+        path: str,
+        role: str,
+        event: str,
+        launch_ns: float,
+        arcs_ns: tuple[float, ...],
+        required_ns: float,
+    ) -> None:
+        if self._finished:
+            raise ValidationError("global STA indexed check builder is sealed")
+        if not path or not event:
+            raise ValidationError("global STA has duplicate/empty check identity")
+        if role not in _EVENT_CHECK_ROLE_INDEX:
+            raise ValidationError("global STA has an unsupported check role")
+        for value in (launch_ns, required_ns, *arcs_ns):
+            if isinstance(value, bool) or not math.isfinite(value):
+                raise ValidationError("global STA times must be finite numbers")
+        if launch_ns < 0 or any(value < 0 for value in arcs_ns):
+            raise ValidationError(
+                "global STA launch/arc delay must be nonnegative"
+            )
+        path_index = self._intern(path, self._paths, self._path_ids)
+        event_index = self._intern(event, self._events, self._event_ids)
+        role_index = _EVENT_CHECK_ROLE_INDEX[role]
+        if path_index != self._current_path_index:
+            self._finish_bundle()
+            # Dense IDs are assigned on first sight. Any non-latest ID here is
+            # a reappearing path bundle, which the production builder rejects;
+            # public list callers retain the legacy interleaved fallback.
+            if path_index != len(self._paths) - 1:
+                raise ValidationError(
+                    "global STA indexed checks are not path-contiguous"
+                )
+            self._current_path_index = path_index
+            self._current_identities = set()
+            self._target_chain = None
+            self._runtime_chain = None
+            self._current_bundle_start = len(self._roles)
+        identity = (role_index, event_index)
+        if identity in self._current_identities:
+            raise ValidationError("global STA has duplicate/empty check identity")
+        self._current_identities.add(identity)
+        if role == "target":
+            if self._target_chain is not None:
+                raise ValidationError(
+                    "global STA must observe each original path once"
+                )
+            self._target_chain = (launch_ns, arcs_ns)
+        elif role == "runtime":
+            if self._runtime_chain is not None:
+                raise ValidationError(
+                    "global STA must observe each original path once"
+                )
+            self._runtime_chain = (launch_ns, arcs_ns)
+        self._path_indices.append(path_index)
+        self._roles.append(role_index)
+        self._event_indices.append(event_index)
+        self._launches.append(launch_ns)
+        self._required.append(required_ns)
+        self._arcs.extend(arcs_ns)
+        self._arc_offsets.append(len(self._arcs))
+        self._numerical_hashes.append(
+            _event_check_values_hash(role, launch_ns, arcs_ns, required_ns)
+        )
+        self._original_to_representative.append(_UINT32_MAX)
+
+    def finish(self) -> _IndexedEventChecks:
+        if self._finished:
+            raise ValidationError("global STA indexed check builder is sealed")
+        self._finish_bundle()
+        self._finished = True
+        result = _IndexedEventChecks(
+            self._paths,
+            self._events,
+            self._path_indices,
+            self._roles,
+            self._event_indices,
+            self._launches,
+            self._required,
+            self._arc_offsets,
+            self._arcs,
+            self._numerical_hashes,
+            self._original_to_representative,
+            self._representative_indices,
+            validated=True,
+        )
+        # These dictionaries are required only while assigning dense IDs.
+        # The sealed view retains the ordered string pools alone.
+        self._path_ids = {}
+        self._event_ids = {}
+        self._representative_bundles = {}
+        return result
+
+
+class _IndexedCheckSelection(Sequence[EventCheck]):
+    """A fixed-width row selection over another check sequence."""
+
+    def __init__(self, rows: Sequence[EventCheck], indices: array):
+        self._rows = rows
+        self._indices = indices
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        selected = self._indices[index]
+        if selected >= len(self._rows):
+            raise ValidationError("global STA representative index is malformed")
+        return self._rows[selected]
+
+    def __iter__(self):
+        for index in self._indices:
+            if index >= len(self._rows):
+                raise ValidationError("global STA representative index is malformed")
+            yield self._rows[index]
+
+    def __eq__(self, other):
+        if not isinstance(other, Sequence) or len(self) != len(other):
+            return False
+        return all(left == right for left, right in zip(self, other))
+
+
 def _validate_check_values(row: EventCheck) -> None:
     if not row.path or not row.event:
         raise ValidationError("global STA has duplicate/empty check identity")
@@ -46,7 +529,7 @@ def _validate_check_values(row: EventCheck) -> None:
         raise ValidationError("global STA launch/arc delay must be nonnegative")
 
 
-def _validate_interleaved_checks(rows: list[EventCheck]) -> None:
+def _validate_interleaved_checks(rows: Sequence[EventCheck]) -> None:
     """Compatibility validator for callers that interleave path bundles."""
     seen = set()
     observations: dict[str, list[EventCheck | None]] = {}
@@ -81,10 +564,78 @@ def _validate_interleaved_checks(rows: list[EventCheck]) -> None:
             raise ValidationError("global STA target/runtime physical chains disagree")
 
 
-def validate_checks(checks: Iterable[EventCheck]) -> list[EventCheck]:
-    rows = list(checks)
+def _validate_indexed_checks(rows: _IndexedEventChecks) -> None:
+    """Validate canonical typed rows without reconstructing every dataclass."""
+
+    completed_paths: set[int] = set()
+    current_path = None
+    current_identities: set[tuple[int, int]] = set()
+    target = None
+    runtime = None
+    interleaved = False
+
+    def finish_bundle() -> bool:
+        if current_path is None:
+            return True
+        if target is None or runtime is None:
+            return False
+        if not rows._physical_chain_equal(target, runtime):
+            raise ValidationError(
+                "global STA target/runtime physical chains disagree"
+            )
+        completed_paths.add(current_path)
+        return True
+
+    for index in range(len(rows)):
+        rows._validate_row(index)
+        path = rows._path_indices[index]
+        if path != current_path:
+            if not finish_bundle() or path in completed_paths:
+                interleaved = True
+                break
+            current_path = path
+            current_identities = set()
+            target = None
+            runtime = None
+        role = rows._roles[index]
+        identity = (role, rows._event_indices[index])
+        if identity in current_identities:
+            raise ValidationError("global STA has duplicate/empty check identity")
+        current_identities.add(identity)
+        if role == _EVENT_CHECK_ROLE_INDEX["target"]:
+            if target is not None:
+                raise ValidationError(
+                    "global STA must observe each original path once"
+                )
+            target = index
+        elif role == _EVENT_CHECK_ROLE_INDEX["runtime"]:
+            if runtime is not None:
+                raise ValidationError(
+                    "global STA must observe each original path once"
+                )
+            runtime = index
+    if not interleaved and not finish_bundle():
+        interleaved = True
+    if interleaved:
+        _validate_interleaved_checks(rows)
+
+
+def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
+    # Preserve the public API's historical snapshot contract for every
+    # caller-owned container, including list, tuple, and custom Sequence
+    # implementations. Only the two private immutable/indexed views may stay
+    # zero-copy across validation and export.
+    rows = (
+        checks
+        if isinstance(checks, (_IndexedEventChecks, _IndexedCheckSelection))
+        else list(checks)
+    )
     if not rows:
         raise ValidationError("global STA has no timing checks")
+    if isinstance(rows, _IndexedEventChecks):
+        if not rows._validated:
+            _validate_indexed_checks(rows)
+        return rows
 
     # bind_physical_checks emits one contiguous bundle per original path.
     # Validate that order while retaining only the live bundle's event
@@ -145,7 +696,7 @@ def validate_checks(checks: Iterable[EventCheck]) -> list[EventCheck]:
     return rows
 
 
-def export_event_checks(checks: Iterable[EventCheck], directory: Path) -> list[EventCheck]:
+def export_event_checks(checks: Iterable[EventCheck], directory: Path) -> Sequence[EventCheck]:
     """Export Verilog/Liberty/SDC and one batch query; names never contain user text.
 
 Fixed-edge register cutpoints lower to SDC input launch times and output
@@ -236,7 +787,7 @@ exit 0
     return rows
 
 
-def read_measurements(path: Path, rows: list[EventCheck], *, verify_arcs=True) -> list[dict]:
+def read_measurements(path: Path, rows: Sequence[EventCheck], *, verify_arcs=True) -> list[dict]:
     result = []
     with path.open() as stream:
         if next(stream, "").strip() != "endpoint\tarrival_ns\trequired_ns\tslack_ns":
@@ -288,7 +839,7 @@ def read_measurements(path: Path, rows: list[EventCheck], *, verify_arcs=True) -
 
 
 def _compress_path_equivalent_checks(
-        rows: list[EventCheck]) -> tuple[list[EventCheck], Sequence[int]]:
+        rows: Sequence[EventCheck]) -> tuple[Sequence[EventCheck], Sequence[int]]:
     """Deduplicate complete, numerically identical original-path bundles.
 
     Every exported check is an independent timing chain.  Two original paths
@@ -298,13 +849,33 @@ def _compress_path_equivalent_checks(
     the numerical signature, but the whole bundle is the unit of compression:
     individual TX, commit or observation rows are never merged in isolation.
     """
-    representatives: list[EventCheck] = []
-    representative_bundles: dict[tuple, tuple[int, ...]] = {}
+    if (
+        isinstance(rows, _IndexedEventChecks)
+        and rows._original_to_representative is not None
+        and rows._representative_indices is not None
+    ):
+        if any(
+            index == _UINT32_MAX
+            or index >= len(rows._representative_indices)
+            for index in rows._original_to_representative
+        ):
+            raise ValidationError("global STA path compression lost a timing check")
+        return (
+            _IndexedCheckSelection(rows, rows._representative_indices),
+            rows._original_to_representative,
+        )
+
+    representative_indices = array("I")
+    # A machine-word hash keeps one bounded key per distinct numerical bundle
+    # instead of retaining every role/float/arc tuple a second time. Hash
+    # matches are compared against the source rows, so hash collisions cannot
+    # merge distinct path bundles.
+    representative_bundles: dict[int, _RepresentativeBundle] = {}
     # This relation has one value per exported check. A Python ``list[int]``
     # costs at least one pointer per entry, while representative indices fit a
     # fixed-width unsigned value.  Reserve UINT32_MAX as the fail-closed
     # sentinel and keep the production relation at exactly four bytes/check.
-    missing_representative = (1 << 32) - 1
+    missing_representative = _UINT32_MAX
     if len(rows) >= missing_representative:
         raise ValidationError(
             "global STA check population exceeds indexed expansion"
@@ -313,20 +884,63 @@ def _compress_path_equivalent_checks(
         "I", (missing_representative for _ in rows)
     )
 
-    def add_bundle(indices: list[int]) -> None:
-        signature = tuple(
-            (rows[index].role, rows[index].launch_ns,
-             rows[index].arcs_ns, rows[index].required_ns)
-            for index in indices
-        )
-        representative_indices = representative_bundles.get(signature)
-        if representative_indices is None:
-            start = len(representatives)
-            representatives.extend(rows[index] for index in indices)
-            representative_indices = tuple(range(start, len(representatives)))
-            representative_bundles[signature] = representative_indices
-        for index, representative_index in zip(indices, representative_indices):
-            original_to_representative[index] = representative_index
+    def numerical_hash(index: int) -> int:
+        if isinstance(rows, _IndexedEventChecks):
+            return rows._numerical_hash(index)
+        return _event_check_row_hash(rows[index])
+
+    def numerical_key(index: int) -> tuple:
+        if isinstance(rows, _IndexedEventChecks):
+            return rows._numerical_key(index)
+        row = rows[index]
+        return row.role, row.launch_ns, row.arcs_ns, row.required_ns
+
+    def bundle_hash(indices: Sequence[int]) -> int:
+        value = len(indices)
+        for index in indices:
+            value = ((value * 1_000_003) ^ numerical_hash(index)) & _UINT64_MASK
+        return value
+
+    def add_bundle(indices: Sequence[int]) -> None:
+        signature = bundle_hash(indices)
+        start = None
+        candidate_key = None
+        candidate = representative_bundles.get(signature)
+        while candidate is not None:
+            if candidate.count != len(indices):
+                candidate = candidate.collision
+                continue
+            if candidate.numerical_key is None:
+                representative_key = tuple(
+                    numerical_key(
+                        representative_indices[candidate.start + offset]
+                    )
+                    for offset in range(candidate.count)
+                )
+                candidate.numerical_key = representative_key
+            else:
+                representative_key = candidate.numerical_key
+            if candidate_key is None:
+                candidate_key = tuple(numerical_key(index) for index in indices)
+            if candidate_key == representative_key:
+                start = candidate.start
+                break
+            candidate = candidate.collision
+        if start is None:
+            start = len(representative_indices)
+            if start + len(indices) >= _UINT32_MAX:
+                raise ValidationError(
+                    "global STA representative population exceeds indexed storage"
+                )
+            representative_indices.extend(indices)
+            representative_bundles[signature] = _RepresentativeBundle(
+                start,
+                len(indices),
+                candidate_key,
+                representative_bundles.get(signature),
+            )
+        for offset, index in enumerate(indices):
+            original_to_representative[index] = start + offset
 
     # bind_physical_checks emits one contiguous bundle per original path. Keep
     # only the active bundle in that production order instead of a dictionary
@@ -337,19 +951,24 @@ def _compress_path_equivalent_checks(
     current_path = None
     current_indices: list[int] = []
     interleaved = False
-    for index, row in enumerate(rows):
-        if row.path != current_path:
-            if row.path in seen_paths:
+    path_identities = (
+        enumerate(rows._path_indices)
+        if isinstance(rows, _IndexedEventChecks)
+        else ((index, row.path) for index, row in enumerate(rows))
+    )
+    for index, path_identity in path_identities:
+        if path_identity != current_path:
+            if path_identity in seen_paths:
                 interleaved = True
                 break
             if current_indices:
                 add_bundle(current_indices)
-            current_path = row.path
-            seen_paths.add(row.path)
+            current_path = path_identity
+            seen_paths.add(path_identity)
             current_indices = []
         current_indices.append(index)
     if interleaved:
-        representatives.clear()
+        representative_indices = array("I")
         representative_bundles.clear()
         original_to_representative = array(
             "I", (missing_representative for _ in rows)
@@ -366,7 +985,7 @@ def _compress_path_equivalent_checks(
         for index in original_to_representative
     ):
         raise ValidationError("global STA path compression lost a timing check")
-    return representatives, original_to_representative
+    return _IndexedCheckSelection(rows, representative_indices), original_to_representative
 
 
 class _ExpandedMeasurementSequence(Sequence):
@@ -379,7 +998,7 @@ class _ExpandedMeasurementSequence(Sequence):
     second check-sized population of Python dictionaries before stitching.
     """
 
-    def __init__(self, rows: list[EventCheck], representative_values: list[dict],
+    def __init__(self, rows: Sequence[EventCheck], representative_values: list[dict],
                  original_to_representative: Sequence[int]):
         if len(original_to_representative) != len(rows):
             raise ValidationError("global STA expansion population disagrees")
@@ -424,11 +1043,18 @@ class _ExpandedMeasurementSequence(Sequence):
         return all(left == right for left, right in zip(self, other))
 
 
-def _write_expanded_measurements(path: Path, rows: list[EventCheck],
+def _write_expanded_measurements(path: Path, rows: Sequence[EventCheck],
                                  representative_values: list[dict],
-                                 original_to_representative: Sequence[int]
+                                 original_to_representative: Sequence[int],
+                                 representative_checks: Sequence[EventCheck]
+                                 | None = None,
                                  ) -> Sequence[dict]:
     """Restore the full TSV and return a lazy original-identity overlay."""
+    if (
+        representative_checks is not None
+        and len(representative_checks) != len(representative_values)
+    ):
+        raise ValidationError("global STA representative population disagrees")
     result = _ExpandedMeasurementSequence(
         rows, representative_values, original_to_representative
     )
@@ -437,6 +1063,27 @@ def _write_expanded_measurements(path: Path, rows: list[EventCheck],
         with temporary.open("w") as stream:
             stream.write("endpoint\tarrival_ns\trequired_ns\tslack_ns\n")
             for index, row in enumerate(rows):
+                representative_index = original_to_representative[index]
+                if representative_checks is not None:
+                    if representative_index >= len(representative_checks):
+                        raise ValidationError(
+                            "global STA expansion references a missing representative"
+                        )
+                    representative = representative_checks[representative_index]
+                    if (
+                        row.role,
+                        row.launch_ns,
+                        row.arcs_ns,
+                        row.required_ns,
+                    ) != (
+                        representative.role,
+                        representative.launch_ns,
+                        representative.arcs_ns,
+                        representative.required_ns,
+                    ):
+                        raise ValidationError(
+                            "global STA expansion mapping disagrees"
+                        )
                 value = result[index]
                 local_arrival = value["arrival_ns"] - row.launch_ns
                 local_required = value["required_ns"] - row.launch_ns
@@ -480,7 +1127,11 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
         output, representatives, verify_arcs=verify_arcs
     )
     expanded_values = _write_expanded_measurements(
-        output, rows, representative_values, original_to_representative
+        output,
+        rows,
+        representative_values,
+        original_to_representative,
+        representatives,
     )
     with (directory / "opensta.log").open("a") as log:
         log.write(
@@ -579,7 +1230,7 @@ the Python event propagator or consume its per-path numerical results.
     if uncertainty < 0 or not math.isfinite(uncertainty):
         raise ValidationError("invalid global STA uncertainty")
     from .runtime import runtime_clock_period_ns
-    result = []
+    result = _EventCheckBuilder()
     path_metadata = {}
     representatives = 0
     for record in reconstruct_tdm_schedule_timing_paths(routes, platform, schedule):
@@ -648,7 +1299,9 @@ the Python event propagator or consume its per-path numerical results.
                     # Previous-frame registered values are stable at first TX.
                     # Only that check is exempt; relays retain current-frame causality.
                     if not (schedule["transport_semantics"] == "registered-boundary" and not j):
-                        result.append(EventCheck(member, "tx", eid, origin, arcs, tx-uncertainty))
+                        result.append_values(
+                            member, "tx", eid, origin, arcs, tx - uncertainty
+                        )
                     origin = tx
                     trailing = (link_delay,
                                 endpoints[hop["rx_endpoint"]])
@@ -666,10 +1319,19 @@ the Python event propagator or consume its per-path numerical results.
                 # Keep absolute TX/commit readiness checks separate; never
                 # add their slot wait again to the modeled path delay.
                 if ratio_mode and role in {"target", "runtime"}:
-                    result.append(EventCheck(member, role, "capture", 0.0,
-                        tuple(model_arcs) + (float(chain[-1]["delay_ns"]), uncertainty), deadline))
+                    result.append_values(
+                        member,
+                        role,
+                        "capture",
+                        0.0,
+                        tuple(model_arcs)
+                        + (float(chain[-1]["delay_ns"]), uncertainty),
+                        deadline,
+                    )
                 else:
-                    result.append(EventCheck(member, role, "capture", origin, final_arcs, deadline))
+                    result.append_values(
+                        member, role, "capture", origin, final_arcs, deadline
+                    )
     source = None
     from .local_path_timing import validate_local_path_timing, path_id_set_sha256
     for fpga, database in physical.get("local_path_timing", {}).items():
@@ -693,9 +1355,15 @@ the Python event propagator or consume its per-path numerical results.
             )
             for role, deadline in (("target", required),
                                    ("runtime", virtual-(path["clock_period_ns"]-required))):
-                result.append(EventCheck(path["id"], role, "capture", 0.0,
-                                         (float(path["delay_ns"]),), deadline))
-    rows = validate_checks(result)
+                result.append_values(
+                    path["id"],
+                    role,
+                    "capture",
+                    0.0,
+                    (float(path["delay_ns"]),),
+                    deadline,
+                )
+    rows = validate_checks(result.finish())
     if metadata is not None:
         if source is not None and (
             source["routes_sha256"] != routes_artifact_sha256

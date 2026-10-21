@@ -11,6 +11,7 @@ from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
     evaluate_chimew_bank_channel_assignment,
 )
+from emuflow.chimew_binding_storage import read_chimew_binding
 from emuflow.cli import main
 from emuflow.chimew_grouping import (
     CHIMEW_CROSSING_PROVIDER,
@@ -552,15 +553,16 @@ class ChimewQualificationTest(unittest.TestCase):
             )
             self.assertEqual(main(["pin-plan", "chimew-validate", str(output)]), 0)
             validation = validate_chimew_phase6_pipeline(output)
-            self.assertEqual(validation["artifact_hashes_verified"], 23)
+            self.assertEqual(validation["artifact_hashes_verified"], 24)
             self.assertEqual(
                 validation["qualification_scope"], "byte-bound-source-artifacts"
             )
             bound_plan = read_json(
                 output / "phase6-adapter" / "pin_plan.json"
             )
-            bound_binding = read_json(
-                output / "phase6-adapter" / "electrical_binding.json"
+            bound_binding = read_chimew_binding(
+                output / "phase6-adapter" / "electrical_binding.json",
+                materialize=True,
             )
             self.assertEqual(
                 bound_plan["configuration"]["qualification_scope"],
@@ -711,13 +713,24 @@ class ChimewQualificationTest(unittest.TestCase):
                 legacy_output / "phase6-adapter" / "adapter_report.json"
             )
             legacy_pin = read_json(legacy_pin_path)
-            legacy_binding = read_json(legacy_binding_path)
+            legacy_binding_selector = read_json(legacy_binding_path)
+            legacy_binding_store = legacy_binding_path.with_name(
+                legacy_binding_selector["artifact"]
+            )
+            legacy_binding = read_chimew_binding(
+                legacy_binding_path, materialize=True
+            )
             legacy_adapter = read_json(legacy_adapter_path)
             legacy_pin["configuration"].pop("qualification_scope")
             legacy_binding["provenance"].pop("qualification_scope")
             legacy_adapter["qualification_validation"].pop(
                 "qualification_scope"
             )
+            legacy_adapter["artifacts"].pop("electrical_binding_store")
+            legacy_report["artifacts"].pop(
+                "adapter_electrical_binding_store"
+            )
+            legacy_binding_store.unlink()
             write_json(legacy_pin_path, legacy_pin)
             write_json(legacy_binding_path, legacy_binding)
             write_json(legacy_adapter_path, legacy_adapter)

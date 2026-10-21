@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -14,6 +15,10 @@ from .chimew_bank_channel import (
     validate_chimew_bank_channel_input,
 )
 from .chimew_grouping import _tdm_ratio
+from .chimew_binding_storage import (
+    ChimewBindingView,
+    write_chimew_binding_storage,
+)
 from .chimew_qualification import (
     canonical_sha256,
     validate_chimew_bank_channel_report_artifact,
@@ -69,6 +74,7 @@ def _open_indexed_chimew_validation(
     schedule: Mapping[str, Any],
     pin_plan: Mapping[str, Any],
     platform: Platform,
+    binding: Mapping[str, Any],
 ) -> tuple[sqlite3.Connection, int]:
     """Open sealed schedule/plan relations and validate exact coverage."""
 
@@ -144,19 +150,43 @@ def _open_indexed_chimew_validation(
                 """
             ),
         )
-        connection.execute(
-            """
-            CREATE TABLE binding_members(
-              member TEXT PRIMARY KEY,
-              group_index INTEGER NOT NULL,
-              declared_direction TEXT NOT NULL,
-              link_id TEXT NOT NULL,
-              fpga_a TEXT NOT NULL,
-              fpga_b TEXT NOT NULL,
-              physical_lane INTEGER NOT NULL
-            ) WITHOUT ROWID
-            """
-        )
+        if isinstance(binding, ChimewBindingView):
+            connection.execute(
+                "ATTACH DATABASE ? AS binding_store",
+                (
+                    f"file:{binding.store_path.resolve()}"
+                    "?mode=ro&immutable=1",
+                ),
+            )
+            connection.execute(
+                """
+                CREATE TEMP VIEW binding_members AS
+                SELECT member.member AS member,
+                       member.group_seq AS group_index,
+                       groups.direction AS declared_direction,
+                       groups.link_id AS link_id,
+                       groups.fpga_a AS fpga_a,
+                       groups.fpga_b AS fpga_b,
+                       groups.physical_lane AS physical_lane
+                FROM binding_store.members AS member
+                JOIN binding_store.groups AS groups
+                  ON groups.seq=member.group_seq
+                """
+            )
+        else:
+            connection.execute(
+                """
+                CREATE TABLE binding_members(
+                  member TEXT PRIMARY KEY,
+                  group_index INTEGER NOT NULL,
+                  declared_direction TEXT NOT NULL,
+                  link_id TEXT NOT NULL,
+                  fpga_a TEXT NOT NULL,
+                  fpga_b TEXT NOT NULL,
+                  physical_lane INTEGER NOT NULL
+                ) WITHOUT ROWID
+                """
+            )
         return connection, int(schedule_count)
     except BaseException:
         connection.close()
@@ -598,6 +628,7 @@ def build_chimew_phase6_pin_plan(
     bank_channel_report_document: Optional[Mapping[str, Any]] = None,
     executable: Optional[str] = None,
     region_count: int = 31,
+    electrical_binding_output_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Run certified Chimew assignment and bind it to concrete EmuFlow lanes."""
 
@@ -662,7 +693,7 @@ def build_chimew_phase6_pin_plan(
 
     plan_assignment: Dict[str, Tuple[int, int]] = {}
     hint_entries = []
-    binding_entries = []
+    binding_entries = [] if electrical_binding_output_path is None else None
     used_schedule_entries = set()
     used_package_pins = set()
     for group_index, group in enumerate(problem["groups"]):
@@ -783,16 +814,17 @@ def build_chimew_phase6_pin_plan(
         if any(key in used_package_pins for key in package_pin_keys):
             raise ValidationError("selected Chimew groups collide on package pins")
         used_package_pins.update(package_pin_keys)
-        binding_entries.append(
-            {
-                "group": group["id"],
-                "schedule_entries": sorted(member_ids),
-                "bank_pair": assignment["bank_pair"],
-                "channel": assignment["channel"],
-                **channel,
-                "direction": group_direction,
-            }
-        )
+        if binding_entries is not None:
+            binding_entries.append(
+                {
+                    "group": group["id"],
+                    "schedule_entries": sorted(member_ids),
+                    "bank_pair": assignment["bank_pair"],
+                    "channel": assignment["channel"],
+                    **channel,
+                    "direction": group_direction,
+                }
+            )
     if used_schedule_entries != set(schedule_by_id):
         raise ValidationError("Chimew groups do not cover the schedule exactly")
 
@@ -873,7 +905,28 @@ def build_chimew_phase6_pin_plan(
         ],
     }
     validation = validate_pin_plan(schedule, platform, positions, plan)
-    binding = {
+    def iter_binding_entries():
+        for group in sorted(problem["groups"], key=lambda item: item["id"]):
+            assignment = report_assignment[group["id"]]
+            channel = electrical["channels"][assignment["channel"]]
+            yield {
+                "group": group["id"],
+                "schedule_entries": sorted(
+                    member["id"] for member in group["members"]
+                ),
+                "bank_pair": assignment["bank_pair"],
+                "channel": assignment["channel"],
+                **channel,
+                "direction": (
+                    "a_to_b"
+                    if group["direction"] == 0
+                    else "b_to_a"
+                    if group["direction"] == 1
+                    else "bidirectional"
+                ),
+            }
+
+    binding_document = {
         "schema": CHIMEW_PHASE6_BINDING_SCHEMA,
         "status": "pass",
         "integration_status": "phase6-pin-plan",
@@ -914,13 +967,24 @@ def build_chimew_phase6_pin_plan(
         "metrics": {
             "signals": len(plan_assignment),
             "groups": len(problem["groups"]),
-            "channels": len(binding_entries),
+            "channels": len(problem["groups"]),
             "package_pins": len(used_package_pins),
             "lane_slot_collisions": validation["physical_lane_slot_collisions"],
             "package_pin_collisions": 0,
         },
-        "entries": sorted(binding_entries, key=lambda item: item["group"]),
+        "entries": (
+            sorted(binding_entries, key=lambda item: item["group"])
+            if binding_entries is not None
+            else iter_binding_entries()
+        ),
     }
+    binding = (
+        binding_document
+        if electrical_binding_output_path is None
+        else write_chimew_binding_storage(
+            electrical_binding_output_path, binding_document
+        )
+    )
     # The assignment channels may be direction-agnostic.  Validate the final,
     # direction-resolved binding before returning so a same-direction lane
     # collision can never escape the build path as a nominal pass.
@@ -1053,7 +1117,9 @@ def _validate_chimew_phase6_binding(
     plan_by_id = None
     if _indexed_chimew_validation_available(schedule, pin_plan):
         indexed_connection, indexed_schedule_count = (
-            _open_indexed_chimew_validation(schedule, pin_plan, platform)
+            _open_indexed_chimew_validation(
+                schedule, pin_plan, platform, binding
+            )
         )
         connection_owner.append(indexed_connection)
     else:
@@ -1079,9 +1145,18 @@ def _validate_chimew_phase6_binding(
                 for entry_id, item in plan_by_id.items()
             },
         )
-    raw_entries = binding.get("entries")
-    if not isinstance(raw_entries, list):
+    indexed_binding = isinstance(binding, ChimewBindingView)
+    raw_entries = (
+        binding.iter_group_records()
+        if indexed_binding and indexed_connection is not None
+        else binding.get("entries")
+    )
+    if not (
+        isinstance(raw_entries, Sequence)
+        and not isinstance(raw_entries, (str, bytes))
+    ) and not (indexed_binding and indexed_connection is not None):
         raise ValidationError("Chimew Phase 6 electrical entries are missing")
+    raw_entry_count = len(binding["entries"])
     covered = set()
     pins = set()
     lanes = set()
@@ -1110,7 +1185,9 @@ def _validate_chimew_phase6_binding(
             raise ValidationError("Chimew electrical binding duplicates a group")
         groups.add(group)
         members = record.get("schedule_entries")
-        if not isinstance(members, list) or not members or not all(
+        if indexed_binding and indexed_connection is not None:
+            members = None
+        elif not isinstance(members, list) or not members or not all(
             isinstance(member, str) and member for member in members
         ):
             raise ValidationError("Chimew electrical binding group is empty")
@@ -1162,7 +1239,7 @@ def _validate_chimew_phase6_binding(
             raise ValidationError("Chimew electrical binding reuses a concrete lane")
         existing_directions.add(direction)
         lanes.add(lane_key)
-        if indexed_connection is not None:
+        if indexed_connection is not None and not indexed_binding:
             _stage_indexed_chimew_members(
                 indexed_connection,
                 group_index=index,
@@ -1173,7 +1250,7 @@ def _validate_chimew_phase6_binding(
                 fpga_b=fpga_b,
                 physical_lane=physical_lane,
             )
-        else:
+        elif indexed_connection is None:
             member_directions = set()
             slots = set()
             ratios_by_direction = {"a_to_b": set(), "b_to_a": set()}
@@ -1299,7 +1376,7 @@ def _validate_chimew_phase6_binding(
     expected = {
         "signals": signal_count,
         "groups": len(groups),
-        "channels": len(raw_entries),
+        "channels": raw_entry_count,
         "package_pins": len(pins),
         "lane_slot_collisions": 0,
         "package_pin_collisions": 0,
@@ -1314,7 +1391,11 @@ def _validate_chimew_phase6_binding(
         "groups": len(groups),
         "concrete_lanes": len(lanes),
         "package_pins": len(pins),
-        "binding_sha256": _canonical_sha256(binding),
+        "binding_sha256": (
+            binding.canonical_sha256
+            if isinstance(binding, ChimewBindingView)
+            else _canonical_sha256(binding)
+        ),
     }
 
 
@@ -1370,6 +1451,7 @@ def run_chimew_phase6_adapter(
         raise ValidationError(
             "Chimew electrical map BoardDB SHA-256 does not match platform"
         )
+    output_dir.mkdir(parents=True, exist_ok=True)
     result = build_chimew_phase6_pin_plan(
         schedule,
         Platform.load(platform_path),
@@ -1379,8 +1461,8 @@ def run_chimew_phase6_adapter(
         bank_channel_report_document=assignment_report,
         executable=executable,
         region_count=region_count,
+        electrical_binding_output_path=(output_dir / "electrical_binding.json"),
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
     artifacts = {
         "bank_channel_report": "bank_channel_report.json",
         "position_hints": "position_hints.json",
@@ -1388,7 +1470,13 @@ def run_chimew_phase6_adapter(
         "electrical_binding": "electrical_binding.json",
     }
     for key, name in artifacts.items():
+        if key == "electrical_binding":
+            continue
         write_json(output_dir / name, result[key])
+    indexed_binding = result["electrical_binding"]
+    if not isinstance(indexed_binding, ChimewBindingView):
+        raise ValidationError("Chimew adapter did not publish indexed binding")
+    artifacts["electrical_binding_store"] = indexed_binding.manifest["artifact"]
     if qualification is not None:
         artifacts["qualification_certificate"] = "qualification_certificate.json"
         write_json(output_dir / artifacts["qualification_certificate"], qualification)

@@ -33,6 +33,7 @@ class BinaryReader {
 
   void RequireEnd() const;
   std::size_t size() const { return bytes_.size(); }
+  std::size_t remaining() const { return bytes_.size() - offset_; }
 
  private:
   std::vector<char> bytes_;

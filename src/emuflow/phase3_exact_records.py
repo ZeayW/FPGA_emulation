@@ -20,6 +20,16 @@ from .errors import ValidationError
 
 
 STATIC_EXACT_RECORD_STREAM_SCHEMA = "emuflow.static-exact-record-stream/v1"
+STATIC_EXACT_CAPTURE_BIT_MAX_BITS = 8192
+STATIC_EXACT_CAPTURE_BIT_MAX_BYTES = STATIC_EXACT_CAPTURE_BIT_MAX_BITS // 8
+STATIC_EXACT_CAPTURE_BIT_ERROR = (
+    "Static Exact capture bit must be a non-negative integer of at most "
+    f"{STATIC_EXACT_CAPTURE_BIT_MAX_BITS} bits"
+)
+# Kind plus byte lengths for cut, FPGA, endpoint, port, and a canonical
+# non-negative big-endian bit. Bits do not use a fixed native integer, but the
+# shared 8192-bit limit keeps JSON hashing and binary decoding bounded across
+# supported Python versions.
 _CAPTURE_HEADER = struct.Struct("<BIIIII")
 _CUT_COUNTS = struct.Struct("<6I")
 _STRING_LENGTH = struct.Struct("<I")
@@ -34,6 +44,19 @@ _CUT_NODE_FIELDS = {
     "source_segment_ids",
     "capture_segment_ids",
 }
+
+
+def validate_static_exact_capture_bit(value: Any) -> int:
+    """Validate a capture bit before integer formatting or byte encoding."""
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value.bit_length() > STATIC_EXACT_CAPTURE_BIT_MAX_BITS
+    ):
+        raise ValidationError(STATIC_EXACT_CAPTURE_BIT_ERROR)
+    return value
 
 
 class StaticExactRecordSequence(list):
@@ -270,10 +293,11 @@ def build_static_exact_capture_stream(
 ) -> StaticExactRecordSequence:
     """Pack the canonical native capture relation behind a typed record stream.
 
-    The native analyzer resolves capture endpoint identity once.  Production
-    publication retains those records in one compact byte buffer instead of
-    expanding a dictionary for every capture requirement.  Diagnostic callers
-    can still materialize the returned sequence with ``list(...)``.
+    Python resolves native capture coordinates against authoritative EmuIR.
+    Production publication retains those records in one compact byte buffer
+    instead of expanding a dictionary for every capture requirement.
+    Diagnostic callers can still materialize the returned sequence with
+    ``list(...)``.
     """
 
     encoded = bytearray()
@@ -298,14 +322,12 @@ def build_static_exact_capture_stream(
                 and (
                     not isinstance(port, str)
                     or not port
-                    or isinstance(bit, bool)
-                    or not isinstance(bit, int)
-                    or bit < 0
-                    or bit >= 2**32
                 )
             )
         ):
             raise ValidationError("Static Exact capture relation is invalid")
+        if kind == "architectural-state":
+            bit = validate_static_exact_capture_bit(bit)
         sort_key = (
             cut_net,
             fpga,
@@ -323,6 +345,11 @@ def build_static_exact_capture_stream(
                 fpga.encode("utf-8"),
                 endpoint.encode("utf-8"),
                 b"" if port is None else port.encode("utf-8"),
+                (
+                    b""
+                    if bit is None
+                    else bit.to_bytes(max(1, (bit.bit_length() + 7) // 8), "big")
+                ),
             ]
         except UnicodeEncodeError as error:
             raise ValidationError(
@@ -333,7 +360,6 @@ def build_static_exact_capture_stream(
         encoded.extend(
             _CAPTURE_HEADER.pack(
                 0 if kind == "top-output" else 1,
-                0 if bit is None else bit,
                 *(len(field) for field in fields),
             )
         )
@@ -347,23 +373,38 @@ def build_static_exact_capture_stream(
         for index in range(count):
             if offset + _CAPTURE_HEADER.size > len(view):
                 raise ValidationError("Static Exact capture stream ended early")
-            kind, bit, *lengths = _CAPTURE_HEADER.unpack_from(view, offset)
+            kind, *lengths = _CAPTURE_HEADER.unpack_from(view, offset)
             offset += _CAPTURE_HEADER.size
             fields = []
-            for length in lengths:
+            for field_index, length in enumerate(lengths):
                 end = offset + length
                 if end > len(view):
                     raise ValidationError(
                         "Static Exact capture stream ended early"
                     )
-                try:
-                    fields.append(bytes(view[offset:end]).decode("utf-8"))
-                except UnicodeDecodeError as error:
-                    raise ValidationError(
-                        "Static Exact capture stream identity is invalid"
-                    ) from error
+                raw = bytes(view[offset:end])
+                if field_index == 4:
+                    fields.append(raw)
+                else:
+                    try:
+                        fields.append(raw.decode("utf-8"))
+                    except UnicodeDecodeError as error:
+                        raise ValidationError(
+                            "Static Exact capture stream identity is invalid"
+                        ) from error
                 offset = end
-            if kind not in {0, 1} or (kind == 1 and not fields[3]):
+            if (
+                kind not in {0, 1}
+                or (kind == 0 and (fields[3] or fields[4]))
+                or (
+                    kind == 1
+                    and (
+                        not fields[3]
+                        or not fields[4]
+                        or (len(fields[4]) > 1 and fields[4][0] == 0)
+                    )
+                )
+            ):
                 raise ValidationError("Static Exact capture stream is invalid")
             yield {
                 "id": f"capture{index:06d}",
@@ -371,7 +412,11 @@ def build_static_exact_capture_stream(
                 "fpga": fields[1],
                 "kind": "top-output" if kind == 0 else "architectural-state",
                 "endpoint": fields[2],
-                **({"port": fields[3], "bit": bit} if kind == 1 else {}),
+                **(
+                    {"port": fields[3], "bit": int.from_bytes(fields[4], "big")}
+                    if kind == 1
+                    else {}
+                ),
             }
         if offset != len(view):
             raise ValidationError("Static Exact capture stream has trailing data")
