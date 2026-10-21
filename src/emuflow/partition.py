@@ -47,8 +47,16 @@ FPGA_SELECTION_POLICIES = {"all", "explicit", "minimum-capacity"}
 
 class _UnionFind:
     def __init__(self, size: int):
-        self.parent = list(range(size))
-        self.rank = [0] * size
+        if size < 0 or size >= 2**32:
+            raise ValidationError(
+                "partition union-find exceeds the uint32 identity domain"
+            )
+        # Phase 3 used to retain two Python-int lists alongside the instance
+        # dictionaries and name index.  Four-byte parents and one-byte ranks
+        # preserve the same union-by-rank policy while keeping the storage
+        # proportional to the native integer identity domain.
+        self.parent = array("I", range(size))
+        self.rank = array("B", [0]) * size
 
     def find(self, item: int) -> int:
         parent = self.parent[item]
@@ -91,6 +99,239 @@ def _sum_resources(
         ResourceVector.from_mapping(instances[instance_id]["resources"])
         for instance_id in instance_ids
     )
+
+
+def _compact_partition_ir_path(ir: Any) -> Optional[Path]:
+    """Return the authoritative compact store for a production Phase 3 IR."""
+
+    # Keep the reference in-memory EmuIR independent of the production SQLite
+    # representation and do not trust an arbitrary object with a path field.
+    from .partition_ir import CompactPartitionIR
+
+    return ir.path if isinstance(ir, CompactPartitionIR) else None
+
+
+def _build_clusters_from_compact_ir(
+    ir: Any,
+    constraints: Mapping[str, Any],
+    released_combinational_nets: Set[str],
+) -> List[Dict[str, Any]]:
+    """Build canonical clusters from integer SQLite records.
+
+    The compatibility implementation expands every cell and endpoint into
+    dictionaries, then retains an instance dictionary, a name-to-index map,
+    grouped member lists, and the final cluster payload at the same time.  A
+    compact production EmuIR already owns dense cell ordinals.  This path maps
+    those ordinals to the canonical lexical order once, performs connectivity
+    union on integer endpoint cursors, and constructs each final record during
+    a second ordered resource scan.  The emitted v1 schema and ordering remain
+    byte-for-byte compatible with the reference implementation.
+    """
+
+    from .emuir_storage import _decode, open_emuir_sqlite_read_only
+
+    path = _compact_partition_ir_path(ir)
+    if path is None:
+        raise ValidationError("compact cluster construction requires compact EmuIR")
+    instance_count = len(ir.value["instances"])
+    if instance_count >= 2**32:
+        raise ValidationError(
+            "partition instance count exceeds the uint32 identity domain"
+        )
+    missing = 2**32 - 1
+    seq_to_ordinal = array("I", [missing]) * instance_count
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        # Python's Unicode lexical order and SQLite BINARY UTF-8 order agree.
+        # Preserve the former build_clusters ordering while retaining only the
+        # four-byte original-seq -> lexical-ordinal permutation.
+        cells = connection.execute(
+            "SELECT seq FROM cell_records ORDER BY id"
+        )
+        cell_count = 0
+        for ordinal, row in enumerate(cells):
+            seq = row["seq"]
+            if (
+                isinstance(seq, bool)
+                or not isinstance(seq, int)
+                or seq < 0
+                or seq >= instance_count
+                or seq_to_ordinal[seq] != missing
+            ):
+                raise ValidationError("compact EmuIR cell sequence is invalid")
+            seq_to_ordinal[seq] = ordinal
+            cell_count += 1
+        if cell_count != instance_count or missing in seq_to_ordinal:
+            raise ValidationError("compact EmuIR cell sequence is incomplete")
+
+        union_find = _UnionFind(instance_count)
+
+        def instance_ordinal(instance_id: str) -> int:
+            row = connection.execute(
+                "SELECT seq FROM cell_records WHERE id=?", (instance_id,)
+            ).fetchone()
+            if row is None:
+                raise ValidationError(
+                    f"partition constraint references absent instance {instance_id!r}"
+                )
+            seq = row["seq"]
+            if seq < 0 or seq >= instance_count:
+                raise ValidationError("compact EmuIR cell sequence is invalid")
+            ordinal = seq_to_ordinal[seq]
+            if ordinal == missing:
+                raise ValidationError("compact EmuIR cell sequence is incomplete")
+            return ordinal
+
+        group_ordinals: List[array] = []
+        for group in constraints["groups"]:
+            ordinals = array(
+                "I", (instance_ordinal(item) for item in group["instances"])
+            )
+            group_ordinals.append(ordinals)
+            first = ordinals[0]
+            for ordinal in ordinals[1:]:
+                union_find.union(first, ordinal)
+
+        endpoint_rows = iter(
+            connection.execute(
+                """SELECT net_seq,role,instance_seq
+                     FROM endpoint_records
+                    ORDER BY net_seq,role,ordinal"""
+            )
+        )
+        endpoint = next(endpoint_rows, None)
+        net_count = 0
+        for net in connection.execute(
+            "SELECT seq,id,cut_class FROM net_records ORDER BY seq"
+        ):
+            net_seq = net["seq"]
+            if net_seq != net_count:
+                raise ValidationError("compact EmuIR net sequence is invalid")
+            net_count += 1
+            if endpoint is not None and endpoint["net_seq"] < net_seq:
+                raise ValidationError("compact EmuIR has orphaned endpoints")
+            members: Set[int] = set()
+            while endpoint is not None and endpoint["net_seq"] == net_seq:
+                if endpoint["role"] not in (0, 1):
+                    raise ValidationError("compact EmuIR endpoint role is invalid")
+                instance_seq = endpoint["instance_seq"]
+                if instance_seq is not None:
+                    if instance_seq < 0 or instance_seq >= instance_count:
+                        raise ValidationError(
+                            "compact EmuIR endpoint owner is invalid"
+                        )
+                    ordinal = seq_to_ordinal[instance_seq]
+                    if ordinal == missing:
+                        raise ValidationError(
+                            "compact EmuIR endpoint owner is invalid"
+                        )
+                    members.add(ordinal)
+                endpoint = next(endpoint_rows, None)
+            if len(members) < 2:
+                continue
+            if (
+                net["cut_class"]
+                not in LEGAL_CUT_CLASSES | REPLICATED_NET_CLASSES
+                and net["id"] not in released_combinational_nets
+            ):
+                member_iter = iter(members)
+                first = next(member_iter)
+                for ordinal in member_iter:
+                    union_find.union(first, ordinal)
+        if net_count != len(ir.value["nets"]):
+            raise ValidationError("compact EmuIR net sequence is incomplete")
+        if endpoint is not None:
+            raise ValidationError("compact EmuIR has orphaned endpoints")
+
+        # Build the final records in lexical cell order.  The first member of
+        # each component therefore establishes the same cluster ordering as
+        # sorting all grouped member lists, without retaining those lists a
+        # second time.
+        root_to_cluster = array("I", [missing]) * instance_count
+        clusters: List[Dict[str, Any]] = []
+        cells = connection.execute(
+            """SELECT c.id,r.seq AS resources_payload_seq,
+                      r.value AS resources_json
+                 FROM cell_records c
+                 LEFT JOIN payloads r ON r.seq=c.resources_seq
+                ORDER BY c.id"""
+        )
+        resource_cell_count = 0
+        for ordinal, row in enumerate(cells):
+            if ordinal >= instance_count:
+                raise ValidationError(
+                    "compact EmuIR resource cell sequence is invalid"
+                )
+            resource_cell_count += 1
+            instance_id = row["id"]
+            root = union_find.find(ordinal)
+            cluster_index = root_to_cluster[root]
+            if cluster_index == missing:
+                cluster_index = len(clusters)
+                root_to_cluster[root] = cluster_index
+                clusters.append(
+                    {
+                        "id": f"c{cluster_index:06d}",
+                        "instances": [],
+                        "resources": {},
+                        "fixed_fpga": None,
+                        "groups": [],
+                    }
+                )
+            cluster = clusters[cluster_index]
+            cluster["instances"].append(instance_id)
+            if (
+                row["resources_payload_seq"] is None
+                or row["resources_json"] is None
+            ):
+                raise ValidationError(
+                    f"instance {instance_id!r} resource payload is missing"
+                )
+            resources_value = _decode(row["resources_json"], "resources")
+            if not isinstance(resources_value, Mapping):
+                raise ValidationError(
+                    f"instance {instance_id!r} resources: expected an object"
+                )
+            resources = ResourceVector.from_mapping(
+                resources_value,
+                f"instance {instance_id!r} resources",
+            )
+            for field in RESOURCE_FIELDS:
+                amount = getattr(resources, field)
+                if amount:
+                    cluster["resources"][field] = (
+                        cluster["resources"].get(field, 0) + amount
+                    )
+        if resource_cell_count != instance_count:
+            raise ValidationError(
+                "compact EmuIR resource cell sequence is incomplete"
+            )
+
+        fixed_by_cluster: Dict[int, Set[str]] = defaultdict(set)
+        for item in constraints["fixed"]:
+            ordinal = instance_ordinal(item["instance"])
+            cluster_index = root_to_cluster[union_find.find(ordinal)]
+            fixed_by_cluster[cluster_index].add(item["fpga"])
+        for cluster_index, fixed_fpgas in fixed_by_cluster.items():
+            if len(fixed_fpgas) > 1:
+                members = clusters[cluster_index]["instances"]
+                raise ValidationError(
+                    f"cluster containing {members[0]!r} has conflicting fixed "
+                    f"FPGA constraints {sorted(fixed_fpgas)}"
+                )
+            clusters[cluster_index]["fixed_fpga"] = next(iter(fixed_fpgas))
+
+        groups_by_cluster: Dict[int, Set[str]] = defaultdict(set)
+        for group, ordinals in zip(constraints["groups"], group_ordinals):
+            for ordinal in ordinals:
+                groups_by_cluster[
+                    root_to_cluster[union_find.find(ordinal)]
+                ].add(group["id"])
+        for cluster_index, group_ids in groups_by_cluster.items():
+            clusters[cluster_index]["groups"] = sorted(group_ids)
+        return clusters
+    finally:
+        connection.close()
 
 
 def _expand_instance_patterns(
@@ -725,6 +966,50 @@ def build_clusters(
         # structurally legal candidate and reconstruct actual depth only after
         # the provider supplies an assignment.
         released_combinational_nets = set(candidate_index["eligible_ids"])
+    compact_ir_path = _compact_partition_ir_path(ir)
+    if compact_ir_path is not None:
+        clusters = _build_clusters_from_compact_ir(
+            ir,
+            constraints,
+            released_combinational_nets,
+        )
+        instance_count = len(ir.value["instances"])
+        result = {
+            "schema": CLUSTERS_SCHEMA,
+            "design": ir.value["design"]["name"],
+            "clusters": clusters,
+            "instances": instance_count,
+            "policy": {
+                "legal_cut_classes": sorted(LEGAL_CUT_CLASSES),
+                "replicated_net_classes": sorted(REPLICATED_NET_CLASSES),
+                "hard_macro_resources": sorted(HARD_MACRO_RESOURCES),
+                "hard_macro_granularity": "instance",
+            },
+        }
+        if cut_mode == CUT_MODE_STATIC_EXACT:
+            result["policy"].update(
+                {
+                    "cut_mode": cut_mode,
+                    "max_cross_fpga_dependency_depth": (
+                        max_cross_fpga_dependency_depth
+                    ),
+                    "eligible_combinational_cut_nets": sorted(
+                        released_combinational_nets
+                    ),
+                    "transported_cut_classes": sorted(
+                        {*TRANSPORTED_CUT_CLASSES, "combinational"}
+                    ),
+                    "qualification": "structural-partition-legality",
+                }
+            )
+            if (
+                static_exact_candidate_policy
+                == STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+            ):
+                result["policy"]["candidate_selection_policy"] = (
+                    static_exact_candidate_policy
+                )
+        return result
     instances = {
         instance["id"]: instance for instance in ir.value["instances"]
     }

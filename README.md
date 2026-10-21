@@ -55,6 +55,16 @@ on Linux, parent-process I/O counters. Search, imported-solution, and replay
 runs must be compared as distinct execution modes. Assignment-index
 publication further separates exact-binary emission, primary and replica copy
 rows, cut-sink rows, commit, and independent index validation.
+Production clustering now consumes compact EmuIR through ordered integer
+SQLite cursors. It keeps only a four-byte original-to-lexical cell permutation,
+compact union-find arrays and the final cluster records; it no longer decodes a
+second cell/net graph or retains the former instance dictionary,
+name-to-index dictionary and grouped-member copy. The in-memory JSON path is
+kept as the reference implementation, and differential tests require identical
+cluster IDs, member order, resource totals, groups, fixed placement and policy.
+On a synthetic 300,000-cell singleton input, loading plus clustering reduced
+traced peak allocation from 436.58 MiB to 212.52 MiB and wall time from 9.94 to
+5.70 seconds. This is isolated construction evidence, not NVDLA qualification.
 New Phase 3 publications use assignment-index schema v3. SQLite is the bounded
 control plane for instance ownership, partitions and cut sinks. Static Exact
 nodes, segments and captures are integer-coded in the versioned,
@@ -78,8 +88,8 @@ the native analyzer result has stopped rebuilding dependency, launch, level,
 and depth dictionaries in Python: those relations now remain in fixed-width
 integer arrays/CSR and expand only the current cut while byte-backed semantic
 records are emitted. A fresh NVDLA replay is still required to measure the new
-peak and attribute the remaining clustering, semantic-record, exact-binary and
-native internal graph/capture costs.
+peak and attribute the remaining candidate characterization, pressure-model,
+semantic-record, exact-binary and native internal graph/capture costs.
 `assignment.json` contains only the contract schema and SHA-256 identity;
 explicit legacy-style reads reconstruct and verify the same logical contract.
 Completed assignment-index v1/v2 artifacts remain readable.
@@ -142,8 +152,9 @@ are not substitutes for the required NVDLA run. On a separate synthetic
 changed from 0.832--0.847 seconds with logical dictionary replay to
 0.736--0.762 seconds with the typed cursor; traced peak allocation remained
 bounded at 0.039 MiB. This is isolated adapter evidence. Canonical hashing is
-still linear in the logical record count; clustering/model construction and
-the C++ capture vector remain migration work.
+still linear in the logical record count; combinational-candidate
+characterization, pressure-model construction and the C++ capture vector
+remain migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
@@ -376,9 +387,26 @@ candidate/group vectors remain graph-scale work. The Python-wide bank list and
 global `flat_channels` map have been removed; one bank's normalized channel
 record remains live while it is checked, and qualification writes channel
 lookup rows in batches of at most 4,096 even when one bank is much larger.
-Native invocation still serializes the
-complete assignment input to `input.txt`, so direct typed input consumption is
-the next I/O boundary.
+Native bank/channel assignment now consumes an explicit versioned little-endian
+record stream over stdin.  The producer walks the validated bank/group cursors
+once, sends fixed-width typed records, and never creates `input.txt` or a
+graph-sized byte/string object. Exact relation counts, record tags, a CRC-32
+seal over the complete semantic header and record stream, and matching
+logical-input digests in the header and trailer make
+truncation, trailing data and mixed-generation streams fail closed before either
+matching stage.  The old text grammar remains available only through the
+explicit `--legacy-text` native CLI for compatibility and differential testing;
+an unflagged invocation fails closed, and the production Python path always
+names `--typed-input`.  Native stdout and its
+certificate state machine are unchanged.
+
+For a synthetic 100,000-channel/100,000-group serialization-only comparison,
+the old text writer took 1.146 seconds, peaked at 0.042 MiB traced allocation
+and wrote an 8,833,627-byte scratch file.  The typed writer took 0.693 seconds,
+peaked at 0.006 MiB and wrote no input scratch; it sent 12,800,193 bytes through
+the pipe.  Thus this slice removes temporary-disk publication and decimal text
+formatting but does not claim lower IPC volume.  These are adapter measurements,
+not native-solver or NVDLA qualification.
 Transport RTL is written atomically from slot-ordered cursors. Python still
 decodes records into the stores and emits adapter text, so native producer
 migration remains. ScheduleStore v4 keeps Static Exact hop, route and
@@ -428,7 +456,36 @@ hash. The per-FPGA evidence databases are still JSON and their producers remain
 Python migration work.
 
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
-from their sealed SQLite sidecar. `openparf-atomic-source.json` is a bounded
+from their sealed SQLite sidecar. Production placement validation writes each
+validated site group directly into a versioned typed store, so it no longer
+constructs the complete certificate cluster tree and then normalizes that tree
+into SQLite. `placement-certificate.json` is the selector-last commit record
+for a content-addressed `placement-certificate.<sha256>.sqlite` generation. Its
+descriptor binds the exact application/user version, bytes, digest, cluster
+count and assignment count; readers hold a shared POSIX lease across the
+ordered cursor, while replacement and stale-generation collection hold the
+exclusive lease. The lease is acquired before the selector is read and remains
+held while its descriptor, store contract and ordered rows are validated, so a
+writer cannot replace or collect that generation between selector lookup and
+the first row. Readers require exact `table_xinfo` contracts and exact whole
+table counts, reject orphan or non-contiguous assignment rows, and independently
+recompute a versioned ordered-record digest stored in both selector and database
+metadata. That logical digest is independent of SQLite page layout and is
+separate from the content-addressed file digest. Archive discovery rejects a
+selector that mixes generic sidecar keys with `cluster_storage`. The selector
+also seals the mapped, packed-source,
+architecture, atomic-name-map, native-placement and, when present, native
+constraints/provider inputs. Production physical handoff rejects historical
+inline certificate clusters; inline and v2-database compatibility
+materialization remains explicit. The
+validation archive treats this selector and sidecar as one retention group.
+An isolated 100,000 singleton-cluster publication comparison reduced retained
+traced allocation from 108.90 MiB to 0.045 MiB, peak traced allocation from
+110.88 MiB to 2.02 MiB, and process peak RSS from 281.81 MiB to 45.27 MiB;
+fsync-inclusive publication was 1.705 versus 1.953 seconds and both stores were
+22,085,632 bytes. This is adapter evidence rather than NVDLA qualification.
+
+`openparf-atomic-source.json` is a bounded
 selector instead of a graph-sized cluster document: its sealed typed sidecar
 owns only physical macros, cascades and constants, while ordinary singleton
 clusters are derived lazily from the authoritative `partition.mapped.sqlite`

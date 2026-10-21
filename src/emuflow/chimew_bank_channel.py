@@ -8,10 +8,13 @@ large inputs.
 
 from __future__ import annotations
 
+import io
 import math
 import sqlite3
+import struct
 import subprocess
 import tempfile
+import zlib
 from array import array
 from collections import OrderedDict
 from pathlib import Path
@@ -36,6 +39,11 @@ CHIMEW_BANK_CHANNEL_ALGORITHM2_INTERPRETATION = (
 CHIMEW_BANK_CHANNEL_NUMERIC_POLICY = (
     "nearest-integer-cost-rank-with-explicit-scale"
 )
+
+_TYPED_INPUT_MAGIC = b"EMCHBC3\0"
+_TYPED_INPUT_END_MAGIC = b"EMCHEND\0"
+_TYPED_INPUT_VERSION = 1
+_TYPED_INPUT_ENDIAN_MARKER = 0x01020304
 
 
 def _string(value: Any, label: str) -> str:
@@ -498,6 +506,7 @@ def _candidate_cost(group: Mapping[str, Any], endpoint_a: Tuple[float, float], e
 
 
 def _serialize(problem: Mapping[str, Any], path: Path) -> None:
+    """Write the explicit legacy text protocol used by compatibility tests."""
     with path.open("w", encoding="utf-8") as stream:
         stream.write("EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V2\n")
         stream.write(f"PARAM {problem['cost_scale']}\n")
@@ -534,6 +543,127 @@ def _serialize(problem: Mapping[str, Any], path: Path) -> None:
                 )
 
 
+def _serialize_typed(
+    problem: Mapping[str, Any], stream: Any, logical_sha256: str
+) -> Mapping[str, int]:
+    """Stream the sealed v1 native protocol without a graph-sized text file.
+
+    The logical digest binds both ends of the stream to the already validated
+    input artifact.  A stream checksum and exact counts catch truncation,
+    concatenation and mixed-generation header/trailer pairs before the kernel
+    starts either matching stage.
+    """
+
+    if (
+        not isinstance(logical_sha256, str)
+        or len(logical_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in logical_sha256)
+    ):
+        raise ValidationError("Chimew typed input logical digest is invalid")
+    metrics = problem["metrics"]
+    counts = tuple(
+        _integer(metrics.get(field), f"chimew.assignment.metrics.{field}")
+        for field in ("bank_pairs", "channels", "groups", "signals", "fanins")
+    )
+    digest = bytes.fromhex(logical_sha256)
+    header = struct.pack(
+        "<8sIIQQQQQd32s",
+        _TYPED_INPUT_MAGIC,
+        _TYPED_INPUT_VERSION,
+        _TYPED_INPUT_ENDIAN_MARKER,
+        *counts,
+        float(problem["cost_scale"]),
+        digest,
+    )
+    stream.write(header)
+    # The checksum seals the complete semantic header (including protocol
+    # identity, counts, cost scale and source digest) followed by every record.
+    # The trailer carrying the checksum is intentionally outside that scope.
+    checksum = zlib.crc32(header)
+    observed_banks = observed_channels = 0
+    observed_groups = observed_members = observed_fanins = 0
+
+    def emit(fmt: str, *values: Any) -> None:
+        nonlocal checksum
+        payload = struct.pack(fmt, *values)
+        stream.write(payload)
+        checksum = zlib.crc32(payload, checksum)
+
+    for bank_index, bank in enumerate(problem["banks"]):
+        point_a = bank["bank_a"]["point"]
+        point_b = bank["bank_b"]["point"]
+        channels = bank["channels"]
+        emit(
+            "<Bii4dQ",
+            ord("B"),
+            bank_index,
+            bank["domain"],
+            point_a[0],
+            point_a[1],
+            point_b[0],
+            point_b[1],
+            len(channels),
+        )
+        observed_banks += 1
+        for channel in channels:
+            pin_a, pin_b = channel["pin_a"], channel["pin_b"]
+            emit(
+                "<Biii4d",
+                ord("C"),
+                channel["index"],
+                bank_index,
+                channel["order"],
+                pin_a[0],
+                pin_a[1],
+                pin_b[0],
+                pin_b[1],
+            )
+            observed_channels += 1
+    for group_index, group in enumerate(problem["groups"]):
+        members = group["members"]
+        emit(
+            "<BiiiiQ",
+            ord("G"),
+            group_index,
+            group["domain"],
+            group["kind"],
+            group["direction"],
+            len(members),
+        )
+        observed_groups += 1
+        for member_index, member in enumerate(members):
+            fanout = member["fanout"]
+            fanins = member["fanins"]
+            emit(
+                "<Bii3dQ",
+                ord("M"),
+                member_index,
+                member["direction"],
+                member["timing_weight"],
+                fanout[0],
+                fanout[1],
+                len(fanins),
+            )
+            observed_members += 1
+            for point in fanins:
+                emit("<B2d", ord("F"), point[0], point[1])
+                observed_fanins += 1
+    observed = (
+        observed_banks,
+        observed_channels,
+        observed_groups,
+        observed_members,
+        observed_fanins,
+    )
+    if observed != counts:
+        raise ValidationError("Chimew typed input record counts disagree")
+    stream.write(
+        struct.pack("<8sQ32s", _TYPED_INPUT_END_MAGIC, checksum, digest)
+    )
+    return {
+        "records": sum(observed),
+        "stream_checksum": checksum,
+    }
 class _NativeAssignmentResult:
     """Disk-backed view of the native primal and residual-dual certificate."""
 
@@ -679,28 +809,56 @@ def _native_integer(value: Any, label: str, *, nonnegative: bool = False) -> int
 
 
 def _run_native(
-    problem: Mapping[str, Any], executable: Optional[str]
+    problem: Mapping[str, Any],
+    executable: Optional[str],
+    *,
+    logical_sha256: str,
 ) -> _NativeAssignmentResult:
     owner = tempfile.TemporaryDirectory(prefix="emuflow-chimew-assignment-")
     root = Path(owner.name)
-    input_path = root / "input.txt"
     stderr_path = root / "stderr.txt"
     database_path = root / "certificate.sqlite"
     connection: sqlite3.Connection | None = None
     process: subprocess.Popen[str] | None = None
     stderr_stream: Any = None
     try:
-        _serialize(problem, input_path)
         command = resolve_native_executable(
             "emuflow_chimew_bank_channel_assigner", executable
         )
         stderr_stream = stderr_path.open("w+", encoding="utf-8")
         process = subprocess.Popen(
-            [command, str(input_path), "-"],
-            text=True,
+            [command, "--typed-input", "-", "-"],
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=stderr_stream,
         )
+        if process.stdin is None:
+            raise EmuFlowError("Chimew bank/channel input stream is unavailable")
+        input_stream = process.stdin
+        try:
+            _serialize_typed(problem, input_stream, logical_sha256)
+            input_stream.close()
+            process.stdin = None
+        except BrokenPipeError as error:
+            try:
+                input_stream.close()
+            except (BrokenPipeError, OSError):
+                pass
+            process.stdin = None
+            returncode = process.wait()
+            if process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except OSError:
+                    pass
+            stderr_stream.flush()
+            stderr_stream.seek(0)
+            detail = stderr_stream.read().strip()
+            raise EmuFlowError(
+                "Chimew bank/channel kernel rejected typed input "
+                f"with exit status {returncode}"
+                + (f": {detail}" if detail else "")
+            ) from error
         connection = sqlite3.connect(database_path)
         connection.executescript(
             """
@@ -774,7 +932,7 @@ def _run_native(
 
         if process.stdout is None:
             raise EmuFlowError("Chimew bank/channel output stream is unavailable")
-        with process.stdout as stream:
+        with io.TextIOWrapper(process.stdout, encoding="utf-8") as stream:
             if stream.readline().rstrip("\n") != "EMUFLOW_CHIMEW_BANK_CHANNEL_OUTPUT_V1":
                 returncode = process.wait()
                 stderr_stream.flush()
@@ -1344,9 +1502,16 @@ def evaluate_chimew_bank_channel_assignment(
 ) -> Mapping[str, Any]:
     """Run both paper stages and check exact optimality without replaying them."""
 
+    from .chimew_bank_channel_storage import (
+        canonical_bank_channel_input_sha256,
+    )
+
+    input_sha256 = canonical_bank_channel_input_sha256(document)
     problem = validate_chimew_bank_channel_input(document)
     banks = problem["banks"]
-    with _run_native(problem, executable) as native:
+    with _run_native(
+        problem, executable, logical_sha256=input_sha256
+    ) as native:
         group_count, stage1_cost, stage2_cost = native.metrics
         if group_count != len(problem["groups"]):
             raise EmuFlowError("Chimew bank/channel metrics do not agree")
@@ -1454,10 +1619,6 @@ def evaluate_chimew_bank_channel_assignment(
             if observed != group_count or next(assignment_cursor, None) is not None:
                 raise EmuFlowError("Chimew bank/channel assignment is incomplete")
 
-        from .chimew_bank_channel_storage import (
-            canonical_bank_channel_input_sha256,
-        )
-
         header = {
             "schema": CHIMEW_BANK_CHANNEL_REPORT_SCHEMA,
             "status": CHIMEW_BANK_CHANNEL_STATUS,
@@ -1471,7 +1632,7 @@ def evaluate_chimew_bank_channel_assignment(
             ),
             "numeric_policy": CHIMEW_BANK_CHANNEL_NUMERIC_POLICY,
             "provenance": problem["provenance"],
-            "input_sha256": canonical_bank_channel_input_sha256(document),
+            "input_sha256": input_sha256,
             "metrics": {
                 **problem["metrics"],
                 "stage1_cost_rank": stage1_cost,

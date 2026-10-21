@@ -267,8 +267,14 @@ def _might_declare_sidecar(path: Path) -> bool:
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(64 * 1024), b""):
             window = overlap + chunk
-            found_artifact = found_artifact or b'"artifact"' in window
-            found_digest = found_digest or b'"store_sha256"' in window
+            found_artifact = found_artifact or (
+                b'"artifact"' in window
+                or b'"cluster_storage"' in window
+            )
+            found_digest = found_digest or (
+                b'"store_sha256"' in window
+                or b'"cluster_storage"' in window
+            )
             if found_artifact and found_digest:
                 return True
             overlap = window[-64:]
@@ -290,8 +296,26 @@ def _selector_sidecar(flow_root: Path, relative: Path) -> Path | None:
         ) from error
     if not isinstance(selector, dict):
         return None
+    generic_declared = any(
+        key in selector for key in ("artifact", "store_sha256", "store_bytes")
+    )
+    nested_declared = "cluster_storage" in selector
+    if generic_declared and nested_declared:
+        raise ValidationError(
+            f"archive selector dependency is ambiguous: {relative.as_posix()}"
+        )
     artifact = selector.get("artifact")
     digest = selector.get("store_sha256")
+    expected_bytes = selector.get("store_bytes")
+    cluster_storage = selector.get("cluster_storage")
+    if nested_declared:
+        if not isinstance(cluster_storage, dict):
+            raise ValidationError(
+                f"archive selector dependency is malformed: {relative.as_posix()}"
+            )
+        artifact = cluster_storage.get("file")
+        digest = cluster_storage.get("sha256")
+        expected_bytes = cluster_storage.get("bytes")
     if artifact is None and digest is None:
         return None
     if (
@@ -330,7 +354,6 @@ def _selector_sidecar(flow_root: Path, relative: Path) -> Path | None:
             "archive selector dependency SHA-256 disagrees: "
             f"{relative.as_posix()}"
         )
-    expected_bytes = selector.get("store_bytes")
     if expected_bytes is not None and (
         isinstance(expected_bytes, bool)
         or not isinstance(expected_bytes, int)

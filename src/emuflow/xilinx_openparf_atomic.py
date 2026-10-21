@@ -13,6 +13,8 @@ before producing a compact EmuFlow placement certificate.
 from __future__ import annotations
 
 from collections import Counter, OrderedDict, defaultdict
+from collections.abc import Mapping as MappingABC
+import fcntl
 import hashlib
 import json
 import math
@@ -64,8 +66,14 @@ from .xilinx_openparf_name_map_storage import (
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
 OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v2"
 OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA = (
+    "emuflow.openparf-atomic-placement-database/v3"
+)
+_LEGACY_OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-placement-database/v2"
 )
+OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID = 0x454D5550  # "EMUP"
+OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION = 3
+_PLACEMENT_CERTIFICATE_STORE_SUFFIX = ".sqlite"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = (
     "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v5"
@@ -491,7 +499,8 @@ class _IndexedAtomicPlacement:
             name_map.close()
 
     def __del__(self) -> None:
-        self.close()
+        if hasattr(self, "closed"):
+            self.close()
 
     def __enter__(self) -> "_IndexedAtomicPlacement":
         return self
@@ -649,123 +658,595 @@ def _write_openparf_result_checkpoint(
     return checkpoint_path
 
 
-def _atomic_placement_database_path(certificate_path: Path) -> Path:
-    return certificate_path.with_suffix(".sqlite3")
+class _PlacementCertificateLease:
+    """Keep a published certificate generation alive for lazy readers."""
+
+    def __init__(self, selector_path: Path, *, exclusive: bool) -> None:
+        parent = selector_path.parent.resolve()
+        lock_path = parent / f".{selector_path.name}.lock"
+        if lock_path.is_symlink():
+            raise ValidationError(
+                "OpenPARF placement-certificate lock is a symbolic link"
+            )
+        flags = os.O_CREAT | os.O_RDWR
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            self._descriptor = os.open(lock_path, flags, 0o600)
+        except OSError as error:
+            raise ValidationError(
+                "OpenPARF placement-certificate lock is invalid"
+            ) from error
+        try:
+            fcntl.flock(
+                self._descriptor,
+                fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH,
+            )
+        except BaseException:
+            os.close(self._descriptor)
+            raise
+        self._closed = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(self._descriptor)
 
 
-def _write_atomic_placement_database(
-    path: Path, clusters: Sequence[Mapping[str, Any]]
-) -> Dict[str, Any]:
-    """Store the large atom placement once in a queryable sidecar.
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
-    The certificate is a hot cross-stage boundary.  Keeping hundreds of
-    thousands of assignments inline made every consumer parse another
-    60--70 MiB JSON document and duplicated the complete placement already
-    represented by the native ``.pl`` result.  SQLite keeps the independently
-    validated rows byte-sealed while allowing bridge consumers to stream them
-    in cluster order.
-    """
 
-    path.unlink(missing_ok=True)
-    assignment_count = sum(
-        len(cluster.get("assignments", [])) for cluster in clusters
-    )
-    with sqlite3.connect(":memory:") as database:
-        database.executescript("""
+def _certificate_store_name(path: Path, digest: str) -> str:
+    return f"{path.stem}.{digest}{_PLACEMENT_CERTIFICATE_STORE_SUFFIX}"
+
+
+_PLACEMENT_TABLE_XINFO = {
+    "metadata": [
+        (0, "key", "TEXT", 1, None, 1, 0),
+        (1, "value", "TEXT", 1, None, 0, 0),
+    ],
+    "clusters": [
+        (0, "cluster_index", "INTEGER", 0, None, 1, 0),
+        (1, "cluster", "TEXT", 1, None, 0, 0),
+        (2, "site", "TEXT", 1, None, 0, 0),
+        (3, "site_type", "TEXT", 1, None, 0, 0),
+        (4, "x", "INTEGER", 1, None, 0, 0),
+        (5, "y", "INTEGER", 1, None, 0, 0),
+    ],
+    "assignments": [
+        (0, "cluster_index", "INTEGER", 1, None, 1, 0),
+        (1, "assignment_index", "INTEGER", 1, None, 2, 0),
+        (2, "instance", "TEXT", 1, None, 0, 0),
+        (3, "cell_type", "TEXT", 1, None, 0, 0),
+        (4, "bel", "TEXT", 1, None, 0, 0),
+        (5, "physical_site", "TEXT", 1, None, 0, 0),
+        (6, "placement_mode", "TEXT", 1, None, 0, 0),
+        (7, "source_cluster", "TEXT", 1, None, 0, 0),
+        (8, "bram_tile_group", "TEXT", 0, None, 0, 0),
+    ],
+}
+
+
+def _logical_record_digest(
+    header: Mapping[str, Any], database: sqlite3.Connection,
+) -> str:
+    """Hash logical records independently of SQLite page/index layout."""
+
+    digest = hashlib.sha256()
+
+    def append(kind: str, value: Any) -> None:
+        encoded = json.dumps(
+            {"kind": kind, "value": value}, ensure_ascii=False,
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+
+    append("header/v1", dict(header))
+    for row in database.execute(
+        "SELECT cluster_index,cluster,site,site_type,x,y FROM clusters "
+        "ORDER BY cluster_index"
+    ):
+        append("cluster/v1", list(row))
+    for row in database.execute(
+        "SELECT cluster_index,assignment_index,instance,cell_type,bel,"
+        "physical_site,placement_mode,source_cluster,bram_tile_group "
+        "FROM assignments ORDER BY cluster_index,assignment_index"
+    ):
+        append("assignment/v1", list(row))
+    return digest.hexdigest()
+
+
+def _validate_placement_database_contract(
+    database: sqlite3.Connection,
+    *,
+    descriptor: Mapping[str, Any],
+    header: Mapping[str, Any],
+    legacy: bool,
+) -> None:
+    if not legacy and (
+        int(database.execute("PRAGMA application_id").fetchone()[0])
+        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID
+        or int(database.execute("PRAGMA user_version").fetchone()[0])
+        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION
+    ):
+        raise ValidationError("OpenPARF atomic placement database identity is invalid")
+    objects = list(database.execute(
+        "SELECT type,name,tbl_name FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+    ))
+    if objects != [
+        ("table", "assignments", "assignments"),
+        ("table", "clusters", "clusters"),
+        ("table", "metadata", "metadata"),
+    ]:
+        raise ValidationError("OpenPARF atomic placement database schema is invalid")
+    for table, expected in _PLACEMENT_TABLE_XINFO.items():
+        actual = [tuple(row) for row in database.execute(
+            f"PRAGMA table_xinfo({table})"
+        )]
+        if actual != expected:
+            raise ValidationError(
+                "OpenPARF atomic placement database column contract is invalid"
+            )
+    metadata = dict(database.execute("SELECT key,value FROM metadata"))
+    expected_metadata = {
+        "schema": (
+            _LEGACY_OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
+            if legacy else OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
+        ),
+        "clusters": str(descriptor["clusters"]),
+        "assignments": str(descriptor["assignments"]),
+    }
+    if not legacy:
+        expected_metadata["logical_sha256"] = str(descriptor["logical_sha256"])
+    if metadata != expected_metadata:
+        raise ValidationError("OpenPARF atomic placement database metadata is invalid")
+    cluster_count = int(database.execute("SELECT COUNT(*) FROM clusters").fetchone()[0])
+    assignment_count = int(database.execute(
+        "SELECT COUNT(*) FROM assignments"
+    ).fetchone()[0])
+    if (
+        cluster_count != descriptor["clusters"]
+        or assignment_count != descriptor["assignments"]
+        or database.execute(
+            "SELECT 1 FROM assignments a LEFT JOIN clusters c "
+            "USING(cluster_index) WHERE c.cluster_index IS NULL LIMIT 1"
+        ).fetchone() is not None
+        or database.execute(
+            "SELECT 1 FROM clusters c LEFT JOIN assignments a "
+            "USING(cluster_index) WHERE a.cluster_index IS NULL LIMIT 1"
+        ).fetchone() is not None
+        or database.execute(
+            "SELECT 1 FROM (SELECT MIN(cluster_index) lo,MAX(cluster_index) hi,"
+            "COUNT(*) n FROM clusters) WHERE lo!=0 OR hi+1!=n LIMIT 1"
+        ).fetchone() is not None
+        or database.execute(
+            "SELECT 1 FROM assignments GROUP BY cluster_index "
+            "HAVING MIN(assignment_index)!=0 OR "
+            "MAX(assignment_index)+1!=COUNT(*) LIMIT 1"
+        ).fetchone() is not None
+    ):
+        raise ValidationError("OpenPARF atomic placement database coverage is invalid")
+    if not legacy and _logical_record_digest(header, database) != descriptor[
+        "logical_sha256"
+    ]:
+        raise ValidationError("OpenPARF atomic placement logical digest disagrees")
+
+
+def _validate_atomic_placement_descriptor(
+    path: Path, descriptor: Any,
+) -> Path:
+    if (
+        not isinstance(descriptor, Mapping)
+        or set(descriptor) != {
+            "schema", "file", "bytes", "sha256", "clusters", "assignments",
+            "application_id", "user_version", "logical_sha256",
+        }
+        or descriptor.get("schema")
+        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
+        or descriptor.get("application_id")
+        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID
+        or descriptor.get("user_version")
+        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION
+        or not isinstance(descriptor.get("file"), str)
+        or Path(descriptor["file"]).name != descriptor["file"]
+        or not isinstance(descriptor.get("clusters"), int)
+        or isinstance(descriptor.get("clusters"), bool)
+        or not isinstance(descriptor.get("assignments"), int)
+        or isinstance(descriptor.get("assignments"), bool)
+        or descriptor["clusters"] <= 0
+        or descriptor["assignments"] <= 0
+        or not isinstance(descriptor.get("bytes"), int)
+        or isinstance(descriptor.get("bytes"), bool)
+        or descriptor["bytes"] <= 0
+        or not isinstance(descriptor.get("sha256"), str)
+        or len(descriptor["sha256"]) != 64
+        or any(c not in "0123456789abcdef" for c in descriptor["sha256"])
+        or not isinstance(descriptor.get("logical_sha256"), str)
+        or len(descriptor["logical_sha256"]) != 64
+        or any(
+            c not in "0123456789abcdef"
+            for c in descriptor["logical_sha256"]
+        )
+        or descriptor["file"]
+        != _certificate_store_name(path, descriptor["sha256"])
+    ):
+        raise ValidationError(
+            "OpenPARF atomic placement storage descriptor is invalid"
+        )
+    if path.is_symlink():
+        raise ValidationError(
+            "OpenPARF atomic placement certificate is a symbolic link"
+        )
+    unresolved = path.parent / descriptor["file"]
+    if unresolved.is_symlink():
+        raise ValidationError(
+            "OpenPARF atomic placement database is a symbolic link"
+        )
+    try:
+        database_path = unresolved.resolve(strict=True)
+        stat = database_path.stat()
+    except OSError as error:
+        raise ValidationError(
+            "OpenPARF atomic placement database is missing"
+        ) from error
+    if database_path.parent != path.parent.resolve():
+        raise ValidationError(
+            "OpenPARF atomic placement database escapes its selector"
+        )
+    if (
+        stat.st_size != descriptor["bytes"]
+        or _sha256(database_path) != descriptor["sha256"]
+    ):
+        raise ValidationError("OpenPARF atomic placement database seal is invalid")
+    return database_path
+
+
+def _valid_unreferenced_certificate_store(
+    selector_path: Path, candidate: Path,
+) -> bool:
+    """Recognize only a complete writer-owned generation before orphan GC."""
+
+    prefix = f"{selector_path.stem}."
+    if candidate.is_symlink() or not candidate.name.endswith(
+        _PLACEMENT_CERTIFICATE_STORE_SUFFIX
+    ) or not candidate.name.startswith(prefix):
+        return False
+    digest = candidate.name[
+        len(prefix):-len(_PLACEMENT_CERTIFICATE_STORE_SUFFIX)
+    ]
+    if (
+        len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        or _sha256(candidate) != digest
+    ):
+        return False
+    try:
+        with sqlite3.connect(
+            f"file:{candidate.resolve()}?mode=ro&immutable=1", uri=True
+        ) as database:
+            if (
+                int(database.execute("PRAGMA application_id").fetchone()[0])
+                != OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID
+                or int(database.execute("PRAGMA user_version").fetchone()[0])
+                != OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION
+                or list(database.execute(
+                    "SELECT type,name,tbl_name FROM sqlite_master "
+                    "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+                )) != [
+                    ("table", "assignments", "assignments"),
+                    ("table", "clusters", "clusters"),
+                    ("table", "metadata", "metadata"),
+                ]
+            ):
+                return False
+            metadata = dict(database.execute("SELECT key,value FROM metadata"))
+            if (
+                set(metadata)
+                != {"schema", "clusters", "assignments", "logical_sha256"}
+                or metadata["schema"]
+                != OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
+                or len(metadata["logical_sha256"]) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in metadata["logical_sha256"]
+                )
+                or any(
+                    [tuple(row) for row in database.execute(
+                        f"PRAGMA table_xinfo({table})"
+                    )] != expected
+                    for table, expected in _PLACEMENT_TABLE_XINFO.items()
+                )
+            ):
+                return False
+            clusters = int(metadata["clusters"])
+            assignments = int(metadata["assignments"])
+            return (
+                clusters > 0
+                and assignments > 0
+                and database.execute("SELECT COUNT(*) FROM clusters").fetchone()[0]
+                == clusters
+                and database.execute(
+                    "SELECT COUNT(*) FROM assignments"
+                ).fetchone()[0] == assignments
+                and database.execute(
+                    "SELECT 1 FROM assignments a LEFT JOIN clusters c "
+                    "USING(cluster_index) WHERE c.cluster_index IS NULL LIMIT 1"
+                ).fetchone() is None
+                and database.execute(
+                    "SELECT 1 FROM clusters c LEFT JOIN assignments a "
+                    "USING(cluster_index) WHERE a.cluster_index IS NULL LIMIT 1"
+                ).fetchone() is None
+                and database.execute(
+                    "SELECT 1 FROM (SELECT MIN(cluster_index) lo,"
+                    "MAX(cluster_index) hi,COUNT(*) n FROM clusters) "
+                    "WHERE lo!=0 OR hi+1!=n LIMIT 1"
+                ).fetchone() is None
+                and database.execute(
+                    "SELECT 1 FROM assignments GROUP BY cluster_index "
+                    "HAVING MIN(assignment_index)!=0 OR "
+                    "MAX(assignment_index)+1!=COUNT(*) LIMIT 1"
+                ).fetchone() is None
+            )
+    except (OSError, ValueError, sqlite3.DatabaseError):
+        return False
+
+
+class _AtomicPlacementCertificateBuilder:
+    """Stream validated site groups into one typed certificate generation."""
+
+    def __init__(self, selector_path: Path) -> None:
+        selector_path.parent.mkdir(parents=True, exist_ok=True)
+        self.selector_path = selector_path
+        self.lease = _PlacementCertificateLease(selector_path, exclusive=True)
+        self.closed = False
+        self.temporary_path: Optional[Path] = None
+        self.database: Optional[sqlite3.Connection] = None
+        self.previous_store: Optional[Path] = None
+        self.cluster_count = 0
+        self.assignment_count = 0
+        try:
+            if selector_path.exists():
+                if selector_path.is_symlink():
+                    raise ValidationError(
+                        "previous OpenPARF placement certificate is a symbolic link"
+                    )
+                try:
+                    previous = read_json(selector_path)
+                except (OSError, ValueError) as error:
+                    raise ValidationError(
+                        "previous OpenPARF placement certificate is corrupt"
+                    ) from error
+                self.previous_store = _validate_atomic_placement_descriptor(
+                    selector_path, previous.get("cluster_storage")
+                )
+                previous_descriptor = previous["cluster_storage"]
+                previous_header = dict(previous)
+                previous_header.pop("cluster_storage")
+                try:
+                    with sqlite3.connect(
+                        f"file:{self.previous_store}?mode=ro&immutable=1",
+                        uri=True,
+                    ) as previous_database:
+                        _validate_placement_database_contract(
+                            previous_database,
+                            descriptor=previous_descriptor,
+                            header=previous_header,
+                            legacy=False,
+                        )
+                except sqlite3.DatabaseError as error:
+                    raise ValidationError(
+                        "previous OpenPARF placement-certificate store is invalid"
+                    ) from error
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{selector_path.name}.", suffix=".sqlite.tmp",
+                dir=selector_path.parent,
+            )
+            os.close(descriptor)
+            self.temporary_path = Path(temporary)
+            self.database = sqlite3.connect(self.temporary_path)
+            self.database.executescript(f"""
             PRAGMA page_size = 65536;
             PRAGMA journal_mode = OFF;
-            PRAGMA synchronous = OFF;
-            PRAGMA temp_store = MEMORY;
+            PRAGMA synchronous = FULL;
+            PRAGMA temp_store = FILE;
+            PRAGMA application_id = {OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID};
+            PRAGMA user_version = {OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION};
             CREATE TABLE metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             ) WITHOUT ROWID;
             CREATE TABLE clusters (
                 cluster_index INTEGER PRIMARY KEY,
-                cluster TEXT NOT NULL,
-                site TEXT NOT NULL,
+                cluster TEXT NOT NULL UNIQUE,
+                site TEXT NOT NULL UNIQUE,
                 site_type TEXT NOT NULL,
                 x INTEGER NOT NULL,
                 y INTEGER NOT NULL
             );
             CREATE TABLE assignments (
-                cluster_index INTEGER NOT NULL,
+                cluster_index INTEGER NOT NULL REFERENCES clusters(cluster_index),
                 assignment_index INTEGER NOT NULL,
-                instance TEXT NOT NULL,
+                instance TEXT NOT NULL UNIQUE,
                 cell_type TEXT NOT NULL,
                 bel TEXT NOT NULL,
                 physical_site TEXT NOT NULL,
                 placement_mode TEXT NOT NULL,
                 source_cluster TEXT NOT NULL,
-                bram_tile_group TEXT,
+                bram_tile_group TEXT CHECK(
+                    bram_tile_group IS NULL OR json_valid(bram_tile_group)
+                ),
                 PRIMARY KEY (cluster_index, assignment_index)
             ) WITHOUT ROWID;
-        """)
-        database.executemany(
-            "INSERT INTO metadata(key, value) VALUES (?, ?)",
+            """)
+        except sqlite3.DatabaseError as error:
+            self.close()
+            raise ValidationError(
+                "OpenPARF atomic placement database is invalid"
+            ) from error
+        except BaseException:
+            self.close()
+            raise
+
+    def append(self, cluster: Mapping[str, Any]) -> None:
+        assignments = cluster.get("assignments")
+        if (
+            not isinstance(assignments, Sequence)
+            or isinstance(assignments, (str, bytes))
+            or not assignments
+        ):
+            raise ValidationError("OpenPARF atomic placement cluster is invalid")
+        cluster_index = self.cluster_count
+        if self.database is None:
+            raise ValidationError("OpenPARF placement-certificate writer is closed")
+        try:
+            self.database.execute(
+                "INSERT INTO clusters VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    cluster_index, str(cluster["cluster"]), str(cluster["site"]),
+                    str(cluster["site_type"]), int(cluster["x"]), int(cluster["y"]),
+                ),
+            )
+            self.database.executemany(
+                "INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    (
+                        cluster_index, assignment_index,
+                        str(assignment["instance"]),
+                        str(assignment["cell_type"]), str(assignment["bel"]),
+                        str(assignment["physical_site"]),
+                        str(assignment["placement_mode"]),
+                        str(assignment["source_cluster"]),
+                        (
+                            json.dumps(
+                                assignment["bram_tile_group"], sort_keys=True,
+                                separators=(",", ":"),
+                            )
+                            if assignment.get("bram_tile_group") is not None
+                            else None
+                        ),
+                    )
+                    for assignment_index, assignment in enumerate(assignments)
+                ),
+            )
+        except (KeyError, TypeError, ValueError, sqlite3.IntegrityError) as error:
+            raise ValidationError(
+                "OpenPARF atomic placement cluster cannot be stored"
+            ) from error
+        self.cluster_count += 1
+        self.assignment_count += len(assignments)
+
+    def publish(self, header: Mapping[str, Any]) -> Dict[str, Any]:
+        if self.cluster_count <= 0 or self.assignment_count <= 0:
+            raise ValidationError("OpenPARF atomic placement clusters are invalid")
+        if self.database is None or self.temporary_path is None:
+            raise ValidationError("OpenPARF placement-certificate writer is closed")
+        compact = dict(header)
+        compact.pop("clusters", None)
+        compact.pop("cluster_storage", None)
+        logical_sha256 = _logical_record_digest(compact, self.database)
+        self.database.executemany(
+            "INSERT INTO metadata VALUES (?, ?)",
             (
                 ("schema", OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA),
-                ("clusters", str(len(clusters))),
-                ("assignments", str(assignment_count)),
+                ("clusters", str(self.cluster_count)),
+                ("assignments", str(self.assignment_count)),
+                ("logical_sha256", logical_sha256),
             ),
         )
-        database.executemany(
-            "INSERT INTO clusters VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                (
-                    cluster_index,
-                    str(cluster["cluster"]),
-                    str(cluster["site"]),
-                    str(cluster["site_type"]),
-                    int(cluster["x"]),
-                    int(cluster["y"]),
-                )
-                for cluster_index, cluster in enumerate(clusters)
-            ),
+        self.database.commit()
+        self.database.close()
+        self.database = None
+        with self.temporary_path.open("rb") as stream:
+            os.fsync(stream.fileno())
+        digest = _sha256(self.temporary_path)
+        store_path = self.selector_path.parent / _certificate_store_name(
+            self.selector_path, digest
         )
-        database.executemany(
-            "INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                (
-                    cluster_index,
-                    assignment_index,
-                    str(assignment["instance"]),
-                    str(assignment["cell_type"]),
-                    str(assignment["bel"]),
-                    str(assignment["physical_site"]),
-                    str(assignment["placement_mode"]),
-                    str(assignment["source_cluster"]),
-                    (
-                        json.dumps(
-                            assignment["bram_tile_group"],
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        )
-                        if assignment.get("bram_tile_group") is not None
-                        else None
-                    ),
+        if store_path.is_symlink():
+            raise ValidationError(
+                "OpenPARF atomic placement database is a symbolic link"
+            )
+        if store_path.exists():
+            if _sha256(store_path) != digest:
+                raise ValidationError(
+                    "OpenPARF atomic placement content-addressed store disagrees"
                 )
-                for cluster_index, cluster in enumerate(clusters)
-                for assignment_index, assignment in enumerate(
-                    cluster["assignments"]
-                )
-            ),
+            self.temporary_path.unlink()
+        else:
+            os.replace(self.temporary_path, store_path)
+        descriptor = {
+            "schema": OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
+            "application_id": OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID,
+            "user_version": OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION,
+            "file": store_path.name,
+            "bytes": store_path.stat().st_size,
+            "sha256": digest,
+            "clusters": self.cluster_count,
+            "assignments": self.assignment_count,
+            "logical_sha256": logical_sha256,
+        }
+        compact["cluster_storage"] = descriptor
+        temporary_selector = self.selector_path.with_name(
+            f".{self.selector_path.name}.{os.getpid()}.tmp"
         )
-        database.commit()
-        with sqlite3.connect(path) as destination:
-            destination.executescript("""
-                PRAGMA journal_mode = OFF;
-                PRAGMA synchronous = OFF;
-            """)
-            database.backup(destination, pages=4096)
-    return {
-        "schema": OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
-        "file": path.name,
-        "bytes": path.stat().st_size,
-        "sha256": _sha256(path),
-        "clusters": len(clusters),
-        "assignments": assignment_count,
-    }
+        try:
+            write_json(temporary_selector, compact, compact=True)
+            with temporary_selector.open("rb") as stream:
+                os.fsync(stream.fileno())
+            os.replace(temporary_selector, self.selector_path)
+            _fsync_directory(self.selector_path.parent)
+            for candidate in self.selector_path.parent.glob(
+                f"{self.selector_path.stem}.*"
+                f"{_PLACEMENT_CERTIFICATE_STORE_SUFFIX}"
+            ):
+                if (
+                    candidate.is_symlink()
+                    or candidate.resolve() == store_path.resolve()
+                ):
+                    continue
+                if (
+                    self.previous_store is None
+                    or candidate.resolve() != self.previous_store.resolve()
+                ) and not _valid_unreferenced_certificate_store(
+                    self.selector_path, candidate
+                ):
+                    continue
+                try:
+                    candidate.unlink()
+                except OSError:
+                    pass
+            _fsync_directory(self.selector_path.parent)
+            return compact
+        finally:
+            temporary_selector.unlink(missing_ok=True)
+            self.close()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        database = self.database
+        self.database = None
+        if database is not None:
+            database.close()
+        temporary_path = self.temporary_path
+        self.temporary_path = None
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        self.lease.close()
+
+    def __del__(self) -> None:
+        self.close()
 
 
 def write_xilinx_openparf_atomic_placement_certificate(
@@ -776,135 +1257,243 @@ def write_xilinx_openparf_atomic_placement_certificate(
     clusters = certificate.get("clusters")
     if not isinstance(clusters, list) or not clusters:
         raise ValidationError("OpenPARF atomic placement clusters are invalid")
-    descriptor = _write_atomic_placement_database(
-        _atomic_placement_database_path(path), clusters
-    )
-    compact = {
-        key: value for key, value in certificate.items() if key != "clusters"
-    }
-    compact["cluster_storage"] = descriptor
-    write_json(path, compact, compact=True)
-    return compact
+    builder = _AtomicPlacementCertificateBuilder(path)
+    try:
+        for cluster in clusters:
+            builder.append(cluster)
+        return builder.publish(certificate)
+    except BaseException:
+        builder.close()
+        raise
 
 
 def load_xilinx_openparf_atomic_placement_clusters(
     path: Path, certificate: Mapping[str, Any]
 ) -> List[Dict[str, Any]]:
-    """Load legacy inline rows or the normalized placement sidecar."""
+    """Explicit compatibility materialization of certified cluster rows."""
 
-    inline = certificate.get("clusters")
-    if inline is not None:
-        if not isinstance(inline, list) or not inline:
-            raise ValidationError("OpenPARF atomic placement clusters are invalid")
-        return [dict(cluster) for cluster in inline]
-    descriptor = certificate.get("cluster_storage")
-    if (
-        not isinstance(descriptor, Mapping)
-        or descriptor.get("schema")
-        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
-        or not isinstance(descriptor.get("file"), str)
-        or Path(descriptor["file"]).name != descriptor["file"]
-        or not isinstance(descriptor.get("clusters"), int)
-        or not isinstance(descriptor.get("assignments"), int)
-        or descriptor["clusters"] <= 0
-        or descriptor["assignments"] <= 0
-    ):
-        raise ValidationError(
-            "OpenPARF atomic placement storage descriptor is invalid"
-        )
-    database_path = path.parent / descriptor["file"]
-    if (
-        not database_path.is_file()
-        or database_path.stat().st_size != descriptor.get("bytes")
-        or _sha256(database_path) != descriptor.get("sha256")
-    ):
-        raise ValidationError("OpenPARF atomic placement database seal is invalid")
-    uri = f"file:{database_path.resolve()}?mode=ro&immutable=1"
-    clusters: List[Dict[str, Any]] = []
-    with sqlite3.connect(uri, uri=True) as database:
-        metadata = dict(database.execute("SELECT key, value FROM metadata"))
-        if metadata != {
-            "schema": OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
-            "clusters": str(descriptor["clusters"]),
-            "assignments": str(descriptor["assignments"]),
-        }:
-            raise ValidationError(
-                "OpenPARF atomic placement database metadata is invalid"
-            )
-        cluster_rows = list(database.execute(
-            "SELECT cluster_index, cluster, site, site_type, x, y "
-            "FROM clusters ORDER BY cluster_index"
-        ))
-        by_index: Dict[int, Dict[str, Any]] = {}
-        cluster_names = set()
-        site_names = set()
-        for row in cluster_rows:
-            if (
-                row[0] in by_index
-                or row[1] in cluster_names
-                or row[2] in site_names
-            ):
+    return list(iter_xilinx_openparf_atomic_placement_clusters(
+        path, certificate, allow_legacy=True
+    ))
+
+
+def _iter_placement_database_clusters(
+    database: sqlite3.Connection, descriptor: Mapping[str, Any],
+) -> Iterator[Dict[str, Any]]:
+    cluster_total = 0
+    assignment_total = 0
+    rows = database.execute(
+        "SELECT c.cluster_index,c.cluster,c.site,c.site_type,c.x,c.y,"
+        "a.assignment_index,a.instance,a.cell_type,a.bel,a.physical_site,"
+        "a.placement_mode,a.source_cluster,a.bram_tile_group "
+        "FROM clusters c LEFT JOIN assignments a "
+        "ON a.cluster_index=c.cluster_index "
+        "ORDER BY c.cluster_index,a.assignment_index"
+    )
+    current_index = None
+    current: Optional[Dict[str, Any]] = None
+    expected_assignment_index = 0
+    for row in rows:
+        if row[0] != current_index:
+            if current is not None:
+                yield current
+            if row[0] != cluster_total:
                 raise ValidationError(
-                    "OpenPARF atomic placement database has duplicate clusters"
+                    "OpenPARF atomic placement cluster ordering is invalid"
                 )
-            cluster = {
-                "cluster": row[1],
-                "site": row[2],
-                "site_type": row[3],
-                "x": row[4],
-                "y": row[5],
+            current_index = row[0]
+            current = {
+                "cluster": row[1], "site": row[2],
+                "site_type": row[3], "x": row[4], "y": row[5],
                 "assignments": [],
             }
-            by_index[row[0]] = cluster
-            cluster_names.add(row[1])
-            site_names.add(row[2])
-            clusters.append(cluster)
-        assignment_total = 0
-        instances = set()
-        for assignment in database.execute(
-            "SELECT cluster_index, instance, cell_type, bel, physical_site, "
-            "placement_mode, source_cluster, bram_tile_group FROM assignments "
-            "ORDER BY cluster_index, assignment_index"
-        ):
-            cluster = by_index.get(assignment[0])
-            if cluster is None:
-                raise ValidationError(
-                    "OpenPARF atomic placement database has an orphan assignment"
-                )
-            if assignment[1] in instances:
-                raise ValidationError(
-                    "OpenPARF atomic placement database has duplicate assignments"
-                )
-            instances.add(assignment[1])
-            cluster["assignments"].append({
-                "instance": assignment[1],
-                "cell_type": assignment[2],
-                "bel": assignment[3],
-                "physical_site": assignment[4],
-                "placement_mode": assignment[5],
-                "source_cluster": assignment[6],
-                "bram_tile_group": (
-                    json.loads(assignment[7])
-                    if assignment[7] is not None else None
-                ),
-            })
-            assignment_total += 1
-        if any(not cluster["assignments"] for cluster in clusters):
+            cluster_total += 1
+            expected_assignment_index = 0
+        if current is None or row[6] is None:
             raise ValidationError(
                 "OpenPARF atomic placement database has an empty cluster"
             )
+        if row[6] != expected_assignment_index:
+            raise ValidationError(
+                "OpenPARF atomic placement assignment ordering is invalid"
+            )
+        expected_assignment_index += 1
+        current["assignments"].append({
+            "instance": row[7], "cell_type": row[8], "bel": row[9],
+            "physical_site": row[10], "placement_mode": row[11],
+            "source_cluster": row[12],
+            "bram_tile_group": (
+                json.loads(row[13]) if row[13] is not None else None
+            ),
+        })
+        assignment_total += 1
+    if current is not None:
+        yield current
     if (
-        len(clusters) != descriptor["clusters"]
+        cluster_total != descriptor["clusters"]
         or assignment_total != descriptor["assignments"]
     ):
         raise ValidationError(
             "OpenPARF atomic placement database coverage is invalid"
         )
-    return clusters
+
+
+class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
+    """Selector and ordered rows held under one shared generation lease."""
+
+    def __init__(self, path: Path, *, allow_legacy: bool = False) -> None:
+        self.path = path
+        self.lease = _PlacementCertificateLease(path, exclusive=False)
+        self.database: Optional[sqlite3.Connection] = None
+        self.closed = False
+        try:
+            if path.is_symlink():
+                raise ValidationError(
+                    "OpenPARF atomic placement certificate is a symbolic link"
+                )
+            try:
+                selector = read_json(path)
+            except (OSError, ValueError) as error:
+                raise ValidationError(
+                    "OpenPARF atomic placement selector is invalid"
+                ) from error
+            if not isinstance(selector, Mapping):
+                raise ValidationError(
+                    "OpenPARF atomic placement selector is invalid"
+                )
+            self.selector = selector
+            inline = selector.get("clusters")
+            if inline is not None:
+                if not allow_legacy or not isinstance(inline, list) or not inline:
+                    raise ValidationError(
+                        "inline OpenPARF placement clusters require explicit "
+                        "legacy mode"
+                    )
+                self.inline = inline
+                self.descriptor = None
+                self.legacy = True
+                return
+            self.inline = None
+            descriptor = selector.get("cluster_storage")
+            self.legacy = (
+                isinstance(descriptor, Mapping)
+                and descriptor.get("schema")
+                == _LEGACY_OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
+            )
+            if self.legacy:
+                if (
+                    not allow_legacy
+                    or not isinstance(descriptor, Mapping)
+                    or set(descriptor) != {
+                        "schema", "file", "bytes", "sha256", "clusters",
+                        "assignments",
+                    }
+                    or not isinstance(descriptor.get("file"), str)
+                    or Path(descriptor["file"]).name != descriptor["file"]
+                    or any(
+                        isinstance(descriptor.get(key), bool)
+                        or not isinstance(descriptor.get(key), int)
+                        or descriptor[key] <= 0
+                        for key in ("bytes", "clusters", "assignments")
+                    )
+                    or not isinstance(descriptor.get("sha256"), str)
+                    or len(descriptor["sha256"]) != 64
+                    or any(
+                        c not in "0123456789abcdef"
+                        for c in descriptor["sha256"]
+                    )
+                ):
+                    raise ValidationError(
+                        "legacy OpenPARF placement database requires explicit "
+                        "compatibility mode"
+                    )
+                unresolved = path.parent / descriptor["file"]
+                if unresolved.is_symlink():
+                    raise ValidationError(
+                        "OpenPARF atomic placement database is a symbolic link"
+                    )
+                database_path = unresolved.resolve(strict=True)
+                if (
+                    database_path.parent != path.parent.resolve()
+                    or database_path.stat().st_size != descriptor["bytes"]
+                    or _sha256(database_path) != descriptor["sha256"]
+                ):
+                    raise ValidationError(
+                        "OpenPARF atomic placement database seal is invalid"
+                    )
+            else:
+                database_path = _validate_atomic_placement_descriptor(
+                    path, descriptor
+                )
+            assert isinstance(descriptor, Mapping)
+            self.descriptor = descriptor
+            database = sqlite3.connect(
+                f"file:{database_path}?mode=ro&immutable=1", uri=True
+            )
+            self.database = database
+            header = dict(selector)
+            header.pop("cluster_storage", None)
+            _validate_placement_database_contract(
+                database, descriptor=descriptor, header=header,
+                legacy=self.legacy,
+            )
+        except BaseException:
+            self.close()
+            raise
+
+    def __getitem__(self, key: str) -> Any:
+        return self.selector[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.selector)
+
+    def __len__(self) -> int:
+        return len(self.selector)
+
+    def iter_clusters(self) -> Iterator[Dict[str, Any]]:
+        if self.closed:
+            raise ValidationError("OpenPARF atomic placement view is closed")
+        if self.inline is not None:
+            for cluster in self.inline:
+                if not isinstance(cluster, Mapping):
+                    raise ValidationError(
+                        "OpenPARF atomic placement cluster is invalid"
+                    )
+                yield dict(cluster)
+            return
+        assert self.database is not None and self.descriptor is not None
+        yield from _iter_placement_database_clusters(
+            self.database, self.descriptor
+        )
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        if self.database is not None:
+            self.database.close()
+            self.database = None
+        self.lease.close()
+
+    def __enter__(self) -> "XilinxOpenparfAtomicPlacementView":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        if hasattr(self, "closed"):
+            self.close()
+
+
+def open_xilinx_openparf_atomic_placement(
+    path: Path, *, allow_legacy: bool = False,
+) -> XilinxOpenparfAtomicPlacementView:
+    return XilinxOpenparfAtomicPlacementView(path, allow_legacy=allow_legacy)
 
 
 def iter_xilinx_openparf_atomic_placement_clusters(
-    path: Path, certificate: Mapping[str, Any]
+    path: Path, certificate: Mapping[str, Any], *, allow_legacy: bool = False,
 ) -> Iterator[Dict[str, Any]]:
     """Stream certified clusters from the normalized placement sidecar.
 
@@ -913,108 +1502,17 @@ def iter_xilinx_openparf_atomic_placement_clusters(
     the packed and placement trees that it is used to construct.
     """
 
-    inline = certificate.get("clusters")
-    if inline is not None:
-        if not isinstance(inline, list) or not inline:
-            raise ValidationError("OpenPARF atomic placement clusters are invalid")
-        for cluster in inline:
-            if not isinstance(cluster, Mapping):
-                raise ValidationError(
-                    "OpenPARF atomic placement cluster is invalid"
-                )
-            yield dict(cluster)
-        return
-    descriptor = certificate.get("cluster_storage")
-    if (
-        not isinstance(descriptor, Mapping)
-        or descriptor.get("schema")
-        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
-        or not isinstance(descriptor.get("file"), str)
-        or Path(descriptor["file"]).name != descriptor["file"]
-        or not isinstance(descriptor.get("clusters"), int)
-        or not isinstance(descriptor.get("assignments"), int)
-        or descriptor["clusters"] <= 0
-        or descriptor["assignments"] <= 0
-    ):
-        raise ValidationError(
-            "OpenPARF atomic placement storage descriptor is invalid"
-        )
-    database_path = path.parent / descriptor["file"]
-    if (
-        not database_path.is_file()
-        or database_path.stat().st_size != descriptor.get("bytes")
-        or _sha256(database_path) != descriptor.get("sha256")
-    ):
-        raise ValidationError("OpenPARF atomic placement database seal is invalid")
-    uri = f"file:{database_path.resolve()}?mode=ro&immutable=1"
-    cluster_total = 0
-    assignment_total = 0
-    with sqlite3.connect(uri, uri=True) as database:
-        metadata = dict(database.execute("SELECT key, value FROM metadata"))
-        if metadata != {
-            "schema": OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
-            "clusters": str(descriptor["clusters"]),
-            "assignments": str(descriptor["assignments"]),
-        }:
+    view = open_xilinx_openparf_atomic_placement(
+        path, allow_legacy=allow_legacy
+    )
+    try:
+        if dict(view) != dict(certificate):
             raise ValidationError(
-                "OpenPARF atomic placement database metadata is invalid"
+                "OpenPARF atomic placement selector changed before leased read"
             )
-        rows = database.execute(
-            "SELECT c.cluster_index,c.cluster,c.site,c.site_type,c.x,c.y,"
-            "a.assignment_index,a.instance,a.cell_type,a.bel,a.physical_site,"
-            "a.placement_mode,a.source_cluster,a.bram_tile_group "
-            "FROM clusters c LEFT JOIN assignments a "
-            "ON a.cluster_index=c.cluster_index "
-            "ORDER BY c.cluster_index,a.assignment_index"
-        )
-        current_index = None
-        current: Optional[Dict[str, Any]] = None
-        expected_assignment_index = 0
-        for row in rows:
-            if row[0] != current_index:
-                if current is not None:
-                    if not current["assignments"]:
-                        raise ValidationError(
-                            "OpenPARF atomic placement database has an empty cluster"
-                        )
-                    yield current
-                current_index = row[0]
-                current = {
-                    "cluster": row[1], "site": row[2],
-                    "site_type": row[3], "x": row[4], "y": row[5],
-                    "assignments": [],
-                }
-                cluster_total += 1
-                expected_assignment_index = 0
-            if current is None or row[6] is None:
-                continue
-            if row[6] != expected_assignment_index:
-                raise ValidationError(
-                    "OpenPARF atomic placement assignment ordering is invalid"
-                )
-            expected_assignment_index += 1
-            current["assignments"].append({
-                "instance": row[7], "cell_type": row[8], "bel": row[9],
-                "physical_site": row[10], "placement_mode": row[11],
-                "source_cluster": row[12],
-                "bram_tile_group": (
-                    json.loads(row[13]) if row[13] is not None else None
-                ),
-            })
-            assignment_total += 1
-        if current is not None:
-            if not current["assignments"]:
-                raise ValidationError(
-                    "OpenPARF atomic placement database has an empty cluster"
-                )
-            yield current
-    if (
-        cluster_total != descriptor["clusters"]
-        or assignment_total != descriptor["assignments"]
-    ):
-        raise ValidationError(
-            "OpenPARF atomic placement database coverage is invalid"
-        )
+        yield from view.iter_clusters()
+    finally:
+        view.close()
 
 
 def _write_site_database(
@@ -4309,12 +4807,19 @@ def validate_xilinx_openparf_atomic_placement(
     mapped_value: Optional[Mapping[str, Any]] = None,
     architecture: Optional[ArchitectureDB] = None,
     packed_path: Optional[Path] = None,
+    materialize_result: bool = True,
+    certificate_metadata: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Validate and aggregate native atom placement without fallback."""
 
     mapped_digest = _sha256(mapped_path)
     packed_digest = _sha256(packed_path) if packed_path is not None else None
     architecture_digest = _sha256(architecture_path)
+    if (native_constraints_path is None) != (provider_manifest_path is None):
+        raise ValidationError(
+            "OpenPARF placement validation requires both native constraints "
+            "and provider manifest"
+        )
     name_map = read_xilinx_openparf_atomic_name_map(
         name_map_path,
         mapped_sha256=mapped_digest,
@@ -4326,6 +4831,7 @@ def validate_xilinx_openparf_atomic_placement(
         ArchitectureDB.load(architecture_path)
         if architecture is None else architecture
     )
+    certificate_builder: Optional[_AtomicPlacementCertificateBuilder] = None
     try:
         if name_map.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA:
             raise ValidationError("OpenPARF atomic name map is invalid")
@@ -4805,7 +5311,9 @@ def validate_xilinx_openparf_atomic_placement(
                         )
                     checked_carry_edges += 1
 
-        clusters = []
+        clusters: list[Dict[str, Any]] = []
+        if output_path is not None and not materialize_result:
+            certificate_builder = _AtomicPlacementCertificateBuilder(output_path)
         for site_name, items in placement_index.iter_site_groups():
             if sum(item["resource"] == "LUT" for item in items) > 8:
                 raise ValidationError(f"site {site_name!r} exceeds physical LUT capacity")
@@ -4856,7 +5364,7 @@ def validate_xilinx_openparf_atomic_placement(
                         f"site {site_name!r} violates native FF control-set legality"
                     )
             site = architecture.site_named(site_name)
-            clusters.append({
+            cluster = {
                 "cluster": f"openparf:{site_name}", "site": site_name,
                 "site_type": site["type"], "x": site["x"], "y": site["y"],
                 "assignments": [
@@ -4870,7 +5378,11 @@ def validate_xilinx_openparf_atomic_placement(
                     }
                     for item in sorted(items, key=lambda value: value["instance"])
                 ],
-            })
+            }
+            if certificate_builder is not None:
+                certificate_builder.append(cluster)
+            else:
+                clusters.append(cluster)
         atom_count, resource_counts = placement_index.summary()
         result = {
             "schema": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
@@ -4883,9 +5395,12 @@ def validate_xilinx_openparf_atomic_placement(
                 "mapped_sha256": _sha256(mapped_path),
                 "architecture_sha256": _sha256(architecture_path),
             },
-            "clusters": clusters,
             "summary": {
-                "atoms": atom_count, "occupied_sites": len(clusters),
+                "atoms": atom_count,
+                "occupied_sites": (
+                    certificate_builder.cluster_count
+                    if certificate_builder is not None else len(clusters)
+                ),
                 "luts": resource_counts["LUT"],
                 "ffs": resource_counts["FF"],
                 "hard_resources": dict(sorted(
@@ -4898,22 +5413,53 @@ def validate_xilinx_openparf_atomic_placement(
         carry8_macro_count = resource_counts["CARRY8"]
         if carry8_macro_count:
             result["summary"]["carry8_macros"] = carry8_macro_count
+        if packed_digest is not None:
+            result["source"]["packed_sha256"] = packed_digest
+        if native_constraints_path is not None:
+            assert provider_manifest_path is not None
+            result["source"].update({
+                "native_constraints_sha256": _sha256(native_constraints_path),
+                "provider_manifest_sha256": _sha256(provider_manifest_path),
+            })
         if checked_carry_edges:
             result["summary"]["native_carry_edges"] = checked_carry_edges
         if hardblock_groups:
             if native_hardblock_groups or carry_cascade_chains:
                 assert native_constraints_path is not None
                 assert provider_manifest_path is not None
-                result["source"].update({
-                    "native_constraints_sha256": _sha256(native_constraints_path),
-                    "provider_manifest_sha256": _sha256(provider_manifest_path),
-                })
             if checked_native_edges:
                 result["summary"]["native_hardblock_edges"] = checked_native_edges
-        if output_path is not None:
-            write_xilinx_openparf_atomic_placement_certificate(output_path, result)
+        if certificate_metadata is not None:
+            if (
+                not isinstance(certificate_metadata, Mapping)
+                or set(certificate_metadata)
+                - {
+                    "ff_control_legalization", "native_convergence",
+                    "runtime_validation",
+                }
+                or (
+                    "runtime_validation" in certificate_metadata
+                    and certificate_metadata["runtime_validation"]
+                    not in {"unverified", "native-openparf"}
+                )
+            ):
+                raise ValidationError(
+                    "OpenPARF placement-certificate metadata is invalid"
+                )
+            result.update(certificate_metadata)
+        if certificate_builder is not None:
+            result = certificate_builder.publish(result)
+            certificate_builder = None
+        else:
+            result["clusters"] = clusters
+            if output_path is not None:
+                write_xilinx_openparf_atomic_placement_certificate(
+                    output_path, result
+                )
         return result
     finally:
+        if certificate_builder is not None:
+            certificate_builder.close()
         placement_index.close()
 
 
@@ -4967,23 +5513,12 @@ def run_xilinx_openparf_atomic_qualification(
         packed_path=packed_path,
     )
     checkpoint_path = _write_openparf_result_checkpoint(output_dir, placement)
-    certificate = validate_xilinx_openparf_atomic_placement(
-        placement, output_dir / "name_map.json", mapped_path,
-        architecture_path, output_dir / "placement-certificate.json",
-        native_constraints_path=native_constraints_path,
-        provider_manifest_path=provider_manifest_path,
-        mapped_value=mapped_value,
-        architecture=architecture,
-        packed_path=packed_path,
-    )
-    serialized_certificate = read_json(
-        output_dir / "placement-certificate.json"
-    )
-    certificate["ff_control_legalization"] = ff_control_legalization
-    serialized_certificate["ff_control_legalization"] = ff_control_legalization
+    certificate_metadata: Dict[str, Any] = {
+        "ff_control_legalization": ff_control_legalization,
+    }
     convergence_path = native_metrics_path(placement)
     if convergence_path.is_file():
-        convergence = {
+        certificate_metadata["native_convergence"] = {
             "artifact": {
                 "path": str(convergence_path),
                 "bytes": convergence_path.stat().st_size,
@@ -4994,13 +5529,6 @@ def run_xilinx_openparf_atomic_qualification(
                 allow_detailed_legalization_handoff=True,
             ),
         }
-        certificate["native_convergence"] = convergence
-        serialized_certificate["native_convergence"] = convergence
-        write_json(
-            output_dir / "placement-certificate.json",
-            serialized_certificate,
-            compact=True,
-        )
     installation = Path(str(runtime.get("installation", "")))
     python = Path(str(runtime.get("python", "")))
     if (
@@ -5008,13 +5536,18 @@ def run_xilinx_openparf_atomic_qualification(
         and (installation / "openparf").is_dir()
         and python.is_file()
     ):
-        certificate["runtime_validation"] = "native-openparf"
-        serialized_certificate["runtime_validation"] = "native-openparf"
-        write_json(
-            output_dir / "placement-certificate.json",
-            serialized_certificate,
-            compact=True,
-        )
+        certificate_metadata["runtime_validation"] = "native-openparf"
+    certificate = validate_xilinx_openparf_atomic_placement(
+        placement, output_dir / "name_map.json", mapped_path,
+        architecture_path, output_dir / "placement-certificate.json",
+        native_constraints_path=native_constraints_path,
+        provider_manifest_path=provider_manifest_path,
+        mapped_value=mapped_value,
+        architecture=architecture,
+        packed_path=packed_path,
+        materialize_result=False,
+        certificate_metadata=certificate_metadata,
+    )
     return {
         "status": "pass", "runtime": runtime,
         "manifest": manifest, "placement": str(placement),
@@ -5066,21 +5599,13 @@ def run_xilinx_openparf_hardblock_qualification(
         output_dir / "ff-control-set-legalization.json",
         packed_path=packed_path,
     )
-    certificate = validate_xilinx_openparf_atomic_placement(
-        placement, output_dir / "name_map.json", mapped_path,
-        architecture_path, output_dir / "placement-certificate.json",
-        native_constraints_path=native_constraints_path,
-        provider_manifest_path=provider_manifest_path,
-        packed_path=packed_path,
-    )
-    serialized_certificate = read_json(
-        output_dir / "placement-certificate.json"
-    )
-    certificate["ff_control_legalization"] = ff_control_legalization
-    serialized_certificate["ff_control_legalization"] = ff_control_legalization
+    certificate_metadata = {
+        "ff_control_legalization": ff_control_legalization,
+        "runtime_validation": "native-openparf",
+    }
     convergence_path = native_metrics_path(placement)
     if convergence_path.is_file():
-        convergence = {
+        certificate_metadata["native_convergence"] = {
             "artifact": {
                 "path": str(convergence_path),
                 "bytes": convergence_path.stat().st_size,
@@ -5091,14 +5616,14 @@ def run_xilinx_openparf_hardblock_qualification(
                 allow_detailed_legalization_handoff=True,
             ),
         }
-        certificate["native_convergence"] = convergence
-        serialized_certificate["native_convergence"] = convergence
-    certificate["runtime_validation"] = "native-openparf"
-    serialized_certificate["runtime_validation"] = "native-openparf"
-    write_json(
-        output_dir / "placement-certificate.json",
-        serialized_certificate,
-        compact=True,
+    certificate = validate_xilinx_openparf_atomic_placement(
+        placement, output_dir / "name_map.json", mapped_path,
+        architecture_path, output_dir / "placement-certificate.json",
+        native_constraints_path=native_constraints_path,
+        provider_manifest_path=provider_manifest_path,
+        packed_path=packed_path,
+        materialize_result=False,
+        certificate_metadata=certificate_metadata,
     )
     return {
         "status": "pass", "runtime": runtime, "manifest": manifest,

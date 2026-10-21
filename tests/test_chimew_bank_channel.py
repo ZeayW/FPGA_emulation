@@ -1,8 +1,10 @@
 import copy
 import hashlib
+import io
 import json
 import shutil
 import sqlite3
+import struct
 import subprocess
 import tempfile
 import threading
@@ -75,6 +77,9 @@ class ChimewBankChannelTest(unittest.TestCase):
                 compiler,
                 "-std=c++17",
                 "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
                 "-pthread",
                 str(ROOT / "src/native/chimew_bank_channel_assigner.cpp"),
                 "-o",
@@ -980,17 +985,176 @@ class ChimewBankChannelTest(unittest.TestCase):
             output_path = root / "output.txt"
             bank_channel_module._serialize(problem, input_path)
             subprocess.run(
-                [str(self.executable), str(input_path), str(output_path)],
+                [
+                    str(self.executable),
+                    "--legacy-text",
+                    str(input_path),
+                    str(output_path),
+                ],
                 check=True,
             )
             streamed = subprocess.run(
-                [str(self.executable), str(input_path), "-"],
+                [str(self.executable), "--legacy-text", str(input_path), "-"],
                 check=True,
                 text=True,
                 capture_output=True,
             )
             self.assertEqual(streamed.stderr, "")
             self.assertEqual(streamed.stdout, output_path.read_text())
+
+    def test_typed_native_stream_matches_explicit_legacy_protocol(self) -> None:
+        problem = validate_chimew_bank_channel_input(self.document)
+        logical_sha256 = canonical_bank_channel_input_sha256(self.document)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legacy_input = root / "legacy.txt"
+            typed_input = root / "typed.bin"
+            legacy_output = root / "legacy.out"
+            typed_output = root / "typed.out"
+            bank_channel_module._serialize(problem, legacy_input)
+            with typed_input.open("wb") as stream:
+                bank_channel_module._serialize_typed(
+                    problem, stream, logical_sha256
+                )
+            subprocess.run(
+                [
+                    str(self.executable),
+                    "--legacy-text",
+                    str(legacy_input),
+                    str(legacy_output),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    str(self.executable),
+                    "--typed-input",
+                    str(typed_input),
+                    str(typed_output),
+                ],
+                check=True,
+            )
+            self.assertEqual(typed_output.read_bytes(), legacy_output.read_bytes())
+            self.assertGreater(typed_input.stat().st_size, 0)
+
+    def test_production_native_invocation_does_not_write_legacy_input(self) -> None:
+        with mock.patch.object(
+            bank_channel_module,
+            "_serialize",
+            side_effect=AssertionError("legacy text producer was called"),
+        ):
+            result = evaluate_chimew_bank_channel_assignment(
+                self.document, executable=str(self.executable)
+            )
+        self.assertEqual(result["metrics"]["certificate_disagreements"], 0)
+
+    def test_typed_input_rejects_truncation_corruption_and_mixed_seals(self) -> None:
+        problem = validate_chimew_bank_channel_input(self.document)
+        digest = canonical_bank_channel_input_sha256(self.document)
+        stream = io.BytesIO()
+        bank_channel_module._serialize_typed(problem, stream, digest)
+        valid = stream.getvalue()
+        changed = copy.deepcopy(self.document)
+        changed["design"] = "different-generation"
+        other_digest = canonical_bank_channel_input_sha256(changed)
+        variants = {
+            "truncated": valid[:-1],
+            # The cost scale is a semantically active header field at bytes
+            # 56..63.  Keep it finite/positive so only the stream seal rejects
+            # the mutation.
+            "mutated-cost-scale": (
+                valid[:56] + struct.pack("<d", 2000.0) + valid[64:]
+            ),
+            "bad-record-tag": valid[:96] + b"X" + valid[97:],
+            "mixed-source-seal": valid[:-32] + bytes.fromhex(other_digest),
+            "trailing-byte": valid + b"X",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, payload in variants.items():
+                with self.subTest(name=name):
+                    input_path = root / f"{name}.bin"
+                    input_path.write_bytes(payload)
+                    completed = subprocess.run(
+                        [
+                            str(self.executable),
+                            "--typed-input",
+                            str(input_path),
+                            "-",
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn("typed input", completed.stderr)
+                    if name == "mutated-cost-scale":
+                        self.assertIn("seal disagrees", completed.stderr)
+
+    def test_typed_input_rejects_oversize_header_counts(self) -> None:
+        problem = validate_chimew_bank_channel_input(self.document)
+        digest = canonical_bank_channel_input_sha256(self.document)
+        stream = io.BytesIO()
+        bank_channel_module._serialize_typed(problem, stream, digest)
+        valid = stream.getvalue()
+        # bank_count begins at byte 16.  UINT64_MAX is rejected before any
+        # allocation or record parsing, regardless of the now-stale seal.
+        oversized = valid[:16] + struct.pack("<Q", (1 << 64) - 1) + valid[24:]
+        with tempfile.TemporaryDirectory() as temporary:
+            input_path = Path(temporary) / "oversize.bin"
+            input_path.write_bytes(oversized)
+            completed = subprocess.run(
+                [str(self.executable), "--typed-input", str(input_path), "-"],
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("typed input bank count", completed.stderr)
+
+    def test_early_native_exit_preserves_status_and_stderr(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["groups"][0]["members"][0]["fanins"] = [
+            {"x": 100.0, "y": float(index)} for index in range(100_000)
+        ]
+        document["metrics"]["fanins"] = 100_004
+        problem = validate_chimew_bank_channel_input(document)
+        digest = canonical_bank_channel_input_sha256(document)
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "reject-input"
+            executable.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "sys.stderr.write('intentional typed-input rejection\\n')\n"
+                "raise SystemExit(23)\n",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            with self.assertRaisesRegex(
+                EmuFlowError,
+                "exit status 23: intentional typed-input rejection",
+            ):
+                bank_channel_module._run_native(
+                    problem, str(executable), logical_sha256=digest
+                )
+
+    def test_typed_input_mode_rejects_legacy_text_and_vice_versa(self) -> None:
+        problem = validate_chimew_bank_channel_input(self.document)
+        digest = canonical_bank_channel_input_sha256(self.document)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legacy = root / "legacy.txt"
+            typed = root / "typed.bin"
+            bank_channel_module._serialize(problem, legacy)
+            with typed.open("wb") as stream:
+                bank_channel_module._serialize_typed(problem, stream, digest)
+            for command in (
+                [str(self.executable), "--typed-input", str(legacy), "-"],
+                [str(self.executable), "--legacy-text", str(typed), "-"],
+                [str(self.executable), str(legacy), "-"],
+            ):
+                completed = subprocess.run(
+                    command, capture_output=True, text=True
+                )
+                self.assertNotEqual(completed.returncode, 0)
 
     def test_streamed_certificate_protocol_rejects_out_of_order_sections(self) -> None:
         problem = validate_chimew_bank_channel_input(self.document)
@@ -1000,7 +1164,12 @@ class ChimewBankChannelTest(unittest.TestCase):
             output_path = root / "output.txt"
             bank_channel_module._serialize(problem, input_path)
             subprocess.run(
-                [str(self.executable), str(input_path), str(output_path)],
+                [
+                    str(self.executable),
+                    "--legacy-text",
+                    str(input_path),
+                    str(output_path),
+                ],
                 check=True,
             )
             lines = output_path.read_text(encoding="utf-8").splitlines()
@@ -1042,7 +1211,12 @@ class ChimewBankChannelTest(unittest.TestCase):
             output_path = root / "output.txt"
             bank_channel_module._serialize(problem, input_path)
             subprocess.run(
-                [str(self.executable), str(input_path), str(output_path)],
+                [
+                    str(self.executable),
+                    "--legacy-text",
+                    str(input_path),
+                    str(output_path),
+                ],
                 check=True,
             )
             lines = output_path.read_text(encoding="utf-8").splitlines()

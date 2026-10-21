@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import emuflow.archive as archive_module
 from emuflow.archive import (
     cleanup_validation_source,
     create_validation_archive,
@@ -13,6 +14,9 @@ from emuflow.cli import main
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.xilinx_openparf_atomic import (
+    write_xilinx_openparf_atomic_placement_certificate,
+)
 from tests.native_build import tlr_router
 
 
@@ -41,6 +45,80 @@ def _run_small_flow(output: Path) -> None:
 
 
 class ValidationArchiveTest(unittest.TestCase):
+    def test_archive_rejects_ambiguous_sidecar_declarations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            flow = Path(temporary_directory).resolve()
+            store = flow / "certificate.deadbeef.sqlite"
+            store.write_bytes(b"typed store")
+            digest = hashlib.sha256(store.read_bytes()).hexdigest()
+            selector = flow / "placement-certificate.json"
+            selector.write_text(json.dumps({
+                "artifact": store.name,
+                "store_sha256": digest,
+                "store_bytes": store.stat().st_size,
+                "cluster_storage": {
+                    "file": "decoy.sqlite",
+                    "sha256": "0" * 64,
+                    "bytes": 0,
+                },
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "ambiguous"):
+                archive_module._selector_sidecar(
+                    flow, Path(selector.name)
+                )
+
+    def test_archive_keeps_placement_certificate_selector_and_store_atomic(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            flow = root / "flow"
+            archive = root / "archive"
+            _run_small_flow(flow)
+            selector_path = flow / "physical" / "placement-certificate.json"
+            certificate = {
+                "schema": "emuflow.openparf-atomic-placement/v2",
+                "clusters": [{
+                    "cluster": "openparf:SLICE_X0Y0",
+                    "site": "SLICE_X0Y0",
+                    "site_type": "SLICEL",
+                    "x": 0,
+                    "y": 0,
+                    "assignments": [{
+                        "instance": "u0",
+                        "cell_type": "LUT6",
+                        "bel": "A6LUT",
+                        "physical_site": "SLICE_X0Y0",
+                        "placement_mode": "SLICEL",
+                        "source_cluster": "atomic-source:u0",
+                        "bram_tile_group": None,
+                    }],
+                }],
+            }
+            selector = write_xilinx_openparf_atomic_placement_certificate(
+                selector_path, certificate
+            )
+            store_path = selector_path.with_name(
+                selector["cluster_storage"]["file"]
+            )
+            threshold = (
+                selector_path.stat().st_size + store_path.stat().st_size
+            ) // 2
+            create_validation_archive(
+                flow, archive, run_id="atomic-placement-certificate",
+                max_copy_bytes=threshold,
+            )
+            manifest = read_json(archive / "archive-manifest.json")
+            records = {
+                item["source_path"]: item for item in manifest["files"]
+            }
+            selector_record = records[
+                "physical/placement-certificate.json"
+            ]
+            store_record = records[f"physical/{store_path.name}"]
+            self.assertEqual(selector_record["retention"], "hash-only")
+            self.assertEqual(store_record["retention"], "hash-only")
+
     def test_archive_keeps_selector_sidecar_retention_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

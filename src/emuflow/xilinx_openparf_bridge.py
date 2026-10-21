@@ -27,7 +27,7 @@ from .xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_PROVIDER,
     OPENPARF_ATOMIC_SOURCE_SCHEMA,
-    iter_xilinx_openparf_atomic_placement_clusters,
+    open_xilinx_openparf_atomic_placement,
 )
 from .xilinx_openparf_source_storage import (
     OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
@@ -1182,6 +1182,11 @@ def materialize_xilinx_openparf_atomic_contract(
     certificate = read_json(atomic_placement_path)
     if not isinstance(mapped, Mapping) or not isinstance(certificate, Mapping):
         raise ValidationError("OpenPARF bridge inputs are invalid")
+    if physical_handoff_path is not None and "clusters" in certificate:
+        raise ValidationError(
+            "production OpenPARF bridge requires the typed placement-certificate "
+            "store; inline legacy clusters require compatibility export"
+        )
     architecture = (
         ArchitectureDB.load(architecture_path)
         if architecture is None else architecture
@@ -1228,9 +1233,13 @@ def materialize_xilinx_openparf_atomic_contract(
         or not isinstance(source.get("name_map_sha256"), str)
     ):
         raise ValidationError("OpenPARF atomic placement source identity is invalid")
-    certificate_clusters = iter_xilinx_openparf_atomic_placement_clusters(
-        atomic_placement_path, certificate
-    )
+    if source_packed_path is not None and (
+        (physical_handoff_path is not None or "packed_sha256" in source)
+        and source.get("packed_sha256") != _sha256(source_packed_path)
+    ):
+        raise ValidationError(
+            "OpenPARF atomic placement packed-source identity is invalid"
+        )
     has_native_seal = any(
         key in source
         for key in ("native_constraints_sha256", "provider_manifest_sha256")
@@ -1267,6 +1276,24 @@ def materialize_xilinx_openparf_atomic_contract(
         XilinxPhysicalHandoffBuilder(physical_handoff_path)
         if physical_handoff_path is not None else None
     )
+    certificate_view = None
+    try:
+        certificate_view = open_xilinx_openparf_atomic_placement(
+            atomic_placement_path,
+            allow_legacy=physical_handoff_path is None,
+        )
+        if dict(certificate_view) != dict(certificate):
+            raise ValidationError(
+                "OpenPARF atomic placement selector changed before leased read"
+            )
+    except BaseException:
+        if certificate_view is not None:
+            certificate_view.close()
+        if handoff_builder is not None:
+            handoff_builder.close()
+        raise
+    assert certificate_view is not None
+    certificate_clusters = certificate_view.iter_clusters()
     legalization_clusters: list[Dict[str, Any]] = []
 
     def stream_physical_cluster(cluster: Mapping[str, Any]) -> None:
@@ -1348,10 +1375,20 @@ def materialize_xilinx_openparf_atomic_contract(
         local_summary = _local_utilization_summary(
             architecture, certificate_statistics["occupied_local"]
         )
+        cluster_storage = certificate.get("cluster_storage")
+        certificate_database_bytes = (
+            int(cluster_storage["bytes"])
+            if isinstance(cluster_storage, Mapping)
+            and isinstance(cluster_storage.get("bytes"), int)
+            and not isinstance(cluster_storage.get("bytes"), bool)
+            else 0
+        )
     except BaseException:
         if handoff_builder is not None:
             handoff_builder.close()
         raise
+    finally:
+        certificate_view.close()
 
     packed_clusters = (
         _BridgeClusterSequence(clusters, placement=False)
@@ -1577,16 +1614,6 @@ def materialize_xilinx_openparf_atomic_contract(
         placement_value_sink.update(published_placement)
 
     publication_validation_seconds = time.perf_counter() - publication_started
-    cluster_storage = certificate.get("cluster_storage")
-    certificate_database_bytes = (
-        (
-            atomic_placement_path.parent / cluster_storage["file"]
-        ).stat().st_size
-        if isinstance(cluster_storage, Mapping)
-        and isinstance(cluster_storage.get("file"), str)
-        else 0
-    )
-
     return {
         "schema": OPENPARF_ATOMIC_BRIDGE_REPORT_SCHEMA,
         "status": "pass", "top": selected_top,
