@@ -244,7 +244,7 @@ def write_xilinx_physical_handoff(
              ("placement", _json(placement_document))),
         )
         assignment_count = 0
-        seen_placement_ids = set()
+        seen_placement_ids = set() if placement_by_id is not None else None
         for cluster_ordinal, packed_cluster in enumerate(packed_clusters):
             if not isinstance(packed_cluster, Mapping):
                 raise ValidationError("Xilinx physical handoff packing cluster is invalid")
@@ -256,7 +256,8 @@ def write_xilinx_physical_handoff(
                 placed = placement_by_id.get(cluster_id)
             if not isinstance(cluster_id, str) or not isinstance(placed, Mapping):
                 raise ValidationError("Xilinx physical handoff cluster coverage disagrees")
-            seen_placement_ids.add(cluster_id)
+            if seen_placement_ids is not None:
+                seen_placement_ids.add(cluster_id)
             packed_assignments = packed_cluster.get("assignments")
             placed_assignments = placed.get("assignments")
             if not isinstance(packed_assignments, Sequence) or not isinstance(
