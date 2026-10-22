@@ -23,6 +23,7 @@ from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
 from emuflow.io import read_json, write_json
 from emuflow.lowering import (
+    _LoweringOverlaySpool,
     run_placement_ir_lowering_from_split,
     run_placement_ir_lowering_from_value,
 )
@@ -823,6 +824,54 @@ class Phase6Test(unittest.TestCase):
                 )
             self.assertEqual(summary["status"], "pass")
             self.assertEqual(summary["source_instances"], 8)
+
+    def test_lowering_overlay_spool_bounds_batches_and_preserves_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            with _LoweringOverlaySpool(root) as spool:
+                spool.add_endpoints(
+                    "net0",
+                    1,
+                    2,
+                    (
+                        {
+                            "instance": f"u{index}", "port": "I0", "bit": 0,
+                            "tag": index,
+                        }
+                        for index in range(10_000)
+                    ),
+                )
+                self.assertLess(len(spool._added_batch), 4096)
+                spool.add_port_endpoints(
+                    "clock", 0,
+                    ({"instance": "u0", "port": "C", "bit": 0},),
+                )
+                spool.consume("transport0")
+                spool.consume("transport1")
+                spool.preserve("transport1")
+                spool.consume_interface("transport2")
+                spool.preserve("transport2")
+                spool.consume_interface("transport3")
+                spool.recompute_fanout("net0")
+                spool.expect_source("net0")
+                spool.finish_consumed()
+                rows = list(spool.added_endpoints())
+                self.assertEqual(len(rows), 10_000)
+                self.assertEqual(rows[0][:4], ("net0", 1, 2, 0))
+                self.assertEqual(rows[-1][:4], ("net0", 1, 2, 9_999))
+                self.assertEqual(
+                    list(spool.identities("consumed_nets")),
+                    ["transport0", "transport1", "transport3"],
+                )
+                self.assertEqual(
+                    list(spool.identities("fanout_nets")), ["net0"]
+                )
+                self.assertEqual(
+                    list(spool.identities("source_nets")), ["net0"]
+                )
+                self.assertEqual(len(list(spool.port_additions())), 1)
+                spool_path = spool.path
+            self.assertFalse(spool_path.exists())
 
     def test_large_sqlite_phase6_never_enters_python_graph_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

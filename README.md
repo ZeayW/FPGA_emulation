@@ -676,9 +676,16 @@ directly instead of expanding it through `read_json`.
 Phase 7 transport synthesis no longer writes `transport-synthesized.json` or
 loads a complete synthesized transport `EmuIR` into Python. Generic Yosys JSON
 is piped directly into the indexed importer. Placement lowering opens that
-compact store read-only, resolves only required interface nets, and uses one
-SQLite `ATTACH` transaction to copy, namespace and filter all remaining
-transport cells, nets, aliases and endpoints into `placement.emuir.sqlite`.
+compact store read-only and resolves only required interface nets. Transport
+drivers, sinks, shared-port additions, consumed-net identities and fanout
+requests are appended to a bounded-batch temporary relation; the placement
+writer consumes ordered cursors from it while one SQLite `ATTACH` transaction
+copies, namespaces and filters all remaining transport cells, nets, aliases
+and endpoints into `placement.emuir.sqlite`. It no longer retains the former
+endpoint dictionaries plus a second flattened addition list. On a synthetic
+100,000-signal/300,000-overlay-row construction and full traversal, process
+peak RSS fell from 245.22 MB to 39.09 MB while wall time changed from 0.411 to
+1.021 seconds. This is isolated adapter evidence, not NVDLA qualification.
 The legacy file-based generic Yosys and logical lowering APIs remain available
 for compatibility and differential tests.
 
