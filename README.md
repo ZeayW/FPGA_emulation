@@ -173,8 +173,8 @@ configured exhaustive behavior; all capacity and lexicographic acceptance
 checks remain unchanged.
 
 Thin versioned runtime deployments rebuild the native Static Exact analyzer
-alongside the partition, routing, TDM ratio, timing-DAG, concrete-slot, and
-balance tools. Large-design Phase 3
+and exact scheduler alongside the partition, routing, TDM ratio, timing-DAG,
+concrete-slot, and balance tools. Large-design Phase 3
 therefore uses native semantic validation from the same exact source revision
 as the refiner. Deployment selects the native compiler only after compiling and
 running a C++17 `<filesystem>` probe with the same statically linked C++ runtime

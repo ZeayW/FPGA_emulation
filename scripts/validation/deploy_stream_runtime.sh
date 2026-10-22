@@ -89,6 +89,7 @@ for tool in \
   tlr_router \
   patron_refiner \
   static_exact_analyzer \
+  tdm_exact_scheduler \
   tdm_ratio_optimizer \
   tdm_slot_optimizer \
   tdm_timing_dag_optimizer \
@@ -96,7 +97,8 @@ for tool in \
 do
   target="$runtime_dir/bin/emuflow_$tool"
   rm -f "$target"
-  if test "$tool" = static_exact_analyzer; then
+  if test "$tool" = static_exact_analyzer || \
+      test "$tool" = tdm_exact_scheduler; then
     "$selected_cxx" -std=c++17 -O3 -pthread \
       -static-libstdc++ -static-libgcc \
       -I"$source_dir/src/native" \
