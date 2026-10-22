@@ -381,8 +381,16 @@ oracle tests. On a synthetic 50,000-demand output containing 350,000 candidate
 records, the isolated parser's process peak RSS fell from 252,018,688 to
 45,809,664 bytes while wall time changed from 0.606 to 1.148 seconds because
 the compact path performs tree, delay, lock and final-route checks online.
-This is adapter evidence rather than NVDLA qualification. RouteStore
-publication validates the previous selector before writing, restores it on a
+This is adapter evidence rather than NVDLA qualification. The native-only
+demand and timing-path model now uses fixed-width columns plus CSR offsets;
+capacity checks and the native text writer consume typed cursors without
+retaining one dictionary and nested list per demand or path. On 100,000
+two-sink demands plus 100,000 two-demand timing paths, construction and a full
+traversal reduced retained traced allocation from 83,580,870 to 10,741,799
+bytes and process peak RSS from 226,361,344 to 35,667,968 bytes. The packed
+payload was 10,400,016 bytes and the checksum was unchanged; wall time changed
+from 0.247 to 0.431 seconds. This isolates Phase 4 model representation and is
+not NVDLA qualification. RouteStore publication validates the previous selector before writing, restores it on a
 selector or post-publication validation failure, and removes an obsolete
 sidecar only after the new view passes. The selector binds the sidecar filename
 to its store digest. Normal publication does not run `VACUUM`, because the

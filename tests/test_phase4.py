@@ -28,6 +28,8 @@ from emuflow.timing_routing import (
     NATIVE_ROUTER_PROVIDER,
     NATIVE_TIMING_EVALUATED_PROVIDER,
     TLR_PROVIDER,
+    _PackedNativeDemandSequence,
+    _PackedNativePathSequence,
     compress_sta_paths,
     load_sta_paths,
     normalize_sta_paths,
@@ -130,6 +132,53 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_native_route_model_uses_fixed_width_demand_and_path_relations(
+        self,
+    ) -> None:
+        demands = _PackedNativeDemandSequence()
+        paths = _PackedNativePathSequence()
+        for index in range(100_000):
+            demands.append_record(
+                index % 4,
+                ((index + 1) % 4, (index + 2) % 4),
+                index % 64 + 1,
+                -0.5,
+                3.25,
+            )
+            paths.append_record(
+                10.0,
+                -1.0,
+                4.0,
+                (index, (index + 1) % 100_000),
+            )
+        self.assertEqual(
+            demands[99_999],
+            {
+                "index": 99_999,
+                "source": 3,
+                "sinks": [0, 1],
+                "width": 32,
+                "normalized_slack": -0.5,
+                "predicted_delay_ns": 3.25,
+            },
+        )
+        self.assertEqual(
+            paths[99_999],
+            {
+                "index": 99_999,
+                "clock_period_ns": 10.0,
+                "baseline_slack_ns": -1.0,
+                "fixed_delay_ns": 4.0,
+                "demands": [99_999, 0],
+            },
+        )
+        self.assertLess(demands.payload_bytes, 6_500_000)
+        self.assertLess(paths.payload_bytes, 5_000_000)
+        demands.clear()
+        paths.clear()
+        self.assertEqual(len(demands), 0)
+        self.assertEqual(len(paths), 0)
+
     def test_route_store_v1_remains_readable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

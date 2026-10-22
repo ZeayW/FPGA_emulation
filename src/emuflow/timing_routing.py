@@ -6,7 +6,9 @@ import heapq
 import math
 import subprocess
 import tempfile
+from array import array
 from collections import defaultdict, deque
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -738,6 +740,185 @@ def _static_predicted_delay(
     return max(distance[sink] for sink in sinks)
 
 
+class _PackedNativeDemandSequence(list):
+    """Fixed-width native router demands with transient logical projection."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._sources = array("Q")
+        self._sink_offsets = array("Q", [0])
+        self._sinks = array("Q")
+        self._widths = array("Q")
+        self._normalized_slacks = array("d")
+        self._predicted_delays = array("d")
+
+    def append_record(
+        self,
+        source: int,
+        sinks: Sequence[int],
+        width: int,
+        normalized_slack: float,
+        predicted_delay_ns: float,
+    ) -> None:
+        self._sources.append(source)
+        self._sinks.extend(sinks)
+        self._sink_offsets.append(len(self._sinks))
+        self._widths.append(width)
+        self._normalized_slacks.append(normalized_slack)
+        self._predicted_delays.append(predicted_delay_ns)
+
+    def __len__(self) -> int:
+        return len(self._sources)
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        start = self._sink_offsets[index]
+        end = self._sink_offsets[index + 1]
+        return {
+            "index": index,
+            "source": int(self._sources[index]),
+            "sinks": [int(value) for value in self._sinks[start:end]],
+            "width": int(self._widths[index]),
+            "normalized_slack": float(self._normalized_slacks[index]),
+            "predicted_delay_ns": float(self._predicted_delays[index]),
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        return self._record(index)
+
+    def iter_native_records(
+        self,
+    ) -> Iterator[tuple[int, int, array, int, float, float]]:
+        for index in range(len(self)):
+            start = self._sink_offsets[index]
+            end = self._sink_offsets[index + 1]
+            yield (
+                index,
+                int(self._sources[index]),
+                self._sinks[start:end],
+                int(self._widths[index]),
+                float(self._normalized_slacks[index]),
+                float(self._predicted_delays[index]),
+            )
+
+    @property
+    def payload_bytes(self) -> int:
+        return sum(
+            len(values) * values.itemsize
+            for values in (
+                self._sources,
+                self._sink_offsets,
+                self._sinks,
+                self._widths,
+                self._normalized_slacks,
+                self._predicted_delays,
+            )
+        )
+
+    def clear(self) -> None:
+        del self._sources[:]
+        del self._sink_offsets[1:]
+        del self._sinks[:]
+        del self._widths[:]
+        del self._normalized_slacks[:]
+        del self._predicted_delays[:]
+
+
+class _PackedNativePathSequence(list):
+    """Fixed-width native timing paths with CSR demand membership."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._periods = array("d")
+        self._baseline_slacks = array("d")
+        self._fixed_delays = array("d")
+        self._demand_offsets = array("Q", [0])
+        self._demands = array("Q")
+
+    def append_record(
+        self,
+        clock_period_ns: float,
+        baseline_slack_ns: float,
+        fixed_delay_ns: float,
+        demands: Sequence[int],
+    ) -> None:
+        self._periods.append(clock_period_ns)
+        self._baseline_slacks.append(baseline_slack_ns)
+        self._fixed_delays.append(fixed_delay_ns)
+        self._demands.extend(demands)
+        self._demand_offsets.append(len(self._demands))
+
+    def __len__(self) -> int:
+        return len(self._periods)
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        start = self._demand_offsets[index]
+        end = self._demand_offsets[index + 1]
+        return {
+            "index": index,
+            "clock_period_ns": float(self._periods[index]),
+            "baseline_slack_ns": float(self._baseline_slacks[index]),
+            "fixed_delay_ns": float(self._fixed_delays[index]),
+            "demands": [int(value) for value in self._demands[start:end]],
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        return self._record(index)
+
+    def iter_native_records(
+        self,
+    ) -> Iterator[tuple[int, float, float, float, array]]:
+        for index in range(len(self)):
+            start = self._demand_offsets[index]
+            end = self._demand_offsets[index + 1]
+            yield (
+                index,
+                float(self._periods[index]),
+                float(self._baseline_slacks[index]),
+                float(self._fixed_delays[index]),
+                self._demands[start:end],
+            )
+
+    @property
+    def payload_bytes(self) -> int:
+        return sum(
+            len(values) * values.itemsize
+            for values in (
+                self._periods,
+                self._baseline_slacks,
+                self._fixed_delays,
+                self._demand_offsets,
+                self._demands,
+            )
+        )
+
+    def clear(self) -> None:
+        del self._periods[:]
+        del self._baseline_slacks[:]
+        del self._fixed_delays[:]
+        del self._demand_offsets[1:]
+        del self._demands[:]
+
+
 def _prepare_native_model(
     assignment: Mapping[str, Any],
     platform: Platform,
@@ -876,7 +1057,7 @@ def _prepare_native_model(
     for path in normalized_timing["paths"]:
         for net in path["cut_nets"]:
             path_by_net[net].append(path)
-    native_demands = []
+    native_demands = _PackedNativeDemandSequence()
     demand_index = {demand["net"]: index for index, demand in enumerate(demands)}
     static_distance_cache: Dict[str, Dict[str, float]] = {}
     for index, demand in enumerate(demands):
@@ -889,37 +1070,31 @@ def _prepare_native_model(
             if layered_rounds
             else None
         )
-        native_demands.append(
-            {
-                "index": index,
-                "source": node_index[(demand_round, demand["source"])],
-                "sinks": [
-                    node_index[(demand_round, sink)]
-                    for sink in demand["sinks"]
-                ],
-                "width": demand["width_bits"],
-                "normalized_slack": normalized_slack,
-                "predicted_delay_ns": _static_predicted_delay(
-                    demand["source"],
-                    demand["sinks"],
-                    adjacency,
-                    platform,
-                    constraints,
-                    static_distance_cache,
-                ),
-            }
+        native_demands.append_record(
+            node_index[(demand_round, demand["source"])],
+            [
+                node_index[(demand_round, sink)]
+                for sink in demand["sinks"]
+            ],
+            demand["width_bits"],
+            normalized_slack,
+            _static_predicted_delay(
+                demand["source"],
+                demand["sinks"],
+                adjacency,
+                platform,
+                constraints,
+                static_distance_cache,
+            ),
         )
 
-    native_paths = []
-    for index, path in enumerate(normalized_timing["paths"]):
-        native_paths.append(
-            {
-                "index": index,
-                "clock_period_ns": path["clock_period_ns"],
-                "baseline_slack_ns": path["slack_ns"],
-                "fixed_delay_ns": path["fixed_delay_ns"],
-                "demands": [demand_index[net] for net in path["cut_nets"]],
-            }
+    native_paths = _PackedNativePathSequence()
+    for path in normalized_timing["paths"]:
+        native_paths.append_record(
+            path["clock_period_ns"],
+            path["slack_ns"],
+            path["fixed_delay_ns"],
+            [demand_index[net] for net in path["cut_nets"]],
         )
     return nodes, {
         "demands": demands,
@@ -975,11 +1150,28 @@ def _validate_single_node_cut_capacity(
 
     sourced = [0] * len(nodes)
     consumed = [0] * len(nodes)
-    for demand in model["native_demands"]:
-        source = int(demand["source"])
-        width = int(demand["width"])
+    native_demands = model["native_demands"]
+    typed_cursor = getattr(native_demands, "iter_native_records", None)
+    demand_records = (
+        typed_cursor()
+        if callable(typed_cursor)
+        else (
+            (
+                demand["index"],
+                demand["source"],
+                demand["sinks"],
+                demand["width"],
+                demand["normalized_slack"],
+                demand["predicted_delay_ns"],
+            )
+            for demand in native_demands
+        )
+    )
+    for _index, source, sinks, width, _slack, _delay in demand_records:
+        source = int(source)
+        width = int(width)
         sourced[source] += width
-        for sink in set(int(item) for item in demand["sinks"]):
+        for sink in set(int(item) for item in sinks):
             consumed[sink] += width
 
     violations = []
@@ -1059,13 +1251,37 @@ def _write_native_input(
                 f"{arc['beta_ns']:.17g} {int(arc['is_sll'])} "
                 f"{arc['bank_count']} {arc['wires_per_bank']}\n"
             )
-        for demand in model["native_demands"]:
-            sinks = ",".join(str(sink) for sink in demand["sinks"])
+        native_demands = model["native_demands"]
+        typed_demands = getattr(native_demands, "iter_native_records", None)
+        demand_records = (
+            typed_demands()
+            if callable(typed_demands)
+            else (
+                (
+                    demand["index"],
+                    demand["source"],
+                    demand["sinks"],
+                    demand["width"],
+                    demand["normalized_slack"],
+                    demand["predicted_delay_ns"],
+                )
+                for demand in native_demands
+            )
+        )
+        for (
+            demand_index,
+            source,
+            demand_sinks,
+            width,
+            normalized_slack,
+            predicted_delay,
+        ) in demand_records:
+            sinks = ",".join(str(sink) for sink in demand_sinks)
             stream.write(
                 "DEMAND "
-                f"{demand['index']} {demand['source']} {sinks} "
-                f"{demand['width']} {demand['normalized_slack']:.17g} "
-                f"{demand['predicted_delay_ns']:.17g}\n"
+                f"{demand_index} {source} {sinks} "
+                f"{width} {normalized_slack:.17g} "
+                f"{predicted_delay:.17g}\n"
             )
         if feedback_prices is not None:
             for index, capacity_key in enumerate(
@@ -1074,14 +1290,36 @@ def _write_native_input(
                 stream.write(
                     f"PRICE {index} {feedback_prices[capacity_key]:.17g}\n"
                 )
-        for timing_path in model["paths"]:
-            demands = ",".join(str(item) for item in timing_path["demands"])
+        native_paths = model["paths"]
+        typed_paths = getattr(native_paths, "iter_native_records", None)
+        path_records = (
+            typed_paths()
+            if callable(typed_paths)
+            else (
+                (
+                    timing_path["index"],
+                    timing_path["clock_period_ns"],
+                    timing_path["baseline_slack_ns"],
+                    timing_path["fixed_delay_ns"],
+                    timing_path["demands"],
+                )
+                for timing_path in native_paths
+            )
+        )
+        for (
+            path_index,
+            clock_period,
+            baseline_slack,
+            fixed_delay,
+            path_demands,
+        ) in path_records:
+            demands = ",".join(str(item) for item in path_demands)
             stream.write(
                 "PATH "
-                f"{timing_path['index']} "
-                f"{timing_path['clock_period_ns']:.17g} "
-                f"{timing_path['baseline_slack_ns']:.17g} "
-                f"{timing_path['fixed_delay_ns']:.17g} {demands}\n"
+                f"{path_index} "
+                f"{clock_period:.17g} "
+                f"{baseline_slack:.17g} "
+                f"{fixed_delay:.17g} {demands}\n"
             )
 
 
