@@ -111,6 +111,27 @@ do
       "$source_dir/src/native/$tool.cpp" -o "$target"
   fi
 done
+
+# Production adapters prefer the unified sibling whenever it exists.  A thin
+# runtime must therefore rebuild that entry from the same exact source commit;
+# retaining the native base's older emuflow-native while refreshing only the
+# standalone binaries would silently execute stale stage code.
+unified="$runtime_dir/bin/emuflow-native"
+rm -f "$unified"
+"$selected_cxx" -std=c++17 -O3 -pthread \
+  -static-libstdc++ -static-libgcc \
+  -DEMUFLOW_NATIVE_STAGE_LIBRARY=1 \
+  -I"$source_dir/src/native" \
+  "$source_dir/src/native/emuflow_native.cpp" \
+  "$source_dir/src/native/static_exact_analyzer.cpp" \
+  "$source_dir/src/native/tlr_router.cpp" \
+  "$source_dir/src/native/tdm_exact_scheduler.cpp" \
+  "$source_dir/src/native/chimew_bank_channel_assigner.cpp" \
+  "$source_dir/src/native/chimew_rudy.cpp" \
+  "$source_dir/src/native/chimew_signal_grouper.cpp" \
+  "$source_dir/src/native/chimew_position_refiner.cpp" \
+  "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
+  -o "$unified"
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"
 printf '%s\n' "$source_dir/src" > "$runtime_dir/PYTHON_SOURCE_PATH"

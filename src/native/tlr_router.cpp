@@ -1,4 +1,5 @@
 #include "bank_allocation.hpp"
+#include "emuflow_core/native_stages.hpp"
 // SPDX-License-Identifier: Apache-2.0
 //
 // Timing-aware load-balanced die-level routing for EmuFlow.
@@ -2716,6 +2717,14 @@ void usage(const char* executable) {
 
 }  // namespace
 
+void emuflow::native::RouteTlr(const std::string& input_path,
+                               const std::string& output_path) {
+  Router router(read_input(input_path));
+  router.run();
+  router.write_output(output_path);
+}
+
+#if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     usage(argv[0]);
@@ -2726,12 +2735,11 @@ int main(int argc, char** argv) {
     return 2;
   }
   try {
-    Router router(read_input(argv[1]));
-    router.run();
-    router.write_output(argv[2]);
+    emuflow::native::RouteTlr(argv[1], argv[2]);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "emuflow_tlr_router: " << error.what() << '\n';
     return 1;
   }
 }
+#endif

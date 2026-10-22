@@ -41,7 +41,7 @@ from emuflow.system_route_storage import (
     write_system_route_storage,
 )
 from emuflow.yosys import import_yosys_json
-from tests.native_build import tlr_router
+from tests.native_build import emuflow_native, tlr_router
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -310,6 +310,44 @@ class Phase4Test(unittest.TestCase):
         self.assertEqual(checked["status"], "pass")
         self.assertEqual(checked["demands"], 0)
         self.assertEqual(checked["total_link_bit_hops"], 0)
+
+    def test_production_router_uses_unified_entry_without_legacy_binary(
+        self,
+    ) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "unified-entry",
+                ["a", "b"],
+                [_link("ab", "a", "b")],
+            )
+        )
+        assignment = _assignment(platform, [("n0", "a", ["b"])])
+        constraints = normalize_route_constraints(None, platform)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            runtime = Path(temporary_directory)
+            binary = runtime / "bin" / "emuflow-native"
+            binary.parent.mkdir()
+            binary.symlink_to(emuflow_native())
+            with mock.patch.dict(
+                "os.environ",
+                {"EMUFLOW_NATIVE_ROOT": str(runtime)},
+                clear=False,
+            ):
+                routes = route_system_native(
+                    assignment,
+                    platform,
+                    constraints,
+                )
+        self.assertEqual(
+            validate_native_system_routes(
+                assignment, platform, routes
+            )["status"],
+            "pass",
+        )
+        self.assertEqual(
+            routes["routes"][0]["tree_edges"],
+            [{"link": "ab", "from": "a", "to": "b"}],
+        )
 
     def test_native_router_seals_transport_round_capacity(self) -> None:
         platform = Platform.from_dict(

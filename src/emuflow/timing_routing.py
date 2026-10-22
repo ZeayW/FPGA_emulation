@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
-from .native_tools import resolve_native_executable
+from .native_tools import resolve_native_stage_command
 from .platform import Platform
 from .bank_allocation import apply_bank_domain_ratios
 from .routing import (
@@ -1400,7 +1400,12 @@ def route_system_native(
             raise ValidationError(
                 "TDM feedback capacity-domain coverage is not exact"
             )
-    resolved = resolve_native_executable("emuflow_tlr_router", executable)
+    command = resolve_native_stage_command(
+        "emuflow_tlr_router",
+        "phase4",
+        "route",
+        executable,
+    )
     with tempfile.TemporaryDirectory(prefix="emuflow-tlr-") as temporary:
         root = Path(temporary)
         native_input = root / "router.in"
@@ -1415,7 +1420,7 @@ def route_system_native(
             candidate_workers,
         )
         completed = subprocess.run(
-            [resolved, str(native_input), str(native_output)],
+            [*command, str(native_input), str(native_output)],
             capture_output=True,
             text=True,
             check=False,

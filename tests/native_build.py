@@ -248,6 +248,7 @@ def emuflow_native() -> Path:
             "-DEMUFLOW_NATIVE_STAGE_LIBRARY=1",
             str(ROOT / "src/native/emuflow_native.cpp"),
             str(ROOT / "src/native/static_exact_analyzer.cpp"),
+            str(ROOT / "src/native/tlr_router.cpp"),
             str(ROOT / "src/native/tdm_exact_scheduler.cpp"),
             str(ROOT / "src/native/chimew_bank_channel_assigner.cpp"),
             str(ROOT / "src/native/chimew_rudy.cpp"),

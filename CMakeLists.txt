@@ -293,6 +293,7 @@ endif()
 add_library(
   emuflow_native_stages STATIC
   "${CMAKE_SOURCE_DIR}/src/native/static_exact_analyzer.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/tlr_router.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/tdm_exact_scheduler.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/chimew_bank_channel_assigner.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/chimew_rudy.cpp"

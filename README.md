@@ -334,8 +334,8 @@ Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
 publication. The installed `emuflow-native` entry now invokes the real Phase 3
-analyzer, Phase 5 exact scheduler and Phase 6 Chimew signal-grouping,
-position-refinement, RUDY and bank/channel assignment kernels from one linked
+analyzer, Phase 4 TLR router, Phase 5 exact scheduler and Phase 6 Chimew
+signal-grouping, position-refinement, RUDY and bank/channel assignment kernels from one linked
 stage library; production resolves this entry directly, while explicit differential runs retain
 each standalone executable and older installs fall back to them. This is the W0/W7
 foundation rather than a claim that native `compile` is complete; remaining

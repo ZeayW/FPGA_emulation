@@ -128,6 +128,28 @@ class NativeToolsTest(unittest.TestCase):
             "/comparison/openroad",
         )
 
+    def test_thin_runtime_rebuilds_unified_entry_from_exact_source(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "scripts/validation/deploy_stream_runtime.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'unified="$runtime_dir/bin/emuflow-native"', script
+        )
+        self.assertIn("-DEMUFLOW_NATIVE_STAGE_LIBRARY=1", script)
+        for source in (
+            "emuflow_native.cpp",
+            "static_exact_analyzer.cpp",
+            "tlr_router.cpp",
+            "tdm_exact_scheduler.cpp",
+            "chimew_bank_channel_assigner.cpp",
+            "chimew_rudy.cpp",
+            "chimew_signal_grouper.cpp",
+            "chimew_position_refiner.cpp",
+            "emuflow_core/artifact_io.cpp",
+        ):
+            self.assertIn(source, script)
+
     def test_relative_override_is_bound_before_backend_changes_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
