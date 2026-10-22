@@ -772,6 +772,12 @@ def run_phase3(
                     model["nets"].construction_identity_bytes
                 ),
             )
+        if hasattr(model.get("paths"), "payload_bytes"):
+            phase3_runtime_observe(
+                pressure_compact_path_payload_bytes=(
+                    model["paths"].payload_bytes
+                )
+            )
         patron_physical_feedback = None
         patron_physical_feedback_validation = None
         if patron_physical_system_timing_path is not None:

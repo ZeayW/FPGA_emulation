@@ -55,6 +55,8 @@ from .routing import (
     route_hop_delay_ns,
 )
 from .sta import (
+    STA_PATH_DATABASE_INDEX_SCHEMA,
+    STA_PATH_DATABASE_SQLITE_FORMAT,
     _normalized_slack,
     _validate_database_normalization,
     iter_sta_path_database_paths,
@@ -309,6 +311,63 @@ class _NativeClusterSequence(Sequence):
         return self._records[self._identities.ordinal_at(index)]
 
 
+class _PackedPressureClusterSequence(list):
+    """Lazy pressure-cluster projection over the authoritative artifact."""
+
+    def __init__(self, records: Sequence[Mapping[str, Any]]) -> None:
+        super().__init__()
+        self._records = records
+
+    def __len__(self) -> int:
+        return len(self._records)
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        cluster = self._records[index]
+        return {
+            "cluster": cluster["id"],
+            "cells": len(cluster["instances"]),
+            "resources": dict(sorted(cluster["resources"].items())),
+            "fixed_fpga": cluster["fixed_fpga"],
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        return (self._record(index) for index in range(len(self)))
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("partition pressure cluster index must be integer")
+        return self._record(index)
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, Sequence):
+            return False
+        return len(self) == len(other) and all(
+            left == right for left, right in zip(self, other)
+        )
+
+    def _immutable(self, *args, **kwargs):
+        raise TypeError("partition pressure cluster sequence is immutable")
+
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+    __delitem__ = _immutable
+    __setitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+
+
 class _PackedPressureNetSequence(list):
     """Canonical pressure nets backed by compact integer membership arrays."""
 
@@ -505,6 +564,280 @@ class _PackedPressureNetSequence(list):
             + self._drivers.itemsize * len(self._drivers)
             + self._sink_offsets.itemsize * len(self._sink_offsets)
             + self._sinks.itemsize * len(self._sinks)
+        )
+
+
+class _PackedPressurePathSequence(list):
+    """Timing paths stored as fixed-width source/net/cluster ordinals."""
+
+    _TRANSITION_MODELS = (
+        "conservative-net-worst-v1",
+        "endpoint-exact-reverse-chain-v1",
+    )
+
+    def __init__(
+        self,
+        known_nets: _PackedStringOrdinalIndex,
+        pressure_nets: _PackedPressureNetSequence,
+        clusters: Sequence[Mapping[str, Any]],
+    ) -> None:
+        super().__init__()
+        self._known_nets = known_nets
+        self._pressure_nets = pressure_nets
+        self._clusters = clusters
+        missing = 2**64 - 1
+        self._source_net_positions = array("Q", [missing]) * len(known_nets)
+        for position in range(len(known_nets)):
+            ordinal = known_nets.ordinal_at(position)
+            if (
+                ordinal >= len(known_nets)
+                or self._source_net_positions[ordinal] != missing
+            ):
+                raise ValidationError(
+                    "partition pressure net identity domain is invalid"
+                )
+            self._source_net_positions[ordinal] = position
+        if missing in self._source_net_positions:
+            raise ValidationError(
+                "partition pressure net identity domain is incomplete"
+            )
+        self._path_data = bytearray()
+        self._path_offsets = array("Q", [0])
+        self._clock_data = bytearray()
+        self._clock_offsets = array("Q", [0])
+        self._clock_present = bytearray()
+        self._periods = array("d")
+        self._slacks = array("d")
+        self._source_net_offsets = array("Q", [0])
+        self._source_nets = array("Q")
+        self._pressure_net_offsets = array("Q", [0])
+        self._pressure_net_ordinals = array("I")
+        self._transition_models = bytearray()
+        self._start_clusters = array("q")
+        self._end_clusters = array("q")
+
+    @staticmethod
+    def _append_string(
+        data: bytearray, offsets: array, value: str
+    ) -> None:
+        data.extend(value.encode("utf-8"))
+        offsets.append(len(data))
+
+    @staticmethod
+    def _string_at(data: bytearray, offsets: array, index: int) -> str:
+        return bytes(data[offsets[index] : offsets[index + 1]]).decode(
+            "utf-8"
+        )
+
+    def append_record(
+        self,
+        path: str,
+        clock_domain: Any,
+        period: float,
+        slack: float,
+        path_nets: Sequence[str],
+        start_cluster: Optional[int],
+        end_cluster: Optional[int],
+        endpoint_exact: bool,
+    ) -> None:
+        source_net_ordinals = array("Q")
+        pressure_net_ordinals = array("I")
+        for net in path_nets:
+            source_ordinal = self._known_nets.get(net)
+            if source_ordinal is None:
+                raise ValidationError(
+                    "partition pressure path references an unknown net"
+                )
+            source_net_ordinals.append(source_ordinal)
+            pressure_ordinal = self._pressure_nets.ordinal(net)
+            if pressure_ordinal is not None:
+                pressure_net_ordinals.append(pressure_ordinal)
+        self.append_ordinals(
+            path,
+            clock_domain,
+            period,
+            slack,
+            source_net_ordinals,
+            pressure_net_ordinals,
+            start_cluster,
+            end_cluster,
+            endpoint_exact,
+        )
+
+    def append_ordinals(
+        self,
+        path: str,
+        clock_domain: Any,
+        period: float,
+        slack: float,
+        source_net_ordinals: Iterable[int],
+        pressure_net_ordinals: Iterable[int],
+        start_cluster: Optional[int],
+        end_cluster: Optional[int],
+        endpoint_exact: bool,
+    ) -> None:
+        if not isinstance(path, str) or not path:
+            raise ValidationError("partition pressure path identity is invalid")
+        self._append_string(self._path_data, self._path_offsets, path)
+        if clock_domain is None:
+            self._clock_present.append(0)
+            self._clock_offsets.append(len(self._clock_data))
+        elif isinstance(clock_domain, str):
+            self._clock_present.append(1)
+            self._append_string(
+                self._clock_data, self._clock_offsets, clock_domain
+            )
+        else:
+            raise ValidationError("partition pressure clock domain is invalid")
+        self._periods.append(period)
+        self._slacks.append(slack)
+        for source_ordinal in source_net_ordinals:
+            if source_ordinal < 0 or source_ordinal >= len(self._known_nets):
+                raise ValidationError(
+                    "partition pressure source-net ordinal is invalid"
+                )
+            self._source_nets.append(source_ordinal)
+        for pressure_ordinal in pressure_net_ordinals:
+            if pressure_ordinal < 0 or pressure_ordinal >= len(
+                self._pressure_nets
+            ):
+                raise ValidationError(
+                    "partition pressure net ordinal is invalid"
+                )
+            self._pressure_net_ordinals.append(pressure_ordinal)
+        self._source_net_offsets.append(len(self._source_nets))
+        self._pressure_net_offsets.append(len(self._pressure_net_ordinals))
+        self._transition_models.append(int(endpoint_exact))
+        self._start_clusters.append(-1 if start_cluster is None else start_cluster)
+        self._end_clusters.append(-1 if end_cluster is None else end_cluster)
+
+    def __len__(self) -> int:
+        return len(self._periods)
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        source_nets = self._source_nets[
+            self._source_net_offsets[index] : self._source_net_offsets[index + 1]
+        ]
+        record: Dict[str, Any] = {
+            "path": self._string_at(
+                self._path_data, self._path_offsets, index
+            ),
+            "clock_domain": (
+                self._string_at(
+                    self._clock_data, self._clock_offsets, index
+                )
+                if self._clock_present[index]
+                else None
+            ),
+            "clock_period_ns": self._periods[index],
+            "base_slack_ns": self._slacks[index],
+            "path_nets": [
+                self._known_nets.key_at(
+                    self._source_net_positions[source_ordinal]
+                )
+                for source_ordinal in source_nets
+            ],
+            "transition_model": self._TRANSITION_MODELS[
+                self._transition_models[index]
+            ],
+        }
+        start_cluster = self._start_clusters[index]
+        end_cluster = self._end_clusters[index]
+        if self._transition_models[index]:
+            if start_cluster < 0 or end_cluster < 0:
+                raise ValidationError(
+                    "partition pressure exact path endpoints are invalid"
+                )
+            record["start_cluster"] = self._clusters[start_cluster]["cluster"]
+            record["end_cluster"] = self._clusters[end_cluster]["cluster"]
+        return record
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        return (self._record(index) for index in range(len(self)))
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("partition pressure path index must be integer")
+        return self._record(index)
+
+    def native_path(
+        self, index: int
+    ) -> Tuple[float, float, int, int, Sequence[int]]:
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("partition pressure path index must be integer")
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        start_cluster = self._start_clusters[index]
+        end_cluster = self._end_clusters[index]
+        return (
+            self._periods[index],
+            self._slacks[index],
+            (
+                -1
+                if start_cluster < 0
+                else self._pressure_nets.native_cluster_ordinal(start_cluster)
+            ),
+            (
+                -1
+                if end_cluster < 0
+                else self._pressure_nets.native_cluster_ordinal(end_cluster)
+            ),
+            self._pressure_net_ordinals[
+                self._pressure_net_offsets[index] :
+                self._pressure_net_offsets[index + 1]
+            ],
+        )
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, Sequence):
+            return False
+        return len(self) == len(other) and all(
+            left == right for left, right in zip(self, other)
+        )
+
+    def _immutable(self, *args, **kwargs):
+        raise TypeError("partition pressure path sequence is immutable")
+
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+    __delitem__ = _immutable
+    __setitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+
+    @property
+    def payload_bytes(self) -> int:
+        arrays = (
+            self._path_offsets,
+            self._clock_offsets,
+            self._periods,
+            self._slacks,
+            self._source_net_positions,
+            self._source_net_offsets,
+            self._source_nets,
+            self._pressure_net_offsets,
+            self._pressure_net_ordinals,
+            self._start_clusters,
+            self._end_clusters,
+        )
+        return (
+            len(self._path_data)
+            + len(self._clock_data)
+            + len(self._clock_present)
+            + len(self._transition_models)
+            + sum(item.itemsize * len(item) for item in arrays)
         )
 
 
@@ -850,7 +1183,7 @@ def _compact_partition_pressure_graph(
     _PackedStringOrdinalIndex,
     _PackedStringOrdinalIndex,
     _PackedPressureNetSequence,
-    List[Dict[str, Any]],
+    _PackedPressureClusterSequence,
 ]:
     """Build pressure facts by ordered joins over a compact EmuIR store.
 
@@ -883,7 +1216,7 @@ def _compact_partition_pressure_graph(
             ) WITHOUT ROWID;
             """
         )
-        cluster_records: List[Dict[str, Any]] = []
+        cluster_records = _PackedPressureClusterSequence(raw_clusters)
         try:
             for ordinal, cluster in enumerate(raw_clusters):
                 if not isinstance(cluster, Mapping):
@@ -914,14 +1247,6 @@ def _compact_partition_pressure_graph(
                 connection.executemany(
                     "INSERT INTO pressure_cluster_members VALUES (?,?)",
                     ((member, ordinal) for member in members),
-                )
-                cluster_records.append(
-                    {
-                        "cluster": cluster_id,
-                        "cells": len(members),
-                        "resources": dict(sorted(resources.items())),
-                        "fixed_fpga": cluster.get("fixed_fpga"),
-                    }
                 )
         except sqlite3.IntegrityError as error:
             raise ValidationError(
@@ -1285,6 +1610,11 @@ def _reconstruct_partition_pressure_model(
         ) = _compact_partition_pressure_graph(ir, clusters_artifact)
         pressure_nets: Any = compact_pressure_nets
         pressure_net_lookup: Any = compact_pressure_nets
+        paths: Any = _PackedPressurePathSequence(
+            known_nets,
+            compact_pressure_nets,
+            clusters,
+        )
     else:
         known_nets = {net["id"] for net in ir.value["nets"]}
         cluster_by_instance = _instance_to_cluster(clusters_artifact)
@@ -1304,8 +1634,24 @@ def _reconstruct_partition_pressure_model(
             }
             for cluster in clusters_artifact["clusters"]
         ]
-    paths = []
-    seen_paths = set()
+        paths = []
+    path_payloads = timing_database.get("payloads")
+    path_descriptor = (
+        path_payloads.get("paths")
+        if isinstance(path_payloads, Mapping)
+        else None
+    )
+    indexed_unique_path_ids = (
+        timing_database_path is not None
+        and timing_database.get("schema") == STA_PATH_DATABASE_INDEX_SCHEMA
+        and isinstance(path_descriptor, Mapping)
+        and path_descriptor.get("format") == STA_PATH_DATABASE_SQLITE_FORMAT
+    )
+    # TimingPathDB v3 owns a UNIQUE path_id column.  Retain the explicit set
+    # only for legacy/inline inputs that lack that typed uniqueness contract.
+    seen_paths: Optional[set[str]] = (
+        None if indexed_unique_path_ids else set()
+    )
     timing_records = (
         iter_sta_path_database_paths(
             timing_database_path,
@@ -1325,7 +1671,7 @@ def _reconstruct_partition_pressure_model(
         if (
             not isinstance(path_id, str)
             or not path_id
-            or path_id in seen_paths
+            or (seen_paths is not None and path_id in seen_paths)
             or not isinstance(path_nets, list)
             or not all(isinstance(net, str) for net in path_nets)
             or not path_nets
@@ -1333,7 +1679,30 @@ def _reconstruct_partition_pressure_model(
             raise ValidationError(
                 f"partition pressure timing path {index} is invalid"
             )
-        unknown = sorted({net for net in path_nets if net not in known_nets})
+        source_net_ordinals: Optional[array] = None
+        pressure_net_ordinals: Optional[array] = None
+        if isinstance(paths, _PackedPressurePathSequence):
+            source_net_ordinals = array("Q")
+            pressure_net_ordinals = array("I")
+            unknown = []
+            single_driver_pressure_nets = True
+            for net in path_nets:
+                source_ordinal = known_nets.get(net)
+                if source_ordinal is None:
+                    unknown.append(net)
+                    continue
+                source_net_ordinals.append(source_ordinal)
+                pressure_ordinal = compact_pressure_nets.ordinal(net)
+                if pressure_ordinal is not None:
+                    pressure_net_ordinals.append(pressure_ordinal)
+                    drivers, _sinks = compact_pressure_nets.native_net_members(
+                        pressure_ordinal
+                    )
+                    if len(drivers) != 1:
+                        single_driver_pressure_nets = False
+            unknown = sorted(set(unknown))
+        else:
+            unknown = sorted({net for net in path_nets if net not in known_nets})
         if unknown:
             raise ValidationError(
                 f"partition pressure path {path_id!r} references unknown nets "
@@ -1349,7 +1718,8 @@ def _reconstruct_partition_pressure_model(
             raise ValidationError(
                 f"path {path_id!r} clock period must be positive"
             )
-        seen_paths.add(path_id)
+        if seen_paths is not None:
+            seen_paths.add(path_id)
         startpoint = raw.get("startpoint")
         endpoint = raw.get("endpoint")
         start_instance = (
@@ -1378,35 +1748,57 @@ def _reconstruct_partition_pressure_model(
         else:
             start_cluster = start_cluster_ordinal
             end_cluster = end_cluster_ordinal
-        considered_records = []
-        for net in path_nets:
-            pressure_record = pressure_net_lookup.get(net)
-            if pressure_record is not None:
-                considered_records.append(pressure_record)
-        endpoint_exact = (
-            start_cluster is not None
-            and end_cluster is not None
-            and all(
-                len(record["drivers"]) == 1
-                for record in considered_records
+        if isinstance(paths, _PackedPressurePathSequence):
+            endpoint_exact = (
+                start_cluster is not None
+                and end_cluster is not None
+                and single_driver_pressure_nets
             )
-        )
-        record = {
-            "path": path_id,
-            "clock_domain": raw.get("clock_domain"),
-            "clock_period_ns": period,
-            "base_slack_ns": slack,
-            "path_nets": list(path_nets),
-            "transition_model": (
-                "endpoint-exact-reverse-chain-v1"
-                if endpoint_exact
-                else "conservative-net-worst-v1"
-            ),
-        }
-        if endpoint_exact:
-            record["start_cluster"] = start_cluster
-            record["end_cluster"] = end_cluster
-        paths.append(record)
+        else:
+            considered_records = []
+            for net in path_nets:
+                pressure_record = pressure_net_lookup.get(net)
+                if pressure_record is not None:
+                    considered_records.append(pressure_record)
+            endpoint_exact = (
+                start_cluster is not None
+                and end_cluster is not None
+                and all(
+                    len(record["drivers"]) == 1
+                    for record in considered_records
+                )
+            )
+        if isinstance(paths, _PackedPressurePathSequence):
+            assert source_net_ordinals is not None
+            assert pressure_net_ordinals is not None
+            paths.append_ordinals(
+                path_id,
+                raw.get("clock_domain"),
+                period,
+                slack,
+                source_net_ordinals,
+                pressure_net_ordinals,
+                start_cluster_ordinal,
+                end_cluster_ordinal,
+                endpoint_exact,
+            )
+        else:
+            record = {
+                "path": path_id,
+                "clock_domain": raw.get("clock_domain"),
+                "clock_period_ns": period,
+                "base_slack_ns": slack,
+                "path_nets": list(path_nets),
+                "transition_model": (
+                    "endpoint-exact-reverse-chain-v1"
+                    if endpoint_exact
+                    else "conservative-net-worst-v1"
+                ),
+            }
+            if endpoint_exact:
+                record["start_cluster"] = start_cluster
+                record["end_cluster"] = end_cluster
+            paths.append(record)
     if not paths:
         raise ValidationError("partition pressure requires timing paths")
 
@@ -2680,36 +3072,55 @@ def _write_patron_native_input(
                         sinks,
                     )
                 )
-        for index, timing_path in enumerate(model["paths"]):
-            if packed_nets is not None:
+        packed_paths = (
+            model["paths"]
+            if isinstance(model["paths"], _PackedPressurePathSequence)
+            else None
+        )
+        for index in range(len(model["paths"])):
+            if packed_paths is not None:
+                (
+                    clock_period_ns,
+                    base_slack_ns,
+                    start_cluster_index,
+                    end_cluster_index,
+                    path_nets,
+                ) = packed_paths.native_path(index)
+            else:
+                timing_path = model["paths"][index]
+                clock_period_ns = timing_path["clock_period_ns"]
+                base_slack_ns = timing_path["base_slack_ns"]
+                start_cluster = timing_path.get("start_cluster")
+                end_cluster = timing_path.get("end_cluster")
+                start_cluster_index = (
+                    -1
+                    if start_cluster is None
+                    else cluster_index[start_cluster]
+                )
+                end_cluster_index = (
+                    -1
+                    if end_cluster is None
+                    else cluster_index[end_cluster]
+                )
+            if packed_paths is None and packed_nets is not None:
                 path_nets = []
                 for net in timing_path["path_nets"]:
                     ordinal = packed_nets.ordinal(net)
                     if ordinal is not None:
                         path_nets.append(ordinal)
-            else:
+            elif packed_paths is None:
                 path_nets = [
                     net_index[net]
                     for net in timing_path["path_nets"]
                     if net in net_index
                 ]
-            start_cluster = timing_path.get("start_cluster")
-            end_cluster = timing_path.get("end_cluster")
             fields = (
                 "PATH",
                 index,
-                f"{timing_path['clock_period_ns']:.17g}",
-                f"{timing_path['base_slack_ns']:.17g}",
-                (
-                    -1
-                    if start_cluster is None
-                    else cluster_index[start_cluster]
-                ),
-                (
-                    -1
-                    if end_cluster is None
-                    else cluster_index[end_cluster]
-                ),
+                f"{clock_period_ns:.17g}",
+                f"{base_slack_ns:.17g}",
+                start_cluster_index,
+                end_cluster_index,
                 len(path_nets),
             )
             feedback_fields: Sequence[Any] = ()

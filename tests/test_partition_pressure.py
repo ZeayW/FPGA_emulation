@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from array import array
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,7 +29,9 @@ from emuflow.combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
 )
 from emuflow.partition_pressure import (
+    _PackedPressureClusterSequence,
     _PackedPressureNetSequence,
+    _PackedPressurePathSequence,
     _PackedStringOrdinalIndex,
     _canonical_digest,
     _flow_refinement_configuration,
@@ -341,6 +344,12 @@ class PartitionPressureTest(unittest.TestCase):
                 )
             self.assertIsInstance(
                 actual["nets"], _PackedPressureNetSequence
+            )
+            self.assertIsInstance(
+                actual["clusters"], _PackedPressureClusterSequence
+            )
+            self.assertIsInstance(
+                actual["paths"], _PackedPressurePathSequence
             )
             self.assertEqual(actual, expected)
             reference_input = root / "reference.patron"
@@ -802,6 +811,40 @@ class PartitionPressureTest(unittest.TestCase):
         self.assertEqual(len(nets), 1)
         self.assertEqual(len(nets._sinks), 1_000_000)
         self.assertLess(nets.payload_bytes, 8_100_000)
+
+    def test_packed_pressure_paths_use_fixed_width_relations(self) -> None:
+        cluster_identities = _PackedStringOrdinalIndex()
+        cluster_identities.append("c000000", 0)
+        clusters = [
+            {
+                "cluster": "c000000",
+                "cells": 1,
+                "resources": {"lut": 1},
+                "fixed_fpga": None,
+            }
+        ]
+        nets = _PackedPressureNetSequence(clusters, cluster_identities)
+        nets.append_record("n0", "register_output", (0,), (0,))
+        known_nets = _PackedStringOrdinalIndex()
+        known_nets.append("n0", 0)
+        paths = _PackedPressurePathSequence(known_nets, nets, clusters)
+        for index in range(100_000):
+            paths.append_record(
+                f"p{index:06d}",
+                "clk",
+                10.0,
+                -1.0,
+                ("n0",),
+                0,
+                0,
+                True,
+            )
+        self.assertEqual(len(paths), 100_000)
+        self.assertLess(paths.payload_bytes, 12_000_000)
+        self.assertEqual(
+            paths.native_path(99_999),
+            (10.0, -1.0, 0, 0, array("I", [0])),
+        )
 
     def test_path_objective_uses_maximum_of_per_path_tdm_ratio_sums(self) -> None:
         evaluated = evaluate_partition_pressure(
@@ -2172,6 +2215,9 @@ class PartitionPressureTest(unittest.TestCase):
             observations = compact_runtime["observations"]
             self.assertGreater(
                 observations["pressure_compact_net_payload_bytes"], 0
+            )
+            self.assertGreater(
+                observations["pressure_compact_path_payload_bytes"], 0
             )
             self.assertNotIn("pressure_model_payload_bytes", observations)
             baseline = promote_patron_baseline(
