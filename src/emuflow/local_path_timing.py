@@ -926,6 +926,11 @@ def import_vpr_local_path_timing(
             "VPR local path timing coverage is incomplete: "
             f"{sorted(set(expected) - set(measured))[:10]}"
         )
+    # This identity document is private to the importer.  Add the one timing
+    # field in place so publication does not retain a second complete list of
+    # path dictionaries beside the source identities.
+    for item in identity["paths"]:
+        item["delay_ns"] = measured[item["id"]]
     database = {
         "schema": LOCAL_PATH_TIMING_SCHEMA,
         "status": "pass",
@@ -939,10 +944,7 @@ def import_vpr_local_path_timing(
         "source": identity["source"],
         "identity_schema": identity["schema"],
         "coverage": identity["coverage"],
-        "paths": [
-            {**item, "delay_ns": measured[item["id"]]}
-            for item in identity["paths"]
-        ],
+        "paths": identity["paths"],
     }
     validation = validate_local_path_timing(database)
     write_json(output_path, database)

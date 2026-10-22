@@ -507,12 +507,13 @@ def build_xilinx_local_path_timing(
         if _timing_graph is not None
         else _graph(mapped_path, timing_path)
     )
-    records = []
     for path in identity["paths"]:
         delay, _actual_start = graph.longest(
             [path["start_pin"]], path["end_pin"]
         )
-        records.append({**path, "delay_ns": delay})
+        # The loaded identity is private to this producer.  Extend each record
+        # in place instead of retaining an equally large timing-record list.
+        path["delay_ns"] = delay
     database = {
         "schema": LOCAL_PATH_TIMING_SCHEMA,
         "status": "pass",
@@ -526,7 +527,7 @@ def build_xilinx_local_path_timing(
         "source": identity["source"],
         "identity_schema": identity["schema"],
         "coverage": identity["coverage"],
-        "paths": records,
+        "paths": identity["paths"],
     }
     validation = validate_local_path_timing(database)
     write_json(output_path, database)

@@ -1063,7 +1063,9 @@ queries with no per-row identity lookup. The identity store was 22,040,576
 bytes, query TSV 4,700,032 bytes, input measurements 5,200,041 bytes and final
 timing store 27,766,784 bytes. Local-path validation now uses a lazy
 identity projection and one statistics pass instead of copying every path and
-rescanning the population. The local-path production file and unique event/check
+rescanning the population. VPR and RapidWright timing producers also attach
+the measured delay to their private identity rows in place, avoiding a second
+path-dictionary population. The local-path production file and unique event/check
 identity tables remain W6 migration work; formal NVDLA Phase 7C
 wall/RSS/I/O and complete original-path coverage are still pending.
 
