@@ -9,6 +9,8 @@ jobs=${5:-16}
 mkdir -p "$build_dir/tmp"
 export TMPDIR="$build_dir/tmp"
 export SWIG_LIB="$dependency_root/tools/ubuntu24/usr/share/swig4.0"
+export CPLUS_INCLUDE_PATH="$dependency_root/deps/source-complete/usr/include${CPLUS_INCLUDE_PATH:+:$CPLUS_INCLUDE_PATH}"
+export C_INCLUDE_PATH="$dependency_root/deps/source-complete/usr/include${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
 cmake -S "$source_dir/engines/openroad" -B "$build_dir/openroad" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$build_dir/install" \
