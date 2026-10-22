@@ -930,6 +930,14 @@ def validate_partition_checkpoint(
             )
     if report["provider"] == "tritonpart":
         metadata = assignment.get("provider_metadata", {})
+        # Read-only support for sealed historical artifacts. Current producers
+        # never emit this field and cannot invoke the retired legalizer.
+        if ("repair_balance" in report
+            and report["repair_balance"]
+            is not metadata.get("balance_repair", {}).get("enabled")):
+            raise ValidationError(
+                "partition balance-repair report disagrees with assignment"
+            )
         attempts = metadata.get("seed_attempts", [])
         actual_seed_attempts = sum(
             item.get("mode") == "timing_weighted"

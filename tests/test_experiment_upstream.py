@@ -1184,6 +1184,17 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     frontend, timing, platform, partition
                 )
 
+            # Historical reports retain their original sealed repair contract;
+            # this does not re-enable the removed producer option.
+            report["seed_attempts"] = 2
+            report["repair_balance"] = True
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            validate_partition_checkpoint(frontend, timing, platform, partition)
+            report["repair_balance"] = False
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "balance-repair report disagrees"):
+                validate_partition_checkpoint(frontend, timing, platform, partition)
+
 
     @mock.patch("emuflow.experiment_partition.validate_phase3_indexed")
     def test_partition_validator_binds_static_exact_cut_policy(
