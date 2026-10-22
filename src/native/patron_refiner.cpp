@@ -11,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <queue>
 #include <set>
@@ -403,6 +404,64 @@ struct ProxyNetState {
   long long cuts = 0;
 };
 
+class SmallDomainSet {
+ public:
+  SmallDomainSet() = default;
+  SmallDomainSet(std::vector<int> values) { assign(std::move(values)); }
+
+  SmallDomainSet(const SmallDomainSet& other) : mask_(other.mask_) {
+    if (other.overflow_ != nullptr) {
+      overflow_ = std::make_unique<std::vector<int>>(*other.overflow_);
+    }
+  }
+  SmallDomainSet& operator=(const SmallDomainSet& other) {
+    if (this == &other) return *this;
+    mask_ = other.mask_;
+    overflow_.reset();
+    if (other.overflow_ != nullptr) {
+      overflow_ = std::make_unique<std::vector<int>>(*other.overflow_);
+    }
+    return *this;
+  }
+  SmallDomainSet(SmallDomainSet&&) noexcept = default;
+  SmallDomainSet& operator=(SmallDomainSet&&) noexcept = default;
+
+  template <typename Callback>
+  void for_each(Callback callback) const {
+    if (overflow_ != nullptr) {
+      for (int domain : *overflow_) callback(domain);
+      return;
+    }
+    std::uint64_t remaining = mask_;
+    while (remaining != 0) {
+      const int domain = __builtin_ctzll(remaining);
+      callback(domain);
+      remaining &= remaining - 1;
+    }
+  }
+
+  void append_to(std::set<int>& output) const {
+    for_each([&](int domain) { output.insert(domain); });
+  }
+
+ private:
+  void assign(std::vector<int> values) {
+    require(std::is_sorted(values.begin(), values.end()) &&
+                std::adjacent_find(values.begin(), values.end()) ==
+                    values.end() &&
+                (values.empty() || values.front() >= 0),
+            "invalid PATRON path domain set");
+    if (values.empty() || values.back() < 64) {
+      for (int domain : values) mask_ |= std::uint64_t{1} << domain;
+    } else {
+      overflow_ = std::make_unique<std::vector<int>>(std::move(values));
+    }
+  }
+
+  std::uint64_t mask_ = 0;
+  std::unique_ptr<std::vector<int>> overflow_;
+};
+
 struct ProxyPathState {
   double normalized_slack = 0.0;
   bool negative = false;
@@ -410,7 +469,7 @@ struct ProxyPathState {
   long long transitions = 0;
   long long hops = 0;
   long long ratio_sum = 0;
-  std::vector<int> dependency_domains;
+  SmallDomainSet dependency_domains;
 };
 
 struct ProxyState {
@@ -1866,9 +1925,9 @@ ProxyState build_proxy_state(
   for (int path = 0; path < model.paths; ++path) {
     state.path[path] = build_proxy_path(
         model, state, empty, state.domain_ratio, path);
-    for (int domain : state.path[path].dependency_domains) {
+    state.path[path].dependency_domains.for_each([&](int domain) {
       state.domain_paths[domain].append(path);
-    }
+    });
     state.slack_path_order.append(
         {state.path[path].normalized_slack, path});
     state.hop_path_order.append({state.path[path].hops, path});
@@ -4194,9 +4253,9 @@ void apply_proxy_delta(const Model& model,
   }
   for (const auto& item : delta.paths) {
     ProxyPathState& old = state.path[item.first];
-    for (int domain : old.dependency_domains) {
+    old.dependency_domains.for_each([&](int domain) {
       state.domain_paths[domain].remove(item.first);
-    }
+    });
     state.hop_path_order.update(
         {old.hops, item.first}, {item.second.hops, item.first});
     state.ratio_sum_path_order.update(
@@ -4215,9 +4274,9 @@ void apply_proxy_delta(const Model& model,
     state.snaking += item.second.snaking - old.snaking;
     state.transitions += item.second.transitions - old.transitions;
     old = item.second;
-    for (int domain : old.dependency_domains) {
+    old.dependency_domains.for_each([&](int domain) {
       state.domain_paths[domain].add(item.first);
-    }
+    });
   }
   state.evaluation = proxy_evaluation(model, state);
   require(state.evaluation.ranked == delta.evaluation.ranked,
@@ -4838,9 +4897,7 @@ void run_scalable(const Model& model,
       }
       if (state.path[path].hops == maximum_hops
           || state.path[path].ratio_sum == maximum_ratio_sum) {
-        critical_domains.insert(
-            state.path[path].dependency_domains.begin(),
-            state.path[path].dependency_domains.end());
+        state.path[path].dependency_domains.append_to(critical_domains);
       }
     }
     std::cerr << "PATRON_CURRENT_MAXIMA maximum_path_hops="
@@ -4956,17 +5013,16 @@ void run_scalable(const Model& model,
   for (int path : current_paths) {
     if (state.path[path].hops == frontier_hops
         || state.path[path].ratio_sum == frontier_ratio_sum) {
-      frontier_domains.insert(state.path[path].dependency_domains.begin(),
-                              state.path[path].dependency_domains.end());
+      state.path[path].dependency_domains.append_to(frontier_domains);
     }
-    for (int domain : state.path[path].dependency_domains) {
+    state.path[path].dependency_domains.for_each([&](int domain) {
       if (state.path[path].hops == frontier_hops) {
         ++hop_frontier_domain_paths[domain];
       }
       if (state.path[path].ratio_sum == frontier_ratio_sum) {
         ++ratio_frontier_domain_paths[domain];
       }
-    }
+    });
   }
   int cover_domain = -1;
   int cover_threshold = 0;

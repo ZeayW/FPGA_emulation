@@ -81,12 +81,14 @@ retain their initial population in sorted vectors and allocate tree nodes only
 for paths changed by accepted moves; ordered traversal merges that sparse
 overlay with the unchanged vector and preserves every tie-break. Domain-to-path
 membership uses the same model: one initial sorted vector per domain plus
-sparse accepted-move additions and removals. On a 500,000-cluster/net/path
-typed fixture, the complete representation changes reduced three-run median
-native time from 1.090 to 0.596 seconds and peak RSS from 769,146,880 to
-472,727,552 bytes (-38.5%), with byte-identical output. ProxyNet/ProxyPath
-dynamic payloads still scale with the graph and remain Phase 3 memory work.
-This is adapter evidence, not NVDLA qualification.
+sparse accepted-move additions and removals. A path's sorted dependency-domain
+set occupies one 64-bit mask for the common small-domain case; designs with 64
+or more domain ordinals retain a checked vector fallback. On a
+500,000-cluster/net/path typed fixture, the complete representation changes
+reduced three-run median native time from 1.090 to 0.609 seconds and peak RSS
+from 769,146,880 to 449,052,672 bytes (-41.6%), with byte-identical output.
+ProxyNet dynamic vector payloads still scale with the graph and remain Phase 3
+memory work. This is adapter evidence, not NVDLA qualification.
 Production clustering now consumes compact EmuIR through ordered integer
 SQLite cursors. It keeps only a four-byte original-to-lexical cell permutation,
 compact union-find arrays and the final cluster records; it no longer decodes a
