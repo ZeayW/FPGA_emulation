@@ -496,8 +496,8 @@ class PartitionPressureTest(unittest.TestCase):
                 "UPDATE endpoint_records SET role=2 "
                 "WHERE net_seq=0 AND role=0 AND ordinal=0"
             )),
-            ("ordinal-gap", "endpoint sequence is invalid", lambda connection: connection.execute(
-                "UPDATE endpoint_records SET ordinal=2 "
+            ("negative-ordinal", "endpoint sequence is invalid", lambda connection: connection.execute(
+                "UPDATE endpoint_records SET ordinal=-1 "
                 "WHERE net_seq=0 AND role=0 AND ordinal=0"
             )),
             ("orphan-net", "orphaned endpoints", lambda connection: connection.execute(
@@ -557,6 +557,34 @@ class PartitionPressureTest(unittest.TestCase):
                         self.route_constraints,
                         independent_validation=False,
                     )
+
+    def test_compact_pressure_model_accepts_sparse_endpoint_ordinals(self) -> None:
+        expected = build_partition_pressure_model(
+            self.ir,
+            self.platform,
+            self.clusters,
+            self.constraints,
+            self.timing,
+            self.route_constraints,
+            independent_validation=False,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, self.ir.to_dict())
+            with sqlite3.connect(path) as connection:
+                connection.execute(
+                    "UPDATE endpoint_records SET ordinal=ordinal+1000000"
+                )
+            actual = build_partition_pressure_model(
+                load_partition_ir(path),
+                self.platform,
+                self.clusters,
+                self.constraints,
+                self.timing,
+                self.route_constraints,
+                independent_validation=False,
+            )
+        self.assertEqual(actual, expected)
 
     def test_native_input_publish_is_atomic_on_validation_and_io_faults(
         self,

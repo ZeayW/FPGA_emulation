@@ -946,17 +946,23 @@ def _compact_combinational_cut_candidate_ids(
                 raise ValidationError("compact EmuIR has orphaned endpoints")
             driver: int | None = None
             multiple_instance_drivers = False
-            endpoint_ordinals = [0, 0]
+            endpoint_ordinals = [-1, -1]
             while endpoint is not None and endpoint["net_seq"] == net_seq:
                 role = endpoint["role"]
                 owner = endpoint["instance_seq"]
                 if role not in (0, 1):
                     raise ValidationError("compact EmuIR endpoint role is invalid")
-                if endpoint["ordinal"] != endpoint_ordinals[role]:
+                ordinal = endpoint["ordinal"]
+                if (
+                    isinstance(ordinal, bool)
+                    or not isinstance(ordinal, int)
+                    or ordinal < 0
+                    or ordinal <= endpoint_ordinals[role]
+                ):
                     raise ValidationError(
                         "compact EmuIR endpoint sequence is invalid"
                     )
-                endpoint_ordinals[role] += 1
+                endpoint_ordinals[role] = ordinal
                 if (
                     endpoint["pin_name_seq"] is None
                     or not isinstance(endpoint["port"], str)
@@ -2038,15 +2044,21 @@ def _write_compact_native_static_exact_graph(
             if net_seq != observed_nets:
                 raise ValidationError("compact EmuIR net sequence is invalid")
             groups: list[list[int]] = [[], []]
+            endpoint_ordinals = [-1, -1]
             while endpoint is not None and endpoint["net_seq"] == net_seq:
                 role = endpoint["role"]
+                ordinal = endpoint["ordinal"]
                 if (
                     role not in {0, 1}
-                    or endpoint["ordinal"] != len(groups[role])
+                    or isinstance(ordinal, bool)
+                    or not isinstance(ordinal, int)
+                    or ordinal < 0
+                    or ordinal <= endpoint_ordinals[role]
                 ):
                     raise ValidationError(
                         "compact EmuIR endpoint sequence is invalid"
                     )
+                endpoint_ordinals[role] = ordinal
                 owner = endpoint["instance_seq"]
                 if owner is None:
                     groups[role].append(-1)

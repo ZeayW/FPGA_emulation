@@ -1067,7 +1067,7 @@ def _compact_partition_pressure_graph(
                     or endpoint_net_seq < net_seq
                 ):
                     raise ValidationError("compact EmuIR has orphaned endpoints")
-            endpoint_ordinals = [0, 0]
+            endpoint_ordinals = [-1, -1]
             while endpoint is not None and endpoint["net_seq"] == net_seq:
                 role = endpoint["role"]
                 owner = endpoint["instance_seq"]
@@ -1081,12 +1081,13 @@ def _compact_partition_pressure_graph(
                 if (
                     isinstance(ordinal, bool)
                     or not isinstance(ordinal, int)
-                    or ordinal != endpoint_ordinals[role]
+                    or ordinal < 0
+                    or ordinal <= endpoint_ordinals[role]
                 ):
                     raise ValidationError(
                         "compact EmuIR endpoint sequence is invalid"
                     )
-                endpoint_ordinals[role] += 1
+                endpoint_ordinals[role] = ordinal
                 if (
                     endpoint["pin_name_seq"] is None
                     or not isinstance(endpoint["port"], str)

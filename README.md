@@ -62,6 +62,10 @@ second cell/net graph or retains the former instance dictionary,
 name-to-index dictionary and grouped-member copy. The in-memory JSON path is
 kept as the reference implementation, and differential tests require identical
 cluster IDs, member order, resource totals, groups, fixed placement and policy.
+Constraint normalization also leaves the complete instance identity catalog
+unopened when no group or fixed-instance constraint needs it. Constrained
+compact inputs read only the indexed identity column rather than decoding cell
+resource payloads merely to validate names and patterns.
 On a synthetic 300,000-cell singleton input, loading plus clustering reduced
 traced peak allocation from 436.58 MiB to 212.52 MiB and wall time from 9.94 to
 5.70 seconds. This is isolated construction evidence, not NVDLA qualification.
@@ -73,6 +77,12 @@ multi-driver and state-source nets do not accumulate sink populations. A
 1,000,000-endpoint high-fanout regression stays below 16 MiB of traced Python
 allocation. A separate 100,001-instance chain used 11.38 MB peak versus 90.99
 MB for the reference path while preserving the same 100,000 eligible cuts.
+Endpoint ordinals are stable ordering keys and may be sparse after a mapped
+frontend filters unsupported or redundant pins. Compact candidate, pressure
+and native Static Exact readers require non-negative, strictly increasing
+ordinals within each net and role; they do not mistake a legal gap for a
+missing logical endpoint. Endpoint row counts, roles, owners, pins, bits and
+top-level identities remain independently validated.
 Production cluster construction now exposes the packed lexical pool through a
 private list-compatible streaming view: canonical JSON publication decodes one
 name at a time, while default and explicitly mutable API callers still receive

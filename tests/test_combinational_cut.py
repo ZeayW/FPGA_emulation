@@ -755,6 +755,27 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
         self.assertEqual(compact["dependency_levels"], {})
         self.assertNotIn("canonical_emuir_sha256", compact)
 
+    def test_compact_v2_candidate_index_accepts_sparse_endpoint_ordinals(self):
+        value = _chain_ir().to_dict()
+        expected = _build_combinational_cut_candidate_index(
+            EmuIR(value),
+            include_dependency_levels=False,
+            include_source_identity=False,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, value)
+            with sqlite3.connect(path) as connection:
+                connection.execute(
+                    "UPDATE endpoint_records SET ordinal=ordinal+1000000"
+                )
+            actual = _build_combinational_cut_candidate_index(
+                load_partition_ir(path),
+                include_dependency_levels=False,
+                include_source_identity=False,
+            )
+        self.assertEqual(actual, expected)
+
     def test_compact_v2_candidate_index_streams_packed_graph_and_matches_reference(
         self,
     ):
@@ -1075,7 +1096,7 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
             (
                 "endpoint sequence is invalid",
                 lambda connection: connection.execute(
-                    "UPDATE endpoint_records SET ordinal=99 "
+                    "UPDATE endpoint_records SET ordinal=-1 "
                     "WHERE net_seq=0 AND role=0 AND ordinal=0"
                 ),
             ),
@@ -1539,6 +1560,11 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "design.emuir.sqlite"
             write_compact_emuir(path, self.ir.to_dict())
+            with sqlite3.connect(path) as connection:
+                connection.execute(
+                    "UPDATE endpoint_records SET ordinal=ordinal+100 "
+                    "WHERE net_seq=0 AND role=0"
+                )
             compact_ir = load_partition_ir(path)
             with patch.dict(
                 os.environ,
