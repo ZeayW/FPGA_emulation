@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "emuflow_core/artifact_io.hpp"
+#include "emuflow_core/native_stages.hpp"
 
 namespace {
 
@@ -18,6 +19,8 @@ constexpr std::uint64_t kInputMagic = 0x3149534d44544545ULL;
 constexpr std::uint64_t kOutputMagic = 0x314f534d44544545ULL;
 constexpr std::uint32_t kInputVersion = 1;
 constexpr std::uint32_t kOutputVersion = 2;
+constexpr emuflow::core::ArtifactSchema kInputSchema{
+    kInputMagic, kInputVersion, "exact schedule input"};
 constexpr std::uint32_t kUnassignedLane =
     std::numeric_limits<std::uint32_t>::max();
 
@@ -97,12 +100,9 @@ class AvailableSlots {
   std::uint32_t lane_budget_;
 };
 
-void Run(const std::string& input_path, const std::string& output_path) {
+void RunImpl(const std::string& input_path, const std::string& output_path) {
   emuflow::core::BinaryReader input(input_path);
-  if (input.Read<std::uint64_t>() != kInputMagic ||
-      input.Read<std::uint32_t>() != kInputVersion) {
-    throw std::runtime_error("unsupported exact schedule input header");
-  }
+  emuflow::core::ReadAndValidateHeader(input, kInputSchema);
   const auto frame_slots = input.Read<std::uint32_t>();
   const auto barrier_slots = input.Read<std::uint32_t>();
   const auto settle_slots = input.Read<std::uint32_t>();
@@ -349,16 +349,23 @@ void Run(const std::string& input_path, const std::string& output_path) {
 
 }  // namespace
 
+void emuflow::native::ScheduleStaticExact(const std::string& input_path,
+                                          const std::string& output_path) {
+  RunImpl(input_path, output_path);
+}
+
+#if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
 int main(int argc, char** argv) {
   try {
     if (argc != 3) {
       std::cerr << "usage: emuflow_tdm_exact_scheduler INPUT OUTPUT\n";
       return 2;
     }
-    Run(argv[1], argv[2]);
+    emuflow::native::ScheduleStaticExact(argv[1], argv[2]);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return 1;
   }
 }
+#endif

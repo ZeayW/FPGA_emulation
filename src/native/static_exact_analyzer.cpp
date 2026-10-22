@@ -9,12 +9,15 @@
 #include <vector>
 
 #include "emuflow_core/artifact_io.hpp"
+#include "emuflow_core/native_stages.hpp"
 
 namespace {
 
 constexpr std::uint64_t kInputMagic = 0x31584553464d5545ULL;
 constexpr std::uint64_t kOutputMagic = 0x315845534f4d5545ULL;
 constexpr std::uint32_t kVersion = 3;
+constexpr emuflow::core::ArtifactSchema kInputSchema{
+    kInputMagic, kVersion, "Static Exact analyzer input"};
 
 struct Instance {
   bool state = false;
@@ -78,12 +81,9 @@ void RequireCount(std::uint64_t count, std::size_t minimum_bytes,
   }
 }
 
-void Analyze(const std::string& input_path, const std::string& output_path) {
+void AnalyzeImpl(const std::string& input_path, const std::string& output_path) {
   emuflow::core::BinaryReader reader(input_path);
-  if (reader.Read<std::uint64_t>() != kInputMagic ||
-      reader.Read<std::uint32_t>() != kVersion) {
-    throw std::runtime_error("unsupported native input header");
-  }
+  emuflow::core::ReadAndValidateHeader(reader, kInputSchema);
   const auto instance_count = reader.Read<std::uint32_t>();
   const auto net_count = reader.Read<std::uint32_t>();
   const auto cut_count = reader.Read<std::uint32_t>();
@@ -345,6 +345,12 @@ void Analyze(const std::string& input_path, const std::string& output_path) {
 
 }  // namespace
 
+void emuflow::native::AnalyzeStaticExact(const std::string& input_path,
+                                         const std::string& output_path) {
+  AnalyzeImpl(input_path, output_path);
+}
+
+#if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "usage: emuflow_static_exact_analyzer INPUT OUTPUT\n";
@@ -355,10 +361,11 @@ int main(int argc, char** argv) {
     return 2;
   }
   try {
-    Analyze(argv[1], argv[2]);
+    emuflow::native::AnalyzeStaticExact(argv[1], argv[2]);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "emuflow_static_exact_analyzer: " << error.what() << '\n';
     return 1;
   }
 }
+#endif

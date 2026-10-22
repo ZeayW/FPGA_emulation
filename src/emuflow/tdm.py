@@ -1581,7 +1581,7 @@ def _schedule_indexed_exact_native(
     rescan those records after the native result is imported.
     """
 
-    from .native_tools import resolve_native_executable
+    from .native_tools import native_stage_command, resolve_native_executable
 
     typed_record_cursor = getattr(
         raw_routes, "iter_native_exact_records", None
@@ -1664,6 +1664,12 @@ def _schedule_indexed_exact_native(
 
     resolved = resolve_native_executable(
         "emuflow_tdm_exact_scheduler", executable
+    )
+    native_command = native_stage_command(
+        resolved,
+        "phase5",
+        "schedule",
+        prefer_unified=executable is None,
     )
     with tempfile.TemporaryDirectory(prefix="emuflow-tdm-exact-") as temporary:
         root = Path(temporary)
@@ -1815,7 +1821,7 @@ def _schedule_indexed_exact_native(
                 seen_demand_ranks[demand_rank_value] = 1
                 demand_order[demand_rank_value] = native_route
         completed = subprocess.run(
-            [resolved, str(input_path), str(output_path)],
+            [*native_command, str(input_path), str(output_path)],
             capture_output=True,
             text=True,
             check=False,

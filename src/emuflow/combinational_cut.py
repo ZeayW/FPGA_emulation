@@ -25,7 +25,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Sequence, Set, 
 from .errors import ValidationError
 from .emuir_storage import open_emuir_sqlite_read_only
 from .ir import EMUIR_SCHEMA, EmuIR, VALID_CUT_CLASSES
-from .native_tools import resolve_native_executable
+from .native_tools import native_stage_command, resolve_native_executable
 from .phase3_exact_records import (
     StaticExactRecordSequence,
     build_static_exact_capture_stream,
@@ -2414,6 +2414,7 @@ def _analyze_static_exact_dependencies_native(
         raise ValidationError("exact semantic contract assignment is incomplete")
 
     resolved = resolve_native_executable("emuflow_static_exact_analyzer")
+    native_command = native_stage_command(resolved, "phase3", "analyze")
     with tempfile.TemporaryDirectory(prefix="emuflow-static-exact-") as temporary:
         root = Path(temporary)
         native_input = root / "static-exact.in"
@@ -2517,7 +2518,7 @@ def _analyze_static_exact_dependencies_native(
         # never receives names, ports, or potentially unbounded Python bits.
         del resolved_cut_ordinals
         completed = subprocess.run(
-            [resolved, str(native_input), str(native_output)],
+            [*native_command, str(native_input), str(native_output)],
             capture_output=True,
             text=True,
             check=False,

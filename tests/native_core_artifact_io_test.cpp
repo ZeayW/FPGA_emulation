@@ -62,6 +62,20 @@ int main() {
       reader.RequireEnd();
     }
     {
+      emuflow::core::AtomicBinaryWriter writer(target.string());
+      writer.Write<std::uint64_t>(0x1234);
+      writer.Write<std::uint32_t>(7);
+      writer.Write<std::uint32_t>(42);
+      writer.Commit();
+      emuflow::core::BinaryReader reader(target.string());
+      emuflow::core::ReadAndValidateHeader(
+          reader, emuflow::core::ArtifactSchema{0x1234, 7, "test artifact"});
+      if (reader.Read<std::uint32_t>() != 42 || reader.remaining() != 0) {
+        throw std::runtime_error("schema round-trip value disagrees");
+      }
+      reader.RequireEnd();
+    }
+    {
       std::ofstream trailing(target, std::ios::binary | std::ios::app);
       trailing.put('\0');
     }

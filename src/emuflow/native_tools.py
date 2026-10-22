@@ -63,3 +63,25 @@ def resolve_native_executable(
         "Build the monorepo with `cmake --preset release && "
         "cmake --build --preset release` or set EMUFLOW_NATIVE_ROOT."
     )
+
+
+def native_stage_command(
+    resolved_legacy_executable: str,
+    phase: str,
+    operation: str,
+    *,
+    prefer_unified: bool = True,
+) -> list[str]:
+    """Prefer the unified in-tree entry beside a resolved stage executable.
+
+    Explicit comparison tools and older installs remain usable because the
+    legacy executable is retained when its sibling unified entry is absent.
+    The caller has already applied the no-PATH and source-root policy through
+    :func:`resolve_native_executable`.
+    """
+
+    legacy = Path(resolved_legacy_executable).expanduser().resolve()
+    unified = legacy.parent / "emuflow-native"
+    if prefer_unified and unified.is_file() and os.access(unified, os.X_OK):
+        return [str(unified), phase, operation]
+    return [str(legacy)]

@@ -228,6 +228,38 @@ def tdm_exact_scheduler() -> Path:
 
 
 @lru_cache(maxsize=1)
+def emuflow_native() -> Path:
+    compiler = (
+        shutil.which("c++")
+        or shutil.which("g++")
+        or shutil.which("clang++")
+    )
+    if compiler is None:
+        raise RuntimeError("a C++17 compiler is required for native entry tests")
+    root = Path(_BUILD_ROOT.name)
+    executable = root / "unified" / "emuflow-native"
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            compiler,
+            "-std=c++17",
+            "-O2",
+            "-DEMUFLOW_NATIVE_STAGE_LIBRARY=1",
+            str(ROOT / "src/native/emuflow_native.cpp"),
+            str(ROOT / "src/native/static_exact_analyzer.cpp"),
+            str(ROOT / "src/native/tdm_exact_scheduler.cpp"),
+            str(ROOT / "src/native/emuflow_core/artifact_io.cpp"),
+            "-I",
+            str(ROOT / "src/native"),
+            "-o",
+            str(executable),
+        ],
+        check=True,
+    )
+    return executable
+
+
+@lru_cache(maxsize=1)
 def tritonpart_balance_legalizer() -> Path:
     compiler = (
         shutil.which("c++")

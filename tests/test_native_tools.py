@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import EmuFlowError
-from emuflow.native_tools import resolve_native_executable
+from emuflow.native_tools import native_stage_command, resolve_native_executable
 
 
 class NativeToolsTest(unittest.TestCase):
@@ -139,6 +139,29 @@ class NativeToolsTest(unittest.TestCase):
             finally:
                 os.chdir(previous)
         self.assertEqual(resolved, str(executable.resolve()))
+
+    def test_native_stage_prefers_unified_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            legacy = root / "bin" / "emuflow_static_exact_analyzer"
+            unified = root / "bin" / "emuflow-native"
+            legacy.parent.mkdir()
+            for executable in (legacy, unified):
+                executable.write_text("#!/bin/sh\n", encoding="utf-8")
+                executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            self.assertEqual(
+                native_stage_command(str(legacy), "phase3", "analyze"),
+                [str(unified.resolve()), "phase3", "analyze"],
+            )
+
+    def test_native_stage_retains_legacy_without_unified_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            legacy = Path(temp_dir) / "emuflow_tdm_exact_scheduler"
+            legacy.write_text("#!/bin/sh\n", encoding="utf-8")
+            self.assertEqual(
+                native_stage_command(str(legacy), "phase5", "schedule"),
+                [str(legacy.resolve())],
+            )
 
 
 if __name__ == "__main__":
