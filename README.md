@@ -169,7 +169,10 @@ checks remain unchanged.
 Thin versioned runtime deployments rebuild the native Static Exact analyzer
 alongside the partition, routing, TDM, and balance tools. Large-design Phase 3
 therefore uses native semantic validation from the same exact source revision
-as the refiner.
+as the refiner. Deployment selects the native compiler only after compiling and
+running a C++17 `<filesystem>` probe; an explicit `CXX` override fails closed
+when it cannot satisfy that probe. This prevents validation-farm login defaults
+such as GCC 7 from producing a partial runtime.
 
 - State the period of every analyzed clock explicitly.
 - Mapping profiles must match the physical device model; generic soft mapping
