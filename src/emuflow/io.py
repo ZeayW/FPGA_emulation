@@ -85,11 +85,13 @@ def read_json(path: Path) -> Dict[str, Any]:
         "emuflow.phase3-assignment-storage/v1",
         "emuflow.phase3-assignment-storage/v2",
         "emuflow.phase3-assignment-storage/v3",
+        "emuflow.phase3-assignment-storage/v4",
     }:
         from .phase3_storage import (
             COMPRESSED_CLUSTERS_SCHEMA,
             INDEXED_CLUSTERS_SCHEMA,
             LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+            OLDER_PACKED_ASSIGNMENT_SCHEMA,
             PACKED_ASSIGNMENT_SCHEMA,
             PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
             expand_compressed_phase3_clusters,
@@ -100,6 +102,7 @@ def read_json(path: Path) -> Dict[str, Any]:
 
         if schema in {
             LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+            OLDER_PACKED_ASSIGNMENT_SCHEMA,
             PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
             PACKED_ASSIGNMENT_SCHEMA,
         }:

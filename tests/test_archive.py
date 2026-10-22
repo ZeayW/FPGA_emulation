@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +47,53 @@ def _run_small_flow(output: Path) -> None:
 
 
 class ValidationArchiveTest(unittest.TestCase):
+    def test_phase3_v4_selector_keeps_all_typed_dependencies_atomic(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            flow = Path(temporary_directory).resolve()
+            partition = flow / "partition"
+            partition.mkdir()
+            assignment = partition / "assignment.json"
+            clusters = partition / "clusters.json"
+            index = partition / "assignment.sqlite"
+            exact = partition / "assignment.exact.bin"
+            write_json(
+                assignment,
+                {
+                    "schema": "emuflow.phase3-assignment-storage/v4",
+                    "cut_nets_index": {
+                        "artifact": "assignment.sqlite",
+                        "schema": "emuflow.phase3-cut-records/v1",
+                        "records": 0,
+                        "sha256": "0" * 64,
+                    },
+                },
+                compact=True,
+            )
+            clusters.write_text("{}", encoding="utf-8")
+            with sqlite3.connect(index) as connection:
+                connection.execute(
+                    "CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT)"
+                )
+                connection.execute(
+                    "INSERT INTO metadata VALUES (?,?)",
+                    (
+                        "semantic_contract_binary",
+                        json.dumps({"artifact": exact.name}),
+                    ),
+                )
+            exact.write_bytes(b"exact")
+            candidates = {
+                path.relative_to(flow): {"fixture"}
+                for path in (assignment, clusters, index, exact)
+            }
+            groups = archive_module._atomic_retention_groups(flow, candidates)
+            self.assertEqual(
+                groups[Path("partition/assignment.json")],
+                frozenset(candidates),
+            )
+
     def test_archive_rollback_accepts_already_absent_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             missing = Path(temporary_directory) / "missing"

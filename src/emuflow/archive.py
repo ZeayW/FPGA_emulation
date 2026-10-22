@@ -9,6 +9,7 @@ import json
 import os
 import platform as host_platform
 import shutil
+import sqlite3
 import subprocess
 import sys
 import uuid
@@ -532,15 +533,60 @@ def _atomic_retention_groups(
             "emuflow.phase3-assignment-storage/v1",
             "emuflow.phase3-assignment-storage/v2",
             "emuflow.phase3-assignment-storage/v3",
+            "emuflow.phase3-assignment-storage/v4",
         }:
             continue
-        dependency = relative.with_name("clusters.json")
-        if dependency not in parents:
-            raise ValidationError(
-                "archive packed assignment cluster dependency was not discovered: "
-                f"{dependency.as_posix()}"
-            )
-        union(relative, dependency)
+        dependencies = [relative.with_name("clusters.json")]
+        if assignment.get("schema") == "emuflow.phase3-assignment-storage/v4":
+            descriptor = assignment.get("cut_nets_index")
+            if (
+                not isinstance(descriptor, dict)
+                or descriptor.get("artifact") != "assignment.sqlite"
+            ):
+                raise ValidationError(
+                    "archive packed assignment cut dependency is malformed"
+                )
+            index_dependency = relative.with_name("assignment.sqlite")
+            dependencies.append(index_dependency)
+            index_path = _source_file(flow_root, index_dependency)
+            try:
+                connection = sqlite3.connect(
+                    f"file:{index_path.resolve()}?mode=ro&immutable=1",
+                    uri=True,
+                )
+                try:
+                    row = connection.execute(
+                        "SELECT value FROM metadata "
+                        "WHERE key='semantic_contract_binary'"
+                    ).fetchone()
+                finally:
+                    connection.close()
+                binary = json.loads(row[0]) if row is not None else None
+            except (sqlite3.Error, TypeError, json.JSONDecodeError) as error:
+                raise ValidationError(
+                    "archive packed assignment index is unreadable"
+                ) from error
+            if binary is not None:
+                binary_artifact = (
+                    binary.get("artifact")
+                    if isinstance(binary, dict)
+                    else None
+                )
+                if (
+                    not isinstance(binary_artifact, str)
+                    or Path(binary_artifact).name != binary_artifact
+                ):
+                    raise ValidationError(
+                        "archive packed assignment binary dependency is malformed"
+                    )
+                dependencies.append(relative.with_name(binary_artifact))
+        for dependency in dependencies:
+            if dependency not in parents:
+                raise ValidationError(
+                    "archive packed assignment dependency was not discovered: "
+                    f"{dependency.as_posix()}"
+                )
+            union(relative, dependency)
 
     for relative in sorted(candidates, key=lambda item: item.as_posix()):
         if relative.name != "physical-summary.json":

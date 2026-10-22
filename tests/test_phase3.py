@@ -329,7 +329,7 @@ class Phase3Test(unittest.TestCase):
             with sqlite3.connect(output / "assignment.sqlite") as connection:
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
-                    3,
+                    4,
                 )
                 schema = json.loads(
                     connection.execute(
@@ -337,7 +337,7 @@ class Phase3Test(unittest.TestCase):
                     ).fetchone()[0]
                 )
                 self.assertEqual(
-                    schema, "emuflow.phase3-assignment-sqlite/v3"
+                    schema, "emuflow.phase3-assignment-sqlite/v4"
                 )
                 exact_tables = connection.execute(
                     "SELECT count(*) FROM sqlite_master "
@@ -461,7 +461,12 @@ class Phase3Test(unittest.TestCase):
             )
             self.assertEqual(
                 packed_assignment["schema"],
-                "emuflow.phase3-assignment-storage/v3",
+                "emuflow.phase3-assignment-storage/v4",
+            )
+            self.assertNotIn("cut_nets", packed_assignment["document"])
+            self.assertEqual(
+                packed_assignment["cut_nets_index"]["artifact"],
+                "assignment.sqlite",
             )
             self.assertIsNone(packed_assignment["semantic_contract"])
             self.assertEqual(

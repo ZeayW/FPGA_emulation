@@ -110,8 +110,22 @@ private list-compatible streaming view: canonical JSON publication decodes one
 name at a time, while default and explicitly mutable API callers still receive
 an ordinary list. The logical policy array remains graph-sized on disk, and
 direct bare-database callers still rely on their managed source seal.
-New Phase 3 publications use assignment-index schema v3. SQLite is the bounded
-control plane for instance ownership, partitions and cut sinks. Static Exact
+New Phase 3 publications use assignment-index schema v4. SQLite is the indexed
+typed owner for instance ownership, partitions, normalized cut records,
+cut sinks and predecessor identities. Assignment-storage v4 removes the
+complete `cut_nets` array from `assignment.json`; the JSON carries only its
+record count and canonical ordered-record SHA-256. Phase 4--7 receive a
+repeatable list-compatible ordered cursor, while explicit compatibility reads
+reconstruct the unchanged logical assignment. Versions 1--3 remain readable.
+The index is published before the selector, and archive retention treats the
+selector, cluster store, assignment index and referenced exact binary as one
+component. On an isolated
+100,000-cut chain, the prior v3 JSON plus cut-sink index occupied 25,603,517
+bytes and JSON loading peaked at 119,371,676 traced bytes. The v4 selector plus
+normalized index occupied 17,117,431 bytes and a full sealed cursor traversal
+peaked at 3,962,233 bytes; traversal took 1.54 versus 0.39 seconds. This is
+storage-adapter evidence, not NVDLA qualification.
+Static Exact
 nodes, segments and captures are integer-coded in the versioned,
 section-digested `assignment.exact.bin` data plane, partitioned by FPGA for
 sequential reads. Phase 6 transfers the sealed binary by hard link when

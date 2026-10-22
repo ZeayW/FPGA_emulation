@@ -21,8 +21,9 @@ PACKED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v1"
 COMPRESSED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v2"
 INDEXED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v3"
 LEGACY_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v1"
-PREVIOUS_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v2"
-PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v3"
+OLDER_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v2"
+PREVIOUS_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v3"
+PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v4"
 _COMPRESSED_JSON_CODEC = "zlib-level-1-base64-canonical-json"
 _COMPRESSED_INDEX_CODEC = "zlib-level-1-base64-unsigned-index"
 CLUSTERS_SQLITE_APPLICATION_ID = 0x454D5543  # ASCII "EMUC"
@@ -1083,6 +1084,8 @@ def expand_phase3_clusters(value: Mapping[str, Any]) -> Dict[str, Any]:
 def pack_phase3_assignment(
     value: Mapping[str, Any],
     clusters_artifact: Mapping[str, Any],
+    *,
+    cut_nets_index: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Store only the irreducible cluster-to-FPGA vector for Phase 3."""
 
@@ -1197,19 +1200,47 @@ def pack_phase3_assignment(
             # Compatibility for non-structural test/legacy contracts that the
             # assignment index does not know how to reconstruct.
             compressed_semantic_contract = _compress_json(semantic_contract)
+    excluded_document_fields = {
+        "cluster_assignment",
+        "instance_assignment",
+        "partitions",
+        "semantic_contract",
+    }
+    if cut_nets_index is not None:
+        excluded_document_fields.add("cut_nets")
     document = {
         key: item
         for key, item in value.items()
-        if key
-        not in {
-            "cluster_assignment",
-            "instance_assignment",
-            "partitions",
-            "semantic_contract",
-        }
+        if key not in excluded_document_fields
     }
-    return {
-        "schema": PACKED_ASSIGNMENT_SCHEMA,
+    schema = PREVIOUS_PACKED_ASSIGNMENT_SCHEMA
+    indexed_cuts = None
+    if cut_nets_index is not None:
+        raw_cuts = value.get("cut_nets")
+        if not isinstance(cut_nets_index, Mapping):
+            raise ValueError("assignment cut-record index is malformed")
+        indexed_cuts = dict(cut_nets_index)
+        if (
+            not isinstance(raw_cuts, list)
+            or set(indexed_cuts)
+            != {"artifact", "schema", "records", "sha256"}
+            or indexed_cuts.get("artifact") != "assignment.sqlite"
+            or indexed_cuts.get("schema")
+            != "emuflow.phase3-cut-records/v1"
+            or isinstance(indexed_cuts.get("records"), bool)
+            or not isinstance(indexed_cuts.get("records"), int)
+            or indexed_cuts["records"] != len(raw_cuts)
+            or not isinstance(indexed_cuts.get("sha256"), str)
+            or len(indexed_cuts["sha256"]) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in indexed_cuts["sha256"]
+            )
+        ):
+            raise ValueError("assignment cut-record index is malformed")
+        schema = PACKED_ASSIGNMENT_SCHEMA
+    packed = {
+        "schema": schema,
         "document": document,
         "cluster_count": len(clusters),
         "cluster_ids": stored_cluster_ids,
@@ -1219,6 +1250,83 @@ def pack_phase3_assignment(
         "semantic_contract": compressed_semantic_contract,
         "semantic_contract_index": indexed_semantic_contract,
     }
+    if indexed_cuts is not None:
+        packed["cut_nets_index"] = indexed_cuts
+    return packed
+
+
+class IndexedCutNetRecords(list):
+    """Repeatable list-compatible view of the sealed typed cut relation."""
+
+    def __init__(self, path: Path, descriptor: Mapping[str, Any]):
+        super().__init__()
+        self.path = path.resolve()
+        self.descriptor = dict(descriptor)
+        if (
+            set(self.descriptor)
+            != {"artifact", "schema", "records", "sha256"}
+            or self.descriptor.get("artifact") != self.path.name
+            or self.descriptor.get("schema")
+            != "emuflow.phase3-cut-records/v1"
+            or isinstance(self.descriptor.get("records"), bool)
+            or not isinstance(self.descriptor.get("records"), int)
+            or self.descriptor["records"] < 0
+            or not isinstance(self.descriptor.get("sha256"), str)
+            or len(self.descriptor["sha256"]) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.descriptor["sha256"]
+            )
+            or not self.path.is_file()
+        ):
+            raise ValueError("packed assignment cut-record index is malformed")
+        connection = sqlite3.connect(
+            f"file:{self.path}?mode=ro&immutable=1", uri=True
+        )
+        try:
+            metadata = {
+                str(row[0]): json.loads(row[1])
+                for row in connection.execute(
+                    "SELECT key,value FROM metadata WHERE key IN "
+                    "('schema','cut_records_schema','cut_records',"
+                    "'cut_records_sha256')"
+                )
+            }
+        finally:
+            connection.close()
+        if (
+            metadata.get("schema") != "emuflow.phase3-assignment-sqlite/v4"
+            or metadata.get("cut_records_schema") != self.descriptor["schema"]
+            or metadata.get("cut_records") != self.descriptor["records"]
+            or metadata.get("cut_records_sha256") != self.descriptor["sha256"]
+        ):
+            raise ValueError("packed assignment cut-record identity disagrees")
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        from .phase3_assignment_index import iter_phase3_cut_records
+
+        return iter_phase3_cut_records(self.path, self.descriptor)
+
+    def __len__(self) -> int:
+        return int(self.descriptor["records"])
+
+    def __getitem__(self, key: int | slice) -> Any:
+        if isinstance(key, slice):
+            return list(self)[key]
+        if isinstance(key, bool) or not isinstance(key, int):
+            raise TypeError("cut-record index must be an integer or slice")
+        index = key if key >= 0 else len(self) + key
+        if index < 0 or index >= len(self):
+            raise IndexError("cut-record index out of range")
+        for ordinal, record in enumerate(self):
+            if ordinal == index:
+                return record
+        raise IndexError("cut-record index out of range")
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, list):
+            return list(self) == list(other)
+        return NotImplemented
 
 
 def expand_phase3_assignment(
@@ -1229,6 +1337,7 @@ def expand_phase3_assignment(
     schema = value.get("schema")
     if schema not in {
         LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+        OLDER_PACKED_ASSIGNMENT_SCHEMA,
         PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
         PACKED_ASSIGNMENT_SCHEMA,
     }:
@@ -1240,6 +1349,12 @@ def expand_phase3_assignment(
     partitions = value.get("partitions")
     compressed_semantic_contract = value.get("semantic_contract")
     indexed_semantic_contract = value.get("semantic_contract_index")
+    indexed_cut_nets = value.get("cut_nets_index")
+    if schema == PACKED_ASSIGNMENT_SCHEMA:
+        if not isinstance(indexed_cut_nets, Mapping) or "cut_nets" in document:
+            raise ValueError("packed assignment cut storage is ambiguous")
+    elif indexed_cut_nets is not None:
+        raise ValueError("legacy packed assignment has a cut-record index")
     if (
         compressed_semantic_contract is not None
         and indexed_semantic_contract is not None
@@ -1326,6 +1441,14 @@ def expand_phase3_assignment(
         "instance_assignment": dict(sorted(instance_assignment.items())),
         "partitions": expanded_partitions,
     }
+    if indexed_cut_nets is not None:
+        artifact = indexed_cut_nets.get("artifact")
+        if not isinstance(artifact, str) or Path(artifact).name != artifact:
+            raise ValueError("packed assignment cut-record index is malformed")
+        index_path = path.with_name(artifact)
+        result["cut_nets"] = list(
+            IndexedCutNetRecords(index_path, indexed_cut_nets)
+        )
     if semantic_contract is not None:
         result["semantic_contract"] = semantic_contract
     if indexed_semantic_contract is not None:
@@ -1568,6 +1691,7 @@ def read_phase3_assignment_view(
         raise ValueError(f"{path}: expected a JSON object")
     if value.get("schema") not in {
         LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+        OLDER_PACKED_ASSIGNMENT_SCHEMA,
         PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
         PACKED_ASSIGNMENT_SCHEMA,
     }:
@@ -1586,6 +1710,20 @@ def read_phase3_assignment_view(
     if not isinstance(document, dict) or not isinstance(partitions, list):
         raise ValueError("packed assignment downstream view is malformed")
     result = {**document, "partitions": partitions}
+    indexed_cut_nets = value.get("cut_nets_index")
+    if value.get("schema") == PACKED_ASSIGNMENT_SCHEMA:
+        if not isinstance(indexed_cut_nets, Mapping) or "cut_nets" in document:
+            raise ValueError("packed assignment cut storage is ambiguous")
+        artifact = indexed_cut_nets.get("artifact")
+        if not isinstance(artifact, str) or Path(artifact).name != artifact:
+            raise ValueError("packed assignment cut-record index is malformed")
+        index_path = path.with_name(artifact)
+        result["cut_nets"] = IndexedCutNetRecords(
+            index_path, indexed_cut_nets
+        )
+        result["cut_records_indexed"] = True
+    elif indexed_cut_nets is not None:
+        raise ValueError("legacy packed assignment has a cut-record index")
     compressed = value.get("semantic_contract")
     indexed = value.get("semantic_contract_index")
     if compressed is not None and indexed is not None:
@@ -1662,7 +1800,7 @@ def read_phase3_assignment_view(
 
             return expand_phase3_assignment(value, path, read_clusters)
         result["instance_assignment"] = IndexedInstanceAssignment(index_path)
-    if enrich_indexed_contract:
+    if enrich_indexed_contract and indexed_cut_nets is None:
         # Drop the potentially gigabyte-scale base64 string before scanning
         # the indexed dependency relations.  The route view retains only the
         # cut records that Phase 4 actually consumes.
@@ -1872,6 +2010,18 @@ def read_phase3_cut_timing_view(
             include_instance_assignment=include_instance_assignment,
         )
 
+    with path.open("r", encoding="utf-8") as stream:
+        selector = json.load(stream)
+    if (
+        isinstance(selector, dict)
+        and selector.get("schema") == PACKED_ASSIGNMENT_SCHEMA
+    ):
+        return read_phase3_assignment_view(
+            path,
+            include_instance_assignment=include_instance_assignment,
+            include_semantic_contract=False,
+        )
+
     connection = sqlite3.connect(
         f"file:{index_path.resolve()}?mode=ro&immutable=1",
         uri=True,
@@ -1886,6 +2036,7 @@ def read_phase3_cut_timing_view(
             "emuflow.phase3-assignment-sqlite/v1",
             "emuflow.phase3-assignment-sqlite/v2",
             "emuflow.phase3-assignment-sqlite/v3",
+            "emuflow.phase3-assignment-sqlite/v4",
         }:
             raise ValueError("assignment index schema is invalid")
         parts = {

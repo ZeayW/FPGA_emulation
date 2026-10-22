@@ -54,6 +54,7 @@ from .phase3_storage import (
 )
 from .phase3_assignment_index import (
     ASSIGNMENT_INDEX_SCHEMA,
+    CUT_RECORDS_SCHEMA,
     validate_phase3_assignment_index_against_emuir,
     write_phase3_assignment_index,
 )
@@ -1217,7 +1218,7 @@ def run_phase3(
     # Publish the typed semantic relation before the lightweight JSON
     # descriptor that names it.  A failed index write can therefore never
     # leave a completed assignment document pointing at a missing sidecar.
-    phase3_runtime_call(
+    assignment_index_summary = phase3_runtime_call(
         "publish.write_assignment_index",
         write_phase3_assignment_index,
         output_dir / "assignment.sqlite",
@@ -1232,6 +1233,12 @@ def run_phase3(
             pack_phase3_assignment,
             assignment,
             clusters,
+            cut_nets_index={
+                "artifact": "assignment.sqlite",
+                "schema": CUT_RECORDS_SCHEMA,
+                "records": assignment_index_summary["cut_records"],
+                "sha256": assignment_index_summary["cut_records_sha256"],
+            },
         )
     )
     phase3_runtime_call(

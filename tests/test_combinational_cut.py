@@ -75,6 +75,7 @@ from emuflow.phase3_exact_binary import (
     write_phase3_exact_binary,
 )
 from emuflow.phase3_storage import (
+    PACKED_ASSIGNMENT_SCHEMA,
     pack_phase3_assignment,
     pack_phase3_clusters,
     read_phase3_assignment_view,
@@ -2333,10 +2334,21 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         clusters, assignment = self._exact_artifacts(dependent_return=True)
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            write_phase3_assignment_index(
+            index_summary = write_phase3_assignment_index(
                 root / "assignment.sqlite", self.ir, assignment
             )
-            packed = pack_phase3_assignment(assignment, clusters)
+            packed = pack_phase3_assignment(
+                assignment,
+                clusters,
+                cut_nets_index={
+                    "artifact": "assignment.sqlite",
+                    "schema": "emuflow.phase3-cut-records/v1",
+                    "records": index_summary["cut_records"],
+                    "sha256": index_summary["cut_records_sha256"],
+                },
+            )
+            self.assertEqual(packed["schema"], PACKED_ASSIGNMENT_SCHEMA)
+            self.assertNotIn("cut_nets", packed["document"])
             self.assertIsNone(packed["semantic_contract"])
             self.assertEqual(
                 packed["semantic_contract_index"],
@@ -2358,6 +2370,10 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 root / "assignment.json",
                 include_semantic_contract=False,
             )
+            self.assertTrue(route_view["cut_records_indexed"])
+            self.assertIsInstance(route_view["cut_nets"], list)
+            self.assertEqual(list(route_view["cut_nets"]), assignment["cut_nets"])
+            self.assertEqual(list(route_view["cut_nets"]), assignment["cut_nets"])
             self.assertTrue(route_view["semantic_contract_indexed"])
             self.assertNotIn("semantic_contract", route_view)
             self.assertEqual(
@@ -2365,10 +2381,59 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
             )
 
+            cut_tampered = copy.deepcopy(packed)
+            cut_tampered["cut_nets_index"]["sha256"] = "0" * 64
+            write_json(root / "assignment.json", cut_tampered, compact=True)
+            with self.assertRaisesRegex(ValueError, "identity disagrees"):
+                read_phase3_assignment_view(root / "assignment.json")
+
             packed["semantic_contract_index"]["sha256"] = "0" * 64
             write_json(root / "assignment.json", packed, compact=True)
             with self.assertRaisesRegex(ValueError, "index is malformed"):
                 read_json(root / "assignment.json")
+
+            with sqlite3.connect(root / "assignment.sqlite") as connection:
+                connection.execute(
+                    "UPDATE cuts SET sink_endpoints=sink_endpoints+1 "
+                    "WHERE cut_index=0"
+                )
+            with self.assertRaisesRegex(
+                ValidationError, "cut-record identity disagrees"
+            ):
+                validate_phase3_assignment_index(root / "assignment.sqlite")
+
+    def test_indexed_assignment_storage_preserves_zero_cut_contract(self):
+        clusters, assignment = self._exact_artifacts(dependent_return=True)
+        assignment = copy.deepcopy(assignment)
+        assignment["cut_nets"] = []
+        assignment.pop("semantic_contract", None)
+        assignment.pop("semantic_contract_sha256", None)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            summary = write_phase3_assignment_index(
+                root / "assignment.sqlite", self.ir, assignment
+            )
+            self.assertEqual(summary["cut_records"], 0)
+            packed = pack_phase3_assignment(
+                assignment,
+                clusters,
+                cut_nets_index={
+                    "artifact": "assignment.sqlite",
+                    "schema": "emuflow.phase3-cut-records/v1",
+                    "records": 0,
+                    "sha256": summary["cut_records_sha256"],
+                },
+            )
+            write_json(
+                root / "clusters.json",
+                pack_phase3_clusters(clusters),
+                compact=True,
+            )
+            write_json(root / "assignment.json", packed, compact=True)
+            view = read_phase3_assignment_view(root / "assignment.json")
+            self.assertEqual(len(view["cut_nets"]), 0)
+            self.assertEqual(list(view["cut_nets"]), [])
+            self.assertEqual(read_json(root / "assignment.json"), assignment)
 
     def _legacy_exact_assignment_with_bit(self, bit):
         _, assignment = self._exact_artifacts(dependent_return=True)

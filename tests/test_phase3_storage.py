@@ -11,8 +11,8 @@ from emuflow.phase3_storage import (
     CLUSTERS_SQLITE_APPLICATION_ID,
     COMPRESSED_CLUSTERS_SCHEMA,
     INDEXED_CLUSTERS_SCHEMA,
-    PACKED_ASSIGNMENT_SCHEMA,
     PACKED_CLUSTERS_SCHEMA,
+    PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
     compress_phase3_clusters,
     pack_phase3_assignment,
     pack_phase3_clusters,
@@ -193,7 +193,9 @@ class Phase3StorageTest(unittest.TestCase):
         packed_clusters = pack_phase3_clusters(clusters)
         packed_assignment = pack_phase3_assignment(assignment, clusters)
         self.assertEqual(packed_clusters["schema"], PACKED_CLUSTERS_SCHEMA)
-        self.assertEqual(packed_assignment["schema"], PACKED_ASSIGNMENT_SCHEMA)
+        self.assertEqual(
+            packed_assignment["schema"], PREVIOUS_PACKED_ASSIGNMENT_SCHEMA
+        )
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             write_json(root / "clusters.json", packed_clusters, compact=True)

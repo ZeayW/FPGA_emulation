@@ -1,21 +1,21 @@
 """Compact, queryable Phase 3 assignment data for downstream data planes.
 
-The JSON assignment remains the human-readable Phase 3 contract used by the
-router and scheduler.  This SQLite artifact is the machine handoff used by
-Phase 6.  It is written while Phase 3 already owns the validated EmuIR and
-assignment objects, so a downstream consumer never has to expand the packed
-cluster JSON merely to recover ``instance -> FPGA``.
+The SQLite artifact owns the production instance, partition, cut and Static
+Exact relations.  The sibling JSON is a small selector and compatibility
+envelope.  Phase 4--7 consumers can therefore scan typed records without
+expanding packed clusters or republishing the same graph as JSON.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from .combinational_cut import semantic_contract_sha256
 from .errors import ValidationError
@@ -42,10 +42,18 @@ from .routing import static_exact_contract_from_assignment
 
 LEGACY_ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v1"
 PREVIOUS_ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v2"
-ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v3"
+PACKED_EXACT_ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v3"
+ASSIGNMENT_INDEX_SCHEMA = "emuflow.phase3-assignment-sqlite/v4"
 ASSIGNMENT_INDEX_APPLICATION_ID = 0x454D5541  # ASCII "EMUA"
-ASSIGNMENT_INDEX_USER_VERSION = 3
-SUPPORTED_ASSIGNMENT_INDEX_USER_VERSIONS = {1, 2, 3}
+ASSIGNMENT_INDEX_USER_VERSION = 4
+SUPPORTED_ASSIGNMENT_INDEX_USER_VERSIONS = {1, 2, 3, 4}
+CUT_RECORDS_SCHEMA = "emuflow.phase3-cut-records/v1"
+_ASSIGNMENT_INDEX_SCHEMA_BY_VERSION = {
+    1: LEGACY_ASSIGNMENT_INDEX_SCHEMA,
+    2: PREVIOUS_ASSIGNMENT_INDEX_SCHEMA,
+    3: PACKED_EXACT_ASSIGNMENT_INDEX_SCHEMA,
+    4: ASSIGNMENT_INDEX_SCHEMA,
+}
 _SQLITE_SIGNED_INTEGER_MAX = (1 << 63) - 1
 
 
@@ -76,6 +84,31 @@ CREATE TABLE cut_sinks(
 ) WITHOUT ROWID;
 CREATE INDEX cut_sinks_sink
   ON cut_sinks(sink_part_index, net_id);
+"""
+
+CUT_RECORD_DDL = """
+CREATE TABLE cuts(
+  cut_index INTEGER PRIMARY KEY,
+  net_id TEXT NOT NULL UNIQUE,
+  source_part_index INTEGER NOT NULL,
+  cut_class TEXT NOT NULL,
+  sink_endpoints INTEGER NOT NULL CHECK(sink_endpoints>0),
+  transport_round INTEGER CHECK(transport_round IS NULL OR transport_round>=0),
+  dependency_level INTEGER CHECK(dependency_level IS NULL OR dependency_level>=0),
+  combinational_dependency_depth INTEGER CHECK(
+    combinational_dependency_depth IS NULL OR
+    combinational_dependency_depth>=0
+  )
+);
+CREATE TABLE cut_predecessors(
+  cut_index INTEGER NOT NULL,
+  ordinal INTEGER NOT NULL,
+  predecessor_net_id TEXT NOT NULL,
+  PRIMARY KEY(cut_index,ordinal),
+  UNIQUE(cut_index,predecessor_net_id)
+) WITHOUT ROWID;
+CREATE INDEX cut_predecessors_net
+  ON cut_predecessors(predecessor_net_id,cut_index);
 """
 
 EXACT_DDL = """
@@ -121,10 +154,277 @@ CREATE INDEX exact_capture_requirements_part
 """
 
 DDL = CORE_DDL + EXACT_DDL
+CURRENT_DDL = CORE_DDL + CUT_RECORD_DDL
 
 
 def _json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def _normalized_cut_record(
+    value: Any,
+    part_index: Mapping[str, int],
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValidationError("cut-net assignment is invalid")
+    allowed = {
+        "net",
+        "cut_class",
+        "source_fpgas",
+        "sink_fpgas",
+        "sink_endpoints",
+        "transport_round",
+        "dependency_level",
+        "combinational_dependency_depth",
+        "predecessor_cut_nets",
+    }
+    if set(value) - allowed:
+        raise ValidationError("cut-net assignment has unsupported fields")
+    net_id = value.get("net")
+    cut_class = value.get("cut_class")
+    sources = value.get("source_fpgas")
+    sinks = value.get("sink_fpgas")
+    sink_endpoints = value.get("sink_endpoints")
+    if (
+        not isinstance(net_id, str)
+        or not net_id
+        or not isinstance(cut_class, str)
+        or not cut_class
+        or not isinstance(sources, list)
+        or len(sources) != 1
+        or sources[0] not in part_index
+        or not isinstance(sinks, list)
+        or not sinks
+        or sinks != sorted(set(sinks))
+        or any(sink not in part_index or sink == sources[0] for sink in sinks)
+        or isinstance(sink_endpoints, bool)
+        or not isinstance(sink_endpoints, int)
+        or sink_endpoints <= 0
+    ):
+        raise ValidationError("cut-net assignment is invalid")
+    transport_round = value.get("transport_round")
+    if transport_round is not None and (
+        isinstance(transport_round, bool)
+        or not isinstance(transport_round, int)
+        or transport_round < 0
+    ):
+        raise ValidationError("cut-net transport round is invalid")
+    dependency_fields = (
+        "dependency_level",
+        "combinational_dependency_depth",
+        "predecessor_cut_nets",
+    )
+    dependency_presence = [field in value for field in dependency_fields]
+    if any(dependency_presence) != all(dependency_presence):
+        raise ValidationError("cut-net dependency fields are incomplete")
+    result = {
+        "net": net_id,
+        "cut_class": cut_class,
+        "source_fpgas": list(sources),
+        "sink_fpgas": list(sinks),
+        "sink_endpoints": sink_endpoints,
+    }
+    if transport_round is not None:
+        result["transport_round"] = transport_round
+    if all(dependency_presence):
+        level = value["dependency_level"]
+        depth = value["combinational_dependency_depth"]
+        predecessors = value["predecessor_cut_nets"]
+        if (
+            isinstance(level, bool)
+            or not isinstance(level, int)
+            or level < 0
+            or isinstance(depth, bool)
+            or not isinstance(depth, int)
+            or depth < 0
+            or not isinstance(predecessors, list)
+            or predecessors != sorted(set(predecessors))
+            or not all(
+                isinstance(predecessor, str) and predecessor
+                for predecessor in predecessors
+            )
+        ):
+            raise ValidationError("cut-net dependency fields are invalid")
+        result.update(
+            {
+                "dependency_level": level,
+                "combinational_dependency_depth": depth,
+                "predecessor_cut_nets": list(predecessors),
+            }
+        )
+    return result
+
+
+def _iter_cut_records(
+    connection: sqlite3.Connection,
+) -> Iterator[dict[str, Any]]:
+    """Merge the normalized v4 cut columns using bounded ordered cursors."""
+
+    parts = {
+        int(row[0]): str(row[1])
+        for row in connection.execute(
+            "SELECT part_index,fpga FROM parts ORDER BY part_index"
+        )
+    }
+    sink_rows = iter(
+        connection.execute(
+            "SELECT c.cut_index,s.source_part_index,s.sink_part_index "
+            "FROM cut_sinks s LEFT JOIN cuts c ON c.net_id=s.net_id "
+            "ORDER BY c.cut_index IS NULL,c.cut_index,s.sink_part_index"
+        )
+    )
+    predecessor_rows = iter(
+        connection.execute(
+            "SELECT cut_index,ordinal,predecessor_net_id "
+            "FROM cut_predecessors ORDER BY cut_index,ordinal"
+        )
+    )
+    sink_row = next(sink_rows, None)
+    predecessor_row = next(predecessor_rows, None)
+    expected_index = 0
+    previous_net = None
+    for row in connection.execute(
+        "SELECT cut_index,net_id,source_part_index,cut_class,"
+        "sink_endpoints,transport_round,dependency_level,"
+        "combinational_dependency_depth FROM cuts ORDER BY cut_index"
+    ):
+        cut_index = int(row[0])
+        net_id = str(row[1])
+        source_index = int(row[2])
+        if (
+            cut_index != expected_index
+            or source_index not in parts
+            or (previous_net is not None and net_id <= previous_net)
+        ):
+            raise ValidationError("assignment index cut order is invalid")
+        expected_index += 1
+        previous_net = net_id
+        sinks = []
+        while sink_row is not None and int(sink_row[0]) == cut_index:
+            if int(sink_row[1]) != source_index:
+                raise ValidationError(
+                    "assignment index cut source is inconsistent"
+                )
+            sink_index = int(sink_row[2])
+            if sink_index not in parts:
+                raise ValidationError("assignment index cut sink is invalid")
+            sinks.append(parts[sink_index])
+            sink_row = next(sink_rows, None)
+        if not sinks or sinks != sorted(set(sinks)):
+            raise ValidationError("assignment index cut sinks are invalid")
+        predecessors = []
+        ordinal = 0
+        while (
+            predecessor_row is not None
+            and int(predecessor_row[0]) == cut_index
+        ):
+            if int(predecessor_row[1]) != ordinal:
+                raise ValidationError(
+                    "assignment index cut predecessor order is invalid"
+                )
+            predecessors.append(str(predecessor_row[2]))
+            ordinal += 1
+            predecessor_row = next(predecessor_rows, None)
+        if predecessors != sorted(set(predecessors)):
+            raise ValidationError(
+                "assignment index cut predecessors are invalid"
+            )
+        record: dict[str, Any] = {
+            "net": net_id,
+            "cut_class": str(row[3]),
+            "source_fpgas": [parts[source_index]],
+            "sink_fpgas": sinks,
+            "sink_endpoints": int(row[4]),
+        }
+        if row[5] is not None:
+            record["transport_round"] = int(row[5])
+        dependency_level = row[6]
+        dependency_depth = row[7]
+        if dependency_level is not None or dependency_depth is not None:
+            if dependency_level is None or dependency_depth is None:
+                raise ValidationError(
+                    "assignment index cut dependency is incomplete"
+                )
+            record.update(
+                {
+                    "dependency_level": int(dependency_level),
+                    "combinational_dependency_depth": int(dependency_depth),
+                    "predecessor_cut_nets": predecessors,
+                }
+            )
+        elif predecessors:
+            raise ValidationError(
+                "assignment index cut dependency is incomplete"
+            )
+        yield record
+    if sink_row is not None or predecessor_row is not None:
+        raise ValidationError("assignment index contains orphan cut records")
+
+
+def _cut_record_identity(
+    connection: sqlite3.Connection,
+) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    records = 0
+    for record in _iter_cut_records(connection):
+        digest.update(_json(record).encode("utf-8"))
+        digest.update(b"\n")
+        records += 1
+    return records, digest.hexdigest()
+
+
+def iter_phase3_cut_records(
+    path: Path,
+    descriptor: Mapping[str, Any] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield sealed v4 cut records without materializing the relation."""
+
+    connection = open_phase3_assignment_index(path)
+    try:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        metadata = {
+            str(row[0]): json.loads(row[1])
+            for row in connection.execute(
+                "SELECT key,value FROM metadata WHERE key IN "
+                "('schema','cut_records_schema','cut_records',"
+                "'cut_records_sha256')"
+            )
+        }
+        expected = {
+            "artifact": path.name,
+            "schema": metadata.get("cut_records_schema"),
+            "records": metadata.get("cut_records"),
+            "sha256": metadata.get("cut_records_sha256"),
+        }
+        if (
+            version != ASSIGNMENT_INDEX_USER_VERSION
+            or metadata.get("schema") != ASSIGNMENT_INDEX_SCHEMA
+            or expected["schema"] != CUT_RECORDS_SCHEMA
+            or isinstance(expected["records"], bool)
+            or not isinstance(expected["records"], int)
+            or expected["records"] < 0
+            or not isinstance(expected["sha256"], str)
+            or len(expected["sha256"]) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in expected["sha256"]
+            )
+            or (descriptor is not None and dict(descriptor) != expected)
+        ):
+            raise ValidationError("Phase 3 cut-record descriptor is invalid")
+        digest = hashlib.sha256()
+        observed = 0
+        for record in _iter_cut_records(connection):
+            digest.update(_json(record).encode("utf-8"))
+            digest.update(b"\n")
+            observed += 1
+            yield record
+        if observed != expected["records"] or digest.hexdigest() != expected[
+            "sha256"
+        ]:
+            raise ValidationError("Phase 3 cut-record identity disagrees")
+    finally:
+        connection.close()
 
 
 def _decode_legacy_capture_bit(value: Any) -> int:
@@ -375,7 +675,7 @@ def write_phase3_assignment_index(
             PRAGMA cache_size=-65536;
             PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
             PRAGMA user_version={ASSIGNMENT_INDEX_USER_VERSION};
-            {CORE_DDL}
+            {CURRENT_DDL}
             """
         )
         metadata = {
@@ -499,30 +799,76 @@ def write_phase3_assignment_index(
             replica_rows(),
         )
 
-        def cut_rows():
-            for cut in assignment.get("cut_nets", []):
-                sources = cut.get("source_fpgas")
-                sinks = cut.get("sink_fpgas")
-                net_id = cut.get("net")
-                if (
-                    not isinstance(sources, list)
-                    or len(sources) != 1
-                    or sources[0] not in part_index
-                    or not isinstance(net_id, str)
-                    or not isinstance(sinks, list)
-                ):
-                    raise ValidationError("cut-net assignment is invalid")
-                source = sources[0]
-                for sink in sinks:
-                    if sink not in part_index:
-                        raise ValidationError("cut net targets an unknown FPGA")
-                    yield (net_id, part_index[source], part_index[sink])
+        raw_cuts = assignment.get("cut_nets")
+        if not isinstance(raw_cuts, list):
+            raise ValidationError("cut-net assignment is invalid")
+        cut_digest = hashlib.sha256()
+        cut_rows: list[tuple[Any, ...]] = []
+        sink_rows: list[tuple[Any, ...]] = []
+        predecessor_rows: list[tuple[Any, ...]] = []
 
-        phase3_runtime_call(
-            "assignment_index.write_cut_sinks",
-            connection.executemany,
-            "INSERT INTO cut_sinks VALUES (?,?,?)",
-            cut_rows(),
+        def flush_cut_rows() -> None:
+            if cut_rows:
+                connection.executemany(
+                    "INSERT INTO cuts VALUES (?,?,?,?,?,?,?,?)", cut_rows
+                )
+                cut_rows.clear()
+            if sink_rows:
+                connection.executemany(
+                    "INSERT INTO cut_sinks VALUES (?,?,?)", sink_rows
+                )
+                sink_rows.clear()
+            if predecessor_rows:
+                connection.executemany(
+                    "INSERT INTO cut_predecessors VALUES (?,?,?)",
+                    predecessor_rows,
+                )
+                predecessor_rows.clear()
+
+        previous_net = None
+        for cut_index, cut in enumerate(raw_cuts):
+            normalized = _normalized_cut_record(cut, part_index)
+            net_id = normalized["net"]
+            if previous_net is not None and net_id <= previous_net:
+                raise ValidationError("cut-net assignment order is not canonical")
+            previous_net = net_id
+            encoded = _json(normalized).encode("utf-8")
+            cut_digest.update(encoded)
+            cut_digest.update(b"\n")
+            source_index = part_index[normalized["source_fpgas"][0]]
+            cut_rows.append(
+                (
+                    cut_index,
+                    net_id,
+                    source_index,
+                    normalized["cut_class"],
+                    normalized["sink_endpoints"],
+                    normalized.get("transport_round"),
+                    normalized.get("dependency_level"),
+                    normalized.get("combinational_dependency_depth"),
+                )
+            )
+            for sink in normalized["sink_fpgas"]:
+                sink_rows.append((net_id, source_index, part_index[sink]))
+                if len(sink_rows) >= 8192:
+                    flush_cut_rows()
+            for ordinal, predecessor in enumerate(
+                normalized.get("predecessor_cut_nets", [])
+            ):
+                predecessor_rows.append((cut_index, ordinal, predecessor))
+                if len(predecessor_rows) >= 8192:
+                    flush_cut_rows()
+            if len(cut_rows) >= 8192:
+                flush_cut_rows()
+        flush_cut_rows()
+        cut_records_sha256 = cut_digest.hexdigest()
+        connection.executemany(
+            "INSERT INTO metadata(key,value) VALUES (?,?)",
+            (
+                ("cut_records_schema", _json(CUT_RECORDS_SCHEMA)),
+                ("cut_records", _json(len(raw_cuts))),
+                ("cut_records_sha256", _json(cut_records_sha256)),
+            ),
         )
 
         phase3_runtime_call(
@@ -827,6 +1173,17 @@ def open_phase3_assignment_index(path: Path) -> sqlite3.Connection:
     ):
         connection.close()
         raise ValidationError("unsupported Phase 3 assignment index")
+    try:
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key='schema'"
+        ).fetchone()
+        schema = json.loads(row[0]) if row is not None else None
+    except (sqlite3.Error, TypeError, json.JSONDecodeError) as error:
+        connection.close()
+        raise ValidationError("Phase 3 assignment index schema is invalid") from error
+    if schema != _ASSIGNMENT_INDEX_SCHEMA_BY_VERSION[version]:
+        connection.close()
+        raise ValidationError("Phase 3 assignment index schema is invalid")
     return connection
 
 
@@ -855,7 +1212,7 @@ def read_phase3_exact_semantic_partition(
             raise ValidationError(f"assignment index omits FPGA {fpga!r}")
         part_index = int(part[0])
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version == 3:
+        if version >= 3:
             descriptor = metadata.get("semantic_contract_binary")
             if not isinstance(descriptor, Mapping):
                 raise ValidationError(
@@ -990,7 +1347,7 @@ def read_phase3_exact_semantic_contract(
             str(row["key"]): json.loads(row["value"])
             for row in connection.execute("SELECT key,value FROM metadata")
         }
-        if version == 3:
+        if version >= 3:
             descriptor = metadata.get("semantic_contract_binary")
             if not isinstance(descriptor, Mapping):
                 raise ValidationError(
@@ -1004,7 +1361,7 @@ def read_phase3_exact_semantic_contract(
             )
         if version != 2:
             raise ValidationError(
-                "full indexed Static Exact reconstruction requires index v2/v3"
+                "full indexed Static Exact reconstruction requires index v2+"
             )
         header = metadata.get("semantic_contract_header")
         schema = metadata.get("semantic_contract_schema")
@@ -1168,7 +1525,7 @@ def phase3_exact_semantic_counts(path: Path) -> dict[str, int]:
     connection = open_phase3_assignment_index(path)
     try:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version == 3:
+        if version >= 3:
             metadata = {
                 row["key"]: json.loads(row["value"])
                 for row in connection.execute("SELECT key,value FROM metadata")
@@ -1234,7 +1591,7 @@ def read_phase3_exact_split_relations(
                 "SELECT part_index,fpga FROM parts ORDER BY part_index"
             )
         }
-        if version == 3:
+        if version >= 3:
             metadata = {
                 str(row[0]): json.loads(row[1])
                 for row in connection.execute(
@@ -1366,11 +1723,9 @@ def validate_phase3_assignment_index(
             row["key"]: json.loads(row["value"])
             for row in connection.execute("SELECT key,value FROM metadata")
         }
-        if metadata.get("schema") not in {
-            LEGACY_ASSIGNMENT_INDEX_SCHEMA,
-            PREVIOUS_ASSIGNMENT_INDEX_SCHEMA,
-            ASSIGNMENT_INDEX_SCHEMA,
-        }:
+        if metadata.get("schema") not in set(
+            _ASSIGNMENT_INDEX_SCHEMA_BY_VERSION.values()
+        ):
             raise ValidationError("Phase 3 assignment index schema is invalid")
         if expected_design is not None and metadata.get("design") != expected_design:
             raise ValidationError("assignment index design disagrees")
@@ -1397,6 +1752,87 @@ def validate_phase3_assignment_index(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        cut_records = 0
+        cut_records_sha256 = None
+        if version == ASSIGNMENT_INDEX_USER_VERSION:
+            if not {"cuts", "cut_predecessors"}.issubset(tables):
+                raise ValidationError(
+                    "Phase 3 assignment index lacks typed cut records"
+                )
+            expected_records = metadata.get("cut_records")
+            expected_digest = metadata.get("cut_records_sha256")
+            if (
+                metadata.get("cut_records_schema") != CUT_RECORDS_SCHEMA
+                or isinstance(expected_records, bool)
+                or not isinstance(expected_records, int)
+                or expected_records < 0
+                or not isinstance(expected_digest, str)
+                or len(expected_digest) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in expected_digest
+                )
+            ):
+                raise ValidationError(
+                    "Phase 3 cut-record metadata is invalid"
+                )
+            invalid_relations = int(
+                connection.execute(
+                    """
+                    SELECT count(*) FROM (
+                      SELECT c.cut_index
+                        FROM cuts c LEFT JOIN parts p
+                          ON p.part_index=c.source_part_index
+                       WHERE p.part_index IS NULL
+                      UNION ALL
+                      SELECT s.net_id
+                        FROM cut_sinks s LEFT JOIN cuts c USING(net_id)
+                        LEFT JOIN parts p
+                          ON p.part_index=s.sink_part_index
+                       WHERE c.cut_index IS NULL
+                          OR p.part_index IS NULL
+                          OR s.source_part_index!=c.source_part_index
+                      UNION ALL
+                      SELECT c.cut_index
+                        FROM cuts c LEFT JOIN cut_sinks s USING(net_id)
+                       WHERE s.net_id IS NULL
+                      UNION ALL
+                      SELECT q.cut_index
+                        FROM cut_predecessors q
+                        LEFT JOIN cuts c ON c.cut_index=q.cut_index
+                        LEFT JOIN cuts p ON p.net_id=q.predecessor_net_id
+                       WHERE c.cut_index IS NULL OR p.cut_index IS NULL
+                          OR c.net_id=q.predecessor_net_id
+                    )
+                    """
+                ).fetchone()[0]
+            )
+            invalid_dependencies = int(
+                connection.execute(
+                    """
+                    SELECT count(*) FROM cuts c
+                     WHERE (c.dependency_level IS NULL)
+                           != (c.combinational_dependency_depth IS NULL)
+                        OR (c.dependency_level IS NULL AND EXISTS (
+                             SELECT 1 FROM cut_predecessors q
+                              WHERE q.cut_index=c.cut_index
+                           ))
+                        OR (? IS NOT NULL AND c.dependency_level IS NULL)
+                    """,
+                    (metadata.get("semantic_contract_sha256"),),
+                ).fetchone()[0]
+            )
+            if invalid_relations or invalid_dependencies:
+                raise ValidationError(
+                    "Phase 3 typed cut-record relation is invalid"
+                )
+            cut_records, cut_records_sha256 = _cut_record_identity(connection)
+            if (
+                cut_records != expected_records
+                or cut_records_sha256 != expected_digest
+            ):
+                raise ValidationError("Phase 3 cut-record identity disagrees")
         has_exact_payloads = {
             "exact_segment_bindings",
             "exact_capture_requirements",
@@ -1454,7 +1890,7 @@ def validate_phase3_assignment_index(
                 )
         return {
             "status": "pass",
-            "schema": ASSIGNMENT_INDEX_SCHEMA,
+            "schema": metadata["schema"],
             "design": metadata["design"],
             "platform": metadata["platform"],
             "parts": connection.execute(
@@ -1465,6 +1901,9 @@ def validate_phase3_assignment_index(
             "cut_sinks": connection.execute(
                 "SELECT count(*) FROM cut_sinks"
             ).fetchone()[0],
+            "cut_records_schema": metadata.get("cut_records_schema"),
+            "cut_records": cut_records,
+            "cut_records_sha256": cut_records_sha256,
             "semantic_contract_sha256": metadata.get(
                 "semantic_contract_sha256"
             ),
@@ -1519,6 +1958,7 @@ def validate_phase3_assignment_index_against_emuir(
             not in {
                 LEGACY_ASSIGNMENT_INDEX_SCHEMA,
                 PREVIOUS_ASSIGNMENT_INDEX_SCHEMA,
+                PACKED_EXACT_ASSIGNMENT_INDEX_SCHEMA,
                 ASSIGNMENT_INDEX_SCHEMA,
             }
             or metadata.get("design") != expected_design
