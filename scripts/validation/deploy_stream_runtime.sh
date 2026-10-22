@@ -23,9 +23,12 @@ export TMPDIR="$runtime_dir/tmp"
 
 # The login environment on the validation farm still exposes GCC 7 as `c++`.
 # That compiler accepts -std=c++17 but does not provide <filesystem>, which is
-# required by emuflow_core/artifact_io.cpp.  Select a compiler by capability
-# instead of trusting PATH or a version string.  CXX, when provided, remains an
-# explicit fail-closed override and must name one executable.
+# required by emuflow_core/artifact_io.cpp.  The farm's system libstdc++ is also
+# older than the GCC 14 compiler installation.  Select a compiler by capability
+# instead of trusting PATH or a version string, and link the small native tools
+# with their compiler's C++ runtime so they do not inherit that ABI mismatch.
+# CXX, when provided, remains an explicit fail-closed override and must name one
+# executable.
 filesystem_probe_source="$runtime_dir/tmp/cxx17_filesystem_probe.cpp"
 filesystem_probe_binary="$runtime_dir/tmp/cxx17_filesystem_probe"
 cleanup_filesystem_probe() {
@@ -43,7 +46,8 @@ EOF
 selected_cxx=
 if test -n "${CXX:-}"; then
   if cxx_path=$(command -v "$CXX" 2>/dev/null) && \
-      "$cxx_path" -std=c++17 "$filesystem_probe_source" \
+      "$cxx_path" -std=c++17 -static-libstdc++ -static-libgcc \
+        "$filesystem_probe_source" \
         -o "$filesystem_probe_binary" >/dev/null 2>&1 && \
       "$filesystem_probe_binary"; then
     selected_cxx=$cxx_path
@@ -59,7 +63,8 @@ else
     g++
   do
     if cxx_path=$(command -v "$cxx_candidate" 2>/dev/null) && \
-        "$cxx_path" -std=c++17 "$filesystem_probe_source" \
+        "$cxx_path" -std=c++17 -static-libstdc++ -static-libgcc \
+          "$filesystem_probe_source" \
           -o "$filesystem_probe_binary" >/dev/null 2>&1 && \
         "$filesystem_probe_binary"; then
       selected_cxx=$cxx_path
@@ -91,12 +96,14 @@ do
   rm -f "$target"
   if test "$tool" = static_exact_analyzer; then
     "$selected_cxx" -std=c++17 -O3 -pthread \
+      -static-libstdc++ -static-libgcc \
       -I"$source_dir/src/native" \
       "$source_dir/src/native/static_exact_analyzer.cpp" \
       "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
       -o "$target"
   else
     "$selected_cxx" -std=c++17 -O3 -pthread \
+      -static-libstdc++ -static-libgcc \
       "$source_dir/src/native/$tool.cpp" -o "$target"
   fi
 done
