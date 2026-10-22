@@ -720,6 +720,18 @@ segment and path-key uniqueness beyond ten FPGAs. Archive retention follows and
 validates the complete summary-selector-store group. Remaining per-FPGA
 evidence databases are still JSON migration work.
 
+Local-path backend preparation no longer retains the complete cross-path ID
+set, original-path ID list, per-FPGA path dictionaries and selected original
+net dictionaries together. One private typed SQLite owner partitions paths
+once, computes the ordered path seal without a Python sort and serves all FPGA
+workers through repeatable read-only cursors; VPR net lookup uses a bounded
+8,192-record cache. On a synthetic 300,000-path preparation with 150,000 local
+paths and selected nets, build plus full traversal reduced process peak RSS
+from 481.92 MB to 82.98 MB. Wall time changed from 1.157 to 2.753 seconds and
+the temporary owner used 55,746,560 bytes; both paths produced the same path
+identity SHA-256. The per-FPGA final query record list and identity JSON remain
+to migrate. This is isolated adapter evidence, not NVDLA qualification.
+
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
 from their sealed SQLite sidecar. Production placement validation writes each
 validated site group directly into a versioned typed store, so it no longer

@@ -154,7 +154,14 @@ class LogicSegmentTimingTest(unittest.TestCase):
                     allow_legacy_schedule=True,
                 )
         self.assertIsNone(prepared.original_ir)
+        self.assertNotIsInstance(prepared.local_paths_by_fpga, dict)
+        self.assertNotIsInstance(prepared.cross_path_ids, (set, frozenset))
+        self.assertNotIsInstance(prepared.original_nets, dict)
         self.assertEqual(set(prepared.original_nets), {"n0", "n1"})
+        self.assertEqual(
+            prepared.source_manifest["original_path_ids_sha256"],
+            path_id_set_sha256(["p0"]),
+        )
         self.assertEqual(prepared.path_endpoints["p0"][0]["instance"], "launch")
         self.assertIsNone(logic.original_ir)
         self.assertEqual(set(logic.original_nets), {"n0", "n1"})
