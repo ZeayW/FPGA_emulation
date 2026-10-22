@@ -81,7 +81,10 @@ Combinational-cut characterization now uses the same compact source. Ordered
 endpoint cursors feed a file-backed arc deduplicator and fixed-width CSR/SCC
 arrays; each net retains at most one driver plus a multi-driver flag, and
 eligible arcs are inserted in batches of at most 8,192. Clock/reset,
-multi-driver and state-source nets do not accumulate sink populations. A
+multi-driver and state-source nets do not accumulate sink populations. The
+same validated endpoint pass also retains fixed-width per-net eligibility
+summaries. After SCC, indexed lookups mark the uncommon cyclic sink owners, so
+the candidate checker does not rescan all endpoints with cell and pin joins. A
 1,000,000-endpoint high-fanout regression stays below 16 MiB of traced Python
 allocation. A separate 100,001-instance chain used 11.38 MB peak versus 90.99
 MB for the reference path while preserving the same 100,000 eligible cuts.

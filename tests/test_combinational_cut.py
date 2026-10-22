@@ -777,6 +777,67 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
             )
         self.assertEqual(actual, expected)
 
+    def test_compact_v2_candidate_index_reuses_endpoint_summary(self):
+        value = _chain_ir().to_dict()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, value)
+            delegate = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            delegate.row_factory = sqlite3.Row
+            statements = []
+
+            class RecordingConnection:
+                def execute(self, statement, *arguments):
+                    statements.append(" ".join(statement.split()))
+                    return delegate.execute(statement, *arguments)
+
+                def executemany(self, statement, *arguments):
+                    statements.append(" ".join(statement.split()))
+                    return delegate.executemany(statement, *arguments)
+
+                def close(self):
+                    delegate.close()
+
+            with patch(
+                "emuflow.combinational_cut.open_emuir_sqlite_read_only",
+                return_value=RecordingConnection(),
+            ):
+                actual = _build_combinational_cut_candidate_index(
+                    load_partition_ir(path),
+                    include_dependency_levels=False,
+                    include_source_identity=False,
+                )
+        self.assertEqual(actual["eligible_ids"], {"n0", "n1"})
+        endpoint_scans = [
+            statement
+            for statement in statements
+            if "FROM endpoint_records" in statement
+        ]
+        self.assertEqual(len(endpoint_scans), 1)
+        self.assertNotIn("WHERE n.cut_class='combinational'", endpoint_scans[0])
+
+    def test_compact_v2_candidate_index_streams_many_cyclic_owners(self):
+        value = _chain_ir().to_dict()
+        value["nets"][2]["sinks"].append(_endpoint("l0", "I1"))
+        expected = _build_combinational_cut_candidate_index(
+            EmuIR(value),
+            include_dependency_levels=False,
+            include_source_identity=False,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, value)
+            with patch(
+                "emuflow.combinational_cut._COMPACT_CYCLIC_OWNER_INDEX_LIMIT",
+                0,
+            ):
+                actual = _build_combinational_cut_candidate_index(
+                    load_partition_ir(path),
+                    include_dependency_levels=False,
+                    include_source_identity=False,
+                )
+        self.assertEqual(actual, expected)
+
     def test_compact_v2_candidate_index_streams_packed_graph_and_matches_reference(
         self,
     ):

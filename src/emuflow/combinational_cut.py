@@ -60,6 +60,7 @@ _STATIC_EXACT_NATIVE_INPUT_MAGIC = 0x31584553464D5545
 _STATIC_EXACT_NATIVE_OUTPUT_MAGIC = 0x315845534F4D5545
 _STATIC_EXACT_NATIVE_PROTOCOL_VERSION = 3
 _COMPACT_CANDIDATE_ARC_BATCH = 8192
+_COMPACT_CYCLIC_OWNER_INDEX_LIMIT = 4096
 SEQUENTIAL_TRANSPORTED_CUT_CLASSES = {"register_output", "register_input"}
 SEQUENTIAL_LEGAL_CUT_CLASSES = {
     *SEQUENTIAL_TRANSPORTED_CUT_CLASSES,
@@ -919,9 +920,10 @@ def _compact_combinational_cut_candidate_ids(
         endpoint_rows = iter(
             connection.execute(
                 """SELECT e.net_seq,e.role,e.ordinal,e.instance_seq,e.bit,
-                          p.seq AS pin_name_seq,p.name AS port
+                          p.seq AS pin_name_seq,p.name AS port,c.type
                      FROM endpoint_records e
                      LEFT JOIN pin_names p ON p.seq=e.port_seq
+                     LEFT JOIN cell_records c ON c.seq=e.instance_seq
                     ORDER BY e.net_seq,e.role,e.ordinal"""
             )
         )
@@ -929,6 +931,14 @@ def _compact_combinational_cut_candidate_ids(
         endpoint_count = 0
         observed_nets = 0
         pending_arcs: List[Tuple[int, int]] = []
+        missing_owner = 2**32 - 1
+        candidate_sources = array("I", [missing_owner]) * net_count
+        candidate_driver_counts = bytearray(net_count)
+        candidate_instance_driver_counts = bytearray(net_count)
+        candidate_has_sink = bytearray(net_count)
+        candidate_reasons = bytearray(net_count)
+        combinational_flags = bytearray(net_count)
+        combinational_nets = array("I")
 
         def append_arc(source: int, sink: int) -> None:
             pending_arcs.append((source, sink))
@@ -955,6 +965,14 @@ def _compact_combinational_cut_candidate_ids(
             driver: int | None = None
             multiple_instance_drivers = False
             endpoint_ordinals = [-1, -1]
+            candidate_driver_count = 0
+            candidate_instance_driver_count = 0
+            candidate_sink_count = 0
+            candidate_reason = False
+            is_combinational = net["cut_class"] == "combinational"
+            if is_combinational:
+                combinational_flags[net_seq] = 1
+                combinational_nets.append(net_seq)
             while endpoint is not None and endpoint["net_seq"] == net_seq:
                 role = endpoint["role"]
                 owner = endpoint["instance_seq"]
@@ -999,18 +1017,46 @@ def _compact_combinational_cut_candidate_ids(
                         driver = owner
                     elif driver != owner:
                         multiple_instance_drivers = True
-                elif (
-                    role == 1
-                    and owner is not None
-                    and net["cut_class"] not in {"clock", "reset"}
-                    and driver is not None
-                    and not multiple_instance_drivers
-                    and classes[driver] != 0
-                    and classes[owner] != 0
-                ):
-                    append_arc(driver, owner)
+                if role == 0:
+                    candidate_driver_count = min(
+                        candidate_driver_count + 1, 2
+                    )
+                    if owner is not None:
+                        candidate_instance_driver_count = min(
+                            candidate_instance_driver_count + 1, 2
+                        )
+                        candidate_sources[net_seq] = owner
+                else:
+                    candidate_sink_count = 1
+                    if is_combinational and owner is not None:
+                        classification = classes[owner]
+                        if classification == 0:
+                            candidate_reason = (
+                                candidate_reason
+                                or not _safe_sequential_input(
+                                    endpoint["type"], endpoint["port"]
+                                )
+                            )
+                        elif classification != 1:
+                            candidate_reason = True
+                    if (
+                        owner is not None
+                        and net["cut_class"] not in {"clock", "reset"}
+                        and driver is not None
+                        and not multiple_instance_drivers
+                        and classes[driver] != 0
+                        and classes[owner] != 0
+                    ):
+                        append_arc(driver, owner)
                 endpoint_count += 1
                 endpoint = next(endpoint_rows, None)
+            if is_combinational:
+                candidate_driver_counts[net_seq] = candidate_driver_count
+                candidate_instance_driver_counts[net_seq] = (
+                    candidate_instance_driver_count
+                )
+                candidate_has_sink[net_seq] = candidate_sink_count
+                candidate_reasons[net_seq] = candidate_reason
             observed_nets += 1
         if pending_arcs:
             connection.executemany(
@@ -1032,67 +1078,49 @@ def _compact_combinational_cut_candidate_ids(
 
         cyclic = _packed_cyclic_nodes(connection, classes)
 
+        cyclic_owners = array(
+            "I", (owner for owner, present in enumerate(cyclic) if present)
+        )
+        if len(cyclic_owners) <= _COMPACT_CYCLIC_OWNER_INDEX_LIMIT:
+            for owner in cyclic_owners:
+                for row in connection.execute(
+                    """SELECT net_seq FROM endpoint_records
+                        WHERE instance_seq=? AND role=1""",
+                    (owner,),
+                ):
+                    net_seq = row["net_seq"]
+                    if combinational_flags[net_seq]:
+                        candidate_reasons[net_seq] = 1
+        else:
+            for row in connection.execute(
+                """SELECT net_seq,instance_seq FROM endpoint_records
+                    WHERE role=1 AND instance_seq IS NOT NULL"""
+            ):
+                net_seq = row["net_seq"]
+                if (
+                    combinational_flags[net_seq]
+                    and cyclic[row["instance_seq"]]
+                ):
+                    candidate_reasons[net_seq] = 1
+
         eligible_bits = bytearray((net_count + 7) // 8)
         eligible_count = 0
-        endpoint_rows = iter(
-            connection.execute(
-                """SELECT e.net_seq,e.role,e.instance_seq,c.type,
-                          p.name AS port
-                     FROM endpoint_records e
-                     JOIN net_records n ON n.seq=e.net_seq
-                     LEFT JOIN cell_records c ON c.seq=e.instance_seq
-                     JOIN pin_names p ON p.seq=e.port_seq
-                    WHERE n.cut_class='combinational'
-                    ORDER BY e.net_seq,e.role,e.ordinal"""
-            )
-        )
-        endpoint = next(endpoint_rows, None)
-        for net in connection.execute(
-            """SELECT seq,id FROM net_records
-                WHERE cut_class='combinational' ORDER BY seq"""
-        ):
-            net_seq = net["seq"]
-            if endpoint is not None and endpoint["net_seq"] < net_seq:
-                raise ValidationError("compact EmuIR has orphaned endpoints")
-            driver_count = 0
-            instance_driver_count = 0
-            source: int | None = None
-            sink_count = 0
-            reasons = False
-            while endpoint is not None and endpoint["net_seq"] == net_seq:
-                role = endpoint["role"]
-                owner = endpoint["instance_seq"]
-                if role not in (0, 1):
-                    raise ValidationError("compact EmuIR endpoint role is invalid")
-                if role == 0:
-                    driver_count += 1
-                    if owner is not None:
-                        instance_driver_count += 1
-                        source = owner
-                else:
-                    sink_count += 1
-                    if owner is not None:
-                        classification = classes[owner]
-                        if classification == 1:
-                            reasons = reasons or bool(cyclic[owner])
-                        elif classification == 0:
-                            reasons = reasons or not _safe_sequential_input(
-                                endpoint["type"], endpoint["port"]
-                            )
-                        else:
-                            reasons = True
-                endpoint = next(endpoint_rows, None)
-            if driver_count != 1 or instance_driver_count != 1:
+        for net_seq in combinational_nets:
+            source = candidate_sources[net_seq]
+            reasons = bool(candidate_reasons[net_seq])
+            if (
+                candidate_driver_counts[net_seq] != 1
+                or candidate_instance_driver_counts[net_seq] != 1
+                or source == missing_owner
+            ):
                 reasons = True
             elif classes[source] != 1 or cyclic[source]:
                 reasons = True
-            if sink_count == 0:
+            if not candidate_has_sink[net_seq]:
                 reasons = True
             if not reasons:
                 eligible_bits[net_seq >> 3] |= 1 << (net_seq & 7)
                 eligible_count += 1
-        if endpoint is not None:
-            raise ValidationError("compact EmuIR has orphaned endpoints")
         name_bytes = bytearray()
         name_offsets = array("Q", [0])
         observed_eligible = 0
