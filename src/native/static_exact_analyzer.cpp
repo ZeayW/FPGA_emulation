@@ -1,8 +1,7 @@
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <iostream>
-#include <set>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -19,26 +18,6 @@ constexpr std::uint32_t kVersion = 3;
 constexpr emuflow::core::ArtifactSchema kInputSchema{
     kInputMagic, kVersion, "Static Exact analyzer input"};
 
-struct Instance {
-  bool state = false;
-  std::uint32_t part = 0;
-};
-
-struct Sink {
-  std::int32_t instance = -1;
-};
-
-struct Net {
-  std::vector<std::int32_t> drivers;
-  std::vector<Sink> sinks;
-};
-
-struct Cut {
-  std::uint32_t net = 0;
-  std::uint32_t source_part = 0;
-  std::vector<std::uint32_t> sink_parts;
-};
-
 struct Capture {
   std::uint32_t cut = 0;
   std::uint32_t part = 0;
@@ -49,6 +28,11 @@ struct Capture {
 struct EndpointRef {
   std::uint32_t net = 0;
   std::uint32_t sink = 0;
+};
+
+struct CsrIndex {
+  std::vector<std::uint32_t> offsets;
+  std::vector<std::uint32_t> values;
 };
 
 class GenerationMarks {
@@ -81,6 +65,50 @@ void RequireCount(std::uint64_t count, std::size_t minimum_bytes,
   }
 }
 
+CsrIndex BuildInstanceNetIndex(
+    std::uint32_t instance_count, std::uint32_t net_count,
+    const std::vector<std::uint32_t>& net_offsets,
+    const std::vector<std::int32_t>& endpoints, const char* context) {
+  std::vector<std::uint32_t> counts(instance_count, 0);
+  for (const auto endpoint : endpoints) {
+    if (endpoint < 0) continue;
+    auto& count = counts[static_cast<std::uint32_t>(endpoint)];
+    if (count == std::numeric_limits<std::uint32_t>::max()) {
+      throw std::runtime_error(std::string(context) + " fanout is invalid");
+    }
+    ++count;
+  }
+  CsrIndex result;
+  result.offsets.resize(static_cast<std::size_t>(instance_count) + 1, 0);
+  std::uint64_t total = 0;
+  for (std::uint32_t index = 0; index < instance_count; ++index) {
+    total += counts[index];
+    if (total > std::numeric_limits<std::uint32_t>::max()) {
+      throw std::runtime_error(std::string(context) + " count is invalid");
+    }
+    result.offsets[index + 1] = static_cast<std::uint32_t>(total);
+  }
+  result.values.resize(static_cast<std::size_t>(total));
+  auto positions = result.offsets;
+  for (std::uint32_t net = 0; net < net_count; ++net) {
+    for (auto offset = net_offsets[net]; offset < net_offsets[net + 1];
+         ++offset) {
+      const auto endpoint = endpoints[offset];
+      if (endpoint >= 0) {
+        result.values[positions[static_cast<std::uint32_t>(endpoint)]++] = net;
+      }
+    }
+  }
+  return result;
+}
+
+bool CutContainsSink(std::uint32_t cut, std::uint32_t part,
+                     const std::vector<std::uint32_t>& offsets,
+                     const std::vector<std::uint32_t>& sink_parts) {
+  return std::binary_search(sink_parts.begin() + offsets[cut],
+                            sink_parts.begin() + offsets[cut + 1], part);
+}
+
 void AnalyzeImpl(const std::string& input_path, const std::string& output_path) {
   emuflow::core::BinaryReader reader(input_path);
   emuflow::core::ReadAndValidateHeader(reader, kInputSchema);
@@ -99,48 +127,64 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
   RequireCount(endpoint_count, sizeof(std::int32_t), reader.remaining(),
                "native endpoint");
 
-  std::vector<Instance> instances(instance_count);
-  for (auto& instance : instances) {
+  std::vector<std::uint8_t> instance_states(instance_count, 0);
+  std::vector<std::uint32_t> instance_parts(instance_count, 0);
+  for (std::uint32_t index = 0; index < instance_count; ++index) {
     const auto state = reader.Read<std::uint8_t>();
-    instance.part = reader.Read<std::uint32_t>();
-    if (state > 1 || instance.part >= part_count) {
+    const auto part = reader.Read<std::uint32_t>();
+    if (state > 1 || part >= part_count) {
       throw std::runtime_error("native instance record is invalid");
     }
-    instance.state = state != 0;
+    instance_states[index] = state;
+    instance_parts[index] = part;
   }
 
   RequireCount(net_count, 2 * sizeof(std::uint32_t), reader.remaining(),
                "native net");
-  std::vector<Net> nets(net_count);
+  std::vector<std::uint32_t> net_driver_offsets;
+  std::vector<std::int32_t> net_drivers;
+  std::vector<std::uint32_t> net_sink_offsets;
+  std::vector<std::int32_t> net_sinks;
+  net_driver_offsets.reserve(static_cast<std::size_t>(net_count) + 1);
+  net_sink_offsets.reserve(static_cast<std::size_t>(net_count) + 1);
+  net_sinks.reserve(endpoint_count);
+  net_driver_offsets.push_back(0);
+  net_sink_offsets.push_back(0);
   std::uint64_t observed_endpoints = 0;
   for (std::uint32_t index = 0; index < net_count; ++index) {
-    auto& net = nets[index];
     const auto drivers = reader.Read<std::uint32_t>();
     RequireCount(drivers, sizeof(std::int32_t), reader.remaining(),
                  "native net driver");
-    net.drivers.resize(drivers);
-    for (auto& driver : net.drivers) {
-      driver = reader.Read<std::int32_t>();
+    if (drivers > std::numeric_limits<std::uint32_t>::max() -
+                      net_drivers.size()) {
+      throw std::runtime_error("native net driver count is invalid");
+    }
+    for (std::uint32_t driver_index = 0; driver_index < drivers;
+         ++driver_index) {
+      const auto driver = reader.Read<std::int32_t>();
       if (driver < -1 ||
           (driver >= 0 && static_cast<std::uint32_t>(driver) >= instance_count)) {
         throw std::runtime_error("native net driver is invalid");
       }
+      net_drivers.push_back(driver);
     }
+    net_driver_offsets.push_back(
+        static_cast<std::uint32_t>(net_drivers.size()));
     const auto sinks = reader.Read<std::uint32_t>();
     observed_endpoints += sinks;
     if (observed_endpoints > endpoint_count ||
         sinks > reader.remaining() / sizeof(std::int32_t)) {
       throw std::runtime_error("native endpoint count is invalid");
     }
-    net.sinks.resize(sinks);
-    for (auto& sink : net.sinks) {
-      sink.instance = reader.Read<std::int32_t>();
-      if (sink.instance < -1 ||
-          (sink.instance >= 0 &&
-           static_cast<std::uint32_t>(sink.instance) >= instance_count)) {
+    for (std::uint32_t sink_index = 0; sink_index < sinks; ++sink_index) {
+      const auto sink = reader.Read<std::int32_t>();
+      if (sink < -1 ||
+          (sink >= 0 && static_cast<std::uint32_t>(sink) >= instance_count)) {
         throw std::runtime_error("native net sink is invalid");
       }
+      net_sinks.push_back(sink);
     }
+    net_sink_offsets.push_back(static_cast<std::uint32_t>(net_sinks.size()));
   }
   if (observed_endpoints != endpoint_count) {
     throw std::runtime_error("native endpoint count is invalid");
@@ -148,57 +192,67 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
 
   RequireCount(cut_count, 3 * sizeof(std::uint32_t), reader.remaining(),
                "native cut");
-  std::vector<Cut> cuts(cut_count);
+  std::vector<std::uint32_t> cut_nets(cut_count, 0);
+  std::vector<std::uint32_t> cut_source_parts(cut_count, 0);
+  std::vector<std::uint32_t> cut_sink_offsets;
+  std::vector<std::uint32_t> cut_sink_parts;
+  cut_sink_offsets.reserve(static_cast<std::size_t>(cut_count) + 1);
+  cut_sink_offsets.push_back(0);
   std::vector<std::int32_t> cut_by_net(net_count, -1);
   for (std::uint32_t index = 0; index < cut_count; ++index) {
-    auto& cut = cuts[index];
-    cut.net = reader.Read<std::uint32_t>();
-    cut.source_part = reader.Read<std::uint32_t>();
+    const auto net = reader.Read<std::uint32_t>();
+    const auto source_part = reader.Read<std::uint32_t>();
     const auto sinks = reader.Read<std::uint32_t>();
     RequireCount(sinks, sizeof(std::uint32_t), reader.remaining(),
                  "native cut sink");
-    cut.sink_parts.resize(sinks);
-    if (cut.net >= net_count || cut.source_part >= part_count ||
-        cut_by_net[cut.net] != -1) {
+    if (sinks > std::numeric_limits<std::uint32_t>::max() -
+                    cut_sink_parts.size()) {
+      throw std::runtime_error("native cut sink count is invalid");
+    }
+    if (net >= net_count || source_part >= part_count ||
+        cut_by_net[net] != -1) {
       throw std::runtime_error("native cut record is invalid");
     }
-    cut_by_net[cut.net] = static_cast<std::int32_t>(index);
+    cut_nets[index] = net;
+    cut_source_parts[index] = source_part;
+    cut_by_net[net] = static_cast<std::int32_t>(index);
     std::uint32_t previous_sink = 0;
     bool have_sink = false;
-    for (auto& sink : cut.sink_parts) {
-      sink = reader.Read<std::uint32_t>();
+    for (std::uint32_t sink_index = 0; sink_index < sinks; ++sink_index) {
+      const auto sink = reader.Read<std::uint32_t>();
       if (sink >= part_count || (have_sink && sink <= previous_sink)) {
         throw std::runtime_error("native cut sink is invalid");
       }
+      cut_sink_parts.push_back(sink);
       previous_sink = sink;
       have_sink = true;
     }
+    cut_sink_offsets.push_back(
+        static_cast<std::uint32_t>(cut_sink_parts.size()));
   }
   reader.RequireEnd();
 
-  std::vector<std::vector<std::uint32_t>> incoming(instance_count);
-  std::vector<std::vector<std::uint32_t>> outgoing(instance_count);
-  for (std::uint32_t net_index = 0; net_index < net_count; ++net_index) {
-    for (const auto& sink : nets[net_index].sinks) {
-      if (sink.instance >= 0) {
-        incoming[static_cast<std::uint32_t>(sink.instance)].push_back(net_index);
-      }
-    }
-    for (const auto driver : nets[net_index].drivers) {
-      if (driver >= 0) {
-        outgoing[static_cast<std::uint32_t>(driver)].push_back(net_index);
-      }
-    }
-  }
+  const auto incoming = BuildInstanceNetIndex(
+      instance_count, net_count, net_sink_offsets, net_sinks,
+      "native incoming net");
+  const auto outgoing = BuildInstanceNetIndex(
+      instance_count, net_count, net_driver_offsets, net_drivers,
+      "native outgoing net");
 
-  std::vector<std::vector<std::uint32_t>> dependencies(cut_count);
+  std::vector<std::uint32_t> dependency_offsets;
+  std::vector<std::uint32_t> dependencies;
+  dependency_offsets.reserve(static_cast<std::size_t>(cut_count) + 1);
+  dependency_offsets.push_back(0);
   std::vector<std::uint8_t> local_launches(cut_count, 0);
   GenerationMarks dependency_marks(instance_count);
+  GenerationMarks found_marks(cut_count);
   std::vector<std::uint32_t> work;
   for (std::uint32_t cut_index = 0; cut_index < cut_count; ++cut_index) {
-    const auto& cut = cuts[cut_index];
     std::vector<std::uint32_t> drivers;
-    for (const auto driver : nets[cut.net].drivers) {
+    const auto cut_net = cut_nets[cut_index];
+    for (auto offset = net_driver_offsets[cut_net];
+         offset < net_driver_offsets[cut_net + 1]; ++offset) {
+      const auto driver = net_drivers[offset];
       if (driver >= 0) drivers.push_back(static_cast<std::uint32_t>(driver));
     }
     std::sort(drivers.begin(), drivers.end());
@@ -207,93 +261,115 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
       throw std::runtime_error("exact cut lacks one logic driver");
     }
     dependency_marks.Next();
+    found_marks.Next();
     work = drivers;
-    std::set<std::uint32_t> found;
+    std::vector<std::uint32_t> found;
     while (!work.empty()) {
       const auto instance_index = work.back();
       work.pop_back();
       if (!dependency_marks.Insert(instance_index)) continue;
-      const auto& instance = instances[instance_index];
-      if (instance.part != cut.source_part) {
+      if (instance_parts[instance_index] != cut_source_parts[cut_index]) {
         throw std::runtime_error("exact cut source cone crosses a boundary");
       }
-      if (instance.state) {
+      if (instance_states[instance_index]) {
         local_launches[cut_index] = 1;
         continue;
       }
-      for (const auto incoming_net : incoming[instance_index]) {
+      for (auto incoming_offset = incoming.offsets[instance_index];
+           incoming_offset < incoming.offsets[instance_index + 1];
+           ++incoming_offset) {
+        const auto incoming_net = incoming.values[incoming_offset];
         const auto predecessor = cut_by_net[incoming_net];
         if (predecessor >= 0) {
-          const auto& predecessor_cut = cuts[static_cast<std::uint32_t>(predecessor)];
-          if (std::binary_search(predecessor_cut.sink_parts.begin(),
-                                 predecessor_cut.sink_parts.end(),
-                                 cut.source_part)) {
-            found.insert(static_cast<std::uint32_t>(predecessor));
+          const auto predecessor_index =
+              static_cast<std::uint32_t>(predecessor);
+          if (CutContainsSink(predecessor_index, cut_source_parts[cut_index],
+                              cut_sink_offsets, cut_sink_parts)) {
+            if (found_marks.Insert(predecessor_index)) {
+              found.push_back(predecessor_index);
+            }
             continue;
           }
         }
-        for (const auto upstream : nets[incoming_net].drivers) {
+        for (auto driver_offset = net_driver_offsets[incoming_net];
+             driver_offset < net_driver_offsets[incoming_net + 1];
+             ++driver_offset) {
+          const auto upstream = net_drivers[driver_offset];
           if (upstream < 0) {
             local_launches[cut_index] = 1;
-          } else if (instances[static_cast<std::uint32_t>(upstream)].part ==
-                     cut.source_part) {
+          } else if (instance_parts[static_cast<std::uint32_t>(upstream)] ==
+                     cut_source_parts[cut_index]) {
             work.push_back(static_cast<std::uint32_t>(upstream));
           }
         }
       }
     }
-    dependencies[cut_index].assign(found.begin(), found.end());
+    std::sort(found.begin(), found.end());
+    if (found.size() > std::numeric_limits<std::uint32_t>::max() -
+                           dependencies.size()) {
+      throw std::runtime_error("native dependency count is invalid");
+    }
+    dependencies.insert(dependencies.end(), found.begin(), found.end());
+    dependency_offsets.push_back(
+        static_cast<std::uint32_t>(dependencies.size()));
   }
 
   std::vector<Capture> captures;
   GenerationMarks capture_marks(instance_count);
   std::vector<EndpointRef> endpoint_work;
   for (std::uint32_t cut_index = 0; cut_index < cut_count; ++cut_index) {
-    const auto& cut = cuts[cut_index];
-    const auto& cut_net = nets[cut.net];
-    for (const auto sink_part : cut.sink_parts) {
+    const auto cut_net = cut_nets[cut_index];
+    const auto cut_sink_begin = net_sink_offsets[cut_net];
+    const auto cut_sink_count =
+        net_sink_offsets[cut_net + 1] - cut_sink_begin;
+    for (auto part_offset = cut_sink_offsets[cut_index];
+         part_offset < cut_sink_offsets[cut_index + 1]; ++part_offset) {
+      const auto sink_part = cut_sink_parts[part_offset];
       endpoint_work.clear();
-      for (std::uint32_t sink_index = 0;
-           sink_index < cut_net.sinks.size(); ++sink_index) {
-        const auto& endpoint = cut_net.sinks[sink_index];
-        if (endpoint.instance < 0) {
-          captures.push_back({cut_index, sink_part, cut.net, sink_index});
-        } else if (instances[static_cast<std::uint32_t>(endpoint.instance)].part ==
+      for (std::uint32_t sink_index = 0; sink_index < cut_sink_count;
+           ++sink_index) {
+        const auto endpoint = net_sinks[cut_sink_begin + sink_index];
+        if (endpoint < 0) {
+          captures.push_back({cut_index, sink_part, cut_net, sink_index});
+        } else if (instance_parts[static_cast<std::uint32_t>(endpoint)] ==
                    sink_part) {
-          endpoint_work.push_back({cut.net, sink_index});
+          endpoint_work.push_back({cut_net, sink_index});
         }
       }
       capture_marks.Next();
       while (!endpoint_work.empty()) {
         const auto endpoint_ref = endpoint_work.back();
         endpoint_work.pop_back();
-        const auto& endpoint =
-            nets[endpoint_ref.net].sinks[endpoint_ref.sink];
-        const auto instance_index = static_cast<std::uint32_t>(endpoint.instance);
-        if (instances[instance_index].state) {
+        const auto endpoint = net_sinks[
+            net_sink_offsets[endpoint_ref.net] + endpoint_ref.sink];
+        const auto instance_index = static_cast<std::uint32_t>(endpoint);
+        if (instance_states[instance_index]) {
           captures.push_back(
               {cut_index, sink_part, endpoint_ref.net, endpoint_ref.sink});
           continue;
         }
         if (!capture_marks.Insert(instance_index)) continue;
-        for (const auto outgoing_net : outgoing[instance_index]) {
+        for (auto outgoing_offset = outgoing.offsets[instance_index];
+             outgoing_offset < outgoing.offsets[instance_index + 1];
+             ++outgoing_offset) {
+          const auto outgoing_net = outgoing.values[outgoing_offset];
           const auto downstream = cut_by_net[outgoing_net];
-          const auto& outgoing_sinks = nets[outgoing_net].sinks;
-          for (std::uint32_t sink_index = 0;
-               sink_index < outgoing_sinks.size(); ++sink_index) {
-            const auto& sink = outgoing_sinks[sink_index];
+          const auto sink_begin = net_sink_offsets[outgoing_net];
+          const auto sink_count =
+              net_sink_offsets[outgoing_net + 1] - sink_begin;
+          for (std::uint32_t sink_index = 0; sink_index < sink_count;
+               ++sink_index) {
+            const auto sink = net_sinks[sink_begin + sink_index];
             if (downstream >= 0 &&
-                cuts[static_cast<std::uint32_t>(downstream)].source_part ==
-                    sink_part &&
-                sink.instance >= 0 &&
-                instances[static_cast<std::uint32_t>(sink.instance)].part !=
-                    sink_part) {
+                cut_source_parts[static_cast<std::uint32_t>(downstream)] ==
+                    sink_part && sink >= 0 &&
+                instance_parts[static_cast<std::uint32_t>(sink)] != sink_part) {
               continue;
             }
-            if (sink.instance < 0) {
+            if (sink < 0) {
               captures.push_back(
                   {cut_index, sink_part, outgoing_net, sink_index});
-            } else if (instances[static_cast<std::uint32_t>(sink.instance)].part ==
+            } else if (instance_parts[static_cast<std::uint32_t>(sink)] ==
                        sink_part) {
               endpoint_work.push_back({outgoing_net, sink_index});
             }
@@ -328,10 +404,12 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
   output.Write(static_cast<std::uint64_t>(captures.size()));
   for (std::uint32_t cut_index = 0; cut_index < cut_count; ++cut_index) {
     output.Write(local_launches[cut_index]);
-    const auto count = static_cast<std::uint32_t>(dependencies[cut_index].size());
+    const auto begin = dependency_offsets[cut_index];
+    const auto end = dependency_offsets[cut_index + 1];
+    const auto count = end - begin;
     output.Write(count);
-    for (const auto dependency : dependencies[cut_index]) {
-      output.Write(dependency);
+    for (auto offset = begin; offset < end; ++offset) {
+      output.Write(dependencies[offset]);
     }
   }
   for (const auto& capture : captures) {
