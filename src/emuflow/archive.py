@@ -515,6 +515,33 @@ def _atomic_retention_groups(
             )
         union(relative, dependency)
 
+    # A packed assignment reconstructs its cluster and instance views through
+    # the sibling cluster selector.  Keep that selector (and, transitively, its
+    # typed sidecar) in the same retention component so a size threshold can
+    # never archive only half of the Phase 3 contract.
+    for relative in sorted(candidates, key=lambda item: item.as_posix()):
+        if relative.name != "assignment.json":
+            continue
+        source = _source_file(flow_root, relative)
+        try:
+            with source.open("r", encoding="utf-8") as stream:
+                assignment = json.load(stream)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(assignment, dict) or assignment.get("schema") not in {
+            "emuflow.phase3-assignment-storage/v1",
+            "emuflow.phase3-assignment-storage/v2",
+            "emuflow.phase3-assignment-storage/v3",
+        }:
+            continue
+        dependency = relative.with_name("clusters.json")
+        if dependency not in parents:
+            raise ValidationError(
+                "archive packed assignment cluster dependency was not discovered: "
+                f"{dependency.as_posix()}"
+            )
+        union(relative, dependency)
+
     for relative in sorted(candidates, key=lambda item: item.as_posix()):
         if relative.name != "physical-summary.json":
             continue

@@ -50,6 +50,12 @@ from .phase5 import (
 )
 from .platform import Platform
 from .phase3_storage import (
+    CLUSTERS_SQLITE_APPLICATION_ID,
+    CLUSTERS_SQLITE_FORMAT,
+    CLUSTERS_SQLITE_USER_VERSION,
+    CLUSTERS_STORE_NAME,
+    INDEXED_CLUSTERS_SCHEMA,
+    phase3_clusters_store_path,
     read_phase3_assignment_view,
     read_phase3_cut_timing_view,
 )
@@ -276,6 +282,62 @@ def _trusted_route_store_path(selector: Path) -> Optional[Path]:
     )
 
 
+def _trusted_cluster_store_path(selector: Path) -> Optional[Path]:
+    """Resolve a sealed managed cluster owner without opening or rehashing it."""
+
+    if selector.is_symlink() or not selector.is_file():
+        raise ValidationError("managed Phase 3 clusters selector is missing")
+    value = _read_selector_envelope(selector, "Phase 3 clusters")
+    schema = value.get("schema")
+    if schema != INDEXED_CLUSTERS_SCHEMA:
+        if isinstance(schema, str) and schema.startswith(
+            "emuflow.phase3-clusters-storage/"
+        ) and schema not in {
+            "emuflow.phase3-clusters-storage/v1",
+            "emuflow.phase3-clusters-storage/v2",
+        }:
+            raise ValidationError(
+                "managed Phase 3 clusters selector schema is invalid"
+            )
+        return None
+    required_keys = {
+        "schema",
+        "logical_schema",
+        "format",
+        "application_id",
+        "user_version",
+        "artifact",
+        "store_bytes",
+        "store_sha256",
+        "counts",
+    }
+    counts = value.get("counts")
+    if (
+        set(value) != required_keys
+        or value.get("logical_schema") != "emuflow.clusters/v1"
+        or value.get("format") != CLUSTERS_SQLITE_FORMAT
+        or value.get("application_id") != CLUSTERS_SQLITE_APPLICATION_ID
+        or value.get("user_version") != CLUSTERS_SQLITE_USER_VERSION
+        or not _selector_digest(value.get("store_sha256"))
+        or not isinstance(counts, dict)
+        or set(counts) != {"clusters", "instances", "eligible_nets"}
+        or any(
+            isinstance(item, bool) or not isinstance(item, int) or item < 0
+            for item in counts.values()
+        )
+    ):
+        raise ValidationError(
+            "managed Phase 3 clusters selector envelope is invalid"
+        )
+    return _trusted_selector_store(
+        selector,
+        artifact=value.get("artifact"),
+        expected_name=CLUSTERS_STORE_NAME,
+        expected_bytes=value.get("store_bytes"),
+        label="Phase 3 clusters",
+    )
+
+
 def _trusted_schedule_store_path(selector: Path) -> Optional[Path]:
     """Resolve a sealed managed ScheduleStore without opening or rehashing it."""
 
@@ -414,8 +476,16 @@ def _shared_indexed_sidecars(
     """Resolve selector sidecars, using bounded checks for sealed roots."""
 
     sidecars: set[str] = set()
+    cluster_selector = _require(root, "partition/clusters.json")
     route_selector = _require(root, "system-route/routes.json")
     schedule_selector = _require(root, "tdm/schedule.json")
+    cluster_store = (
+        _trusted_cluster_store_path(cluster_selector)
+        if trusted_selectors
+        else phase3_clusters_store_path(cluster_selector)
+    )
+    if cluster_store is not None:
+        sidecars.add(f"partition/{cluster_store.name}")
     route_store = (
         _trusted_route_store_path(route_selector)
         if trusted_selectors
@@ -1538,6 +1608,18 @@ def materialize_shared_phase1_5(
             "cut-timing",
         ),
     }
+    cluster_selector = partition_root / "clusters.json"
+    if cluster_selector.is_file():
+        cluster_store = (
+            _trusted_cluster_store_path(cluster_selector)
+            if managed_dag_node
+            else phase3_clusters_store_path(cluster_selector)
+        )
+        if cluster_store is not None:
+            mapping[f"partition/{cluster_store.name}"] = (
+                cluster_store,
+                "partition",
+            )
     path_payload = sta_path_database_payload_path(
         timing_root / "path-database.json"
     )

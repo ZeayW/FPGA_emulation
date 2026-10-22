@@ -533,6 +533,7 @@ def compile_partition_qualification_spec(
         partition_validator,
         [
             _artifact("clusters.json", "consumer-checkpoint"),
+            _artifact("clusters.sqlite", "consumer-checkpoint"),
             _artifact("constraints.normalized.json", "consumer-checkpoint"),
             _artifact("assignment.json", "consumer-checkpoint"),
             _artifact("phase3_report.json", "consumer-checkpoint"),

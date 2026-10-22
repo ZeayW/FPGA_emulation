@@ -14,16 +14,200 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping
 
-from .io import json_writes_are_durable
+from .io import file_sha256, json_writes_are_durable, write_json
 
 
 PACKED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v1"
 COMPRESSED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v2"
+INDEXED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v3"
 LEGACY_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v1"
 PREVIOUS_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v2"
 PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v3"
 _COMPRESSED_JSON_CODEC = "zlib-level-1-base64-canonical-json"
 _COMPRESSED_INDEX_CODEC = "zlib-level-1-base64-unsigned-index"
+CLUSTERS_SQLITE_APPLICATION_ID = 0x454D5543  # ASCII "EMUC"
+CLUSTERS_SQLITE_USER_VERSION = 1
+CLUSTERS_SQLITE_FORMAT = "sqlite-phase3-clusters/v1"
+CLUSTERS_STORE_NAME = "clusters.sqlite"
+
+
+_CLUSTERS_DDL = """
+CREATE TABLE metadata(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE sections(
+  section TEXT PRIMARY KEY,
+  codec TEXT NOT NULL,
+  records INTEGER NOT NULL,
+  raw_bytes INTEGER NOT NULL,
+  compressed_bytes INTEGER NOT NULL,
+  chunks INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE section_chunks(
+  section TEXT NOT NULL,
+  chunk_seq INTEGER NOT NULL,
+  payload BLOB NOT NULL,
+  PRIMARY KEY(section,chunk_seq)
+) WITHOUT ROWID;
+"""
+
+_CLUSTER_SECTION_CODEC = "zlib-level-1-typed-columns"
+_CLUSTER_SECTION_CHUNK_BYTES = 1024 * 1024
+_CLUSTER_SECTIONS = {
+    "cluster_ids",
+    "member_counts",
+    "member_names",
+    "resource_counts",
+    "resource_names",
+    "resource_values",
+    "fixed_indices",
+    "fixed_values",
+    "group_counts",
+    "group_values",
+    "extra_values",
+    "eligible_nets",
+    "document",
+}
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+class _ClusterSectionWriter:
+    """Bounded-memory zlib stream stored as ordered SQLite BLOB chunks."""
+
+    def __init__(self, connection: sqlite3.Connection, section: str):
+        self.connection = connection
+        self.section = section
+        self.compressor = zlib.compressobj(level=1)
+        self.pending = bytearray()
+        self.records = 0
+        self.raw_bytes = 0
+        self.compressed_bytes = 0
+        self.chunks = 0
+
+    def _accept(self, payload: bytes) -> None:
+        if not payload:
+            return
+        self.pending.extend(payload)
+        self.compressed_bytes += len(payload)
+        while len(self.pending) >= _CLUSTER_SECTION_CHUNK_BYTES:
+            chunk = bytes(self.pending[:_CLUSTER_SECTION_CHUNK_BYTES])
+            del self.pending[:_CLUSTER_SECTION_CHUNK_BYTES]
+            self.connection.execute(
+                "INSERT INTO section_chunks VALUES (?,?,?)",
+                (self.section, self.chunks, sqlite3.Binary(chunk)),
+            )
+            self.chunks += 1
+
+    def write_bytes(self, payload: bytes) -> None:
+        self.records += 1
+        self.raw_bytes += len(payload)
+        self._accept(self.compressor.compress(payload))
+
+    def write_u32(self, value: int) -> None:
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < 2**32:
+            raise ValueError(f"{self.section}: value exceeds uint32 storage")
+        self.write_bytes(value.to_bytes(4, "little"))
+
+    def write_string(self, value: str) -> None:
+        if not isinstance(value, str):
+            raise ValueError(f"{self.section}: expected a string")
+        encoded = value.encode("utf-8")
+        if len(encoded) >= 2**32:
+            raise ValueError(f"{self.section}: string exceeds uint32 storage")
+        self.write_bytes(len(encoded).to_bytes(4, "little") + encoded)
+
+    def finish(self) -> None:
+        self._accept(self.compressor.flush())
+        if self.pending:
+            self.connection.execute(
+                "INSERT INTO section_chunks VALUES (?,?,?)",
+                (self.section, self.chunks, sqlite3.Binary(bytes(self.pending))),
+            )
+            self.chunks += 1
+            self.pending.clear()
+        self.connection.execute(
+            "INSERT INTO sections VALUES (?,?,?,?,?,?)",
+            (
+                self.section,
+                _CLUSTER_SECTION_CODEC,
+                self.records,
+                self.raw_bytes,
+                self.compressed_bytes,
+                self.chunks,
+            ),
+        )
+
+
+def _decode_u32_section(raw: bytes, records: int, context: str) -> List[int]:
+    if len(raw) != records * 4:
+        raise ValueError(f"{context}: uint32 section length is invalid")
+    return [
+        int.from_bytes(raw[offset : offset + 4], "little")
+        for offset in range(0, len(raw), 4)
+    ]
+
+
+def _decode_string_section(raw: bytes, records: int, context: str) -> List[str]:
+    result: List[str] = []
+    offset = 0
+    try:
+        for _ in range(records):
+            if offset + 4 > len(raw):
+                raise ValueError("missing string length")
+            length = int.from_bytes(raw[offset : offset + 4], "little")
+            offset += 4
+            end = offset + length
+            if end > len(raw):
+                raise ValueError("truncated string")
+            result.append(raw[offset:end].decode("utf-8"))
+            offset = end
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{context}: string section is not UTF-8") from error
+    if offset != len(raw):
+        raise ValueError(f"{context}: string section has trailing data")
+    return result
+
+
+def _load_cluster_section(
+    connection: sqlite3.Connection, section: str
+) -> tuple[bytes, int]:
+    row = connection.execute(
+        "SELECT codec,records,raw_bytes,compressed_bytes,chunks "
+        "FROM sections WHERE section=?",
+        (section,),
+    ).fetchone()
+    if row is None or row["codec"] != _CLUSTER_SECTION_CODEC:
+        raise ValueError(f"indexed clusters section {section!r} is missing")
+    decompressor = zlib.decompressobj()
+    output = bytearray()
+    observed_chunks = 0
+    observed_compressed = 0
+    for chunk in connection.execute(
+        "SELECT chunk_seq,payload FROM section_chunks "
+        "WHERE section=? ORDER BY chunk_seq",
+        (section,),
+    ):
+        if chunk["chunk_seq"] != observed_chunks:
+            raise ValueError(f"indexed clusters section {section!r} is sparse")
+        payload = bytes(chunk["payload"])
+        observed_compressed += len(payload)
+        output.extend(decompressor.decompress(payload))
+        observed_chunks += 1
+    output.extend(decompressor.flush())
+    if (
+        observed_chunks != row["chunks"]
+        or observed_compressed != row["compressed_bytes"]
+        or len(output) != row["raw_bytes"]
+        or not decompressor.eof
+        or decompressor.unused_data
+        or decompressor.unconsumed_tail
+    ):
+        raise ValueError(f"indexed clusters section {section!r} is corrupt")
+    return bytes(output), int(row["records"])
 
 
 def _compress_json(value: Mapping[str, Any]) -> Dict[str, Any]:
@@ -244,6 +428,448 @@ def write_compressed_phase3_clusters(
             os.close(descriptor)
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _cluster_store_path(selector_path: Path, selector: Mapping[str, Any]) -> Path:
+    artifact = selector.get("artifact")
+    if (
+        not isinstance(artifact, str)
+        or Path(artifact).name != artifact
+        or artifact != CLUSTERS_STORE_NAME
+    ):
+        raise ValueError(f"{selector_path}: indexed clusters artifact is invalid")
+    return selector_path.with_name(artifact)
+
+
+def _open_cluster_store(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(
+        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+    )
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def _read_cluster_store_metadata(
+    selector_path: Path,
+    selector: Mapping[str, Any],
+) -> tuple[Path, Dict[str, Any]]:
+    if (
+        selector.get("schema") != INDEXED_CLUSTERS_SCHEMA
+        or selector.get("logical_schema") != "emuflow.clusters/v1"
+        or selector.get("format") != CLUSTERS_SQLITE_FORMAT
+        or selector.get("application_id") != CLUSTERS_SQLITE_APPLICATION_ID
+        or selector.get("user_version") != CLUSTERS_SQLITE_USER_VERSION
+        or isinstance(selector.get("store_bytes"), bool)
+        or not isinstance(selector.get("store_bytes"), int)
+        or selector["store_bytes"] < 0
+        or not isinstance(selector.get("store_sha256"), str)
+        or len(selector["store_sha256"]) != 64
+        or any(character not in "0123456789abcdef" for character in selector["store_sha256"])
+        or not isinstance(selector.get("counts"), dict)
+    ):
+        raise ValueError(f"{selector_path}: indexed clusters header is malformed")
+    counts = selector["counts"]
+    if set(counts) != {"clusters", "instances", "eligible_nets"} or any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in counts.values()
+    ):
+        raise ValueError(f"{selector_path}: indexed clusters counts are malformed")
+    store_path = _cluster_store_path(selector_path, selector)
+    try:
+        stat = store_path.stat()
+    except FileNotFoundError as error:
+        raise ValueError(
+            f"{selector_path}: indexed clusters artifact is missing"
+        ) from error
+    if stat.st_size != selector["store_bytes"] or file_sha256(store_path) != selector[
+        "store_sha256"
+    ]:
+        raise ValueError(f"{selector_path}: indexed clusters seal disagrees")
+    connection = _open_cluster_store(store_path)
+    try:
+        if (
+            connection.execute("PRAGMA application_id").fetchone()[0]
+            != CLUSTERS_SQLITE_APPLICATION_ID
+            or connection.execute("PRAGMA user_version").fetchone()[0]
+            != CLUSTERS_SQLITE_USER_VERSION
+        ):
+            raise ValueError(
+                f"{selector_path}: indexed clusters SQLite identity is invalid"
+            )
+        metadata = {
+            row["key"]: json.loads(row["value"])
+            for row in connection.execute(
+                "SELECT key,value FROM metadata ORDER BY key"
+            )
+        }
+        if (
+            set(metadata) != {"counts", "eligible_nets_present"}
+            or metadata.get("counts") != counts
+            or not isinstance(metadata.get("eligible_nets_present"), bool)
+            or (
+                not metadata["eligible_nets_present"]
+                and counts["eligible_nets"] != 0
+            )
+        ):
+            raise ValueError(
+                f"{selector_path}: indexed clusters metadata is invalid"
+            )
+        sections = {
+            row["section"]: row
+            for row in connection.execute(
+                "SELECT section,codec,records,raw_bytes,compressed_bytes,chunks "
+                "FROM sections ORDER BY section"
+            )
+        }
+        if set(sections) != _CLUSTER_SECTIONS or any(
+            row["codec"] != _CLUSTER_SECTION_CODEC
+            or any(
+                isinstance(row[field], bool)
+                or not isinstance(row[field], int)
+                or row[field] < 0
+                for field in (
+                    "records", "raw_bytes", "compressed_bytes", "chunks"
+                )
+            )
+            or row["chunks"] == 0
+            for row in sections.values()
+        ):
+            raise ValueError(
+                f"{selector_path}: indexed cluster sections are invalid"
+            )
+        expected_records = {
+            "cluster_ids": counts["clusters"],
+            "member_counts": counts["clusters"],
+            "member_names": counts["instances"],
+            "resource_counts": counts["clusters"],
+            "group_counts": counts["clusters"],
+            "extra_values": counts["clusters"],
+            "eligible_nets": counts["eligible_nets"],
+            "document": 1,
+        }
+        if any(
+            sections[name]["records"] != amount
+            for name, amount in expected_records.items()
+        ) or (
+            sections["fixed_indices"]["records"]
+            != sections["fixed_values"]["records"]
+        ) or (
+            sections["resource_names"]["records"]
+            != sections["resource_values"]["records"]
+        ):
+            raise ValueError(
+                f"{selector_path}: indexed cluster section counts disagree"
+            )
+        for name in ("member_counts", "resource_counts", "fixed_indices", "group_counts"):
+            if sections[name]["raw_bytes"] != sections[name]["records"] * 4:
+                raise ValueError(
+                    f"{selector_path}: indexed cluster integer columns are invalid"
+                )
+        chunk_summaries = {
+            row["section"]: (row["amount"], row["size"])
+            for row in connection.execute(
+                "SELECT section,count(*) AS amount,sum(length(payload)) AS size "
+                "FROM section_chunks GROUP BY section ORDER BY section"
+            )
+        }
+        if set(chunk_summaries) != _CLUSTER_SECTIONS or any(
+            chunk_summaries[name]
+            != (sections[name]["chunks"], sections[name]["compressed_bytes"])
+            for name in _CLUSTER_SECTIONS
+        ):
+            raise ValueError(
+                f"{selector_path}: indexed cluster chunks disagree"
+            )
+    except (json.JSONDecodeError, sqlite3.DatabaseError) as error:
+        raise ValueError(
+            f"{selector_path}: indexed clusters SQLite is corrupt"
+        ) from error
+    finally:
+        connection.close()
+    return store_path, metadata
+
+
+def write_indexed_phase3_clusters(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    durable: bool | None = None,
+) -> Dict[str, Any]:
+    """Publish the cluster population once in a typed SQLite sidecar.
+
+    ``clusters.json`` becomes a small sealed selector.  The logical v1 document
+    remains available through :func:`read_json`, but production publication no
+    longer serializes every name/resource/policy entry into JSON, compresses it,
+    base64-encodes it, and then asks later consumers to decode the same graph.
+    """
+
+    clusters = value.get("clusters")
+    if not isinstance(clusters, list):
+        raise ValueError("clusters.clusters: expected an array")
+    policy = value.get("policy")
+    if not isinstance(policy, dict):
+        raise ValueError("clusters.policy: expected an object")
+    eligible_present = "eligible_combinational_cut_nets" in policy
+    eligible_nets = policy.get("eligible_combinational_cut_nets", [])
+    if not isinstance(eligible_nets, list):
+        raise ValueError(
+            "clusters.policy.eligible_combinational_cut_nets: expected an array"
+        )
+    stored_policy = {
+        key: item
+        for key, item in policy.items()
+        if key != "eligible_combinational_cut_nets"
+    }
+    document = {
+        key: item for key, item in value.items() if key not in {"clusters", "policy"}
+    }
+    document["policy"] = stored_policy
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.sqlite.tmp")
+    connection = sqlite3.connect(temporary)
+    cluster_count = 0
+    instance_count = 0
+    eligible_count = 0
+    try:
+        connection.executescript(
+            f"""
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=FILE;
+            PRAGMA cache_size=-65536;
+            PRAGMA application_id={CLUSTERS_SQLITE_APPLICATION_ID};
+            PRAGMA user_version={CLUSTERS_SQLITE_USER_VERSION};
+            {_CLUSTERS_DDL}
+            """
+        )
+        writers = {
+            name: _ClusterSectionWriter(connection, name)
+            for name in sorted(_CLUSTER_SECTIONS)
+        }
+
+        required = {"id", "instances", "resources", "fixed_fpga", "groups"}
+        for cluster_seq, cluster in enumerate(clusters):
+            if not isinstance(cluster, dict) or not required <= set(cluster):
+                raise ValueError(
+                    f"clusters[{cluster_seq}]: unsupported cluster record"
+                )
+            cluster_id = cluster["id"]
+            instances = cluster["instances"]
+            resources = cluster["resources"]
+            fixed_fpga = cluster["fixed_fpga"]
+            groups = cluster["groups"]
+            if (
+                not isinstance(cluster_id, str)
+                or not isinstance(instances, list)
+                or not all(isinstance(item, str) for item in instances)
+                or not isinstance(resources, dict)
+                or not all(isinstance(name, str) for name in resources)
+                or (fixed_fpga is not None and not isinstance(fixed_fpga, str))
+                or not isinstance(groups, list)
+                or not all(isinstance(item, str) for item in groups)
+            ):
+                raise ValueError(f"clusters[{cluster_seq}]: malformed cluster record")
+            extra = {key: item for key, item in cluster.items() if key not in required}
+            writers["cluster_ids"].write_string(cluster_id)
+            writers["member_counts"].write_u32(len(instances))
+            for instance_id in instances:
+                writers["member_names"].write_string(instance_id)
+            writers["resource_counts"].write_u32(len(resources))
+            for name in sorted(resources):
+                writers["resource_names"].write_string(name)
+                writers["resource_values"].write_string(
+                    _canonical_json(resources[name])
+                )
+            if fixed_fpga is not None:
+                writers["fixed_indices"].write_u32(cluster_seq)
+                writers["fixed_values"].write_string(fixed_fpga)
+            writers["group_counts"].write_u32(len(groups))
+            for group_id in groups:
+                writers["group_values"].write_string(group_id)
+            writers["extra_values"].write_string(_canonical_json(extra))
+            cluster_count += 1
+            instance_count += len(instances)
+
+        for net_id in eligible_nets:
+            if not isinstance(net_id, str):
+                raise ValueError(
+                    "clusters.policy.eligible_combinational_cut_nets is malformed"
+                )
+            writers["eligible_nets"].write_string(net_id)
+            eligible_count += 1
+        writers["document"].write_string(_canonical_json(document))
+        for writer in writers.values():
+            writer.finish()
+        counts = {
+            "clusters": cluster_count,
+            "instances": instance_count,
+            "eligible_nets": eligible_count,
+        }
+        declared_instances = value.get("instances")
+        if declared_instances != instance_count:
+            raise ValueError("clusters instance count is inconsistent")
+        connection.executemany(
+            "INSERT INTO metadata(key,value) VALUES (?,?)",
+            (
+                ("counts", _canonical_json(counts)),
+                ("eligible_nets_present", _canonical_json(eligible_present)),
+            ),
+        )
+        connection.commit()
+        connection.close()
+        effective_durable = (
+            json_writes_are_durable() if durable is None else bool(durable)
+        )
+        if effective_durable:
+            with temporary.open("rb") as stream:
+                os.fsync(stream.fileno())
+        digest = file_sha256(temporary)
+        artifact = CLUSTERS_STORE_NAME
+        store_path = path.with_name(artifact)
+        os.replace(temporary, store_path)
+        selector = {
+            "schema": INDEXED_CLUSTERS_SCHEMA,
+            "logical_schema": value.get("schema"),
+            "format": CLUSTERS_SQLITE_FORMAT,
+            "application_id": CLUSTERS_SQLITE_APPLICATION_ID,
+            "user_version": CLUSTERS_SQLITE_USER_VERSION,
+            "artifact": artifact,
+            "store_bytes": store_path.stat().st_size,
+            "store_sha256": digest,
+            "counts": counts,
+        }
+        write_json(path, selector, compact=True, durable=durable)
+        return selector
+    except BaseException:
+        try:
+            connection.close()
+        finally:
+            temporary.unlink(missing_ok=True)
+        raise
+
+
+def expand_indexed_phase3_clusters(
+    value: Mapping[str, Any], path: Path
+) -> Dict[str, Any]:
+    store_path, metadata = _read_cluster_store_metadata(path, value)
+    connection = _open_cluster_store(store_path)
+    try:
+        def strings(name: str) -> List[str]:
+            raw, records = _load_cluster_section(connection, name)
+            return _decode_string_section(raw, records, f"{path}:{name}")
+
+        def integers(name: str) -> List[int]:
+            raw, records = _load_cluster_section(connection, name)
+            return _decode_u32_section(raw, records, f"{path}:{name}")
+
+        document_values = strings("document")
+        if len(document_values) != 1:
+            raise ValueError(f"{path}: indexed cluster document is invalid")
+        document = json.loads(document_values[0])
+        if (
+            not isinstance(document, dict)
+            or document.get("schema") != value["logical_schema"]
+            or "clusters" in document
+            or document.get("instances") != value["counts"]["instances"]
+        ):
+            raise ValueError(f"{path}: indexed cluster document is invalid")
+
+        cluster_ids = strings("cluster_ids")
+        member_counts = integers("member_counts")
+        member_names = strings("member_names")
+        resource_counts = integers("resource_counts")
+        resource_names = strings("resource_names")
+        resource_values = strings("resource_values")
+        fixed_indices = integers("fixed_indices")
+        fixed_values = strings("fixed_values")
+        group_counts = integers("group_counts")
+        group_values = strings("group_values")
+        extra_values = strings("extra_values")
+        eligible_nets = strings("eligible_nets")
+        cluster_count = value["counts"]["clusters"]
+        if (
+            len(cluster_ids) != cluster_count
+            or len(set(cluster_ids)) != cluster_count
+            or len(member_counts) != cluster_count
+            or len(resource_counts) != cluster_count
+            or len(group_counts) != cluster_count
+            or len(extra_values) != cluster_count
+            or sum(member_counts) != len(member_names)
+            or len(member_names) != value["counts"]["instances"]
+            or len(set(member_names)) != len(member_names)
+            or sum(resource_counts) != len(resource_names)
+            or len(resource_names) != len(resource_values)
+            or sum(group_counts) != len(group_values)
+            or len(fixed_indices) != len(fixed_values)
+            or fixed_indices != sorted(set(fixed_indices))
+            or any(index >= cluster_count for index in fixed_indices)
+            or len(eligible_nets) != value["counts"]["eligible_nets"]
+            or len(set(eligible_nets)) != len(eligible_nets)
+        ):
+            raise ValueError(f"{path}: indexed cluster columns disagree")
+        fixed_by_cluster = dict(zip(fixed_indices, fixed_values))
+        clusters: List[Dict[str, Any]] = []
+        member_offset = resource_offset = group_offset = 0
+        for cluster_seq, cluster_id in enumerate(cluster_ids):
+            next_member = member_offset + member_counts[cluster_seq]
+            next_resource = resource_offset + resource_counts[cluster_seq]
+            next_group = group_offset + group_counts[cluster_seq]
+            names = resource_names[resource_offset:next_resource]
+            if len(set(names)) != len(names):
+                raise ValueError(f"{path}: indexed cluster resources repeat")
+            groups = group_values[group_offset:next_group]
+            if len(set(groups)) != len(groups):
+                raise ValueError(f"{path}: indexed cluster groups repeat")
+            extra = json.loads(extra_values[cluster_seq])
+            if not isinstance(extra, dict):
+                raise ValueError(f"{path}: indexed cluster extras are invalid")
+            resources = {
+                name: json.loads(encoded)
+                for name, encoded in zip(
+                    names, resource_values[resource_offset:next_resource]
+                )
+            }
+            clusters.append(
+                {
+                    "id": cluster_id,
+                    "instances": member_names[member_offset:next_member],
+                    "resources": resources,
+                    "fixed_fpga": fixed_by_cluster.get(cluster_seq),
+                    "groups": groups,
+                    **extra,
+                }
+            )
+            member_offset = next_member
+            resource_offset = next_resource
+            group_offset = next_group
+        if metadata["eligible_nets_present"]:
+            policy = document.get("policy")
+            if not isinstance(policy, dict):
+                raise ValueError(f"{path}: indexed cluster policy is invalid")
+            policy["eligible_combinational_cut_nets"] = eligible_nets
+    except (IndexError, json.JSONDecodeError, sqlite3.DatabaseError, zlib.error) as error:
+        raise ValueError(f"{path}: indexed clusters payload is corrupt") from error
+    finally:
+        connection.close()
+    return {**document, "clusters": clusters}
+
+def phase3_clusters_store_path(selector_path: Path) -> Path | None:
+    """Resolve and validate the typed cluster owner named by a selector."""
+
+    with selector_path.open("r", encoding="utf-8") as stream:
+        value = json.load(stream)
+    if not isinstance(value, dict):
+        raise ValueError(f"{selector_path}: expected a JSON object")
+    schema = value.get("schema")
+    if schema != INDEXED_CLUSTERS_SCHEMA:
+        if isinstance(schema, str) and schema.startswith(
+            "emuflow.phase3-clusters-storage/"
+        ) and schema not in {PACKED_CLUSTERS_SCHEMA, COMPRESSED_CLUSTERS_SCHEMA}:
+            raise ValueError(f"{selector_path}: unsupported clusters storage schema")
+        return None
+    store_path, _ = _read_cluster_store_metadata(selector_path, value)
+    return store_path
 
 
 def expand_compressed_phase3_clusters(value: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1026,6 +1652,10 @@ def read_phase3_assignment_view(
                 schema = clusters_value.get("schema")
                 if schema == COMPRESSED_CLUSTERS_SCHEMA:
                     return expand_compressed_phase3_clusters(clusters_value)
+                if schema == INDEXED_CLUSTERS_SCHEMA:
+                    return expand_indexed_phase3_clusters(
+                        clusters_value, candidate
+                    )
                 if schema == PACKED_CLUSTERS_SCHEMA:
                     return expand_phase3_clusters(clusters_value)
                 return clusters_value

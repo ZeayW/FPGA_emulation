@@ -312,6 +312,9 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(f"{stage}:{relative}\n", encoding="utf-8")
             (roots["route"] / "routes.json").write_text("{}", encoding="utf-8")
+            (roots["partition"] / "clusters.json").write_text(
+                "{}", encoding="utf-8"
+            )
             (roots["tdm"] / "schedule.json").write_text("{}", encoding="utf-8")
             (roots["timing"] / "path-database.json").write_text(
                 json.dumps(

@@ -1076,6 +1076,7 @@ def compile_canonical_experiment_spec(
     ]
     partition_artifacts = [
         _artifact("clusters.json", "consumer-checkpoint"),
+        _artifact("clusters.sqlite", "consumer-checkpoint"),
         _artifact("constraints.normalized.json", "consumer-checkpoint"),
         _artifact("assignment.json", "consumer-checkpoint"),
         _artifact("phase3_report.json", "consumer-checkpoint"),

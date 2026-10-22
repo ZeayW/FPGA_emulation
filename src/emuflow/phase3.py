@@ -47,10 +47,10 @@ from .combinational_cut import (
     static_exact_analysis_engine,
 )
 from .phase3_storage import (
-    COMPRESSED_CLUSTERS_SCHEMA,
+    INDEXED_CLUSTERS_SCHEMA,
     PACKED_ASSIGNMENT_SCHEMA,
     pack_phase3_assignment,
-    write_compressed_phase3_clusters,
+    write_indexed_phase3_clusters,
 )
 from .phase3_assignment_index import (
     ASSIGNMENT_INDEX_SCHEMA,
@@ -1177,7 +1177,7 @@ def run_phase3(
         )
     if not retain_diagnostics:
         report["artifact_storage"] = {
-            "clusters": COMPRESSED_CLUSTERS_SCHEMA,
+            "clusters": INDEXED_CLUSTERS_SCHEMA,
             "assignment": PACKED_ASSIGNMENT_SCHEMA,
             "assignment_index": ASSIGNMENT_INDEX_SCHEMA,
             "static_exact_data": EXACT_BINARY_SCHEMA,
@@ -1191,6 +1191,7 @@ def run_phase3(
         shutil.rmtree(output_dir / "patron", ignore_errors=True)
     if not retain_diagnostics and hop_refinement["enabled"]:
         shutil.rmtree(output_dir / "hop-refinement", ignore_errors=True)
+    indexed_clusters = None
     if retain_diagnostics:
         phase3_runtime_call(
             "publish.write_clusters",
@@ -1200,12 +1201,13 @@ def run_phase3(
             compact=True,
         )
     else:
-        phase3_runtime_call(
+        indexed_clusters = phase3_runtime_call(
             "publish.write_clusters",
-            write_compressed_phase3_clusters,
+            write_indexed_phase3_clusters,
             output_dir / "clusters.json",
             clusters,
         )
+        report["artifacts"]["clusters_data"] = indexed_clusters["artifact"]
     phase3_runtime_call(
         "publish.write_constraints",
         write_json,
@@ -1265,6 +1267,11 @@ def run_phase3(
         )
     phase3_runtime_observe(
         clusters_artifact_bytes=(output_dir / "clusters.json").stat().st_size,
+        clusters_data_bytes=(
+            (output_dir / indexed_clusters["artifact"]).stat().st_size
+            if indexed_clusters is not None
+            else 0
+        ),
         assignment_artifact_bytes=(output_dir / "assignment.json").stat().st_size,
         assignment_index_bytes=(output_dir / "assignment.sqlite").stat().st_size,
         static_exact_binary_bytes=(

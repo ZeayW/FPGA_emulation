@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -7,7 +8,9 @@ from unittest import mock
 
 from emuflow.io import read_json, write_json
 from emuflow.phase3_storage import (
+    CLUSTERS_SQLITE_APPLICATION_ID,
     COMPRESSED_CLUSTERS_SCHEMA,
+    INDEXED_CLUSTERS_SCHEMA,
     PACKED_ASSIGNMENT_SCHEMA,
     PACKED_CLUSTERS_SCHEMA,
     compress_phase3_clusters,
@@ -16,6 +19,7 @@ from emuflow.phase3_storage import (
     read_phase3_assignment_view,
     read_phase3_cut_timing_view,
     write_compressed_phase3_clusters,
+    write_indexed_phase3_clusters,
 )
 
 
@@ -80,6 +84,72 @@ def _large_artifacts(count: int = 1000):
 
 
 class Phase3StorageTest(unittest.TestCase):
+    def test_indexed_clusters_round_trip_and_seal_typed_population(self) -> None:
+        clusters, _ = _large_artifacts(32)
+        clusters["design"] = "large-设计-µ"
+        clusters["policy"]["eligible_combinational_cut_nets"] = [
+            "top/net_β",
+            "top/net_γ",
+        ]
+        clusters["clusters"][0]["qualification"] = {"kind": "fixture"}
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector_path = root / "clusters.json"
+            selector = write_indexed_phase3_clusters(selector_path, clusters)
+            stored = json.loads(selector_path.read_text())
+            self.assertEqual(stored, selector)
+            self.assertEqual(stored["schema"], INDEXED_CLUSTERS_SCHEMA)
+            self.assertEqual(
+                stored["application_id"], CLUSTERS_SQLITE_APPLICATION_ID
+            )
+            self.assertEqual(stored["counts"]["clusters"], 32)
+            self.assertEqual(stored["counts"]["instances"], 64)
+            self.assertEqual(stored["counts"]["eligible_nets"], 2)
+            store = root / stored["artifact"]
+            self.assertTrue(store.is_file())
+            self.assertLess(selector_path.stat().st_size, 1024)
+            with sqlite3.connect(store) as connection:
+                self.assertEqual(
+                    connection.execute("PRAGMA application_id").fetchone()[0],
+                    CLUSTERS_SQLITE_APPLICATION_ID,
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT records FROM sections "
+                        "WHERE section='member_names'"
+                    ).fetchone()[0],
+                    64,
+                )
+            self.assertEqual(read_json(selector_path), clusters)
+
+            with store.open("r+b") as stream:
+                stream.seek(128)
+                byte = stream.read(1)
+                stream.seek(128)
+                stream.write(bytes([byte[0] ^ 1]))
+            with self.assertRaisesRegex(ValueError, "seal disagrees"):
+                read_json(selector_path)
+
+    def test_indexed_clusters_reject_resealed_section_count_corruption(self) -> None:
+        clusters, _ = _large_artifacts(4)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector_path = root / "clusters.json"
+            selector = write_indexed_phase3_clusters(selector_path, clusters)
+            store = root / selector["artifact"]
+            with sqlite3.connect(store) as connection:
+                connection.execute(
+                    "UPDATE sections SET records=records+1 "
+                    "WHERE section='cluster_ids'"
+                )
+            selector["store_sha256"] = hashlib.sha256(
+                store.read_bytes()
+            ).hexdigest()
+            selector["store_bytes"] = store.stat().st_size
+            selector_path.write_text(json.dumps(selector), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "section counts disagree"):
+                read_json(selector_path)
+
     def test_compressed_clusters_round_trip_without_column_copy(self) -> None:
         clusters, _ = _large_artifacts()
         compressed = compress_phase3_clusters(clusters)

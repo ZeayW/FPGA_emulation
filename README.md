@@ -138,8 +138,13 @@ columns and only sparse fixed/group constraints; it exposes the unchanged v1
 records lazily. `phase3-runtime.json` reports its retained column bytes as
 `cluster_compact_payload_bytes`. On 200,000 singleton clusters, retained traced
 allocation fell from 141.62 MB to 16.13 MB and process peak RSS from 323.91 MB
-to 34.18 MB, with a byte-identical canonical SHA. Streamed JSON encoding changed
-from 2.01 to 3.12 seconds. The native analyzer now stores instances, nets,
+to 34.18 MB, with a byte-identical canonical SHA. Production publication now
+writes that population once as chunked, compressed typed columns in
+`clusters.sqlite`; `clusters.json` is a sealed selector, while explicit
+compatibility reads reconstruct the unchanged logical v1 document. The same
+200,000-cluster publication used 1,589,621 bytes versus 2,133,472 bytes for the
+former compressed/base64 JSON envelope and took 1.85 versus 1.90 seconds.
+The native analyzer now stores instances, nets,
 cuts, incoming/outgoing incidence and dependencies in flat columns/CSR. A
 500,000-instance/net/cut differential run reduced its peak RSS from 136.89 MB
 to 53.92 MB and produced identical bytes. These are isolated representation
