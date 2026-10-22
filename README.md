@@ -270,8 +270,13 @@ construction from 7.31 to 1.68 seconds (-77.0%) while producing the same
 Native PATRON input is written record by record
 through a synchronized same-directory temporary file; the previous `lines`
 plus `join` copy is gone. Its strict reader checks logical schema, ownership,
-bit ordinals, endpoint order and counts before any native search. Native
-PATRON output is also parsed as an ordered record stream. In the production
+bit ordinals, endpoint order and counts before any native search. Packed paths
+encode every conservative transition with the complete `(-1, -1)` endpoint
+sentinel; only exact transitions may carry two valid cluster ordinals, and they
+are validated before the packed record is mutated. This prevents top-level
+one-sided endpoint resolution from reaching the native protocol while keeping
+the native reader fail-closed. Native PATRON output is also parsed as an
+ordered record stream. In the production
 compact path, final `cN -> FPGA` ownership remains a four-byte part-index
 column through assignment construction, online validation and Phase 3 packing;
 it is not expanded into a million-entry Python dictionary after the native

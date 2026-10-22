@@ -681,6 +681,29 @@ class _PackedPressurePathSequence(list):
     ) -> None:
         if not isinstance(path, str) or not path:
             raise ValidationError("partition pressure path identity is invalid")
+        if endpoint_exact:
+            if (
+                isinstance(start_cluster, bool)
+                or not isinstance(start_cluster, int)
+                or start_cluster < 0
+                or start_cluster >= len(self._clusters)
+                or isinstance(end_cluster, bool)
+                or not isinstance(end_cluster, int)
+                or end_cluster < 0
+                or end_cluster >= len(self._clusters)
+            ):
+                raise ValidationError(
+                    "partition pressure exact path endpoints are invalid"
+                )
+            normalized_start_cluster = start_cluster
+            normalized_end_cluster = end_cluster
+        else:
+            # Conservative paths do not have an authoritative endpoint pair.
+            # A top-level port can resolve only one side to a cluster; carrying
+            # that partial identity into the native protocol creates an invalid
+            # mixed (-1, cluster) pair and misrepresents the transition model.
+            normalized_start_cluster = -1
+            normalized_end_cluster = -1
         self._append_string(self._path_data, self._path_offsets, path)
         if clock_domain is None:
             self._clock_present.append(0)
@@ -711,8 +734,8 @@ class _PackedPressurePathSequence(list):
         self._source_net_offsets.append(len(self._source_nets))
         self._pressure_net_offsets.append(len(self._pressure_net_ordinals))
         self._transition_models.append(int(endpoint_exact))
-        self._start_clusters.append(-1 if start_cluster is None else start_cluster)
-        self._end_clusters.append(-1 if end_cluster is None else end_cluster)
+        self._start_clusters.append(normalized_start_cluster)
+        self._end_clusters.append(normalized_end_cluster)
 
     def __len__(self) -> int:
         return len(self._periods)

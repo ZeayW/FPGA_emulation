@@ -917,6 +917,76 @@ class PartitionPressureTest(unittest.TestCase):
             (10.0, -1.0, 0, 0, array("I", [0])),
         )
 
+    def test_packed_conservative_path_discards_partial_endpoint_pair(
+        self,
+    ) -> None:
+        cluster_identities = _PackedStringOrdinalIndex()
+        cluster_identities.append("c000000", 0)
+        clusters = [{
+            "cluster": "c000000",
+            "cells": 1,
+            "resources": {"lut": 1},
+            "fixed_fpga": None,
+        }]
+        nets = _PackedPressureNetSequence(clusters, cluster_identities)
+        nets.append_record("n0", "register_output", (0,), (0,))
+        known_nets = _PackedStringOrdinalIndex()
+        known_nets.append("n0", 0)
+        paths = _PackedPressurePathSequence(known_nets, nets, clusters)
+        paths.append_record(
+            "top-to-cell",
+            "clk",
+            10.0,
+            -1.0,
+            ("n0",),
+            None,
+            0,
+            False,
+        )
+        self.assertEqual(
+            paths.native_path(0),
+            (10.0, -1.0, -1, -1, array("I", [0])),
+        )
+        self.assertEqual(
+            paths[0]["transition_model"], "conservative-net-worst-v1"
+        )
+        self.assertNotIn("start_cluster", paths[0])
+        self.assertNotIn("end_cluster", paths[0])
+
+    def test_packed_exact_path_rejects_partial_endpoint_before_mutation(
+        self,
+    ) -> None:
+        cluster_identities = _PackedStringOrdinalIndex()
+        cluster_identities.append("c000000", 0)
+        clusters = [{
+            "cluster": "c000000",
+            "cells": 1,
+            "resources": {"lut": 1},
+            "fixed_fpga": None,
+        }]
+        nets = _PackedPressureNetSequence(clusters, cluster_identities)
+        nets.append_record("n0", "register_output", (0,), (0,))
+        known_nets = _PackedStringOrdinalIndex()
+        known_nets.append("n0", 0)
+        paths = _PackedPressurePathSequence(known_nets, nets, clusters)
+        empty_payload_bytes = paths.payload_bytes
+        with self.assertRaisesRegex(
+            ValidationError,
+            "partition pressure exact path endpoints are invalid",
+        ):
+            paths.append_record(
+                "invalid-exact",
+                "clk",
+                10.0,
+                -1.0,
+                ("n0",),
+                None,
+                0,
+                True,
+            )
+        self.assertEqual(len(paths), 0)
+        self.assertEqual(paths.payload_bytes, empty_payload_bytes)
+
     def test_path_objective_uses_maximum_of_per_path_tdm_ratio_sums(self) -> None:
         evaluated = evaluate_partition_pressure(
             self.ir,
