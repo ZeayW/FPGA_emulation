@@ -15,6 +15,7 @@ from emuflow.mfspart_provider import (
     _partition_graph,
     _timing_path_groups,
     refine_mfspart_partition,
+    run_mfspart,
 )
 from emuflow.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
 from emuflow.partition import (
@@ -122,6 +123,36 @@ class MFSPartPhase3Test(unittest.TestCase):
             set(assignment["cluster_assignment"]),
             {f"c{index:06d}" for index in range(8)},
         )
+
+    def test_deferred_contract_keeps_mfspart_candidate_lightweight(self) -> None:
+        ir = import_yosys_json(
+            ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
+        )
+        platform = Platform.load(PLATFORM)
+        constraints = load_partition_constraints(None, ir, platform)
+        clusters = build_clusters(
+            ir,
+            constraints,
+            cut_mode=CUT_MODE_STATIC_EXACT,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            assignment = run_mfspart(
+                ir,
+                platform,
+                clusters,
+                constraints,
+                load_route_constraints(None, platform),
+                Path(temporary_directory),
+                seed=23,
+                coarsener=self.executables["coarsener"],
+                initializer=self.executables["initializer"],
+                refiner=self.executables["refiner"],
+                refiner_checker=self.executables["refiner_checker"],
+                legalizer=self.executables["legalizer"],
+                defer_semantic_contract=True,
+            )
+        self.assertNotIn("semantic_contract", assignment)
+        self.assertNotIn("semantic_contract_sha256", assignment)
 
     def test_phase3_cli_selects_mfspart_provider(self) -> None:
         ir = import_yosys_json(

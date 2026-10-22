@@ -311,7 +311,12 @@ synthetic cut records, retained traced allocation fell from 85,428,138 to
 10,995,827 bytes and process peak RSS from 246,202,368 to 35,536,896 bytes;
 construction plus a complete logical traversal changed from 1.82 to 3.74
 seconds and produced the same canonical SHA-256. This is isolated
-representation evidence, not NVDLA qualification. The C++ analyzer now bounds protocol-v3
+representation evidence, not NVDLA qualification. Production MFSPart and
+non-replicating RePart candidates now carry only partition facts through final
+hop refinement; the authoritative Static Exact contract is constructed once
+after the last assignment change. Explicit diagnostics retain intermediate
+contracts, and RePart replication retains its separate effective-cut evidence.
+The C++ analyzer now bounds protocol-v3
 capture ordering to a 1,048,576-record run and a 64-way external merge instead
 of retaining and sorting the complete capture population. Runs deduplicate
 before merging; populations below one run stay in memory, while the final

@@ -480,6 +480,7 @@ def run_repart(
     net_weights_path: Optional[Path] = None,
     timeout_seconds: int = 3600,
     enable_replication: bool = False,
+    defer_semantic_contract: bool = False,
 ) -> Dict[str, Any]:
     repart_input = export_repart_inputs(
         ir,
@@ -627,6 +628,7 @@ def run_repart(
                 "log": log_path.name if log_path is not None else None,
             },
         },
+        _include_semantic_contract=not defer_semantic_contract,
     )
     if not enable_replication:
         return primary_assignment

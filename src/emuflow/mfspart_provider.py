@@ -641,6 +641,7 @@ def run_mfspart(
     refiner: Optional[str] = None,
     refiner_checker: Optional[str] = None,
     legalizer: Optional[str] = None,
+    defer_semantic_contract: bool = False,
 ) -> Dict[str, Any]:
     platform_fpga_ids = {fpga.id for fpga in platform.fpgas}
     active_fpga_ids = set(
@@ -741,4 +742,5 @@ def run_mfspart(
                 "legalization": "mfspart/legalization.json",
             },
         },
+        _include_semantic_contract=not defer_semantic_contract,
     )

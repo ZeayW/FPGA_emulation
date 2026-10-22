@@ -645,6 +645,10 @@ def run_phase3(
             net_weights_path=net_weights_path,
             timeout_seconds=repart_timeout_seconds,
             enable_replication=provider == "repart-replication",
+            defer_semantic_contract=(
+                not retain_diagnostics
+                and provider != "repart-replication"
+            ),
         )
     elif provider == "mfspart":
         assignment = phase3_runtime_call(
@@ -663,6 +667,7 @@ def run_phase3(
             refiner=mfspart_refiner,
             refiner_checker=mfspart_refiner_checker,
             legalizer=mfspart_legalizer,
+            defer_semantic_contract=not retain_diagnostics,
         )
     elif provider == "patron":
         if timing_database_path is None:

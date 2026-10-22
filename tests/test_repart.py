@@ -19,6 +19,7 @@ from emuflow.repart import (
     REPART_INPUT_SCHEMA,
     export_repart_inputs,
     parse_repart_solution,
+    run_repart,
 )
 from emuflow.yosys import import_yosys_json
 from tests.native_build import tlr_router
@@ -138,6 +139,85 @@ class RePartTest(unittest.TestCase):
             solution.write_text("fpga0:\nfpga1:\n", encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "exact coverage"):
                 parse_repart_solution(solution, artifact)
+
+    def test_deferred_contract_keeps_repart_candidate_lightweight(self) -> None:
+        clusters = build_clusters(
+            self.ir,
+            self.constraints,
+            cut_mode="static-exact-combinational",
+        )
+        candidate = assign_clusters(
+            self.ir,
+            self.platform,
+            clusters,
+            self.constraints,
+            seed=9,
+            _include_semantic_contract=False,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            solution = root / "repart.out"
+            self._write_solution(
+                solution,
+                candidate["cluster_assignment"],
+            )
+            assignment = run_repart(
+                self.ir,
+                self.platform,
+                clusters,
+                self.constraints,
+                root / "run",
+                solution_input=solution,
+                defer_semantic_contract=True,
+            )
+        self.assertNotIn("semantic_contract", assignment)
+        self.assertNotIn("semantic_contract_sha256", assignment)
+        self.assertEqual(
+            assignment["cluster_assignment"],
+            candidate["cluster_assignment"],
+        )
+
+    def test_phase3_builds_static_exact_contract_after_repart_hops(self) -> None:
+        clusters = build_clusters(
+            self.ir,
+            self.constraints,
+            cut_mode="static-exact-combinational",
+        )
+        candidate = assign_clusters(
+            self.ir,
+            self.platform,
+            clusters,
+            self.constraints,
+            seed=9,
+            _include_semantic_contract=False,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "design.emuir.sqlite"
+            self.ir.save(ir_path)
+            solution = root / "repart.out"
+            self._write_solution(
+                solution,
+                candidate["cluster_assignment"],
+            )
+            report = run_phase3(
+                ir_path,
+                PLATFORM_PATH,
+                root / "phase3",
+                balance_tolerance=1.0,
+                provider="repart",
+                cut_mode="static-exact-combinational",
+                repart_solution=solution,
+            )
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(
+            report["validation"]["semantic_contract"]["status"],
+            "pass",
+        )
+        self.assertGreater(
+            report["validation"]["semantic_contract"]["logic_segments"],
+            0,
+        )
 
     def test_phase3_imports_unique_owner_repart_solution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
