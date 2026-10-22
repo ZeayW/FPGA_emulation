@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.partition import (
@@ -17,6 +18,7 @@ from emuflow.partition import (
     validate_partition_artifacts,
 )
 from emuflow.partition_hops import refine_partition_hops
+from emuflow.partition_ir import load_partition_ir
 from emuflow.phase3 import run_phase3
 from emuflow.platform import Platform
 from emuflow.yosys import import_yosys_json
@@ -227,6 +229,63 @@ class HopPartitionRefinementTest(unittest.TestCase):
         self.assertEqual(
             refined.get("semantic_contract"), assignment.get("semantic_contract")
         )
+
+    def test_compact_refiner_stream_matches_reference_bytes(self) -> None:
+        constraints, clusters, assignment = self._artifacts()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            route_constraints = self._route_constraints(root)
+            reference, reference_report = refine_partition_hops(
+                self.ir,
+                self.platform,
+                clusters,
+                constraints,
+                assignment,
+                root / "reference",
+                route_constraints_path=route_constraints,
+                executable=str(self.executable),
+                defer_semantic_contract=True,
+            )
+            ir_path = root / "partition.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            compact_ir = load_partition_ir(ir_path)
+            compact_clusters = build_clusters(compact_ir, constraints)
+            compact_assignment = build_partition_assignment(
+                compact_ir,
+                self.platform,
+                compact_clusters,
+                constraints,
+                assignment["cluster_assignment"],
+                provider=assignment["provider"],
+                seed=assignment["seed"],
+                _stream_semantic_records=True,
+            )
+            actual, actual_report = refine_partition_hops(
+                compact_ir,
+                self.platform,
+                compact_clusters,
+                constraints,
+                compact_assignment,
+                root / "compact",
+                route_constraints_path=route_constraints,
+                executable=str(self.executable),
+                defer_semantic_contract=True,
+            )
+
+            self.assertEqual(
+                (root / "compact/hop_refiner.in").read_bytes(),
+                (root / "reference/hop_refiner.in").read_bytes(),
+            )
+            self.assertEqual(
+                dict(actual["cluster_assignment"].items()),
+                dict(reference["cluster_assignment"].items()),
+            )
+            self.assertNotIsInstance(actual["cluster_assignment"], dict)
+            self.assertEqual(actual_report["moves"], reference_report["moves"])
+            self.assertEqual(
+                list(actual_report["input"]["cluster_order"]),
+                list(reference_report["input"]["cluster_order"]),
+            )
 
     def test_candidate_hop_database_preserves_simplex_direction(self) -> None:
         platform = Platform.from_dict(

@@ -52,6 +52,16 @@ from 56,891,500 to 22,376 bytes. Logical records and generated input bytes are
 differentially identical. These measurements do not replace the required
 NVDLA replay.
 
+The following topology hop refinement boundary now remains compact as well.
+One ordered endpoint scan emits directed net membership into packed ordinal
+columns, the native input writer streams every record atomically, and ordered
+native `ASSIGN` records become one fixed-width part column. A 200,000-net
+representation comparison reduced retained traced allocation from 107,113,418
+to 9,007,799 bytes (8,488,906-byte payload). A separate 200,000-cluster
+assignment comparison reduced retained allocation from 31,886,472 to 845,764
+bytes (800,000-byte payload). Differential tests require byte-identical native
+input and identical refined ownership. NVDLA remains the qualification gate.
+
 Representation-only waves must preserve the effective provider, seed,
 constraints, ordering, and external tool versions. DeviceRegionIndex,
 pin-aware SLR cost, and other placement-policy changes are qualified in

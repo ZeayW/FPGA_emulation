@@ -368,6 +368,95 @@ class _CompactInstanceAssignment(Mapping[str, str]):
         return digest.hexdigest()
 
 
+class _PackedClusterAssignment(Mapping[str, str]):
+    """Canonical ``cN -> FPGA`` ownership in one fixed-width part column."""
+
+    def __init__(
+        self,
+        part_ids: Sequence[str],
+        part_indices: Iterable[int],
+    ) -> None:
+        self.part_ids = tuple(part_ids)
+        if (
+            not self.part_ids
+            or len(set(self.part_ids)) != len(self.part_ids)
+            or any(not isinstance(part, str) or not part for part in self.part_ids)
+        ):
+            raise ValidationError("packed cluster assignment parts are invalid")
+        self.part_indices = array("I", part_indices)
+        if self.part_indices and max(self.part_indices) >= len(self.part_ids):
+            raise ValidationError(
+                "packed cluster assignment part index is invalid"
+            )
+
+    @staticmethod
+    def identity(index: int) -> str:
+        return f"c{index:06d}"
+
+    def _index(self, identity: str) -> int:
+        if (
+            not isinstance(identity, str)
+            or not identity.startswith("c")
+            or not identity[1:].isdigit()
+        ):
+            raise KeyError(identity)
+        index = int(identity[1:])
+        if (
+            index < 0
+            or index >= len(self.part_indices)
+            or self.identity(index) != identity
+        ):
+            raise KeyError(identity)
+        return index
+
+    def __len__(self) -> int:
+        return len(self.part_indices)
+
+    def __iter__(self) -> Iterator[str]:
+        for index in range(len(self)):
+            yield self.identity(index)
+
+    def __getitem__(self, identity: str) -> str:
+        return self.part_ids[self.part_indices[self._index(identity)]]
+
+    def part_for_index(self, index: int) -> str:
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or index < 0
+            or index >= len(self)
+        ):
+            raise IndexError("packed cluster index out of range")
+        return self.part_ids[self.part_indices[index]]
+
+    def values(self) -> Iterator[str]:
+        for part_index in self.part_indices:
+            yield self.part_ids[part_index]
+
+    def items(self) -> Iterator[Tuple[str, str]]:
+        for index, part_index in enumerate(self.part_indices):
+            yield self.identity(index), self.part_ids[part_index]
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _PackedClusterAssignment):
+            if self.part_ids == other.part_ids:
+                return self.part_indices == other.part_indices
+        if not isinstance(other, Mapping) or len(self) != len(other):
+            return False
+        missing = object()
+        return all(
+            other.get(identity, missing) == part
+            for identity, part in self.items()
+        )
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    @property
+    def packed_payload_bytes(self) -> int:
+        return len(self.part_indices) * self.part_indices.itemsize
+
+
 def _instance_ids_on_net(net: Mapping[str, Any]) -> List[str]:
     return sorted(
         {
@@ -2092,7 +2181,7 @@ def build_partition_assignment(
         )
 
     cluster_assignment_is_canonical = (
-        isinstance(cluster_assignment, dict)
+        isinstance(cluster_assignment, (dict, _PackedClusterAssignment))
         and all(
             cluster_id == cluster["id"]
             for cluster_id, cluster in zip(
@@ -2168,7 +2257,7 @@ def validate_partition_artifacts_online(
     if (
         not isinstance(raw_clusters, list)
         or not isinstance(raw_assignment, Mapping)
-        or not isinstance(cluster_assignment, dict)
+        or not isinstance(cluster_assignment, Mapping)
         or not isinstance(metrics, dict)
         or not isinstance(constraints, dict)
     ):

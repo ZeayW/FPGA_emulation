@@ -785,7 +785,13 @@ class TritonPartTest(unittest.TestCase):
                 persist_input_manifest=False,
             )
             owners = assignment["instance_assignment"]
+            cluster_owners = assignment["cluster_assignment"]
             self.assertNotIsInstance(owners, dict)
+            self.assertNotIsInstance(cluster_owners, dict)
+            self.assertEqual(
+                cluster_owners.packed_payload_bytes,
+                4 * len(clusters["clusters"]),
+            )
             expected = {
                 instance_id: f"fpga{index % 2}"
                 for index, cluster in enumerate(clusters["clusters"])

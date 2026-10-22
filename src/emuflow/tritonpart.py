@@ -28,6 +28,7 @@ from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .partition import (
     _CompactClusterRecords,
+    _PackedClusterAssignment,
     _compact_partition_ir_path,
     active_partition_fpgas,
     build_partition_assignment,
@@ -801,7 +802,9 @@ def export_tritonpart_inputs(
 def parse_tritonpart_solution(
     path: Path,
     tritonpart_input: Mapping[str, Any],
-) -> Dict[str, str]:
+    *,
+    packed_assignment: bool = False,
+) -> Mapping[str, str]:
     if not path.is_file():
         raise ValidationError(f"TritonPart solution does not exist: {path}")
     cluster_order = tritonpart_input["cluster_order"]
@@ -814,12 +817,12 @@ def parse_tritonpart_solution(
             f"expected {len(cluster_order)}, got {token_count}"
         )
     assignment: Dict[str, str] = {}
-    cluster_ids = iter(cluster_order)
+    packed_parts = array("I")
+    cluster_ids = iter(cluster_order) if not packed_assignment else None
     index = 0
     with path.open("r", encoding="utf-8") as stream:
         for line in stream:
             for token in line.split():
-                cluster_id = next(cluster_ids)
                 try:
                     part_id = int(token)
                 except ValueError as error:
@@ -832,9 +835,17 @@ def parse_tritonpart_solution(
                         "TritonPart solution line "
                         f"{index + 1}: invalid part {part_id}"
                     )
-                assignment[cluster_id] = fpga_order[part_id]
+                if packed_assignment:
+                    packed_parts.append(part_id)
+                else:
+                    assert cluster_ids is not None
+                    assignment[next(cluster_ids)] = fpga_order[part_id]
                 index += 1
-    return assignment
+    return (
+        _PackedClusterAssignment(fpga_order, packed_parts)
+        if packed_assignment
+        else assignment
+    )
 
 
 def _repair_min_used_fpgas(
@@ -2138,7 +2149,8 @@ def _run_native_balance_legalizer(
     *,
     executable: Optional[str],
     timeout_seconds: int,
-) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    packed_assignment: bool = False,
+) -> Tuple[Mapping[str, str], Dict[str, Any]]:
     limits_path = output_dir / "balance-limits.txt"
     report_path = output_dir / "balance-repair-report.txt"
     log_path = output_dir / "balance-repair.log"
@@ -2196,7 +2208,11 @@ def _run_native_balance_legalizer(
             "native TritonPart balance legalizer failed with exit code "
             f"{completed.returncode}: {detail}"
         )
-    result = parse_tritonpart_solution(output_solution, tritonpart_input)
+    result = parse_tritonpart_solution(
+        output_solution,
+        tritonpart_input,
+        packed_assignment=packed_assignment,
+    )
     if len(result) != len(candidate) or any(
         cluster_id not in result for cluster_id in candidate
     ):
@@ -2326,7 +2342,7 @@ def run_tritonpart(
             "openroad", executable
         )
 
-    cluster_assignment: Optional[Dict[str, str]] = None
+    cluster_assignment: Optional[Mapping[str, str]] = None
     selected_seed = seed
     selected_log: Optional[Path] = None
     selected_solution_path: Optional[Path] = None
@@ -2447,6 +2463,12 @@ def run_tritonpart(
             parse_tritonpart_solution,
             provider_solution_path,
             tritonpart_input,
+            packed_assignment=(
+                defer_semantic_contract
+                and isinstance(
+                    tritonpart_input["cluster_order"], _CompactClusterOrder
+                )
+            ),
         )
         attempt_solution = None
         if len(attempt_specs) > 1:
@@ -2490,6 +2512,9 @@ def run_tritonpart(
                     repaired_solution_path,
                     executable=balance_legalizer,
                     timeout_seconds=timeout_seconds,
+                    packed_assignment=isinstance(
+                        candidate, _PackedClusterAssignment
+                    ),
                 )
             except ValidationError as error:
                 attempts.append(

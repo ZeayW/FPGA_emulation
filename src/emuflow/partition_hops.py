@@ -5,31 +5,128 @@ from __future__ import annotations
 import hashlib
 import math
 import subprocess
+from array import array
 from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from .errors import EmuFlowError, ValidationError
 from .io import read_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .partition import (
+    _CompactClusterRecords,
+    _PackedClusterAssignment,
+    _compact_partition_ir_path,
     active_partition_fpgas,
     build_partition_assignment,
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
 )
 from .platform import Platform
+from .phase3_runtime import phase3_runtime_observe
 from .phase3_storage import read_phase3_assignment_view
 from .replication import apply_replication
 from .resources import RESOURCE_FIELDS
 from .routing import build_directed_graph, load_route_constraints
-from .tritonpart import load_partition_net_weights
+from .tritonpart import _CompactClusterOrder, load_partition_net_weights
 
 
 HOP_REFINER_INPUT_SCHEMA = "emuflow.hop-partition-refiner-input/v1"
 HOP_REFINER_REPORT_SCHEMA = "emuflow.hop-partition-refinement/v1"
 HOP_REFINER_PROVIDER = "topology-constrained-fm-v1"
+
+
+class _PackedHopNetRecords(list):
+    """Directed hop-refiner nets stored as fixed-width cluster ordinals."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.name_bytes = bytearray()
+        self.name_offsets = array("Q", [0])
+        self.weights = array("d")
+        self.sources = array("I")
+        self.sink_offsets = array("Q", [0])
+        self.sinks = array("I")
+
+    def append_record(
+        self,
+        net_id: str,
+        weight: float,
+        source: int,
+        sinks: Sequence[int],
+    ) -> None:
+        encoded = net_id.encode("utf-8")
+        self.name_bytes.extend(encoded)
+        self.name_offsets.append(len(self.name_bytes))
+        self.weights.append(float(weight))
+        self.sources.append(source)
+        self.sinks.extend(sinks)
+        self.sink_offsets.append(len(self.sinks))
+
+    def __len__(self) -> int:
+        return len(self.sources)
+
+    def iter_columns(self) -> Iterator[Tuple[float, int, array]]:
+        for index, (weight, source) in enumerate(
+            zip(self.weights, self.sources)
+        ):
+            begin = self.sink_offsets[index]
+            end = self.sink_offsets[index + 1]
+            yield weight, source, self.sinks[begin:end]
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("packed hop net index out of range")
+        name_begin = self.name_offsets[index]
+        name_end = self.name_offsets[index + 1]
+        sink_begin = self.sink_offsets[index]
+        sink_end = self.sink_offsets[index + 1]
+        source = self.sources[index]
+        return {
+            "net": self.name_bytes[name_begin:name_end].decode("utf-8"),
+            "weight": self.weights[index],
+            "source": f"c{source:06d}",
+            "sinks": [
+                f"c{sink:06d}" for sink in self.sinks[sink_begin:sink_end]
+            ],
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("packed hop net index must be an integer")
+        return self._record(index)
+
+    @property
+    def payload_bytes(self) -> int:
+        columns = (
+            self.name_offsets,
+            self.weights,
+            self.sources,
+            self.sink_offsets,
+            self.sinks,
+        )
+        return len(self.name_bytes) + sum(
+            len(column) * column.itemsize for column in columns
+        )
 
 
 def _shortest_hop_distances(
@@ -200,6 +297,83 @@ def _primary_net_records(
     return records
 
 
+def _compact_primary_net_records(
+    ir: EmuIR,
+    clusters: _CompactClusterRecords,
+    transported_cut_classes: Sequence[str],
+    net_weights: Mapping[str, float],
+) -> _PackedHopNetRecords:
+    """Build directed net records from compact endpoint ownership."""
+
+    from .emuir_storage import open_emuir_sqlite_read_only
+
+    path = _compact_partition_ir_path(ir)
+    if path is None:
+        raise ValidationError("compact hop-refiner input has no EmuIR store")
+    source_clusters = clusters.source_cluster_indices
+    records = _PackedHopNetRecords()
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        endpoint_rows = iter(
+            connection.execute(
+                """SELECT net_seq,role,instance_seq
+                     FROM endpoint_records
+                    ORDER BY net_seq,role,ordinal"""
+            )
+        )
+        endpoint = next(endpoint_rows, None)
+        observed_nets = 0
+        for net in connection.execute(
+            "SELECT seq,id,cut_class FROM net_records ORDER BY seq"
+        ):
+            net_seq = net["seq"]
+            if net_seq != observed_nets:
+                raise ValidationError("compact EmuIR net sequence is invalid")
+            observed_nets += 1
+            sources = set()
+            sinks = set()
+            while endpoint is not None and endpoint["net_seq"] == net_seq:
+                role = endpoint["role"]
+                source_seq = endpoint["instance_seq"]
+                if role not in (0, 1):
+                    raise ValidationError(
+                        "compact EmuIR endpoint role is invalid"
+                    )
+                if source_seq is not None:
+                    if source_seq < 0 or source_seq >= len(source_clusters):
+                        raise ValidationError(
+                            "compact EmuIR endpoint owner is invalid"
+                        )
+                    owner = source_clusters[source_seq]
+                    (sources if role == 0 else sinks).add(owner)
+                endpoint = next(endpoint_rows, None)
+            if endpoint is not None and endpoint["net_seq"] < net_seq:
+                raise ValidationError("compact EmuIR has orphaned endpoints")
+            if net["cut_class"] not in transported_cut_classes:
+                continue
+            if not sources or not sinks:
+                continue
+            if len(sources) != 1:
+                raise ValidationError(
+                    "hop refinement requires one driver cluster for net "
+                    f"{net['id']!r}"
+                )
+            source = next(iter(sources))
+            ordered_sinks = sorted(sink for sink in sinks if sink != source)
+            if ordered_sinks:
+                records.append_record(
+                    net["id"],
+                    float(net_weights.get(net["id"], 1.0)),
+                    source,
+                    ordered_sinks,
+                )
+        if observed_nets != len(ir.value["nets"]) or endpoint is not None:
+            raise ValidationError("compact EmuIR endpoint coverage is invalid")
+    finally:
+        connection.close()
+    return records
+
+
 def _replica_targets(
     assignment: Mapping[str, Any],
 ) -> Dict[str, List[str]]:
@@ -227,12 +401,18 @@ def _write_native_input(
 ) -> Dict[str, Any]:
     hop_limit = route_constraints["max_route_hops"]
     assert hop_limit is not None
-    clusters = sorted(
-        clusters_artifact["clusters"], key=lambda item: item["id"]
+    raw_clusters = clusters_artifact["clusters"]
+    compact_clusters = (
+        raw_clusters
+        if isinstance(raw_clusters, _CompactClusterRecords)
+        and _compact_partition_ir_path(ir) is not None
+        else None
     )
-    cluster_index = {
-        cluster["id"]: index for index, cluster in enumerate(clusters)
-    }
+    clusters = (
+        compact_clusters
+        if compact_clusters is not None
+        else sorted(raw_clusters, key=lambda item: item["id"])
+    )
     partition_fpgas = active_partition_fpgas(
         platform, partition_constraints
     )
@@ -248,138 +428,262 @@ def _write_native_input(
         partition_constraints.get("balance_dimensions"),
     )
     dimensions = balance["balance_dimensions"]
-    nets = _primary_net_records(ir, clusters_artifact, net_weights)
-    lines = [
-        "EMUFLOW_HOP_PARTITION_REFINER_INPUT_V1",
-        "PARAM "
-        + " ".join(
-            str(value)
-            for value in (
-                len(fpga_ids),
-                len(clusters),
-                len(dimensions),
-                len(nets),
-                hop_limit,
-                partition_constraints["min_used_fpgas"],
-            )
-        ),
-    ]
-    for source in fpga_ids:
-        for sink in fpga_ids:
-            value = distances[source][sink]
-            lines.append(
-                f"DIST {fpga_index[source]} {fpga_index[sink]} "
-                f"{value if value is not None else -1}"
-            )
-    for fpga in partition_fpgas:
-        for dimension_index, dimension in enumerate(dimensions):
-            balance_bound = balance["balance_allowed_loads"][fpga.id][
-                dimension
-            ]
-            hard_capacity = (
-                math.ceil(balance_bound)
-                if dimension == "cells"
-                else fpga.effective_capacity[dimension]
-            )
-            lines.append(
-                f"BOUND {fpga_index[fpga.id]} {dimension_index} "
-                f"{balance_bound:.17g} {hard_capacity}"
-            )
-    for index, cluster in enumerate(clusters):
-        current = fpga_index[assignment["cluster_assignment"][cluster["id"]]]
-        fixed = (
-            -1
-            if cluster["fixed_fpga"] is None
-            else fpga_index[cluster["fixed_fpga"]]
+    transported = transported_cut_classes_for_clusters(clusters_artifact)
+    nets: Sequence[Mapping[str, Any]] = (
+        _compact_primary_net_records(
+            ir, compact_clusters, transported, net_weights
         )
-        weights = [
-            len(cluster["instances"]),
-            *[
-                cluster["resources"].get(dimension, 0)
-                for dimension in dimensions
-                if dimension != "cells"
-            ],
-        ]
-        lines.append(
-            "CLUSTER "
-            + " ".join(str(value) for value in (index, current, fixed, *weights))
-        )
-    for index, net in enumerate(nets):
-        sink_indices = [cluster_index[item] for item in net["sinks"]]
-        lines.append(
-            "NET "
-            + " ".join(
-                str(value)
-                for value in (
-                    index,
-                    f"{net['weight']:.17g}",
-                    cluster_index[net["source"]],
-                    len(sink_indices),
-                    *sink_indices,
+        if compact_clusters is not None
+        else _primary_net_records(ir, clusters_artifact, net_weights)
+    )
+    cluster_order: Sequence[str] = (
+        _CompactClusterOrder(len(compact_clusters))
+        if compact_clusters is not None
+        else [cluster["id"] for cluster in clusters]
+    )
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            def emit(line: str) -> None:
+                stream.write(line)
+                stream.write("\n")
+
+            emit("EMUFLOW_HOP_PARTITION_REFINER_INPUT_V1")
+            emit(
+                "PARAM "
+                + " ".join(
+                    str(value)
+                    for value in (
+                        len(fpga_ids),
+                        len(clusters),
+                        len(dimensions),
+                        len(nets),
+                        hop_limit,
+                        partition_constraints["min_used_fpgas"],
+                    )
                 )
             )
+            for source in fpga_ids:
+                for sink in fpga_ids:
+                    value = distances[source][sink]
+                    emit(
+                        f"DIST {fpga_index[source]} {fpga_index[sink]} "
+                        f"{value if value is not None else -1}"
+                    )
+            for fpga in partition_fpgas:
+                for dimension_index, dimension in enumerate(dimensions):
+                    balance_bound = balance["balance_allowed_loads"][fpga.id][
+                        dimension
+                    ]
+                    hard_capacity = (
+                        math.ceil(balance_bound)
+                        if dimension == "cells"
+                        else fpga.effective_capacity[dimension]
+                    )
+                    emit(
+                        f"BOUND {fpga_index[fpga.id]} {dimension_index} "
+                        f"{balance_bound:.17g} {hard_capacity}"
+                    )
+            owners = assignment["cluster_assignment"]
+            if compact_clusters is not None:
+                field_index = {
+                    field: index
+                    for index, field in enumerate(RESOURCE_FIELDS)
+                }
+                resource_columns = tuple(
+                    compact_clusters._resource_columns[field_index[dimension]]
+                    for dimension in dimensions
+                    if dimension != "cells"
+                )
+                for index in range(len(compact_clusters)):
+                    part = (
+                        owners.part_for_index(index)
+                        if isinstance(owners, _PackedClusterAssignment)
+                        else owners[f"c{index:06d}"]
+                    )
+                    fixed_fpga = compact_clusters._fixed_by_cluster.get(index)
+                    weights = (
+                        compact_clusters.cluster_member_count(index),
+                        *(column[index] for column in resource_columns),
+                    )
+                    emit(
+                        "CLUSTER "
+                        + " ".join(
+                            str(value)
+                            for value in (
+                                index,
+                                fpga_index[part],
+                                -1
+                                if fixed_fpga is None
+                                else fpga_index[fixed_fpga],
+                                *weights,
+                            )
+                        )
+                    )
+            else:
+                for index, cluster in enumerate(clusters):
+                    current = fpga_index[owners[cluster["id"]]]
+                    fixed = (
+                        -1
+                        if cluster["fixed_fpga"] is None
+                        else fpga_index[cluster["fixed_fpga"]]
+                    )
+                    weights = [
+                        len(cluster["instances"]),
+                        *[
+                            cluster["resources"].get(dimension, 0)
+                            for dimension in dimensions
+                            if dimension != "cells"
+                        ],
+                    ]
+                    emit(
+                        "CLUSTER "
+                        + " ".join(
+                            str(value)
+                            for value in (index, current, fixed, *weights)
+                        )
+                    )
+            if isinstance(nets, _PackedHopNetRecords):
+                net_rows: Iterable[Tuple[float, int, Sequence[int]]] = (
+                    nets.iter_columns()
+                )
+            else:
+                cluster_index = {
+                    cluster["id"]: index
+                    for index, cluster in enumerate(clusters)
+                }
+                net_rows = (
+                    (
+                        float(net["weight"]),
+                        cluster_index[net["source"]],
+                        [cluster_index[item] for item in net["sinks"]],
+                    )
+                    for net in nets
+                )
+            for index, (weight, source, sink_indices) in enumerate(net_rows):
+                emit(
+                    "NET "
+                    + " ".join(
+                        str(value)
+                        for value in (
+                            index,
+                            f"{weight:.17g}",
+                            source,
+                            len(sink_indices),
+                            *sink_indices,
+                        )
+                    )
+                )
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if isinstance(nets, _PackedHopNetRecords):
+        phase3_runtime_observe(
+            hop_refiner_compact_nets=len(nets),
+            hop_refiner_compact_net_payload_bytes=nets.payload_bytes,
         )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {
         "schema": HOP_REFINER_INPUT_SCHEMA,
         "algorithm": HOP_REFINER_PROVIDER,
         "fpga_order": fpga_ids,
-        "cluster_order": [cluster["id"] for cluster in clusters],
+        "cluster_order": cluster_order,
         "dimensions": dimensions,
         "nets": len(nets),
         "max_route_hops": hop_limit,
         "balance": balance,
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "sha256": digest.hexdigest(),
     }
 
 
 def _parse_native_output(
     path: Path,
     native_input: Mapping[str, Any],
-) -> Tuple[str, Dict[str, str], List[Dict[str, Any]], Dict[str, float]]:
+    *,
+    packed_assignment: bool = False,
+) -> Tuple[
+    str,
+    Mapping[str, str],
+    List[Dict[str, Any]],
+    Dict[str, float],
+]:
     if not path.is_file():
         raise EmuFlowError("hop partition refiner produced no output")
-    lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_HOP_PARTITION_REFINER_OUTPUT_V1":
-        raise ValidationError("invalid hop partition refiner output header")
     status = None
     assignments: Dict[int, int] = {}
+    packed_parts = array("I")
     moves = []
     metrics: Dict[str, float] = {}
-    for line in lines[1:]:
-        fields = line.split()
-        if not fields:
-            continue
-        if fields[0] == "STATUS" and len(fields) == 2:
-            status = fields[1]
-        elif fields[0] == "ASSIGN" and len(fields) == 3:
-            assignments[int(fields[1])] = int(fields[2])
-        elif fields[0] == "MOVE" and len(fields) == 4:
-            cluster, source, target = map(int, fields[1:])
-            moves.append(
-                {
-                    "cluster": native_input["cluster_order"][cluster],
-                    "source": native_input["fpga_order"][source],
-                    "target": native_input["fpga_order"][target],
-                }
-            )
-        elif fields[0] == "METRIC" and len(fields) == 3:
-            metrics[fields[1]] = float(fields[2])
-        else:
-            raise ValidationError(
-                f"invalid hop partition refiner output record {line!r}"
-            )
+    fpga_order = native_input["fpga_order"]
+    with path.open("r", encoding="utf-8") as stream:
+        if stream.readline().rstrip("\r\n") != (
+            "EMUFLOW_HOP_PARTITION_REFINER_OUTPUT_V1"
+        ):
+            raise ValidationError("invalid hop partition refiner output header")
+        for line in stream:
+            fields = line.split()
+            if not fields:
+                continue
+            if fields[0] == "STATUS" and len(fields) == 2:
+                status = fields[1]
+            elif fields[0] == "ASSIGN" and len(fields) == 3:
+                cluster = int(fields[1])
+                part = int(fields[2])
+                if packed_assignment:
+                    if cluster != len(packed_parts):
+                        raise ValidationError(
+                            "hop partition refiner assignment order mismatch"
+                        )
+                    if part < 0 or part >= len(fpga_order):
+                        raise ValidationError(
+                            "hop partition refiner emitted invalid part"
+                        )
+                    packed_parts.append(part)
+                else:
+                    assignments[cluster] = part
+            elif fields[0] == "MOVE" and len(fields) == 4:
+                cluster, source, target = map(int, fields[1:])
+                moves.append(
+                    {
+                        "cluster": native_input["cluster_order"][cluster],
+                        "source": native_input["fpga_order"][source],
+                        "target": native_input["fpga_order"][target],
+                    }
+                )
+            elif fields[0] == "METRIC" and len(fields) == 3:
+                metrics[fields[1]] = float(fields[2])
+            else:
+                raise ValidationError(
+                    f"invalid hop partition refiner output record {line!r}"
+                )
     if status not in {"PASS", "STUCK"}:
         raise ValidationError("hop partition refiner output has no valid status")
-    if set(assignments) != set(range(len(native_input["cluster_order"]))):
+    cluster_count = len(native_input["cluster_order"])
+    if packed_assignment:
+        if len(packed_parts) != cluster_count:
+            raise ValidationError(
+                "hop partition refiner assignment coverage mismatch"
+            )
+        if packed_parts and max(packed_parts) >= len(fpga_order):
+            raise ValidationError("hop partition refiner emitted invalid part")
+        assignment: Mapping[str, str] = _PackedClusterAssignment(
+            fpga_order, packed_parts
+        )
+        return status, assignment, moves, metrics
+    if set(assignments) != set(range(cluster_count)):
         raise ValidationError("hop partition refiner assignment coverage mismatch")
-    fpga_order = native_input["fpga_order"]
-    assignment = {}
+    materialized_assignment: Dict[str, str] = {}
     for cluster, part in sorted(assignments.items()):
         if part < 0 or part >= len(fpga_order):
             raise ValidationError("hop partition refiner emitted invalid part")
-        assignment[native_input["cluster_order"][cluster]] = fpga_order[part]
-    return status, assignment, moves, metrics
+        materialized_assignment[
+            native_input["cluster_order"][cluster]
+        ] = fpga_order[part]
+    return status, materialized_assignment, moves, metrics
 
 
 def refine_partition_hops(
@@ -448,7 +752,14 @@ def refine_partition_hops(
             f"{completed.returncode}: {completed.stdout[-2000:]}"
         )
     status, cluster_assignment, moves, native_metrics = _parse_native_output(
-        native_output_path, native_input
+        native_output_path,
+        native_input,
+        packed_assignment=(
+            defer_semantic_contract
+            and isinstance(
+                native_input["cluster_order"], _CompactClusterOrder
+            )
+        ),
     )
 
     metadata = dict(assignment.get("provider_metadata", {}))
@@ -486,6 +797,7 @@ def refine_partition_hops(
             seed=assignment["seed"],
             provider_metadata=metadata,
             _include_semantic_contract=not defer_semantic_contract,
+            _stream_semantic_records=defer_semantic_contract,
         )
     replicas = _replica_targets(assignment)
     if replicas:

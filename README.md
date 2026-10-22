@@ -159,6 +159,17 @@ the packed owner used 7,888,906 payload bytes and 8,372,861 traced bytes versus
 balance validation peaked at 22,376 traced bytes versus 56,891,500 bytes for
 the former weight map. These are isolated representation measurements; the
 same-input NVDLA replay remains the qualification gate.
+The topology hop initializer now uses the same compact boundary. It derives
+directed source/sink cluster ordinals from one ordered endpoint scan, stores
+them in packed columns, streams the native protocol, and parses the native
+assignment directly into a fixed-width part column. The unchanged-assignment
+path carries that column into PATRON instead of rebuilding a cluster dictionary.
+On 200,000 synthetic directed nets, retained traced allocation fell from
+107,113,418 to 9,007,799 bytes with an 8,488,906-byte packed payload. A
+200,000-cluster assignment used 845,764 traced bytes with an 800,000-byte
+payload versus 31,886,472 retained bytes for the string dictionary. Generated
+native input is byte-identical to the reference path; full NVDLA timing and RSS
+qualification is still pending.
 The native analyzer now stores instances, nets,
 cuts, incoming/outgoing incidence and dependencies in flat columns/CSR. A
 500,000-instance/net/cut differential run reduced its peak RSS from 136.89 MB
