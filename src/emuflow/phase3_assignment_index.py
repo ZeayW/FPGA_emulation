@@ -327,7 +327,10 @@ def write_phase3_assignment_index(
     if len(part_ids) != len(partitions) or len(set(part_ids)) != len(part_ids):
         raise ValidationError("Phase 3 assignment has invalid partitions")
     part_index = {fpga: index for index, fpga in enumerate(part_ids)}
-    if any(target not in part_index for target in instance_assignment.values()):
+    assignment_parts = getattr(instance_assignment, "part_ids", None)
+    if assignment_parts is None:
+        assignment_parts = instance_assignment.values()
+    if any(target not in part_index for target in assignment_parts):
         raise ValidationError("Phase 3 assignment references an unknown FPGA")
 
     exact_contract = static_exact_contract_from_assignment(assignment)
@@ -421,7 +424,25 @@ def write_phase3_assignment_index(
                 "Phase 3 assignment instance coverage disagrees with EmuIR"
             )
 
+        compact_rows = getattr(
+            instance_assignment, "iter_source_assignments", None
+        )
+
         def primary_rows():
+            if callable(compact_rows):
+                observed = 0
+                for source_seq, identity, target in compact_rows():
+                    if source_seq != observed or target not in part_index:
+                        raise ValidationError(
+                            "Phase 3 compact assignment coverage is invalid"
+                        )
+                    observed += 1
+                    yield (source_seq, part_index[target], identity, 0)
+                if observed != len(source_instances):
+                    raise ValidationError(
+                        "Phase 3 compact assignment coverage is incomplete"
+                    )
+                return
             for source_seq, instance in enumerate(source_instances):
                 identity = instance["id"]
                 target = instance_assignment.get(identity)

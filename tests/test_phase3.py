@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import math
 import sqlite3
@@ -381,6 +382,19 @@ class Phase3Test(unittest.TestCase):
 
             def publish_index(path, ir, assignment):
                 contract = assignment["semantic_contract"]
+                materialized_assignment = dict(
+                    assignment["instance_assignment"]
+                )
+                expected_assignment_digest = hashlib.sha256(
+                    (
+                        json.dumps(
+                            {"instance_assignment": materialized_assignment},
+                            indent=2,
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    ).encode("utf-8")
+                ).hexdigest()
                 observed_streams.append(
                     (
                         isinstance(
@@ -395,6 +409,13 @@ class Phase3Test(unittest.TestCase):
                             contract["capture_requirements"],
                             StaticExactRecordSequence,
                         ),
+                        not isinstance(
+                            assignment["instance_assignment"], dict
+                        ),
+                        contract["source_identity"][
+                            "instance_assignment_sha256"
+                        ]
+                        == expected_assignment_digest,
                     )
                 )
                 return write_phase3_assignment_index(path, ir, assignment)
@@ -416,7 +437,10 @@ class Phase3Test(unittest.TestCase):
                     seed=7,
                     cut_mode="static-exact-combinational",
                 )
-            self.assertEqual(observed_streams, [(True, True, True)])
+            self.assertEqual(
+                observed_streams,
+                [(True, True, True, True, True)],
+            )
             assignment = read_json(output / "assignment.json")
             packed_assignment = json.loads(
                 (output / "assignment.json").read_text(encoding="utf-8")

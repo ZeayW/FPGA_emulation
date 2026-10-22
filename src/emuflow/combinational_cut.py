@@ -2085,6 +2085,9 @@ def _write_compact_native_static_exact_graph(
             raise ValidationError("compact EmuIR record counts are invalid")
 
         observed_instances = 0
+        part_for_source_seq = getattr(
+            instance_assignment, "part_for_source_seq", None
+        )
         for row in connection.execute(
             """SELECT c.seq,c.id,p.value AS resources_json
                  FROM cell_records c JOIN payloads p ON p.seq=c.resources_seq
@@ -2092,7 +2095,11 @@ def _write_compact_native_static_exact_graph(
         ):
             if row["seq"] != observed_instances:
                 raise ValidationError("compact EmuIR instance sequence is invalid")
-            target = instance_assignment.get(row["id"])
+            target = (
+                part_for_source_seq(row["seq"])
+                if callable(part_for_source_seq)
+                else instance_assignment.get(row["id"])
+            )
             if target not in part_index:
                 raise ValidationError(
                     "exact semantic contract assignment is incomplete"
@@ -2391,8 +2398,13 @@ def _analyze_static_exact_dependencies_native(
     del ordered_positions
     del eligible
 
+    compact_part_ids = getattr(instance_assignment, "part_ids", None)
     part_ids = sorted(
-        set(instance_assignment.values())
+        set(
+            compact_part_ids
+            if compact_part_ids is not None
+            else instance_assignment.values()
+        )
         | {
             fpga
             for cut in ordered_cuts
@@ -2959,6 +2971,10 @@ def _resolve_compact_native_coordinate_capture_stream(
             )
         )
 
+        part_for_source_seq = getattr(
+            instance_assignment, "part_for_source_seq", None
+        )
+
         def capture_relation() -> Iterator[
             Tuple[str, str, str, str, Any, Any]
         ]:
@@ -3021,10 +3037,15 @@ def _resolve_compact_native_coordinate_capture_stream(
                     port = None
                     bit = None
                 else:
+                    assigned_part = (
+                        part_for_source_seq(endpoint["instance_seq"])
+                        if callable(part_for_source_seq)
+                        else instance_assignment.get(raw_instance)
+                    )
                     if (
                         not isinstance(raw_instance, str)
                         or not raw_instance
-                        or instance_assignment.get(raw_instance) != fpga
+                        or assigned_part != fpga
                     ):
                         raise ValidationError(
                             "native Static Exact capture is invalid"
@@ -3500,8 +3521,14 @@ def build_static_exact_semantic_contract(
         "source_identity": {
             "emuir": _bounded_emuir_identity(ir),
             "canonical_platform_sha256": _canonical_sha256(platform_value),
-            "instance_assignment_sha256": _canonical_sha256(
-                {"instance_assignment": instance_assignment}
+            "instance_assignment_sha256": (
+                instance_assignment.canonical_sha256()
+                if callable(
+                    getattr(instance_assignment, "canonical_sha256", None)
+                )
+                else _canonical_sha256(
+                    {"instance_assignment": instance_assignment}
+                )
             ),
             "timing_source_sha256": None,
         },

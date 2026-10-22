@@ -467,7 +467,7 @@ def pack_phase3_assignment(
     if (
         not isinstance(clusters, list)
         or not isinstance(cluster_assignment, dict)
-        or not isinstance(instance_assignment, dict)
+        or not isinstance(instance_assignment, Mapping)
         or not isinstance(partitions, list)
     ):
         raise ValueError("assignment cannot be packed: required mappings are absent")
@@ -498,7 +498,13 @@ def pack_phase3_assignment(
 
     def cluster_part_indices() -> Iterator[int]:
         nonlocal observed_instances
-        for cluster in clusters:
+        compact_cluster_part = getattr(
+            instance_assignment, "cluster_part", None
+        )
+        compact_member_count = getattr(
+            instance_assignment, "cluster_member_count", None
+        )
+        for cluster_index, cluster in enumerate(clusters):
             cluster_id = cluster.get("id")
             if (
                 not isinstance(cluster_id, str)
@@ -508,12 +514,25 @@ def pack_phase3_assignment(
                     "assignment cannot be packed: cluster coverage differs"
                 )
             part = cluster_assignment[cluster_id]
-            for instance in cluster.get("instances", []):
-                if instance_assignment.get(instance) != part:
+            if callable(compact_cluster_part) and callable(compact_member_count):
+                if compact_cluster_part(cluster_index) != part:
                     raise ValueError(
                         "assignment cannot be packed: cluster is split"
                     )
-                observed_instances += 1
+                members = cluster.get("instances", [])
+                member_count = compact_member_count(cluster_index)
+                if not isinstance(members, list) or member_count != len(members):
+                    raise ValueError(
+                        "assignment cannot be packed: cluster coverage differs"
+                    )
+                observed_instances += member_count
+            else:
+                for instance in cluster.get("instances", []):
+                    if instance_assignment.get(instance) != part:
+                        raise ValueError(
+                            "assignment cannot be packed: cluster is split"
+                        )
+                    observed_instances += 1
             yield part_index[part]
 
     cluster_parts = _compress_indices(
