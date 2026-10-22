@@ -53,6 +53,38 @@ def test_binds_payloads_without_copying_or_loading_graph(tmp_path, boundaries):
     assert read_json(tmp_path / "out/front/platform.normalized.json") == Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
 
 
+def test_rebinds_legacy_platform_snapshot_without_inventing_ratio_limits(
+    tmp_path, boundaries
+):
+    front, timing = boundaries
+    legacy = read_json(front / "platform.normalized.json")
+    for link in legacy["links"]:
+        model = link.get("tdm_delay_model")
+        if model is not None:
+            model.pop("min_ratio")
+            model.pop("max_ratio")
+            model.pop("ratio_quantum")
+    write_json(front / "platform.normalized.json", legacy)
+
+    bind_prepared_inputs(
+        front,
+        timing,
+        tmp_path / "out/front",
+        tmp_path / "out/timing",
+        DEFAULT_PLATFORM_PATH,
+        {"clk": 10.0},
+        PROFILE,
+    )
+
+    rebound = Platform.load(tmp_path / "out/front/platform.normalized.json")
+    assert {
+        (link.tdm_delay_model.min_ratio,
+         link.tdm_delay_model.max_ratio,
+         link.tdm_delay_model.ratio_quantum)
+        for link in rebound.links
+    } == {(8, 256, 8)}
+
+
 def test_rejects_changed_clock_contract(tmp_path, boundaries):
     with pytest.raises(ValidationError, match="clock constraints mismatch"):
         bind_prepared_inputs(*boundaries, tmp_path / "out/front", tmp_path / "out/timing",
