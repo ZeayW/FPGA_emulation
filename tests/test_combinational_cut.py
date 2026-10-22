@@ -1828,8 +1828,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             )
             executable.chmod(0o755)
             with patch(
-                "emuflow.combinational_cut.resolve_native_executable",
-                return_value=executable,
+                "emuflow.combinational_cut.resolve_native_stage_command",
+                return_value=[str(executable)],
             ), self.assertRaisesRegex(
                 ValidationError, "capture is invalid"
             ):
@@ -1914,8 +1914,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             )
             executable.chmod(0o755)
             with patch(
-                "emuflow.combinational_cut.resolve_native_executable",
-                return_value=executable,
+                "emuflow.combinational_cut.resolve_native_stage_command",
+                return_value=[str(executable)],
             ), self.assertRaisesRegex(
                 ValidationError, "capture count is invalid"
             ):

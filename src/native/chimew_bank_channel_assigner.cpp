@@ -23,6 +23,8 @@
 #include <utility>
 #include <vector>
 
+#include "emuflow_core/native_stages.hpp"
+
 namespace {
 
 struct Point {
@@ -1173,6 +1175,13 @@ void run(const std::string& input_path, const std::string& output_path,
 
 }  // namespace
 
+void emuflow::native::AssignChimewBankChannels(
+    const std::string& input_path, const std::string& output_path,
+    bool typed_input) {
+  run(input_path, output_path, typed_input);
+}
+
+#if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "usage: emuflow_chimew_bank_channel_assigner "
@@ -1187,7 +1196,8 @@ int main(int argc, char** argv) {
     return 2;
   }
   try {
-    run(argv[2], argv[3], typed_input);
+    emuflow::native::AssignChimewBankChannels(
+        argv[2], argv[3], typed_input);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "emuflow_chimew_bank_channel_assigner: " << error.what()
@@ -1195,3 +1205,4 @@ int main(int argc, char** argv) {
     return 1;
   }
 }
+#endif

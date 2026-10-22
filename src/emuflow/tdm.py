@@ -1581,7 +1581,7 @@ def _schedule_indexed_exact_native(
     rescan those records after the native result is imported.
     """
 
-    from .native_tools import native_stage_command, resolve_native_executable
+    from .native_tools import resolve_native_stage_command
 
     typed_record_cursor = getattr(
         raw_routes, "iter_native_exact_records", None
@@ -1662,14 +1662,11 @@ def _schedule_indexed_exact_native(
                 arc_key = (edge["link"], edge["from"], edge["to"])
                 register_capacity(arc_key, repr(route["id"]))
 
-    resolved = resolve_native_executable(
-        "emuflow_tdm_exact_scheduler", executable
-    )
-    native_command = native_stage_command(
-        resolved,
+    native_command = resolve_native_stage_command(
+        "emuflow_tdm_exact_scheduler",
         "phase5",
         "schedule",
-        prefer_unified=executable is None,
+        explicit=executable,
     )
     with tempfile.TemporaryDirectory(prefix="emuflow-tdm-exact-") as temporary:
         root = Path(temporary)

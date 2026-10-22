@@ -294,6 +294,7 @@ add_library(
   emuflow_native_stages STATIC
   "${CMAKE_SOURCE_DIR}/src/native/static_exact_analyzer.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/tdm_exact_scheduler.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/chimew_bank_channel_assigner.cpp"
 )
 target_compile_features(emuflow_native_stages PUBLIC cxx_std_17)
 target_compile_options(emuflow_native_stages PRIVATE -O3)
@@ -303,7 +304,10 @@ target_compile_definitions(
 target_include_directories(
   emuflow_native_stages PUBLIC "${CMAKE_SOURCE_DIR}/src/native"
 )
-target_link_libraries(emuflow_native_stages PUBLIC emuflow_core)
+find_package(Threads REQUIRED)
+target_link_libraries(
+  emuflow_native_stages PUBLIC emuflow_core Threads::Threads
+)
 
 add_executable(
   emuflow_native
@@ -843,7 +847,6 @@ if(EMUFLOW_BUILD_MFSPART_COARSENER)
 endif()
 
 if(EMUFLOW_BUILD_PIN_PLANNER)
-  find_package(Threads REQUIRED)
   add_executable(
     emuflow_pin_planner
     "${CMAKE_SOURCE_DIR}/src/native/placement_aware_pin_planner.cpp"

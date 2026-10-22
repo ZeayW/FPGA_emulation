@@ -46,6 +46,7 @@ from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.chimew_qualification import (
     validate_chimew_bank_channel_report_artifact,
 )
+from tests.native_build import emuflow_native
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1037,6 +1038,42 @@ class ChimewBankChannelTest(unittest.TestCase):
             self.assertEqual(typed_output.read_bytes(), legacy_output.read_bytes())
             self.assertGreater(typed_input.stat().st_size, 0)
 
+    def test_unified_native_entry_matches_phase6_assigner(self) -> None:
+        problem = validate_chimew_bank_channel_input(self.document)
+        logical_sha256 = canonical_bank_channel_input_sha256(self.document)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            typed_input = root / "typed.bin"
+            legacy_output = root / "legacy.out"
+            unified_output = root / "unified.out"
+            with typed_input.open("wb") as stream:
+                bank_channel_module._serialize_typed(
+                    problem, stream, logical_sha256
+                )
+            subprocess.run(
+                [
+                    str(self.executable),
+                    "--typed-input",
+                    str(typed_input),
+                    str(legacy_output),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    str(emuflow_native()),
+                    "phase6",
+                    "assign-banks",
+                    "--typed-input",
+                    str(typed_input),
+                    str(unified_output),
+                ],
+                check=True,
+            )
+            self.assertEqual(
+                unified_output.read_bytes(), legacy_output.read_bytes()
+            )
+
     def test_production_native_invocation_does_not_write_legacy_input(self) -> None:
         with mock.patch.object(
             bank_channel_module,
@@ -1047,6 +1084,25 @@ class ChimewBankChannelTest(unittest.TestCase):
                 self.document, executable=str(self.executable)
             )
         self.assertEqual(result["metrics"]["certificate_disagreements"], 0)
+
+    def test_production_prefers_unified_phase6_entry(self) -> None:
+        problem = validate_chimew_bank_channel_input(self.document)
+        digest = canonical_bank_channel_input_sha256(self.document)
+        with mock.patch.object(
+            bank_channel_module,
+            "resolve_native_stage_command",
+            return_value=[str(self.executable)],
+        ) as dispatch:
+            with bank_channel_module._run_native(
+                problem, None, logical_sha256=digest
+            ):
+                pass
+        dispatch.assert_called_once_with(
+            "emuflow_chimew_bank_channel_assigner",
+            "phase6",
+            "assign-banks",
+            explicit=None,
+        )
 
     def test_typed_input_rejects_truncation_corruption_and_mixed_seals(self) -> None:
         problem = validate_chimew_bank_channel_input(self.document)

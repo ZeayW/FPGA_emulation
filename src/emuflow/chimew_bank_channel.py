@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
 
 from .errors import EmuFlowError, ValidationError
-from .native_tools import resolve_native_executable
+from .native_tools import resolve_native_stage_command
 
 
 CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1 = "emuflow.chimew-bank-channel-input/v1"
@@ -822,12 +822,15 @@ def _run_native(
     process: subprocess.Popen[str] | None = None
     stderr_stream: Any = None
     try:
-        command = resolve_native_executable(
-            "emuflow_chimew_bank_channel_assigner", executable
+        native_command = resolve_native_stage_command(
+            "emuflow_chimew_bank_channel_assigner",
+            "phase6",
+            "assign-banks",
+            explicit=executable,
         )
         stderr_stream = stderr_path.open("w+", encoding="utf-8")
         process = subprocess.Popen(
-            [command, "--typed-input", "-", "-"],
+            [*native_command, "--typed-input", "-", "-"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=stderr_stream,

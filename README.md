@@ -234,10 +234,13 @@ analyzer's graph/capture vectors remain graph-scale migration work.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
-publication. This is the W0 foundation rather than a claim that the full
-native production entry exists; the remaining Phase 5 independent validation
-maps, Phase 6/7 data-plane loops, and global timing evidence decoding are still
-migration work.
+publication. The installed `emuflow-native` entry now invokes the real Phase 3
+analyzer, Phase 5 exact scheduler and Phase 6 Chimew bank/channel assignment
+kernel from one linked stage library; production resolves this entry directly, while explicit differential runs retain
+each standalone executable and older installs fall back to them. This is the W0/W7
+foundation rather than a claim that native `compile` is complete; remaining
+Phase 5 validation maps, Phase 6/7 data-plane loops, and global timing evidence
+decoding are still migration work.
 Phase 4 now publishes `routes.json` as a small selector plus a
 content-addressed `routes.<sha256>.sqlite` RouteStore. Demand identities are
 projected from their authoritative routed records; route sinks, tree edges,
