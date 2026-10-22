@@ -133,7 +133,8 @@ Missing RapidWright inputs do not trigger an automatic VTR fallback.
 Phase 4 defaults to `synergistic-author-route-v1`, with author pressure costs
 and hard-connection ordering. The previous router remains available through
 `--route-provider timing-aware-global-candidate-v1`. Both feed the same Phase 5
-interface; faster routing does not establish better timing. See the
+interface; the paired NV_nvdla check uses deterministic dependency scheduling
+without academic optimizer executables. Faster routing does not establish better timing. See the
 [provider contracts and alternatives](docs/ALGORITHMS.md#phase-4-system-level-multicast-routing).
 
 Use `--stop-after phase3` or `--stop-after phase5` for an explicit intermediate

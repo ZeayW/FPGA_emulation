@@ -37,6 +37,13 @@ def qualification():
 
 
 class ContractTest(unittest.TestCase):
+    def test_deterministic_phase5_has_no_academic_optimizer_bindings(self):
+        options = compare.phase5_options()
+        self.assertEqual(options["provider"], "deterministic-dependency-earliest-slot-v1")
+        self.assertEqual(options["simulation_frames"], 16)
+        for key in ("ratio_optimizer", "timing_dag_optimizer", "slot_optimizer"):
+            self.assertIsNone(options.get(key))
+
     def test_valid_prefix_is_explicitly_cross_partition(self):
         self.assertEqual(compare.check_prefix(prefix())["scope"], "projected-inter-fpga-paths")
 

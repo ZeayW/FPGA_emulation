@@ -303,6 +303,11 @@ def verify_contract(contract, common, platform):
             "common coverage changed")
 
 
+def phase5_options():
+    # Deterministic scheduling does not invoke the academic native optimizers.
+    return dict(provider=P5, simulation_frames=16, managed_storage=True)
+
+
 def worker(spec_path):
     from emuflow.phase4 import run_phase4, validate_phase4
     from emuflow.phase5 import run_phase5, validate_phase5
@@ -475,10 +480,7 @@ def main():
         path = getattr(args, name)
         require(path and Path(path).is_file(), f"explicit executable required: {name}")
         tools[name] = {"path": str(Path(path).resolve()), "sha256": digest(path)}
-    phase5 = dict(provider=P5, simulation_frames=16, ratio_max_iterations=500,
-                  post_refinement_iterations=200, slot_refinement_iterations=200,
-                  convergence=1e-9, managed_storage=True,
-                  **{key: tools[key]["path"] for key in ("ratio_optimizer", "timing_dag_optimizer", "slot_optimizer")})
+    phase5 = phase5_options()
     args.output.mkdir(parents=True)
     summary = {"schema": "emuflow.phase4-nvdla-comparison/v1", "status": "running",
                "contract_sha256": digest(args.contract), "source_sha256": code_identity(),
