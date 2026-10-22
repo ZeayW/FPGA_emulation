@@ -24,7 +24,10 @@ continues at Phase 3 without synthesis or pre-partition STA. Both boundaries
 must already be published and validated. The continuation checks their compact
 design, mapping, device and complete DUT-clock contracts, binds SQLite payloads
 read-only, and uses the current default BoardDB unless `--platform` is explicit.
-It never inherits the saved frontend's old interconnect configuration. Supply
+For legacy prepared frontend snapshots, rebinding reads only the saved FPGA part
+inventory before applying the current BoardDB; it does not require obsolete
+platform fields or invent defaults for newly required TDM ratio limits. It never
+inherits the saved frontend's old interconnect configuration. Supply
 the original `--clock-period` values and source-sealed architecture timing data.
 Do not use an active producer's temporary database as a completed boundary.
 A native flow's published Phase 2 SQLite manifests may be supplied directly

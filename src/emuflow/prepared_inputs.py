@@ -10,6 +10,32 @@ from .platform import Platform
 from .split_netlist_storage import read_compact_emuir_control_metadata
 
 
+def _prepared_device_parts(platform_path: Path):
+    """Read the device identity from a historical Phase-1 board snapshot.
+
+    A prepared boundary only contributes its indexed design database.  The
+    selected platform is rebound below and remains the authoritative topology,
+    link-delay, and TDM-ratio contract.  Reading only the immutable device-part
+    identity keeps older boundaries usable when BoardDB gains new required link
+    fields, without assigning defaults to those historical link records.
+    """
+    document = read_json(platform_path)
+    if document.get("schema") != "emuflow.boarddb/v1":
+        raise ValidationError("prepared Phase 1 platform schema is unsupported")
+    fpgas = document.get("fpgas")
+    if not isinstance(fpgas, list) or not fpgas:
+        raise ValidationError("prepared Phase 1 platform FPGA inventory is invalid")
+    parts = set()
+    for fpga in fpgas:
+        if not isinstance(fpga, dict):
+            raise ValidationError("prepared Phase 1 platform FPGA inventory is invalid")
+        part = fpga.get("part")
+        if not isinstance(part, str) or not part:
+            raise ValidationError("prepared Phase 1 platform device part is invalid")
+        parts.add(part)
+    return parts
+
+
 def _published_timing_report(timing, database, weights, clock_periods):
     """Validate atomically published native flow payloads without rerunning STA."""
     if weights.get("schema") != "emuflow.partition-net-weights/v2" or weights.get("design") != database.get("design"):
@@ -71,9 +97,10 @@ def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path
         raise ValidationError("prepared Phase 1 design mismatch")
     if {c["id"] for c in control["clocks"]} != set(clock_periods or {}):
         raise ValidationError("prepared continuation must preserve every DUT clock")
-    old_platform = Platform.load(phase1 / "platform.normalized.json")
     platform = Platform.load(platform_path)
-    if {f.part for f in old_platform.fpgas} != {f.part for f in platform.fpgas}:
+    if _prepared_device_parts(phase1 / "platform.normalized.json") != {
+        f.part for f in platform.fpgas
+    }:
         raise ValidationError("prepared Phase 1 device part differs from the selected platform")
     database = read_json(timing / "path-database.json")
     if database.get("schema") != "emuflow.sta-path-database/v3" or database.get("design") != report["design"]:

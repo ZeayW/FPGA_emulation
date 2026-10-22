@@ -50,6 +50,35 @@ def test_binds_payloads_without_copying_or_loading_graph(tmp_path, boundaries):
     assert read_json(tmp_path / "out/front/platform.normalized.json") == Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
 
 
+def test_rebinds_legacy_platform_snapshot_without_parsing_obsolete_links(
+    tmp_path, boundaries
+):
+    front, timing = boundaries
+    legacy = read_json(front / "platform.normalized.json")
+    # Historical prepared inputs contribute only device identity. Make their
+    # saved link model deliberately invalid for today's full BoardDB reader to
+    # prove the binder does not infer or reuse obsolete interconnect semantics.
+    for link in legacy["links"]:
+        model = link.get("tdm_delay_model")
+        if model is not None:
+            model.pop("ratio_coefficient_ns")
+    write_json(front / "platform.normalized.json", legacy)
+
+    bind_prepared_inputs(
+        front,
+        timing,
+        tmp_path / "out/front",
+        tmp_path / "out/timing",
+        DEFAULT_PLATFORM_PATH,
+        {"clk": 10.0},
+        PROFILE,
+    )
+
+    assert read_json(tmp_path / "out/front/platform.normalized.json") == (
+        Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
+    )
+
+
 def test_rejects_changed_clock_contract(tmp_path, boundaries):
     with pytest.raises(ValidationError, match="clock constraints mismatch"):
         bind_prepared_inputs(*boundaries, tmp_path / "out/front", tmp_path / "out/timing",
