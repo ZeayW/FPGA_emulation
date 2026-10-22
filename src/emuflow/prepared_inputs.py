@@ -6,7 +6,7 @@ from typing import Mapping
 
 from .errors import ValidationError
 from .io import read_json, write_json
-from .platform import Platform
+from .platform import BOARDDB_SCHEMA, Platform
 from .split_netlist_storage import read_compact_emuir_control_metadata
 
 
@@ -111,9 +111,20 @@ def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path
         raise ValidationError("prepared Phase 1 design mismatch")
     if {c["id"] for c in control["clocks"]} != set(clock_periods or {}):
         raise ValidationError("prepared continuation must preserve every DUT clock")
-    old_platform = Platform.load(phase1 / "platform.normalized.json")
+    # The saved board describes the mapping device, not the interconnect used
+    # by this continuation. Do not parse retired link models with the current
+    # producer schema, or infer missing routing defaults from the old board.
+    saved_board = read_json(phase1 / "platform.normalized.json")
+    saved_fpgas = saved_board.get("fpgas")
+    if (saved_board.get("schema") != BOARDDB_SCHEMA
+            or not isinstance(saved_fpgas, list) or not saved_fpgas
+            or any(not isinstance(fpga, dict)
+                   or not isinstance(fpga.get("part"), str)
+                   or not fpga["part"].strip() for fpga in saved_fpgas)):
+        raise ValidationError("prepared Phase 1 device identity is invalid")
+    saved_parts = {fpga["part"] for fpga in saved_fpgas}
     platform = Platform.load(platform_path)
-    if {f.part for f in old_platform.fpgas} != {f.part for f in platform.fpgas}:
+    if saved_parts != {f.part for f in platform.fpgas}:
         raise ValidationError("prepared Phase 1 device part differs from the selected platform")
     database = read_json(timing / "path-database.json")
     if database.get("schema") != "emuflow.sta-path-database/v3" or database.get("design") != report["design"]:

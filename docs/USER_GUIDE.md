@@ -1,5 +1,22 @@
 # User guide
 
+## Continue from completed indexed inputs
+
+Use `multi-fpga compile --prepared-frontend PHASE1_DIRECTORY
+--prepared-timing PHASE2_DIRECTORY` with the original mapping profile and an
+explicit `--clock-period NAME=NS` for every original clock. The saved Phase 1
+must contain the indexed design, passing primitive audit, and normalized
+BoardDB. Phase 2 must contain the indexed path and net-weight manifests and
+their SQLite payloads. The continuation validates design, mapping, device,
+clock periods, publication counts, and SQLite versions without rerunning
+synthesis or pre-partition STA.
+
+The saved BoardDB is read only for its device part identity. Its historical
+interconnect fields are not interpreted or migrated. The explicitly selected
+current BoardDB is validated in full and supplies all Phase 3–7 capacities,
+topology, and link models. Missing or changed saved device identities still
+reject the continuation. Input databases remain read-only.
+
 ## Complete build
 
 Build from the repository root:

@@ -22,6 +22,8 @@ synthesis or pre-partition STA. The continuation validates the saved design,
 mapping, clock, timing-path, and SQLite contracts, then uses the currently
 selected BoardDB for Phases 3–7. See the
 [user guide](docs/USER_GUIDE.md) for input requirements and failure behavior.
+The saved BoardDB supplies only the mapping device identity; older link-model
+fields do not need migration to continue with the current BoardDB.
 
 Phases 3–7 exchange compact selector manifests and content-addressed SQLite
 sidecars for assignments, routes, schedules, transport, and physical handoffs.

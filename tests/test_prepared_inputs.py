@@ -59,6 +59,34 @@ def test_rejects_changed_clock_contract(tmp_path, boundaries):
                              DEFAULT_PLATFORM_PATH, {"clk": 20.0}, PROFILE)
 
 
+def test_saved_link_schema_is_not_a_current_routing_input(tmp_path, boundaries):
+    front, timing = boundaries
+    board = read_json(front / "platform.normalized.json")
+    # Historical normalized boards predate the explicit TDM ratio domain.
+    for link in board["links"]:
+        link["tdm_delay_model"] = {"model": "linear-ratio-v1",
+                                   "intercept_ns": 30.0,
+                                   "ratio_coefficient_ns": 0.5}
+    write_json(front / "platform.normalized.json", board)
+    with pytest.raises(ValidationError, match="unexpected or missing fields"):
+        Platform.load(front / "platform.normalized.json")
+    bind_prepared_inputs(front, timing, tmp_path / "out/front", tmp_path / "out/timing",
+                         DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
+    assert read_json(tmp_path / "out/front/platform.normalized.json") == Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
+    assert read_json(front / "platform.normalized.json") == board
+
+
+@pytest.mark.parametrize("part", [None, "", "xcvu9p-flga2104-2-e"])
+def test_saved_device_identity_still_enforced(tmp_path, boundaries, part):
+    front, timing = boundaries
+    board = read_json(front / "platform.normalized.json")
+    board["fpgas"][0]["part"] = part
+    write_json(front / "platform.normalized.json", board)
+    with pytest.raises(ValidationError, match="device identity|device part differs"):
+        bind_prepared_inputs(front, timing, tmp_path / "out/front", tmp_path / "out/timing",
+                             DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
+
+
 def test_full_flow_continuation_reaches_phase3_without_synthesis_or_sta(tmp_path, boundaries):
     class ReachedPartition(Exception):
         pass
