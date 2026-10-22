@@ -6,6 +6,7 @@ import json
 import math
 import mmap
 import os
+from bisect import bisect_left
 from pathlib import Path
 import struct
 import subprocess
@@ -261,6 +262,167 @@ class _NativeExactEntryRecords(list):
                         self._offset + index * self._RECORD_SIZE,
                     )
                 )
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Sequence) and not isinstance(other, (str, bytes)):
+            return len(self) == len(other) and all(
+                left == right for left, right in zip(self, other)
+            )
+        return False
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+
+class _PackedExactArrivals(Mapping[Tuple[str, str], int]):
+    """Compact route-rank by FPGA-rank arrival matrix.
+
+    Native Static Exact output already uses integer route and FPGA identities.
+    Rebuilding those rows as a tuple-keyed Python dictionary keeps two Python
+    strings, a tuple and an integer object alive for every routed sink.  The
+    route input is net ordered, so binary search plus one packed uint32 matrix
+    preserves the Mapping contract with bounded per-record storage.
+    """
+
+    _MISSING = (1 << 32) - 1
+
+    def __init__(self, nets: Sequence[str], fpga_ids: Sequence[str]) -> None:
+        self._nets = nets
+        self._fpga_ids = fpga_ids
+        self._fpga_index = {
+            identity: index for index, identity in enumerate(fpga_ids)
+        }
+        self._values = array("I", [self._MISSING]) * (
+            len(nets) * len(fpga_ids)
+        )
+        self._count = 0
+
+    def store(self, route_rank: int, fpga_rank: int, arrival: int) -> None:
+        index = route_rank * len(self._fpga_ids) + fpga_rank
+        if self._values[index] != self._MISSING:
+            raise ValidationError("native Static Exact sink arrival is duplicated")
+        self._values[index] = arrival
+        self._count += 1
+
+    def _index(self, key: Tuple[str, str]) -> int:
+        if not isinstance(key, tuple) or len(key) != 2:
+            raise KeyError(key)
+        net, fpga = key
+        if not isinstance(net, str) or not isinstance(fpga, str):
+            raise KeyError(key)
+        route_rank = bisect_left(self._nets, net)
+        fpga_rank = self._fpga_index.get(fpga)
+        if (
+            route_rank >= len(self._nets)
+            or self._nets[route_rank] != net
+            or fpga_rank is None
+        ):
+            raise KeyError(key)
+        index = route_rank * len(self._fpga_ids) + fpga_rank
+        if self._values[index] == self._MISSING:
+            raise KeyError(key)
+        return index
+
+    def __getitem__(self, key: Tuple[str, str]) -> int:
+        return int(self._values[self._index(key)])
+
+    def __contains__(self, key: object) -> bool:
+        try:
+            self._index(key)  # type: ignore[arg-type]
+        except KeyError:
+            return False
+        return True
+
+    def __iter__(self) -> Iterator[Tuple[str, str]]:
+        width = len(self._fpga_ids)
+        for route_rank, net in enumerate(self._nets):
+            base = route_rank * width
+            for fpga_rank, fpga in enumerate(self._fpga_ids):
+                if self._values[base + fpga_rank] != self._MISSING:
+                    yield net, fpga
+
+    def __len__(self) -> int:
+        return self._count
+
+
+class _NativeExactCompletionRecords(list):
+    """Demand-ordered lazy completion view over native variable records."""
+
+    demand_ordered = True
+    _HEADER_FORMAT = "<4I"
+    _HEADER_SIZE = struct.calcsize(_HEADER_FORMAT)
+    _ARRIVAL_FORMAT = "<2I"
+    _ARRIVAL_SIZE = struct.calcsize(_ARRIVAL_FORMAT)
+
+    def __init__(
+        self,
+        *,
+        owner: tempfile.TemporaryDirectory[str],
+        path: Path,
+        offsets: Sequence[int],
+        demand_order: Sequence[int],
+        route_ids: Sequence[str],
+        nets: Sequence[str],
+        fpga_ids: Sequence[str],
+    ) -> None:
+        super().__init__()
+        self._owner = owner
+        self._path = path
+        self._offsets = offsets
+        self._demand_order = demand_order
+        self._route_ids = route_ids
+        self._nets = nets
+        self._fpga_ids = fpga_ids
+
+    def __len__(self) -> int:
+        return len(self._demand_order)
+
+    def _decode(
+        self, data: mmap.mmap, native_route: int
+    ) -> Dict[str, Any]:
+        offset = self._offsets[native_route]
+        observed_route, source_ready, completion, sink_count = (
+            struct.unpack_from(self._HEADER_FORMAT, data, offset)
+        )
+        if observed_route != native_route:
+            raise ValidationError("native Static Exact completion index disagrees")
+        offset += self._HEADER_SIZE
+        arrivals: Dict[str, int] = {}
+        for _ in range(sink_count):
+            sink_rank, arrival = struct.unpack_from(
+                self._ARRIVAL_FORMAT, data, offset
+            )
+            offset += self._ARRIVAL_SIZE
+            if sink_rank >= len(self._fpga_ids):
+                raise ValidationError("native Static Exact sink arrival is invalid")
+            sink = self._fpga_ids[sink_rank]
+            if sink in arrivals:
+                raise ValidationError("native Static Exact sink arrival is duplicated")
+            arrivals[sink] = arrival
+        return {
+            "demand": self._route_ids[native_route],
+            "net": self._nets[native_route],
+            "source_ready_slot": source_ready,
+            "completion_slot": completion,
+            "sink_arrival_slots": dict(sorted(arrivals.items())),
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        with self._path.open("rb") as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                for native_route in self._demand_order:
+                    yield self._decode(data, native_route)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        with self._path.open("rb") as stream:
+            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                return self._decode(data, self._demand_order[index])
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Sequence) and not isinstance(other, (str, bytes)):
@@ -1410,7 +1572,7 @@ def _schedule_indexed_exact_native(
     Sequence[Mapping[str, Any]],
     List[Dict[str, Any]],
     List[Dict[str, Any]],
-    Dict[Tuple[str, str], int],
+    Mapping[Tuple[str, str], int],
 ]:
     """Run the indexed Static Exact earliest-slot engine in native code.
 
@@ -1536,6 +1698,7 @@ def _schedule_indexed_exact_native(
             compact_predecessors: List[Sequence[str]] = []
             compact_dependency_levels: List[int] = []
             compact_dependency_depths: List[int] = []
+            compact_demand_ranks = array("I")
             if typed_routes:
                 route_records = typed_record_cursor()
             else:
@@ -1572,6 +1735,7 @@ def _schedule_indexed_exact_native(
                 compact_dependency_depths.append(
                     route["combinational_dependency_depth"]
                 )
+                compact_demand_ranks.append(route_demand_rank)
                 emit(
                     "<7I",
                     fpga_index[route["source"]],
@@ -1636,6 +1800,20 @@ def _schedule_indexed_exact_native(
                 stream.write(pending)
             if observed_routes != len(raw_routes):
                 raise ValidationError("indexed exact route cursor is incomplete")
+            demand_order = array("I", [0]) * route_count
+            seen_demand_ranks = bytearray(route_count)
+            for native_route, demand_rank_value in enumerate(
+                compact_demand_ranks
+            ):
+                if (
+                    demand_rank_value >= route_count
+                    or seen_demand_ranks[demand_rank_value]
+                ):
+                    raise ValidationError(
+                        "indexed exact demand ranks are invalid"
+                    )
+                seen_demand_ranks[demand_rank_value] = 1
+                demand_order[demand_rank_value] = native_route
         completed = subprocess.run(
             [resolved, str(input_path), str(output_path)],
             capture_output=True,
@@ -1763,54 +1941,48 @@ def _schedule_indexed_exact_native(
                         raise ValidationError(
                             "native Static Exact schedule ratio is invalid"
                         )
-                completions: List[Dict[str, Any]] = []
-                exact_arrivals: Dict[Tuple[str, str], int] = {}
-                seen_completions = set()
+                completion_offsets = array("Q", [0]) * route_count
+                exact_arrivals = _PackedExactArrivals(
+                    compact_nets, fpga_ids
+                )
+                seen_completions = bytearray(route_count)
                 for _ in range(route_count):
+                    completion_offset = offset
                     native_route, source_ready, completion, sink_count = take(
                         "<4I"
                     )
                     if (
                         native_route >= route_count
-                        or native_route in seen_completions
+                        or seen_completions[native_route]
                     ):
                         raise ValidationError(
                             "native Static Exact schedule completion is invalid"
                         )
-                    seen_completions.add(native_route)
-                    route_id = compact_route_ids[native_route]
-                    route_net = compact_nets[native_route]
-                    sink_arrivals = {}
+                    seen_completions[native_route] = 1
+                    completion_offsets[native_route] = completion_offset
+                    sink_ranks = bytearray(len(fpga_ids))
+                    observed_sink_ranks: List[int] = []
                     for _sink in range(sink_count):
                         sink_index, arrival = take("<2I")
-                        if sink_index >= len(fpga_ids):
+                        if (
+                            sink_index >= len(fpga_ids)
+                            or sink_ranks[sink_index]
+                        ):
                             raise ValidationError(
                                 "native Static Exact sink arrival is invalid"
                             )
-                        sink = fpga_ids[sink_index]
-                        if sink in sink_arrivals:
-                            raise ValidationError(
-                                "native Static Exact sink arrival is duplicated"
-                            )
-                        sink_arrivals[sink] = arrival
-                        exact_arrivals[(route_net, sink)] = arrival
-                    if sorted(sink_arrivals) != sorted(
-                        compact_sinks[native_route]
+                        sink_ranks[sink_index] = 1
+                        observed_sink_ranks.append(sink_index)
+                        exact_arrivals.store(
+                            native_route, sink_index, arrival
+                        )
+                    if sorted(observed_sink_ranks) != sorted(
+                        fpga_index[sink]
+                        for sink in compact_sinks[native_route]
                     ):
                         raise ValidationError(
                             "native Static Exact sink coverage is incomplete"
                         )
-                    completions.append(
-                        {
-                            "demand": route_id,
-                            "net": route_net,
-                            "source_ready_slot": source_ready,
-                            "completion_slot": completion,
-                            "sink_arrival_slots": dict(
-                                sorted(sink_arrivals.items())
-                            ),
-                        }
-                    )
                 if offset != len(data):
                     raise ValidationError(
                         "native Static Exact schedule output has trailing bytes"
@@ -1837,6 +2009,15 @@ def _schedule_indexed_exact_native(
             ),
             capacity_keys=capacity_keys,
             link_ids=link_ids,
+            fpga_ids=fpga_ids,
+        )
+        completions = _NativeExactCompletionRecords(
+            owner=retained,
+            path=retained_output,
+            offsets=completion_offsets,
+            demand_order=demand_order,
+            route_ids=compact_route_ids,
+            nets=compact_nets,
             fpga_ids=fpga_ids,
         )
     return ordered_routes, entries, completions, exact_arrivals
@@ -2355,8 +2536,10 @@ def build_tdm_schedule(
             ]
         ),
         "entries": entries,
-        "demand_completions": sorted(
-            demand_completions, key=lambda item: item["demand"]
+        "demand_completions": (
+            demand_completions
+            if getattr(demand_completions, "demand_ordered", False)
+            else sorted(demand_completions, key=lambda item: item["demand"])
         ),
         "domain_schedules": domain_schedules,
         "metrics": metrics,

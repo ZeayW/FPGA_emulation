@@ -273,7 +273,16 @@ typed cursor maps fixed records directly to the ScheduleStore entry relation,
 and the writer derives canonical records while computing both logical seals and
 each section seal in one bounded pass. Static Exact entries are not also kept
 as JSON rows. Native hops therefore reach ScheduleStore without first becoming
-Python dictionaries. Phase 6 now reads the ScheduleStore
+Python dictionaries. Native completion output uses the same retained record
+file through a demand-ordered lazy view; only fixed-width record offsets and
+demand ranks remain resident. Sink arrivals used while constructing the
+independent dependency certificate live in a packed net-rank by FPGA-rank
+`uint32` matrix instead of a tuple-keyed Python dictionary. In a synthetic
+100,000-route/two-sink comparison, the former completion and arrival objects
+retained 65.70 MiB of traced allocation. The replacement uses 2.67 MiB of
+packed resident arrays plus a 3.05 MiB native record file; a complete lazy
+traversal added 0.014 MiB traced peak. This is adapter evidence, not NVDLA
+qualification. Phase 6 now reads the ScheduleStore
 through a typed SQL projection which validates and joins routes without
 per-hop `json.loads` or Python entry/route dictionaries. When a typed pin plan
 is present, both streams use the same natural identity order, including IDs

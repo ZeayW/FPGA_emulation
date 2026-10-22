@@ -2863,6 +2863,11 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.assertIsNot(type(native["entries"]), list)
             self.assertGreater(len(native["entries"]), 0)
             self.assertEqual(list.__len__(native["entries"]), 0)
+            self.assertIsInstance(native["demand_completions"], list)
+            self.assertIsNot(type(native["demand_completions"]), list)
+            self.assertEqual(
+                list.__len__(native["demand_completions"]), 0
+            )
             self.assertEqual(native, reference)
             self.assertEqual(json.loads(json.dumps(native)), reference)
             self.assertEqual(
