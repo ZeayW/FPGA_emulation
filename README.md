@@ -301,10 +301,20 @@ view back into a retained Python string list before publication. In a separate
 14,000,014-character JSON used 11,327 versus 68,009,482 bytes of incremental
 traced peak allocation and 64,749,568 versus 203,161,600 bytes of process peak
 RSS; wall time was 1.780 versus 1.618 seconds. The policy array remains
-graph-sized in the logical v1 schema, and the persisted cluster compatibility
-envelope still contains the logical cluster population. The C++ analyzer still
-retains and sorts the complete capture population required by protocol v3
-ordering.
+graph-sized in the logical v1 schema. The C++ analyzer now bounds protocol-v3
+capture ordering to a 1,048,576-record run and a 64-way external merge instead
+of retaining and sorting the complete capture population. Runs deduplicate
+before merging; populations below one run stay in memory, while the final
+ordered run streams into the atomic output in bulk,
+and every private run is removed on success or failure. On 2,200,000 unique
+captures, output remained byte-identical at 35,200,029 bytes while process peak
+RSS fell from 185,663,488 to 133,627,904 bytes; wall time changed from 0.69 to
+0.74 seconds and no sort file remained. This exercises multiple runs and the
+merge path. A separate 1,100,000-way reconvergent duplicate case produced the
+same single canonical capture as the old analyzer across a run boundary and
+also left no sort file. These are synthetic results rather than NVDLA
+qualification; Phase 3 temporary-I/O accounting must include the private
+capture runs.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary

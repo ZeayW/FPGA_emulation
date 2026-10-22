@@ -97,6 +97,17 @@ AtomicBinaryWriter::~AtomicBinaryWriter() {
   if (!committed_) std::remove(temporary_path_.c_str());
 }
 
+void AtomicBinaryWriter::WriteBytes(const void* data, std::size_t size) {
+  if (size == 0) return;
+  if (size > static_cast<std::size_t>(
+                 std::numeric_limits<std::streamsize>::max())) {
+    throw std::runtime_error("native output block is too large");
+  }
+  stream_.write(static_cast<const char*>(data),
+                static_cast<std::streamsize>(size));
+  if (!stream_) throw std::runtime_error("cannot write native output");
+}
+
 void AtomicBinaryWriter::Commit() {
   if (committed_) throw std::runtime_error("native output is already committed");
   stream_.flush();

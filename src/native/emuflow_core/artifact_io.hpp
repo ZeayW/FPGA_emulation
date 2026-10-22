@@ -70,6 +70,8 @@ class AtomicBinaryWriter {
     if (!stream_) throw std::runtime_error("cannot write native output");
   }
 
+  void WriteBytes(const void* data, std::size_t size);
+
   void Commit();
   const std::string& temporary_path() const { return temporary_path_; }
 

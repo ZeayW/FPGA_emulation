@@ -83,12 +83,19 @@ int main() {
     {
       emuflow::core::AtomicBinaryWriter writer(target.string());
       writer.Write<std::uint32_t>(42);
+      const std::array<std::uint32_t, 2> trailing = {7, 9};
+      writer.WriteBytes(trailing.data(),
+                        trailing.size() * sizeof(std::uint32_t));
       writer.Commit();
     }
     {
       emuflow::core::BinaryReader reader(target.string());
       if (reader.Read<std::uint32_t>() != 42) {
         throw std::runtime_error("round-trip value disagrees");
+      }
+      if (reader.Read<std::uint32_t>() != 7 ||
+          reader.Read<std::uint32_t>() != 9) {
+        throw std::runtime_error("bulk round-trip value disagrees");
       }
       reader.RequireEnd();
     }

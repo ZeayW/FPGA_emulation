@@ -1,11 +1,23 @@
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
+#include <queue>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/native_stages.hpp"
@@ -24,6 +36,239 @@ struct Capture {
   std::uint32_t net = 0;
   std::uint32_t sink = 0;
 };
+
+static_assert(sizeof(Capture) == 4 * sizeof(std::uint32_t),
+              "capture spool record must be packed");
+static_assert(std::is_trivially_copyable<Capture>::value,
+              "capture spool record must be trivially copyable");
+
+bool CaptureLess(const Capture& left, const Capture& right) {
+  if (left.net != right.net) return left.net < right.net;
+  if (left.sink != right.sink) return left.sink < right.sink;
+  if (left.cut != right.cut) return left.cut < right.cut;
+  return left.part < right.part;
+}
+
+bool CaptureEqual(const Capture& left, const Capture& right) {
+  return left.cut == right.cut && left.part == right.part &&
+         left.net == right.net && left.sink == right.sink;
+}
+
+std::uint64_t ProcessId() {
+#if defined(_WIN32)
+  return static_cast<std::uint64_t>(_getpid());
+#else
+  return static_cast<std::uint64_t>(getpid());
+#endif
+}
+
+// Capture discovery walks one cut cone at a time, whereas protocol v3 is
+// ordered by authoritative (net, sink, cut, part) coordinates.  Keeping that
+// complete population in a vector made the analyzer retain 16 bytes per raw
+// capture and sort all records at once.  This private external sorter bounds
+// the resident population, deduplicates each run early, and performs a
+// bounded-fan-in merge before the atomic result is published.
+class CaptureSorter {
+ public:
+  explicit CaptureSorter(const std::string& output_path) {
+    const auto sequence = sequence_.fetch_add(1);
+    prefix_ = output_path + ".capture-sort." + std::to_string(ProcessId()) +
+              "." + std::to_string(sequence);
+    buffer_.reserve(kChunkRecords);
+  }
+
+  ~CaptureSorter() {
+    for (const auto& path : owned_paths_) {
+      std::error_code error;
+      std::filesystem::remove(path, error);
+    }
+  }
+
+  CaptureSorter(const CaptureSorter&) = delete;
+  CaptureSorter& operator=(const CaptureSorter&) = delete;
+
+  void Add(const Capture& capture) {
+    if (finished_) throw std::runtime_error("capture sorter is finalized");
+    buffer_.push_back(capture);
+    if (buffer_.size() == kChunkRecords) FlushRun();
+  }
+
+  std::uint64_t Finish() {
+    if (finished_) return count_;
+    if (runs_.empty()) {
+      SortUniqueBuffer();
+      count_ = buffer_.size();
+      finished_ = true;
+      return count_;
+    }
+    FlushRun();
+    while (runs_.size() > 1) {
+      std::vector<std::string> next;
+      next.reserve((runs_.size() + kMergeFanIn - 1) / kMergeFanIn);
+      for (std::size_t begin = 0; begin < runs_.size();
+           begin += kMergeFanIn) {
+        const auto end = std::min(runs_.size(), begin + kMergeFanIn);
+        if (end - begin == 1) {
+          next.push_back(runs_[begin]);
+        } else {
+          next.push_back(MergeRuns(begin, end));
+        }
+      }
+      runs_ = std::move(next);
+    }
+    if (!runs_.empty()) {
+      final_path_ = runs_.front();
+      std::error_code error;
+      const auto bytes = std::filesystem::file_size(final_path_, error);
+      if (error || bytes % sizeof(Capture) != 0) {
+        throw std::runtime_error("capture sort output is invalid");
+      }
+      count_ = bytes / sizeof(Capture);
+    }
+    finished_ = true;
+    return count_;
+  }
+
+  void WriteTo(emuflow::core::AtomicBinaryWriter& output) {
+    Finish();
+    if (final_path_.empty()) {
+      output.WriteBytes(buffer_.data(), buffer_.size() * sizeof(Capture));
+      return;
+    }
+    std::ifstream stream(final_path_, std::ios::binary);
+    if (!stream) throw std::runtime_error("cannot read capture sort output");
+    std::vector<Capture> records(kCopyRecords);
+    std::uint64_t observed = 0;
+    while (stream) {
+      stream.read(reinterpret_cast<char*>(records.data()),
+                  static_cast<std::streamsize>(records.size() *
+                                               sizeof(Capture)));
+      const auto bytes = stream.gcount();
+      if (bytes < 0 || bytes % static_cast<std::streamsize>(sizeof(Capture)) !=
+                           0) {
+        throw std::runtime_error("capture sort output is truncated");
+      }
+      if (bytes == 0) break;
+      output.WriteBytes(records.data(), static_cast<std::size_t>(bytes));
+      observed += static_cast<std::uint64_t>(bytes) / sizeof(Capture);
+    }
+    if ((!stream.eof() && stream.fail()) || observed != count_) {
+      throw std::runtime_error("cannot read capture sort output");
+    }
+  }
+
+ private:
+  struct MergeItem {
+    Capture capture;
+    std::size_t stream = 0;
+  };
+
+  struct MergeGreater {
+    bool operator()(const MergeItem& left, const MergeItem& right) const {
+      return CaptureLess(right.capture, left.capture);
+    }
+  };
+
+  static constexpr std::size_t kChunkRecords = 1U << 20;
+  static constexpr std::size_t kMergeFanIn = 64;
+  static constexpr std::size_t kCopyRecords = 1U << 15;
+  static std::atomic<std::uint64_t> sequence_;
+
+  std::string NewPath() {
+    const auto path = prefix_ + "." + std::to_string(next_path_++);
+    owned_paths_.push_back(path);
+    return path;
+  }
+
+  static bool ReadCapture(std::ifstream& stream, Capture& capture) {
+    stream.read(reinterpret_cast<char*>(&capture), sizeof(Capture));
+    if (stream.gcount() == 0 && stream.eof()) return false;
+    if (!stream || stream.gcount() != sizeof(Capture)) {
+      throw std::runtime_error("capture sort run is truncated");
+    }
+    return true;
+  }
+
+  static void CloseOutput(std::ofstream& stream) {
+    stream.flush();
+    if (!stream) throw std::runtime_error("cannot write capture sort run");
+    stream.close();
+    if (!stream) throw std::runtime_error("cannot close capture sort run");
+  }
+
+  void SortUniqueBuffer() {
+    std::sort(buffer_.begin(), buffer_.end(), CaptureLess);
+    buffer_.erase(std::unique(buffer_.begin(), buffer_.end(), CaptureEqual),
+                  buffer_.end());
+  }
+
+  void FlushRun() {
+    if (buffer_.empty()) return;
+    SortUniqueBuffer();
+    const auto path = NewPath();
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (!stream) throw std::runtime_error("cannot create capture sort run");
+    stream.write(reinterpret_cast<const char*>(buffer_.data()),
+                 static_cast<std::streamsize>(buffer_.size() *
+                                              sizeof(Capture)));
+    CloseOutput(stream);
+    runs_.push_back(path);
+    buffer_.clear();
+  }
+
+  std::string MergeRuns(std::size_t begin, std::size_t end) {
+    std::vector<std::unique_ptr<std::ifstream>> inputs;
+    inputs.reserve(end - begin);
+    std::priority_queue<MergeItem, std::vector<MergeItem>, MergeGreater> queue;
+    for (auto index = begin; index < end; ++index) {
+      auto stream = std::make_unique<std::ifstream>(runs_[index],
+                                                    std::ios::binary);
+      if (!*stream) throw std::runtime_error("cannot read capture sort run");
+      Capture capture;
+      if (ReadCapture(*stream, capture)) {
+        queue.push({capture, inputs.size()});
+      }
+      inputs.push_back(std::move(stream));
+    }
+    const auto output_path = NewPath();
+    std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
+    if (!output) throw std::runtime_error("cannot create capture sort run");
+    Capture previous;
+    bool have_previous = false;
+    while (!queue.empty()) {
+      const auto item = queue.top();
+      queue.pop();
+      if (!have_previous || !CaptureEqual(previous, item.capture)) {
+        output.write(reinterpret_cast<const char*>(&item.capture),
+                     sizeof(Capture));
+        if (!output) throw std::runtime_error("cannot write capture sort run");
+        previous = item.capture;
+        have_previous = true;
+      }
+      Capture next;
+      if (ReadCapture(*inputs[item.stream], next)) {
+        queue.push({next, item.stream});
+      }
+    }
+    CloseOutput(output);
+    for (auto index = begin; index < end; ++index) {
+      std::error_code error;
+      std::filesystem::remove(runs_[index], error);
+    }
+    return output_path;
+  }
+
+  std::string prefix_;
+  std::vector<Capture> buffer_;
+  std::vector<std::string> runs_;
+  std::vector<std::string> owned_paths_;
+  std::string final_path_;
+  std::size_t next_path_ = 0;
+  std::uint64_t count_ = 0;
+  bool finished_ = false;
+};
+
+std::atomic<std::uint64_t> CaptureSorter::sequence_{0};
 
 struct EndpointRef {
   std::uint32_t net = 0;
@@ -314,7 +559,7 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
         static_cast<std::uint32_t>(dependencies.size()));
   }
 
-  std::vector<Capture> captures;
+  CaptureSorter captures(output_path);
   GenerationMarks capture_marks(instance_count);
   std::vector<EndpointRef> endpoint_work;
   for (std::uint32_t cut_index = 0; cut_index < cut_count; ++cut_index) {
@@ -330,7 +575,7 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
            ++sink_index) {
         const auto endpoint = net_sinks[cut_sink_begin + sink_index];
         if (endpoint < 0) {
-          captures.push_back({cut_index, sink_part, cut_net, sink_index});
+          captures.Add({cut_index, sink_part, cut_net, sink_index});
         } else if (instance_parts[static_cast<std::uint32_t>(endpoint)] ==
                    sink_part) {
           endpoint_work.push_back({cut_net, sink_index});
@@ -344,7 +589,7 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
             net_sink_offsets[endpoint_ref.net] + endpoint_ref.sink];
         const auto instance_index = static_cast<std::uint32_t>(endpoint);
         if (instance_states[instance_index]) {
-          captures.push_back(
+          captures.Add(
               {cut_index, sink_part, endpoint_ref.net, endpoint_ref.sink});
           continue;
         }
@@ -367,7 +612,7 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
               continue;
             }
             if (sink < 0) {
-              captures.push_back(
+              captures.Add(
                   {cut_index, sink_part, outgoing_net, sink_index});
             } else if (instance_parts[static_cast<std::uint32_t>(sink)] ==
                        sink_part) {
@@ -381,27 +626,13 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
   // Protocol v3 returns stable EmuIR coordinates rather than asserting final
   // string identity. The Python parent resolves only these C capture records
   // against authoritative EmuIR and independently checks endpoint semantics.
-  std::sort(captures.begin(), captures.end(),
-            [](const auto& left, const auto& right) {
-              if (left.net != right.net) return left.net < right.net;
-              if (left.sink != right.sink) return left.sink < right.sink;
-              if (left.cut != right.cut) return left.cut < right.cut;
-              return left.part < right.part;
-            });
-  captures.erase(std::unique(captures.begin(), captures.end(),
-                             [](const auto& left, const auto& right) {
-                               return left.cut == right.cut &&
-                                      left.part == right.part &&
-                                      left.net == right.net &&
-                                      left.sink == right.sink;
-                             }),
-                 captures.end());
+  const auto capture_count = captures.Finish();
 
   emuflow::core::AtomicBinaryWriter output(output_path);
   output.Write(kOutputMagic);
   output.Write(kVersion);
   output.Write(cut_count);
-  output.Write(static_cast<std::uint64_t>(captures.size()));
+  output.Write(capture_count);
   for (std::uint32_t cut_index = 0; cut_index < cut_count; ++cut_index) {
     output.Write(local_launches[cut_index]);
     const auto begin = dependency_offsets[cut_index];
@@ -412,12 +643,7 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
       output.Write(dependencies[offset]);
     }
   }
-  for (const auto& capture : captures) {
-    output.Write(capture.cut);
-    output.Write(capture.part);
-    output.Write(capture.net);
-    output.Write(capture.sink);
-  }
+  captures.WriteTo(output);
   output.Commit();
 }
 
