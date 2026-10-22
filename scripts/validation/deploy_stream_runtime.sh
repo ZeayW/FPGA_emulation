@@ -102,7 +102,7 @@ do
     "$selected_cxx" -std=c++17 -O3 -pthread \
       -static-libstdc++ -static-libgcc \
       -I"$source_dir/src/native" \
-      "$source_dir/src/native/static_exact_analyzer.cpp" \
+      "$source_dir/src/native/$tool.cpp" \
       "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
       -o "$target"
   else
