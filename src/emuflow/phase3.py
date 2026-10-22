@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import math
 import shutil
 from pathlib import Path
@@ -771,10 +772,16 @@ def run_phase3(
             independent_validation=retain_diagnostics,
             timing_database_path=timing_database_path,
         )
+        patron_model_counts = {
+            "clusters": len(model.get("clusters", [])),
+            "nets": len(model.get("nets", [])),
+            "paths": len(model.get("paths", [])),
+            "capacity_domains": len(model.get("capacities", [])),
+        }
         phase3_runtime_observe(
-            pressure_clusters=len(model.get("clusters", [])),
-            pressure_nets=len(model.get("nets", [])),
-            pressure_paths=len(model.get("paths", [])),
+            pressure_clusters=patron_model_counts["clusters"],
+            pressure_nets=patron_model_counts["nets"],
+            pressure_paths=patron_model_counts["paths"],
         )
         if hasattr(model.get("nets"), "payload_bytes"):
             phase3_runtime_observe(
@@ -843,6 +850,7 @@ def run_phase3(
             retain_trace_seals=retain_diagnostics,
             stream_semantic_records=not retain_diagnostics,
             timeout_seconds=tritonpart_timeout_seconds,
+            _release_model_before_assignment=not retain_diagnostics,
         )
         if retain_diagnostics:
             write_json(output_dir / "patron" / "pressure_model.json", model)
@@ -957,12 +965,7 @@ def run_phase3(
                 "deep_replay": "deferred-to-offline-qualification",
                 "initial_assignment": initial_validation,
                 "candidate_assignment": candidate_validation,
-                "model": {
-                    "clusters": len(model.get("clusters", [])),
-                    "nets": len(model.get("nets", [])),
-                    "paths": len(model.get("paths", [])),
-                    "capacity_domains": len(model.get("capacities", [])),
-                },
+                "model": patron_model_counts,
                 "moves": move_count,
                 "batches": batch_count,
                 "batch_changes": change_count,
@@ -985,6 +988,27 @@ def run_phase3(
                 patron_trace,
             )
             patron_validation["candidate_selection"] = candidate_selection
+        if not retain_diagnostics:
+            # The pressure graph, timing source and native trace are no longer
+            # inputs after online validation and v14 candidate selection.  In
+            # production they used to remain live while the final Static Exact
+            # semantic contract and assignment index built their own graph-scale
+            # state.  Release that complete lifetime before either publication
+            # stage begins; diagnostics retain it explicitly for offline replay.
+            del model
+            del timing_database
+            del patron_trace
+            del patron_physical_feedback
+            del patron_feedback_source_assignment
+            if not retain_patron_baseline:
+                del initial
+                del patron_initial_hop
+            phase3_runtime_call(
+                "patron.release_post_selection_state", gc.collect
+            )
+            phase3_runtime_observe(
+                pressure_model_released_before_candidate_assignment=1
+            )
     else:
         raise ValueError(
             f"unknown Phase 3 provider {provider!r}; "

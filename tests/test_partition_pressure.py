@@ -2841,6 +2841,7 @@ class PartitionPressureTest(unittest.TestCase):
                     retain_diagnostics=False,
                 )
             assignment = read_json(root / "phase3/assignment.json")
+            runtime = read_json(root / "phase3/phase3-runtime.json")
             self.assertEqual(report["status"], "pass")
             self.assertTrue(report["patron_initial_clusters_reused"])
             self.assertEqual(
@@ -2865,6 +2866,21 @@ class PartitionPressureTest(unittest.TestCase):
                     "candidate_selection"
                 ]["provider"],
                 PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER,
+            )
+            step_names = [step["name"] for step in runtime["steps"]]
+            self.assertLess(
+                step_names.index("patron.release_pressure_model"),
+                step_names.index("patron.build_candidate_assignment"),
+            )
+            self.assertLess(
+                step_names.index("patron.release_post_selection_state"),
+                step_names.index("publish.write_assignment_index"),
+            )
+            self.assertEqual(
+                runtime["observations"][
+                    "pressure_model_released_before_candidate_assignment"
+                ],
+                1,
             )
 
     def test_phase3_patron_v14_initializes_on_selected_generalized_graph(

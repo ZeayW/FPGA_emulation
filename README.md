@@ -98,6 +98,14 @@ Relative to the original representation baseline, peak RSS has fallen from
 769,146,880 to 385,073,152 bytes (-49.9%). The packed ProxyNet values and
 weight pool still scale with graph content. This is adapter evidence, not NVDLA
 qualification.
+In the production PATRON path, the pressure model now has an explicit ownership
+boundary: after native output parsing and optional diagnostic hashing, its
+cluster/net/path/capacity views are cleared and collected before the final
+candidate assignment and Static Exact semantic contract are constructed. The
+remaining timing, trace and initial-candidate state is released after online
+validation and candidate selection, before assignment-index publication.
+`phase3-runtime.json` records both release steps. This removes overlapping
+graph-scale lifetimes; its NVDLA peak-RSS effect remains pending the full replay.
 Production clustering now consumes compact EmuIR through ordered integer
 SQLite cursors. It keeps only a four-byte original-to-lexical cell permutation,
 compact union-find arrays and the final cluster records; it no longer decodes a

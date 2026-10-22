@@ -7,6 +7,7 @@ is not the large-design production optimizer.
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import heapq
 import itertools
@@ -4311,6 +4312,7 @@ def run_partition_pressure_native(
     retain_trace_seals: bool = True,
     stream_semantic_records: bool = False,
     timeout_seconds: int = 3600,
+    _release_model_before_assignment: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     limit = len(model["clusters"]) if max_moves is None else max_moves
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
@@ -4323,12 +4325,34 @@ def run_partition_pressure_native(
         raise ValidationError("native PATRON trace-seal flag is invalid")
     if not isinstance(stream_semantic_records, bool):
         raise ValidationError("native PATRON record-stream flag is invalid")
+    if not isinstance(_release_model_before_assignment, bool):
+        raise ValidationError("native PATRON model-release flag is invalid")
+    if _release_model_before_assignment and (
+        retain_trace_seals or not stream_semantic_records
+    ):
+        raise ValidationError(
+            "native PATRON model release requires summary-only streamed output"
+        )
     if (
         isinstance(timeout_seconds, bool)
         or not isinstance(timeout_seconds, int)
         or timeout_seconds <= 0
     ):
         raise ValidationError("native PATRON timeout is invalid")
+    trace_model = {
+        "design": model["design"],
+        "platform": model["platform"],
+        "clusters": len(model["clusters"]),
+        "configuration": {
+            key: model["configuration"][key]
+            for key in (
+                "max_scalable_sweeps",
+                "scalable_ejection_critical_limit",
+                "scalable_ejection_donor_limit",
+                "max_scalable_ejections",
+            )
+        },
+    }
     if algorithm_version is None:
         algorithm_version = (
             11
@@ -4539,6 +4563,13 @@ def run_partition_pressure_native(
     if retain_trace_seals:
         model_sha256 = _canonical_digest(model)
         provider_metadata["model_sha256"] = model_sha256
+    if _release_model_before_assignment:
+        if not isinstance(model, dict):
+            raise ValidationError(
+                "native PATRON production model is not releasable"
+            )
+        model.clear()
+        phase3_runtime_call("patron.release_pressure_model", gc.collect)
     final = phase3_runtime_call(
         "patron.build_candidate_assignment",
         build_partition_assignment,
@@ -4574,8 +4605,8 @@ def run_partition_pressure_native(
                 14: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14,
             }[algorithm_version]
         ),
-        "design": model["design"],
-        "platform": model["platform"],
+        "design": trace_model["design"],
+        "platform": trace_model["platform"],
         "provider": (
             {
                 6: PARTITION_PRESSURE_NATIVE_PROVIDER,
@@ -4589,21 +4620,21 @@ def run_partition_pressure_native(
         "configuration": {
             "algorithm_version": algorithm_version,
             "max_moves": limit,
-            "max_scalable_sweeps": model["configuration"][
+            "max_scalable_sweeps": trace_model["configuration"][
                 "max_scalable_sweeps"
             ],
-            "scalable_ejection_critical_limit": model["configuration"][
+            "scalable_ejection_critical_limit": trace_model["configuration"][
                 "scalable_ejection_critical_limit"
             ],
-            "scalable_ejection_donor_limit": model["configuration"][
+            "scalable_ejection_donor_limit": trace_model["configuration"][
                 "scalable_ejection_donor_limit"
             ],
-            "max_scalable_ejections": model["configuration"][
+            "max_scalable_ejections": trace_model["configuration"][
                 "max_scalable_ejections"
             ],
             "flow_refinement": _flow_refinement_configuration(
                 flow_refinement,
-                len(model["clusters"]),
+                trace_model["clusters"],
                 version=(
                     {6: 1, 9: 3, 10: 4, 11: 5, 14: 8}[
                         algorithm_version
