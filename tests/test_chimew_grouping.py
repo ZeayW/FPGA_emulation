@@ -26,6 +26,7 @@ from emuflow.chimew_grouping import (
     validate_chimew_crossings,
 )
 from emuflow.errors import EmuFlowError, ValidationError
+from tests.native_build import emuflow_native
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -451,6 +452,50 @@ class ChimewGroupingTest(unittest.TestCase):
             )
             self.assertEqual(typed_output.read_bytes(), legacy_output.read_bytes())
 
+    def test_unified_native_entry_matches_signal_grouper(self) -> None:
+        schedule = copy.deepcopy(self.schedule)
+        for index, entry in enumerate(schedule["entries"]):
+            entry.update({"lane": index // 2, "slot": index % 2})
+        entries = sorted(schedule["entries"], key=lambda entry: entry["id"])
+        encodings = grouping_module.validate_chimew_crossings(
+            schedule, self.crossings
+        )
+        guarded = grouping_module._guarded_lane_domains(entries, set())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            typed_input = root / "typed.bin"
+            legacy_output = root / "legacy.out"
+            unified_output = root / "unified.out"
+            with typed_input.open("wb") as stream:
+                metadata = grouping_module._serialize_typed(
+                    entries, encodings, guarded, stream
+                )
+            subprocess.run(
+                [
+                    str(self.executable),
+                    "--typed-input",
+                    str(typed_input),
+                    str(legacy_output),
+                    metadata["logical_sha256"],
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    str(emuflow_native()),
+                    "phase6",
+                    "group-signals",
+                    "--typed-input",
+                    str(typed_input),
+                    str(unified_output),
+                    metadata["logical_sha256"],
+                ],
+                check=True,
+            )
+            self.assertEqual(
+                unified_output.read_bytes(), legacy_output.read_bytes()
+            )
+
     def test_production_grouping_does_not_publish_legacy_text(self) -> None:
         with mock.patch.object(
             grouping_module,
@@ -461,6 +506,23 @@ class ChimewGroupingTest(unittest.TestCase):
                 self.schedule, self.crossings, executable=str(self.executable)
             )
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
+
+    def test_production_prefers_unified_grouping_entry(self) -> None:
+        with mock.patch.object(
+            grouping_module,
+            "resolve_native_stage_command",
+            return_value=[str(self.executable)],
+        ) as dispatch:
+            result = build_chimew_initial_groups(
+                self.schedule, self.crossings
+            )
+        self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
+        dispatch.assert_called_once_with(
+            "emuflow_chimew_signal_grouper",
+            "phase6",
+            "group-signals",
+            explicit=None,
+        )
 
     def test_typed_input_rejects_truncation_corruption_and_mixed_seals(self) -> None:
         entries = sorted(self.schedule["entries"], key=lambda entry: entry["id"])

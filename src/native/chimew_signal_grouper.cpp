@@ -18,6 +18,8 @@
 #include <type_traits>
 #include <vector>
 
+#include "emuflow_core/native_stages.hpp"
+
 namespace {
 
 struct Signal {
@@ -507,6 +509,15 @@ void run(std::vector<Signal> signals, const std::string& output_path) {
 
 }  // namespace
 
+void emuflow::native::GroupChimewSignals(
+    const std::string& input_path, const std::string& output_path,
+    bool typed_input, const std::string& expected_sha256) {
+  run(typed_input ? read_typed_input(input_path, parse_digest(expected_sha256))
+                  : read_text_input(input_path),
+      output_path);
+}
+
+#if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "usage: emuflow_chimew_signal_grouper "
@@ -525,12 +536,12 @@ int main(int argc, char** argv) {
     return 2;
   }
   try {
-    run(typed_input ? read_typed_input(argv[2], parse_digest(argv[4]))
-                    : read_text_input(argv[2]),
-        argv[3]);
+    emuflow::native::GroupChimewSignals(
+        argv[2], argv[3], typed_input, typed_input ? argv[4] : "");
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "emuflow_chimew_signal_grouper: " << error.what() << "\n";
     return 1;
   }
 }
+#endif

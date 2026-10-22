@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .errors import EmuFlowError, ValidationError
-from .native_tools import resolve_native_executable
+from .native_tools import resolve_native_stage_command
 
 
 CHIMEW_CROSSING_SCHEMA = "emuflow.chimew-crossing-encodings/v1"
@@ -737,12 +737,21 @@ def _run_native(
         logical_sha256 = _typed_logical_sha256(
             entries, encodings, guarded_lanes
         )
-        command = resolve_native_executable(
-            "emuflow_chimew_signal_grouper", executable
+        native_command = resolve_native_stage_command(
+            "emuflow_chimew_signal_grouper",
+            "phase6",
+            "group-signals",
+            explicit=executable,
         )
         with stderr_path.open("w+", encoding="utf-8") as stderr_stream:
             process = subprocess.Popen(
-                [command, "--typed-input", "-", "-", logical_sha256],
+                [
+                    *native_command,
+                    "--typed-input",
+                    "-",
+                    "-",
+                    logical_sha256,
+                ],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=stderr_stream,

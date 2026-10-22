@@ -250,6 +250,7 @@ def emuflow_native() -> Path:
             str(ROOT / "src/native/static_exact_analyzer.cpp"),
             str(ROOT / "src/native/tdm_exact_scheduler.cpp"),
             str(ROOT / "src/native/chimew_bank_channel_assigner.cpp"),
+            str(ROOT / "src/native/chimew_signal_grouper.cpp"),
             str(ROOT / "src/native/emuflow_core/artifact_io.cpp"),
             "-I",
             str(ROOT / "src/native"),
