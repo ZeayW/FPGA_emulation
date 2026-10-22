@@ -1328,9 +1328,18 @@ class Phase7CTest(unittest.TestCase):
             )
             for filename in closed["artifacts"].values():
                 self.assertTrue((root / "closed" / filename).is_file())
+            stored_qor = json.loads(
+                (root / "closed/qor_report.json").read_text()
+            )
+            self.assertEqual(
+                stored_qor["schema"], "emuflow.qor-report-storage/v1"
+            )
             self.assertLess(
-                (root / "closed/phase7c_report.json").stat().st_size,
                 (root / "closed/qor_report.json").stat().st_size,
+                (root / "closed/phase7c_report.json").stat().st_size,
+            )
+            self.assertTrue(
+                (root / "closed" / stored_qor["artifact"]).is_file()
             )
 
     def test_phase7c_binds_local_timing_to_compact_route_artifact(self):

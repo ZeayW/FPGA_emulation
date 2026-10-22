@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import hashlib
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ from .platform import Platform
 from .physical_summary_storage import read_physical_summary
 from .phase3_storage import read_phase3_assignment_view
 from .phase5 import validate_phase5_generation
+from .qor_storage import write_qor_report
 from .routing import semantic_contract_for_routes
 from .system_route_storage import pretty_system_routes_sha256, read_system_routes
 from .runtime import (
@@ -277,7 +279,14 @@ def run_phase7c(
                 qor["status"] = "incomplete"
         output_dir.mkdir(parents=True, exist_ok=True)
         write_json(output_dir / "runtime_contract.json", runtime)
-        write_json(output_dir / "qor_report.json", qor)
+        timing_paths = qor.get("timing", {}).get("paths")
+        if isinstance(timing_paths, Sequence) and not isinstance(
+            timing_paths, (str, bytes, bytearray)
+        ):
+            qor_owner = write_qor_report(output_dir / "qor_report.json", qor)
+            qor_owner.close()
+        else:
+            write_json(output_dir / "qor_report.json", qor)
         if physical_summary is not None:
             write_json(
                 output_dir / "cross_layer_physical_binding.json",

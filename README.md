@@ -1069,8 +1069,9 @@ coverage and TX/commit semantics while appending instead of retaining an
 `EventCheck` object and arc tuple per check or scanning the complete set again
 for compression. Original-path metadata uses sorted path IDs, interned strings
 and fixed-width columns instead of one nested dictionary per path; stitching
-materializes metadata only for the current bundle while retaining the required
-final report row for every path. The already sorted IDs also feed the source
+materializes metadata only for the current bundle, and the final numerical
+result remains in five fixed-width columns over that same identity. The already
+sorted IDs also feed the source
 seal without another path list and sort. Hashes only select collision candidates
 and full values are compared before sharing an identity. Canonical
 report stitching consumes one contiguous path bundle at a time, retaining
@@ -1091,7 +1092,15 @@ from 73,624,528 to 5,205,354 bytes and traced peak from 73,624,712 to
 peak RSS was 83,722,240 versus 188,334,080 bytes. A separate 200,000-path
 metadata fixture reduced retained traced
 allocation from 56,886,856 to 7,908,412 bytes (-86.1%) and peak allocation from
-56,887,132 to 37,454,410 bytes (-34.2%). These boundary measurements do not
+56,887,132 to 37,454,410 bytes (-34.2%). On 100,000 final timing paths, the
+fixed-width result view used a 4,000,000-byte payload, 4,112,523 bytes traced
+peak and 150,814,720 bytes process peak RSS, versus 69,804,657 bytes traced
+peak and 263,176,192 bytes RSS for the prior Python dictionary rows. The typed
+build took 1.31 versus 0.56 seconds. Phase 7C now publishes those paths in a
+content-addressed SQLite owner and leaves a 603-byte selector in
+`qor_report.json`; a 100,000-path fixture used 8,983,131 total bytes versus
+45,900,216 bytes for the former JSON, with fsync and full typed validation
+taking 1.79 versus 0.68 seconds. These boundary measurements do not
 replace NVDLA Global STA qualification. See
 [timing scope and metric definitions](docs/global-opensta-qualification.md).
 
@@ -1125,8 +1134,7 @@ RapidWright producers write the measured records directly into that owner.
 On 100,000 synthetic paths, typed read and full seal validation used 32,653,312
 bytes peak RSS versus 251,887,616 bytes for legacy JSON and occupied 24 MiB
 versus 30 MiB, while wall time changed from 0.73 to 0.90 seconds. Unique
-event/check identity tables and the final per-path QoR JSON owner remain W6
-migration work; formal NVDLA Phase 7C
+event/check identity tables remain W6 migration work; formal NVDLA Phase 7C
 wall/RSS/I/O and complete original-path coverage are still pending.
 
 ### Selected research references

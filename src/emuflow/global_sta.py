@@ -242,6 +242,120 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
         return hashlib.sha256(encoded).hexdigest()
 
 
+class _IndexedSystemTimingPaths(Sequence[Mapping[str, object]]):
+    """Fixed-width final OpenSTA values over indexed original-path metadata."""
+
+    def __init__(
+        self,
+        metadata: _IndexedPathMetadata,
+        system_delays: array,
+        target_required: array,
+        target_slacks: array,
+        runtime_required: array,
+        runtime_slacks: array,
+    ):
+        values = (
+            system_delays,
+            target_required,
+            target_slacks,
+            runtime_required,
+            runtime_slacks,
+        )
+        if any(column.typecode != "d" or len(column) != len(metadata) for column in values):
+            raise ValidationError("global STA indexed timing paths are malformed")
+        self._metadata = metadata
+        self._system_delays = system_delays
+        self._target_required = target_required
+        self._target_slacks = target_slacks
+        self._runtime_required = runtime_required
+        self._runtime_slacks = runtime_slacks
+
+    def __len__(self) -> int:
+        return len(self._metadata)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        path = self._metadata._paths[index]
+        return {
+            "path": path,
+            **self._metadata[path],
+            "system_delay_bound_ns": self._system_delays[index],
+            "target_required_time_ns": self._target_required[index],
+            "target_clock_slack_bound_ns": self._target_slacks[index],
+            "runtime_required_time_ns": self._runtime_required[index],
+            "runtime_clock_slack_bound_ns": self._runtime_slacks[index],
+        }
+
+    def __iter__(self):
+        for index in range(len(self)):
+            yield self[index]
+
+    def __eq__(self, other):
+        if not isinstance(other, Sequence) or len(self) != len(other):
+            return False
+        return all(left == right for left, right in zip(self, other))
+
+    @property
+    def typed_payload_bytes(self) -> int:
+        return sum(
+            column.itemsize * len(column)
+            for column in (
+                self._system_delays,
+                self._target_required,
+                self._target_slacks,
+                self._runtime_required,
+                self._runtime_slacks,
+            )
+        )
+
+
+class _SystemTimingPathBuilder:
+    """Place one complete measurement bundle into sorted metadata columns."""
+
+    def __init__(self, metadata: _IndexedPathMetadata):
+        self._metadata = metadata
+        count = len(metadata)
+        self._seen = array("B", [0]) * count
+        self._system_delays = array("d", [math.nan]) * count
+        self._target_required = array("d", [math.nan]) * count
+        self._target_slacks = array("d", [math.nan]) * count
+        self._runtime_required = array("d", [math.nan]) * count
+        self._runtime_slacks = array("d", [math.nan]) * count
+
+    def append(self, path: str, target: Mapping, runtime: Mapping) -> bool:
+        index = bisect_left(self._metadata._paths, path)
+        if index >= len(self._metadata) or self._metadata._paths[index] != path:
+            raise ValidationError("global STA measurement path is unknown")
+        if self._seen[index]:
+            return False
+        self._seen[index] = 1
+        self._system_delays[index] = target["arrival_ns"]
+        self._target_required[index] = target["required_ns"]
+        self._target_slacks[index] = target["slack_ns"]
+        self._runtime_required[index] = runtime["required_ns"]
+        self._runtime_slacks[index] = runtime["slack_ns"]
+        return True
+
+    def finish(self) -> _IndexedSystemTimingPaths:
+        if not self._seen or any(not value for value in self._seen):
+            raise ValidationError(
+                "global STA invalid standalone measurement population"
+            )
+        return _IndexedSystemTimingPaths(
+            self._metadata,
+            self._system_delays,
+            self._target_required,
+            self._target_slacks,
+            self._runtime_required,
+            self._runtime_slacks,
+        )
+
+
 class _PathMetadataBuilder:
     """Append path metadata, then seal it into sorted indexed columns."""
 
@@ -1720,8 +1834,13 @@ def build_opensta_timing(runtime, metadata, measurements):
         # Validate identities within the live bundle and construct the final
         # path row when that bundle ends. This avoids an H-sized identity set
         # and a second P-sized target/runtime record map in production.
-        paths = []
-        completed = set()
+        typed_builder = (
+            _SystemTimingPathBuilder(metadata_paths)
+            if isinstance(metadata_paths, _IndexedPathMetadata)
+            else None
+        )
+        paths = [] if typed_builder is None else None
+        completed = set() if typed_builder is None else None
         current_path = None
         current_rows = {}
         current_identities = set()
@@ -1735,17 +1854,23 @@ def build_opensta_timing(runtime, metadata, measurements):
                 raise InterleavedMeasurements
             info = metadata_paths[current_path]
             target = current_rows["target"]
-            path = {
-                "path": current_path,
-                **info,
-                "system_delay_bound_ns": target["arrival_ns"],
-            }
-            for role in ("target", "runtime"):
-                row = current_rows[role]
-                path[f"{role}_required_time_ns"] = row["required_ns"]
-                path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
-            paths.append(path)
-            completed.add(current_path)
+            runtime_row = current_rows["runtime"]
+            if typed_builder is not None:
+                if not typed_builder.append(current_path, target, runtime_row):
+                    raise InterleavedMeasurements
+            else:
+                assert paths is not None and completed is not None
+                path = {
+                    "path": current_path,
+                    **info,
+                    "system_delay_bound_ns": target["arrival_ns"],
+                    "target_required_time_ns": target["required_ns"],
+                    "target_clock_slack_bound_ns": target["slack_ns"],
+                    "runtime_required_time_ns": runtime_row["required_ns"],
+                    "runtime_clock_slack_bound_ns": runtime_row["slack_ns"],
+                }
+                paths.append(path)
+                completed.add(current_path)
 
         for row in measurements:
             checks += 1
@@ -1762,7 +1887,7 @@ def build_opensta_timing(runtime, metadata, measurements):
                     "global STA invalid standalone measurement population"
                 )
             if path_id != current_path:
-                if path_id in completed:
+                if completed is not None and path_id in completed:
                     raise InterleavedMeasurements
                 finish_bundle()
                 current_path = path_id
@@ -1792,11 +1917,15 @@ def build_opensta_timing(runtime, metadata, measurements):
             elif row["slack_ns"] < -1e-3:
                 failures += 1
         finish_bundle()
-        if not paths or len(paths) != len(metadata_paths):
-            raise ValidationError(
-                "global STA invalid standalone measurement population"
-            )
-        paths.sort(key=lambda path: path["path"])
+        if typed_builder is not None:
+            paths = typed_builder.finish()
+        else:
+            assert paths is not None
+            if not paths or len(paths) != len(metadata_paths):
+                raise ValidationError(
+                    "global STA invalid standalone measurement population"
+                )
+            paths.sort(key=lambda path: path["path"])
         return paths, failures, checks
 
     try:
@@ -1860,8 +1989,54 @@ def build_opensta_timing(runtime, metadata, measurements):
         raise ValidationError("global STA empty standalone result")
     source = metadata["source_binding"]
     scope = "whole-original-design" if source is not None else "cross-fpga-path-subset"
-    local = sum(p["path_scope"] == "same-fpga-local" for p in paths)
-    bounds = sum(p["physical_logic_segments_cone_bound"] for p in paths)
+    local = 0
+    bounds = 0
+    maximum_delay = -math.inf
+    metrics = {
+        role: {
+            "wns_ns": math.inf,
+            "original_path_tns_ns": 0.0,
+            "negative_paths": 0,
+        }
+        for role in ("target", "runtime")
+    }
+    worst_paths = {role: None for role in ("target", "runtime")}
+    negative_partials = {role: [] for role in ("target", "runtime")}
+
+    def add_fsum(partials: list[float], value: float) -> None:
+        """Accumulate one value with math.fsum's bounded partials strategy."""
+
+        index = 0
+        for partial in partials:
+            if abs(value) < abs(partial):
+                value, partial = partial, value
+            high = value + partial
+            low = partial - (high - value)
+            if low:
+                partials[index] = low
+                index += 1
+            value = high
+        partials[index:] = [value]
+
+    for path in paths:
+        local += path["path_scope"] == "same-fpga-local"
+        bounds += path["physical_logic_segments_cone_bound"]
+        maximum_delay = max(maximum_delay, path["system_delay_bound_ns"])
+        for role in ("target", "runtime"):
+            slack = path[f"{role}_clock_slack_bound_ns"]
+            metric = metrics[role]
+            if (slack, path["path"]) < (
+                metric["wns_ns"], worst_paths[role] or ""
+            ):
+                metric["wns_ns"] = slack
+                worst_paths[role] = path["path"]
+            if slack < 0.0:
+                metric["negative_paths"] += 1
+                add_fsum(negative_partials[role], slack)
+    for role in ("target", "runtime"):
+        metrics[role]["original_path_tns_ns"] = math.fsum(
+            negative_partials[role]
+        )
     timing = {"schema": "emuflow.system-timing/v2", "status": "fail" if failures else "pass",
               "qualification": "opensta-fixed-event-physical-bounds", "timing_scope": scope,
               "source_binding": source, "paths": paths,
@@ -1874,17 +2049,13 @@ def build_opensta_timing(runtime, metadata, measurements):
                   "compressed_representative_paths": metadata["compressed_representative_paths"],
                   "original_path_coverage": 1.0 if source else None,
                   "original_path_ids_sha256": source["original_path_ids_sha256"] if source else None,
-                  "maximum_system_delay_bound_ns": max(p["system_delay_bound_ns"] for p in paths)}}
-    metrics = {}
+                  "maximum_system_delay_bound_ns": maximum_delay}}
     for role in ("target", "runtime"):
-        worst = min(paths, key=lambda p:(p[f"{role}_clock_slack_bound_ns"],p["path"]))
-        slacks = [p[f"{role}_clock_slack_bound_ns"] for p in paths]
-        tns = math.fsum(min(0.0,s) for s in slacks)
-        metrics[role] = {"wns_ns": min(slacks), "original_path_tns_ns": tns,
-                         "negative_paths": sum(s<0 for s in slacks)}
-        timing[f"{role}_clock"] = {"closure_gate": role=="runtime", "worst_path": worst["path"],
-            "worst_slack_bound_ns": min(slacks), "tns_bound_ns": tns,
-            "total_negative_slack_bound_ns": tns, "negative_slack_paths": metrics[role]["negative_paths"]}
+        metric = metrics[role]
+        tns = metric["original_path_tns_ns"]
+        timing[f"{role}_clock"] = {"closure_gate": role=="runtime", "worst_path": worst_paths[role],
+            "worst_slack_bound_ns": metric["wns_ns"], "tns_bound_ns": tns,
+            "total_negative_slack_bound_ns": tns, "negative_slack_paths": metric["negative_paths"]}
     clock_periods = {
         clock: float(record["nominal_period_ns"])
         for clock, record in runtime["virtual_dut_clocks"].items()

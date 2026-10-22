@@ -65,6 +65,10 @@ def read_json(path: Path) -> Dict[str, Any]:
         from .system_route_storage import expand_system_route_storage
 
         return expand_system_route_storage(value, path)
+    if schema == "emuflow.qor-report-storage/v1":
+        from .qor_storage import expand_qor_report_storage
+
+        return expand_qor_report_storage(value, path)
     if schema in {
         "emuflow.transport-storage/v1",
         "emuflow.logical-lane-map-storage/v1",

@@ -8,7 +8,8 @@ import pytest
 from emuflow.errors import ValidationError
 from emuflow.global_sta import (
     EventCheck, _EventCheckBuilder, _IndexedEventChecks,
-    _IndexedMeasurements, _IndexedPathMetadata, _PathMetadataBuilder,
+    _IndexedMeasurements, _IndexedPathMetadata, _IndexedSystemTimingPaths,
+    _PathMetadataBuilder,
     _compress_path_equivalent_checks, _write_expanded_measurements,
     adopt_opensta_results, bind_physical_checks, build_opensta_timing,
     compare_system_timing, export_event_checks, read_engine_identity,
@@ -762,6 +763,51 @@ def test_physical_binding_uses_raw_measurements():
     del physical["board_link_timing"]
     assert bind_physical_checks(build_virtual_runtime(fixture.schedule, fixture.platform),
                                 routes, fixture.schedule, physical, fixture.platform) == checks
+
+
+def test_indexed_metadata_produces_fixed_width_final_timing_paths():
+    builder = _PathMetadataBuilder()
+    for path in ("path-a", "path-b"):
+        builder.append(
+            path,
+            representative_path=path,
+            path_scope="cross-fpga",
+            clock_domain="clk",
+            target_period_ns=10.0,
+            physical_logic_segments_cone_bound=False,
+        )
+    metadata = {
+        "paths": builder.finish(),
+        "source_binding": None,
+        "compressed_representative_paths": 2,
+    }
+    measurements = [
+        {
+            "path": path,
+            "role": role,
+            "event": "capture",
+            "arrival_ns": 3.0,
+            "required_ns": required,
+            "slack_ns": required - 3.0,
+        }
+        for path in ("path-b", "path-a")
+        for role, required in (("target", 10.0), ("runtime", 100.0))
+    ]
+
+    timing = build_opensta_timing(
+        {
+            "virtual_dut_clocks": {"clk": {"nominal_period_ns": 100.0}},
+            "virtual_dut_clock": {"nominal_period_ns": 100.0},
+        },
+        metadata,
+        measurements,
+    )
+
+    assert isinstance(timing["paths"], _IndexedSystemTimingPaths)
+    assert timing["paths"].typed_payload_bytes == 2 * 5 * 8
+    assert [row["path"] for row in timing["paths"]] == ["path-a", "path-b"]
+    assert timing["target_clock"]["worst_slack_bound_ns"] == 7.0
+    assert timing["runtime_clock"]["tns_bound_ns"] == 0.0
 
 
 def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path):

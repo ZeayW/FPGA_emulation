@@ -374,6 +374,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/openparf.py",
         "src/emuflow/packed_placement.py",
         "src/emuflow/phase7c.py",
+        "src/emuflow/qor_storage.py",
         "src/emuflow/system_timing.py",
         "src/emuflow/local_path_timing.py",
         "src/emuflow/local_path_timing_storage.py",
