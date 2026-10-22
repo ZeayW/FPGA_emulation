@@ -3503,6 +3503,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "emuflow_tlr_router build"
         ),
     )
+    phase4.add_argument(
+        "--retain-candidate-pool",
+        action="store_true",
+        help=(
+            "write the complete diagnostic candidate-tree pool; the default "
+            "production path validates candidates online"
+        ),
+    )
 
     schedule_parser = subparsers.add_parser(
         "schedule", help="TDM schedule artifact operations"
@@ -6219,6 +6227,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             physical_feedback_weight=args.physical_feedback_weight,
             candidate_workers=args.candidate_workers,
+            retain_candidate_pool=args.retain_candidate_pool,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2

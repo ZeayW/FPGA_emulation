@@ -371,7 +371,7 @@ reside in the selector header and are exposed as lazy sequences. Managed
 global routing validates each native candidate as it is parsed and retains one
 capacity-domain bitset per demand for independent batch reconstruction. It no
 longer rebuilds the complete multi-generator candidate-tree pool in Python;
-an explicit candidate-pool output remains available for diagnostics and exact
+`phase4 --retain-candidate-pool` remains available for diagnostics and exact
 oracle tests. On a synthetic 50,000-demand output containing 350,000 candidate
 records, the isolated parser's process peak RSS fell from 252,018,688 to
 45,809,664 bytes while wall time changed from 0.606 to 1.148 seconds because

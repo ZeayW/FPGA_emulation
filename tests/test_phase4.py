@@ -566,6 +566,9 @@ class Phase4Test(unittest.TestCase):
                     "requested_workers": 1,
                     "ordering": "demand-index-then-generator-index",
                     "route_artifact_deterministic": True,
+                    "validation_dataflow": (
+                        "streamed-candidate-domain-footprint-v1"
+                    ),
                 },
             )
             normalized = load_sta_paths(timing_path, routes["demands"])
@@ -1491,14 +1494,13 @@ class Phase4Test(unittest.TestCase):
             self.assertEqual(report["validation"]["overloaded_links"], 0)
             for filename in (
                 "route_constraints.normalized.json",
-                "route_candidate_pool.json",
                 "routes.json",
                 "phase4_report.json",
             ):
                 self.assertTrue((root / "phase4" / filename).is_file())
-            self.assertEqual(
-                report["artifacts"]["candidate_pool"],
-                "route_candidate_pool.json",
+            self.assertNotIn("candidate_pool", report["artifacts"])
+            self.assertFalse(
+                (root / "phase4/route_candidate_pool.json").exists()
             )
             selector = json.loads(
                 (root / "phase4/routes.json").read_text(encoding="utf-8")
@@ -1524,6 +1526,24 @@ class Phase4Test(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValidationError, "store is missing"):
                 read_system_routes(detached / "routes.json")
+            diagnostic_report = run_phase4(
+                assignment_path=assignment_path,
+                platform_path=PLATFORM_PATH,
+                output_dir=root / "phase4-diagnostic",
+                frame_slots=1,
+                router=str(tlr_router()),
+                retain_candidate_pool=True,
+            )
+            self.assertEqual(
+                diagnostic_report["artifacts"]["candidate_pool"],
+                "route_candidate_pool.json",
+            )
+            self.assertTrue(
+                (
+                    root
+                    / "phase4-diagnostic/route_candidate_pool.json"
+                ).is_file()
+            )
             managed_report = run_phase4(
                 assignment_path=assignment_path,
                 platform_path=PLATFORM_PATH,

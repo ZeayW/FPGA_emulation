@@ -58,6 +58,7 @@ def run_phase4(
     physical_feedback_weight: float = 1.0,
     candidate_workers: int = 1,
     managed_storage: bool = False,
+    retain_candidate_pool: bool = False,
 ) -> Dict[str, Any]:
     assignment = read_phase3_assignment_view(
         assignment_path, include_semantic_contract=False
@@ -65,7 +66,9 @@ def run_phase4(
     platform = Platform.load(platform_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     candidate_pool_path = (
-        None if managed_storage else output_dir / "route_candidate_pool.json"
+        output_dir / "route_candidate_pool.json"
+        if retain_candidate_pool
+        else None
     )
     constraints = load_route_constraints(
         constraints_path,
@@ -269,6 +272,11 @@ def run_phase4(
         "requested_workers": candidate_workers,
         "ordering": "demand-index-then-generator-index",
         "route_artifact_deterministic": True,
+        "validation_dataflow": (
+            "materialized-diagnostic-candidate-pool-v1"
+            if candidate_pool_path is not None
+            else "streamed-candidate-domain-footprint-v1"
+        ),
     }
     if candidate_pool_path is not None and candidate_pool_path.is_file():
         report["artifacts"]["candidate_pool"] = "route_candidate_pool.json"
