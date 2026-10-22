@@ -33,13 +33,16 @@ for tool in \
 do
   target="$runtime_dir/bin/emuflow_$tool"
   rm -f "$target"
-  sources=("$source_dir/src/native/$tool.cpp")
-  includes=()
   if test "$tool" = static_exact_analyzer; then
-    sources+=("$source_dir/src/native/emuflow_core/artifact_io.cpp")
-    includes+=("-I$source_dir/src/native")
+    c++ -std=c++17 -O3 -pthread \
+      -I"$source_dir/src/native" \
+      "$source_dir/src/native/static_exact_analyzer.cpp" \
+      "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
+      -o "$target"
+  else
+    c++ -std=c++17 -O3 -pthread \
+      "$source_dir/src/native/$tool.cpp" -o "$target"
   fi
-  c++ -std=c++17 -O3 -pthread "${includes[@]}" "${sources[@]}" -o "$target"
 done
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"
