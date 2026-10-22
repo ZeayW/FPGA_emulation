@@ -906,6 +906,11 @@ def run_phase3(
             move_count = patron_trace.get("move_count")
             batch_count = patron_trace.get("batch_count")
             change_count = patron_trace.get("change_count")
+            native_input_transport = patron_trace.get(
+                "native_input_transport"
+            )
+            native_input_bytes = patron_trace.get("native_input_bytes")
+            native_input_records = patron_trace.get("native_input_records")
             native_output_bytes = patron_trace.get("native_output_bytes")
             if (
                 isinstance(move_count, bool)
@@ -917,6 +922,14 @@ def run_phase3(
                 or isinstance(change_count, bool)
                 or not isinstance(change_count, int)
                 or change_count < 0
+                or native_input_transport
+                not in {"streamed-text-pipe", "atomic-text-file"}
+                or isinstance(native_input_bytes, bool)
+                or not isinstance(native_input_bytes, int)
+                or native_input_bytes <= 0
+                or isinstance(native_input_records, bool)
+                or not isinstance(native_input_records, int)
+                or native_input_records <= 0
                 or isinstance(native_output_bytes, bool)
                 or not isinstance(native_output_bytes, int)
                 or native_output_bytes <= 0
@@ -939,6 +952,9 @@ def run_phase3(
                 "moves": move_count,
                 "batches": batch_count,
                 "batch_changes": change_count,
+                "native_input_transport": native_input_transport,
+                "native_input_bytes": native_input_bytes,
+                "native_input_records": native_input_records,
                 "native_output_bytes": native_output_bytes,
             }
         if patron_physical_feedback_validation is not None:

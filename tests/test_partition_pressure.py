@@ -1,4 +1,5 @@
 import copy
+import io
 import itertools
 import math
 import os
@@ -452,7 +453,49 @@ class PartitionPressureTest(unittest.TestCase):
             packed["cluster_count"], len(compact_clusters["clusters"])
         )
         self.assertEqual(trace["trace_storage"], "summary-only")
+        self.assertEqual(
+            trace["native_input_transport"], "streamed-text-pipe"
+        )
+        self.assertGreater(trace["native_input_bytes"], 0)
+        self.assertGreater(trace["native_input_records"], 0)
         self.assertNotIn("moves", trace)
+
+    def test_native_patron_explicit_input_copy_preserves_debug_protocol(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            copy_path = Path(temporary) / "debug" / "patron.in"
+            with patch.dict(
+                os.environ,
+                {"EMUFLOW_PATRON_INPUT_COPY": str(copy_path)},
+            ):
+                final, trace = run_partition_pressure_native(
+                    self.ir,
+                    self.platform,
+                    self.clusters,
+                    self.constraints,
+                    self.route_constraints,
+                    self.model,
+                    self.initial,
+                    executable=str(patron_refiner()),
+                    max_moves=0,
+                )
+
+            self.assertEqual(
+                final["cluster_assignment"],
+                self.initial["cluster_assignment"],
+            )
+            self.assertEqual(
+                trace["native_input_transport"], "atomic-text-file"
+            )
+            self.assertEqual(
+                copy_path.stat().st_size, trace["native_input_bytes"]
+            )
+            self.assertGreater(trace["native_input_records"], 0)
+            self.assertEqual(
+                copy_path.read_text().splitlines()[0],
+                "EMUFLOW_PATRON_INPUT_V6_BANKS_V1",
+            )
 
     def test_compact_pressure_model_randomized_differential(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2205,12 +2248,28 @@ class PartitionPressureTest(unittest.TestCase):
         )
 
     def test_native_patron_timeout_is_enforced(self) -> None:
+        class TimeoutProcess:
+            def __init__(self):
+                self.stdin = io.StringIO()
+                self.killed = False
+                self.wait_timeouts = []
+
+            def wait(self, timeout=None):
+                self.wait_timeouts.append(timeout)
+                if not self.killed:
+                    raise subprocess.TimeoutExpired(
+                        cmd=["emuflow_patron_refiner"], timeout=timeout
+                    )
+                return -9
+
+            def kill(self):
+                self.killed = True
+
+        process = TimeoutProcess()
         with patch(
-            "emuflow.partition_pressure.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(
-                cmd=["emuflow_patron_refiner"], timeout=7
-            ),
-        ) as run:
+            "emuflow.partition_pressure.subprocess.Popen",
+            return_value=process,
+        ) as popen:
             with self.assertRaisesRegex(
                 ValidationError,
                 "native PATRON exceeded timeout of 7 seconds",
@@ -2226,7 +2285,9 @@ class PartitionPressureTest(unittest.TestCase):
                     executable="/bin/true",
                     timeout_seconds=7,
                 )
-        self.assertEqual(run.call_args.kwargs["timeout"], 7)
+        self.assertEqual(process.wait_timeouts, [7, None])
+        self.assertTrue(process.killed)
+        self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.PIPE)
 
     def test_native_patron_timeout_must_be_positive(self) -> None:
         with self.assertRaisesRegex(

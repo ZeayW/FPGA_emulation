@@ -14,7 +14,6 @@ import json
 import math
 import os
 import sqlite3
-import shutil
 import subprocess
 import tempfile
 import uuid
@@ -879,6 +878,8 @@ class _NativeLineWriter:
         self._recovery_backup: Optional[Path] = None
         self._stream = None
         self._published = False
+        self._bytes = 0
+        self._records = 0
         self._stream = self._temporary.open(
             "x", encoding="utf-8", newline="\n"
         )
@@ -888,6 +889,8 @@ class _NativeLineWriter:
             raise ValidationError("native PATRON input record is invalid")
         self._stream.write(line)
         self._stream.write("\n")
+        self._bytes += len(line.encode("utf-8")) + 1
+        self._records += 1
 
     def extend(self, lines: Iterable[str]) -> None:
         for line in lines:
@@ -897,17 +900,22 @@ class _NativeLineWriter:
         if self._stream is None:
             raise ValidationError("native PATRON input writer is closed")
         first = True
+        encoded_bytes = 0
         for raw in fields:
             token = str(raw)
             if not token or any(character.isspace() for character in token):
                 raise ValidationError("native PATRON input field is invalid")
             if not first:
                 self._stream.write(" ")
+                encoded_bytes += 1
             self._stream.write(token)
+            encoded_bytes += len(token.encode("utf-8"))
             first = False
         if first:
             raise ValidationError("native PATRON input record is empty")
         self._stream.write("\n")
+        self._bytes += encoded_bytes + 1
+        self._records += 1
 
     def publish(self) -> None:
         if self._stream is None or self._published:
@@ -992,6 +1000,83 @@ class _NativeLineWriter:
             self.abort()
         except BaseException:
             pass
+
+    @property
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "transport": "atomic-text-file",
+            "bytes": self._bytes,
+            "records": self._records,
+        }
+
+
+class _NativePipeLineWriter:
+    """Stream the checked text grammar without a graph-sized input file."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self._published = False
+        self._bytes = 0
+        self._records = 0
+
+    def append(self, line: str) -> None:
+        if self._stream is None or not isinstance(line, str) or "\n" in line:
+            raise ValidationError("native PATRON input record is invalid")
+        self._stream.write(line)
+        self._stream.write("\n")
+        self._bytes += len(line.encode("utf-8")) + 1
+        self._records += 1
+
+    def extend(self, lines: Iterable[str]) -> None:
+        for line in lines:
+            self.append(line)
+
+    def append_fields(self, fields: Iterable[Any]) -> None:
+        if self._stream is None:
+            raise ValidationError("native PATRON input writer is closed")
+        first = True
+        encoded_bytes = 0
+        for raw in fields:
+            token = str(raw)
+            if not token or any(character.isspace() for character in token):
+                raise ValidationError("native PATRON input field is invalid")
+            if not first:
+                self._stream.write(" ")
+                encoded_bytes += 1
+            self._stream.write(token)
+            encoded_bytes += len(token.encode("utf-8"))
+            first = False
+        if first:
+            raise ValidationError("native PATRON input record is empty")
+        self._stream.write("\n")
+        self._bytes += encoded_bytes + 1
+        self._records += 1
+
+    def publish(self) -> None:
+        if self._stream is None or self._published:
+            raise ValidationError("native PATRON input writer is closed")
+        stream = self._stream
+        self._stream = None
+        stream.flush()
+        stream.close()
+        self._published = True
+
+    def abort(self) -> None:
+        stream = self._stream
+        self._stream = None
+        if stream is not None:
+            try:
+                stream.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+    @property
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "transport": "streamed-text-pipe",
+            "bytes": self._bytes,
+            "records": self._records,
+        }
 
 
 def _canonical_digest(value: Any) -> str:
@@ -3116,7 +3201,7 @@ def _native_dimensions(
 
 
 def _write_patron_native_input(
-    path: Path,
+    path: Optional[Path],
     platform: Platform,
     clusters_artifact: Mapping[str, Any],
     constraints: Mapping[str, Any],
@@ -3127,6 +3212,7 @@ def _write_patron_native_input(
     flow_version: int,
     physical_feedback: Optional[Mapping[str, Any]] = None,
     physical_feedback_scale: float = 0.0,
+    _writer: Optional[Any] = None,
 ) -> Dict[str, Any]:
     if flow_version not in {6, 9, 10, 11, 14}:
         raise ValidationError("native PATRON algorithm version is invalid")
@@ -3216,7 +3302,16 @@ def _write_patron_native_input(
             net["net"]: index for index, net in enumerate(nets)
         }
     max_hops = model["configuration"]["max_route_hops"]
-    lines = _NativeLineWriter(path)
+    if _writer is None:
+        if path is None:
+            raise ValidationError("native PATRON input path is missing")
+        lines = _NativeLineWriter(path)
+    else:
+        if path is not None:
+            raise ValidationError(
+                "native PATRON input cannot use both a path and a stream"
+            )
+        lines = _writer
     published = False
     try:
         lines.extend([
@@ -3442,6 +3537,7 @@ def _write_patron_native_input(
     return {
         "parts": parts,
         "clusters": cluster_names,
+        "input": dict(lines.summary),
     }
 
 
@@ -3956,28 +4052,8 @@ def run_partition_pressure_native(
     resolved = resolve_native_executable("emuflow_patron_refiner", executable)
     with tempfile.TemporaryDirectory(prefix="emuflow-patron-") as temporary:
         root = Path(temporary)
-        native_input = root / "patron.in"
         native_output = root / "patron.out"
-        indexes = phase3_runtime_call(
-            "patron.export_native_input",
-            _write_patron_native_input,
-            native_input,
-            platform,
-            clusters_artifact,
-            constraints,
-            route_constraints,
-            model,
-            initial_assignment,
-            limit,
-            algorithm_version,
-            physical_feedback,
-            physical_feedback_scale,
-        )
         native_input_copy = os.environ.get("EMUFLOW_PATRON_INPUT_COPY")
-        if native_input_copy:
-            copy_path = Path(native_input_copy)
-            copy_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(native_input, copy_path)
         environment = dict(os.environ)
         for name in tuple(environment):
             if name.startswith("EMUFLOW_PATRON_"):
@@ -3985,22 +4061,122 @@ def run_partition_pressure_native(
         command = [resolved]
         if not retain_trace_seals:
             command.append("--summary-output")
-        command.extend((str(native_input), str(native_output)))
-        try:
-            completed = phase3_runtime_call(
-                "patron.execute_native",
-                subprocess.run,
-                command,
-                capture_output=True,
-                text=True,
-                check=False,
-                env=environment,
-                timeout=timeout_seconds,
+        if native_input_copy:
+            copy_path = Path(native_input_copy)
+            copy_path.parent.mkdir(parents=True, exist_ok=True)
+            indexes = phase3_runtime_call(
+                "patron.export_native_input",
+                _write_patron_native_input,
+                copy_path,
+                platform,
+                clusters_artifact,
+                constraints,
+                route_constraints,
+                model,
+                initial_assignment,
+                limit,
+                algorithm_version,
+                physical_feedback,
+                physical_feedback_scale,
             )
-        except subprocess.TimeoutExpired as error:
-            raise ValidationError(
-                f"native PATRON exceeded timeout of {timeout_seconds} seconds"
-            ) from error
+            command.extend((str(copy_path), str(native_output)))
+            try:
+                completed = phase3_runtime_call(
+                    "patron.execute_native",
+                    subprocess.run,
+                    command,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    env=environment,
+                    timeout=timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as error:
+                raise ValidationError(
+                    "native PATRON exceeded timeout of "
+                    f"{timeout_seconds} seconds"
+                ) from error
+        else:
+            command.extend(("-", str(native_output)))
+            stdout_path = root / "patron.stdout"
+            stderr_path = root / "patron.stderr"
+            with (
+                stdout_path.open("w+", encoding="utf-8") as stdout_stream,
+                stderr_path.open("w+", encoding="utf-8") as stderr_stream,
+            ):
+                process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=stdout_stream,
+                    stderr=stderr_stream,
+                    text=True,
+                    encoding="utf-8",
+                    errors="strict",
+                    env=environment,
+                )
+                if process.stdin is None:
+                    process.kill()
+                    process.wait()
+                    raise ValidationError(
+                        "native PATRON input stream is unavailable"
+                    )
+                try:
+                    indexes = phase3_runtime_call(
+                        "patron.export_native_input",
+                        _write_patron_native_input,
+                        None,
+                        platform,
+                        clusters_artifact,
+                        constraints,
+                        route_constraints,
+                        model,
+                        initial_assignment,
+                        limit,
+                        algorithm_version,
+                        physical_feedback,
+                        physical_feedback_scale,
+                        _writer=_NativePipeLineWriter(process.stdin),
+                    )
+                except (BrokenPipeError, OSError) as error:
+                    process.stdin = None
+                    returncode = process.wait()
+                    stderr_stream.flush()
+                    stderr_stream.seek(0)
+                    detail = stderr_stream.read().strip()
+                    raise ValidationError(
+                        "native PATRON rejected its streamed input with exit "
+                        f"code {returncode}"
+                        + (f": {detail}" if detail else "")
+                    ) from error
+                except BaseException:
+                    process.stdin = None
+                    process.kill()
+                    process.wait()
+                    raise
+                process.stdin = None
+                try:
+                    returncode = phase3_runtime_call(
+                        "patron.execute_native",
+                        process.wait,
+                        timeout=timeout_seconds,
+                    )
+                except subprocess.TimeoutExpired as error:
+                    process.kill()
+                    process.wait()
+                    raise ValidationError(
+                        "native PATRON exceeded timeout of "
+                        f"{timeout_seconds} seconds"
+                    ) from error
+                stdout_stream.flush()
+                stderr_stream.flush()
+                stdout_stream.seek(0)
+                stderr_stream.seek(0)
+                completed = subprocess.CompletedProcess(
+                    command,
+                    returncode,
+                    stdout_stream.read(),
+                    stderr_stream.read(),
+                )
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()
             raise ValidationError(
@@ -4022,6 +4198,7 @@ def run_partition_pressure_native(
             indexes,
             packed_assignment=stream_semantic_records,
         )
+        output_summary["input"] = indexes["input"]
     provider_metadata = {
         "initial_provider": initial_assignment.get("provider"),
     }
@@ -4127,6 +4304,9 @@ def run_partition_pressure_native(
         "move_count": output_summary["moves"],
         "batch_count": output_summary["batches"],
         "change_count": output_summary["changes"],
+        "native_input_transport": output_summary["input"]["transport"],
+        "native_input_bytes": output_summary["input"]["bytes"],
+        "native_input_records": output_summary["input"]["records"],
         "native_output_bytes": output_summary["output_bytes"],
         "trace_storage": (
             "retained"

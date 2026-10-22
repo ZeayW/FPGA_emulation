@@ -393,8 +393,14 @@ double predicted_transition_delay(const Model& model,
 }
 
 Model read_model(const std::string& path) {
-  std::ifstream stream(path);
-  require(stream.good(), "cannot open input");
+  std::ifstream input_file;
+  std::istream* input = &std::cin;
+  if (path != "-") {
+    input_file.open(path);
+    require(input_file.good(), "cannot open input");
+    input = &input_file;
+  }
+  std::istream& stream = *input;
   std::string token;
   stream >> token;
   const std::string bank_suffix = "_BANKS_V1";

@@ -58,6 +58,15 @@ on Linux, parent-process I/O counters. Search, imported-solution, and replay
 runs must be compared as distinct execution modes. Assignment-index
 publication further separates exact-binary emission, primary and replica copy
 rows, cut-sink rows, commit, and independent index validation.
+Production PATRON input now streams the existing checked text grammar directly
+to the native parser over standard input. The normal path therefore does not
+create, flush, or reread the graph-sized `patron.in` temporary file. The trace
+records the exact input byte and record counts plus the selected transport, so
+large NVDLA qualification can attribute the eliminated temporary I/O without
+changing the partition algorithm or protocol semantics. Setting
+`EMUFLOW_PATRON_INPUT_COPY` explicitly retains an atomically published text
+copy for differential debugging. Text formatting and parsing still scale with
+the model; a direct typed native store/protocol remains future work.
 Production clustering now consumes compact EmuIR through ordered integer
 SQLite cursors. It keeps only a four-byte original-to-lexical cell permutation,
 compact union-find arrays and the final cluster records; it no longer decodes a
