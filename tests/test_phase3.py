@@ -143,6 +143,27 @@ class Phase3Test(unittest.TestCase):
             "pass",
         )
 
+    def test_compact_default_constraints_skip_instance_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            ir_path = Path(temporary_directory) / "design.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            compact_ir = load_partition_ir(ir_path)
+            with patch(
+                "emuflow.partition_ir._CompactPartitionInstances.__iter__",
+                side_effect=AssertionError(
+                    "default constraints must not scan every instance"
+                ),
+            ):
+                constraints = normalize_partition_constraints(
+                    None,
+                    compact_ir,
+                    self.platform,
+                    min_used_fpgas=2,
+                )
+        self.assertEqual(constraints["groups"], [])
+        self.assertEqual(constraints["fixed"], [])
+        self.assertEqual(constraints["active_fpgas"], ["fpga0", "fpga1"])
+
     def test_compact_cluster_builder_rejects_invalid_endpoint_owner(self) -> None:
         constraints = normalize_partition_constraints(
             None, self.ir, self.platform

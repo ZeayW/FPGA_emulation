@@ -112,6 +112,31 @@ def _compact_partition_ir_path(ir: Any) -> Optional[Path]:
     return ir.path if isinstance(ir, CompactPartitionIR) else None
 
 
+def _ordered_partition_instance_ids(ir: Any) -> List[str]:
+    """Return instance identities without decoding compact cell payloads."""
+
+    path = _compact_partition_ir_path(ir)
+    if path is None:
+        return sorted(instance["id"] for instance in ir.value["instances"])
+
+    from .emuir_storage import open_emuir_sqlite_read_only
+
+    expected = len(ir.value["instances"])
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        instance_ids = [
+            row["id"]
+            for row in connection.execute(
+                "SELECT id FROM cell_records ORDER BY id"
+            )
+        ]
+    finally:
+        connection.close()
+    if len(instance_ids) != expected:
+        raise ValidationError("compact EmuIR cell identity set is incomplete")
+    return instance_ids
+
+
 def _build_clusters_from_compact_ir(
     ir: Any,
     constraints: Mapping[str, Any],
@@ -381,8 +406,21 @@ def normalize_partition_constraints(
             f"{PARTITION_CONSTRAINTS_SCHEMA!r}, got {raw.get('schema')!r}"
         )
 
-    instance_ids = sorted(instance["id"] for instance in ir.value["instances"])
-    instance_set = set(instance_ids)
+    # Most production runs have no instance-level group or fixed constraints.
+    # Do not build and then destroy a million-entry Python list plus set in
+    # that common case.  On compact EmuIR, the uncommon constrained path reads
+    # only the indexed identity column instead of decoding resource payloads.
+    instance_ids: Optional[List[str]] = None
+    instance_set: Optional[Set[str]] = None
+
+    def instance_catalog() -> Tuple[List[str], Set[str]]:
+        nonlocal instance_ids, instance_set
+        if instance_ids is None:
+            instance_ids = _ordered_partition_instance_ids(ir)
+            instance_set = set(instance_ids)
+        assert instance_set is not None
+        return instance_ids, instance_set
+
     fpga_ids = {fpga.id for fpga in platform.fpgas}
 
     raw_groups = raw.get("groups", [])
@@ -415,7 +453,8 @@ def normalize_partition_constraints(
             raise ValidationError(
                 f"constraints.groups[{index}].patterns: expected an array"
             )
-        unknown = sorted(set(raw_instances) - instance_set)
+        all_instance_ids, known_instance_ids = instance_catalog()
+        unknown = sorted(set(raw_instances) - known_instance_ids)
         if unknown:
             raise ValidationError(
                 f"constraints.groups[{index}].instances: unknown instances {unknown}"
@@ -424,7 +463,7 @@ def normalize_partition_constraints(
         expanded.update(
             _expand_instance_patterns(
                 raw_patterns,
-                instance_ids,
+                all_instance_ids,
                 f"constraints.groups[{index}].patterns",
             )
         )
@@ -461,7 +500,8 @@ def normalize_partition_constraints(
             raise ValidationError(
                 f"constraints.fixed[{index}].patterns: expected an array"
             )
-        unknown = sorted(set(raw_instances) - instance_set)
+        all_instance_ids, known_instance_ids = instance_catalog()
+        unknown = sorted(set(raw_instances) - known_instance_ids)
         if unknown:
             raise ValidationError(
                 f"constraints.fixed[{index}].instances: unknown instances {unknown}"
@@ -470,7 +510,7 @@ def normalize_partition_constraints(
         expanded.update(
             _expand_instance_patterns(
                 raw_patterns,
-                instance_ids,
+                all_instance_ids,
                 f"constraints.fixed[{index}].patterns",
             )
         )
