@@ -393,13 +393,103 @@ struct Evaluation {
   long long capacity_excess_bits = 0;
 };
 
+class ProxyNetPayload {
+ public:
+  void add_transition(const Transition& transition) {
+    require(!finished_ &&
+                transitions_ < std::numeric_limits<std::uint32_t>::max(),
+            "invalid PATRON proxy-net transition count");
+    values_.push_back(transition.source);
+    values_.push_back(transition.sink);
+    values_.push_back(transition.sink_clusters);
+    ++transitions_;
+  }
+
+  void finish(const std::map<int, int>& sink_counts,
+              const std::map<int, int>& domain_counts) {
+    require(!finished_ &&
+                sink_counts.size() <=
+                    std::numeric_limits<std::uint32_t>::max() &&
+                domain_counts.size() <=
+                    std::numeric_limits<std::uint32_t>::max(),
+            "invalid PATRON proxy-net payload");
+    sinks_ = static_cast<std::uint32_t>(sink_counts.size());
+    domains_ = static_cast<std::uint32_t>(domain_counts.size());
+    for (const auto& item : sink_counts) {
+      values_.push_back(item.first);
+      values_.push_back(item.second);
+    }
+    for (const auto& item : domain_counts) {
+      values_.push_back(item.first);
+      values_.push_back(item.second);
+    }
+    finished_ = true;
+  }
+
+  template <typename Callback>
+  void for_each_transition(Callback callback) const {
+    require(finished_, "PATRON proxy-net payload is not finalized");
+    for (std::uint32_t index = 0; index < transitions_; ++index) {
+      const std::size_t offset = static_cast<std::size_t>(index) * 3;
+      callback(Transition{
+          values_[offset], values_[offset + 1], values_[offset + 2]});
+    }
+  }
+
+  template <typename Callback>
+  void for_each_domain(Callback callback) const {
+    require(finished_, "PATRON proxy-net payload is not finalized");
+    const std::size_t begin =
+        static_cast<std::size_t>(transitions_) * 3 +
+        static_cast<std::size_t>(sinks_) * 2;
+    for (std::uint32_t index = 0; index < domains_; ++index) {
+      const std::size_t offset = begin + static_cast<std::size_t>(index) * 2;
+      callback(values_[offset], values_[offset + 1]);
+    }
+  }
+
+  int sink_count(int part) const {
+    return lookup(part, static_cast<std::size_t>(transitions_) * 3, sinks_);
+  }
+
+  int domain_count(int domain) const {
+    const std::size_t begin =
+        static_cast<std::size_t>(transitions_) * 3 +
+        static_cast<std::size_t>(sinks_) * 2;
+    return lookup(domain, begin, domains_);
+  }
+
+ private:
+  int lookup(int key, std::size_t begin, std::uint32_t count) const {
+    require(finished_, "PATRON proxy-net payload is not finalized");
+    std::size_t low = 0;
+    std::size_t high = count;
+    while (low < high) {
+      const std::size_t middle = low + (high - low) / 2;
+      const int candidate = values_[begin + middle * 2];
+      if (candidate < key) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+    return low < count && values_[begin + low * 2] == key
+               ? values_[begin + low * 2 + 1]
+               : 0;
+  }
+
+  std::vector<int> values_;
+  std::uint32_t transitions_ = 0;
+  std::uint32_t sinks_ = 0;
+  std::uint32_t domains_ = 0;
+  bool finished_ = false;
+};
+
 struct ProxyNetState {
   bool feasible = true;
   double delay_ns = 0.0;
   std::pair<int, int> worst_transition = {-1, -1};
-  std::vector<Transition> transitions;
-  std::vector<std::pair<int, int>> sink_counts;
-  std::vector<std::pair<int, int>> domain_counts;
+  ProxyNetPayload payload;
   long long hops = 0;
   long long cuts = 0;
 };
@@ -1658,7 +1748,7 @@ ProxyNetState build_proxy_net(const Model& model,
         ++domain_counts[arc.domain];
       }
       const std::pair<int, int> transition = {source, sink};
-      state.transitions.push_back(
+      state.payload.add_transition(
           Transition{source, sink, sink_item.second});
       if (delay > state.delay_ns
           || (std::abs(delay - state.delay_ns) <= 1.0e-12
@@ -1671,8 +1761,7 @@ ProxyNetState build_proxy_net(const Model& model,
       ++state.cuts;
     }
   }
-  state.sink_counts.assign(sink_counts.begin(), sink_counts.end());
-  state.domain_counts.assign(domain_counts.begin(), domain_counts.end());
+  state.payload.finish(sink_counts, domain_counts);
   return state;
 }
 
@@ -1696,12 +1785,7 @@ const ProxyNetState& selected_proxy_net(
 }
 
 int proxy_sink_count(const ProxyNetState& state, int part) {
-  const auto item = std::lower_bound(
-      state.sink_counts.begin(), state.sink_counts.end(),
-      std::make_pair(part, std::numeric_limits<int>::min()));
-  return item != state.sink_counts.end() && item->first == part
-             ? item->second
-             : 0;
+  return state.payload.sink_count(part);
 }
 
 ProxyPathState build_proxy_path(
@@ -1770,7 +1854,7 @@ ProxyPathState build_proxy_path(
       long long worst_hops = 0;
       long long worst_ratio_sum = 0;
       std::pair<int, int> worst = {-1, -1};
-      for (const auto& transition : net_state.transitions) {
+      net_state.payload.for_each_transition([&](const Transition& transition) {
         const Route& route = model.route[transition.source][transition.sink];
         const double delay = predicted_transition_delay(
             model, route, ratios, transition.sink_clusters);
@@ -1791,7 +1875,7 @@ ProxyPathState build_proxy_path(
                 worst_ratio_sum, static_cast<long long>(ratios[arc.domain]));
           }
         }
-      }
+      });
       transport += worst_delay;
       path_hops += worst_hops;
       path_ratio_sum += worst_ratio_sum;
@@ -1909,9 +1993,8 @@ ProxyState build_proxy_state(
   for (int net = 0; net < model.nets; ++net) {
     state.net[net] = build_proxy_net(model, state.assignment, net);
     require(state.net[net].feasible, "initial scalable net is infeasible");
-    for (const auto& item : state.net[net].domain_counts) {
-      state.domain_load[item.first] += item.second;
-    }
+    state.net[net].payload.for_each_domain(
+        [&](int domain, int count) { state.domain_load[domain] += count; });
     state.hops += state.net[net].hops;
     state.cuts += state.net[net].cuts;
   }
@@ -2142,12 +2225,7 @@ std::vector<int> diagnose_flow_corridors(
     }
     std::set<int> boundary_set;
     for (int net = 0; net < model.nets; ++net) {
-      const auto domain = std::lower_bound(
-          state.net[net].domain_counts.begin(),
-          state.net[net].domain_counts.end(),
-          std::make_pair(cover_domain, std::numeric_limits<int>::min()));
-      if (domain == state.net[net].domain_counts.end()
-          || domain->first != cover_domain) {
+      if (state.net[net].payload.domain_count(cover_domain) == 0) {
         continue;
       }
       for (int cluster : model.net[net].drivers) {
@@ -3372,12 +3450,14 @@ std::vector<int> diagnose_flow_corridors(
                 parametric_routes = false;
                 break;
               }
-              for (const auto& domain : state.net[net].domain_counts) {
-                parametric_domain_load[domain.first] -= domain.second;
-              }
-              for (const auto& domain : replacement.domain_counts) {
-                parametric_domain_load[domain.first] += domain.second;
-              }
+              state.net[net].payload.for_each_domain(
+                  [&](int domain, int count) {
+                    parametric_domain_load[domain] -= count;
+                  });
+              replacement.payload.for_each_domain(
+                  [&](int domain, int count) {
+                    parametric_domain_load[domain] += count;
+                  });
               parametric_hops += replacement.hops - state.net[net].hops;
               parametric_cuts += replacement.cuts - state.net[net].cuts;
             }
@@ -4013,12 +4093,10 @@ ProxyDelta evaluate_proxy_changes(
     delta.nets.emplace(net, std::move(replacement));
   }
   for (const auto& item : delta.nets) {
-    for (const auto& domain : state.net[item.first].domain_counts) {
-      delta.domain_delta[domain.first] -= domain.second;
-    }
-    for (const auto& domain : item.second.domain_counts) {
-      delta.domain_delta[domain.first] += domain.second;
-    }
+    state.net[item.first].payload.for_each_domain(
+        [&](int domain, int count) { delta.domain_delta[domain] -= count; });
+    item.second.payload.for_each_domain(
+        [&](int domain, int count) { delta.domain_delta[domain] += count; });
   }
   for (auto item = delta.domain_delta.begin(); item != delta.domain_delta.end();) {
     if (item->second == 0) {
@@ -5476,22 +5554,24 @@ void run_scalable(const Model& model,
           feasible.evaluation.ranked[3] - state.evaluation.ranked[3]});
     };
     for (int net = 0; net < model.nets; ++net) {
-      for (const Transition& transition : state.net[net].transitions) {
-        const Route& route = model.route[transition.source][transition.sink];
-        const bool uses_cover_domain = std::any_of(
-            route.arcs.begin(), route.arcs.end(), [&](const Arc& arc) {
-              return arc.domain == cover_domain;
-            });
-        if (!uses_cover_domain) {
-          continue;
-        }
-        evaluate_cover_group(model.net[net].sinks,
-                             transition.sink,
-                             transition.source);
-        evaluate_cover_group(model.net[net].drivers,
-                             transition.source,
-                             transition.sink);
-      }
+      state.net[net].payload.for_each_transition(
+          [&](const Transition& transition) {
+            const Route& route =
+                model.route[transition.source][transition.sink];
+            const bool uses_cover_domain = std::any_of(
+                route.arcs.begin(), route.arcs.end(), [&](const Arc& arc) {
+                  return arc.domain == cover_domain;
+                });
+            if (!uses_cover_domain) {
+              return;
+            }
+            evaluate_cover_group(model.net[net].sinks,
+                                 transition.sink,
+                                 transition.source);
+            evaluate_cover_group(model.net[net].drivers,
+                                 transition.source,
+                                 transition.sink);
+          });
     }
     std::cerr << "PATRON_COVER_GROUP_INPUT options="
               << cover_transition_options

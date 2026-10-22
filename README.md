@@ -83,12 +83,17 @@ overlay with the unchanged vector and preserves every tie-break. Domain-to-path
 membership uses the same model: one initial sorted vector per domain plus
 sparse accepted-move additions and removals. A path's sorted dependency-domain
 set occupies one 64-bit mask for the common small-domain case; designs with 64
-or more domain ordinals retain a checked vector fallback. On a
-500,000-cluster/net/path typed fixture, the complete representation changes
-reduced three-run median native time from 1.090 to 0.609 seconds and peak RSS
-from 769,146,880 to 449,052,672 bytes (-41.6%), with byte-identical output.
-ProxyNet dynamic vector payloads still scale with the graph and remain Phase 3
-memory work. This is adapter evidence, not NVDLA qualification.
+or more domain ordinals retain a checked vector fallback. Each ProxyNet now
+packs transitions, sink counts and domain counts into one integer payload,
+replacing three separately allocated dynamic containers while preserving
+sorted lookup and iteration semantics. On the same
+500,000-cluster/net/path typed fixture, a direct three-run A/B against the
+immediately preceding binary reduced maximum RSS from 448,577,536 to
+400,588,800 bytes (-10.7%); median native time was 0.66 versus 0.67 seconds and
+output was byte-identical. Relative to the original representation baseline,
+peak RSS has fallen from 769,146,880 to 400,588,800 bytes (-47.9%). The packed
+ProxyNet values still scale with graph content. This is adapter evidence, not
+NVDLA qualification.
 Production clustering now consumes compact EmuIR through ordered integer
 SQLite cursors. It keeps only a four-byte original-to-lexical cell permutation,
 compact union-find arrays and the final cluster records; it no longer decodes a
