@@ -147,8 +147,8 @@ def _tritonpart_ubfactor_percent_points(
     contract specifies only per-resource upper bounds, so its implicit lower
     bound must not exclude legal assignments either. Infer a partition's lowest
     feasible share from the other partitions' upper bounds. The exported scalar
-    is used for the legacy evaluation interface only. Native partitioning uses
-    the independent absolute resource bounds, also checked after parsing.
+    is retained for scalar-only interfaces. Native partitioning and evaluation
+    use the independent absolute bounds, also checked after parsing.
     """
     margin = 0.0
     for field, total in totals.items():
@@ -842,25 +842,12 @@ def run_tritonpart(
             )
             shutil.copyfile(provider_solution_path, attempt_solution)
         raw_used_fpgas = len(set(candidate.values()))
-        repair_moves: List[Dict[str, Any]] = []
-        if (
-            repair_min_used_fpgas
-            and len(set(candidate.values())) < constraints["min_used_fpgas"]
-        ):
-            candidate, repair_moves = _repair_min_used_fpgas(
-                candidate,
-                clusters_artifact,
-                platform,
-                constraints,
-                tritonpart_input["hyperedges"],
-            )
-        used_fpgas = len(set(candidate.values()))
         attempt: Dict[str, Any] = {
             "mode": spec["mode"],
             "seed": attempt_seed,
             "raw_used_fpgas": raw_used_fpgas,
-            "used_fpgas": used_fpgas,
-            "repair_moves": repair_moves,
+            "used_fpgas": raw_used_fpgas,
+            "repair_moves": [],
             "solution": (
                 attempt_solution.name
                 if attempt_solution is not None
@@ -868,28 +855,42 @@ def run_tritonpart(
             ),
             "log": log_path.name if log_path is not None else None,
         }
-        if used_fpgas < constraints["min_used_fpgas"]:
-            attempt["accepted"] = False
-            attempt["rejection"] = "min_used_fpgas"
-            attempts.append(attempt)
-            continue
-        try:
-            attempt["balance_validation"] = (
-                validate_cluster_assignment_balance(
-                    platform,
-                    clusters_artifact["clusters"],
-                    candidate,
-                    constraints["balance_tolerance"],
-                    constraints.get("balance_tolerance_by_dimension", {}),
-                    constraints.get("active_fpgas"),
-                    constraints.get("balance_dimensions", ()),
-                    constraints.get("resource_reservations_by_fpga", {}),
-                )
+
+        def validate_candidate(value: Mapping[str, str]) -> Dict[str, Any]:
+            return validate_cluster_assignment_balance(
+                platform,
+                clusters_artifact["clusters"],
+                value,
+                constraints["balance_tolerance"],
+                constraints.get("balance_tolerance_by_dimension", {}),
+                constraints.get("active_fpgas"),
+                constraints.get("balance_dimensions", ()),
+                constraints.get("resource_reservations_by_fpga", {}),
             )
+
+        # Occupancy repair is not allowed to rescue an illegal resource load.
+        # Validate the untouched native assignment before any postprocessing.
+        repair_moves: List[Dict[str, Any]] = []
+        try:
+            attempt["balance_validation"] = validate_candidate(candidate)
+            if repair_min_used_fpgas and raw_used_fpgas < constraints["min_used_fpgas"]:
+                candidate, repair_moves = _repair_min_used_fpgas(
+                    candidate, clusters_artifact, platform, constraints,
+                    tritonpart_input["hyperedges"],
+                )
+                attempt["balance_validation"] = validate_candidate(candidate)
         except ValidationError as error:
             attempt["accepted"] = False
             attempt["rejection"] = "multi_resource_balance"
             attempt["error"] = str(error)
+            attempts.append(attempt)
+            continue
+        used_fpgas = len(set(candidate.values()))
+        attempt["used_fpgas"] = used_fpgas
+        attempt["repair_moves"] = repair_moves
+        if used_fpgas < constraints["min_used_fpgas"]:
+            attempt["accepted"] = False
+            attempt["rejection"] = "min_used_fpgas"
             attempts.append(attempt)
             continue
 
@@ -912,7 +913,9 @@ def run_tritonpart(
             selected_attempt_mode = spec["mode"]
             selected_log = log_path
             selected_solution_path = (
-                attempt_solution if attempt_solution is not None else provider_solution_path
+                attempt_solution
+                if attempt_solution is not None
+                else provider_solution_path
             )
             selected_repair_moves = repair_moves
             selected_timing_cut_summary = {

@@ -38,8 +38,7 @@ class TritonPartTest(unittest.TestCase):
 
 
     def test_illegal_native_assignment_is_rejected_without_mutation(self):
-        constraints = {**self.constraints, "balance_dimensions": ["cells", "lut", "ff"],
-                       "min_used_fpgas": 1}
+        constraints = {**self.constraints, "balance_dimensions": ["cells", "lut", "ff"]}
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = "0\n" * len(self.clusters["clusters"])
@@ -48,7 +47,7 @@ class TritonPartTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "multi_resource_balance"):
                 run_tritonpart(self.ir, self.platform, self.clusters, constraints,
                                root / "run", seed=1, solution_input=solution,
-                               repair_min_used_fpgas=False)
+                               repair_min_used_fpgas=True)
             self.assertEqual(solution.read_text(), original)
             self.assertEqual((root / "run/partition.hgr.part.2").read_text(), original)
             self.assertFalse(list((root / "run").glob("*repaired*")))

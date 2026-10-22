@@ -83,8 +83,9 @@ partition, with `lower upper` pairs in hMetis vertex-weight dimension order.
 EmuFlow exports zero lower bounds because its contract limits maximum loads;
 minimum occupancy is checked separately. This represents capacity-only rare
 resources, explicitly balanced dimensions, and transport reservations without
-relaxing unrelated dimensions through a scalar UBfactor. The scalar remains an
-envelope for the upstream evaluation interface.
+relaxing unrelated dimensions through a scalar UBfactor. The scalar remains a
+compatibility envelope; the absolute bounds override it throughout solving and
+final evaluation.
 
 Coarsening, FM moves, initialization selection, and final acceptance check every
 resource independently, including equality at a bound and zero-weight resources.

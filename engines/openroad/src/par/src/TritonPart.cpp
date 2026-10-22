@@ -2065,13 +2065,9 @@ void TritonPart::MultiLevelPartition()
 
   // evaluate on the original hypergraph
   // tritonpart_evaluator->CutEvaluator(original_hypergraph_, solution_, true);
-  const auto final_token =
-      tritonpart_evaluator->CutEvaluator(original_hypergraph_, solution_, true);
-  if (!ResourceBalanced(final_token.block_balance, lower_block_balance,
-                        upper_block_balance) ||
-      !tritonpart_evaluator->ConstraintAndCutEvaluator(
+  if (!tritonpart_evaluator->ConstraintAndCutEvaluator(
           original_hypergraph_, solution_, ub_factor_, base_balance_,
-          group_attr_, false)) {
+          group_attr_, true, upper_block_balance, lower_block_balance)) {
     logger_->error(
         PAR, 1004,
         "No legal partition: refusing to write an invalid solution.");

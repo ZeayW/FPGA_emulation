@@ -201,7 +201,9 @@ class GoldenEvaluator
       float ub_factor,
       const std::vector<float>& base_balance,
       const std::vector<std::vector<int>>& group_attr,
-      bool print_flag = false) const;
+      bool print_flag = false,
+      const Matrix<float>& upper_bounds = {},
+      const Matrix<float>& lower_bounds = {}) const;
 
   // hgraph will be updated here
   // For timing-driven flow,
