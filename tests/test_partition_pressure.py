@@ -1010,6 +1010,36 @@ class PartitionPressureTest(unittest.TestCase):
                     "u2/O->u3/I#00000001",
                 },
             )
+            compact_ir_path = root / "ir.emuir.sqlite"
+            write_compact_emuir(compact_ir_path, self.ir.to_dict())
+            with patch(
+                "emuflow.partition_pressure.iter_sta_path_database_paths",
+                side_effect=AssertionError(
+                    "indexed compact pressure construction decoded paths"
+                ),
+            ):
+                compact_model = build_partition_pressure_model(
+                    load_partition_ir(compact_ir_path),
+                    self.platform,
+                    self.clusters,
+                    self.constraints,
+                    manifest,
+                    self.route_constraints,
+                    independent_validation=True,
+                    timing_database_path=database_path,
+                )
+            self.assertIsInstance(
+                compact_model["paths"], _PackedPressurePathSequence
+            )
+            self.assertTrue(compact_model["paths"].indexed_sql_projection)
+            compact_logical = dict(compact_model)
+            reference_logical = dict(model)
+            compact_logical.pop("sources")
+            reference_logical.pop("sources")
+            for field in ("clusters", "nets", "paths"):
+                compact_logical[field] = list(compact_model[field])
+                reference_logical[field] = list(model[field])
+            self.assertEqual(compact_logical, reference_logical)
 
     def test_frozen_assignment_rebase_reuses_identical_clusters(self) -> None:
         with patch(
@@ -2331,6 +2361,9 @@ class PartitionPressureTest(unittest.TestCase):
             )
             self.assertGreater(
                 observations["pressure_compact_path_payload_bytes"], 0
+            )
+            self.assertEqual(
+                observations["pressure_indexed_sql_projection"], 0
             )
             self.assertNotIn("pressure_model_payload_bytes", observations)
             baseline = promote_patron_baseline(

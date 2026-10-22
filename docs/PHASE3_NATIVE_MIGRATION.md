@@ -28,14 +28,41 @@ The implementation status at this revision is:
 | W6 global STA stitching | **Started** | OpenSTA remains the numerical engine, indexed timing readers exist, and Phase 7C no longer expands the whole ScheduleStore before binding. Measurement TSV import validates endpoint order and arc equations in one pass. Production event/check construction now appends interned strings and fixed-width columns to `_IndexedEventChecks`, validates target/runtime and TX/commit coverage online, and creates representative indices without a second complete compression scan. Original-path metadata is a sorted, interned, fixed-width mapping instead of one nested dictionary per path. Canonical report stitching consumes one path bundle at a time. OpenSTA measurement import stores only three fixed-width double columns and reuses the typed check identities. Representative membership uses a fixed-width integer map and exposes original-check measurements through a repeatable lazy sequence, so stitching and TSV publication no longer allocate object/arc lists or a second dictionary list for all expanded checks. A 200,000-row comparison reduced retained traced result allocation from 73,624,528 to 5,205,354 bytes and process peak RSS from 188,334,080 to 83,722,240 bytes; the typed scalar payload is 4,800,000 bytes. Final OpenSTA stitching now stores five fixed-width result columns over the existing path metadata and computes WNS/TNS with bounded compensated partials. Phase 7C publishes the authoritative rows in a content-addressed typed QoR owner, while `qor_report.json` is a bounded selector and compatibility reads reconstruct the unchanged logical report explicitly. On 100,000 paths, result construction reduced traced peak from 69,804,657 to 4,112,523 bytes and process peak RSS from 263,176,192 to 150,814,720 bytes; the build took 1.31 versus 0.56 seconds. The selector plus typed owner used 8,983,131 bytes versus 45,900,216 bytes for the former JSON and took 1.79 versus 0.68 seconds including fsync and validation. Logic-segment producers now write a content-addressed typed store directly; selectors and physical summary bind route, schedule and Phase 3 logical seals. Boundary identities, boundary timing and local-path timing are leased typed stores, and physical-summary readers resolve each FPGA lazily. A leased bounded multi-FPGA ordered merge validates global segment/path-key uniqueness and supplies Global STA/system timing without the former `path -> member -> segments` tree or per-member/per-FPGA queries. Archive retention follows the complete summary/selector/store group. Logic-segment query preparation now spools ordered rows on disk and atomically publishes the query with its content-addressed identity selector. Measurement import streams into a temporary typed relation, proves exact coverage and equations with set joins, and writes the final timing store directly without per-row identity queries. Interleaved legacy input remains a checked compatibility fallback and WNS/TNS still count every original path once. Local-path timing producers now publish ordered typed rows directly, and validation projects identity fields through a repeatable lazy sequence while accumulating statistics in one pass. A 100,000-path typed-owner comparison reduced process peak RSS from 251,887,616 to 32,653,312 bytes and artifact bytes from 30 MiB to 24 MiB, while read and full seal validation changed from 0.73 to 0.90 seconds. | String interning, path IDs and representative identity tables remain linear in unique checks/paths, and the legacy interleaved fallback still requires graph-sized Python work. Compatibility callers that use generic `read_json` intentionally reconstruct the full logical path list; production summary consumers must use the leased QoR view. Other per-FPGA evidence remains to migrate. NVDLA Phase 7C wall/RSS/I/O qualification remains required. |
 | W7 native production entry | **Started** | The installed `emuflow-native` executable now dispatches the real Phase 3 Static Exact analyzer, Phase 4 TLR router, Phase 5 exact scheduler and Phase 6 Chimew signal-grouping, position-refinement, RUDY and bank/channel assignment kernels in-process through one linked stage library. All seven production adapters resolve the unified entry directly without requiring a redundant standalone executable; explicit comparison overrides remain standalone, and older installs fall back to them. Differential checks require byte-identical output. | There is no complete `emuflow-native compile` path yet. Phase 1/2/4/6/7 orchestration remains in Python, and Python production memory can still scale with routes, endpoints, and timing paths. Move stage ownership into this entry incrementally rather than delegating `compile` back to the Python CLI. |
 
-The October 22 gap review changes the implementation order. The next primary
-work is the remaining Phase 3 provider-candidate ownership and native
-analyzer graph working set, followed by typed Global STA query/result stitching. W0 and W7
-then establish the real shared compile/stage boundary needed to retire the
-remaining Python data plane. Phase 5 terminal compatibility, Phase 6
-qualification maps and Phase 7 exporter maps follow those structural gaps.
-Further local OpenPARF staging-store cleanup is deferred unless NVDLA stage
-profiling shows it on the critical path.
+An October 23 live-process sample corrected the immediate Phase 3 diagnosis.
+Two still-running NVDLA PATRON jobs at earlier series commits (`68958333` and
+`5be3f127`) had elapsed 1:21:34 and 1:34:16 with 99.5--99.7% CPU. Their Python
+high-water RSS was 7,974,808 and 8,076,304 KiB rather than the former 42.7 GiB,
+but each process had only the 1,209,520,128-byte indexed TimingPathDB open.
+Over ten seconds its SQLite file position advanced about 1.20 MB and 0.24 MB,
+with no additional writes. This is live hotspot evidence, not terminal or
+exact-HEAD qualification: retained-memory work has succeeded, while the
+TimingPathDB-to-pressure projection remained CPU-bound.
+
+Production compact construction now attaches TimingPathDB v3 read-only to the
+compact EmuIR connection and uses ordered SQLite joins to resolve path nets and
+launch/capture instances directly to fixed-width source-net, pressure-net and
+cluster ordinals. It avoids a Python dictionary per timing path and two UTF-8
+binary searches per path-net incidence. On a same-input synthetic case with
+100,000 paths, 800,000 incidences and 20,000 compact nets, the old adapter took
+7.31 seconds and the joined adapter took 1.68 seconds (-77.0%). Both emitted an
+identical 17,560,024-byte packed path payload; process peak RSS remained in the
+same roughly 78--90 MB range. The runtime report records
+`pressure_indexed_sql_projection=1`, so the next NVDLA replay can prove that it
+exercised this path.
+
+The October 22 gap review changes the implementation order. Exact-HEAD NVDLA
+profiling now gates the remaining Phase 3 provider/native-model work. The next
+structural boundary is Phase 4: its C++ search still receives a complete
+Python-built demand/path model through text and Python reconstructs all native
+route/candidate output before RouteStore publication. Typed Global STA binding
+then removes the upstream `route_paths`/`scheduled_hops` object graph that is
+still built before the packed check writers. Direct native ScheduleStore
+publication follows. W0 grows only to support these concrete boundaries, and
+W7 becomes the final production-entry consolidation rather than an early
+wrapper milestone. Phase 6 qualification maps and the remaining Phase 7
+exporter maps follow those structural gaps. Further local OpenPARF
+staging-store cleanup is deferred unless NVDLA stage profiling shows it on the
+critical path.
 
 The TritonPart initializer now preserves compact Phase 3 ownership through
 input construction. Canonical cluster order and vertex weights are lazy views

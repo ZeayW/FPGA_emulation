@@ -258,7 +258,16 @@ characterization now reads ordered integer endpoints, deduplicates arcs in a
 temporary relation and runs SCC over fixed-width CSR. PATRON pressure-model
 construction likewise reads the compact EmuIR store through ordered joins,
 interns UTF-8 identities once, and keeps cluster/net membership and driver/sink
-relations in ordinal arrays. Native PATRON input is written record by record
+relations in ordinal arrays. Indexed TimingPathDB v3 construction now attaches
+the sealed path database read-only to the compact EmuIR connection and joins
+path-net plus launch/capture identities directly to those ordinal domains. It
+does not decode one Python path dictionary or perform two UTF-8 binary searches
+per path-net incidence. On 100,000 paths with 800,000 path-net incidences and
+20,000 compact nets, a same-input comparison reduced pressure-model
+construction from 7.31 to 1.68 seconds (-77.0%) while producing the same
+17,560,024-byte packed path payload. Process peak RSS remained in the same
+78--90 MB range; this is adapter evidence pending an exact-HEAD NVDLA replay.
+Native PATRON input is written record by record
 through a synchronized same-directory temporary file; the previous `lines`
 plus `join` copy is gone. Its strict reader checks logical schema, ownership,
 bit ordinals, endpoint order and counts before any native search. Native

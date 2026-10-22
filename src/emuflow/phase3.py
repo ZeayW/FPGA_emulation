@@ -789,7 +789,16 @@ def run_phase3(
             phase3_runtime_observe(
                 pressure_compact_path_payload_bytes=(
                     model["paths"].payload_bytes
-                )
+                ),
+                pressure_indexed_sql_projection=int(
+                    bool(
+                        getattr(
+                            model["paths"],
+                            "indexed_sql_projection",
+                            False,
+                        )
+                    )
+                ),
             )
         patron_physical_feedback = None
         patron_physical_feedback_validation = None

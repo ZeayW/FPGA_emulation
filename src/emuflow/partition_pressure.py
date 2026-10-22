@@ -61,6 +61,7 @@ from .sta import (
     _normalized_slack,
     _validate_database_normalization,
     iter_sta_path_database_paths,
+    sta_path_database_payload_path,
 )
 
 
@@ -616,6 +617,7 @@ class _PackedPressurePathSequence(list):
         self._transition_models = bytearray()
         self._start_clusters = array("q")
         self._end_clusters = array("q")
+        self.indexed_sql_projection = False
 
     @staticmethod
     def _append_string(
@@ -1179,12 +1181,16 @@ def _net_records(
 def _compact_partition_pressure_graph(
     ir: Any,
     clusters_artifact: Mapping[str, Any],
+    *,
+    timing_database_path: Optional[Path] = None,
+    timing_database: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[
     _PackedStringOrdinalIndex,
     _PackedStringOrdinalIndex,
     _PackedStringOrdinalIndex,
     _PackedPressureNetSequence,
     _PackedPressureClusterSequence,
+    Optional[_PackedPressurePathSequence],
 ]:
     """Build pressure facts by ordered joins over a compact EmuIR store.
 
@@ -1202,6 +1208,24 @@ def _compact_partition_pressure_graph(
     raw_clusters = clusters_artifact.get("clusters")
     if not isinstance(raw_clusters, list):
         raise ValidationError("partition pressure clusters are invalid")
+    timing_payloads = (
+        timing_database.get("payloads")
+        if isinstance(timing_database, Mapping)
+        else None
+    )
+    timing_descriptor = (
+        timing_payloads.get("paths")
+        if isinstance(timing_payloads, Mapping)
+        else None
+    )
+    indexed_timing = (
+        timing_database_path is not None
+        and isinstance(timing_database, Mapping)
+        and timing_database.get("schema") == STA_PATH_DATABASE_INDEX_SCHEMA
+        and isinstance(timing_descriptor, Mapping)
+        and timing_descriptor.get("format")
+        == STA_PATH_DATABASE_SQLITE_FORMAT
+    )
     connection = open_emuir_sqlite_read_only(ir.path)
     try:
         connection.execute("PRAGMA temp_store=FILE")
@@ -1474,9 +1498,56 @@ def _compact_partition_pressure_graph(
             transported_cut_classes_for_clusters(clusters_artifact)
         )
         placeholders = ",".join("?" for _ in transported)
-        rows = connection.execute(
-            f"""SELECT n.id,n.cut_class,e.role,m.cluster_ordinal,
-                       pc.cluster_id
+        if indexed_timing:
+            connection.execute(
+                "CREATE TEMP TABLE pressure_net_lookup("
+                "net_id TEXT PRIMARY KEY,"
+                "pressure_ordinal INTEGER NOT NULL UNIQUE,"
+                "single_driver INTEGER NOT NULL) WITHOUT ROWID"
+            )
+            connection.execute(
+                f"""INSERT INTO pressure_net_lookup
+                SELECT net_id,
+                       row_number() OVER (ORDER BY net_id)-1,
+                       CASE WHEN driver_clusters=1 THEN 1 ELSE 0 END
+                  FROM (
+                    SELECT n.id AS net_id,
+                           COUNT(DISTINCT CASE WHEN e.role=0
+                                              THEN m.cluster_ordinal END)
+                             AS driver_clusters,
+                           COUNT(DISTINCT CASE WHEN e.role=1
+                                              THEN m.cluster_ordinal END)
+                             AS sink_clusters
+                      FROM net_records n
+                      JOIN endpoint_records e ON e.net_seq=n.seq
+                      JOIN cell_records c ON c.seq=e.instance_seq
+                      JOIN pressure_cluster_members m ON m.instance_id=c.id
+                     WHERE n.cut_class IN ({placeholders})
+                     GROUP BY n.id
+                    HAVING COUNT(DISTINCT CASE WHEN e.role=0
+                                               THEN m.cluster_ordinal END)>0
+                       AND COUNT(DISTINCT CASE WHEN e.role=1
+                                               THEN m.cluster_ordinal END)>0
+                  ) ORDER BY net_id""",
+                transported,
+            )
+            pressure_query = f"""SELECT n.id,n.cut_class,e.role,
+                       m.cluster_ordinal,
+                       pc.cluster_id,q.pressure_ordinal
+                  FROM net_records n
+                  JOIN endpoint_records e ON e.net_seq=n.seq
+                  JOIN cell_records c ON c.seq=e.instance_seq
+                  JOIN pressure_cluster_members m ON m.instance_id=c.id
+                  JOIN pressure_clusters pc
+                    ON pc.cluster_ordinal=m.cluster_ordinal
+                  JOIN pressure_net_lookup q ON q.net_id=n.id
+                 WHERE n.cut_class IN ({placeholders})
+                 GROUP BY n.id,n.cut_class,e.role,m.cluster_ordinal,pc.cluster_id
+                 ORDER BY q.pressure_ordinal,e.role,pc.cluster_id"""
+        else:
+            pressure_query = f"""SELECT n.id,n.cut_class,e.role,
+                       m.cluster_ordinal,pc.cluster_id,
+                       NULL AS pressure_ordinal
                   FROM net_records n
                   JOIN endpoint_records e ON e.net_seq=n.seq
                   JOIN cell_records c ON c.seq=e.instance_seq
@@ -1485,17 +1556,24 @@ def _compact_partition_pressure_graph(
                     ON pc.cluster_ordinal=m.cluster_ordinal
                  WHERE n.cut_class IN ({placeholders})
                  GROUP BY n.id,n.cut_class,e.role,m.cluster_ordinal,pc.cluster_id
-                 ORDER BY n.id,e.role,pc.cluster_id""",
-            transported,
-        )
+                 ORDER BY n.id,e.role,pc.cluster_id"""
+        rows = connection.execute(pressure_query, transported)
         current_id: Optional[str] = None
         current_class: Optional[str] = None
+        current_ordinal: Optional[int] = None
         drivers = array("I")
         sinks = array("I")
 
         def finish() -> None:
             if current_id is not None and drivers and sinks:
                 assert current_class is not None
+                if (
+                    current_ordinal is not None
+                    and current_ordinal != len(pressure_nets)
+                ):
+                    raise ValidationError(
+                        "partition pressure net ordinal is invalid"
+                    )
                 pressure_nets.append_record(
                     current_id, current_class, drivers, sinks
                 )
@@ -1505,9 +1583,21 @@ def _compact_partition_pressure_graph(
                 finish()
                 current_id = row["id"]
                 current_class = row["cut_class"]
+                current_ordinal = (
+                    None
+                    if row["pressure_ordinal"] is None
+                    else int(row["pressure_ordinal"])
+                )
                 drivers = array("I")
                 sinks = array("I")
-            if row["cut_class"] != current_class or row["role"] not in (0, 1):
+            if (
+                row["cut_class"] != current_class
+                or (
+                    row["pressure_ordinal"] is not None
+                    and int(row["pressure_ordinal"]) != current_ordinal
+                )
+                or row["role"] not in (0, 1)
+            ):
                 raise ValidationError(
                     "compact EmuIR pressure net relation is corrupt"
                 )
@@ -1518,15 +1608,183 @@ def _compact_partition_pressure_graph(
         pressure_nets.construction_identity_bytes = (
             known_nets.payload_bytes + cluster_by_instance.payload_bytes
         )
+        indexed_paths: Optional[_PackedPressurePathSequence] = None
+        if indexed_timing:
+            assert timing_database_path is not None
+            assert isinstance(timing_database, Mapping)
+            assert isinstance(timing_descriptor, Mapping)
+            descriptor = timing_descriptor
+            payload_path = sta_path_database_payload_path(
+                timing_database_path, timing_database
+            )
+            if payload_path is None:
+                raise ValidationError(
+                    "indexed timing database has no SQLite payload"
+                )
+            expected_paths = descriptor.get("records")
+            if (
+                isinstance(expected_paths, bool)
+                or not isinstance(expected_paths, int)
+                or expected_paths <= 0
+            ):
+                raise ValidationError(
+                    "indexed timing database path count is invalid"
+                )
+            indexed_paths = _append_indexed_pressure_paths(
+                connection,
+                payload_path,
+                expected_paths,
+                known_nets,
+                pressure_nets,
+                cluster_records,
+            )
         return (
             known_nets,
             cluster_by_instance,
             native_cluster_identities,
             pressure_nets,
             cluster_records,
+            indexed_paths,
         )
     finally:
         connection.close()
+
+
+def _append_indexed_pressure_paths(
+    connection: sqlite3.Connection,
+    payload_path: Path,
+    expected_paths: int,
+    known_nets: _PackedStringOrdinalIndex,
+    pressure_nets: _PackedPressureNetSequence,
+    clusters: _PackedPressureClusterSequence,
+) -> _PackedPressurePathSequence:
+    """Project TimingPathDB rows onto packed pressure ordinals in SQL.
+
+    The former production path decoded every TimingPathDB row into a Python
+    dictionary, then performed two UTF-8 binary searches for every path/net
+    incidence.  NVDLA has millions of incidences, so that adapter consumed
+    more than an hour of one CPU even after the retained representation was
+    packed.  Keep the authoritative stores immutable, attach the indexed
+    timing payload read-only, and let SQLite join identities to the EmuIR and
+    pressure-net ordinal domains once.
+    """
+
+    alias = "pressure_timing"
+    uri = f"file:{payload_path.resolve()}?mode=ro&immutable=1"
+    try:
+        connection.execute(f"ATTACH DATABASE ? AS {alias}", (uri,))
+        version = connection.execute(
+            f"PRAGMA {alias}.user_version"
+        ).fetchone()[0]
+        if version != 1:
+            raise ValidationError(
+                "indexed timing database SQLite version is invalid"
+            )
+        paths = _PackedPressurePathSequence(
+            known_nets, pressure_nets, clusters
+        )
+        path_cursor = connection.execute(
+            f"""SELECT p.ordinal,p.path_id,p.clock_domain,
+                       p.clock_period_ns,p.slack_ns,
+                       launch.cluster_ordinal,capture.cluster_ordinal
+                  FROM {alias}.paths p
+                  LEFT JOIN pressure_cluster_members launch
+                    ON launch.instance_id=p.start_instance
+                  LEFT JOIN pressure_cluster_members capture
+                    ON capture.instance_id=p.end_instance
+                 ORDER BY p.ordinal"""
+        )
+        net_cursor = iter(connection.execute(
+            f"""SELECT pn.path_ordinal,pn.net_ordinal,n.seq,
+                       q.pressure_ordinal,q.single_driver,pn.net_id
+                  FROM {alias}.path_nets pn
+                  LEFT JOIN net_records n ON n.id=pn.net_id
+                  LEFT JOIN pressure_net_lookup q ON q.net_id=pn.net_id
+                 ORDER BY pn.path_ordinal,pn.net_ordinal"""
+        ))
+        net_row = next(net_cursor, None)
+        observed_paths = 0
+        for row in path_cursor:
+            ordinal = int(row[0])
+            if ordinal != observed_paths:
+                raise ValidationError(
+                    "indexed timing database path order is invalid"
+                )
+            identity = row[1]
+            period = _require_finite(
+                row[3], f"path {identity!r} period"
+            )
+            slack = _require_finite(
+                row[4], f"path {identity!r} slack"
+            )
+            if not isinstance(identity, str) or not identity or period <= 0.0:
+                raise ValidationError(
+                    "indexed timing database path record is invalid"
+                )
+            source_net_ordinals = array("Q")
+            pressure_net_ordinals = array("I")
+            expected_net_ordinal = 0
+            single_driver_pressure_nets = True
+            while net_row is not None and int(net_row[0]) == ordinal:
+                if int(net_row[1]) != expected_net_ordinal:
+                    raise ValidationError(
+                        "indexed timing database net order is invalid"
+                    )
+                if net_row[2] is None:
+                    raise ValidationError(
+                        f"partition pressure path {identity!r} references "
+                        f"unknown net {net_row[5]!r}"
+                    )
+                source_net_ordinals.append(int(net_row[2]))
+                if net_row[3] is not None:
+                    pressure_net_ordinals.append(int(net_row[3]))
+                    single_driver_pressure_nets = (
+                        single_driver_pressure_nets and bool(net_row[4])
+                    )
+                expected_net_ordinal += 1
+                net_row = next(net_cursor, None)
+            if expected_net_ordinal == 0:
+                raise ValidationError(
+                    "indexed timing database path has no nets"
+                )
+            start_cluster = None if row[5] is None else int(row[5])
+            end_cluster = None if row[6] is None else int(row[6])
+            endpoint_exact = (
+                start_cluster is not None
+                and end_cluster is not None
+                and single_driver_pressure_nets
+            )
+            paths.append_ordinals(
+                identity,
+                row[2],
+                period,
+                slack,
+                source_net_ordinals,
+                pressure_net_ordinals,
+                start_cluster,
+                end_cluster,
+                endpoint_exact,
+            )
+            observed_paths += 1
+        if net_row is not None:
+            raise ValidationError(
+                "indexed timing database contains orphan path nets"
+            )
+        if observed_paths != expected_paths:
+            raise ValidationError(
+                "indexed timing database path count disagrees"
+            )
+        paths.indexed_sql_projection = True
+        return paths
+    except sqlite3.DatabaseError as error:
+        raise ValidationError(
+            "indexed timing database SQLite payload is invalid"
+        ) from error
+    finally:
+        try:
+            connection.execute(f"DETACH DATABASE {alias}")
+        except sqlite3.DatabaseError:
+            pass
 
 
 def _shortest_routes(
@@ -1599,6 +1857,18 @@ def _reconstruct_partition_pressure_model(
     normalization = _validate_database_normalization(
         timing_database.get("normalization")
     )
+    path_payloads = timing_database.get("payloads")
+    path_descriptor = (
+        path_payloads.get("paths")
+        if isinstance(path_payloads, Mapping)
+        else None
+    )
+    indexed_unique_path_ids = (
+        timing_database_path is not None
+        and timing_database.get("schema") == STA_PATH_DATABASE_INDEX_SCHEMA
+        and isinstance(path_descriptor, Mapping)
+        and path_descriptor.get("format") == STA_PATH_DATABASE_SQLITE_FORMAT
+    )
     from .partition_ir import CompactPartitionIR
 
     if isinstance(ir, CompactPartitionIR):
@@ -1608,13 +1878,23 @@ def _reconstruct_partition_pressure_model(
             _native_cluster_identities,
             compact_pressure_nets,
             clusters,
-        ) = _compact_partition_pressure_graph(ir, clusters_artifact)
+            indexed_paths,
+        ) = _compact_partition_pressure_graph(
+            ir,
+            clusters_artifact,
+            timing_database_path=timing_database_path,
+            timing_database=timing_database,
+        )
         pressure_nets: Any = compact_pressure_nets
         pressure_net_lookup: Any = compact_pressure_nets
-        paths: Any = _PackedPressurePathSequence(
-            known_nets,
-            compact_pressure_nets,
-            clusters,
+        paths: Any = (
+            indexed_paths
+            if indexed_paths is not None
+            else _PackedPressurePathSequence(
+                known_nets,
+                compact_pressure_nets,
+                clusters,
+            )
         )
     else:
         known_nets = {net["id"] for net in ir.value["nets"]}
@@ -1636,31 +1916,23 @@ def _reconstruct_partition_pressure_model(
             for cluster in clusters_artifact["clusters"]
         ]
         paths = []
-    path_payloads = timing_database.get("payloads")
-    path_descriptor = (
-        path_payloads.get("paths")
-        if isinstance(path_payloads, Mapping)
-        else None
-    )
-    indexed_unique_path_ids = (
-        timing_database_path is not None
-        and timing_database.get("schema") == STA_PATH_DATABASE_INDEX_SCHEMA
-        and isinstance(path_descriptor, Mapping)
-        and path_descriptor.get("format") == STA_PATH_DATABASE_SQLITE_FORMAT
-    )
     # TimingPathDB v3 owns a UNIQUE path_id column.  Retain the explicit set
     # only for legacy/inline inputs that lack that typed uniqueness contract.
     seen_paths: Optional[set[str]] = (
         None if indexed_unique_path_ids else set()
     )
     timing_records = (
-        iter_sta_path_database_paths(
-            timing_database_path,
-            timing_database,
-            verify_payload=False,
+        ()
+        if isinstance(ir, CompactPartitionIR) and indexed_paths is not None
+        else (
+            iter_sta_path_database_paths(
+                timing_database_path,
+                timing_database,
+                verify_payload=False,
+            )
+            if timing_database_path is not None
+            else timing_database.get("paths", [])
         )
-        if timing_database_path is not None
-        else timing_database.get("paths", [])
     )
     for index, raw in enumerate(timing_records):
         if not isinstance(raw, dict):
