@@ -109,6 +109,17 @@ class TritonPartTest(unittest.TestCase):
         )
         self.clusters = build_clusters(self.ir, self.constraints)
 
+    def test_export_keeps_resource_absent_from_one_device(self):
+        value = self.platform.to_dict()
+        value["fpgas"][1]["capacity"]["ff"] = 0
+        platform = Platform.from_dict(value)
+        constraints = normalize_partition_constraints(None, self.ir, platform)
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact = export_tritonpart_inputs(self.ir, platform, self.clusters,
+                                              constraints, Path(temporary))
+            self.assertIn("ff", artifact["vertex_dimensions"])
+            self.assertEqual(artifact["balance_allowed_loads"]["fpga1"]["ff"], 0)
+
     def test_export_is_weighted_multiresource_hypergraph(self) -> None:
         timed_net = next(
             net["id"]

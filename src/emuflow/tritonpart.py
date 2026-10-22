@@ -82,47 +82,13 @@ def load_partition_net_weights(path: Optional[Path]) -> Dict[str, float]:
 
 def _active_resource_fields(
     clusters: Sequence[Mapping[str, Any]],
-    fpgas: Sequence[Any],
 ) -> List[str]:
     fields = []
     for field in RESOURCE_FIELDS:
         if not any(cluster["resources"].get(field, 0) for cluster in clusters):
             continue
-        if not all(fpga.effective_capacity.get(field, 0) > 0 for fpga in fpgas):
-            continue
         fields.append(field)
     return fields
-
-
-def _capacity_base_balance(
-    fpgas: Sequence[Any],
-    resource_fields: Sequence[str],
-) -> List[float]:
-    num_parts = len(fpgas)
-    if not resource_fields:
-        return [1.0 / num_parts] * num_parts
-
-    reference: Optional[List[float]] = None
-    for field in resource_fields:
-        capacities = [
-            float(fpga.effective_capacity[field]) for fpga in fpgas
-        ]
-        total = sum(capacities)
-        shares = [capacity / total for capacity in capacities]
-        if reference is None:
-            reference = shares
-            continue
-        if any(
-            not math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-9)
-            for left, right in zip(reference, shares)
-        ):
-            raise ValidationError(
-                "TritonPart hypergraph mode cannot represent resource-specific "
-                "heterogeneous FPGA capacity ratios; use homogeneous/proportionally "
-                "scaled FPGAs or the greedy provider"
-            )
-    assert reference is not None
-    return reference
 
 
 def _vertex_weights(
@@ -251,10 +217,10 @@ def export_tritonpart_inputs(
             "TritonPart needs at least one atomic cluster per FPGA"
         )
 
-    resource_fields = _active_resource_fields(clusters, partition_fpgas)
+    resource_fields = _active_resource_fields(clusters)
     dimensions = ["cells", *resource_fields]
     weights = [_vertex_weights(cluster, resource_fields) for cluster in clusters]
-    base_balance = _capacity_base_balance(partition_fpgas, resource_fields)
+    base_balance = [1.0 / len(partition_fpgas)] * len(partition_fpgas)
     fpga_ids = [fpga.id for fpga in partition_fpgas]
     tolerances = constraints.get("balance_tolerance_by_dimension", {})
     requested_balance = constraints["balance_tolerance"] * 100.0
