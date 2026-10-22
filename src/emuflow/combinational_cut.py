@@ -848,6 +848,7 @@ def _compact_combinational_cut_candidate_ids(
             "hard-combinational-macro": 2,
             "unsupported-or-opaque": 3,
         }
+        class_by_resource_payload: Dict[int, int] = {}
         classes = bytearray([unknown_class]) * instance_count
         cell_count = 0
         for row in connection.execute(
@@ -869,26 +870,31 @@ def _compact_combinational_cut_candidate_ids(
                 or row["resources_json"] is None
             ):
                 raise ValidationError("compact EmuIR resource payload is missing")
-            try:
-                resources = json.loads(row["resources_json"])
-            except (TypeError, json.JSONDecodeError) as error:
-                raise ValidationError(
-                    "compact EmuIR instance resources are invalid"
-                ) from error
-            if not isinstance(resources, Mapping):
-                raise ValidationError(
-                    "compact EmuIR instance resources are invalid"
-                )
-            try:
-                ResourceVector.from_mapping(
-                    resources, "compact EmuIR instance resources"
-                )
-                classification = _instance_class({"resources": resources})
-            except (TypeError, ValueError) as error:
-                raise ValidationError(
-                    "compact EmuIR instance resources are invalid"
-                ) from error
-            classes[sequence] = class_codes[classification]
+            payload_seq = row["resources_payload_seq"]
+            classification_code = class_by_resource_payload.get(payload_seq)
+            if classification_code is None:
+                try:
+                    resources = json.loads(row["resources_json"])
+                except (TypeError, json.JSONDecodeError) as error:
+                    raise ValidationError(
+                        "compact EmuIR instance resources are invalid"
+                    ) from error
+                if not isinstance(resources, Mapping):
+                    raise ValidationError(
+                        "compact EmuIR instance resources are invalid"
+                    )
+                try:
+                    ResourceVector.from_mapping(
+                        resources, "compact EmuIR instance resources"
+                    )
+                    classification = _instance_class({"resources": resources})
+                except (TypeError, ValueError) as error:
+                    raise ValidationError(
+                        "compact EmuIR instance resources are invalid"
+                    ) from error
+                classification_code = class_codes[classification]
+                class_by_resource_payload[payload_seq] = classification_code
+            classes[sequence] = classification_code
             cell_count += 1
         if cell_count != instance_count or unknown_class in classes:
             raise ValidationError("compact EmuIR cell sequence is incomplete")

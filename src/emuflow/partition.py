@@ -283,6 +283,7 @@ def _build_clusters_from_compact_ir(
         # second time.
         root_to_cluster = array("I", [missing]) * instance_count
         clusters: List[Dict[str, Any]] = []
+        resources_by_payload: Dict[int, ResourceVector] = {}
         cells = connection.execute(
             """SELECT c.id,r.seq AS resources_payload_seq,
                       r.value AS resources_json
@@ -321,15 +322,19 @@ def _build_clusters_from_compact_ir(
                 raise ValidationError(
                     f"instance {instance_id!r} resource payload is missing"
                 )
-            resources_value = _decode(row["resources_json"], "resources")
-            if not isinstance(resources_value, Mapping):
-                raise ValidationError(
-                    f"instance {instance_id!r} resources: expected an object"
+            payload_seq = row["resources_payload_seq"]
+            resources = resources_by_payload.get(payload_seq)
+            if resources is None:
+                resources_value = _decode(row["resources_json"], "resources")
+                if not isinstance(resources_value, Mapping):
+                    raise ValidationError(
+                        f"instance {instance_id!r} resources: expected an object"
+                    )
+                resources = ResourceVector.from_mapping(
+                    resources_value,
+                    f"instance {instance_id!r} resources",
                 )
-            resources = ResourceVector.from_mapping(
-                resources_value,
-                f"instance {instance_id!r} resources",
-            )
+                resources_by_payload[payload_seq] = resources
             for field in RESOURCE_FIELDS:
                 amount = getattr(resources, field)
                 if amount:

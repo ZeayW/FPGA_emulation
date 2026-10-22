@@ -85,6 +85,7 @@ from emuflow.routing import (
     normalize_route_constraints,
     validate_system_routes,
 )
+from emuflow.resources import ResourceVector
 from emuflow.tdm import (
     TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER,
     TDM_BASELINE_PROVIDER,
@@ -1269,14 +1270,19 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
 
             compact_ir = load_partition_ir(path)
             tracemalloc.start()
-            result = _build_combinational_cut_candidate_index(
-                compact_ir,
-                include_dependency_levels=False,
-                include_source_identity=False,
-            )
+            with patch(
+                "emuflow.combinational_cut.ResourceVector.from_mapping",
+                wraps=ResourceVector.from_mapping,
+            ) as decode:
+                result = _build_combinational_cut_candidate_index(
+                    compact_ir,
+                    include_dependency_levels=False,
+                    include_source_identity=False,
+                )
             _, peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
         self.assertEqual(result["eligible_ids"], {"eligible_fanout"})
+        self.assertEqual(decode.call_count, 1)
         self.assertLess(peak, 16 * 1024 * 1024)
 
     def test_cycle_is_fail_closed_and_stays_atomic(self):

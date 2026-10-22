@@ -143,6 +143,33 @@ class Phase3Test(unittest.TestCase):
             "pass",
         )
 
+    def test_compact_cluster_builder_decodes_each_resource_payload_once(
+        self,
+    ) -> None:
+        constraints = normalize_partition_constraints(
+            None, self.ir, self.platform
+        )
+        expected = build_clusters(self.ir, constraints)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            ir_path = Path(temporary_directory) / "design.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            with sqlite3.connect(ir_path) as connection:
+                unique_payloads = connection.execute(
+                    "SELECT COUNT(DISTINCT resources_seq) FROM cell_records"
+                ).fetchone()[0]
+                cell_count = connection.execute(
+                    "SELECT COUNT(*) FROM cell_records"
+                ).fetchone()[0]
+            self.assertLess(unique_payloads, cell_count)
+            compact_ir = load_partition_ir(ir_path)
+            with patch(
+                "emuflow.partition.ResourceVector.from_mapping",
+                wraps=ResourceVector.from_mapping,
+            ) as decode:
+                actual = build_clusters(compact_ir, constraints)
+        self.assertEqual(actual, expected)
+        self.assertEqual(decode.call_count, unique_payloads)
+
     def test_compact_default_constraints_skip_instance_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             ir_path = Path(temporary_directory) / "design.emuir.sqlite"

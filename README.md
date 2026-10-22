@@ -66,6 +66,11 @@ Constraint normalization also leaves the complete instance identity catalog
 unopened when no group or fixed-instance constraint needs it. Constrained
 compact inputs read only the indexed identity column rather than decoding cell
 resource payloads merely to validate names and patterns.
+Compact candidate classification and final cluster aggregation decode and
+validate each interned resource payload once, then reuse its immutable class or
+resource vector for every cell that references it. This preserves per-cell
+identity and resource accounting while avoiding repeated JSON parsing for the
+millions of cells that share a small resource vocabulary.
 On a synthetic 300,000-cell singleton input, loading plus clustering reduced
 traced peak allocation from 436.58 MiB to 212.52 MiB and wall time from 9.94 to
 5.70 seconds. This is isolated construction evidence, not NVDLA qualification.
