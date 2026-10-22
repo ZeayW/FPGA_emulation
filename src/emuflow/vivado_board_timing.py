@@ -14,6 +14,11 @@ from .board_link_timing import (
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .boundary_timing import validate_boundary_timing_database
+from .boundary_identity_storage import write_boundary_identity_storage
+from .boundary_timing_storage import (
+    boundary_timing_reference,
+    read_boundary_timing_storage,
+)
 from .logic_segment_timing import (
     import_vivado_logic_segment_timing,
     validate_logic_segment_timing,
@@ -250,10 +255,18 @@ def run_vivado_board_timing(
             fpga_out.mkdir(exist_ok=resume)
             merged_ir = source_root / "placement.emuir.sqlite"
             identities = source_physical.get("boundary_identities", {}).get(fpga_id)
-            if not isinstance(identities, dict) or not merged_ir.is_file():
+            if not isinstance(identities, Mapping) or not merged_ir.is_file():
                 raise ValidationError(f"{fpga_id}: physical timing identity is missing")
             identity_path = fpga_out / "boundary-identities.json"
-            write_json(identity_path, identities)
+            identity_header = {
+                key: identities[key]
+                for key in (
+                    "schema", "status", "design", "platform", "fpga", "provider",
+                )
+            }
+            write_boundary_identity_storage(
+                identity_path, identity_header, identities["endpoints"]
+            ).close()
 
             board_dcp_info = board_by_fpga[fpga_id].get("artifacts", {}).get(
                 "routed.dcp"
@@ -273,9 +286,14 @@ def run_vivado_board_timing(
             boundary_database = fpga_out / "boundary-timing.json"
             logic_database = fpga_out / "logic-segment-timing.json"
             if resume and boundary_database.is_file() and logic_database.is_file():
-                boundary_database_value = read_json(boundary_database)
-                boundary_validation = validate_boundary_timing_database(
-                    boundary_database_value, identities
+                with read_boundary_timing_storage(
+                    boundary_database
+                ) as boundary_database_value:
+                    boundary_validation = validate_boundary_timing_database(
+                        boundary_database_value, identities
+                    )
+                boundary_reference = boundary_timing_reference(
+                    boundary_database, relative_to=output_dir
                 )
                 from .logic_segment_timing_storage import (
                     logic_segment_timing_reference,
@@ -318,7 +336,7 @@ def run_vivado_board_timing(
                         "logic_segment_timing": _artifact(logic_database),
                     },
                 }
-                return record, boundary_database_value, logic_reference
+                return record, boundary_reference, logic_reference
 
             boundary_query = fpga_out / "boundary-timing-query.tsv"
             boundary_query_report = write_vivado_boundary_timing_query(
@@ -340,7 +358,9 @@ def run_vivado_board_timing(
                 qualification="routed-board-integrated-interface-path",
                 measurement_scope="board-integrated-interface",
             )
-            boundary_database_value = read_json(boundary_database)
+            boundary_reference = boundary_timing_reference(
+                boundary_database, relative_to=output_dir
+            )
 
             logic_query = fpga_out / "logic-segment-timing-query.tsv"
             logic_identity = fpga_out / "logic-segment-identities.json"
@@ -414,7 +434,7 @@ def run_vivado_board_timing(
                     "logic_segment_timing": _artifact(logic_database),
                 },
             }
-            return record, boundary_database_value, logic_reference
+            return record, boundary_reference, logic_reference
 
         ordered_fpgas = sorted(platform.fpgas, key=lambda item: item.id)
         with ThreadPoolExecutor(max_workers=min(workers, len(ordered_fpgas))) as pool:

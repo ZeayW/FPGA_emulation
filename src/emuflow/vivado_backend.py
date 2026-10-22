@@ -13,10 +13,12 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .boundary_timing import (
     BOUNDARY_IDENTITY_SCHEMA,
-    build_boundary_timing_database,
+    boundary_timing_header,
+    iter_boundary_timing_records,
     validate_boundary_timing_database,
 )
 from .boundary_identity_storage import read_boundary_identity_storage
+from .boundary_timing_storage import write_boundary_timing_storage
 from .physical_backend import (
     PHYSICAL_PARTITION_RESULT_SCHEMA,
     validate_physical_partition_result,
@@ -154,15 +156,25 @@ def import_vivado_boundary_timing(
             "start_object": _unhex(fields[3], f"line {line_number} start"),
             "end_object": _unhex(fields[4], f"line {line_number} end"),
         }
-    database = build_boundary_timing_database(
+    header = boundary_timing_header(
         identities,
-        measurements,
         provider=provider,
         qualification=qualification,
         measurement_scope=measurement_scope,
     )
-    validation = validate_boundary_timing_database(database, identities)
-    write_json(output_path, database)
+    with write_boundary_timing_storage(
+        output_path,
+        header,
+        iter_boundary_timing_records(
+            identities,
+            measurements,
+            measurement_scope=measurement_scope,
+        ),
+    ) as database:
+        validation = validate_boundary_timing_database(database, identities)
+    close_identities = getattr(identities, "close", None)
+    if callable(close_identities):
+        close_identities()
     return {**validation, "output": str(output_path)}
 
 

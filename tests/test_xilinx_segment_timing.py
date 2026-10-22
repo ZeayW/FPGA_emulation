@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 import pytest
 
+from emuflow.boundary_timing_storage import read_boundary_timing_storage
 from emuflow.errors import ValidationError
 
 import emuflow.xilinx_segment_timing as xilinx_segment_timing
@@ -183,6 +184,11 @@ def test_boundary_timing_covers_rx_and_tx_with_routed_delays():
             identity_path, mapped_path, timing_path, output
         )
         database = json.loads(output.read_text())
+        with read_boundary_timing_storage(output) as boundary_view:
+            delays = {
+                item["id"]: item["delay_ns"]
+                for item in boundary_view["endpoints"]
+            }
         endpoints = timing.pop("endpoints")
         encoded = b"".join(
             json.dumps(
@@ -209,8 +215,7 @@ def test_boundary_timing_covers_rx_and_tx_with_routed_delays():
         streamed_database = json.loads(streamed_output.read_text())
     assert result["endpoints"] == 2
     assert streamed_result["endpoints"] == 2
-    assert streamed_database == database
-    delays = {item["id"]: item["delay_ns"] for item in database["endpoints"]}
+    assert streamed_database["logical_sha256"] == database["logical_sha256"]
     assert abs(delays["rx0"] - 0.38) < 1e-12
     assert abs(delays["tx0"] - 0.795) < 1e-12
 

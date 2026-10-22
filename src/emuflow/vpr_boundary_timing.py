@@ -7,12 +7,14 @@ from typing import Any, Dict, Mapping
 
 from .boundary_timing import (
     BOUNDARY_IDENTITY_SCHEMA,
-    build_boundary_timing_database,
+    boundary_timing_header,
+    iter_boundary_timing_records,
     validate_boundary_timing_database,
 )
 from .boundary_identity_storage import read_boundary_identity_storage
+from .boundary_timing_storage import write_boundary_timing_storage
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import read_json
 from .ir import EmuIR
 
 
@@ -284,12 +286,18 @@ def import_vpr_boundary_timing(
             "start_object": fields[3],
             "end_object": fields[4],
         }
-    database = build_boundary_timing_database(
+    header = boundary_timing_header(
         identities,
-        measurements,
         provider="vpr-tatum-endpoint-longest-path-v1",
         qualification="routed-academic-architecture-endpoint-exact",
     )
-    validation = validate_boundary_timing_database(database, identities)
-    write_json(output_path, database)
+    with write_boundary_timing_storage(
+        output_path,
+        header,
+        iter_boundary_timing_records(identities, measurements),
+    ) as database:
+        validation = validate_boundary_timing_database(database, identities)
+    close_identities = getattr(identities, "close", None)
+    if callable(close_identities):
+        close_identities()
     return {**validation, "output": str(output_path)}

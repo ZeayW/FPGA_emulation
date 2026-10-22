@@ -559,10 +559,12 @@ in one read pass, then validates one FPGA at a time;
 Phase 4 feedback, Phase 7C, global timing, Vivado timing import and experiment
 validation resolve those files lazily. Logical canonical hashing streams one
 referenced database at a time and remains equal to the previous inline JSON
-hash. Logic-segment timing is the first per-FPGA evidence population moved to
-a direct typed owner: each producer writes a content-addressed SQLite generation
+hash. Logic-segment timing, boundary identities and boundary timing now use
+direct typed owners: each producer writes a content-addressed SQLite generation
 and commits a small selector last, without retaining a production JSON copy.
-The selector and physical summary bind the route, schedule and Phase 3 logical
+Boundary validation merges the ordered identity and timing cursors, and the
+RapidWright timing projection writes records directly without an endpoint map.
+The selectors and physical summary bind the route, schedule and Phase 3 logical
 seals. Exact schema/count/key validation, owner-scoped generation leases and
 garbage collection, and a bounded multi-FPGA ordered merge preserve global
 segment and path-key uniqueness beyond ten FPGAs. Archive retention follows and
@@ -1059,8 +1061,8 @@ and query publication took 2.388 seconds, measurement import took 6.444
 seconds, traced Python peak was 7.962 MiB, and the importer executed 15 SQL
 queries with no per-row identity lookup. The identity store was 22,040,576
 bytes, query TSV 4,700,032 bytes, input measurements 5,200,041 bytes and final
-timing store 27,766,784 bytes. Boundary/local-path evidence and unique
-event/check identity tables remain W6 migration work; formal NVDLA Phase 7C
+timing store 27,766,784 bytes. Local-path evidence and unique event/check
+identity tables remain W6 migration work; formal NVDLA Phase 7C
 wall/RSS/I/O and complete original-path coverage are still pending.
 
 ### Selected research references

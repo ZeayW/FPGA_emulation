@@ -15,6 +15,16 @@ from .netlist import TRANSPORT_ENDPOINTS_SCHEMA, transport_endpoint_port
 
 BOUNDARY_IDENTITY_SCHEMA = "emuflow.boundary-identity/v1"
 BOUNDARY_TIMING_SCHEMA = "emuflow.boundary-timing/v1"
+_MEASUREMENTS_BY_SCOPE = {
+    "partition-boundary": {
+        "tx": "logical-source-to-tx-port",
+        "rx": "rx-port-to-shadow-capture",
+    },
+    "board-integrated-interface": {
+        "tx": "routed-launch-through-tx-boundary-to-interface-endpoint",
+        "rx": "interface-startpoint-through-rx-boundary-to-shadow-capture",
+    },
+}
 
 
 def _ordered_endpoint_records(
@@ -430,68 +440,52 @@ def build_boundary_timing_database(
     qualification: str,
     measurement_scope: str = "partition-boundary",
 ) -> Dict[str, Any]:
-    """Build a complete endpoint-keyed physical timing database."""
+    """Materialize the legacy logical document for compatibility callers."""
+    records = list(
+        iter_boundary_timing_records(
+            identities,
+            measurements,
+            measurement_scope=measurement_scope,
+        )
+    )
+    coverage = {
+        "endpoints": len(records),
+        "tx": sum(record["kind"] == "tx" for record in records),
+        "rx": sum(record["kind"] == "rx" for record in records),
+    }
+    return {
+        **boundary_timing_header(
+            identities,
+            provider=provider,
+            qualification=qualification,
+            measurement_scope=measurement_scope,
+        ),
+        "coverage": coverage,
+        "endpoints": records,
+    }
+
+
+def boundary_timing_header(
+    identities: Mapping[str, Any],
+    *,
+    provider: str,
+    qualification: str,
+    measurement_scope: str = "partition-boundary",
+) -> Dict[str, Any]:
+    """Return the bounded logical header shared by JSON and typed owners."""
+
     if identities.get("schema") != BOUNDARY_IDENTITY_SCHEMA:
         raise ValidationError("boundary timing requires valid identities")
-    measurements_by_scope = {
-        "partition-boundary": {
-            "tx": "logical-source-to-tx-port",
-            "rx": "rx-port-to-shadow-capture",
-        },
-        "board-integrated-interface": {
-            "tx": "routed-launch-through-tx-boundary-to-interface-endpoint",
-            "rx": "interface-startpoint-through-rx-boundary-to-shadow-capture",
-        },
-    }
-    if measurement_scope not in measurements_by_scope:
+    if measurement_scope not in _MEASUREMENTS_BY_SCOPE:
         raise ValidationError("boundary timing measurement scope is invalid")
-    records = []
-    tx_count = 0
-    rx_count = 0
-    for identity in _ordered_endpoint_records(
-        identities.get("endpoints"), "boundary identity"
+    if any(
+        not isinstance(value, str) or not value
+        for value in (provider, qualification)
     ):
-        endpoint_id = identity["id"]
-        measurement = measurements.get(endpoint_id)
-        if not isinstance(measurement, Mapping):
-            raise ValidationError(
-                "boundary timing measurement coverage disagrees"
-            )
-        delay = measurement.get("delay_ns")
-        if (
-            isinstance(delay, bool)
-            or not isinstance(delay, (int, float))
-            or not math.isfinite(float(delay))
-            or float(delay) < 0.0
-        ):
-            raise ValidationError(
-                f"boundary timing {endpoint_id!r} delay is invalid"
-            )
-        start = measurement.get("start_object")
-        end = measurement.get("end_object")
-        if not isinstance(start, str) or not start or not isinstance(end, str) or not end:
-            raise ValidationError(
-                f"boundary timing {endpoint_id!r} object trace is invalid"
-            )
-        records.append(
-            {
-                "id": endpoint_id,
-                "kind": identity["kind"],
-                "schedule_entry": identity["schedule_entry"],
-                "delay_ns": float(delay),
-                "start_object": start,
-                "end_object": end,
-                "measurement": measurements_by_scope[measurement_scope][
-                    identity["kind"]
-                ],
-            }
-        )
-        if identity["kind"] == "tx":
-            tx_count += 1
-        else:
-            rx_count += 1
-    if len(measurements) != len(records):
-        raise ValidationError("boundary timing measurement coverage disagrees")
+        raise ValidationError("boundary timing provider is invalid")
+    for field in ("design", "platform", "fpga"):
+        if not isinstance(identities.get(field), str) or not identities[field]:
+            raise ValidationError(f"boundary timing {field} is invalid")
     return {
         "schema": BOUNDARY_TIMING_SCHEMA,
         "status": "pass",
@@ -501,13 +495,85 @@ def build_boundary_timing_database(
         "provider": provider,
         "qualification": qualification,
         "measurement_scope": measurement_scope,
-        "coverage": {
-            "endpoints": len(records),
-            "tx": tx_count,
-            "rx": rx_count,
-        },
-        "endpoints": records,
+        "coverage": {"endpoints": 0, "tx": 0, "rx": 0},
     }
+
+
+def boundary_timing_record(
+    identity: Mapping[str, Any],
+    measurement: Mapping[str, Any],
+    *,
+    measurement_scope: str = "partition-boundary",
+) -> Dict[str, Any]:
+    """Validate and bind one measurement without retaining adjacent records."""
+
+    if measurement_scope not in _MEASUREMENTS_BY_SCOPE:
+        raise ValidationError("boundary timing measurement scope is invalid")
+    endpoint_id = identity.get("id")
+    if not isinstance(endpoint_id, str) or not endpoint_id:
+        raise ValidationError("boundary timing identity is invalid")
+    if identity.get("kind") not in {"tx", "rx"}:
+        raise ValidationError(f"boundary timing {endpoint_id!r} kind is invalid")
+    schedule_entry = identity.get("schedule_entry")
+    if not isinstance(schedule_entry, str) or not schedule_entry:
+        raise ValidationError(
+            f"boundary timing {endpoint_id!r} schedule entry is invalid"
+        )
+    delay = measurement.get("delay_ns")
+    if (
+        isinstance(delay, bool)
+        or not isinstance(delay, (int, float))
+        or not math.isfinite(float(delay))
+        or float(delay) < 0.0
+    ):
+        raise ValidationError(
+            f"boundary timing {endpoint_id!r} delay is invalid"
+        )
+    start = measurement.get("start_object")
+    end = measurement.get("end_object")
+    if not isinstance(start, str) or not start or not isinstance(end, str) or not end:
+        raise ValidationError(
+            f"boundary timing {endpoint_id!r} object trace is invalid"
+        )
+    return {
+        "id": endpoint_id,
+        "kind": identity["kind"],
+        "schedule_entry": schedule_entry,
+        "delay_ns": float(delay),
+        "start_object": start,
+        "end_object": end,
+        "measurement": _MEASUREMENTS_BY_SCOPE[measurement_scope][identity["kind"]],
+    }
+
+
+def iter_boundary_timing_records(
+    identities: Mapping[str, Any],
+    measurements: Mapping[str, Mapping[str, Any]],
+    *,
+    measurement_scope: str = "partition-boundary",
+) -> Iterator[Dict[str, Any]]:
+    """Yield checked endpoint timing records in canonical identity order."""
+
+    if identities.get("schema") != BOUNDARY_IDENTITY_SCHEMA:
+        raise ValidationError("boundary timing requires valid identities")
+    count = 0
+    for identity in _ordered_endpoint_records(
+        identities.get("endpoints"), "boundary identity"
+    ):
+        endpoint_id = identity["id"]
+        measurement = measurements.get(endpoint_id)
+        if not isinstance(measurement, Mapping):
+            raise ValidationError(
+                "boundary timing measurement coverage disagrees"
+            )
+        yield boundary_timing_record(
+            identity,
+            measurement,
+            measurement_scope=measurement_scope,
+        )
+        count += 1
+    if len(measurements) != count:
+        raise ValidationError("boundary timing measurement coverage disagrees")
 
 
 def validate_boundary_timing_database(
@@ -524,17 +590,7 @@ def validate_boundary_timing_database(
         if database.get(field) != identities.get(field):
             raise ValidationError(f"boundary timing {field} disagrees")
     measurement_scope = database.get("measurement_scope", "partition-boundary")
-    measurements_by_scope = {
-        "partition-boundary": {
-            "tx": "logical-source-to-tx-port",
-            "rx": "rx-port-to-shadow-capture",
-        },
-        "board-integrated-interface": {
-            "tx": "routed-launch-through-tx-boundary-to-interface-endpoint",
-            "rx": "interface-startpoint-through-rx-boundary-to-shadow-capture",
-        },
-    }
-    if measurement_scope not in measurements_by_scope:
+    if measurement_scope not in _MEASUREMENTS_BY_SCOPE:
         raise ValidationError("boundary timing measurement scope is invalid")
     records = database.get("endpoints")
     missing = object()
@@ -566,7 +622,7 @@ def validate_boundary_timing_database(
             item["kind"] != identity["kind"]
             or item.get("schedule_entry") != identity.get("schedule_entry")
             or item.get("measurement")
-            != measurements_by_scope[measurement_scope][item["kind"]]
+            != _MEASUREMENTS_BY_SCOPE[measurement_scope][item["kind"]]
             or not isinstance(item.get("start_object"), str)
             or not item["start_object"]
             or not isinstance(item.get("end_object"), str)

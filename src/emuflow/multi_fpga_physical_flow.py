@@ -14,11 +14,15 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 
 from .boundary_timing import (
-    build_boundary_timing_database,
+    boundary_timing_header,
     validate_boundary_identity_database,
     validate_boundary_timing_database,
 )
 from .boundary_identity_storage import read_boundary_identity_storage
+from .boundary_timing_storage import (
+    read_boundary_timing_storage,
+    write_boundary_timing_storage,
+)
 from .chimew_binding_storage import (
     open_chimew_binding_schedule_entry_lookup,
     read_chimew_binding,
@@ -63,6 +67,7 @@ from .physical_backend import (
 )
 from .physical_summary_storage import (
     publish_boundary_identity_store,
+    publish_boundary_timing_store,
     publish_logic_segment_timing_store,
     publish_physical_evidence,
 )
@@ -1273,16 +1278,17 @@ def run_multi_fpga_physical_flow(
                 boundary_identity_path, allow_legacy=True
             )
             boundary_timing_path = fpga_root / "boundary-timing.json"
-            boundary_timing = build_boundary_timing_database(
+            boundary_header = boundary_timing_header(
                 boundary_identity,
-                {},
                 provider=_INACTIVE_PARTITION_PROVIDER,
                 qualification="not-applicable-empty-partition",
             )
-            boundary_validation = validate_boundary_timing_database(
-                boundary_timing, boundary_identity
-            )
-            write_json(boundary_timing_path, boundary_timing)
+            with write_boundary_timing_storage(
+                boundary_timing_path, boundary_header, ()
+            ) as boundary_timing:
+                boundary_validation = validate_boundary_timing_database(
+                    boundary_timing, boundary_identity
+                )
             close_boundary = getattr(boundary_identity, "close", None)
             if callable(close_boundary):
                 close_boundary()
@@ -2260,15 +2266,18 @@ def _assemble_multi_fpga_physical_results(
                     "import"
                 ]["output"]
             )
-            timing_database, timing_reference = publish_physical_evidence(
+            _timing_selector, timing_reference = publish_boundary_timing_store(
                 timing_path,
                 output_dir,
                 Path(fpga_id) / timing_path.name,
             )
-            validate_boundary_timing_database(
-                timing_database,
-                identity_database,
-            )
+            with read_boundary_timing_storage(
+                output_dir / timing_reference["path"]
+            ) as timing_database:
+                validate_boundary_timing_database(
+                    timing_database,
+                    identity_database,
+                )
         physical_summary["boundary_timing"][fpga_id] = timing_reference
     if include_logic_timing:
         physical_summary["logic_segment_timing"] = {}

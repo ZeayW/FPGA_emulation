@@ -192,6 +192,20 @@ def publish_boundary_identity_store(
     )
 
 
+def publish_boundary_timing_store(
+    source: Path,
+    output_directory: Path,
+    relative_path: Path,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Relocate a typed boundary-timing selector without expansion."""
+
+    from .boundary_timing_storage import publish_boundary_timing_selector
+
+    return publish_boundary_timing_selector(
+        source, output_directory, relative_path
+    )
+
+
 def _validate_reference(value: Any) -> Mapping[str, Any]:
     if not isinstance(value, Mapping) or value.get("schema") not in {
         PHYSICAL_EVIDENCE_REFERENCE_SCHEMA,
@@ -224,6 +238,7 @@ def _validate_reference(value: Any) -> Mapping[str, Any]:
         if value.get("logical_schema") not in {
             "emuflow.logic-segment-timing/v1",
             "emuflow.boundary-identity/v1",
+            "emuflow.boundary-timing/v1",
         }:
             raise ValidationError(
                 "physical indexed evidence reference is malformed"
@@ -256,6 +271,17 @@ def _read_reference(
     if stat.st_size != reference["bytes"]:
         raise ValidationError("physical evidence byte count disagrees")
     if reference["schema"] == PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA:
+        if reference["logical_schema"] == "emuflow.boundary-timing/v1":
+            from .boundary_timing_storage import read_boundary_timing_storage
+
+            return read_boundary_timing_storage(
+                resolved_path,
+                expected_design=expected_design,
+                expected_platform=expected_platform,
+                expected_fpga=expected_fpga,
+                expected_selector_bytes=reference["bytes"],
+                expected_selector_sha256=reference["sha256"],
+            )
         if reference["logical_schema"] == "emuflow.boundary-identity/v1":
             from .boundary_identity_storage import read_boundary_identity_storage
 
