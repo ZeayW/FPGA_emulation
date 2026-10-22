@@ -17,6 +17,7 @@ from emuflow.xilinx_physical_handoff import (
     write_xilinx_physical_handoff,
 )
 from emuflow.xilinx_rwroute import (
+    _qualified_lut_clock_gates,
     _validate_rapidwright_device_data,
     export_rwroute_input,
     validate_xilinx_route_db,
@@ -666,20 +667,48 @@ class XilinxRWRouteTest(unittest.TestCase):
             },
         ]
         packed = {
-            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
-            "clusters": [{"assignments": assignments}],
+            "schema": "emuflow.packed-site-netlist/v1", "status": "pass",
+            "mapping_profile": "test", "top": "top", "source": {},
+            "policy": {}, "cascade_chains": [], "unplaced_constants": [],
+            "clusters": [
+                {
+                    "id": "cluster0", "kind": "slice",
+                    "site_templates": ["SLICEL"], "control_set": None,
+                    "assignments": assignments[:2],
+                },
+                {
+                    "id": "cluster1", "kind": "slice",
+                    "site_templates": ["SLICEL"], "control_set": None,
+                    "assignments": assignments[2:3],
+                },
+                {
+                    "id": "cluster2", "kind": "bram",
+                    "site_templates": ["RAMB18"], "control_set": None,
+                    "assignments": assignments[3:],
+                },
+            ],
+            "summary": {"clusters": 3},
         }
         placement = {
-            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
-            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
-                {"instance": "enable", "bel": "AFF", "site": "SLICE_X0Y0"},
-                {"instance": "gate", "bel": "B6LUT", "site": "SLICE_X0Y0"},
-                {"instance": "sink", "bel": "CFF", "site": "SLICE_X0Y1"},
+            "schema": "emuflow.xilinx-placement/v1", "status": "pass",
+            "part": "xcvu19p-test", "provider": "test", "policy": {},
+            "source": {},
+            "clusters": [
                 {
-                    "instance": "ram", "bel": "RAMB18E2_L",
-                    "site": "RAMB18_X0Y0",
-                },
-            ]}],
+                    "cluster": f"cluster{index}", "site": site,
+                    "site_type": "SLICEL", "x": 0, "y": index,
+                    "fixed": False, "physical_region": None,
+                    "assignments": [{
+                        **assignment, "site": site,
+                        "placement_mode": "SLICEL",
+                    } for assignment in cluster_assignments],
+                }
+                for index, (cluster_assignments, site) in enumerate(zip(
+                    (assignments[:2], assignments[2:3], assignments[3:]),
+                    ("SLICE_X0Y0", "SLICE_X0Y1", "RAMB18_X0Y0"),
+                ))
+            ],
+            "summary": {"clusters": 3},
         }
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -688,12 +717,161 @@ class XilinxRWRouteTest(unittest.TestCase):
             )]
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
-            report = export_rwroute_input(*paths, root / "route.tsv")
+            source_sha256 = {
+                "mapped_sha256": "1" * 64,
+                "packed_sha256": "2" * 64,
+                "placement_sha256": "2" * 64,
+            }
+            report = export_rwroute_input(
+                *paths, root / "route.tsv", source_sha256=source_sha256
+            )
             text = (root / "route.tsv").read_text(encoding="utf-8")
+            ir_path = root / "mapped.emuir.sqlite"
+            mapped_index = root / "mapped.sqlite"
+            handoff = root / "physical-handoff.sqlite"
+            indexed_output = root / "route-indexed.tsv"
+            import_yosys_json(paths[0]).save(ir_path)
+            emit_xilinx_mapped_index(ir_path, mapped_index)
+            write_xilinx_physical_handoff(handoff, packed, placement)
+            packed_view, placement_view = open_xilinx_physical_handoff(handoff)
+            with (
+                open_xilinx_mapped_index(mapped_index) as indexed,
+                mock.patch.object(
+                    indexed, "iter_qualified_lut_clock_gates",
+                    wraps=indexed.iter_qualified_lut_clock_gates,
+                ) as qualify,
+                mock.patch.object(
+                    indexed, "iter_physical_route_pins_by_net",
+                    wraps=indexed.iter_physical_route_pins_by_net,
+                ) as routed_pins,
+                mock.patch(
+                    "emuflow.xilinx_rwroute._lut_clock_candidate_pins",
+                    side_effect=AssertionError(
+                        "typed qualification rebuilt Python candidates"
+                    ),
+                ),
+            ):
+                indexed_report = export_rwroute_input(
+                    mapped_index, handoff, handoff, indexed_output,
+                    mapped_value=indexed, packed_value=packed_view,
+                    placement_value=placement_view,
+                    source_sha256=source_sha256,
+                )
+                self.assertEqual(qualify.call_count, 1)
+                self.assertEqual(routed_pins.call_count, 1)
+            indexed_text = indexed_output.read_text(encoding="utf-8")
         self.assertEqual(report["qualified_clock_gates"], 1)
+        self.assertEqual(indexed_report["qualified_clock_gates"], 1)
+        self.assertEqual(indexed_report["routable_nets"], report["routable_nets"])
+        self.assertEqual(indexed_report["excluded_nets"], report["excluded_nets"])
+        self.assertEqual(indexed_text.count("\nCLOCK_GATE\t"), 1)
         self.assertIn("\nCLOCK_GATE\t", text)
         self.assertIn("\nNET\tn3\tclock\n", text)
         self.assertIn("\nNET\tn2\tsignal\n", text)
+
+    def test_typed_clock_gate_qualification_preserves_closed_chain_pruning(self):
+        for add_invalid_sink in (False, True):
+            with self.subTest(add_invalid_sink=add_invalid_sink):
+                cells = {
+                    "enable0": {
+                        "type": "FDRE", "port_directions": {"Q": "output"},
+                        "connections": {"Q": [10]},
+                    },
+                    "enable1": {
+                        "type": "FDRE", "port_directions": {"Q": "output"},
+                        "connections": {"Q": [11]},
+                    },
+                    "gate0": {
+                        "type": "LUT2", "parameters": {"INIT": "1000"},
+                        "port_directions": {
+                            "I0": "input", "I1": "input", "O": "output",
+                        },
+                        "connections": {"I0": [20], "I1": [10], "O": [21]},
+                    },
+                    "gate1": {
+                        "type": "LUT2", "parameters": {"INIT": "1000"},
+                        "port_directions": {
+                            "I0": "input", "I1": "input", "O": "output",
+                        },
+                        "connections": {"I0": [21], "I1": [11], "O": [22]},
+                    },
+                    "clock_sink": {
+                        "type": "FDRE", "port_directions": {"C": "input"},
+                        "connections": {"C": [22]},
+                    },
+                }
+                if add_invalid_sink:
+                    cells["invalid_sink"] = {
+                        "type": "FDRE", "port_directions": {"D": "input"},
+                        "connections": {"D": [21]},
+                    }
+                endpoints = {}
+                for name, cell in cells.items():
+                    for port, bits in cell["connections"].items():
+                        role = (
+                            "driver"
+                            if cell["port_directions"][port] in {"output", "inout"}
+                            else "sink"
+                        )
+                        for index, bit in enumerate(bits):
+                            pin = port if len(bits) == 1 else f"{port}[{index}]"
+                            endpoints.setdefault(bit, []).append((name, pin, role))
+                expected = _qualified_lut_clock_gates(cells, endpoints)
+                self.assertEqual(
+                    expected, set() if add_invalid_sink else {"gate0", "gate1"}
+                )
+
+                bels = ("AFF", "BFF", "A6LUT", "B6LUT", "CFF", "DFF")
+                assignments = [
+                    {"instance": name, "cell_type": cell["type"], "bel": bel}
+                    for (name, cell), bel in zip(cells.items(), bels)
+                ]
+                packed = {
+                    "schema": "emuflow.packed-site-netlist/v1",
+                    "status": "pass", "mapping_profile": "test", "top": "top",
+                    "source": {}, "policy": {}, "cascade_chains": [],
+                    "unplaced_constants": [],
+                    "clusters": [{
+                        "id": "cluster0", "kind": "slice",
+                        "site_templates": ["SLICEL"], "control_set": None,
+                        "assignments": assignments,
+                    }],
+                    "summary": {"clusters": 1},
+                }
+                placement = {
+                    "schema": "emuflow.xilinx-placement/v1", "status": "pass",
+                    "part": "xcvu19p-test", "provider": "test", "policy": {},
+                    "source": {},
+                    "clusters": [{
+                        "cluster": "cluster0", "site": "SLICE_X0Y0",
+                        "site_type": "SLICEL", "x": 0, "y": 0,
+                        "fixed": False, "physical_region": None,
+                        "assignments": [{
+                            **assignment, "site": "SLICE_X0Y0",
+                            "placement_mode": "SLICEL",
+                        } for assignment in assignments],
+                    }],
+                    "summary": {"clusters": 1},
+                }
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    source = root / "mapped.json"
+                    ir_path = root / "mapped.emuir.sqlite"
+                    mapped_index = root / "mapped.sqlite"
+                    handoff = root / "handoff.sqlite"
+                    source.write_text(
+                        json.dumps({"modules": {"top": {"cells": cells}}}),
+                        encoding="utf-8",
+                    )
+                    import_yosys_json(source).save(ir_path)
+                    emit_xilinx_mapped_index(ir_path, mapped_index)
+                    write_xilinx_physical_handoff(handoff, packed, placement)
+                    with open_xilinx_mapped_index(mapped_index) as indexed:
+                        actual = {
+                            name for name, _ordinal in
+                            indexed.iter_qualified_lut_clock_gates(handoff)
+                        }
+                self.assertEqual(actual, expected)
 
     def test_rapidwright_input_is_parsed_in_two_streaming_passes(self):
         source = (

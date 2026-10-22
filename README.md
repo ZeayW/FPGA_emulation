@@ -835,9 +835,12 @@ Its report separates binding, cell/I/O
 emission, endpoint indexing, clock checks, net emission, and atomic commit.
 Mapped-index v2 stores each typed cell pin once outside `record_json`; legacy
 cell mappings are reconstructed lazily. Production RWRoute groups this ordered
-pin relation by net, retaining only the clock-gate qualification subset rather
-than a whole-design Python endpoint dictionary. Mapped-index v1 remains
-readable. Because packing and placement share one immutable handoff path, the
+pin relation by net. LUT2 clock-gate candidates, their relevant endpoints, and
+closed-chain pruning now stay in temporary SQLite relations joined directly to
+the mapped index and physical handoff; Python retains only the final qualified
+gate identity/ordinal table. The complete routed-pin cursor is therefore read
+once for net emission instead of once for qualification and again for emission.
+Mapped-index v1 remains readable. Because packing and placement share one immutable handoff path, the
 physical backend also computes its source digest once and reuses it for both
 historical contract identities. In the indexed production path, mapped-index
 v2 attaches the typed physical handoff read-only and streams cells and pins
@@ -846,8 +849,11 @@ from ordered joins; RWRoute therefore no longer retains an
 deterministic route-cell ordinal, including the two-cell LUT6_2 expansion, so
 the production exporter formats `cN` while streaming without retaining a
 million-entry safe-name map. Compatibility JSON inputs keep the historical
-lookup path. Clock-gate discovery likewise queries only typed `LUT2` records
-and their pins; it no longer reconstructs every mapped cell before routing.
+lookup path. On 50,000 deliberately rejected LUT2 candidates, an isolated
+construction-plus-qualification comparison reduced process peak RSS from 114.49 MB to 51.76 MB;
+wall time changed from 0.202 to 0.598 seconds because the new path performs
+file-backed joins and closure checks. This is adapter evidence, not NVDLA
+qualification.
 
 ## Flow
 

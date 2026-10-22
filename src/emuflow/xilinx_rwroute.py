@@ -581,6 +581,9 @@ def export_rwroute_input(
         mapped, "iter_physical_route_pins_by_net", None
     )
     indexed_cells_by_type = getattr(mapped, "iter_cells_by_type", None)
+    indexed_clock_gate_source = getattr(
+        mapped, "iter_qualified_lut_clock_gates", None
+    )
     use_typed_physical = (
         packed_path == placement_path
         and callable(indexed_physical_cells)
@@ -851,7 +854,16 @@ def export_rwroute_input(
                 None, logical_pin,
             )
 
-    if use_typed_physical or callable(indexed_pin_source):
+    typed_clock_gate_qualification = (
+        use_typed_physical and callable(indexed_clock_gate_source)
+    )
+    if typed_clock_gate_qualification:
+        endpoints = None
+        clock_endpoints = None
+        clock_route_ordinals: Dict[str, int] = {}
+        candidate_pins = None
+        endpoint_dataflow = "typed-mapped-physical-join"
+    elif use_typed_physical or callable(indexed_pin_source):
         candidate_pins = _lut_clock_candidate_pins(
             indexed_cells_by_type("LUT2")
             if callable(indexed_cells_by_type) else cells.items()
@@ -915,9 +927,23 @@ def export_rwroute_input(
 
     endpoint_index_seconds = time.perf_counter() - endpoint_index_started
     clock_validation_started = time.perf_counter()
-    clock_gates = _qualified_lut_clock_gates(
-        cells, clock_endpoints, candidate_pins
-    )
+    if typed_clock_gate_qualification:
+        assert callable(indexed_clock_gate_source)
+        clock_route_ordinals = dict(indexed_clock_gate_source(
+            packed_path,
+            ordinal_offset=len(io_ordinals),
+            io_endpoints=(
+                (bit, endpoint[0], endpoint[1], endpoint[2])
+                for bit, endpoint in sorted(io_by_bit.items())
+            ),
+        ))
+        clock_gates: Mapping[str, int] | Set[str] = clock_route_ordinals
+    else:
+        assert clock_endpoints is not None
+        assert candidate_pins is not None
+        clock_gates = _qualified_lut_clock_gates(
+            cells, clock_endpoints, candidate_pins
+        )
     for name in sorted(clock_gates):
         lines.append(
             f"CLOCK_GATE\t{safe_name(name, clock_route_ordinals.get(name))}"

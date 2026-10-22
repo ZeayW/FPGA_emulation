@@ -9,7 +9,7 @@ import uuid
 from collections import Counter, defaultdict
 from collections.abc import Iterator, Mapping as MappingABC
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 from .emuir_compact import compact_metadata, is_compact_emuir
 from .emuir_storage import _RowsForOwner, _decode, open_emuir_sqlite_read_only
@@ -497,6 +497,295 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
                     int(row["port_bit"]), int(row["port_width"]), direction,
                     str(row["physical_site"]), route_ordinal, route_pin,
                 )
+        finally:
+            connection.close()
+
+    def iter_qualified_lut_clock_gates(
+        self,
+        handoff_path: Path,
+        *,
+        ordinal_offset: int = 0,
+        io_endpoints: Iterable[Tuple[int, str, str, str]] = (),
+    ) -> Iterator[Tuple[str, int]]:
+        """Qualify routed LUT2 clock gates with file-backed set operations.
+
+        The compatibility exporter reconstructs candidate cells and all pins
+        on their three nets in Python.  On a large mapped design that creates
+        another LUT/endpoint-sized object graph immediately before RWRoute.
+        The indexed production path already owns the same facts in ``cells``,
+        ``cell_pins`` and the physical handoff.  Keep candidates and the
+        transitive closed-chain qualification in SQLite and return only the
+        gates that RapidWright must treat specially.
+        """
+
+        if (
+            isinstance(ordinal_offset, bool)
+            or not isinstance(ordinal_offset, int)
+            or ordinal_offset < 0
+        ):
+            raise ValidationError("RWRoute ordinal offset is invalid")
+        connection = self._physical_connection(handoff_path)
+        try:
+            connection.execute("PRAGMA temp_store=FILE")
+            connection.executescript(
+                """
+                CREATE TEMP TABLE rwroute_io_endpoints(
+                  net_bit INTEGER NOT NULL,
+                  seq INTEGER NOT NULL,
+                  cell_id TEXT NOT NULL,
+                  pin TEXT NOT NULL,
+                  role INTEGER NOT NULL CHECK(role IN (0,1)),
+                  PRIMARY KEY(net_bit,seq)
+                ) WITHOUT ROWID;
+                CREATE TEMP TABLE rwroute_clock_candidates(
+                  name TEXT PRIMARY KEY,
+                  root_bit INTEGER NOT NULL,
+                  enable_bit INTEGER NOT NULL,
+                  output_bit INTEGER NOT NULL,
+                  route_ordinal INTEGER NOT NULL
+                ) WITHOUT ROWID;
+                """
+            )
+            io_batch = []
+            for seq, endpoint in enumerate(io_endpoints):
+                if (
+                    not isinstance(endpoint, tuple)
+                    or len(endpoint) != 4
+                ):
+                    raise ValidationError(
+                        "RWRoute indexed I/O endpoint is invalid"
+                    )
+                bit, cell_id, pin, role = endpoint
+                if (
+                    isinstance(bit, bool)
+                    or not isinstance(bit, int)
+                    or not isinstance(cell_id, str)
+                    or not isinstance(pin, str)
+                    or role not in {"driver", "sink"}
+                ):
+                    raise ValidationError(
+                        "RWRoute indexed I/O endpoint is invalid"
+                    )
+                io_batch.append(
+                    (bit, seq, cell_id, pin, 0 if role == "driver" else 1)
+                )
+            connection.executemany(
+                "INSERT INTO rwroute_io_endpoints VALUES (?,?,?,?,?)",
+                io_batch,
+            )
+
+            # Parse only one LUT2 row at a time.  ``record_json`` contains the
+            # small parameter payload while the routed pin identities remain
+            # typed columns.  The window expression exactly matches the CELL
+            # ordinal stream, including the two slots consumed by LUT6_2.
+            candidate_batch = []
+            rows = connection.execute(
+                """
+                WITH physical_cells AS (
+                  SELECT a.instance,c.type,
+                         ? + sum(CASE WHEN c.type='LUT6_2' THEN 2 ELSE 1 END)
+                           OVER (
+                             ORDER BY a.instance
+                             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                           )
+                           - CASE WHEN c.type='LUT6_2' THEN 2 ELSE 1 END
+                           AS route_ordinal
+                    FROM physical.assignment AS a
+                    JOIN cells AS c ON c.id=a.instance
+                )
+                SELECT c.id,c.record_json,r.route_ordinal,
+                       sum(CASE WHEN p.port='I0' THEN 1 ELSE 0 END) AS i0_rows,
+                       sum(CASE WHEN p.port='I1' THEN 1 ELSE 0 END) AS i1_rows,
+                       sum(CASE WHEN p.port='O' THEN 1 ELSE 0 END) AS o_rows,
+                       max(CASE WHEN p.port='I0' AND p.port_width=1
+                                     AND p.port_bit=0 AND p.value_kind=0
+                                THEN p.net_bit END) AS root_bit,
+                       max(CASE WHEN p.port='I1' AND p.port_width=1
+                                     AND p.port_bit=0 AND p.value_kind=0
+                                THEN p.net_bit END) AS enable_bit,
+                       max(CASE WHEN p.port='O' AND p.port_width=1
+                                     AND p.port_bit=0 AND p.value_kind=0
+                                THEN p.net_bit END) AS output_bit
+                  FROM cells AS c
+             LEFT JOIN physical_cells AS r ON r.instance=c.id
+             LEFT JOIN cell_pins AS p ON p.cell_id=c.id
+                 WHERE c.type='LUT2'
+                 GROUP BY c.id,c.record_json,r.route_ordinal
+                 ORDER BY c.id
+                """,
+                (ordinal_offset,),
+            )
+            for row in rows:
+                record = json.loads(row["record_json"])
+                if not isinstance(record, dict):
+                    raise ValidationError(
+                        f"indexed mapped record {row['id']!r} is invalid"
+                    )
+                parameters = record.get("parameters", {})
+                if not isinstance(parameters, MappingABC):
+                    raise ValidationError(
+                        "primitive parameter 'INIT' has invalid type"
+                    )
+                value = parameters.get("INIT")
+                if value is None:
+                    continue
+                if isinstance(value, bool):
+                    normalized = "1" if value else "0"
+                elif isinstance(value, int):
+                    normalized = str(value)
+                elif isinstance(value, str):
+                    if value and set(value) <= {"0", "1"}:
+                        normalized = str(int(value, 2))
+                    elif any(character in value for character in "\t\r\n"):
+                        raise ValidationError(
+                            "primitive parameter 'INIT' is not TSV-safe"
+                        )
+                    else:
+                        normalized = value
+                else:
+                    raise ValidationError(
+                        "primitive parameter 'INIT' has invalid type"
+                    )
+                if normalized != "8":
+                    continue
+                if (
+                    row["route_ordinal"] is None
+                    or int(row["i0_rows"]) != 1
+                    or int(row["i1_rows"]) != 1
+                    or int(row["o_rows"]) != 1
+                    or row["root_bit"] is None
+                    or row["enable_bit"] is None
+                    or row["output_bit"] is None
+                ):
+                    continue
+                candidate_batch.append(
+                    (
+                        str(row["id"]), int(row["root_bit"]),
+                        int(row["enable_bit"]), int(row["output_bit"]),
+                        int(row["route_ordinal"]),
+                    )
+                )
+                if len(candidate_batch) >= 4096:
+                    connection.executemany(
+                        "INSERT INTO rwroute_clock_candidates VALUES (?,?,?,?,?)",
+                        candidate_batch,
+                    )
+                    candidate_batch.clear()
+            connection.executemany(
+                "INSERT INTO rwroute_clock_candidates VALUES (?,?,?,?,?)",
+                candidate_batch,
+            )
+            connection.executescript(
+                """
+                CREATE TEMP VIEW rwroute_clock_endpoints AS
+                SELECT p.net_bit,p.cell_id,
+                       CASE WHEN p.port_width=1 THEN p.port
+                            ELSE p.port || '[' || p.port_bit || ']' END AS pin,
+                       CASE WHEN p.direction IN (1,2) THEN 0 ELSE 1 END AS role
+                  FROM cell_pins AS p
+                  JOIN physical.assignment AS a ON a.instance=p.cell_id
+                 WHERE p.value_kind=0
+                UNION ALL
+                SELECT net_bit,cell_id,pin,role
+                  FROM rwroute_io_endpoints;
+
+                DELETE FROM rwroute_clock_candidates AS c
+                 WHERE (SELECT count(*) FROM rwroute_clock_endpoints AS e
+                         WHERE e.net_bit=c.enable_bit AND e.role=0) != 1
+                    OR NOT EXISTS (
+                         SELECT 1
+                           FROM rwroute_clock_endpoints AS e
+                           JOIN cells AS d ON d.id=e.cell_id
+                          WHERE e.net_bit=c.enable_bit AND e.role=0
+                            AND d.type='FDRE' AND e.pin='Q'
+                       );
+
+                CREATE TEMP TABLE rwroute_qualified_clock_gates(
+                  name TEXT PRIMARY KEY,
+                  root_bit INTEGER NOT NULL,
+                  output_bit INTEGER NOT NULL,
+                  route_ordinal INTEGER NOT NULL
+                ) WITHOUT ROWID;
+                INSERT INTO rwroute_qualified_clock_gates
+                SELECT c.name,c.root_bit,c.output_bit,c.route_ordinal
+                  FROM rwroute_clock_candidates AS c
+                 WHERE (
+                       NOT EXISTS (
+                         SELECT 1 FROM rwroute_clock_endpoints AS e
+                          WHERE e.net_bit=c.root_bit AND e.role=0
+                       )
+                       OR (
+                         (SELECT count(*) FROM rwroute_clock_endpoints AS e
+                           WHERE e.net_bit=c.root_bit AND e.role=0) = 1
+                         AND EXISTS (
+                           SELECT 1
+                             FROM rwroute_clock_endpoints AS e
+                             JOIN rwroute_clock_candidates AS n
+                               ON n.name=e.cell_id
+                            WHERE e.net_bit=c.root_bit AND e.role=0
+                              AND e.pin='O'
+                         )
+                       )
+                     )
+                   AND EXISTS (
+                         SELECT 1 FROM rwroute_clock_endpoints AS e
+                          WHERE e.net_bit=c.output_bit AND e.role=1
+                       )
+                   AND NOT EXISTS (
+                         SELECT 1
+                           FROM rwroute_clock_endpoints AS e
+                          WHERE e.net_bit=c.output_bit AND e.role=1
+                            AND e.pin NOT IN ('C','CLK','CLKARDCLK','CLKBWRCLK')
+                            AND NOT EXISTS (
+                              SELECT 1
+                                FROM rwroute_clock_candidates AS n
+                               WHERE n.name=e.cell_id AND e.pin='I0'
+                            )
+                       );
+                """
+            )
+
+            # Preserve only closed candidate chains.  Each delete shrinks the
+            # typed relation; Python never retains the candidate graph.
+            while True:
+                connection.execute(
+                    """
+                    DELETE FROM rwroute_qualified_clock_gates AS q
+                     WHERE EXISTS (
+                           SELECT 1
+                             FROM rwroute_clock_endpoints AS e
+                             JOIN rwroute_clock_candidates AS n
+                               ON n.name=e.cell_id
+                            WHERE e.net_bit=q.root_bit AND e.role=0
+                              AND e.pin='O'
+                              AND NOT EXISTS (
+                                SELECT 1
+                                  FROM rwroute_qualified_clock_gates AS keep
+                                 WHERE keep.name=e.cell_id
+                              )
+                         )
+                        OR EXISTS (
+                           SELECT 1
+                             FROM rwroute_clock_endpoints AS e
+                             JOIN rwroute_clock_candidates AS n
+                               ON n.name=e.cell_id
+                            WHERE e.net_bit=q.output_bit AND e.role=1
+                              AND e.pin='I0'
+                              AND NOT EXISTS (
+                                SELECT 1
+                                  FROM rwroute_qualified_clock_gates AS keep
+                                 WHERE keep.name=e.cell_id
+                              )
+                         )
+                    """
+                )
+                if int(connection.execute("SELECT changes()").fetchone()[0]) == 0:
+                    break
+            for row in connection.execute(
+                """SELECT name,route_ordinal
+                     FROM rwroute_qualified_clock_gates ORDER BY name"""
+            ):
+                yield str(row[0]), int(row[1])
         finally:
             connection.close()
 
