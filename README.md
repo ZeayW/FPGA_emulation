@@ -72,6 +72,16 @@ debugging. On a 100,000-cluster/net/path adapter fixture, typed encoding took
 byte-identical native output. Typed IPC was 9,900,418 bytes versus 8,411,397
 text bytes, so this result demonstrates conversion, parsing and disk removal,
 not compression. Large NVDLA qualification remains required.
+Inside PATRON, net driver/sink members and path-net members now occupy two flat
+integer pools referenced by fixed-width ranges. The cluster-to-net and
+net-to-path reverse relations are built by a bounded two-pass count/fill into
+CSR, replacing one `std::set` and one `std::vector` object per graph row; the
+unused ranked-path tree is gone. On a 500,000-cluster/net/path typed fixture,
+three-run native median time fell from 1.090 to 0.989 seconds and peak RSS from
+769,146,880 to 601,522,176 bytes (-21.8%), with byte-identical output. The
+remaining ProxyNet/ProxyPath payloads and four mutable path-order trees still
+scale with the graph and remain Phase 3 memory work. This is adapter evidence,
+not NVDLA qualification.
 Production clustering now consumes compact EmuIR through ordered integer
 SQLite cursors. It keeps only a four-byte original-to-lexical cell permutation,
 compact union-find arrays and the final cluster records; it no longer decodes a

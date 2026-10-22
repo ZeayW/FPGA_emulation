@@ -50,9 +50,88 @@ struct Cluster {
   std::vector<double> weight;
 };
 
+void require(bool condition, const char* message);
+
+class PackedIndexRange {
+ public:
+  using const_iterator = const int*;
+  using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+
+  PackedIndexRange() = default;
+  PackedIndexRange(const std::vector<int>& values,
+                   std::size_t begin,
+                   std::size_t end) {
+    set_offsets(begin, end);
+    bind(values);
+  }
+
+  void set_offsets(std::size_t begin, std::size_t end) {
+    require(begin <= end &&
+                end <= static_cast<std::size_t>(
+                           std::numeric_limits<std::uint32_t>::max()),
+            "PATRON packed member range is too large");
+    begin_ = static_cast<std::uint32_t>(begin);
+    end_ = static_cast<std::uint32_t>(end);
+  }
+
+  void bind(const std::vector<int>& values) {
+    require(end_ <= values.size(), "invalid PATRON packed member range");
+    values_ = values.empty() ? nullptr : values.data();
+  }
+
+  const_iterator begin() const {
+    return values_ == nullptr ? nullptr : values_ + begin_;
+  }
+  const_iterator end() const {
+    return values_ == nullptr ? nullptr : values_ + end_;
+  }
+  const_reverse_iterator rbegin() const {
+    return const_reverse_iterator(end());
+  }
+  const_reverse_iterator rend() const {
+    return const_reverse_iterator(begin());
+  }
+  std::size_t size() const { return end_ - begin_; }
+  bool empty() const { return begin_ == end_; }
+  int front() const {
+    require(!empty() && values_ != nullptr,
+            "empty PATRON packed member range");
+    return values_[begin_];
+  }
+
+ private:
+  const int* values_ = nullptr;
+  std::uint32_t begin_ = 0;
+  std::uint32_t end_ = 0;
+};
+
+class PackedAdjacency {
+ public:
+  PackedAdjacency() = default;
+  PackedAdjacency(std::vector<std::uint32_t> offsets,
+                  std::vector<int> values)
+      : offsets_(std::move(offsets)), values_(std::move(values)) {
+    require(!offsets_.empty() && offsets_.front() == 0 &&
+                offsets_.back() == values_.size(),
+            "invalid PATRON packed adjacency");
+  }
+
+  PackedIndexRange operator[](int row) const {
+    require(row >= 0 &&
+                static_cast<std::size_t>(row + 1) < offsets_.size(),
+            "invalid PATRON adjacency lookup");
+    return PackedIndexRange(
+        values_, offsets_[row], offsets_[static_cast<std::size_t>(row) + 1]);
+  }
+
+ private:
+  std::vector<std::uint32_t> offsets_;
+  std::vector<int> values_;
+};
+
 struct Net {
-  std::vector<int> drivers;
-  std::vector<int> sinks;
+  PackedIndexRange drivers;
+  PackedIndexRange sinks;
 };
 
 struct Transition {
@@ -66,7 +145,7 @@ struct Path {
   double slack_ns = 0.0;
   int start_cluster = -1;
   int end_cluster = -1;
-  std::vector<int> nets;
+  PackedIndexRange nets;
   int feedback_source = -1;
   int feedback_sink = -1;
   double feedback_residual_ns = 0.0;
@@ -110,7 +189,19 @@ struct Model {
   std::vector<std::vector<Route>> route;
   std::vector<Net> net;
   std::vector<Path> path;
+  std::vector<int> net_members;
+  std::vector<int> path_nets;
 };
+
+void bind_packed_members(Model& model) {
+  for (Net& net : model.net) {
+    net.drivers.bind(model.net_members);
+    net.sinks.bind(model.net_members);
+  }
+  for (Path& path : model.path) {
+    path.nets.bind(model.path_nets);
+  }
+}
 
 struct Evaluation {
   bool feasible = false;
@@ -152,7 +243,6 @@ struct ProxyState {
   std::vector<ProxyPathState> path;
   std::vector<std::set<int>> domain_paths;
   std::set<std::pair<double, int>> slack_path_order;
-  std::set<std::pair<long long, int>> ranked_path_order;
   std::set<std::pair<long long, int>> hop_path_order;
   std::set<std::pair<long long, int>> ratio_sum_path_order;
   std::set<std::tuple<long long, long long, int>> objective_path_order;
@@ -578,23 +668,28 @@ Model read_text_model(const std::string& path) {
     int drivers = -1;
     stream >> index >> drivers;
     require(index == net && drivers > 0, "invalid NET drivers");
+    const std::size_t driver_begin = model.net_members.size();
     for (int count = 0; count < drivers; ++count) {
       int cluster = -1;
       stream >> cluster;
       require(cluster >= 0 && cluster < model.clusters,
               "invalid NET driver");
-      model.net[net].drivers.push_back(cluster);
+      model.net_members.push_back(cluster);
     }
+    model.net[net].drivers.set_offsets(
+        driver_begin, model.net_members.size());
     int sinks = -1;
     stream >> sinks;
     require(sinks > 0, "invalid NET sinks");
+    const std::size_t sink_begin = model.net_members.size();
     for (int count = 0; count < sinks; ++count) {
       int cluster = -1;
       stream >> cluster;
       require(cluster >= 0 && cluster < model.clusters,
               "invalid NET sink");
-      model.net[net].sinks.push_back(cluster);
+      model.net_members.push_back(cluster);
     }
+    model.net[net].sinks.set_offsets(sink_begin, model.net_members.size());
   }
 
   model.path.resize(model.paths);
@@ -617,12 +712,15 @@ Model read_text_model(const std::string& path) {
                     && model.path[path_index].end_cluster >= 0
                     && model.path[path_index].end_cluster < model.clusters),
             "invalid PATH endpoints");
+    const std::size_t path_net_begin = model.path_nets.size();
     for (int count = 0; count < nets; ++count) {
       int net = -1;
       stream >> net;
       require(net >= 0 && net < model.nets, "invalid PATH net");
-      model.path[path_index].nets.push_back(net);
+      model.path_nets.push_back(net);
     }
+    model.path[path_index].nets.set_offsets(
+        path_net_begin, model.path_nets.size());
     if (flow_v11) {
       stream >> model.path[path_index].feedback_source
           >> model.path[path_index].feedback_sink
@@ -648,6 +746,7 @@ Model read_text_model(const std::string& path) {
   }
   stream >> token;
   require(stream.good() && token == "END", "missing END");
+  bind_packed_members(model);
   return model;
 }
 
@@ -966,24 +1065,27 @@ Model read_typed_model(const std::string& path) {
             "non-canonical PATRON typed net index");
     const int drivers =
         typed_count(reader.u64("net driver count"), "net driver count", true);
-    model.net[net].drivers.reserve(drivers);
+    const std::size_t driver_begin = model.net_members.size();
     for (int count = 0; count < drivers; ++count) {
       const int cluster = typed_count(reader.u32("net driver"),
                                       "net driver", false);
       require(cluster >= 0 && cluster < model.clusters,
               "invalid PATRON typed net driver");
-      model.net[net].drivers.push_back(cluster);
+      model.net_members.push_back(cluster);
     }
+    model.net[net].drivers.set_offsets(
+        driver_begin, model.net_members.size());
     const int sinks =
         typed_count(reader.u64("net sink count"), "net sink count", true);
-    model.net[net].sinks.reserve(sinks);
+    const std::size_t sink_begin = model.net_members.size();
     for (int count = 0; count < sinks; ++count) {
       const int cluster = typed_count(reader.u32("net sink"),
                                       "net sink", false);
       require(cluster >= 0 && cluster < model.clusters,
               "invalid PATRON typed net sink");
-      model.net[net].sinks.push_back(cluster);
+      model.net_members.push_back(cluster);
     }
+    model.net[net].sinks.set_offsets(sink_begin, model.net_members.size());
   }
 
   model.path.resize(model.paths);
@@ -1007,14 +1109,15 @@ Model read_typed_model(const std::string& path) {
                   path_record.end_cluster >= 0 &&
                   path_record.end_cluster < model.clusters)),
             "invalid PATRON typed path");
-    path_record.nets.reserve(path_nets);
+    const std::size_t path_net_begin = model.path_nets.size();
     for (int count = 0; count < path_nets; ++count) {
       const int net =
           typed_count(reader.u32("path net"), "path net", false);
       require(net >= 0 && net < model.nets,
               "invalid PATRON typed path net");
-      path_record.nets.push_back(net);
+      model.path_nets.push_back(net);
     }
+    path_record.nets.set_offsets(path_net_begin, model.path_nets.size());
     if (physical_feedback) {
       path_record.feedback_source = reader.i32("feedback source");
       path_record.feedback_sink = reader.i32("feedback sink");
@@ -1047,6 +1150,7 @@ Model read_typed_model(const std::string& path) {
   input->read(&trailing, 1);
   require(input->gcount() == 0 && input->eof(),
           "trailing PATRON typed input bytes");
+  bind_packed_members(model);
   return model;
 }
 
@@ -1585,8 +1689,6 @@ ProxyState build_proxy_state(
     }
     state.slack_path_order.emplace(
         state.path[path].normalized_slack, path);
-    state.ranked_path_order.emplace(
-        rank_float(state.path[path].normalized_slack), path);
     state.hop_path_order.emplace(state.path[path].hops, path);
     state.ratio_sum_path_order.emplace(state.path[path].ratio_sum, path);
     state.objective_path_order.emplace(
@@ -1596,8 +1698,7 @@ ProxyState build_proxy_state(
     state.snaking += state.path[path].snaking;
     state.transitions += state.path[path].transitions;
   }
-  require(!state.slack_path_order.empty() && !state.ranked_path_order.empty()
-              && !state.hop_path_order.empty()
+  require(!state.slack_path_order.empty() && !state.hop_path_order.empty()
               && !state.ratio_sum_path_order.empty()
               && !state.objective_path_order.empty()
               && !state.ratio_order.empty(),
@@ -1606,42 +1707,89 @@ ProxyState build_proxy_state(
   return state;
 }
 
-std::vector<std::vector<int>> build_cluster_nets(const Model& model) {
-  std::vector<std::set<int>> sets(model.clusters);
-  for (int net = 0; net < model.nets; ++net) {
-    for (int cluster : model.net[net].drivers) {
-      sets[cluster].insert(net);
-    }
-    for (int cluster : model.net[net].sinks) {
-      sets[cluster].insert(net);
-    }
+template <typename Visit>
+PackedAdjacency build_ordered_adjacency(int rows, Visit visit) {
+  require(rows >= 0, "invalid PATRON adjacency row count");
+  std::vector<std::uint32_t> counts(rows, 0);
+  visit([&](int row, int value) {
+    require(row >= 0 && row < rows && value >= 0,
+            "invalid PATRON adjacency identity");
+    require(counts[row] < std::numeric_limits<std::uint32_t>::max(),
+            "PATRON adjacency row is too large");
+    ++counts[row];
+  });
+  std::vector<std::uint32_t> offsets(
+      static_cast<std::size_t>(rows) + 1, 0);
+  std::uint64_t total = 0;
+  for (int row = 0; row < rows; ++row) {
+    total += counts[row];
+    require(total <= std::numeric_limits<std::uint32_t>::max(),
+            "PATRON adjacency is too large");
+    offsets[static_cast<std::size_t>(row) + 1] =
+        static_cast<std::uint32_t>(total);
   }
-  std::vector<std::vector<int>> result(model.clusters);
-  for (int cluster = 0; cluster < model.clusters; ++cluster) {
-    result[cluster].assign(sets[cluster].begin(), sets[cluster].end());
+  std::vector<std::uint32_t> cursor(offsets.begin(), offsets.end() - 1);
+  std::vector<int> values(static_cast<std::size_t>(total), 0);
+  visit([&](int row, int value) {
+    const std::uint32_t position = cursor[row]++;
+    require(position < offsets[static_cast<std::size_t>(row) + 1],
+            "PATRON adjacency count changed between passes");
+    values[position] = value;
+  });
+  std::vector<std::uint32_t> compact_offsets(
+      static_cast<std::size_t>(rows) + 1, 0);
+  std::size_t output = 0;
+  for (int row = 0; row < rows; ++row) {
+    require(cursor[row] == offsets[static_cast<std::size_t>(row) + 1],
+            "PATRON adjacency count changed between passes");
+    bool first = true;
+    int previous = -1;
+    for (std::uint32_t input = offsets[row];
+         input < offsets[static_cast<std::size_t>(row) + 1]; ++input) {
+      const int value = values[input];
+      require(first || value >= previous,
+              "non-canonical PATRON adjacency order");
+      if (first || value != previous) {
+        values[output++] = value;
+      }
+      first = false;
+      previous = value;
+    }
+    compact_offsets[static_cast<std::size_t>(row) + 1] =
+        static_cast<std::uint32_t>(output);
   }
-  return result;
+  values.resize(output);
+  return PackedAdjacency(std::move(compact_offsets), std::move(values));
 }
 
-std::vector<std::vector<int>> build_net_paths(const Model& model) {
-  std::vector<std::set<int>> sets(model.nets);
-  for (int path = 0; path < model.paths; ++path) {
-    for (int net : model.path[path].nets) {
-      sets[net].insert(path);
+PackedAdjacency build_cluster_nets(const Model& model) {
+  return build_ordered_adjacency(model.clusters, [&](const auto& emit) {
+    for (int net = 0; net < model.nets; ++net) {
+      for (int cluster : model.net[net].drivers) {
+        emit(cluster, net);
+      }
+      for (int cluster : model.net[net].sinks) {
+        emit(cluster, net);
+      }
     }
-  }
-  std::vector<std::vector<int>> result(model.nets);
-  for (int net = 0; net < model.nets; ++net) {
-    result[net].assign(sets[net].begin(), sets[net].end());
-  }
-  return result;
+  });
+}
+
+PackedAdjacency build_net_paths(const Model& model) {
+  return build_ordered_adjacency(model.nets, [&](const auto& emit) {
+    for (int path = 0; path < model.paths; ++path) {
+      for (int net : model.path[path].nets) {
+        emit(net, path);
+      }
+    }
+  });
 }
 
 ProxyDelta evaluate_proxy_move(
     const Model& model,
     ProxyState& state,
-    const std::vector<std::vector<int>>& cluster_nets,
-    const std::vector<std::vector<int>>& net_paths,
+    const PackedAdjacency& cluster_nets,
+    const PackedAdjacency& net_paths,
     int cluster,
     int target);
 
@@ -1652,8 +1800,8 @@ void apply_proxy_delta(const Model& model,
 std::vector<int> diagnose_flow_corridors(
     const Model& model,
     const ProxyState& state,
-    const std::vector<std::vector<int>>& cluster_nets,
-    const std::vector<std::vector<int>>& net_paths,
+    const PackedAdjacency& cluster_nets,
+    const PackedAdjacency& net_paths,
     const std::vector<double>& exposure,
     int cover_domain) {
   std::vector<int> selected_assignment;
@@ -3498,8 +3646,8 @@ void erase_one(std::multiset<int>& values, int value) {
 ProxyDelta evaluate_proxy_changes(
     const Model& model,
     ProxyState& state,
-    const std::vector<std::vector<int>>& cluster_nets,
-    const std::vector<std::vector<int>>& net_paths,
+    const PackedAdjacency& cluster_nets,
+    const PackedAdjacency& net_paths,
     int cluster,
     int target,
     int partner = -1,
@@ -3761,8 +3909,8 @@ ProxyDelta evaluate_proxy_changes(
 ProxyDelta evaluate_proxy_move(
     const Model& model,
     ProxyState& state,
-    const std::vector<std::vector<int>>& cluster_nets,
-    const std::vector<std::vector<int>>& net_paths,
+    const PackedAdjacency& cluster_nets,
+    const PackedAdjacency& net_paths,
     int cluster,
     int target) {
   return evaluate_proxy_changes(
@@ -3772,8 +3920,8 @@ ProxyDelta evaluate_proxy_move(
 ProxyDelta evaluate_proxy_ejection(
     const Model& model,
     ProxyState& state,
-    const std::vector<std::vector<int>>& cluster_nets,
-    const std::vector<std::vector<int>>& net_paths,
+    const PackedAdjacency& cluster_nets,
+    const PackedAdjacency& net_paths,
     int cluster,
     int partner,
     int partner_target) {
@@ -3799,8 +3947,8 @@ ProxyDelta evaluate_proxy_ejection(
 ProxyDelta evaluate_proxy_comove(
     const Model& model,
     ProxyState& state,
-    const std::vector<std::vector<int>>& cluster_nets,
-    const std::vector<std::vector<int>>& net_paths,
+    const PackedAdjacency& cluster_nets,
+    const PackedAdjacency& net_paths,
     int cluster,
     int partner,
     int target) {
@@ -3861,9 +4009,6 @@ void apply_proxy_delta(const Model& model,
       const std::size_t erased = state.domain_paths[domain].erase(item.first);
       require(erased == 1, "missing scalable domain/path dependency");
     }
-    const std::size_t ranked_erased = state.ranked_path_order.erase(
-        {rank_float(old.normalized_slack), item.first});
-    require(ranked_erased == 1, "missing scalable ranked path");
     const std::size_t hop_erased = state.hop_path_order.erase(
         {old.hops, item.first});
     require(hop_erased == 1, "missing scalable hop/path record");
@@ -3889,8 +4034,6 @@ void apply_proxy_delta(const Model& model,
       state.domain_paths[domain].insert(item.first);
     }
     state.slack_path_order.emplace(old.normalized_slack, item.first);
-    state.ranked_path_order.emplace(
-        rank_float(old.normalized_slack), item.first);
     state.hop_path_order.emplace(old.hops, item.first);
     state.ratio_sum_path_order.emplace(old.ratio_sum, item.first);
     state.objective_path_order.emplace(
@@ -5021,7 +5164,7 @@ void run_scalable(const Model& model,
     long long skipped_large_cover_groups = 0;
     int maximum_cover_group_size = 0;
     int maximum_cover_group_reduction = 0;
-    const auto evaluate_cover_group = [&](const std::vector<int>& members,
+    const auto evaluate_cover_group = [&](const PackedIndexRange& members,
                                           int source,
                                           int target) {
       ++cover_transition_options;
