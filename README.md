@@ -1058,8 +1058,10 @@ exported model. Timing reconstruction carries fixed-slot TX time and ratio in
 each scheduled-hop record, so physical-check binding no longer rebuilds a
 second entry-keyed ScheduleStore dictionary. Measurement import validates
 canonical endpoint order and the independent arc equations while streaming
-directly into result records; it no longer retains a second endpoint-keyed
-measurement dictionary. Check validation likewise keeps one per-path
+directly into three fixed-width scalar columns that reuse the existing typed
+check identity; it no longer retains a second endpoint-keyed measurement
+dictionary or one Python result dictionary per check. Check validation likewise
+keeps one per-path
 target/runtime state instead of several duplicate path populations. Production
 event/check construction stores interned strings, fixed-width columns and
 representative indices in `_IndexedEventChecks`; it validates target/runtime
@@ -1082,7 +1084,12 @@ overlay with a 592-byte lazy object; full original-check order and WNS/TNS
 accounting are unchanged. Interleaved legacy input uses an explicit checked
 compatibility fallback. Separate 200,000-check and 100,000-unique-check
 synthetic measurements reduced traced peak allocation by 52.8% and 49.4%,
-respectively. A separate 200,000-path metadata fixture reduced retained traced
+respectively. A 200,000-row result-import comparison, measured after the
+shared check identities were constructed, reduced retained traced allocation
+from 73,624,528 to 5,205,354 bytes and traced peak from 73,624,712 to
+5,227,183 bytes; the typed result payload is exactly 4,800,000 bytes. Process
+peak RSS was 83,722,240 versus 188,334,080 bytes. A separate 200,000-path
+metadata fixture reduced retained traced
 allocation from 56,886,856 to 7,908,412 bytes (-86.1%) and peak allocation from
 56,887,132 to 37,454,410 bytes (-34.2%). These boundary measurements do not
 replace NVDLA Global STA qualification. See
@@ -1118,7 +1125,8 @@ RapidWright producers write the measured records directly into that owner.
 On 100,000 synthetic paths, typed read and full seal validation used 32,653,312
 bytes peak RSS versus 251,887,616 bytes for legacy JSON and occupied 24 MiB
 versus 30 MiB, while wall time changed from 0.73 to 0.90 seconds. Unique
-event/check identity tables remain W6 migration work; formal NVDLA Phase 7C
+event/check identity tables and the final per-path QoR JSON owner remain W6
+migration work; formal NVDLA Phase 7C
 wall/RSS/I/O and complete original-path coverage are still pending.
 
 ### Selected research references

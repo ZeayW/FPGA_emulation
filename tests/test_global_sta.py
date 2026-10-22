@@ -8,7 +8,7 @@ import pytest
 from emuflow.errors import ValidationError
 from emuflow.global_sta import (
     EventCheck, _EventCheckBuilder, _IndexedEventChecks,
-    _IndexedPathMetadata, _PathMetadataBuilder,
+    _IndexedMeasurements, _IndexedPathMetadata, _PathMetadataBuilder,
     _compress_path_equivalent_checks, _write_expanded_measurements,
     adopt_opensta_results, bind_physical_checks, build_opensta_timing,
     compare_system_timing, export_event_checks, read_engine_identity,
@@ -75,6 +75,33 @@ def test_measurement_requires_canonical_endpoint_order(tmp_path):
     )
     with pytest.raises(ValidationError, match="endpoint"):
         read_measurements(path, rows, verify_arcs=False)
+
+
+def test_measurements_use_fixed_width_scalars(tmp_path):
+    rows = [
+        EventCheck(f"path-{index}", "target", "capture", 1.0, (2.0,), 4.0)
+        for index in range(20000)
+    ]
+    path = tmp_path / "measurements.tsv"
+    with path.open("w") as stream:
+        stream.write("endpoint\tarrival_ns\trequired_ns\tslack_ns\n")
+        for index in range(len(rows)):
+            stream.write(f"o{index}\t2\t3\t1\n")
+
+    measurements = read_measurements(path, rows)
+
+    assert isinstance(measurements, _IndexedMeasurements)
+    assert len(measurements) == len(rows)
+    assert measurements.typed_payload_bytes == len(rows) * 3 * 8
+    assert measurements[0] == {
+        "path": "path-0",
+        "role": "target",
+        "event": "capture",
+        "arrival_ns": 3.0,
+        "required_ns": 4.0,
+        "slack_ns": 1.0,
+    }
+    assert measurements[-1]["path"] == "path-19999"
 
 
 def test_engine_identity_from_existing_banner(tmp_path):

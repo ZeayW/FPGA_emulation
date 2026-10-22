@@ -37,6 +37,75 @@ class EventCheck:
     required_ns: float
 
 
+class _IndexedMeasurements(Sequence[Mapping[str, object]]):
+    """Fixed-width OpenSTA scalar results over an existing check sequence.
+
+    Check identity already belongs to ``rows``.  Retaining it again in one
+    Python dictionary per measurement used substantially more memory than the
+    three engine scalars, especially for saved-result validation where every
+    original TX/commit/check row is read at once.  This view keeps exactly
+    three doubles per row and materializes a mapping only for the row currently
+    consumed by stitching or validation.
+    """
+
+    def __init__(
+        self,
+        rows: Sequence[EventCheck],
+        arrivals: array,
+        required: array,
+        slacks: array,
+    ):
+        if (
+            arrivals.typecode != "d"
+            or required.typecode != "d"
+            or slacks.typecode != "d"
+            or len(arrivals) != len(rows)
+            or len(required) != len(rows)
+            or len(slacks) != len(rows)
+        ):
+            raise ValidationError("global STA indexed measurements are malformed")
+        self._rows = rows
+        self._arrivals = arrivals
+        self._required = required
+        self._slacks = slacks
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        row = self._rows[index]
+        return {
+            "path": row.path,
+            "role": row.role,
+            "event": row.event,
+            "arrival_ns": self._arrivals[index],
+            "required_ns": self._required[index],
+            "slack_ns": self._slacks[index],
+        }
+
+    def __iter__(self):
+        for index in range(len(self)):
+            yield self[index]
+
+    def __eq__(self, other):
+        if not isinstance(other, Sequence) or len(self) != len(other):
+            return False
+        return all(left == right for left, right in zip(self, other))
+
+    @property
+    def typed_payload_bytes(self) -> int:
+        return sum(
+            values.itemsize * len(values)
+            for values in (self._arrivals, self._required, self._slacks)
+        )
+
+
 _EVENT_CHECK_ROLES = ("target", "runtime", "tx", "commit")
 _EVENT_CHECK_ROLE_INDEX = {
     role: index for index, role in enumerate(_EVENT_CHECK_ROLES)
@@ -1017,8 +1086,15 @@ exit 0
     return rows
 
 
-def read_measurements(path: Path, rows: Sequence[EventCheck], *, verify_arcs=True) -> list[dict]:
-    result = []
+def read_measurements(
+    path: Path,
+    rows: Sequence[EventCheck],
+    *,
+    verify_arcs=True,
+) -> _IndexedMeasurements:
+    arrivals = array("d")
+    required_values = array("d")
+    slacks = array("d")
     with path.open() as stream:
         if next(stream, "").strip() != "endpoint\tarrival_ns\trequired_ns\tslack_ns":
             raise ValidationError("invalid global STA measurements header")
@@ -1053,19 +1129,12 @@ def read_measurements(path: Path, rows: Sequence[EventCheck], *, verify_arcs=Tru
                         raise ValidationError(
                             f"global STA event binding disagrees at o{index}"
                         )
-            result.append(
-                {
-                    "path": row.path,
-                    "role": row.role,
-                    "event": row.event,
-                    "arrival_ns": numbers[0] + row.launch_ns,
-                    "required_ns": numbers[1] + row.launch_ns,
-                    "slack_ns": numbers[2],
-                }
-            )
-    if len(result) != len(rows):
+            arrivals.append(numbers[0] + row.launch_ns)
+            required_values.append(numbers[1] + row.launch_ns)
+            slacks.append(numbers[2])
+    if len(arrivals) != len(rows):
         raise ValidationError("global STA missing/extra/unconstrained endpoints")
-    return result
+    return _IndexedMeasurements(rows, arrivals, required_values, slacks)
 
 
 def _compress_path_equivalent_checks(
@@ -1228,7 +1297,7 @@ class _ExpandedMeasurementSequence(Sequence):
     second check-sized population of Python dictionaries before stitching.
     """
 
-    def __init__(self, rows: Sequence[EventCheck], representative_values: list[dict],
+    def __init__(self, rows: Sequence[EventCheck], representative_values: Sequence,
                  original_to_representative: Sequence[int]):
         if len(original_to_representative) != len(rows):
             raise ValidationError("global STA expansion population disagrees")
@@ -1274,7 +1343,7 @@ class _ExpandedMeasurementSequence(Sequence):
 
 
 def _write_expanded_measurements(path: Path, rows: Sequence[EventCheck],
-                                 representative_values: list[dict],
+                                 representative_values: Sequence,
                                  original_to_representative: Sequence[int],
                                  representative_checks: Sequence[EventCheck]
                                  | None = None,
