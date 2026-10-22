@@ -807,6 +807,53 @@ class LogicSegmentTimingTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 import_vpr_local_path_timing(raw, identity_path, output)
 
+    def test_local_path_timing_accepts_repeatable_lazy_path_sequence(self):
+        record = {
+            "id": "local-a",
+            "kind": "local",
+            "fpga": "fpga0",
+            "clock_domain": "clk",
+            "clock_period_ns": 10.0,
+            "required_time_ns": 9.0,
+            "start_pin": "i0.Q[0]",
+            "end_pin": "i1.D[0]",
+            "measurement": "endpoint-longest-path-fallback",
+            "path_pins": [],
+            "delay_ns": 2.5,
+        }
+        database = {
+            "schema": "emuflow.local-path-timing/v1",
+            "status": "pass",
+            "design": "dut",
+            "fpga": "fpga0",
+            "provider": "test",
+            "qualification": "endpoint-exact",
+            "identity_schema": "emuflow.local-path-identity/v2",
+            "source": {
+                "path_database_sha256": "a" * 64,
+                "original_ir_sha256": "b" * 64,
+                "assignment_sha256": "c" * 64,
+                "routes_sha256": "d" * 64,
+                "original_paths": 1,
+                "original_path_ids_sha256": path_id_set_sha256(["local-a"]),
+            },
+            "coverage": {"local_paths": 1},
+            "paths": (record,),
+        }
+        self.assertEqual(
+            validate_local_path_timing(database),
+            {
+                "status": "pass",
+                "fpga": "fpga0",
+                "local_paths": 1,
+                "maximum_delay_ns": 2.5,
+                "measurement_counts": {
+                    "explicit-routed-path-chain": 0,
+                    "endpoint-longest-path-fallback": 1,
+                },
+            },
+        )
+
     def test_vivado_pin_mapping_covers_logic_ff_and_memory_endpoints(self):
         ir = EmuIR(
             {

@@ -1061,7 +1061,9 @@ and query publication took 2.388 seconds, measurement import took 6.444
 seconds, traced Python peak was 7.962 MiB, and the importer executed 15 SQL
 queries with no per-row identity lookup. The identity store was 22,040,576
 bytes, query TSV 4,700,032 bytes, input measurements 5,200,041 bytes and final
-timing store 27,766,784 bytes. Local-path evidence and unique event/check
+timing store 27,766,784 bytes. Local-path validation now uses a lazy
+identity projection and one statistics pass instead of copying every path and
+rescanning the population. The local-path production file and unique event/check
 identity tables remain W6 migration work; formal NVDLA Phase 7C
 wall/RSS/I/O and complete original-path coverage are still pending.
 
