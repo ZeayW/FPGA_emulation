@@ -37,6 +37,21 @@ qualification maps and Phase 7 exporter maps follow those structural gaps.
 Further local OpenPARF staging-store cleanup is deferred unless NVDLA stage
 profiling shows it on the critical path.
 
+The TritonPart initializer now preserves compact Phase 3 ownership through
+input construction. Canonical cluster order and vertex weights are lazy views
+of the packed cluster columns, legal hyperedges are built from ordered compact
+endpoint ordinals into fixed-width CSR-style storage, and both hMetis variants
+plus fixed/edge-class files are streamed atomically. Deferred candidates keep
+the compact instance-owner view so cut discovery uses the ordered SQLite
+endpoint scan rather than recreating an instance-name dictionary and decoding
+the graph. The independent balance check now computes totals and assigned
+loads in one pass. A 200,000-hyperedge representation comparison used
+8,372,861 traced bytes (7,888,906-byte payload) instead of 147,099,118 bytes;
+a separate 200,000-cluster balance comparison reduced traced peak allocation
+from 56,891,500 to 22,376 bytes. Logical records and generated input bytes are
+differentially identical. These measurements do not replace the required
+NVDLA replay.
+
 Representation-only waves must preserve the effective provider, seed,
 constraints, ordering, and external tool versions. DeviceRegionIndex,
 pin-aware SLR cost, and other placement-policy changes are qualified in

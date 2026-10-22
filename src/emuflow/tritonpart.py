@@ -5,6 +5,7 @@ import heapq
 import math
 import shutil
 import subprocess
+from array import array
 from bisect import bisect_left
 from collections import defaultdict
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import (
     Any,
     Dict,
     Iterable,
+    Iterator,
     List,
     Mapping,
     Optional,
@@ -25,13 +27,15 @@ from .io import read_json, write_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .partition import (
+    _CompactClusterRecords,
+    _compact_partition_ir_path,
     active_partition_fpgas,
     build_partition_assignment,
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
 )
 from .partition_limits import strict_balance_limits, validate_indivisible_limits
-from .phase3_runtime import phase3_runtime_call
+from .phase3_runtime import phase3_runtime_call, phase3_runtime_observe
 from .platform import Platform
 from .resources import RESOURCE_FIELDS
 from .sta import (
@@ -44,6 +48,169 @@ TRITONPART_INPUT_SCHEMA = "emuflow.tritonpart-input/v1"
 PARTITION_NET_WEIGHTS_SCHEMA = "emuflow.partition-net-weights/v1"
 TRITONPART_PROVIDER = "tritonpart-openroad-hypergraph-v1"
 TRITONPART_OBJECTIVE_NET_CUT = "net-cut-v1"
+
+
+class _CompactClusterOrder(list):
+    """Canonical cluster identities without one Python string per vertex."""
+
+    def __init__(self, count: int) -> None:
+        super().__init__()
+        self.count = count
+
+    def __len__(self) -> int:
+        return self.count
+
+    def __iter__(self) -> Iterator[str]:
+        for index in range(self.count):
+            yield f"c{index:06d}"
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(self.count))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("compact cluster index must be an integer")
+        if index < 0:
+            index += self.count
+        if index < 0 or index >= self.count:
+            raise IndexError("compact cluster index out of range")
+        return f"c{index:06d}"
+
+
+class _CompactVertexWeights(list):
+    """Lazy TritonPart vertex rows over the authoritative cluster columns."""
+
+    def __init__(
+        self,
+        clusters: _CompactClusterRecords,
+        resource_fields: Sequence[str],
+    ) -> None:
+        super().__init__()
+        self.clusters = clusters
+        field_index = {
+            field: index for index, field in enumerate(RESOURCE_FIELDS)
+        }
+        self.columns = tuple(
+            clusters._resource_columns[field_index[field]]
+            for field in resource_fields
+        )
+
+    def __len__(self) -> int:
+        return len(self.clusters)
+
+    def _row(self, index: int) -> List[int]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("compact vertex index out of range")
+        return [
+            self.clusters.cluster_member_count(index),
+            *(column[index] for column in self.columns),
+        ]
+
+    def __iter__(self) -> Iterator[List[int]]:
+        for index in range(len(self)):
+            yield self._row(index)
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [self._row(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("compact vertex index must be an integer")
+        return self._row(index)
+
+    def totals(self) -> List[int]:
+        return [
+            len(self.clusters.source_cluster_indices),
+            *(sum(column) for column in self.columns),
+        ]
+
+
+class _PackedHyperedgeRecords(list):
+    """Packed legal hyperedges expanded one record at a time."""
+
+    _CUT_CLASSES = (
+        "register_output",
+        "register_input",
+        "combinational",
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.name_bytes = bytearray()
+        self.name_offsets = array("Q", [0])
+        self.member_offsets = array("Q", [0])
+        self.members = array("I")
+        self.weights = array("d")
+        self.cut_classes = array("B")
+
+    def append_record(
+        self,
+        net_id: str,
+        cut_class: str,
+        weight: float,
+        cluster_indices: Sequence[int],
+    ) -> None:
+        try:
+            cut_code = self._CUT_CLASSES.index(cut_class)
+        except ValueError as error:
+            raise ValidationError(
+                f"unsupported compact hyperedge class {cut_class!r}"
+            ) from error
+        encoded = net_id.encode("utf-8")
+        self.name_bytes.extend(encoded)
+        self.name_offsets.append(len(self.name_bytes))
+        self.members.extend(cluster_indices)
+        self.member_offsets.append(len(self.members))
+        self.weights.append(float(weight))
+        self.cut_classes.append(cut_code)
+
+    def __len__(self) -> int:
+        return len(self.weights)
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("packed hyperedge index out of range")
+        name_begin = self.name_offsets[index]
+        name_end = self.name_offsets[index + 1]
+        member_begin = self.member_offsets[index]
+        member_end = self.member_offsets[index + 1]
+        cluster_indices = self.members[member_begin:member_end]
+        return {
+            "net": self.name_bytes[name_begin:name_end].decode("utf-8"),
+            "cut_class": self._CUT_CLASSES[self.cut_classes[index]],
+            "objective_component": "net-cut",
+            "weight": self.weights[index],
+            "clusters": [
+                f"c{cluster_index:06d}" for cluster_index in cluster_indices
+            ],
+            "vertices": [cluster_index + 1 for cluster_index in cluster_indices],
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("packed hyperedge index must be an integer")
+        return self._record(index)
+
+    @property
+    def payload_bytes(self) -> int:
+        columns = (
+            self.name_offsets,
+            self.member_offsets,
+            self.members,
+            self.weights,
+            self.cut_classes,
+        )
+        return len(self.name_bytes) + sum(
+            len(column) * column.itemsize for column in columns
+        )
 
 
 def load_partition_net_weights(path: Optional[Path]) -> Dict[str, float]:
@@ -84,8 +251,21 @@ def _active_resource_fields(
     fpgas: Sequence[Any],
 ) -> List[str]:
     fields = []
-    for field in RESOURCE_FIELDS:
-        if not any(cluster["resources"].get(field, 0) for cluster in clusters):
+    compact_columns = (
+        clusters._resource_columns
+        if isinstance(clusters, _CompactClusterRecords)
+        else None
+    )
+    for field_index, field in enumerate(RESOURCE_FIELDS):
+        present = (
+            any(compact_columns[field_index])
+            if compact_columns is not None
+            else any(
+                cluster["resources"].get(field, 0)
+                for cluster in clusters
+            )
+        )
+        if not present:
             continue
         if not all(fpga.effective_capacity.get(field, 0) > 0 for fpga in fpgas):
             continue
@@ -205,6 +385,129 @@ def _legal_hyperedges(
     return hyperedges
 
 
+def _compact_legal_hyperedges(
+    ir: EmuIR,
+    clusters: _CompactClusterRecords,
+    net_weights: Mapping[str, float],
+    transported_cut_classes: AbstractSet[str],
+) -> _PackedHyperedgeRecords:
+    """Build packed hyperedges directly from compact endpoint ordinals."""
+
+    from .emuir_storage import open_emuir_sqlite_read_only
+
+    path = _compact_partition_ir_path(ir)
+    if path is None:
+        raise ValidationError("compact TritonPart input has no EmuIR store")
+    source_clusters = clusters.source_cluster_indices
+    remaining_weights = set(net_weights)
+    hyperedges = _PackedHyperedgeRecords()
+    connection = open_emuir_sqlite_read_only(path)
+    try:
+        endpoint_rows = iter(
+            connection.execute(
+                """SELECT net_seq,role,instance_seq
+                     FROM endpoint_records
+                    ORDER BY net_seq,role,ordinal"""
+            )
+        )
+        endpoint = next(endpoint_rows, None)
+        observed_nets = 0
+        for net in connection.execute(
+            "SELECT seq,id,cut_class FROM net_records ORDER BY seq"
+        ):
+            net_seq = net["seq"]
+            if net_seq != observed_nets:
+                raise ValidationError("compact EmuIR net sequence is invalid")
+            observed_nets += 1
+            cluster_indices = set()
+            while endpoint is not None and endpoint["net_seq"] == net_seq:
+                if endpoint["role"] not in (0, 1):
+                    raise ValidationError(
+                        "compact EmuIR endpoint role is invalid"
+                    )
+                source_seq = endpoint["instance_seq"]
+                if source_seq is not None:
+                    if source_seq < 0 or source_seq >= len(source_clusters):
+                        raise ValidationError(
+                            "compact EmuIR endpoint owner is invalid"
+                        )
+                    cluster_indices.add(source_clusters[source_seq])
+                endpoint = next(endpoint_rows, None)
+            if endpoint is not None and endpoint["net_seq"] < net_seq:
+                raise ValidationError("compact EmuIR has orphaned endpoints")
+
+            net_id = net["id"]
+            remaining_weights.discard(net_id)
+            cut_class = net["cut_class"]
+            if (
+                cut_class not in transported_cut_classes
+                or len(cluster_indices) < 2
+            ):
+                continue
+            ordered_clusters = sorted(cluster_indices)
+            hyperedges.append_record(
+                net_id,
+                cut_class,
+                float(net_weights.get(net_id, 1.0)),
+                ordered_clusters,
+            )
+        if observed_nets != len(ir.value["nets"]) or endpoint is not None:
+            raise ValidationError("compact EmuIR endpoint coverage is invalid")
+    finally:
+        connection.close()
+    if remaining_weights:
+        raise ValidationError(
+            "net weights reference unknown nets "
+            f"{sorted(remaining_weights)[:8]}"
+        )
+    return hyperedges
+
+
+def _write_hypergraph_file(
+    path: Path,
+    hyperedges: Sequence[Mapping[str, Any]],
+    vertex_weights: Sequence[Sequence[int]],
+    vertex_count: int,
+    *,
+    weighted: bool,
+) -> None:
+    """Stream one hMetis file without retaining the complete text."""
+
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(f"{len(hyperedges)} {vertex_count} 11\n")
+            for edge in hyperedges:
+                weight = f"{edge['weight']:.9g}" if weighted else "1"
+                stream.write(weight)
+                for vertex in edge["vertices"]:
+                    stream.write(f" {vertex}")
+                stream.write("\n")
+            for row in vertex_weights:
+                stream.write(" ".join(str(value) for value in row))
+                stream.write("\n")
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _write_lines(
+    path: Path,
+    lines: Iterable[str],
+) -> None:
+    """Publish a generated line stream without a graph-sized join."""
+
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.writelines(lines)
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def export_tritonpart_inputs(
     ir: EmuIR,
     platform: Platform,
@@ -234,7 +537,18 @@ def export_tritonpart_inputs(
             "TritonPart num_best_initial_solutions must be in [1, "
             "num_initial_solutions]"
         )
-    clusters = sorted(clusters_artifact["clusters"], key=lambda item: item["id"])
+    raw_clusters = clusters_artifact["clusters"]
+    compact_clusters = (
+        raw_clusters
+        if isinstance(raw_clusters, _CompactClusterRecords)
+        and _compact_partition_ir_path(ir) is not None
+        else None
+    )
+    clusters = (
+        compact_clusters
+        if compact_clusters is not None
+        else sorted(raw_clusters, key=lambda item: item["id"])
+    )
     partition_fpgas = active_partition_fpgas(platform, constraints)
     if len(clusters) < len(partition_fpgas):
         raise ValidationError(
@@ -243,7 +557,13 @@ def export_tritonpart_inputs(
 
     resource_fields = _active_resource_fields(clusters, partition_fpgas)
     dimensions = ["cells", *resource_fields]
-    weights = [_vertex_weights(cluster, resource_fields) for cluster in clusters]
+    weights: Sequence[Sequence[int]] = (
+        _CompactVertexWeights(compact_clusters, resource_fields)
+        if compact_clusters is not None
+        else [
+            _vertex_weights(cluster, resource_fields) for cluster in clusters
+        ]
+    )
     base_balance = _capacity_base_balance(partition_fpgas, resource_fields)
     fpga_ids = [fpga.id for fpga in partition_fpgas]
     tolerances = constraints.get("balance_tolerance_by_dimension", {})
@@ -253,8 +573,15 @@ def export_tritonpart_inputs(
         for field in dimensions
     )
     tritonpart_ubfactor = _tritonpart_ubfactor_percent_points(base_balance, effective_balance)
-    totals = {field: sum(row[index] for row in weights)
-              for index, field in enumerate(dimensions)}
+    weight_totals = (
+        weights.totals()
+        if isinstance(weights, _CompactVertexWeights)
+        else [
+            sum(row[index] for row in weights)
+            for index in range(len(dimensions))
+        ]
+    )
+    totals = dict(zip(dimensions, weight_totals))
     limits = strict_balance_limits(
         partition_fpgas,
         totals,
@@ -262,26 +589,54 @@ def export_tritonpart_inputs(
         tolerances,
         constraints.get("balance_dimensions"),
     )
-    validate_indivisible_limits(
-        ((cluster["id"], dict(zip(dimensions, row)), cluster.get("fixed_fpga"))
-         for cluster, row in zip(clusters, weights)), limits,
-    )
-
-    vertex_number = {
-        cluster["id"]: index for index, cluster in enumerate(clusters, start=1)
-    }
-    cluster_by_instance = {
-        instance_id: cluster["id"]
-        for cluster in clusters
-        for instance_id in cluster["instances"]
-    }
-    hyperedges = _legal_hyperedges(
-        ir,
-        cluster_by_instance,
-        vertex_number,
-        net_weights or {},
-        transported_cut_classes_for_clusters(clusters_artifact),
-    )
+    if compact_clusters is not None:
+        validate_indivisible_limits(
+            (
+                (
+                    f"c{index:06d}",
+                    dict(zip(dimensions, row)),
+                    compact_clusters._fixed_by_cluster.get(index),
+                )
+                for index, row in enumerate(weights)
+            ),
+            limits,
+        )
+        hyperedges: Sequence[Mapping[str, Any]] = (
+            _compact_legal_hyperedges(
+                ir,
+                compact_clusters,
+                net_weights or {},
+                transported_cut_classes_for_clusters(clusters_artifact),
+            )
+        )
+    else:
+        validate_indivisible_limits(
+            (
+                (
+                    cluster["id"],
+                    dict(zip(dimensions, row)),
+                    cluster.get("fixed_fpga"),
+                )
+                for cluster, row in zip(clusters, weights)
+            ),
+            limits,
+        )
+        vertex_number = {
+            cluster["id"]: index
+            for index, cluster in enumerate(clusters, start=1)
+        }
+        cluster_by_instance = {
+            instance_id: cluster["id"]
+            for cluster in clusters
+            for instance_id in cluster["instances"]
+        }
+        hyperedges = _legal_hyperedges(
+            ir,
+            cluster_by_instance,
+            vertex_number,
+            net_weights or {},
+            transported_cut_classes_for_clusters(clusters_artifact),
+        )
     if not hyperedges:
         raise ValidationError(
             "TritonPart hypergraph has no legal sequential-boundary "
@@ -289,30 +644,35 @@ def export_tritonpart_inputs(
             "use the greedy provider for disconnected designs"
         )
     specified_weights = net_weights or {}
-    net_cut_hyperedges = [
-        edge
-        for edge in hyperedges
-        if edge["objective_component"] == "net-cut"
-    ]
-    timed_hyperedges = [
-        edge
-        for edge in net_cut_hyperedges
-        if edge["net"] in specified_weights
-    ]
+    timed_legal_hyperedges = 0
+    minimum_timed_weight = math.inf
+    maximum_timed_weight = -math.inf
+    for edge in hyperedges:
+        if edge["objective_component"] != "net-cut":
+            raise ValidationError(
+                "TritonPart input contains an unsupported objective component"
+            )
+        if edge["net"] not in specified_weights:
+            continue
+        timed_legal_hyperedges += 1
+        minimum_timed_weight = min(
+            minimum_timed_weight, float(edge["weight"])
+        )
+        maximum_timed_weight = max(
+            maximum_timed_weight, float(edge["weight"])
+        )
     timing_weight_coverage = {
         "specified_nets": len(specified_weights),
-        "legal_hyperedges": len(net_cut_hyperedges),
-        "timed_legal_hyperedges": len(timed_hyperedges),
+        "legal_hyperedges": len(hyperedges),
+        "timed_legal_hyperedges": timed_legal_hyperedges,
         "timed_legal_hyperedge_fraction": (
-            len(timed_hyperedges) / len(net_cut_hyperedges)
+            timed_legal_hyperedges / len(hyperedges)
         ),
-        "minimum_timed_weight": min(
-            (edge["weight"] for edge in timed_hyperedges),
-            default=1.0,
+        "minimum_timed_weight": (
+            minimum_timed_weight if timed_legal_hyperedges else 1.0
         ),
-        "maximum_timed_weight": max(
-            (edge["weight"] for edge in timed_hyperedges),
-            default=1.0,
+        "maximum_timed_weight": (
+            maximum_timed_weight if timed_legal_hyperedges else 1.0
         ),
     }
 
@@ -324,45 +684,46 @@ def export_tritonpart_inputs(
     tcl_path = output_dir / "run_tritonpart.tcl"
     solution_path = output_dir / f"partition.hgr.part.{len(fpga_ids)}"
 
-    hgr_lines = [f"{len(hyperedges)} {len(clusters)} 11"]
-    for edge in hyperedges:
-        vertices = " ".join(str(vertex) for vertex in edge["vertices"])
-        hgr_lines.append(f"{edge['weight']:.9g} {vertices}")
-    hgr_lines.extend(" ".join(str(value) for value in item) for item in weights)
-    hypergraph_path.write_text("\n".join(hgr_lines) + "\n", encoding="utf-8")
+    _write_hypergraph_file(
+        hypergraph_path,
+        hyperedges,
+        weights,
+        len(clusters),
+        weighted=True,
+    )
     if specified_weights:
-        baseline_lines = [f"{len(hyperedges)} {len(clusters)} 11"]
-        for edge in hyperedges:
-            vertices = " ".join(
-                str(vertex) for vertex in edge["vertices"]
-            )
-            baseline_lines.append(f"1 {vertices}")
-        baseline_lines.extend(
-            " ".join(str(value) for value in item) for item in weights
-        )
-        baseline_hypergraph_path.write_text(
-            "\n".join(baseline_lines) + "\n",
-            encoding="utf-8",
+        _write_hypergraph_file(
+            baseline_hypergraph_path,
+            hyperedges,
+            weights,
+            len(clusters),
+            weighted=False,
         )
 
     fpga_index = {fpga_id: index for index, fpga_id in enumerate(fpga_ids)}
-    fixed_path.write_text(
-        "".join(
-            (
-                f"{fpga_index[cluster['fixed_fpga']]}\n"
-                if cluster["fixed_fpga"] is not None
-                else "-1\n"
-            )
-            for cluster in clusters
-        ),
-        encoding="utf-8",
+    fixed_fpgas: Iterable[Optional[str]] = (
+        (
+            compact_clusters._fixed_by_cluster.get(index)
+            for index in range(len(compact_clusters))
+        )
+        if compact_clusters is not None
+        else (cluster["fixed_fpga"] for cluster in clusters)
     )
-    edge_classes_path.write_text(
-        "".join(
+    _write_lines(
+        fixed_path,
+        (
+            f"{fpga_index[fixed_fpga]}\n"
+            if fixed_fpga is not None
+            else "-1\n"
+            for fixed_fpga in fixed_fpgas
+        ),
+    )
+    _write_lines(
+        edge_classes_path,
+        (
             "1\n" if edge["cut_class"] == "combinational" else "0\n"
             for edge in hyperedges
         ),
-        encoding="utf-8",
     )
 
     def tcl_list(values: Sequence[Any]) -> str:
@@ -395,12 +756,16 @@ def export_tritonpart_inputs(
         "schema": TRITONPART_INPUT_SCHEMA,
         "objective_encoding": TRITONPART_OBJECTIVE_NET_CUT,
         "objective_components": {
-            "net_cut_hyperedges": len(net_cut_hyperedges),
+            "net_cut_hyperedges": len(hyperedges),
         },
         "design": ir.value["design"]["name"],
         "platform": platform.name,
         "fpga_order": fpga_ids,
-        "cluster_order": [cluster["id"] for cluster in clusters],
+        "cluster_order": (
+            _CompactClusterOrder(len(compact_clusters))
+            if compact_clusters is not None
+            else [cluster["id"] for cluster in clusters]
+        ),
         "vertex_dimensions": dimensions,
         "vertex_weights": weights,
         "hyperedges": hyperedges,
@@ -439,27 +804,36 @@ def parse_tritonpart_solution(
 ) -> Dict[str, str]:
     if not path.is_file():
         raise ValidationError(f"TritonPart solution does not exist: {path}")
-    tokens = path.read_text(encoding="utf-8").split()
     cluster_order = tritonpart_input["cluster_order"]
     fpga_order = tritonpart_input["fpga_order"]
-    if len(tokens) != len(cluster_order):
+    with path.open("r", encoding="utf-8") as stream:
+        token_count = sum(len(line.split()) for line in stream)
+    if token_count != len(cluster_order):
         raise ValidationError(
             "TritonPart solution vertex count mismatch: "
-            f"expected {len(cluster_order)}, got {len(tokens)}"
+            f"expected {len(cluster_order)}, got {token_count}"
         )
     assignment: Dict[str, str] = {}
-    for index, (cluster_id, token) in enumerate(zip(cluster_order, tokens)):
-        try:
-            part_id = int(token)
-        except ValueError as error:
-            raise ValidationError(
-                f"TritonPart solution line {index + 1}: expected an integer"
-            ) from error
-        if part_id < 0 or part_id >= len(fpga_order):
-            raise ValidationError(
-                f"TritonPart solution line {index + 1}: invalid part {part_id}"
-            )
-        assignment[cluster_id] = fpga_order[part_id]
+    cluster_ids = iter(cluster_order)
+    index = 0
+    with path.open("r", encoding="utf-8") as stream:
+        for line in stream:
+            for token in line.split():
+                cluster_id = next(cluster_ids)
+                try:
+                    part_id = int(token)
+                except ValueError as error:
+                    raise ValidationError(
+                        "TritonPart solution line "
+                        f"{index + 1}: expected an integer"
+                    ) from error
+                if part_id < 0 or part_id >= len(fpga_order):
+                    raise ValidationError(
+                        "TritonPart solution line "
+                        f"{index + 1}: invalid part {part_id}"
+                    )
+                assignment[cluster_id] = fpga_order[part_id]
+                index += 1
     return assignment
 
 
@@ -1727,7 +2101,7 @@ def _native_balance_assignment_loads(
     vertex_weights = tritonpart_input["vertex_weights"]
     if (
         len(cluster_order) != len(vertex_weights)
-        or set(assignment) != set(cluster_order)
+        or len(assignment) != len(cluster_order)
     ):
         raise ValidationError(
             "native TritonPart balance assignment coverage changed"
@@ -1740,7 +2114,12 @@ def _native_balance_assignment_loads(
         cluster_order,
         vertex_weights,
     ):
-        fpga_id = assignment[cluster_id]
+        try:
+            fpga_id = assignment[cluster_id]
+        except KeyError as error:
+            raise ValidationError(
+                "native TritonPart balance assignment coverage changed"
+            ) from error
         if fpga_id not in loads or len(row) != len(dimensions):
             raise ValidationError(
                 "native TritonPart balance assignment dimensions changed"
@@ -1818,8 +2197,12 @@ def _run_native_balance_legalizer(
             f"{completed.returncode}: {detail}"
         )
     result = parse_tritonpart_solution(output_solution, tritonpart_input)
-    if set(result) != set(candidate):
-        raise ValidationError("native TritonPart balance assignment coverage changed")
+    if len(result) != len(candidate) or any(
+        cluster_id not in result for cluster_id in candidate
+    ):
+        raise ValidationError(
+            "native TritonPart balance assignment coverage changed"
+        )
     summary = _parse_native_balance_report(report_path, tritonpart_input)
     if summary["initial_loads"] != _native_balance_assignment_loads(
         candidate, tritonpart_input
@@ -1915,6 +2298,14 @@ def run_tritonpart(
         num_best_initial_solutions=num_best_initial_solutions,
         write_manifest=False,
     )
+    compact_hyperedges = tritonpart_input["hyperedges"]
+    if isinstance(compact_hyperedges, _PackedHyperedgeRecords):
+        phase3_runtime_observe(
+            tritonpart_compact_hyperedges=len(compact_hyperedges),
+            tritonpart_compact_hyperedge_payload_bytes=(
+                compact_hyperedges.payload_bytes
+            ),
+        )
     num_parts = len(tritonpart_input["fpga_order"])
     tritonpart_input["seed"] = seed
     if persist_input_manifest:
@@ -2289,4 +2680,5 @@ def run_tritonpart(
         seed=selected_seed,
         provider_metadata=provider_metadata,
         _include_semantic_contract=not defer_semantic_contract,
+        _stream_semantic_records=defer_semantic_contract,
     )

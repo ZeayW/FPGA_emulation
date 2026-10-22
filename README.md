@@ -144,6 +144,21 @@ writes that population once as chunked, compressed typed columns in
 compatibility reads reconstruct the unchanged logical v1 document. The same
 200,000-cluster publication used 1,589,621 bytes versus 2,133,472 bytes for the
 former compressed/base64 JSON envelope and took 1.85 versus 1.90 seconds.
+The production TritonPart initializer now keeps that compact ownership through
+its own export boundary. Vertex order and weights are lazy column views;
+endpoint ordinals are grouped directly into packed hyperedges; and weighted,
+unweighted, fixed and edge-class files are written as atomic record streams.
+It no longer expands every compact cluster into a dictionary, builds a second
+instance-to-cluster map, retains one dictionary per hyperedge, or joins the
+complete hMetis text in memory. Deferred initializer assignments also retain
+the compact instance-owner columns, and the independent balance validator
+accumulates totals and per-FPGA loads in one cluster pass instead of creating a
+second nested weight dictionary. On 200,000 synthetic two-member hyperedges,
+the packed owner used 7,888,906 payload bytes and 8,372,861 traced bytes versus
+147,099,118 bytes for the logical dictionaries. On 200,000 singleton clusters,
+balance validation peaked at 22,376 traced bytes versus 56,891,500 bytes for
+the former weight map. These are isolated representation measurements; the
+same-input NVDLA replay remains the qualification gate.
 The native analyzer now stores instances, nets,
 cuts, incoming/outgoing incidence and dependencies in flat columns/CSR. A
 500,000-instance/net/cut differential run reduced its peak RSS from 136.89 MB

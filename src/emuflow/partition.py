@@ -2610,31 +2610,57 @@ def validate_cluster_assignment_balance(
     if len(partition_fpgas) != len(active_set) or not partition_fpgas:
         raise ValidationError("balance active FPGA set is invalid")
     fpga_ids = [fpga.id for fpga in partition_fpgas]
+    if len(cluster_assignment) != len(clusters):
+        raise ValidationError("balance assignment cluster coverage changed")
+
+    # Accumulate totals and assigned loads while each cluster record is live.
+    # The former implementation retained a nested ``weights`` dictionary for
+    # every cluster, then walked that graph a second time through the
+    # assignment.  NVDLA has more than a million clusters, so this independent
+    # validator duplicated the optimizer's largest string-keyed structure
+    # after TritonPart had already finished.  All balance equations are sums;
+    # no per-cluster weight is needed after its owning partition has been
+    # checked.
+    all_dimensions = ("cells", *RESOURCE_FIELDS)
+    totals_all = {dimension: 0 for dimension in all_dimensions}
+    loads_all = {
+        fpga_id: {dimension: 0 for dimension in all_dimensions}
+        for fpga_id in fpga_ids
+    }
+    resource_present = {field: False for field in RESOURCE_FIELDS}
+    missing = object()
+    for cluster in clusters:
+        cluster_id = cluster["id"]
+        fpga_id = cluster_assignment.get(cluster_id, missing)
+        if fpga_id is missing:
+            raise ValidationError(
+                "balance assignment cluster coverage changed"
+            )
+        if fpga_id not in loads_all:
+            raise ValidationError(
+                f"balance assignment references unknown FPGA {fpga_id!r}"
+            )
+        cells = len(cluster["instances"])
+        totals_all["cells"] += cells
+        loads_all[fpga_id]["cells"] += cells
+        resources = cluster["resources"]
+        for field in RESOURCE_FIELDS:
+            value = resources.get(field, 0)
+            resource_present[field] = resource_present[field] or bool(value)
+            totals_all[field] += value
+            loads_all[fpga_id][field] += value
+
     dimensions = ["cells"]
     dimensions.extend(
         field
         for field in RESOURCE_FIELDS
-        if any(cluster["resources"].get(field, 0) for cluster in clusters)
+        if resource_present[field]
         and all(
             fpga.effective_capacity.get(field, 0) > 0
             for fpga in partition_fpgas
         )
     )
-    weights = {
-        cluster["id"]: {
-            "cells": len(cluster["instances"]),
-            **{
-                field: cluster["resources"].get(field, 0)
-                for field in dimensions
-                if field != "cells"
-            },
-        }
-        for cluster in clusters
-    }
-    totals = {
-        dimension: sum(item[dimension] for item in weights.values())
-        for dimension in dimensions
-    }
+    totals = {dimension: totals_all[dimension] for dimension in dimensions}
     tolerance_overrides = requested_tolerance_by_dimension or {}
     requested_percent_by_dimension = {
         dimension: float(tolerance_overrides.get(dimension, requested_tolerance)) * 100.0
@@ -2656,12 +2682,12 @@ def validate_cluster_assignment_balance(
         strict_dimensions,
     )
     loads = {
-        fpga_id: {dimension: 0 for dimension in dimensions}
+        fpga_id: {
+            dimension: loads_all[fpga_id][dimension]
+            for dimension in dimensions
+        }
         for fpga_id in fpga_ids
     }
-    for cluster_id, fpga_id in cluster_assignment.items():
-        for dimension in dimensions:
-            loads[fpga_id][dimension] += weights[cluster_id][dimension]
 
     violations = []
     maximum_ratio = 0.0

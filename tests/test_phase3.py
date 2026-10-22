@@ -814,6 +814,42 @@ class Phase3Test(unittest.TestCase):
             report["requested_balance_percent_by_dimension"]["bram"], 50.0
         )
 
+    def test_balance_validation_consumes_cluster_records_once(self) -> None:
+        class SinglePassClusters(list):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                if self.iterations > 1:
+                    raise AssertionError("cluster records were scanned twice")
+                return super().__iter__()
+
+        clusters = SinglePassClusters(
+            [
+                {
+                    "id": f"cluster_{index}",
+                    "instances": [f"instance_{index}"],
+                    "resources": {"lut": 1, "ff": 1},
+                    "fixed_fpga": None,
+                }
+                for index in range(4)
+            ]
+        )
+        report = validate_cluster_assignment_balance(
+            self.platform,
+            clusters,
+            {
+                "cluster_0": "fpga0",
+                "cluster_1": "fpga0",
+                "cluster_2": "fpga1",
+                "cluster_3": "fpga1",
+            },
+            requested_tolerance=0.25,
+        )
+        self.assertEqual(clusters.iterations, 1)
+        self.assertEqual(report["balance_loads"]["fpga0"]["cells"], 2)
+        self.assertEqual(report["balance_loads"]["fpga1"]["cells"], 2)
+
     def test_dimension_specific_balance_rejects_unknown_resource(self) -> None:
         with self.assertRaisesRegex(ValidationError, "unknown dimensions"):
             normalize_partition_constraints(
