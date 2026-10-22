@@ -173,7 +173,8 @@ cuts and Chimew are explicit options. The integrated Chimew
 lookahead path currently requires the explicit VTR backend/profile combination.
 Phase 3 supplies exact resource limits to TritonPart, checks feasibility during
 native search, and independently validates its output. PATRON receives a legal
-initial assignment, with bounded native ILP initialization for coarse graphs.
+initial assignment: bounded native ILP establishes coarse resource feasibility
+before optimizing cut.
 No external balance
 legalizer modifies the solver output.
 

@@ -445,8 +445,8 @@ bool ILPPartitionInst(
   };
 
   // Establish resource feasibility before optimizing cut. With a zero
-  // objective, the y variables can all be zero and SCIP presolves their
-  // hyperedge constraints away. This avoids asking a large cut model to
+  // objective, the y variables can all be zero, allowing presolve to discard
+  // their hyperedge constraints. This avoids asking a large cut model to
   // discover its first balanced assignment while also proving cut bounds.
   std::vector<int> incumbent = solution;
   if (!legal_assignment(incumbent)) {
