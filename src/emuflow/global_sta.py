@@ -1606,7 +1606,10 @@ the Python event propagator or consume its per-path numerical results.
         _board_link_delay_database, _endpoint_delay_database,
         _logic_segment_database,
     )
-    from .tdm import is_fixed_slot_transport_schedule, reconstruct_tdm_schedule_timing_paths
+    from .tdm import (
+        is_fixed_slot_transport_schedule,
+        open_tdm_schedule_timing_path_stream,
+    )
 
     if not is_fixed_slot_transport_schedule(schedule):
         raise ValidationError("global OpenSTA requires fixed-slot transport")
@@ -1638,7 +1641,6 @@ the Python event propagator or consume its per-path numerical results.
                 "global STA references a missing scheduled event"
             ) from exc
     board_links = {link.id: link for link in platform.links}
-    demand_by_net = {r["net"]: r["id"] for r in routes["routes"]}
     uncertainty = float(physical.get("static_exact_clock_uncertainty_ns", 0.0))
     if uncertainty < 0 or not math.isfinite(uncertainty):
         raise ValidationError("invalid global STA uncertainty")
@@ -1652,118 +1654,132 @@ the Python event propagator or consume its per-path numerical results.
         else None
     )
     try:
-        reconstructed = reconstruct_tdm_schedule_timing_paths(
-            routes, platform, schedule
-        )
-        for record in sorted(reconstructed, key=lambda item: item["path"]):
-            virtual = runtime_clock_period_ns(runtime, record.get("clock_domain"))
-            representatives += 1
-            by_demand = {}
-            for hop in record["scheduled_hops"]:
-                by_demand.setdefault(hop["demand"], []).append(hop)
-            members = sorted(record.get("compressed_path_ids", [record["path"]]))
-            for member in members:
-                chain = list(segment_cursor.take(record["path"], member)) if (
-                    segment_cursor is not None
-                ) else sorted(
-                    segments.get(record["path"], {}).get(member, []),
-                    key=lambda s: s["cut_index"],
+        with open_tdm_schedule_timing_path_stream(
+            routes, platform, schedule, path_order="path"
+        ) as reconstructed:
+            for record in reconstructed:
+                virtual = runtime_clock_period_ns(
+                    runtime, record.get("clock_domain")
                 )
-                if [s["cut_index"] for s in chain] != list(range(len(record["cut_nets"])+1)):
-                    raise ValidationError("global STA missing original-member logic segments")
-                origin = 0.0
-                trailing = ()
-                ratio_mode = any(board_links[h["link"]].tdm_delay_model is not None
-                                 for h in record["scheduled_hops"])
-                if ratio_mode and not all(board_links[h["link"]].tdm_delay_model is not None
-                                          for h in record["scheduled_hops"]):
-                    raise ValidationError("one path cannot mix total net-ratio and fixed-slot delay models")
-                model_arcs = []
-                path_metadata.append(
-                    member,
-                    representative_path=record["path"],
-                    path_scope="cross-fpga",
-                    clock_domain=record.get("clock_domain"),
-                    target_period_ns=record["clock_period_ns"],
-                    physical_logic_segments_cone_bound=any(
-                        s.get("measurement") == "cut-net-cone-upper-bound"
-                        for s in chain
-                    ),
-                    interconnect_delay_model=(
-                        "linear-ratio-v1" if ratio_mode else None
-                    ),
+                representatives += 1
+                by_demand = {}
+                for hop in record["scheduled_hops"]:
+                    by_demand.setdefault(hop["demand"], []).append(hop)
+                cut_demands = record.get("_cut_demands")
+                if (
+                    not isinstance(cut_demands, list)
+                    or len(cut_demands) != len(record["cut_nets"])
+                ):
+                    raise ValidationError(
+                        "global STA timing stream lacks cut-demand binding"
+                    )
+                members = sorted(
+                    record.get("compressed_path_ids", [record["path"]])
                 )
-                periods = set()
-                seen_entries = set()
-                for k, net in enumerate(record["cut_nets"]):
-                    hops = by_demand.get(demand_by_net[net], [])
-                    if not hops or chain[k]["replace_tx_endpoint"] != hops[0]["tx_endpoint"]:
-                        raise ValidationError("global STA cut/segment binding disagrees")
-                    for j, hop in enumerate(hops):
-                        eid = hop["schedule_entry"]
-                        if eid in seen_entries:
-                            raise ValidationError("global STA reused a scheduled event")
-                        seen_entries.add(eid)
-                        period = float(hop["tdm_slot_ns"])
-                        periods.add(period)
-                        if "fixed_slot_tx_time_ns" in hop:
-                            tx = float(hop["fixed_slot_tx_time_ns"])
-                            ratio = hop.get("tdm_ratio")
-                        else:
-                            entry = legacy_entry(eid)
-                            for field in ("link", "from", "to"):
-                                if entry[field] != hop[field]:
-                                    raise ValidationError(
-                                        "global STA hop/event identity disagrees"
-                                    )
-                            tx = entry["slot"] * period
-                            ratio = entry.get("tdm_ratio")
-                        if not math.isfinite(tx) or tx < 0.0:
-                            raise ValidationError("global STA TX time is invalid")
-                        arcs = trailing + (float(chain[k]["delay_ns"]) if not j else
-                                           endpoints[hop["tx_endpoint"]],)
-                        delay_model = board_links[hop["link"]].tdm_delay_model
-                        link_delay = (delay_model.delay_ns(ratio)
-                                      if delay_model is not None else
-                                      links[hop["link"], hop["from"], hop["to"]])
-                        if ratio_mode:
-                            model_arcs.extend((arcs[-1], link_delay, endpoints[hop["rx_endpoint"]]))
-                        # Previous-frame registered values are stable at first TX.
-                        # Only that check is exempt; relays retain current-frame causality.
-                        if not (schedule["transport_semantics"] == "registered-boundary" and not j):
+                for member in members:
+                    chain = list(segment_cursor.take(record["path"], member)) if (
+                        segment_cursor is not None
+                    ) else sorted(
+                        segments.get(record["path"], {}).get(member, []),
+                        key=lambda s: s["cut_index"],
+                    )
+                    if [s["cut_index"] for s in chain] != list(range(len(record["cut_nets"])+1)):
+                        raise ValidationError("global STA missing original-member logic segments")
+                    origin = 0.0
+                    trailing = ()
+                    ratio_mode = any(board_links[h["link"]].tdm_delay_model is not None
+                                     for h in record["scheduled_hops"])
+                    if ratio_mode and not all(board_links[h["link"]].tdm_delay_model is not None
+                                              for h in record["scheduled_hops"]):
+                        raise ValidationError("one path cannot mix total net-ratio and fixed-slot delay models")
+                    model_arcs = []
+                    path_metadata.append(
+                        member,
+                        representative_path=record["path"],
+                        path_scope="cross-fpga",
+                        clock_domain=record.get("clock_domain"),
+                        target_period_ns=record["clock_period_ns"],
+                        physical_logic_segments_cone_bound=any(
+                            s.get("measurement") == "cut-net-cone-upper-bound"
+                            for s in chain
+                        ),
+                        interconnect_delay_model=(
+                            "linear-ratio-v1" if ratio_mode else None
+                        ),
+                    )
+                    periods = set()
+                    seen_entries = set()
+                    for k, (net, demand) in enumerate(
+                        zip(record["cut_nets"], cut_demands)
+                    ):
+                        hops = by_demand.get(demand, [])
+                        if not hops or chain[k]["replace_tx_endpoint"] != hops[0]["tx_endpoint"]:
+                            raise ValidationError("global STA cut/segment binding disagrees")
+                        for j, hop in enumerate(hops):
+                            eid = hop["schedule_entry"]
+                            if eid in seen_entries:
+                                raise ValidationError("global STA reused a scheduled event")
+                            seen_entries.add(eid)
+                            period = float(hop["tdm_slot_ns"])
+                            periods.add(period)
+                            if "fixed_slot_tx_time_ns" in hop:
+                                tx = float(hop["fixed_slot_tx_time_ns"])
+                                ratio = hop.get("tdm_ratio")
+                            else:
+                                entry = legacy_entry(eid)
+                                for field in ("link", "from", "to"):
+                                    if entry[field] != hop[field]:
+                                        raise ValidationError(
+                                            "global STA hop/event identity disagrees"
+                                        )
+                                tx = entry["slot"] * period
+                                ratio = entry.get("tdm_ratio")
+                            if not math.isfinite(tx) or tx < 0.0:
+                                raise ValidationError("global STA TX time is invalid")
+                            arcs = trailing + (float(chain[k]["delay_ns"]) if not j else
+                                               endpoints[hop["tx_endpoint"]],)
+                            delay_model = board_links[hop["link"]].tdm_delay_model
+                            link_delay = (delay_model.delay_ns(ratio)
+                                          if delay_model is not None else
+                                          links[hop["link"], hop["from"], hop["to"]])
+                            if ratio_mode:
+                                model_arcs.extend((arcs[-1], link_delay, endpoints[hop["rx_endpoint"]]))
+                            # Previous-frame registered values are stable at first TX.
+                            # Only that check is exempt; relays retain current-frame causality.
+                            if not (schedule["transport_semantics"] == "registered-boundary" and not j):
+                                result.append_values(
+                                    member, "tx", eid, origin, arcs, tx - uncertainty
+                                )
+                            origin = tx
+                            trailing = (link_delay,
+                                        endpoints[hop["rx_endpoint"]])
+                    if len(periods) != 1 or len(seen_entries) != len(record["scheduled_hops"]):
+                        raise ValidationError("global STA incomplete event coverage or mixed slot periods")
+                    if chain[-1]["kind"] != "capture" or chain[-1]["replace_tx_endpoint"] is not None:
+                        raise ValidationError("global STA final segment is not capture")
+                    final_arcs = trailing + (float(chain[-1]["delay_ns"]), uncertainty)
+                    required = float(record.get("required_time_ns", record["clock_period_ns"]))
+                    commit = (schedule["route_constraints"]["frame_slots"]-1)*periods.pop()
+                    for role, deadline in (("target", required),
+                                           ("runtime", virtual-(record["clock_period_ns"]-required)),
+                                           ("commit", commit)):
+                        # The total net-ratio model already includes TDM delay.
+                        # Keep absolute TX/commit readiness checks separate; never
+                        # add their slot wait again to the modeled path delay.
+                        if ratio_mode and role in {"target", "runtime"}:
                             result.append_values(
-                                member, "tx", eid, origin, arcs, tx - uncertainty
+                                member,
+                                role,
+                                "capture",
+                                0.0,
+                                tuple(model_arcs)
+                                + (float(chain[-1]["delay_ns"]), uncertainty),
+                                deadline,
                             )
-                        origin = tx
-                        trailing = (link_delay,
-                                    endpoints[hop["rx_endpoint"]])
-                if len(periods) != 1 or len(seen_entries) != len(record["scheduled_hops"]):
-                    raise ValidationError("global STA incomplete event coverage or mixed slot periods")
-                if chain[-1]["kind"] != "capture" or chain[-1]["replace_tx_endpoint"] is not None:
-                    raise ValidationError("global STA final segment is not capture")
-                final_arcs = trailing + (float(chain[-1]["delay_ns"]), uncertainty)
-                required = float(record.get("required_time_ns", record["clock_period_ns"]))
-                commit = (schedule["route_constraints"]["frame_slots"]-1)*periods.pop()
-                for role, deadline in (("target", required),
-                                       ("runtime", virtual-(record["clock_period_ns"]-required)),
-                                       ("commit", commit)):
-                    # The total net-ratio model already includes TDM delay.
-                    # Keep absolute TX/commit readiness checks separate; never
-                    # add their slot wait again to the modeled path delay.
-                    if ratio_mode and role in {"target", "runtime"}:
-                        result.append_values(
-                            member,
-                            role,
-                            "capture",
-                            0.0,
-                            tuple(model_arcs)
-                            + (float(chain[-1]["delay_ns"]), uncertainty),
-                            deadline,
-                        )
-                    else:
-                        result.append_values(
-                            member, role, "capture", origin, final_arcs, deadline
-                        )
+                        else:
+                            result.append_values(
+                                member, role, "capture", origin, final_arcs, deadline
+                            )
         if segment_cursor is not None:
             segment_cursor.finish()
     finally:

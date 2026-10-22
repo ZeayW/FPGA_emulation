@@ -1,5 +1,6 @@
 """Cross-stage regression checks for the declared cable/HP-bank model."""
 import copy
+from contextlib import contextmanager
 import pytest
 
 from emuflow.board_link_timing import build_board_link_timing_model, validate_board_link_timing
@@ -94,7 +95,15 @@ def test_physical_path_keeps_local_delays_and_separate_readiness_gate(monkeypatc
     monkeypatch.setattr(st,"_logic_segment_database",lambda _: {"p":{"p":segments}})
     monkeypatch.setattr(st,"_board_link_delay_database",lambda *_: {
         (h["link"],h["from"],h["to"]):30.5 for h in hops})
-    monkeypatch.setattr(tdm,"reconstruct_tdm_schedule_timing_paths",lambda *_: [record])
+    @contextmanager
+    def injected_timing_stream(*_args, **_kwargs):
+        yield iter([{**record, "_cut_demands": ["d"]}])
+
+    monkeypatch.setattr(
+        tdm,
+        "open_tdm_schedule_timing_path_stream",
+        injected_timing_stream,
+    )
     schedule.update(transport_semantics="registered-boundary",route_constraints={"frame_slots":41})
     checks = bind_physical_checks({"virtual_dut_clocks":{"clk":{"nominal_period_ns":164,"target_period_ns":10}}},
                                   routes,schedule,{},platform)

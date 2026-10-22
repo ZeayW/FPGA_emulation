@@ -12,7 +12,8 @@ import struct
 import subprocess
 import tempfile
 from array import array
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
+from contextlib import ExitStack, contextmanager
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .errors import TDMScheduleInfeasibleError, ValidationError
@@ -4206,9 +4207,13 @@ def reconstruct_tdm_schedule_timing_paths(
     """Return independently reconstructed, traceable timing-path records."""
     from .tdm_ratio import _normalized_slack, _prepare_model
 
-    if (any(link.tdm_delay_model is not None for link in platform.links)
-            and any(path.get("cut_transitions") is None
-                    for path in routes.get("timing", {}).get("paths", []))):
+    if model is None and entries is None:
+        if (
+            routes.get("routes") == []
+            and schedule.get("entries") == []
+            and system_route_timing_paths(routes) == []
+        ):
+            return []
         return reconstruct_tdm_schedule_timing_paths_from_routes(routes, platform, schedule)
     if model is None:
         # A canonical packed single-FPGA run has neither inter-FPGA routes nor
@@ -4327,28 +4332,30 @@ def reconstruct_tdm_schedule_timing_paths(
     return records
 
 
-def reconstruct_tdm_schedule_timing_paths_from_routes(
+@contextmanager
+def open_tdm_schedule_timing_path_stream(
     routes: Mapping[str, Any],
     platform: Platform,
     schedule: Mapping[str, Any],
     *,
+    path_order: str = "source",
     _indexed_entries: Optional[Mapping[HopKey, Mapping[str, Any]]] = None,
-) -> List[Dict[str, Any]]:
-    """Reconstruct concrete timing without the optimizer's dense model.
+) -> Iterator[Iterator[Dict[str, Any]]]:
+    """Open a repeatable-lifetime stream of concrete timing paths.
 
-    The production ratio optimizer needs a hop-indexed representation, but
-    baseline scheduling and concrete feedback only need the route trees used
-    by each imported path.  Building the optimizer model on large public
-    cases needlessly materializes and indexes every hop/path several times.
-    This independent route-key reconstruction keeps the baseline checker
-    linear in the serialized route and timing-path sizes.
+    Typed production inputs retain route trees and schedule entries in their
+    authoritative SQLite stores.  The stream opens their narrow lookup views,
+    decodes one timing path at a time, and keeps only a bounded cache of route
+    projections.  It therefore avoids both the R-sized ``route_by_net`` /
+    ``route_paths`` graph and the P/H-sized reconstructed record tree.
+
+    ``path_order='path'`` delegates ordering to the RouteStore relation.  The
+    inline reference fallback sorts only its timing-path inputs; it is not the
+    production large-design path.
     """
-    from .tdm_ratio import _normalized_slack
-    from .routing import normalize_route_constraints, route_link_delay_ns
-
     timing = routes.get("timing")
-    if not isinstance(timing, dict) or not isinstance(
-        timing.get("paths"), list
+    if not isinstance(timing, Mapping) or not isinstance(
+        timing.get("paths"), Sequence
     ):
         raise ValidationError(
             "schedule timing reconstruction requires routes.timing.paths"
@@ -4358,49 +4365,109 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
         raise ValidationError(
             "schedule timing reconstruction requires timing normalization"
         )
-    constraints = normalize_route_constraints(
-        routes.get("constraints"), platform
-    )
-    if _indexed_entries is None:
-        open_index = getattr(schedule, "open_validation_index", None)
-        if callable(open_index):
-            with open_index() as indexed_entries:
-                return reconstruct_tdm_schedule_timing_paths_from_routes(
-                    routes,
-                    platform,
-                    schedule,
-                    _indexed_entries=indexed_entries,
-                )
-        entries: Mapping[HopKey, Mapping[str, Any]] = {}
-        materialized_entries: Dict[HopKey, Mapping[str, Any]] = {}
-        for entry in schedule["entries"]:
-            key = _hop_key(
-                entry["demand"],
-                entry["link"],
-                entry["from"],
-                entry["to"],
+    if path_order not in {"source", "path"}:
+        raise ValueError(f"unsupported timing-path order {path_order!r}")
+    timing_paths = timing["paths"]
+    if path_order == "path":
+        ordered = getattr(timing_paths, "ordered", None)
+        timing_paths = (
+            ordered("path")
+            if callable(ordered)
+            else sorted(
+                timing_paths,
+                key=lambda item: item.get("path", item.get("id", "")),
             )
-            if key in materialized_entries:
-                raise ValidationError(
-                    "schedule timing reconstruction found duplicate hop "
-                    f"{key}"
-                )
-            materialized_entries[key] = entry
-        entries = materialized_entries
-    else:
-        entries = _indexed_entries
+        )
+
+    with ExitStack() as stack:
+        if _indexed_entries is None:
+            open_index = getattr(schedule, "open_validation_index", None)
+            if callable(open_index):
+                entries = stack.enter_context(open_index())
+            else:
+                materialized_entries: Dict[
+                    HopKey, Mapping[str, Any]
+                ] = {}
+                for entry in schedule["entries"]:
+                    key = _hop_key(
+                        entry["demand"],
+                        entry["link"],
+                        entry["from"],
+                        entry["to"],
+                    )
+                    if key in materialized_entries:
+                        raise ValidationError(
+                            "schedule timing reconstruction found duplicate "
+                            f"hop {key}"
+                        )
+                    materialized_entries[key] = entry
+                entries = materialized_entries
+        else:
+            entries = _indexed_entries
+
+        route_records = routes["routes"]
+        open_route_index = getattr(route_records, "open_net_index", None)
+        if callable(open_route_index):
+            route_source = stack.enter_context(open_route_index())
+        else:
+            route_source = {}
+            for route in route_records:
+                net = route["net"]
+                if net in route_source:
+                    raise ValidationError(f"duplicate route net {net!r}")
+                route_source[net] = route
+        yield _iter_tdm_schedule_timing_paths_from_routes(
+            timing_paths,
+            timing["normalization"],
+            route_source,
+            platform,
+            routes.get("constraints"),
+            entries,
+        )
+
+
+def _iter_tdm_schedule_timing_paths_from_routes(
+    timing_paths: Sequence[Mapping[str, Any]],
+    normalization: Mapping[str, Any],
+    route_source: Any,
+    platform: Platform,
+    raw_constraints: Any,
+    entries: Mapping[HopKey, Mapping[str, Any]],
+) -> Iterator[Dict[str, Any]]:
+    """Yield path records while retaining at most a bounded route working set."""
+
+    from .tdm_ratio import _normalized_slack
+    from .routing import normalize_route_constraints, route_link_delay_ns
+
+    constraints = normalize_route_constraints(raw_constraints, platform)
     links = _link_by_id(platform)
-    route_by_net = {}
-    route_paths = {}
-    longest_sink = {}
-    for route in routes["routes"]:
-        net = route["net"]
-        if net in route_by_net:
-            raise ValidationError(f"duplicate route net {net!r}")
-        route_by_net[net] = route
-        paths_by_node = {route["source"]: (0.0, [])}
+    # Each projection owns one route's predecessor tree and accumulated
+    # per-node delay.  A constant bound prevents memory from scaling with R.
+    route_cache: OrderedDict[
+        str,
+        tuple[
+            Mapping[str, Any],
+            Dict[str, Mapping[str, str]],
+            str,
+        ],
+    ] = OrderedDict()
+    route_cache_limit = 128
+
+    def project(net: str):
+        cached = route_cache.pop(net, None)
+        if cached is not None:
+            route_cache[net] = cached
+            return cached
+        route = route_source.get(net)
+        if route is None:
+            return None
+        parents: Dict[str, Mapping[str, str]] = {}
+        node_delays = {route["source"]: 0.0}
         for _depth, edge in _route_hops(route):
-            parent_delay, parent_path = paths_by_node[edge["from"]]
+            if edge["from"] not in node_delays:
+                raise ValidationError(
+                    f"route {route['id']!r} edge order is not rooted"
+                )
             base_delay = route_link_delay_ns(
                 platform,
                 edge["link"],
@@ -4410,31 +4477,66 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
             )
             link = links[edge["link"]]
             if link.tdm_delay_model is not None:
-                key = _hop_key(route["id"], edge["link"], edge["from"], edge["to"])
+                key = _hop_key(
+                    route["id"], edge["link"], edge["from"], edge["to"]
+                )
                 entry = entries.get(key)
                 if entry is None:
-                    raise ValidationError(f"schedule timing reconstruction is missing routed hop {key}")
+                    raise ValidationError(
+                        "schedule timing reconstruction is missing routed "
+                        f"hop {key}"
+                    )
                 _base, slope = route_link_delay_coefficients_ns(
-                    platform, edge["link"], edge["from"], edge["to"], constraints)
+                    platform,
+                    edge["link"],
+                    edge["from"],
+                    edge["to"],
+                    constraints,
+                )
                 base_delay, _arrival, _tx = _entry_ratio_delay(
-                    link, entry, base_delay, slope, 0.0)
-            paths_by_node[edge["to"]] = (
-                parent_delay + base_delay,
-                [*parent_path, edge],
+                    link, entry, base_delay, slope, 0.0
+                )
+            if edge["to"] in parents or edge["to"] == route["source"]:
+                raise ValidationError(
+                    f"route {route['id']!r} has duplicate tree parent"
+                )
+            parents[edge["to"]] = edge
+            node_delays[edge["to"]] = (
+                node_delays[edge["from"]] + base_delay
             )
-        candidates = [
-            (paths_by_node[sink][0], sink)
-            for sink in route["sinks"]
-        ]
-        candidates.sort(key=lambda item: (-item[0], item[1]))
-        longest_sink[net] = candidates[0][1]
-        route_paths[net] = {
-            sink: paths_by_node[sink][1] for sink in route["sinks"]
-        }
-    route_net_names = set(route_by_net)
+        try:
+            longest = min(
+                route["sinks"], key=lambda sink: (-node_delays[sink], sink)
+            )
+        except (KeyError, ValueError) as error:
+            raise ValidationError(
+                f"route {route['id']!r} has an unreachable sink"
+            ) from error
+        projection = (route, parents, longest)
+        route_cache[net] = projection
+        if len(route_cache) > route_cache_limit:
+            route_cache.popitem(last=False)
+        return projection
 
-    records = []
-    for index, timing_path in enumerate(timing["paths"]):
+    def edges_to(
+        route: Mapping[str, Any],
+        parents: Mapping[str, Mapping[str, str]],
+        sink: str,
+    ) -> list[Mapping[str, str]]:
+        edges = []
+        node = sink
+        while node != route["source"]:
+            edge = parents.get(node)
+            if edge is None:
+                raise ValidationError(
+                    f"route {route['id']!r} has an unreachable sink {sink!r}"
+                )
+            edges.append(edge)
+            node = edge["from"]
+        edges.reverse()
+        return edges
+
+    for index, timing_path in enumerate(timing_paths):
         cut_nets = timing_path.get("cut_nets")
         if (
             not isinstance(cut_nets, list)
@@ -4444,7 +4546,11 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
             raise ValidationError(
                 f"routes.timing.paths[{index}].cut_nets: invalid"
             )
-        unknown = sorted(set(cut_nets) - route_net_names)
+        projections = [project(net) for net in cut_nets]
+        unknown = sorted(
+            {net for net, projection in zip(cut_nets, projections)
+             if projection is None}
+        )
         if unknown:
             raise ValidationError(
                 f"routes.timing.paths[{index}]: unknown cut nets {unknown}"
@@ -4455,10 +4561,10 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
             transitions = [
                 {
                     "net": net,
-                    "from": route_by_net[net]["source"],
-                    "to": longest_sink[net],
+                    "from": projection[0]["source"],
+                    "to": projection[2],
                 }
-                for net in cut_nets
+                for net, projection in zip(cut_nets, projections)
             ]
         elif (
             not isinstance(transitions, list)
@@ -4499,11 +4605,12 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
         transport_arrival_ns = 0.0
         scheduled_hops = []
         seen_hops = set()
-        for net, transition in zip(cut_nets, transitions):
-            route = route_by_net.get(net)
+        for net, transition, projection in zip(
+            cut_nets, transitions, projections
+        ):
+            route, parents, _longest = projection
             if (
-                route is None
-                or not isinstance(transition, dict)
+                not isinstance(transition, dict)
                 or transition.get("net") != net
                 or transition.get("from") != route["source"]
                 or transition.get("to") not in route["sinks"]
@@ -4511,7 +4618,7 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
                 raise ValidationError(
                     f"routes.timing.paths[{index}].cut_transitions: invalid"
                 )
-            for edge in route_paths[net][transition["to"]]:
+            for edge in edges_to(route, parents, transition["to"]):
                 key = _hop_key(
                     route["id"],
                     edge["link"],
@@ -4575,33 +4682,55 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
         period = float(period)
         required = float(required)
         slack = required - delay_ns
-        records.append(
-            {
-                "path": timing_path["path"],
-                "clock_domain": timing_path["clock_domain"],
-                "clock_period_ns": period,
-                "required_time_ns": required,
-                "preplacement_fixed_delay_ns": float(
-                    fixed
-                ),
-                "transport_delay_ns": transport_delay_ns,
-                "delay_ns": delay_ns,
-                "slack_ns": slack,
-                "normalized_slack": _normalized_slack(
-                    period, slack, normalization
-                ),
-                "cut_nets": list(cut_nets),
-                "compressed_path_ids": list(
-                    timing_path.get(
-                        "compressed_path_ids", [timing_path["path"]]
-                    )
-                ),
-                "cut_transitions": [dict(item) for item in transitions],
-                "routed_hops": len(scheduled_hops),
-                "scheduled_hops": scheduled_hops,
-            }
-        )
-    return records
+        yield {
+            "path": timing_path["path"],
+            "clock_domain": timing_path["clock_domain"],
+            "clock_period_ns": period,
+            "required_time_ns": required,
+            "preplacement_fixed_delay_ns": float(fixed),
+            "transport_delay_ns": transport_delay_ns,
+            "delay_ns": delay_ns,
+            "slack_ns": slack,
+            "normalized_slack": _normalized_slack(
+                period, slack, normalization
+            ),
+            "cut_nets": list(cut_nets),
+            # Stream-only binding metadata lets Global STA join a cut net to
+            # its schedule demand without rebuilding an R-sized net map.
+            "_cut_demands": [
+                projection[0]["id"] for projection in projections
+            ],
+            "compressed_path_ids": list(
+                timing_path.get(
+                    "compressed_path_ids", [timing_path["path"]]
+                )
+            ),
+            "cut_transitions": [dict(item) for item in transitions],
+            "routed_hops": len(scheduled_hops),
+            "scheduled_hops": scheduled_hops,
+        }
+
+
+def reconstruct_tdm_schedule_timing_paths_from_routes(
+    routes: Mapping[str, Any],
+    platform: Platform,
+    schedule: Mapping[str, Any],
+    *,
+    _indexed_entries: Optional[Mapping[HopKey, Mapping[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Materialize the compatibility view over the streaming reconstructor."""
+
+    with open_tdm_schedule_timing_path_stream(
+        routes,
+        platform,
+        schedule,
+        _indexed_entries=_indexed_entries,
+    ) as records:
+        materialized = []
+        for record in records:
+            record.pop("_cut_demands", None)
+            materialized.append(record)
+        return materialized
 
 
 def simulate_tdm_schedule(

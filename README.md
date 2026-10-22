@@ -1229,7 +1229,21 @@ option for explicit comparisons, not an implicit prerequisite for OpenSTA.
 The binding/export layer is EmuFlow code; the STA engine computes timing on the
 exported model. Timing reconstruction carries fixed-slot TX time and ratio in
 each scheduled-hop record, so physical-check binding no longer rebuilds a
-second entry-keyed ScheduleStore dictionary. Measurement import validates
+second entry-keyed ScheduleStore dictionary. Global physical-check binding now
+opens the RouteStore timing-path relation in path-identity order and joins each
+current path to ScheduleStore through its typed hop index. Route lookup uses one
+read-only SQLite connection plus a 128-route LRU of predecessor trees, so the
+production binder no longer builds complete `route_by_net`, `route_paths`,
+reconstructed-path or `scheduled_hops` populations. Compatibility reconstruction
+still returns the unchanged list contract on request. On 50,000 repeated timing
+paths, complete compatibility materialization used 182,810,845 traced peak bytes
+and 496,173,056 bytes peak RSS in 2.68 seconds; ordered production streaming used
+64,704 traced peak bytes and 51,232,768 bytes peak RSS in 2.28 seconds with the
+same 1,400,000 checksum. A separate 20,000-unique-route/path run reduced
+traced peak from 55,828,322 to 392,874 bytes and process peak RSS from
+192,675,840 to 61,882,368 bytes while changing traversal from 1.44 to
+1.27 seconds with the same checksum. This is isolated adapter evidence;
+exact-head NVDLA Phase 7C qualification is still required. Measurement import validates
 canonical endpoint order and the independent arc equations while streaming
 directly into three fixed-width scalar columns that reuse the existing typed
 check identity; it no longer retains a second endpoint-keyed measurement

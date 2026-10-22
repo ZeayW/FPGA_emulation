@@ -2,6 +2,7 @@ import os
 import subprocess
 from array import array
 from collections.abc import Sequence
+from unittest import mock
 
 import pytest
 
@@ -1044,6 +1045,114 @@ def test_physical_binding_does_not_reindex_schedule_entries():
 
     assert checks
     assert schedule["entries"].iterations == 1
+
+
+def test_indexed_physical_binding_streams_routes_paths_and_schedule(tmp_path):
+    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
+    from emuflow.board_link_timing import build_board_link_timing_model
+    from emuflow.runtime import build_virtual_runtime
+    from emuflow.system_route_storage import (
+        SystemRouteSequence,
+        read_system_routes,
+        write_system_route_storage,
+    )
+    from emuflow.tdm_schedule_storage import (
+        read_tdm_schedule,
+        write_tdm_schedule_storage,
+    )
+
+    fixture = StaticExactSystemTimingTest()
+    fixture.setUp()
+    _, routes, _ = fixture._system_inputs()
+    runtime = build_virtual_runtime(fixture.schedule, fixture.platform)
+    physical = fixture._system_physical()
+    physical["board_link_timing"] = build_board_link_timing_model(
+        fixture.platform
+    )
+    expected = bind_physical_checks(
+        runtime, routes, fixture.schedule, physical, fixture.platform
+    )
+
+    route_path = tmp_path / "routes.json"
+    schedule_path = tmp_path / "schedule.json"
+    write_system_route_storage(route_path, routes)
+    write_tdm_schedule_storage(schedule_path, fixture.schedule)
+    indexed_routes = read_system_routes(route_path)
+    indexed_schedule = read_tdm_schedule(schedule_path)
+    route_records = indexed_routes["routes"]
+    timing_records = indexed_routes["timing"]["paths"]
+
+    with mock.patch.object(
+        SystemRouteSequence,
+        "__iter__",
+        side_effect=AssertionError("decoded the complete route relation"),
+    ):
+        actual = bind_physical_checks(
+            runtime,
+            indexed_routes,
+            indexed_schedule,
+            physical,
+            fixture.platform,
+        )
+
+    assert actual == expected
+    assert list.__len__(route_records) == 0
+    assert list.__len__(timing_records) == 0
+
+
+def test_indexed_timing_stream_delegates_path_order_to_route_store(tmp_path):
+    import copy
+    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
+    from emuflow.system_route_storage import (
+        SystemRouteSequence,
+        read_system_routes,
+        write_system_route_storage,
+    )
+    from emuflow.tdm import open_tdm_schedule_timing_path_stream
+    from emuflow.tdm_schedule_storage import (
+        read_tdm_schedule,
+        write_tdm_schedule_storage,
+    )
+
+    fixture = StaticExactSystemTimingTest()
+    fixture.setUp()
+    _, routes, _ = fixture._system_inputs()
+    routes = copy.deepcopy(routes)
+    base = routes["timing"]["paths"][0]
+    routes["timing"]["paths"] = [
+        {**base, "path": "path-z"},
+        {**base, "path": "path-a"},
+    ]
+    route_path = tmp_path / "routes.json"
+    schedule_path = tmp_path / "schedule.json"
+    write_system_route_storage(route_path, routes)
+    write_tdm_schedule_storage(schedule_path, fixture.schedule)
+    indexed_routes = read_system_routes(route_path)
+    indexed_schedule = read_tdm_schedule(schedule_path)
+    timing_records = indexed_routes["timing"]["paths"]
+
+    assert timing_records.ordered("path")[0]["path"] == "path-a"
+    with mock.patch.object(
+        SystemRouteSequence,
+        "__iter__",
+        side_effect=AssertionError("decoded the complete route relation"),
+    ):
+        with open_tdm_schedule_timing_path_stream(
+            indexed_routes,
+            fixture.platform,
+            indexed_schedule,
+            path_order="path",
+        ) as records:
+            observed = [
+                (record["path"], record["_cut_demands"])
+                for record in records
+            ]
+
+    assert observed == [
+        ("path-a", ["d000001", "d000000"]),
+        ("path-z", ["d000001", "d000000"]),
+    ]
+    assert list.__len__(timing_records) == 0
 
 
 @pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENSTA"), reason="real OpenSTA not configured")

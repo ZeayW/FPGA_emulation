@@ -199,11 +199,29 @@ def _decode_json(payload: str, context: str) -> dict[str, Any]:
 class _JsonRecordSequence(list):
     """List-compatible lazy view over one ordered JSON-record relation."""
 
-    def __init__(self, store_path: Path, table: str, count: int):
+    def __init__(
+        self,
+        store_path: Path,
+        table: str,
+        count: int,
+        order: str = "seq",
+    ):
         super().__init__()
         self.store_path = store_path
         self.table = table
         self._count = count
+        if order not in {"seq", "path"} or (
+            order == "path" and table != "timing_paths"
+        ):
+            raise ValueError(f"unsupported {table} record order {order!r}")
+        self.order = order
+
+    def ordered(self, order: str) -> "_JsonRecordSequence":
+        """Return another lazy view with a store-owned stable order."""
+
+        return _JsonRecordSequence(
+            self.store_path, self.table, self._count, order
+        )
 
     def __len__(self) -> int:
         return self._count
@@ -212,8 +230,9 @@ class _JsonRecordSequence(list):
         connection = _connect(self.store_path)
         try:
             observed = 0
+            order_sql = "path_id,seq" if self.order == "path" else "seq"
             for row in connection.execute(
-                f"SELECT record_json FROM {self.table} ORDER BY seq"
+                f"SELECT record_json FROM {self.table} ORDER BY {order_sql}"
             ):
                 observed += 1
                 yield _decode_json(row[0], self.table)
@@ -231,9 +250,17 @@ class _JsonRecordSequence(list):
             raise IndexError(index)
         connection = _connect(self.store_path)
         try:
-            row = connection.execute(
-                f"SELECT record_json FROM {self.table} WHERE seq=?", (index,)
-            ).fetchone()
+            if self.order == "seq":
+                row = connection.execute(
+                    f"SELECT record_json FROM {self.table} WHERE seq=?",
+                    (index,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    f"SELECT record_json FROM {self.table} "
+                    "ORDER BY path_id,seq LIMIT 1 OFFSET ?",
+                    (index,),
+                ).fetchone()
             if row is None:
                 raise ValidationError(f"{self.table} sequence is not contiguous")
             return _decode_json(row[0], self.table)
@@ -507,6 +534,39 @@ class SystemDemandSequence(list):
         return not self == other
 
 
+class SystemRouteNetIndex:
+    """Read individual normalized routes by net without owning a graph map."""
+
+    def __init__(self, store_path: Path):
+        self.store_path = store_path
+        self._connection = _connect(store_path)
+
+    def __enter__(self) -> "SystemRouteNetIndex":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
+    def close(self) -> None:
+        connection = self._connection
+        if connection is not None:
+            connection.close()
+            self._connection = None
+
+    def get(
+        self, net: str, default: Any = None
+    ) -> dict[str, Any] | Any:
+        connection = self._connection
+        if connection is None:
+            raise RuntimeError("system-route net index is closed")
+        row = connection.execute(
+            "SELECT * FROM routes WHERE net_id=?", (net,)
+        ).fetchone()
+        if row is None:
+            return default
+        return _route_from_row(connection, row)
+
+
 class SystemRouteSequence(list):
     """List-compatible route-tree cursor with stable SQL ordering."""
 
@@ -523,6 +583,16 @@ class SystemRouteSequence(list):
 
     def ordered(self, order: str) -> "SystemRouteSequence":
         return SystemRouteSequence(self.store_path, self._count, order)
+
+    def open_net_index(self) -> "SystemRouteNetIndex":
+        """Open a bounded-lifetime net lookup over the normalized store.
+
+        The returned view owns one read-only SQLite connection.  It fetches
+        only the requested route and its child relations, so consumers that
+        walk timing paths do not need an R-sized ``net -> route`` dictionary.
+        """
+
+        return SystemRouteNetIndex(self.store_path)
 
     def validate_indexed_exact_metadata(self) -> None:
         """Validate indexed-exact scalar shape without decoding route trees."""
