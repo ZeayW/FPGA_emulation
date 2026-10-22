@@ -65,6 +65,7 @@ from .system_route_storage import (
     SYSTEM_ROUTE_STORE_PREFIX,
     SYSTEM_ROUTE_STORE_SUFFIX,
     SYSTEM_ROUTE_USER_VERSION,
+    read_system_routes,
     system_route_store_path,
 )
 from .sta import (
@@ -103,6 +104,7 @@ from .tdm_schedule_storage import (
     TYPED_ROUTE_RELATION_SCHEMA,
     TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
     TYPED_TDM_SCHEDULE_USER_VERSION,
+    read_tdm_schedule,
     tdm_schedule_store_path,
 )
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
@@ -1374,8 +1376,13 @@ def validate_tdm_checkpoint(
         managed_root_sealed=managed_dag_node,
     )
     phase5 = read_json(phase5_report)
-    route_document = read_json(routes)
-    schedule_document = read_json(schedule)
+    # Keep the typed route and schedule relations lazy.  ``read_json`` expands
+    # their multi-gigabyte SQLite sidecars into ordinary Python containers,
+    # which both defeats the production storage contract and changes the
+    # optimized cross-layer reconstruction path used when Phase 5 generated
+    # its sealed contract.
+    route_document = read_system_routes(routes)
+    schedule_document = read_tdm_schedule(schedule)
     actual_provider = schedule_document.get("provider")
     exact_mode = route_document.get("semantic_contract_schema") is not None
     if exact_mode != is_sampled_virtual_wire_schedule(schedule_document):

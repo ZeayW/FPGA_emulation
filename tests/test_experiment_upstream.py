@@ -1385,5 +1385,99 @@ class ExperimentUpstreamTest(unittest.TestCase):
             )
             self.assertEqual(checked["status"], "pass")
 
+    @mock.patch(
+        "emuflow.experiment_upstream.validate_cross_layer_timing_contract",
+        return_value={"status": "pass"},
+    )
+    @mock.patch(
+        "emuflow.experiment_upstream.validate_phase5",
+        return_value={"status": "pass"},
+    )
+    @mock.patch("emuflow.experiment_upstream.validate_phase5_generation")
+    def test_tdm_validator_keeps_typed_stores_lazy(
+        self, _validate_generation, _validate_phase5, validate_cross_layer
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            route = root / "route"
+            partition = root / "partition"
+            tdm = root / "tdm"
+            route.mkdir()
+            partition.mkdir()
+            tdm.mkdir()
+            platform = root / "platform.json"
+            platform.write_text("{}", encoding="utf-8")
+            (partition / "assignment.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            write_system_route_storage(
+                route / "routes.json",
+                {
+                    "schema": SYSTEM_ROUTES_SCHEMA,
+                    "design": "fixture",
+                    "platform": "fixture-platform",
+                    "provider": "fixture-router",
+                    "demands": [],
+                    "routes": [],
+                },
+            )
+            write_tdm_schedule_storage(
+                tdm / "schedule.json",
+                {
+                    "schema": "emuflow.tdm-schedule/v1",
+                    "design": "fixture",
+                    "platform": "fixture-platform",
+                    "provider": "static-tdm-v2",
+                    "metrics": {},
+                    "routes": [],
+                    "entries": [],
+                    "demand_completions": [],
+                    "domain_schedules": [],
+                },
+            )
+            (tdm / "cross_layer_timing.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            phase5 = {"provider": "static-tdm-v2"}
+            (tdm / "phase5_report.json").write_text(
+                json.dumps(phase5), encoding="utf-8"
+            )
+            report = {
+                "schema": EXPERIMENT_TDM_SCHEMA,
+                "status": "pass",
+                "routes_sha256": _sha256(route / "routes.json"),
+                "platform_sha256": _sha256(platform),
+                "schedule_sha256": _sha256(tdm / "schedule.json"),
+                "cross_layer_timing_sha256": _sha256(
+                    tdm / "cross_layer_timing.json"
+                ),
+                "phase5_report_sha256": _sha256(tdm / "phase5_report.json"),
+                "phase5_ref": {
+                    "artifact": "phase5_report.json",
+                    "provider": "static-tdm-v2",
+                    "optimization_provider": None,
+                    "design": None,
+                    "platform": None,
+                },
+            }
+            (tdm / "experiment-tdm-report.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+
+            checked = validate_tdm_checkpoint(
+                route,
+                partition,
+                platform,
+                tdm,
+                expected_provider="static-tdm-v2",
+            )
+
+            self.assertEqual(checked["status"], "pass")
+            routes_arg, _contract, schedule_arg, _semantics = (
+                validate_cross_layer.call_args.args
+            )
+            self.assertEqual(type(routes_arg).__name__, "SystemRoutesView")
+            self.assertEqual(type(schedule_arg).__name__, "TDMScheduleView")
+
 if __name__ == "__main__":
     unittest.main()
