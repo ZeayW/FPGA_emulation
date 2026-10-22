@@ -174,6 +174,9 @@ running a C++17 `<filesystem>` probe with the same statically linked C++ runtime
 used by the deployed tools; an explicit `CXX` override fails closed when it
 cannot satisfy that probe. This prevents validation-farm login defaults such as
 GCC 7, or an older compute-node `libstdc++`, from producing a partial runtime.
+The compact bridge also derives dense native endpoint coordinates from stored
+endpoint order, so filtered legacy artifacts with sparse endpoint ordinals keep
+the same logical EmuIR semantics without rewriting the SQLite database.
 
 - State the period of every analyzed clock explicitly.
 - Mapping profiles must match the physical device model; generic soft mapping
