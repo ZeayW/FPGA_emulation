@@ -2,14 +2,18 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <fstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
-#include <vector>
 
 namespace emuflow::core {
+
+struct ArtifactSchema {
+  std::uint64_t magic;
+  std::uint32_t version;
+  const char* name;
+};
 
 // Checked little-endian host artifact reader used by versioned, same-build
 // native boundaries. Stable schemas still declare their own magic/version;
@@ -22,23 +26,30 @@ class BinaryReader {
   T Read() {
     static_assert(std::is_trivially_copyable<T>::value,
                   "artifact fields must be trivially copyable");
-    if (offset_ > bytes_.size() || bytes_.size() - offset_ < sizeof(T)) {
+    if (remaining() < sizeof(T)) {
       throw std::runtime_error("native input is truncated");
     }
     T value{};
-    std::memcpy(&value, bytes_.data() + offset_, sizeof(T));
+    stream_.read(reinterpret_cast<char*>(&value), sizeof(T));
+    if (!stream_) throw std::runtime_error("cannot read native input");
     offset_ += sizeof(T);
     return value;
   }
 
   void RequireEnd() const;
-  std::size_t size() const { return bytes_.size(); }
-  std::size_t remaining() const { return bytes_.size() - offset_; }
+  std::size_t size() const { return size_; }
+  std::size_t remaining() const { return size_ - offset_; }
 
  private:
-  std::vector<char> bytes_;
+  std::ifstream stream_;
+  std::size_t size_ = 0;
   std::size_t offset_ = 0;
 };
+
+// Stable native schemas keep their own magic and version. Centralizing the
+// envelope check gives every producer the same truncation and version failure
+// behavior without teaching the shared core any stage-specific payload.
+void ReadAndValidateHeader(BinaryReader& reader, const ArtifactSchema& schema);
 
 // Same-directory temporary publication prevents consumers from observing a
 // partial native artifact. Commit synchronizes the file before atomic rename;

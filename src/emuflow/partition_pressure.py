@@ -9,18 +9,24 @@ from __future__ import annotations
 
 import hashlib
 import heapq
+import itertools
 import json
 import math
 import os
+import sqlite3
 import shutil
 import subprocess
 import tempfile
+import uuid
+from array import array
+from collections.abc import Iterator, Sequence
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .errors import ValidationError
-from .ir import EmuIR
+from .emuir_storage import open_emuir_sqlite_read_only
+from .ir import EMUIR_SCHEMA, VALID_CUT_CLASSES, EmuIR
 from .io import read_json, write_json
 from .partition import (
     CUT_MODE_STATIC_EXACT,
@@ -130,11 +136,528 @@ SCALABLE_EJECTION_DONOR_LIMIT = 32
 MAX_SCALABLE_EJECTIONS = 64
 
 
+class _PackedStringOrdinalIndex:
+    """Sorted UTF-8 identities with fixed-width ordinal payloads.
+
+    A production partition can contain millions of cells and nets.  Python
+    dictionaries for those identities cost several pointers and allocator
+    objects per record.  This index retains each identity once in a byte pool
+    and uses binary search over fixed-width offsets.  SQLite supplies the
+    canonical ordering, so construction does not need a graph-sized sort
+    vector either.
+    """
+
+    def __init__(self) -> None:
+        self._data = bytearray()
+        self._offsets = array("Q", [0])
+        self._ordinals = array("Q")
+
+    def append(self, identity: str, ordinal: int) -> None:
+        if (
+            not isinstance(identity, str)
+            or not identity
+            or isinstance(ordinal, bool)
+            or not isinstance(ordinal, int)
+            or ordinal < 0
+            or ordinal >= 2**64
+        ):
+            raise ValidationError("partition pressure identity index is invalid")
+        encoded = identity.encode("utf-8")
+        if self._ordinals and encoded <= self._key_bytes(len(self) - 1):
+            raise ValidationError(
+                "partition pressure identity ordering is invalid"
+            )
+        self._data.extend(encoded)
+        self._offsets.append(len(self._data))
+        self._ordinals.append(ordinal)
+
+    def __len__(self) -> int:
+        return len(self._ordinals)
+
+    def _key_bytes(self, index: int) -> bytes:
+        return bytes(
+            self._data[self._offsets[index] : self._offsets[index + 1]]
+        )
+
+    def key_at(self, index: int) -> str:
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("partition pressure identity index must be integer")
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return self._key_bytes(index).decode("utf-8")
+
+    def ordinal_at(self, index: int) -> int:
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("partition pressure identity index must be integer")
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return int(self._ordinals[index])
+
+    def get(self, identity: Any, default: Any = None) -> Any:
+        position = self.position(identity)
+        return default if position is None else int(self._ordinals[position])
+
+    def position(self, identity: Any) -> Optional[int]:
+        if not isinstance(identity, str):
+            return None
+        encoded = identity.encode("utf-8")
+        left = 0
+        right = len(self)
+        while left < right:
+            middle = (left + right) // 2
+            observed = self._key_bytes(middle)
+            if observed < encoded:
+                left = middle + 1
+            else:
+                right = middle
+        if left >= len(self) or self._key_bytes(left) != encoded:
+            return None
+        return left
+
+    def __contains__(self, identity: Any) -> bool:
+        return self.get(identity) is not None
+
+    def __getitem__(self, identity: str) -> int:
+        result = self.get(identity)
+        if result is None:
+            raise KeyError(identity)
+        return int(result)
+
+    @property
+    def payload_bytes(self) -> int:
+        return (
+            len(self._data)
+            + self._offsets.itemsize * len(self._offsets)
+            + self._ordinals.itemsize * len(self._ordinals)
+        )
+
+
+class _PackedIndexKeys(list):
+    """Read-only logical list backed by a packed identity index."""
+
+    def __init__(self, index: _PackedStringOrdinalIndex) -> None:
+        super().__init__()
+        self._index = index
+
+    def __len__(self) -> int:
+        return len(self._index)
+
+    def __iter__(self) -> Iterator[str]:
+        return (self._index.key_at(index) for index in range(len(self)))
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self._index.key_at(item) for item in range(*index.indices(len(self)))]
+        return self._index.key_at(index)
+
+    def _immutable(self, *args, **kwargs):
+        raise TypeError("partition pressure identity sequence is immutable")
+
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+    __delitem__ = _immutable
+    __setitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+
+
+class _PackedIndexPositions(Mapping[str, int]):
+    """Mapping from a packed key to its lexical position."""
+
+    def __init__(self, index: _PackedStringOrdinalIndex) -> None:
+        self._index = index
+
+    def __getitem__(self, key: str) -> int:
+        position = self._index.position(key)
+        if position is None:
+            raise KeyError(key)
+        return position
+
+    def __iter__(self) -> Iterator[str]:
+        return (self._index.key_at(index) for index in range(len(self._index)))
+
+    def __len__(self) -> int:
+        return len(self._index)
+
+
+class _NativeClusterSequence(Sequence):
+    """Repeatable cluster records in native lexical identity order."""
+
+    def __init__(
+        self,
+        records: Sequence[Mapping[str, Any]],
+        identities: _PackedStringOrdinalIndex,
+    ) -> None:
+        self._records = records
+        self._identities = identities
+
+    def __len__(self) -> int:
+        return len(self._identities)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(len(self)))]
+        return self._records[self._identities.ordinal_at(index)]
+
+
+class _PackedPressureNetSequence(list):
+    """Canonical pressure nets backed by compact integer membership arrays."""
+
+    _CUT_CLASSES = (
+        "clock",
+        "combinational",
+        "multi_driver",
+        "primary_input",
+        "register_input",
+        "register_output",
+        "reset",
+        "undriven",
+    )
+    _CUT_CLASS_INDEX = {name: index for index, name in enumerate(_CUT_CLASSES)}
+
+    def __init__(
+        self,
+        cluster_records: Sequence[Mapping[str, Any]],
+        native_cluster_identities: _PackedStringOrdinalIndex,
+    ) -> None:
+        super().__init__()
+        self._cluster_records = cluster_records
+        self.native_cluster_identities = native_cluster_identities
+        self.construction_identity_bytes = 0
+        if len(native_cluster_identities) >= 2**32:
+            raise ValidationError(
+                "partition pressure cluster count is unsupported"
+            )
+        self._artifact_to_native = array("I", [0]) * len(cluster_records)
+        for native_ordinal in range(len(native_cluster_identities)):
+            artifact_ordinal = native_cluster_identities.ordinal_at(
+                native_ordinal
+            )
+            if artifact_ordinal >= len(cluster_records):
+                raise ValidationError(
+                    "partition pressure cluster identity is invalid"
+                )
+            self._artifact_to_native[artifact_ordinal] = native_ordinal
+        self._net_identities = _PackedStringOrdinalIndex()
+        self._cut_classes = array("B")
+        self._driver_offsets = array("Q", [0])
+        self._drivers = array("I")
+        self._sink_offsets = array("Q", [0])
+        self._sinks = array("I")
+
+    @staticmethod
+    def _append_members(
+        target: array, values: Iterable[int], cluster_count: int
+    ) -> None:
+        previous = -1
+        for value in values:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value == previous
+                or value < 0
+                or value >= 2**32
+                or value >= cluster_count
+            ):
+                raise ValidationError(
+                    "partition pressure net membership is invalid"
+                )
+            target.append(value)
+            previous = value
+
+    def append_record(
+        self,
+        net: str,
+        cut_class: str,
+        drivers: Iterable[int],
+        sinks: Iterable[int],
+    ) -> None:
+        cut_index = self._CUT_CLASS_INDEX.get(cut_class)
+        if cut_index is None:
+            raise ValidationError("partition pressure net class is invalid")
+        self._net_identities.append(net, len(self._cut_classes))
+        driver_start = len(self._drivers)
+        sink_start = len(self._sinks)
+        self._append_members(self._drivers, drivers, len(self._cluster_records))
+        self._append_members(self._sinks, sinks, len(self._cluster_records))
+        if len(self._drivers) == driver_start or len(self._sinks) == sink_start:
+            raise ValidationError("partition pressure net endpoints are invalid")
+        self._cut_classes.append(cut_index)
+        self._driver_offsets.append(len(self._drivers))
+        self._sink_offsets.append(len(self._sinks))
+
+    def __len__(self) -> int:
+        return len(self._cut_classes)
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return {
+            "net": self._net_identities.key_at(index),
+            "cut_class": self._CUT_CLASSES[self._cut_classes[index]],
+            "drivers": [
+                self._cluster_records[ordinal]["cluster"]
+                for ordinal in self._drivers[
+                    self._driver_offsets[index] : self._driver_offsets[index + 1]
+                ]
+            ],
+            "sinks": [
+                self._cluster_records[ordinal]["cluster"]
+                for ordinal in self._sinks[
+                    self._sink_offsets[index] : self._sink_offsets[index + 1]
+                ]
+            ],
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        return (self._record(index) for index in range(len(self)))
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("partition pressure net index must be integer")
+        return self._record(index)
+
+    def get(self, net: Any, default: Any = None) -> Any:
+        index = self._net_identities.get(net)
+        return default if index is None else self._record(index)
+
+    def ordinal(self, net: Any) -> Optional[int]:
+        result = self._net_identities.get(net)
+        return None if result is None else int(result)
+
+    def native_net_members(
+        self, index: int
+    ) -> Tuple[Sequence[int], Sequence[int]]:
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("partition pressure net index must be integer")
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return (
+            self._drivers[
+                self._driver_offsets[index] : self._driver_offsets[index + 1]
+            ],
+            self._sinks[
+                self._sink_offsets[index] : self._sink_offsets[index + 1]
+            ],
+        )
+
+    def native_cluster_ordinal(self, artifact_ordinal: int) -> int:
+        return int(self._artifact_to_native[artifact_ordinal])
+
+    def native_clusters(self) -> _NativeClusterSequence:
+        return _NativeClusterSequence(
+            self._cluster_records, self.native_cluster_identities
+        )
+
+    def native_cluster_names(self) -> _PackedIndexKeys:
+        return _PackedIndexKeys(self.native_cluster_identities)
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, Sequence):
+            return False
+        return len(self) == len(other) and all(
+            left == right for left, right in zip(self, other)
+        )
+
+    def _immutable(self, *args, **kwargs):
+        raise TypeError("partition pressure net sequence is immutable")
+
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+    __delitem__ = _immutable
+    __setitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+
+    @property
+    def payload_bytes(self) -> int:
+        """Bytes in packed net identities, memberships, and ordinal maps.
+
+        This deliberately excludes the final cluster/path records and Python
+        object overhead.  It is a narrow accounting metric for the compact
+        net payload that replaces decoded per-net dictionaries.
+        """
+        return (
+            self.native_cluster_identities.payload_bytes
+            + self._net_identities.payload_bytes
+            + self._artifact_to_native.itemsize * len(self._artifact_to_native)
+            + self._cut_classes.itemsize * len(self._cut_classes)
+            + self._driver_offsets.itemsize * len(self._driver_offsets)
+            + self._drivers.itemsize * len(self._drivers)
+            + self._sink_offsets.itemsize * len(self._sink_offsets)
+            + self._sinks.itemsize * len(self._sinks)
+        )
+
+
+class _NativeLineWriter:
+    """Write an owner-unique native input and atomically publish it."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._temporary = path.with_name(
+            f".{path.name}.{uuid.uuid4().hex}.tmp"
+        )
+        self._owned_backup: Optional[Path] = None
+        self._recovery_backup: Optional[Path] = None
+        self._stream = None
+        self._published = False
+        self._stream = self._temporary.open(
+            "x", encoding="utf-8", newline="\n"
+        )
+
+    def append(self, line: str) -> None:
+        if self._stream is None or not isinstance(line, str) or "\n" in line:
+            raise ValidationError("native PATRON input record is invalid")
+        self._stream.write(line)
+        self._stream.write("\n")
+
+    def extend(self, lines: Iterable[str]) -> None:
+        for line in lines:
+            self.append(line)
+
+    def append_fields(self, fields: Iterable[Any]) -> None:
+        if self._stream is None:
+            raise ValidationError("native PATRON input writer is closed")
+        first = True
+        for raw in fields:
+            token = str(raw)
+            if not token or any(character.isspace() for character in token):
+                raise ValidationError("native PATRON input field is invalid")
+            if not first:
+                self._stream.write(" ")
+            self._stream.write(token)
+            first = False
+        if first:
+            raise ValidationError("native PATRON input record is empty")
+        self._stream.write("\n")
+
+    def publish(self) -> None:
+        if self._stream is None or self._published:
+            raise ValidationError("native PATRON input writer is closed")
+        stream = self._stream
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        replaced = False
+        try:
+            stream.flush()
+            os.fsync(stream.fileno())
+            stream.close()
+            self._stream = None
+            if self._path.exists():
+                candidate = self._path.with_name(
+                    f".{self._path.name}.{uuid.uuid4().hex}.backup"
+                )
+                os.link(self._path, candidate)
+                # Ownership begins only after link(2) succeeds.  A collision
+                # belongs to another writer and must never enter cleanup.
+                self._owned_backup = candidate
+            os.replace(self._temporary, self._path)
+            replaced = True
+            directory = os.open(self._path.parent, directory_flags)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            self._published = True
+        except BaseException:
+            if replaced:
+                try:
+                    if self._owned_backup is None:
+                        self._path.unlink(missing_ok=True)
+                    else:
+                        os.replace(self._owned_backup, self._path)
+                        self._owned_backup = None
+                    directory = os.open(self._path.parent, directory_flags)
+                    try:
+                        os.fsync(directory)
+                    finally:
+                        os.close(directory)
+                except OSError as rollback_error:
+                    if self._owned_backup is not None:
+                        self._recovery_backup = self._owned_backup
+                        self._owned_backup = None
+                        raise ValidationError(
+                            "native PATRON input rollback failed; recovery "
+                            f"backup retained at {self._recovery_backup}"
+                        ) from rollback_error
+                    raise
+            raise
+        finally:
+            if self._published and self._owned_backup is not None:
+                try:
+                    self._owned_backup.unlink(missing_ok=True)
+                    self._owned_backup = None
+                    directory = os.open(self._path.parent, directory_flags)
+                    try:
+                        os.fsync(directory)
+                    finally:
+                        os.close(directory)
+                except OSError:
+                    # The target has already been durably published.  A stale
+                    # owner-unique backup is harmless and never a partial target.
+                    pass
+
+    def abort(self) -> None:
+        try:
+            if self._stream is not None:
+                stream = self._stream
+                self._stream = None
+                stream.close()
+        finally:
+            if not self._published:
+                self._temporary.unlink(missing_ok=True)
+            if self._owned_backup is not None and not self._published:
+                self._owned_backup.unlink(missing_ok=True)
+                self._owned_backup = None
+
+    def __del__(self) -> None:
+        try:
+            self.abort()
+        except BaseException:
+            pass
+
+
 def _canonical_digest(value: Any) -> str:
     payload = json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _pressure_ir_source_digest(ir: Any) -> str:
+    """Seal an in-memory logical IR or its exact compact source artifact."""
+
+    from .partition_ir import CompactPartitionIR
+
+    if not isinstance(ir, CompactPartitionIR):
+        return _canonical_digest(ir.value)
+    digest = hashlib.sha256()
+    with ir.path.open("rb") as stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _flow_refinement_configuration(
@@ -280,9 +803,12 @@ def _instance_to_cluster(
 
 
 def _net_records(
-    ir: EmuIR, clusters_artifact: Mapping[str, Any]
+    ir: EmuIR,
+    clusters_artifact: Mapping[str, Any],
+    cluster_by_instance: Optional[Mapping[str, str]] = None,
 ) -> List[Dict[str, Any]]:
-    cluster_by_instance = _instance_to_cluster(clusters_artifact)
+    if cluster_by_instance is None:
+        cluster_by_instance = _instance_to_cluster(clusters_artifact)
     transported_cut_classes = transported_cut_classes_for_clusters(
         clusters_artifact
     )
@@ -315,6 +841,367 @@ def _net_records(
             }
         )
     return sorted(records, key=lambda record: record["net"])
+
+
+def _compact_partition_pressure_graph(
+    ir: Any,
+    clusters_artifact: Mapping[str, Any],
+) -> Tuple[
+    _PackedStringOrdinalIndex,
+    _PackedStringOrdinalIndex,
+    _PackedStringOrdinalIndex,
+    _PackedPressureNetSequence,
+    List[Dict[str, Any]],
+]:
+    """Build pressure facts by ordered joins over a compact EmuIR store.
+
+    The temporary tables contain only cluster membership needed by this
+    construction and are owned by SQLite's bounded temp store.  The returned
+    graph retains names once in packed byte pools and endpoint membership as
+    integer ordinals.  No decoded EmuIR net dictionaries, all-net Python set,
+    or instance-to-cluster Python dictionary is created.
+    """
+
+    from .partition_ir import CompactPartitionIR
+
+    if not isinstance(ir, CompactPartitionIR):
+        raise TypeError("compact partition pressure graph requires compact IR")
+    raw_clusters = clusters_artifact.get("clusters")
+    if not isinstance(raw_clusters, list):
+        raise ValidationError("partition pressure clusters are invalid")
+    connection = open_emuir_sqlite_read_only(ir.path)
+    try:
+        connection.execute("PRAGMA temp_store=FILE")
+        connection.executescript(
+            """
+            CREATE TEMP TABLE pressure_clusters(
+              cluster_ordinal INTEGER PRIMARY KEY,
+              cluster_id TEXT NOT NULL UNIQUE
+            );
+            CREATE TEMP TABLE pressure_cluster_members(
+              instance_id TEXT PRIMARY KEY,
+              cluster_ordinal INTEGER NOT NULL
+            ) WITHOUT ROWID;
+            """
+        )
+        cluster_records: List[Dict[str, Any]] = []
+        try:
+            for ordinal, cluster in enumerate(raw_clusters):
+                if not isinstance(cluster, Mapping):
+                    raise ValidationError(
+                        "partition pressure cluster record is invalid"
+                    )
+                cluster_id = cluster.get("id")
+                members = cluster.get("instances")
+                resources = cluster.get("resources")
+                if (
+                    not isinstance(cluster_id, str)
+                    or not cluster_id
+                    or not isinstance(members, list)
+                    or not all(
+                        isinstance(member, str) and member
+                        for member in members
+                    )
+                    or not isinstance(resources, Mapping)
+                    or "fixed_fpga" not in cluster
+                ):
+                    raise ValidationError(
+                        "partition pressure cluster record is invalid"
+                    )
+                connection.execute(
+                    "INSERT INTO pressure_clusters VALUES (?,?)",
+                    (ordinal, cluster_id),
+                )
+                connection.executemany(
+                    "INSERT INTO pressure_cluster_members VALUES (?,?)",
+                    ((member, ordinal) for member in members),
+                )
+                cluster_records.append(
+                    {
+                        "cluster": cluster_id,
+                        "cells": len(members),
+                        "resources": dict(sorted(resources.items())),
+                        "fixed_fpga": cluster.get("fixed_fpga"),
+                    }
+                )
+        except sqlite3.IntegrityError as error:
+            raise ValidationError(
+                "partition pressure cluster identity or membership is duplicated"
+            ) from error
+
+        metadata = dict(
+            connection.execute(
+                "SELECT key,value FROM metadata WHERE key IN "
+                "('logical_schema','record_counts_json')"
+            )
+        )
+        if (
+            metadata.get("logical_schema") != EMUIR_SCHEMA
+            or ir.value.get("schema") != EMUIR_SCHEMA
+        ):
+            raise ValidationError("compact EmuIR logical schema is invalid")
+        try:
+            counts = json.loads(metadata["record_counts_json"])
+            if (
+                not isinstance(counts, Mapping)
+                or set(counts)
+                != {"cell_records", "net_records", "endpoint_records"}
+            ):
+                raise TypeError("unexpected compact EmuIR record-count keys")
+            cell_count = counts["cell_records"]
+            net_count = counts["net_records"]
+            endpoint_count = counts["endpoint_records"]
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ValidationError(
+                "compact EmuIR record counts are invalid"
+            ) from error
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            for value in (cell_count, net_count, endpoint_count)
+        ):
+            raise ValidationError("compact EmuIR record counts are invalid")
+        observed = connection.execute(
+            "SELECT COUNT(*) FROM pressure_cluster_members"
+        ).fetchone()[0]
+        actual_cells = connection.execute(
+            "SELECT COUNT(*) FROM cell_records"
+        ).fetchone()[0]
+        cell_bounds = connection.execute(
+            "SELECT MIN(seq),MAX(seq) FROM cell_records"
+        ).fetchone()
+        dense_cells = (
+            (cell_count == 0 and cell_bounds[0] is None and cell_bounds[1] is None)
+            or (
+                cell_count > 0
+                and cell_bounds[0] == 0
+                and cell_bounds[1] == cell_count - 1
+            )
+        )
+        if (
+            observed != cell_count
+            or actual_cells != cell_count
+            or not dense_cells
+        ):
+            raise ValidationError(
+                "partition pressure cluster membership coverage disagrees"
+            )
+        missing = connection.execute(
+            """SELECT c.id FROM cell_records c
+                LEFT JOIN pressure_cluster_members m ON m.instance_id=c.id
+               WHERE m.instance_id IS NULL LIMIT 1"""
+        ).fetchone()
+        extra = connection.execute(
+            """SELECT m.instance_id FROM pressure_cluster_members m
+                LEFT JOIN cell_records c ON c.id=m.instance_id
+               WHERE c.id IS NULL LIMIT 1"""
+        ).fetchone()
+        if missing is not None or extra is not None:
+            raise ValidationError(
+                "partition pressure cluster membership coverage disagrees"
+            )
+
+        cluster_by_instance = _PackedStringOrdinalIndex()
+        for row in connection.execute(
+            "SELECT instance_id,cluster_ordinal "
+            "FROM pressure_cluster_members ORDER BY instance_id"
+        ):
+            cluster_by_instance.append(
+                row["instance_id"], row["cluster_ordinal"]
+            )
+
+        top_ports = set()
+        for expected_port_seq, row in enumerate(
+            connection.execute(
+                "SELECT seq,record_json FROM port_records ORDER BY seq"
+            )
+        ):
+            if row["seq"] != expected_port_seq:
+                raise ValidationError("compact EmuIR port sequence is invalid")
+            try:
+                port = json.loads(row["record_json"])
+            except (TypeError, json.JSONDecodeError) as error:
+                raise ValidationError(
+                    "compact EmuIR port record is invalid"
+                ) from error
+            port_id = port.get("id") if isinstance(port, Mapping) else None
+            if (
+                not isinstance(port_id, str)
+                or not port_id
+                or port_id in top_ports
+            ):
+                raise ValidationError("compact EmuIR port record is invalid")
+            top_ports.add(port_id)
+
+        endpoint_rows = iter(
+            connection.execute(
+                """SELECT e.net_seq,e.role,e.ordinal,e.instance_seq,e.bit,
+                          c.seq AS cell_owner_seq,
+                          p.seq AS pin_name_seq,p.name AS port
+                     FROM endpoint_records e
+                     LEFT JOIN cell_records c ON c.seq=e.instance_seq
+                     LEFT JOIN pin_names p ON p.seq=e.port_seq
+                    ORDER BY e.net_seq,e.role,e.ordinal"""
+            )
+        )
+        endpoint = next(endpoint_rows, None)
+        observed_endpoints = 0
+        known_nets = _PackedStringOrdinalIndex()
+        observed_net_ordinals = 0
+        for net in connection.execute(
+            "SELECT seq,id,cut_class FROM net_records ORDER BY seq"
+        ):
+            net_seq = net["seq"]
+            if net_seq != observed_net_ordinals:
+                raise ValidationError("compact EmuIR net sequence is invalid")
+            if not isinstance(net["id"], str) or not net["id"]:
+                raise ValidationError("compact EmuIR net identity is invalid")
+            if net["cut_class"] not in VALID_CUT_CLASSES:
+                raise ValidationError("compact EmuIR net cut class is invalid")
+            if endpoint is not None:
+                endpoint_net_seq = endpoint["net_seq"]
+                if (
+                    isinstance(endpoint_net_seq, bool)
+                    or not isinstance(endpoint_net_seq, int)
+                    or endpoint_net_seq < 0
+                    or endpoint_net_seq < net_seq
+                ):
+                    raise ValidationError("compact EmuIR has orphaned endpoints")
+            endpoint_ordinals = [-1, -1]
+            while endpoint is not None and endpoint["net_seq"] == net_seq:
+                role = endpoint["role"]
+                owner = endpoint["instance_seq"]
+                if (
+                    isinstance(role, bool)
+                    or not isinstance(role, int)
+                    or role not in (0, 1)
+                ):
+                    raise ValidationError("compact EmuIR endpoint role is invalid")
+                ordinal = endpoint["ordinal"]
+                if (
+                    isinstance(ordinal, bool)
+                    or not isinstance(ordinal, int)
+                    or ordinal < 0
+                    or ordinal <= endpoint_ordinals[role]
+                ):
+                    raise ValidationError(
+                        "compact EmuIR endpoint sequence is invalid"
+                    )
+                endpoint_ordinals[role] = ordinal
+                if (
+                    endpoint["pin_name_seq"] is None
+                    or not isinstance(endpoint["port"], str)
+                    or not endpoint["port"]
+                ):
+                    raise ValidationError("compact EmuIR endpoint port is invalid")
+                bit = endpoint["bit"]
+                if isinstance(bit, bool) or not isinstance(bit, int) or bit < 0:
+                    raise ValidationError("compact EmuIR endpoint bit is invalid")
+                if owner is not None:
+                    if (
+                        isinstance(owner, bool)
+                        or not isinstance(owner, int)
+                        or owner < 0
+                        or owner >= cell_count
+                        or endpoint["cell_owner_seq"] != owner
+                    ):
+                        raise ValidationError(
+                            "compact EmuIR endpoint owner is invalid"
+                        )
+                elif endpoint["port"] not in top_ports:
+                    raise ValidationError(
+                        "compact EmuIR top-level endpoint is invalid"
+                    )
+                observed_endpoints += 1
+                endpoint = next(endpoint_rows, None)
+            observed_net_ordinals += 1
+        if endpoint is not None:
+            raise ValidationError("compact EmuIR has orphaned endpoints")
+        if observed_net_ordinals != net_count:
+            raise ValidationError("compact EmuIR net count disagrees")
+        if observed_endpoints != endpoint_count:
+            raise ValidationError("compact EmuIR record counts disagree")
+        for row in connection.execute(
+            "SELECT seq,id FROM net_records ORDER BY id"
+        ):
+            known_nets.append(row["id"], row["seq"])
+
+        native_cluster_identities = _PackedStringOrdinalIndex()
+        for native_ordinal, row in enumerate(
+            connection.execute(
+                "SELECT cluster_id,cluster_ordinal "
+                "FROM pressure_clusters ORDER BY cluster_id"
+            )
+        ):
+            native_cluster_identities.append(
+                row["cluster_id"], row["cluster_ordinal"]
+            )
+            if native_ordinal >= 2**64:
+                raise ValidationError(
+                    "partition pressure cluster count is unsupported"
+                )
+
+        pressure_nets = _PackedPressureNetSequence(
+            cluster_records, native_cluster_identities
+        )
+        transported = sorted(
+            transported_cut_classes_for_clusters(clusters_artifact)
+        )
+        placeholders = ",".join("?" for _ in transported)
+        rows = connection.execute(
+            f"""SELECT n.id,n.cut_class,e.role,m.cluster_ordinal,
+                       pc.cluster_id
+                  FROM net_records n
+                  JOIN endpoint_records e ON e.net_seq=n.seq
+                  JOIN cell_records c ON c.seq=e.instance_seq
+                  JOIN pressure_cluster_members m ON m.instance_id=c.id
+                  JOIN pressure_clusters pc
+                    ON pc.cluster_ordinal=m.cluster_ordinal
+                 WHERE n.cut_class IN ({placeholders})
+                 GROUP BY n.id,n.cut_class,e.role,m.cluster_ordinal,pc.cluster_id
+                 ORDER BY n.id,e.role,pc.cluster_id""",
+            transported,
+        )
+        current_id: Optional[str] = None
+        current_class: Optional[str] = None
+        drivers = array("I")
+        sinks = array("I")
+
+        def finish() -> None:
+            if current_id is not None and drivers and sinks:
+                assert current_class is not None
+                pressure_nets.append_record(
+                    current_id, current_class, drivers, sinks
+                )
+
+        for row in rows:
+            if row["id"] != current_id:
+                finish()
+                current_id = row["id"]
+                current_class = row["cut_class"]
+                drivers = array("I")
+                sinks = array("I")
+            if row["cut_class"] != current_class or row["role"] not in (0, 1):
+                raise ValidationError(
+                    "compact EmuIR pressure net relation is corrupt"
+                )
+            (drivers if row["role"] == 0 else sinks).append(
+                int(row["cluster_ordinal"])
+            )
+        finish()
+        pressure_nets.construction_identity_bytes = (
+            known_nets.payload_bytes + cluster_by_instance.payload_bytes
+        )
+        return (
+            known_nets,
+            cluster_by_instance,
+            native_cluster_identities,
+            pressure_nets,
+            cluster_records,
+        )
+    finally:
+        connection.close()
 
 
 def _shortest_routes(
@@ -387,12 +1274,37 @@ def _reconstruct_partition_pressure_model(
     normalization = _validate_database_normalization(
         timing_database.get("normalization")
     )
-    known_nets = {net["id"] for net in ir.value["nets"]}
-    cluster_by_instance = _instance_to_cluster(clusters_artifact)
-    pressure_nets = {
-        record["net"]: record
-        for record in _net_records(ir, clusters_artifact)
-    }
+    from .partition_ir import CompactPartitionIR
+
+    if isinstance(ir, CompactPartitionIR):
+        (
+            known_nets,
+            cluster_by_instance,
+            _native_cluster_identities,
+            compact_pressure_nets,
+            clusters,
+        ) = _compact_partition_pressure_graph(ir, clusters_artifact)
+        pressure_nets: Any = compact_pressure_nets
+        pressure_net_lookup: Any = compact_pressure_nets
+    else:
+        known_nets = {net["id"] for net in ir.value["nets"]}
+        cluster_by_instance = _instance_to_cluster(clusters_artifact)
+        pressure_nets = {
+            record["net"]: record
+            for record in _net_records(
+                ir, clusters_artifact, cluster_by_instance
+            )
+        }
+        pressure_net_lookup = pressure_nets
+        clusters = [
+            {
+                "cluster": cluster["id"],
+                "cells": len(cluster["instances"]),
+                "resources": dict(sorted(cluster["resources"].items())),
+                "fixed_fpga": cluster["fixed_fpga"],
+            }
+            for cluster in clusters_artifact["clusters"]
+        ]
     paths = []
     seen_paths = set()
     timing_records = (
@@ -422,7 +1334,7 @@ def _reconstruct_partition_pressure_model(
             raise ValidationError(
                 f"partition pressure timing path {index} is invalid"
             )
-        unknown = sorted(set(path_nets) - known_nets)
+        unknown = sorted({net for net in path_nets if net not in known_nets})
         if unknown:
             raise ValidationError(
                 f"partition pressure path {path_id!r} references unknown nets "
@@ -451,15 +1363,33 @@ def _reconstruct_partition_pressure_model(
             if isinstance(endpoint, dict)
             else None
         )
-        start_cluster = cluster_by_instance.get(start_instance)
-        end_cluster = cluster_by_instance.get(end_instance)
-        considered_nets = [net for net in path_nets if net in pressure_nets]
+        start_cluster_ordinal = cluster_by_instance.get(start_instance)
+        end_cluster_ordinal = cluster_by_instance.get(end_instance)
+        if isinstance(cluster_by_instance, _PackedStringOrdinalIndex):
+            start_cluster = (
+                None
+                if start_cluster_ordinal is None
+                else clusters[start_cluster_ordinal]["cluster"]
+            )
+            end_cluster = (
+                None
+                if end_cluster_ordinal is None
+                else clusters[end_cluster_ordinal]["cluster"]
+            )
+        else:
+            start_cluster = start_cluster_ordinal
+            end_cluster = end_cluster_ordinal
+        considered_records = []
+        for net in path_nets:
+            pressure_record = pressure_net_lookup.get(net)
+            if pressure_record is not None:
+                considered_records.append(pressure_record)
         endpoint_exact = (
             start_cluster is not None
             and end_cluster is not None
             and all(
-                len(pressure_nets[net]["drivers"]) == 1
-                for net in considered_nets
+                len(record["drivers"]) == 1
+                for record in considered_records
             )
         )
         record = {
@@ -502,15 +1432,6 @@ def _reconstruct_partition_pressure_model(
                 "fabric_clock_mhz": link.fabric_clock_mhz,
             }
         )
-    clusters = [
-        {
-            "cluster": cluster["id"],
-            "cells": len(cluster["instances"]),
-            "resources": dict(sorted(cluster["resources"].items())),
-            "fixed_fpga": cluster["fixed_fpga"],
-        }
-        for cluster in clusters_artifact["clusters"]
-    ]
     model = {
         "schema": PARTITION_PRESSURE_MODEL_SCHEMA,
         "design": ir.value["design"]["name"],
@@ -551,12 +1472,16 @@ def _reconstruct_partition_pressure_model(
         ],
         "capacities": capacity_records,
         "shortest_routes": _shortest_routes(platform, route_constraints),
-        "nets": list(pressure_nets.values()),
+        "nets": (
+            pressure_nets
+            if isinstance(pressure_nets, _PackedPressureNetSequence)
+            else list(pressure_nets.values())
+        ),
         "paths": paths,
     }
     if include_source_seals:
         model["sources"] = {
-            "ir_sha256": _canonical_digest(ir.value),
+            "ir_sha256": _pressure_ir_source_digest(ir),
             "clusters_sha256": _canonical_digest(clusters_artifact),
             "constraints_sha256": _canonical_digest(constraints),
             "timing_database_sha256": _canonical_digest(timing_database),
@@ -630,7 +1555,7 @@ def validate_partition_pressure_model(
     if model != expected:
         raise ValidationError("partition pressure model reconstruction mismatch")
     expected_sources = {
-        "ir_sha256": _canonical_digest(ir.value),
+        "ir_sha256": _pressure_ir_source_digest(ir),
         "clusters_sha256": _canonical_digest(clusters_artifact),
         "constraints_sha256": _canonical_digest(constraints),
         "timing_database_sha256": _canonical_digest(timing_database),
@@ -1564,17 +2489,30 @@ def _write_patron_native_input(
         feedback_by_index = {}
     parts = sorted(record["fpga"] for record in model["fpgas"])
     part_index = {part: index for index, part in enumerate(parts)}
-    clusters = sorted(model["clusters"], key=lambda item: item["cluster"])
-    cluster_index = {
-        cluster["cluster"]: index for index, cluster in enumerate(clusters)
-    }
+    packed_nets = (
+        model["nets"]
+        if isinstance(model["nets"], _PackedPressureNetSequence)
+        else None
+    )
+    if packed_nets is not None:
+        clusters: Sequence[Mapping[str, Any]] = packed_nets.native_clusters()
+        cluster_index: Mapping[str, int] = _PackedIndexPositions(
+            packed_nets.native_cluster_identities
+        )
+        cluster_names: Sequence[str] = packed_nets.native_cluster_names()
+    else:
+        clusters = sorted(
+            model["clusters"], key=lambda item: item["cluster"]
+        )
+        cluster_index = {
+            cluster["cluster"]: index
+            for index, cluster in enumerate(clusters)
+        }
+        cluster_names = [cluster["cluster"] for cluster in clusters]
     dimensions = _native_dimensions(platform, model)
-    original_clusters = {
-        cluster["id"]: cluster for cluster in clusters_artifact["clusters"]
-    }
     balance = validate_cluster_assignment_balance(
         platform,
-        list(original_clusters.values()),
+        clusters_artifact["clusters"],
         initial_assignment["cluster_assignment"],
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
@@ -1593,185 +2531,224 @@ def _write_patron_native_input(
     }
     arc_domain = _capacity_key_by_arc(model)
     link_by_id = {link.id: link for link in platform.links}
-    nets = sorted(model["nets"], key=lambda item: item["net"])
-    net_index = {net["net"]: index for index, net in enumerate(nets)}
+    if packed_nets is not None:
+        nets: Sequence[Mapping[str, Any]] = packed_nets
+        net_index: Any = packed_nets
+    else:
+        nets = sorted(model["nets"], key=lambda item: item["net"])
+        net_index = {
+            net["net"]: index for index, net in enumerate(nets)
+        }
     max_hops = model["configuration"]["max_route_hops"]
-    lines = [
-        (
-            f"EMUFLOW_PATRON_INPUT_V{flow_version}_BANKS_V1"
-        ),
-        (
-            f"PARAM {len(parts)} {len(clusters)} {len(dimensions)} "
-            f"{len(domains)} {len(nets)} {len(model['paths'])} "
-            f"{-1 if max_hops is None else max_hops} "
-            f"{model['configuration']['tdm_max_ratio']} "
-            f"{model['configuration']['tdm_ratio_quantum']} "
-            f"{constraints['min_used_fpgas']} {max_moves} "
-            f"{model['normalization']['positive_slack_scale_ns']:.17g} "
-            f"{model['normalization']['negative_slack_scale_ns']:.17g} "
-            f"{model['normalization']['max_clock_period_ns']:.17g} "
-            f"{model['configuration']['boundary_fanout_penalty_scale_ns']:.17g} "
-            f"{model['configuration']['max_scalable_sweeps']} "
-            f"{model['configuration']['scalable_ejection_critical_limit']} "
-            f"{model['configuration']['scalable_ejection_donor_limit']} "
-            f"{model['configuration']['max_scalable_ejections']} "
-            f"{route_constraints.get('tdm_min_ratio', 1)}"
-        ),
-    ]
-    if flow_refinement:
-        fields = [
-            "FLOW",
-            "1",
-            str(len(clusters)),
-            str(PATRON_FLOW_CORRIDOR_DISTANCE),
-            str(PATRON_FLOW_PIERCING_STRATEGY),
-            str(PATRON_FLOW_MAX_LEGAL_CANDIDATES),
-            str(PATRON_FLOW_MAX_POLISH_MOVES),
-            str(PATRON_FLOW_MAX_FRONTIER_PATHS),
-            str(PATRON_FLOW_MAX_TAIL_MOVES),
-        ]
-        if flow_version >= 10:
-            fields.append(
-                f"{(PATRON_FLOW_PHYSICAL_HOP_GUARD_SCALE_NS if flow_version == 10 else 0.0):.17g}"
+
+    lines = _NativeLineWriter(path)
+    published = False
+    try:
+        lines.extend([
+            (
+                f"EMUFLOW_PATRON_INPUT_V{flow_version}_BANKS_V1"
+            ),
+            (
+                f"PARAM {len(parts)} {len(clusters)} {len(dimensions)} "
+                f"{len(domains)} {len(nets)} {len(model['paths'])} "
+                f"{-1 if max_hops is None else max_hops} "
+                f"{model['configuration']['tdm_max_ratio']} "
+                f"{model['configuration']['tdm_ratio_quantum']} "
+                f"{constraints['min_used_fpgas']} {max_moves} "
+                f"{model['normalization']['positive_slack_scale_ns']:.17g} "
+                f"{model['normalization']['negative_slack_scale_ns']:.17g} "
+                f"{model['normalization']['max_clock_period_ns']:.17g} "
+                f"{model['configuration']['boundary_fanout_penalty_scale_ns']:.17g} "
+                f"{model['configuration']['max_scalable_sweeps']} "
+                f"{model['configuration']['scalable_ejection_critical_limit']} "
+                f"{model['configuration']['scalable_ejection_donor_limit']} "
+                f"{model['configuration']['max_scalable_ejections']} "
+                f"{route_constraints.get('tdm_min_ratio', 1)}"
+            ),
+        ])
+        if flow_refinement:
+            fields = [
+                "FLOW",
+                "1",
+                str(len(clusters)),
+                str(PATRON_FLOW_CORRIDOR_DISTANCE),
+                str(PATRON_FLOW_PIERCING_STRATEGY),
+                str(PATRON_FLOW_MAX_LEGAL_CANDIDATES),
+                str(PATRON_FLOW_MAX_POLISH_MOVES),
+                str(PATRON_FLOW_MAX_FRONTIER_PATHS),
+                str(PATRON_FLOW_MAX_TAIL_MOVES),
+            ]
+            if flow_version >= 10:
+                fields.append(
+                    f"{(PATRON_FLOW_PHYSICAL_HOP_GUARD_SCALE_NS if flow_version == 10 else 0.0):.17g}"
+                )
+            lines.append(" ".join(fields))
+        total_cells = sum(cluster["cells"] for cluster in clusters)
+        for part in parts:
+            hard = []
+            allowed = []
+            for dimension in dimensions:
+                hard.append(
+                    float(total_cells)
+                    if dimension == "cells"
+                    else float(planning_capacity[part][dimension])
+                )
+                allowed.append(
+                    float(balance["balance_allowed_loads"][part][dimension])
+                )
+            fields = " ".join(
+                f"{hard_value:.17g} {allowed_value:.17g}"
+                for hard_value, allowed_value in zip(hard, allowed)
             )
-        lines.append(" ".join(fields))
-    total_cells = sum(cluster["cells"] for cluster in clusters)
-    for part in parts:
-        hard = []
-        allowed = []
-        for dimension in dimensions:
-            hard.append(
-                float(total_cells)
+            lines.append(f"CAP {part_index[part]} {fields}")
+        for index, cluster in enumerate(clusters):
+            current = initial_assignment["cluster_assignment"][cluster["cluster"]]
+            fixed = cluster["fixed_fpga"]
+            weights = [
+                cluster["cells"]
                 if dimension == "cells"
-                else float(planning_capacity[part][dimension])
-            )
-            allowed.append(
-                float(balance["balance_allowed_loads"][part][dimension])
-            )
-        fields = " ".join(
-            f"{hard_value:.17g} {allowed_value:.17g}"
-            for hard_value, allowed_value in zip(hard, allowed)
-        )
-        lines.append(f"CAP {part_index[part]} {fields}")
-    for index, cluster in enumerate(clusters):
-        current = initial_assignment["cluster_assignment"][cluster["cluster"]]
-        fixed = cluster["fixed_fpga"]
-        weights = [
-            cluster["cells"]
-            if dimension == "cells"
-            else cluster["resources"].get(dimension, 0)
-            for dimension in dimensions
-        ]
-        lines.append(
-            " ".join(
-                [
-                    "CLUSTER",
-                    str(index),
-                    str(part_index[current]),
-                    str(-1 if fixed is None else part_index[fixed]),
-                    *(str(weight) for weight in weights),
-                ]
-            )
-        )
-    for index, domain in enumerate(domains):
-        link = link_by_id[domain["link"]]
-        lines.append(
-            f"DOMAIN {index} {domain['lanes']} "
-            f"{int(domain['link'] in set(route_constraints['sll_links']))} "
-            f"{route_link_delay_coefficients_ns(platform, link.id, link.endpoints[0], link.endpoints[1], route_constraints)[1]:.17g} "
-            f"{domain_index.get(domain.get('opposite_capacity_key'), -1)} "
-            f"{domain.get('bank_count', 0)} {domain.get('wires_per_bank', 0)} "
-            f"{int(domain['capacity_bits'])}"
-        )
-    for source in parts:
-        for sink in parts:
-            route = model["shortest_routes"][source][sink]
-            if route is None:
-                lines.append(
-                    f"ROUTE {part_index[source]} {part_index[sink]} -1"
-                )
-                continue
-            fields = []
-            for arc in route:
-                fields.extend(
-                    [
-                        str(
-                            domain_index[
-                                arc_domain[
-                                    (arc["link"], arc["from"], arc["to"])
-                                ]
-                            ]
-                        ),
-                        f"{route_link_delay_ns(platform, arc['link'], arc['from'], arc['to'], route_constraints):.17g}",
-                    ]
-                )
+
+                else cluster["resources"].get(dimension, 0)
+                for dimension in dimensions
+            ]
             lines.append(
                 " ".join(
                     [
-                        "ROUTE",
-                        str(part_index[source]),
-                        str(part_index[sink]),
-                        str(len(route)),
-                        *fields,
+                        "CLUSTER",
+                        str(index),
+                        str(part_index[current]),
+                        str(-1 if fixed is None else part_index[fixed]),
+                        *(str(weight) for weight in weights),
                     ]
                 )
             )
-    for index, net in enumerate(nets):
-        drivers = [cluster_index[item] for item in net["drivers"]]
-        sinks = [cluster_index[item] for item in net["sinks"]]
-        fields = [
-            "NET",
-            str(index),
-            str(len(drivers)),
-            *(str(item) for item in drivers),
-            str(len(sinks)),
-            *(str(item) for item in sinks),
-        ]
-        lines.append(" ".join(fields))
-    for index, timing_path in enumerate(model["paths"]):
-        path_nets = [
-            net_index[net]
-            for net in timing_path["path_nets"]
-            if net in net_index
-        ]
-        start_cluster = timing_path.get("start_cluster")
-        end_cluster = timing_path.get("end_cluster")
-        fields = [
-                    "PATH",
-                    str(index),
-                    f"{timing_path['clock_period_ns']:.17g}",
-                    f"{timing_path['base_slack_ns']:.17g}",
-                    str(
-                        -1
-                        if start_cluster is None
-                        else cluster_index[start_cluster]
-                    ),
-                    str(
-                        -1
-                        if end_cluster is None
-                        else cluster_index[end_cluster]
-                    ),
-                    str(len(path_nets)),
-                    *(str(item) for item in path_nets),
-                ]
-        if use_physical_feedback:
-            feedback = feedback_by_index.get(index)
-            if feedback is None:
-                fields.extend(("-1", "-1", "0"))
-            else:
-                fields.extend(
-                    (
-                        str(part_index[feedback["observed_source_fpga"]]),
-                        str(part_index[feedback["observed_sink_fpga"]]),
-                        f"{float(feedback['positive_residual_ns']) * physical_feedback_scale:.17g}",
+        for index, domain in enumerate(domains):
+            link = link_by_id[domain["link"]]
+            lines.append(
+                f"DOMAIN {index} {domain['lanes']} "
+                f"{int(domain['link'] in set(route_constraints['sll_links']))} "
+                f"{route_link_delay_coefficients_ns(platform, link.id, link.endpoints[0], link.endpoints[1], route_constraints)[1]:.17g} "
+                f"{domain_index.get(domain.get('opposite_capacity_key'), -1)} "
+                f"{domain.get('bank_count', 0)} {domain.get('wires_per_bank', 0)} "
+                f"{int(domain['capacity_bits'])}"
+            )
+        for source in parts:
+            for sink in parts:
+                route = model["shortest_routes"][source][sink]
+                if route is None:
+                    lines.append(
+                        f"ROUTE {part_index[source]} {part_index[sink]} -1"
+                    )
+                    continue
+                fields = []
+                for arc in route:
+                    fields.extend(
+                        [
+                            str(
+                                domain_index[
+                                    arc_domain[
+                                        (arc["link"], arc["from"], arc["to"])
+                                    ]
+                                ]
+                            ),
+                            f"{route_link_delay_ns(platform, arc['link'], arc['from'], arc['to'], route_constraints):.17g}",
+                        ]
+                    )
+                lines.append(
+                    " ".join(
+                        [
+                            "ROUTE",
+                            str(part_index[source]),
+                            str(part_index[sink]),
+                            str(len(route)),
+                            *fields,
+                        ]
                     )
                 )
-        lines.append(" ".join(fields))
-    lines.append("END")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if packed_nets is not None:
+            for index in range(len(packed_nets)):
+                drivers, sinks = packed_nets.native_net_members(index)
+                lines.append_fields(
+                    itertools.chain(
+                        ("NET", index, len(drivers)),
+                        (
+                            packed_nets.native_cluster_ordinal(item)
+                            for item in drivers
+                        ),
+                        (len(sinks),),
+                        (
+                            packed_nets.native_cluster_ordinal(item)
+                            for item in sinks
+                        ),
+                    )
+                )
+        else:
+            for index, net in enumerate(nets):
+                drivers = [cluster_index[item] for item in net["drivers"]]
+                sinks = [cluster_index[item] for item in net["sinks"]]
+                lines.append_fields(
+                    itertools.chain(
+                        ("NET", index, len(drivers)),
+                        drivers,
+                        (len(sinks),),
+                        sinks,
+                    )
+                )
+        for index, timing_path in enumerate(model["paths"]):
+            if packed_nets is not None:
+                path_nets = []
+                for net in timing_path["path_nets"]:
+                    ordinal = packed_nets.ordinal(net)
+                    if ordinal is not None:
+                        path_nets.append(ordinal)
+            else:
+                path_nets = [
+                    net_index[net]
+                    for net in timing_path["path_nets"]
+                    if net in net_index
+                ]
+            start_cluster = timing_path.get("start_cluster")
+            end_cluster = timing_path.get("end_cluster")
+            fields = (
+                "PATH",
+                index,
+                f"{timing_path['clock_period_ns']:.17g}",
+                f"{timing_path['base_slack_ns']:.17g}",
+                (
+                    -1
+                    if start_cluster is None
+                    else cluster_index[start_cluster]
+                ),
+                (
+                    -1
+                    if end_cluster is None
+                    else cluster_index[end_cluster]
+                ),
+                len(path_nets),
+            )
+            feedback_fields: Sequence[Any] = ()
+            if use_physical_feedback:
+                feedback = feedback_by_index.get(index)
+                if feedback is None:
+                    feedback_fields = (-1, -1, 0)
+                else:
+                    feedback_fields = (
+                        part_index[feedback["observed_source_fpga"]],
+                        part_index[feedback["observed_sink_fpga"]],
+                        f"{float(feedback['positive_residual_ns']) * physical_feedback_scale:.17g}",
+                    )
+            lines.append_fields(
+                itertools.chain(fields, path_nets, feedback_fields)
+            )
+        lines.append("END")
+        lines.publish()
+        published = True
+    finally:
+        if not published:
+            lines.abort()
     return {
         "parts": parts,
-        "clusters": [cluster["cluster"] for cluster in clusters],
+        "clusters": cluster_names,
     }
 
 
@@ -1838,7 +2815,13 @@ def _parse_patron_native_output(
     summary = None
     capacity_summary = None
     path_max_summary = None
+    ended = False
+    next_assignment = 0
     for line in lines[1:]:
+        if ended:
+            raise ValidationError(
+                "native PATRON output has records after END"
+            )
         fields = line.split()
         if not fields:
             raise ValidationError("native PATRON output has an empty record")
@@ -2022,14 +3005,23 @@ def _parse_patron_native_output(
             cluster_id = indexed("cluster", indexes["clusters"], cluster)
             if cluster_id in assignment:
                 raise ValidationError("native PATRON returned duplicate ASSIGN")
+            if cluster != next_assignment:
+                raise ValidationError(
+                    "native PATRON ASSIGN order is invalid"
+                )
             assignment[cluster_id] = indexed("part", indexes["parts"], part)
+            next_assignment += 1
         elif fields == ["END"]:
-            continue
+            ended = True
         else:
             raise ValidationError(
                 f"native PATRON output record is invalid: {line}"
             )
-    if set(assignment) != set(indexes["clusters"]):
+    if not ended:
+        raise ValidationError("native PATRON output END is missing")
+    if len(assignment) != len(indexes["clusters"]) or any(
+        cluster not in assignment for cluster in indexes["clusters"]
+    ):
         raise ValidationError("native PATRON assignment coverage is invalid")
     for batch in batches:
         expected_changes = batch.pop("expected_changes")

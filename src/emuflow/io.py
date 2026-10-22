@@ -16,6 +16,12 @@ from typing import Any, Dict
 _DURABLE_WRITES = ContextVar("emuflow_durable_json_writes", default=True)
 
 
+def json_writes_are_durable() -> bool:
+    """Return the active atomic-publication durability policy."""
+
+    return bool(_DURABLE_WRITES.get())
+
+
 @contextmanager
 def json_write_policy(*, durable: bool):
     """Select durability for a managed staging transaction.

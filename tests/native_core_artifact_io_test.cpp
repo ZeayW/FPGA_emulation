@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -12,6 +13,7 @@
 #endif
 
 #include "emuflow_core/artifact_io.hpp"
+#include "emuflow_core/hash.hpp"
 
 namespace {
 struct CellTag {};
@@ -31,6 +33,35 @@ std::uint64_t ProcessId() {
 int main() {
   static_assert(!std::is_convertible<CellId, NetId>::value,
                 "typed artifact identities must not mix implicitly");
+  {
+    emuflow::core::Sha256 empty;
+    const std::array<unsigned char, 32> empty_expected = {
+        0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14,
+        0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
+        0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c,
+        0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55};
+    if (empty.finish() != empty_expected) {
+      throw std::runtime_error("empty SHA-256 vector disagrees");
+    }
+    emuflow::core::Sha256 abc;
+    const std::array<unsigned char, 3> payload = {'a', 'b', 'c'};
+    abc.update(payload.data(), payload.size());
+    const std::array<unsigned char, 32> abc_expected = {
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
+        0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+        0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+        0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
+    if (abc.finish() != abc_expected) {
+      throw std::runtime_error("SHA-256 vector disagrees");
+    }
+    std::uint32_t crc = 0;
+    const std::array<unsigned char, 9> digits = {
+        '1', '2', '3', '4', '5', '6', '7', '8', '9'};
+    emuflow::core::UpdateCrc32(crc, digits.data(), digits.size());
+    if (crc != 0xcbf43926U) {
+      throw std::runtime_error("CRC-32 vector disagrees");
+    }
+  }
   const auto root = std::filesystem::temp_directory_path() /
                     ("emuflow-core-artifact-" + std::to_string(ProcessId()));
   std::filesystem::create_directories(root);
@@ -58,6 +89,20 @@ int main() {
       emuflow::core::BinaryReader reader(target.string());
       if (reader.Read<std::uint32_t>() != 42) {
         throw std::runtime_error("round-trip value disagrees");
+      }
+      reader.RequireEnd();
+    }
+    {
+      emuflow::core::AtomicBinaryWriter writer(target.string());
+      writer.Write<std::uint64_t>(0x1234);
+      writer.Write<std::uint32_t>(7);
+      writer.Write<std::uint32_t>(42);
+      writer.Commit();
+      emuflow::core::BinaryReader reader(target.string());
+      emuflow::core::ReadAndValidateHeader(
+          reader, emuflow::core::ArtifactSchema{0x1234, 7, "test artifact"});
+      if (reader.Read<std::uint32_t>() != 42 || reader.remaining() != 0) {
+        throw std::runtime_error("schema round-trip value disagrees");
       }
       reader.RequireEnd();
     }

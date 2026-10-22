@@ -5,9 +5,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .boundary_timing import (
+    boundary_identity_header,
     build_boundary_identity_database,
+    iter_boundary_identity_records,
     validate_boundary_identity_database,
 )
+from .boundary_identity_storage import write_boundary_identity_storage
 from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EMUIR_SCHEMA, EmuIR
@@ -703,13 +706,15 @@ def _run_placement_ir_lowering_from_split_indexed(
         else output_path.with_name("boundary-identities.json")
     )
     with IndexedPhysicalIR(output_path) as result:
-        boundary_database = build_boundary_identity_database(
-            transport, result, transport_ir
-        )
-        boundary_validation = validate_boundary_identity_database(
-            boundary_database, transport
-        )
-    write_json(boundary_path, boundary_database)
+        with write_boundary_identity_storage(
+            boundary_path,
+            boundary_identity_header(transport),
+            iter_boundary_identity_records(transport, result, transport_ir),
+        ) as boundary_database:
+            boundary_validation = validate_boundary_identity_database(
+                boundary_database, transport
+            )
+            boundary_schema = boundary_database["schema"]
     connection = open_emuir_sqlite_read_only(output_path)
     try:
         instances = int(connection.execute(
@@ -742,7 +747,7 @@ def _run_placement_ir_lowering_from_split_indexed(
         "original_instances": original_instances,
         "output": str(output_path),
         "boundary_identity": {
-            "schema": boundary_database["schema"],
+            "schema": boundary_schema,
             "output": str(boundary_path),
             "validation": boundary_validation,
         },

@@ -50,8 +50,8 @@ from .combinational_cut import (
 from .phase3_storage import (
     COMPRESSED_CLUSTERS_SCHEMA,
     PACKED_ASSIGNMENT_SCHEMA,
-    compress_phase3_clusters,
     pack_phase3_assignment,
+    write_compressed_phase3_clusters,
 )
 from .phase3_assignment_index import (
     ASSIGNMENT_INDEX_SCHEMA,
@@ -535,6 +535,7 @@ def run_phase3(
                 max_cross_fpga_dependency_depth
             ),
             static_exact_candidate_policy=static_exact_candidate_policy,
+            _stream_eligible_policy_names=True,
         )
     else:
         clusters = phase3_runtime_call(
@@ -763,6 +764,15 @@ def run_phase3(
             pressure_nets=len(model.get("nets", [])),
             pressure_paths=len(model.get("paths", [])),
         )
+        if hasattr(model.get("nets"), "payload_bytes"):
+            phase3_runtime_observe(
+                # Packed net identity/member/ordinal storage only.  This does
+                # not include final cluster/path records or Python overhead.
+                pressure_compact_net_payload_bytes=model["nets"].payload_bytes,
+                pressure_construction_identity_bytes=(
+                    model["nets"].construction_identity_bytes
+                ),
+            )
         patron_physical_feedback = None
         patron_physical_feedback_validation = None
         if patron_physical_system_timing_path is not None:
@@ -1169,21 +1179,21 @@ def run_phase3(
         shutil.rmtree(output_dir / "patron", ignore_errors=True)
     if not retain_diagnostics and hop_refinement["enabled"]:
         shutil.rmtree(output_dir / "hop-refinement", ignore_errors=True)
-    persisted_clusters = (
-        clusters
-        if retain_diagnostics
-        else phase3_runtime_call(
-            "publish.pack_clusters", compress_phase3_clusters, clusters
+    if retain_diagnostics:
+        phase3_runtime_call(
+            "publish.write_clusters",
+            write_json,
+            output_dir / "clusters.json",
+            clusters,
+            compact=True,
         )
-    )
-    phase3_runtime_call(
-        "publish.write_clusters",
-        write_json,
-        output_dir / "clusters.json",
-        persisted_clusters,
-        compact=True,
-    )
-    del persisted_clusters
+    else:
+        phase3_runtime_call(
+            "publish.write_clusters",
+            write_compressed_phase3_clusters,
+            output_dir / "clusters.json",
+            clusters,
+        )
     phase3_runtime_call(
         "publish.write_constraints",
         write_json,

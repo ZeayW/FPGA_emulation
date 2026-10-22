@@ -948,6 +948,47 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     )
             self.assertFalse(root.exists())
 
+    def test_rapidwright_native_runtime_preflight_precedes_frontend(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            root = temporary / "multi"
+            timing = temporary / "xilinx-timing.json"
+            write_json(
+                timing,
+                {"schema": "emuflow.xilinx-preplacement-timing-db/v1"},
+            )
+            with patch(
+                "emuflow.multi_fpga_flow.validate_openparf_runtime",
+                side_effect=EmuFlowError("missing PyTorch runtime"),
+            ) as preflight:
+                with self.assertRaisesRegex(
+                    EmuFlowError, "missing PyTorch runtime"
+                ):
+                    run_multi_fpga_flow(
+                        platform_path=PLATFORM,
+                        output_dir=root,
+                        yosys_json=ROOT / "examples/yosys/counter.json",
+                        top="counter",
+                        clocks=["clk"],
+                        partition_provider="greedy",
+                        cut_mode="sequential-only",
+                        timing_driven=False,
+                        clock_periods={"clk": 10.0},
+                        architecture_timing_db=timing,
+                        opensta=str(FAKE_OPENSTA),
+                        router=str(tlr_router()),
+                        frame_slots=32,
+                        physical=True,
+                        mapping_profile="xilinx-ultrascaleplus-open-v1",
+                        physical_backend="rapidwright",
+                        physical_rapidwright_placer="openparf-native",
+                    )
+            preflight.assert_called_once_with(
+                install_root=None,
+                python_executable=None,
+            )
+            self.assertFalse(root.exists())
+
     def test_board_link_preflight_rejects_mismatches_before_frontend(self) -> None:
         platform = Platform.load(PLATFORM)
         for mismatch in ("platform", "coverage", "clock"):

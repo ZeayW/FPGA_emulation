@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from emuflow.chimew_bank_channel_storage import read_chimew_bank_channel_input
 from emuflow.chimew_pipeline import CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER
 from emuflow.contest_eda2023_chimew import (
     EDA2023_CONTEST_CHIMEW_AB_SCHEMA,
@@ -282,7 +283,7 @@ class Eda2023ContestChimewTest(unittest.TestCase):
                     ([], [], 0),
                 ],
             )
-            bank_input = read_json(
+            bank_input = read_chimew_bank_channel_input(
                 root / "ab/materialized/inputs/bank_channel_input.json"
             )
             self.assertEqual(bank_input["metrics"]["fanins"], 9)

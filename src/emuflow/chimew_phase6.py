@@ -19,6 +19,12 @@ from .chimew_bank_channel import (
     evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
+from .chimew_bank_channel_storage import read_chimew_bank_channel_input
+from .chimew_bank_channel_report_storage import (
+    BankChannelReportView,
+    read_chimew_bank_channel_report,
+    write_chimew_bank_channel_report_storage,
+)
 from .chimew_grouping import _tdm_ratio
 from .chimew_binding_storage import (
     CHIMEW_BINDING_STORAGE_SCHEMA,
@@ -78,7 +84,10 @@ CHIMEW_PHASE6_BINDING_PROVIDER = "chimew-paper-plus-emuflow-electrical-slot-v1"
 CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA_V1 = (
     "emuflow.chimew-phase6-adapter-report/v1"
 )
-CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA = "emuflow.chimew-phase6-adapter-report/v2"
+CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA_V2 = (
+    "emuflow.chimew-phase6-adapter-report/v2"
+)
+CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA = "emuflow.chimew-phase6-adapter-report/v3"
 _IOSTANDARD_VOLTAGES = {
     "LVCMOS12": 1.2,
     "LVCMOS15": 1.5,
@@ -130,6 +139,7 @@ _ADAPTER_LEGACY_FIXED_NAMES = {
 }
 _ADAPTER_ARTIFACT_LAYOUT = {
     "bank_channel_report": ("bank_channel_report", "json"),
+    "bank_channel_report_store": ("bank_channel_report", "sqlite"),
     "qualification_certificate": ("qualification_certificate", "json"),
     "position_hints": ("position_hints", "json"),
     "position_hints_store": ("position_hints", "sqlite"),
@@ -165,12 +175,19 @@ def validate_chimew_adapter_generation(report_path: Path) -> set[Path]:
         raise ValidationError("Chimew adapter report generation is invalid")
     report = read_json(report_path)
     artifacts = report.get("artifacts")
+    schema = report.get("schema")
     required_labels = set(_ADAPTER_ARTIFACT_LAYOUT) - {
         "qualification_certificate"
     }
+    if schema != CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA:
+        required_labels.remove("bank_channel_report_store")
     supplied_labels = set(artifacts) if isinstance(artifacts, dict) else set()
     if (
-        report.get("schema") != CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA
+        schema
+        not in {
+            CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA_V2,
+            CHIMEW_PHASE6_ADAPTER_REPORT_SCHEMA,
+        }
         or report.get("status") != "pass"
         or report.get("provider") != CHIMEW_PHASE6_BINDING_PROVIDER
         or not isinstance(report.get("design"), str)
@@ -231,8 +248,11 @@ def validate_chimew_adapter_generation(report_path: Path) -> set[Path]:
         ) from error
 
     try:
-        bank_report = read_json(paths["bank_channel_report"])
-    except (OSError, ValueError) as error:
+        bank_report = read_chimew_bank_channel_report(
+            paths["bank_channel_report"],
+            allow_legacy="bank_channel_report_store" not in paths,
+        )
+    except (OSError, ValueError, ValidationError) as error:
         raise ValidationError(
             "Chimew bank/channel report generation is malformed"
         ) from error
@@ -243,11 +263,18 @@ def validate_chimew_adapter_generation(report_path: Path) -> set[Path]:
         or bank_report.get("platform") != report["platform"]
         or not isinstance(bank_report.get("input_sha256"), str)
         or len(bank_report["input_sha256"]) != 64
-        or not isinstance(bank_report.get("assignments"), list)
+        or not isinstance(bank_report.get("assignments"), Sequence)
         or not isinstance(bank_report.get("metrics"), dict)
         or not isinstance(bank_report.get("provenance"), dict)
     ):
         raise ValidationError("Chimew bank/channel report generation is malformed")
+    if "bank_channel_report_store" in paths and (
+        not isinstance(bank_report, BankChannelReportView)
+        or bank_report.store_path != paths["bank_channel_report_store"]
+    ):
+        raise ValidationError("Chimew bank/channel report selector/store pairing differs")
+    if isinstance(bank_report, BankChannelReportView):
+        bank_report.close()
 
     if "qualification_certificate" in paths:
         try:
@@ -490,6 +517,11 @@ def _open_chimew_build_index(
             ) WITHOUT ROWID;
             CREATE INDEX chimew_build_members_group
               ON chimew_build_members(group_index,member_seq);
+            CREATE TABLE chimew_build_package_pins(
+              fpga TEXT NOT NULL,
+              package_pin TEXT NOT NULL,
+              PRIMARY KEY(fpga,package_pin)
+            ) WITHOUT ROWID;
             """
         )
         return connection, schedule_count
@@ -1142,6 +1174,7 @@ def build_chimew_phase6_pin_plan(
     *,
     qualification_document: Optional[Mapping[str, Any]] = None,
     bank_channel_report_document: Optional[Mapping[str, Any]] = None,
+    bank_channel_report_output_path: Optional[Path] = None,
     executable: Optional[str] = None,
     region_count: int = 31,
     electrical_binding_output_path: Optional[Path] = None,
@@ -1190,10 +1223,12 @@ def build_chimew_phase6_pin_plan(
         validate_chimew_bank_channel_report_artifact(
             bank_channel_input, bank_channel_report_document
         )
-        report = dict(bank_channel_report_document)
+        report = bank_channel_report_document
     else:
         report = evaluate_chimew_bank_channel_assignment(
-            bank_channel_input, executable=executable
+            bank_channel_input,
+            executable=executable,
+            output_path=bank_channel_report_output_path,
         )
     if qualification_document is not None and qualification_document[
         "artifacts"
@@ -1208,17 +1243,25 @@ def build_chimew_phase6_pin_plan(
         or schedule.get("platform") != platform.name
     ):
         raise ValidationError("Chimew assignment does not match schedule identity")
-    report_assignment = {row["group"]: row for row in report["assignments"]}
-    if len(report_assignment) != len(report["assignments"]):
-        raise ValidationError("Chimew assignment duplicates groups")
+    indexed_report = isinstance(report, BankChannelReportView)
+    report_assignment = None
+    if not indexed_report:
+        report_assignment = {row["group"]: row for row in report["assignments"]}
+        if len(report_assignment) != len(report["assignments"]):
+            raise ValidationError("Chimew assignment duplicates groups")
+    assignment_cursor = iter(report["assignments"]) if indexed_report else None
 
     build_connection, schedule_count = _open_chimew_build_index(schedule)
-    used_package_pins = set()
     try:
         pending_members: list[tuple[Any, ...]] = []
+        pending_package_pins: list[tuple[str, str]] = []
         for group_index, group in enumerate(problem["groups"]):
-            assignment = report_assignment.get(group["id"])
-            if assignment is None:
+            assignment = (
+                next(assignment_cursor, None)
+                if assignment_cursor is not None
+                else report_assignment.get(group["id"])
+            )
+            if assignment is None or assignment.get("group") != group["id"]:
                 raise ValidationError("Chimew assignment does not cover all groups")
             channel = electrical["channels"].get(assignment["channel"])
             if channel is None:
@@ -1311,9 +1354,20 @@ def build_chimew_phase6_pin_plan(
                 (channel["fpga_a"], channel["package_pin_a"]),
                 (channel["fpga_b"], channel["package_pin_b"]),
             )
-            if any(key in used_package_pins for key in package_pin_keys):
-                raise ValidationError("selected Chimew groups collide on package pins")
-            used_package_pins.update(package_pin_keys)
+            pending_package_pins.extend(package_pin_keys)
+            if len(pending_package_pins) >= 4096:
+                try:
+                    build_connection.executemany(
+                        "INSERT INTO chimew_build_package_pins VALUES (?,?)",
+                        pending_package_pins,
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise ValidationError(
+                        "selected Chimew groups collide on package pins"
+                    ) from error
+                pending_package_pins.clear()
+        if assignment_cursor is not None and next(assignment_cursor, None) is not None:
+            raise ValidationError("Chimew assignment does not cover all groups")
         if pending_members:
             try:
                 build_connection.executemany(
@@ -1325,6 +1379,16 @@ def build_chimew_phase6_pin_plan(
                 raise ValidationError(
                     "Chimew members do not cover unique schedule entries"
                 ) from error
+        if pending_package_pins:
+            try:
+                build_connection.executemany(
+                    "INSERT INTO chimew_build_package_pins VALUES (?,?)",
+                    pending_package_pins,
+                )
+            except sqlite3.IntegrityError as error:
+                raise ValidationError(
+                    "selected Chimew groups collide on package pins"
+                ) from error
 
         member_count, joined_count = build_connection.execute(
             """
@@ -1335,6 +1399,11 @@ def build_chimew_phase6_pin_plan(
             """
         ).fetchone()
         member_count = int(member_count)
+        package_pin_count = int(
+            build_connection.execute(
+                "SELECT count(*) FROM chimew_build_package_pins"
+            ).fetchone()[0]
+        )
         if member_count != schedule_count or joined_count != schedule_count:
             raise ValidationError("Chimew groups do not cover the schedule exactly")
         mismatch = build_connection.execute(
@@ -1480,8 +1549,28 @@ def build_chimew_phase6_pin_plan(
         validation = validate_pin_plan(schedule, platform, positions, plan)
 
         def iter_binding_entries() -> Iterator[Mapping[str, Any]]:
-            for group in sorted(problem["groups"], key=lambda item: item["id"]):
-                assignment = report_assignment[group["id"]]
+            # Typed production storage exposes this cursor in strict group-id
+            # order and validates that order record by record.  Avoid an H-size
+            # ``sorted`` list here; legacy callers retain their explicitly
+            # materialized compatibility path.
+            groups = problem["groups"]
+            if not hasattr(bank_channel_input, "store_path"):
+                groups = sorted(groups, key=lambda item: item["id"])
+            else:
+                groups = bank_channel_input.iter_normalized_groups_by_id()
+            assignments = (
+                report.iter_assignments_by_group()
+                if indexed_report
+                else (
+                    report_assignment[group["id"]]
+                    for group in groups
+                )
+            )
+            for group, assignment in zip(groups, assignments):
+                if assignment.get("group") != group["id"]:
+                    raise ValidationError(
+                        "Chimew assignment does not cover all groups"
+                    )
                 channel = electrical["channels"][assignment["channel"]]
                 yield {
                     "group": group["id"],
@@ -1542,7 +1631,7 @@ def build_chimew_phase6_pin_plan(
                 "signals": member_count,
                 "groups": len(problem["groups"]),
                 "channels": len(problem["groups"]),
-                "package_pins": len(used_package_pins),
+                "package_pins": package_pin_count,
                 "lane_slot_collisions": validation["physical_lane_slot_collisions"],
                 "package_pin_collisions": 0,
             },
@@ -1990,10 +2079,10 @@ def validate_chimew_phase6_binding(
             connection.close()
 
 
-def run_chimew_phase6_adapter(
+def _run_chimew_phase6_adapter_with_input(
     schedule_path: Path,
     platform_path: Path,
-    bank_channel_input_path: Path,
+    assignment_input: Mapping[str, Any],
     electrical_map_path: Path,
     output_dir: Path,
     *,
@@ -2006,11 +2095,14 @@ def run_chimew_phase6_adapter(
     """Publish one crash-safe, report-committed Phase 6 adapter bundle."""
 
     schedule = read_tdm_schedule(schedule_path)
-    assignment_input = read_json(bank_channel_input_path)
     electrical_map = read_json(electrical_map_path)
     qualification = read_json(qualification_path) if qualification_path else None
     assignment_report = (
-        read_json(bank_channel_report_path) if bank_channel_report_path else None
+        read_chimew_bank_channel_report(
+            bank_channel_report_path, allow_legacy=True
+        )
+        if bank_channel_report_path
+        else None
     )
     platform_sha256 = hashlib.sha256(platform_path.read_bytes()).hexdigest()
     provenance = electrical_map.get("provenance")
@@ -2058,6 +2150,8 @@ def run_chimew_phase6_adapter(
             output_dir,
             (*previous_names, "adapter_report.json"),
         )
+    indexed_bank_report: BankChannelReportView | None = None
+    result_bank_report: Mapping[str, Any] | None = None
     try:
         result = build_chimew_phase6_pin_plan(
             schedule,
@@ -2066,6 +2160,9 @@ def run_chimew_phase6_adapter(
             electrical_map,
             qualification_document=qualification,
             bank_channel_report_document=assignment_report,
+            bank_channel_report_output_path=(
+                staging_root / "bank_channel_report.json"
+            ),
             executable=executable,
             region_count=region_count,
             electrical_binding_output_path=(
@@ -2085,15 +2182,23 @@ def run_chimew_phase6_adapter(
                 "Chimew adapter did not publish indexed artifacts"
             )
 
-        write_json(
-            staging_root / "bank_channel_report.json",
-            result["bank_channel_report"],
-        )
+        report_selector_path = staging_root / "bank_channel_report.json"
+        result_bank_report = result["bank_channel_report"]
+        if (
+            isinstance(result_bank_report, BankChannelReportView)
+            and result_bank_report.manifest_path == report_selector_path.resolve()
+        ):
+            indexed_bank_report = result_bank_report
+        else:
+            indexed_bank_report = write_chimew_bank_channel_report_storage(
+                report_selector_path, result_bank_report
+            )
         if qualification is not None:
             write_json(staging_root / "qualification_certificate.json", qualification)
 
         sources: Dict[str, Path] = {
             "bank_channel_report": staging_root / "bank_channel_report.json",
+            "bank_channel_report_store": indexed_bank_report.store_path,
             "position_hints": indexed_positions.manifest_path,
             "position_hints_store": indexed_positions.store_path,
             "pin_plan": indexed_plan.manifest_path,
@@ -2107,6 +2212,7 @@ def run_chimew_phase6_adapter(
             )
 
         sidecar_labels = {
+            "bank_channel_report_store",
             "position_hints_store",
             "pin_plan_store",
             "electrical_binding_store",
@@ -2229,4 +2335,46 @@ def run_chimew_phase6_adapter(
                     pass
         raise
     finally:
+        if isinstance(indexed_bank_report, BankChannelReportView):
+            indexed_bank_report.close()
+        if (
+            isinstance(result_bank_report, BankChannelReportView)
+            and result_bank_report is not indexed_bank_report
+        ):
+            result_bank_report.close()
+        if isinstance(assignment_report, BankChannelReportView):
+            assignment_report.close()
         shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def run_chimew_phase6_adapter(
+    schedule_path: Path,
+    platform_path: Path,
+    bank_channel_input_path: Path,
+    electrical_map_path: Path,
+    output_dir: Path,
+    *,
+    qualification_path: Optional[Path] = None,
+    bank_channel_report_path: Optional[Path] = None,
+    executable: Optional[str] = None,
+    region_count: int = 31,
+    defer_generation_gc: bool = False,
+) -> Dict[str, Any]:
+    """Lease typed bank/group storage through the adapter's final cursor."""
+
+    assignment_input = read_chimew_bank_channel_input(bank_channel_input_path)
+    if not hasattr(assignment_input, "__enter__"):
+        raise ValidationError("Phase 6 production requires indexed bank storage")
+    with assignment_input:
+        return _run_chimew_phase6_adapter_with_input(
+            schedule_path,
+            platform_path,
+            assignment_input,
+            electrical_map_path,
+            output_dir,
+            qualification_path=qualification_path,
+            bank_channel_report_path=bank_channel_report_path,
+            executable=executable,
+            region_count=region_count,
+            defer_generation_gc=defer_generation_gc,
+        )

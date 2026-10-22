@@ -594,12 +594,12 @@ class ScheduleValidationIndex(Mapping[tuple[str, str, str, str], Mapping[str, An
         )
         self._connection = connection
         try:
+            connection.execute("PRAGMA temp_store=FILE")
             if self._producer_owned:
                 _validate_typed_relation_structure(
                     connection, self._expected_entries
                 )
             else:
-                connection.execute("PRAGMA temp_store=FILE")
                 malformed = connection.execute(
                 """
                 SELECT identity
@@ -790,6 +790,147 @@ class ScheduleValidationIndex(Mapping[tuple[str, str, str, str], Mapping[str, An
                 "GROUP BY capacity_key"
             )
         }
+
+    def validate_expected_completions(
+        self, records: Iterator[Mapping[str, Any]]
+    ) -> int:
+        """Compare recomputed completions through a bounded TEMP relation.
+
+        Phase 5 produces completions in dependency order while their logical
+        ScheduleStore section is ordered by demand.  Sorting R Python objects
+        duplicated the full completion/sink relation.  This method spools the
+        independent reconstruction into SQLite in bounded batches and compares
+        the complete typed relation (or an explicit legacy canonical row)
+        without weakening coverage.
+        """
+
+        db = self._db
+        db.execute(
+            "CREATE TEMP TABLE expected_schedule_completions("
+            "demand TEXT PRIMARY KEY,net TEXT NOT NULL,"
+            "source_ready_slot INTEGER NOT NULL,completion_slot INTEGER NOT NULL,"
+            "canonical_record TEXT NOT NULL) WITHOUT ROWID"
+        )
+        db.execute(
+            "CREATE TEMP TABLE expected_schedule_completion_arrivals("
+            "demand TEXT NOT NULL,seq INTEGER NOT NULL,sink_fpga TEXT NOT NULL,"
+            "arrival_slot INTEGER NOT NULL,PRIMARY KEY(demand,seq),"
+            "UNIQUE(demand,sink_fpga)) WITHOUT ROWID"
+        )
+        completion_batch: list[tuple[Any, ...]] = []
+        arrival_batch: list[tuple[Any, ...]] = []
+        observed = 0
+
+        def flush() -> None:
+            if completion_batch:
+                db.executemany(
+                    "INSERT INTO expected_schedule_completions "
+                    "VALUES(?,?,?,?,?)",
+                    completion_batch,
+                )
+                completion_batch.clear()
+            if arrival_batch:
+                db.executemany(
+                    "INSERT INTO expected_schedule_completion_arrivals "
+                    "VALUES(?,?,?,?)",
+                    arrival_batch,
+                )
+                arrival_batch.clear()
+
+        try:
+            for record in records:
+                demand = record.get("demand")
+                net = record.get("net")
+                source_ready = record.get("source_ready_slot")
+                completion = record.get("completion_slot")
+                arrivals = record.get("sink_arrival_slots")
+                if (
+                    not isinstance(demand, str)
+                    or not demand
+                    or not isinstance(net, str)
+                    or not net
+                    or isinstance(source_ready, bool)
+                    or not isinstance(source_ready, int)
+                    or isinstance(completion, bool)
+                    or not isinstance(completion, int)
+                    or not isinstance(arrivals, Mapping)
+                ):
+                    raise ValidationError(
+                        "recomputed schedule completion is malformed"
+                    )
+                canonical = _canonical(record)
+                completion_batch.append(
+                    (demand, net, source_ready, completion, canonical)
+                )
+                for sequence, (sink, arrival) in enumerate(
+                    sorted(arrivals.items())
+                ):
+                    if (
+                        not isinstance(sink, str)
+                        or not sink
+                        or isinstance(arrival, bool)
+                        or not isinstance(arrival, int)
+                    ):
+                        raise ValidationError(
+                            "recomputed schedule sink arrival is malformed"
+                        )
+                    arrival_batch.append(
+                        (demand, sequence, sink, arrival)
+                    )
+                observed += 1
+                if len(completion_batch) >= 4096:
+                    flush()
+            flush()
+        except sqlite3.IntegrityError as error:
+            raise ValidationError(
+                "recomputed schedule completion identity repeats"
+            ) from error
+
+        typed = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='schedule_completions'"
+        ).fetchone()
+        if typed is not None:
+            scalar_mismatch = db.execute(
+                "SELECT * FROM (SELECT demand,net,source_ready_slot,"
+                "completion_slot FROM expected_schedule_completions EXCEPT "
+                "SELECT demand,net,source_ready_slot,completion_slot FROM "
+                "schedule_completions) UNION ALL SELECT * FROM (SELECT demand,"
+                "net,source_ready_slot,completion_slot FROM schedule_completions "
+                "EXCEPT SELECT demand,net,source_ready_slot,completion_slot "
+                "FROM expected_schedule_completions) LIMIT 1"
+            ).fetchone()
+            arrival_mismatch = db.execute(
+                "SELECT * FROM (SELECT e.demand,a.seq,a.sink_fpga,a.arrival_slot "
+                "FROM schedule_completions e JOIN "
+                "schedule_completion_arrivals a ON a.completion_seq=e.seq "
+                "EXCEPT SELECT demand,seq,sink_fpga,arrival_slot FROM "
+                "expected_schedule_completion_arrivals) UNION ALL SELECT * "
+                "FROM (SELECT demand,seq,sink_fpga,arrival_slot FROM "
+                "expected_schedule_completion_arrivals EXCEPT SELECT e.demand,"
+                "a.seq,a.sink_fpga,a.arrival_slot FROM schedule_completions e "
+                "JOIN schedule_completion_arrivals a ON a.completion_seq=e.seq) "
+                "LIMIT 1"
+            ).fetchone()
+            if scalar_mismatch is not None or arrival_mismatch is not None:
+                raise ValidationError(
+                    "schedule.demand_completions does not match recomputed values"
+                )
+        else:
+            mismatch = db.execute(
+                "SELECT * FROM (SELECT demand,canonical_record FROM "
+                "expected_schedule_completions EXCEPT SELECT identity,"
+                "record_json FROM records WHERE section='demand_completions') "
+                "UNION ALL SELECT * FROM (SELECT identity,record_json FROM "
+                "records WHERE section='demand_completions' EXCEPT SELECT "
+                "demand,canonical_record FROM expected_schedule_completions) "
+                "LIMIT 1"
+            ).fetchone()
+            if mismatch is not None:
+                raise ValidationError(
+                    "schedule.demand_completions does not match recomputed values"
+                )
+        return observed
 
     def first_collision(self) -> tuple[str, int, int] | None:
         row = self._db.execute(

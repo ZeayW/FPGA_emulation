@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "emuflow_core/native_stages.hpp"
+
 namespace {
 
 struct Point {
@@ -40,8 +42,7 @@ bool finite_positive(double value) {
   return std::isfinite(value) && value > 0.0;
 }
 
-Input read_input(const std::string& path) {
-  std::ifstream stream(path);
+Input read_input(std::istream& stream) {
   std::string header;
   if (!(stream >> header) || header != "EMUFLOW_CHIMEW_RUDY_INPUT_V1") {
     throw std::runtime_error("invalid Chimew RUDY input header");
@@ -108,8 +109,8 @@ double overlap(double lower_a, double upper_a, double lower_b,
                            std::max(lower_a, lower_b));
 }
 
-void run(const std::string& input_path, const std::string& output_path) {
-  const Input input = read_input(input_path);
+void run(std::istream& input_stream, std::ostream& output) {
+  const Input input = read_input(input_stream);
   const double grid_upper_x =
       input.origin_x + input.bin_width * input.columns;
   const double grid_upper_y =
@@ -192,10 +193,6 @@ void run(const std::string& input_path, const std::string& output_path) {
     throw std::runtime_error("Chimew RUDY load is not conserved");
   }
 
-  std::ofstream output(output_path);
-  if (!output) {
-    throw std::runtime_error("cannot open Chimew RUDY output");
-  }
   output << std::setprecision(17);
   output << "EMUFLOW_CHIMEW_RUDY_OUTPUT_V1\n";
   output << "METRIC " << input.nets.size() << " " << pin_count << " "
@@ -209,6 +206,37 @@ void run(const std::string& input_path, const std::string& output_path) {
 
 }  // namespace
 
+namespace emuflow::native {
+
+void EvaluateChimewRudy(const std::string& input_path,
+                        const std::string& output_path) {
+  std::ifstream input_file;
+  std::istream* input = &std::cin;
+  if (input_path != "-") {
+    input_file.open(input_path);
+    if (!input_file) {
+      throw std::runtime_error("cannot open Chimew RUDY input");
+    }
+    input = &input_file;
+  }
+  std::ofstream output_file;
+  std::ostream* output = &std::cout;
+  if (output_path != "-") {
+    output_file.open(output_path);
+    if (!output_file) {
+      throw std::runtime_error("cannot open Chimew RUDY output");
+    }
+    output = &output_file;
+  }
+  run(*input, *output);
+  if (!*output) {
+    throw std::runtime_error("cannot write Chimew RUDY output");
+  }
+}
+
+}  // namespace emuflow::native
+
+#ifndef EMUFLOW_NATIVE_STAGE_LIBRARY
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "usage: emuflow_chimew_rudy INPUT OUTPUT\n";
@@ -219,10 +247,11 @@ int main(int argc, char** argv) {
     return 2;
   }
   try {
-    run(argv[1], argv[2]);
+    emuflow::native::EvaluateChimewRudy(argv[1], argv[2]);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "emuflow_chimew_rudy: " << error.what() << "\n";
     return 1;
   }
 }
+#endif

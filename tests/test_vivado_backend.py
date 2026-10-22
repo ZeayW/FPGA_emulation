@@ -6,6 +6,9 @@ from unittest.mock import patch
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import write_json
 from emuflow.ir import EmuIR
+from emuflow.logic_segment_identity_storage import (
+    write_logic_segment_identity_storage,
+)
 from emuflow.sta import VIVADO_PATH_DATABASE_TSV_HEADER
 from emuflow.vtr_netlist import normalize_vtr_hard_block_json
 from emuflow.yosys import import_yosys_json
@@ -303,10 +306,10 @@ class VivadoBackendTest(unittest.TestCase):
             logic_query = root / "logic-query.tsv"
             write_json(ir_path, _ir().to_dict())
             mapped.write_text("module partition; endmodule\n", encoding="utf-8")
-            write_json(
-                logic_identity,
-                {
+            logic_identity_value = {
                     "schema": "emuflow.logic-segment-identity/v1",
+                    "system_routes_sha256": "a" * 64,
+                    "tdm_schedule_sha256": "b" * 64,
                     "status": "pass",
                     "design": "partition",
                     "platform": "board",
@@ -334,8 +337,19 @@ class VivadoBackendTest(unittest.TestCase):
                             "end_object_kind": "port",
                         }
                     ],
+                }
+            identity_view = write_logic_segment_identity_storage(
+                logic_identity,
+                header={
+                    key: value for key, value in logic_identity_value.items()
+                    if key not in {"segments", "unsupported_member_paths"}
                 },
+                segments=logic_identity_value["segments"],
+                unsupported_member_paths=logic_identity_value[
+                    "unsupported_member_paths"
+                ],
             )
+            identity_view.close()
             logic_query.write_text("query\n", encoding="utf-8")
 
             def fake_run(_exe, script, _arguments, out, log_name):
@@ -399,12 +413,16 @@ class VivadoBackendTest(unittest.TestCase):
                 elif script.name == "export_logic_segment_timing.tcl":
                     (out / "logic-segment-timing.tsv").write_text(
                         "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\t"
-                        "end_object_hex\n"
+                        "end_object_hex\tmeasurement\tactual_start_object_hex\t"
+                        "actual_end_object_hex\n"
                         + "\t".join(
                             (
                                 "logic0".encode().hex(),
                                 "launch",
                                 "2.25",
+                                "dut/O".encode().hex(),
+                                "tx[0]".encode().hex(),
+                                "endpoint-exact",
                                 "dut/O".encode().hex(),
                                 "tx[0]".encode().hex(),
                             )

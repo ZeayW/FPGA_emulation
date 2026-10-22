@@ -19,7 +19,9 @@ from emuflow.xilinx_openparf_atomic import (
     export_xilinx_openparf_atomic,
     load_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_sites,
+    read_xilinx_openparf_atomic_name_map,
     validate_xilinx_openparf_atomic_placement,
+    write_xilinx_openparf_atomic_placement_certificate,
 )
 from emuflow.xilinx_openparf_bridge import (
     _BridgeClusterSequence,
@@ -42,6 +44,12 @@ def _inline_certificate(path: Path):
     return value
 
 
+def _rewrite_typed_certificate(path: Path, mutate):
+    value = _inline_certificate(path)
+    mutate(value)
+    return write_xilinx_openparf_atomic_placement_certificate(path, value)
+
+
 def _native_certificate(
     root: Path, *, include_hard: bool, split_ff_control_sets: bool = False
 ):
@@ -58,7 +66,7 @@ def _native_certificate(
     export_xilinx_openparf_atomic(
         mapped, source_packed, architecture, export_dir
     )
-    name_map = json.loads((export_dir / "name_map.json").read_text())
+    name_map = read_xilinx_openparf_atomic_name_map(export_dir / "name_map.json")
     sites = load_xilinx_openparf_atomic_sites(export_dir / "name_map.json")
     slices = [item for item in sites if "LUT" in item["resources"]]
     hard_sites = {
@@ -93,10 +101,8 @@ def _native_certificate(
         architecture, certificate_path,
     )
     certificate["runtime_validation"] = "native-openparf"
-    persisted = json.loads(certificate_path.read_text(encoding="utf-8"))
-    persisted["runtime_validation"] = "native-openparf"
-    certificate_path.write_text(
-        json.dumps(persisted, sort_keys=True), encoding="utf-8"
+    write_xilinx_openparf_atomic_placement_certificate(
+        certificate_path, certificate
     )
     return mapped, architecture, certificate_path
 
@@ -587,12 +593,11 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             cells["lut_00"]["connections"]["O"] = [9_999_999]
             cells["lut_01"]["connections"]["O"] = [9_999_999]
             mapped.write_text(json.dumps(mapped_value), encoding="utf-8")
-            certificate_value = json.loads(
-                certificate.read_text(encoding="utf-8")
-            )
-            certificate_value["source"]["mapped_sha256"] = file_sha256(mapped)
-            certificate.write_text(
-                json.dumps(certificate_value, sort_keys=True), encoding="utf-8"
+            _rewrite_typed_certificate(
+                certificate,
+                lambda value: value["source"].update({
+                    "mapped_sha256": file_sha256(mapped)
+                }),
             )
 
             for production in (False, True):
@@ -650,9 +655,10 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             mapped, architecture, certificate = _native_certificate(
                 root, include_hard=False
             )
-            value = _inline_certificate(certificate)
-            value["clusters"][0]["assignments"].pop()
-            certificate.write_text(json.dumps(value), encoding="utf-8")
+            _rewrite_typed_certificate(
+                certificate,
+                lambda value: value["clusters"][0]["assignments"].pop(),
+            )
             packed = root / "converted-packed.json"
             placement = root / "converted-placement.json"
             with self.assertRaisesRegex(ValidationError, "coverage is incomplete"):
@@ -742,9 +748,12 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             mapped, architecture, certificate = _native_certificate(
                 root, include_hard=True
             )
-            value = json.loads(certificate.read_text())
-            value["summary"]["native_hardblock_edges"] = 1
-            certificate.write_text(json.dumps(value), encoding="utf-8")
+            _rewrite_typed_certificate(
+                certificate,
+                lambda value: value["summary"].update({
+                    "native_hardblock_edges": 1
+                }),
+            )
             with self.assertRaisesRegex(
                 ValidationError, "requires its source packing"
             ):

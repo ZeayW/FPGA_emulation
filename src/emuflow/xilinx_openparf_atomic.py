@@ -13,6 +13,8 @@ before producing a compact EmuFlow placement certificate.
 from __future__ import annotations
 
 from collections import Counter, OrderedDict, defaultdict
+from collections.abc import Mapping as MappingABC
+import fcntl
 import hashlib
 import json
 import math
@@ -51,14 +53,27 @@ from .xilinx_openparf_source_storage import (
     read_xilinx_openparf_atomic_source,
     write_xilinx_openparf_atomic_source_storage,
 )
+from .xilinx_openparf_name_map_storage import (
+    OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
+    OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA,
+    XilinxOpenparfAtomicNameMapView,
+    read_xilinx_openparf_atomic_name_map,
+    materialize_xilinx_openparf_atomic_name_map,
+    write_xilinx_openparf_atomic_name_map_storage,
+)
 
 
 OPENPARF_ATOMIC_MANIFEST_SCHEMA = "emuflow.openparf-atomic-manifest/v1"
-OPENPARF_ATOMIC_NAME_MAP_SCHEMA = "emuflow.openparf-atomic-name-map/v2"
 OPENPARF_ATOMIC_PLACEMENT_SCHEMA = "emuflow.openparf-atomic-placement/v2"
 OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA = (
+    "emuflow.openparf-atomic-placement-database/v3"
+)
+_LEGACY_OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-placement-database/v2"
 )
+OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID = 0x454D5550  # "EMUP"
+OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION = 3
+_PLACEMENT_CERTIFICATE_STORE_SUFFIX = ".sqlite"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = (
     "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v7"
@@ -126,6 +141,376 @@ _DEVICE_STATIC_CACHE: "OrderedDict[Tuple[Any, ...], Dict[str, Any]]" = (
     OrderedDict()
 )
 _NATIVE_CARRY_Y_AXIS_ORDER_CACHE: Dict[Tuple[Any, str], str] = {}
+
+
+class _IndexedAtomicPlacement:
+    """Disk-backed join of native ``.pl`` rows to the typed atom contract.
+
+    The name-map reader has already authenticated every atom row and owns a
+    shared lease on its immutable sidecar.  Stage only the solver coordinates
+    here, then let SQLite prove one-to-one coverage and stream the joined rows
+    in authoritative atom order.  This avoids retaining both a graph-sized
+    ``openparf -> atom`` dictionary and a second ``openparf -> coordinate``
+    dictionary beside the final placement certificate.
+    """
+
+    def __init__(
+        self,
+        placement_path: Path,
+        name_map: XilinxOpenparfAtomicNameMapView,
+    ) -> None:
+        self._name_map: Optional[XilinxOpenparfAtomicNameMapView] = name_map
+        self._path: Optional[Path] = None
+        self._database: Optional[sqlite3.Connection] = None
+        descriptor, temporary = tempfile.mkstemp(
+            prefix="emuflow-openparf-placement-", suffix=".sqlite3",
+        )
+        os.close(descriptor)
+        self._path = Path(temporary)
+        try:
+            database = sqlite3.connect(self._path)
+            self._database = database
+            database.execute("PRAGMA journal_mode=OFF")
+            database.execute("PRAGMA synchronous=OFF")
+            database.execute("PRAGMA temp_store=FILE")
+            database.execute("PRAGMA cache_size=-4096")
+            database.execute("""
+                CREATE TABLE placement(
+                    openparf TEXT PRIMARY KEY,
+                    x INTEGER NOT NULL,
+                    y INTEGER NOT NULL,
+                    z INTEGER NOT NULL,
+                    source_line INTEGER NOT NULL
+                ) WITHOUT ROWID
+            """)
+            database.execute("""
+                CREATE TABLE occupancy(
+                    site TEXT NOT NULL,
+                    resource TEXT NOT NULL,
+                    z INTEGER NOT NULL,
+                    PRIMARY KEY(site,resource,z)
+                ) WITHOUT ROWID
+            """)
+            database.execute("""
+                CREATE TABLE normalized(
+                    seq INTEGER PRIMARY KEY,
+                    instance TEXT NOT NULL UNIQUE,
+                    cell_type TEXT NOT NULL,
+                    source_cluster TEXT NOT NULL,
+                    resource TEXT NOT NULL,
+                    z INTEGER NOT NULL,
+                    x REAL NOT NULL,
+                    y REAL NOT NULL,
+                    site TEXT NOT NULL,
+                    anchor_site TEXT NOT NULL,
+                    bel TEXT NOT NULL,
+                    placement_mode TEXT NOT NULL,
+                    bram_tile_group TEXT
+                )
+            """)
+            database.execute("""
+                CREATE TABLE requested_instances(
+                    seq INTEGER PRIMARY KEY,
+                    instance TEXT NOT NULL
+                )
+            """)
+            batch: list[tuple[str, int, int, int, int]] = []
+            atom_count = int(name_map.selector["counts"]["atoms"])
+            max_ordinal_digits = len(str(atom_count - 1))
+            seen_ordinals = bytearray((atom_count + 7) // 8)
+
+            def flush_pending() -> None:
+                if batch:
+                    self._insert(batch)
+                    batch.clear()
+
+            with placement_path.open("r", encoding="utf-8") as stream:
+                for line_number, raw in enumerate(stream, start=1):
+                    fields = raw.strip().split()
+                    if not fields or fields[0].startswith("#"):
+                        continue
+                    if len(fields) not in {4, 5}:
+                        flush_pending()
+                        raise ImportError(
+                            f"{placement_path}:{line_number}: invalid atomic "
+                            "placement row"
+                        )
+                    ordinal = fields[0][1:]
+                    valid_ordinal = (
+                        fields[0].startswith("a")
+                        and ordinal.isascii()
+                        and ordinal.isdecimal()
+                        and (ordinal == "0" or not ordinal.startswith("0"))
+                        and len(ordinal) <= max_ordinal_digits
+                    )
+                    ordinal_value = -1
+                    if valid_ordinal:
+                        ordinal_value = int(ordinal)
+                        valid_ordinal = (
+                            fields[0] == f"a{ordinal_value}"
+                            and ordinal_value < atom_count
+                        )
+                    if not valid_ordinal:
+                        flush_pending()
+                        raise ImportError(
+                            f"{placement_path}:{line_number}: invalid atomic "
+                            "placement row"
+                        )
+                    byte_index, bit_index = divmod(ordinal_value, 8)
+                    ordinal_bit = 1 << bit_index
+                    if seen_ordinals[byte_index] & ordinal_bit:
+                        flush_pending()
+                        raise ValidationError(
+                            "OpenPARF atomic placement duplicates an atom"
+                        )
+                    try:
+                        values = [float(value) for value in fields[1:4]]
+                    except ValueError as error:
+                        flush_pending()
+                        raise ImportError(
+                            "OpenPARF atomic placement is non-numeric"
+                        ) from error
+                    if any(
+                        not math.isfinite(value) or not value.is_integer()
+                        for value in values
+                    ):
+                        flush_pending()
+                        raise ValidationError(
+                            "OpenPARF atomic placement is not discrete"
+                        )
+                    seen_ordinals[byte_index] |= ordinal_bit
+                    batch.append((
+                        fields[0], *(int(value) for value in values), line_number,
+                    ))
+                    if len(batch) >= 8192:
+                        flush_pending()
+                flush_pending()
+            database.commit()
+            atom_uri = name_map.store_path.resolve().as_uri() + (
+                "?mode=ro&immutable=1"
+            )
+            database.execute("ATTACH DATABASE ? AS atom_map", (atom_uri,))
+            unknown = database.execute(
+                "SELECT p.source_line FROM placement p "
+                "LEFT JOIN atom_map.atoms a USING(openparf) "
+                "WHERE a.seq IS NULL ORDER BY p.source_line LIMIT 1"
+            ).fetchone()
+            if unknown is not None:
+                raise ImportError(
+                    f"{placement_path}:{int(unknown[0])}: invalid atomic "
+                    "placement row"
+                )
+            placed_count = int(database.execute(
+                "SELECT COUNT(*) FROM placement"
+            ).fetchone()[0])
+            if placed_count != atom_count or database.execute(
+                "SELECT 1 FROM atom_map.atoms a "
+                "LEFT JOIN placement p USING(openparf) "
+                "WHERE p.openparf IS NULL LIMIT 1"
+            ).fetchone() is not None:
+                raise ValidationError(
+                    "OpenPARF atomic placement does not cover every atom"
+                )
+        except BaseException:
+            self.close()
+            raise
+
+    def _insert(self, rows: Sequence[tuple[str, int, int, int, int]]) -> None:
+        assert self._database is not None
+        try:
+            self._database.executemany(
+                "INSERT INTO placement VALUES (?, ?, ?, ?, ?)", rows
+            )
+        except sqlite3.IntegrityError as error:
+            raise ValidationError(
+                "OpenPARF atomic placement duplicates an atom"
+            ) from error
+
+    def requested_coordinates(self) -> list[tuple[int, int]]:
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        return [
+            (int(row[0]), int(row[1]))
+            for row in self._database.execute(
+                "SELECT DISTINCT x,y FROM placement ORDER BY x,y"
+            )
+        ]
+
+    def iter_joined(
+        self,
+    ) -> Iterator[tuple[Mapping[str, str], tuple[int, int, int]]]:
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        rows = self._database.execute(
+            "SELECT a.openparf,a.instance,a.cell_type,a.source_cluster,a.resource,"
+            "p.x,p.y,p.z FROM atom_map.atoms a JOIN placement p USING(openparf) "
+            "ORDER BY a.seq"
+        )
+        for row in rows:
+            yield ({
+                "openparf": str(row[0]), "instance": str(row[1]),
+                "cell_type": str(row[2]), "source_cluster": str(row[3]),
+                "resource": str(row[4]),
+            }, (int(row[5]), int(row[6]), int(row[7])))
+
+    def claim_occupancy(self, site: str, resource: str, z: int) -> None:
+        """Record one exact physical slot without a design-sized Python set."""
+
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        try:
+            self._database.execute(
+                "INSERT INTO occupancy VALUES (?, ?, ?)", (site, resource, z)
+            )
+        except sqlite3.IntegrityError as error:
+            raise ValidationError(
+                "OpenPARF atomic placement overlaps a BEL slot"
+            ) from error
+
+    def append_normalized(
+        self,
+        atom: Mapping[str, str],
+        *,
+        z: int,
+        x: float,
+        y: float,
+        site: str,
+        anchor_site: str,
+        bel: str,
+        placement_mode: str,
+        bram_tile_group: Optional[Mapping[str, Any]],
+    ) -> None:
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        encoded_group = (
+            json.dumps(bram_tile_group, sort_keys=True, separators=(",", ":"))
+            if bram_tile_group is not None else None
+        )
+        try:
+            self._database.execute(
+                "INSERT INTO normalized VALUES "
+                "((SELECT seq FROM atom_map.atoms WHERE openparf=?),"
+                "?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    atom["openparf"], atom["instance"], atom["cell_type"],
+                    atom["source_cluster"], atom["resource"], z, x, y, site,
+                    anchor_site, bel, placement_mode, encoded_group,
+                ),
+            )
+        except sqlite3.IntegrityError as error:
+            raise ValidationError(
+                "OpenPARF normalized placement identity is duplicated"
+            ) from error
+
+    @staticmethod
+    def _normalized_record(row: Sequence[Any]) -> Dict[str, Any]:
+        return {
+            "instance": str(row[0]), "cell_type": str(row[1]),
+            "source_cluster": str(row[2]), "resource": str(row[3]),
+            "z": int(row[4]), "x": float(row[5]), "y": float(row[6]),
+            "site": str(row[7]), "anchor_site": str(row[8]),
+            "bel": str(row[9]), "placement_mode": str(row[10]),
+            "bram_tile_group": (
+                json.loads(str(row[11])) if row[11] is not None else None
+            ),
+        }
+
+    def instances(self, names: Sequence[str]) -> List[Dict[str, Any]]:
+        """Resolve one bounded macro/cascade membership in caller order."""
+
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        self._database.execute("DELETE FROM requested_instances")
+        self._database.executemany(
+            "INSERT INTO requested_instances VALUES (?, ?)", enumerate(names)
+        )
+        missing = self._database.execute(
+            "SELECT r.instance FROM requested_instances r "
+            "LEFT JOIN normalized n USING(instance) "
+            "WHERE n.seq IS NULL ORDER BY r.seq LIMIT 1"
+        ).fetchone()
+        if missing is not None:
+            raise KeyError(str(missing[0]))
+        return [
+            self._normalized_record(row)
+            for row in self._database.execute(
+                "SELECT n.instance,n.cell_type,n.source_cluster,n.resource,n.z,"
+                "n.x,n.y,n.site,n.anchor_site,n.bel,n.placement_mode,"
+                "n.bram_tile_group FROM requested_instances r "
+                "JOIN normalized n USING(instance) ORDER BY r.seq"
+            )
+        ]
+
+    def iter_site_groups(
+        self,
+    ) -> Iterator[tuple[str, List[Dict[str, Any]]]]:
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        rows = self._database.execute(
+            "SELECT instance,cell_type,source_cluster,resource,z,x,y,site,"
+            "anchor_site,bel,placement_mode,bram_tile_group FROM normalized "
+            "ORDER BY anchor_site,instance"
+        )
+        current_site: Optional[str] = None
+        current: List[Dict[str, Any]] = []
+        for row in rows:
+            site = str(row[8])
+            if current_site is not None and site != current_site:
+                yield current_site, current
+                current = []
+            current_site = site
+            current.append(self._normalized_record(row))
+        if current_site is not None:
+            yield current_site, current
+
+    def hard_resource_instances(self) -> set[str]:
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        placeholders = ",".join("?" for _ in _HARD_RESOURCES)
+        return {
+            str(row[0]) for row in self._database.execute(
+                f"SELECT instance FROM normalized WHERE resource IN ({placeholders})",
+                tuple(_HARD_RESOURCES.values()),
+            )
+        }
+
+    def summary(self) -> tuple[int, Counter[str]]:
+        if self._database is None:
+            raise ValidationError("OpenPARF atomic placement index is closed")
+        total = int(self._database.execute(
+            "SELECT COUNT(*) FROM normalized"
+        ).fetchone()[0])
+        counts: Counter[str] = Counter({
+            str(row[0]): int(row[1])
+            for row in self._database.execute(
+                "SELECT resource,COUNT(*) FROM normalized GROUP BY resource"
+            )
+        })
+        return total, counts
+
+    def close(self) -> None:
+        database = self._database
+        self._database = None
+        if database is not None:
+            database.close()
+        path = self._path
+        self._path = None
+        if path is not None:
+            path.unlink(missing_ok=True)
+        name_map = self._name_map
+        self._name_map = None
+        if name_map is not None:
+            name_map.close()
+
+    def __del__(self) -> None:
+        if hasattr(self, "closed"):
+            self.close()
+
+    def __enter__(self) -> "_IndexedAtomicPlacement":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
 
 
 def _site_claim(site_name: str) -> List[str]:
@@ -277,123 +662,595 @@ def _write_openparf_result_checkpoint(
     return checkpoint_path
 
 
-def _atomic_placement_database_path(certificate_path: Path) -> Path:
-    return certificate_path.with_suffix(".sqlite3")
+class _PlacementCertificateLease:
+    """Keep a published certificate generation alive for lazy readers."""
+
+    def __init__(self, selector_path: Path, *, exclusive: bool) -> None:
+        parent = selector_path.parent.resolve()
+        lock_path = parent / f".{selector_path.name}.lock"
+        if lock_path.is_symlink():
+            raise ValidationError(
+                "OpenPARF placement-certificate lock is a symbolic link"
+            )
+        flags = os.O_CREAT | os.O_RDWR
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            self._descriptor = os.open(lock_path, flags, 0o600)
+        except OSError as error:
+            raise ValidationError(
+                "OpenPARF placement-certificate lock is invalid"
+            ) from error
+        try:
+            fcntl.flock(
+                self._descriptor,
+                fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH,
+            )
+        except BaseException:
+            os.close(self._descriptor)
+            raise
+        self._closed = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(self._descriptor)
 
 
-def _write_atomic_placement_database(
-    path: Path, clusters: Sequence[Mapping[str, Any]]
-) -> Dict[str, Any]:
-    """Store the large atom placement once in a queryable sidecar.
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
-    The certificate is a hot cross-stage boundary.  Keeping hundreds of
-    thousands of assignments inline made every consumer parse another
-    60--70 MiB JSON document and duplicated the complete placement already
-    represented by the native ``.pl`` result.  SQLite keeps the independently
-    validated rows byte-sealed while allowing bridge consumers to stream them
-    in cluster order.
-    """
 
-    path.unlink(missing_ok=True)
-    assignment_count = sum(
-        len(cluster.get("assignments", [])) for cluster in clusters
-    )
-    with sqlite3.connect(":memory:") as database:
-        database.executescript("""
+def _certificate_store_name(path: Path, digest: str) -> str:
+    return f"{path.stem}.{digest}{_PLACEMENT_CERTIFICATE_STORE_SUFFIX}"
+
+
+_PLACEMENT_TABLE_XINFO = {
+    "metadata": [
+        (0, "key", "TEXT", 1, None, 1, 0),
+        (1, "value", "TEXT", 1, None, 0, 0),
+    ],
+    "clusters": [
+        (0, "cluster_index", "INTEGER", 0, None, 1, 0),
+        (1, "cluster", "TEXT", 1, None, 0, 0),
+        (2, "site", "TEXT", 1, None, 0, 0),
+        (3, "site_type", "TEXT", 1, None, 0, 0),
+        (4, "x", "INTEGER", 1, None, 0, 0),
+        (5, "y", "INTEGER", 1, None, 0, 0),
+    ],
+    "assignments": [
+        (0, "cluster_index", "INTEGER", 1, None, 1, 0),
+        (1, "assignment_index", "INTEGER", 1, None, 2, 0),
+        (2, "instance", "TEXT", 1, None, 0, 0),
+        (3, "cell_type", "TEXT", 1, None, 0, 0),
+        (4, "bel", "TEXT", 1, None, 0, 0),
+        (5, "physical_site", "TEXT", 1, None, 0, 0),
+        (6, "placement_mode", "TEXT", 1, None, 0, 0),
+        (7, "source_cluster", "TEXT", 1, None, 0, 0),
+        (8, "bram_tile_group", "TEXT", 0, None, 0, 0),
+    ],
+}
+
+
+def _logical_record_digest(
+    header: Mapping[str, Any], database: sqlite3.Connection,
+) -> str:
+    """Hash logical records independently of SQLite page/index layout."""
+
+    digest = hashlib.sha256()
+
+    def append(kind: str, value: Any) -> None:
+        encoded = json.dumps(
+            {"kind": kind, "value": value}, ensure_ascii=False,
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+
+    append("header/v1", dict(header))
+    for row in database.execute(
+        "SELECT cluster_index,cluster,site,site_type,x,y FROM clusters "
+        "ORDER BY cluster_index"
+    ):
+        append("cluster/v1", list(row))
+    for row in database.execute(
+        "SELECT cluster_index,assignment_index,instance,cell_type,bel,"
+        "physical_site,placement_mode,source_cluster,bram_tile_group "
+        "FROM assignments ORDER BY cluster_index,assignment_index"
+    ):
+        append("assignment/v1", list(row))
+    return digest.hexdigest()
+
+
+def _validate_placement_database_contract(
+    database: sqlite3.Connection,
+    *,
+    descriptor: Mapping[str, Any],
+    header: Mapping[str, Any],
+    legacy: bool,
+) -> None:
+    if not legacy and (
+        int(database.execute("PRAGMA application_id").fetchone()[0])
+        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID
+        or int(database.execute("PRAGMA user_version").fetchone()[0])
+        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION
+    ):
+        raise ValidationError("OpenPARF atomic placement database identity is invalid")
+    objects = list(database.execute(
+        "SELECT type,name,tbl_name FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+    ))
+    if objects != [
+        ("table", "assignments", "assignments"),
+        ("table", "clusters", "clusters"),
+        ("table", "metadata", "metadata"),
+    ]:
+        raise ValidationError("OpenPARF atomic placement database schema is invalid")
+    for table, expected in _PLACEMENT_TABLE_XINFO.items():
+        actual = [tuple(row) for row in database.execute(
+            f"PRAGMA table_xinfo({table})"
+        )]
+        if actual != expected:
+            raise ValidationError(
+                "OpenPARF atomic placement database column contract is invalid"
+            )
+    metadata = dict(database.execute("SELECT key,value FROM metadata"))
+    expected_metadata = {
+        "schema": (
+            _LEGACY_OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
+            if legacy else OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
+        ),
+        "clusters": str(descriptor["clusters"]),
+        "assignments": str(descriptor["assignments"]),
+    }
+    if not legacy:
+        expected_metadata["logical_sha256"] = str(descriptor["logical_sha256"])
+    if metadata != expected_metadata:
+        raise ValidationError("OpenPARF atomic placement database metadata is invalid")
+    cluster_count = int(database.execute("SELECT COUNT(*) FROM clusters").fetchone()[0])
+    assignment_count = int(database.execute(
+        "SELECT COUNT(*) FROM assignments"
+    ).fetchone()[0])
+    if (
+        cluster_count != descriptor["clusters"]
+        or assignment_count != descriptor["assignments"]
+        or database.execute(
+            "SELECT 1 FROM assignments a LEFT JOIN clusters c "
+            "USING(cluster_index) WHERE c.cluster_index IS NULL LIMIT 1"
+        ).fetchone() is not None
+        or database.execute(
+            "SELECT 1 FROM clusters c LEFT JOIN assignments a "
+            "USING(cluster_index) WHERE a.cluster_index IS NULL LIMIT 1"
+        ).fetchone() is not None
+        or database.execute(
+            "SELECT 1 FROM (SELECT MIN(cluster_index) lo,MAX(cluster_index) hi,"
+            "COUNT(*) n FROM clusters) WHERE lo!=0 OR hi+1!=n LIMIT 1"
+        ).fetchone() is not None
+        or database.execute(
+            "SELECT 1 FROM assignments GROUP BY cluster_index "
+            "HAVING MIN(assignment_index)!=0 OR "
+            "MAX(assignment_index)+1!=COUNT(*) LIMIT 1"
+        ).fetchone() is not None
+    ):
+        raise ValidationError("OpenPARF atomic placement database coverage is invalid")
+    if not legacy and _logical_record_digest(header, database) != descriptor[
+        "logical_sha256"
+    ]:
+        raise ValidationError("OpenPARF atomic placement logical digest disagrees")
+
+
+def _validate_atomic_placement_descriptor(
+    path: Path, descriptor: Any,
+) -> Path:
+    if (
+        not isinstance(descriptor, Mapping)
+        or set(descriptor) != {
+            "schema", "file", "bytes", "sha256", "clusters", "assignments",
+            "application_id", "user_version", "logical_sha256",
+        }
+        or descriptor.get("schema")
+        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
+        or descriptor.get("application_id")
+        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID
+        or descriptor.get("user_version")
+        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION
+        or not isinstance(descriptor.get("file"), str)
+        or Path(descriptor["file"]).name != descriptor["file"]
+        or not isinstance(descriptor.get("clusters"), int)
+        or isinstance(descriptor.get("clusters"), bool)
+        or not isinstance(descriptor.get("assignments"), int)
+        or isinstance(descriptor.get("assignments"), bool)
+        or descriptor["clusters"] <= 0
+        or descriptor["assignments"] <= 0
+        or not isinstance(descriptor.get("bytes"), int)
+        or isinstance(descriptor.get("bytes"), bool)
+        or descriptor["bytes"] <= 0
+        or not isinstance(descriptor.get("sha256"), str)
+        or len(descriptor["sha256"]) != 64
+        or any(c not in "0123456789abcdef" for c in descriptor["sha256"])
+        or not isinstance(descriptor.get("logical_sha256"), str)
+        or len(descriptor["logical_sha256"]) != 64
+        or any(
+            c not in "0123456789abcdef"
+            for c in descriptor["logical_sha256"]
+        )
+        or descriptor["file"]
+        != _certificate_store_name(path, descriptor["sha256"])
+    ):
+        raise ValidationError(
+            "OpenPARF atomic placement storage descriptor is invalid"
+        )
+    if path.is_symlink():
+        raise ValidationError(
+            "OpenPARF atomic placement certificate is a symbolic link"
+        )
+    unresolved = path.parent / descriptor["file"]
+    if unresolved.is_symlink():
+        raise ValidationError(
+            "OpenPARF atomic placement database is a symbolic link"
+        )
+    try:
+        database_path = unresolved.resolve(strict=True)
+        stat = database_path.stat()
+    except OSError as error:
+        raise ValidationError(
+            "OpenPARF atomic placement database is missing"
+        ) from error
+    if database_path.parent != path.parent.resolve():
+        raise ValidationError(
+            "OpenPARF atomic placement database escapes its selector"
+        )
+    if (
+        stat.st_size != descriptor["bytes"]
+        or _sha256(database_path) != descriptor["sha256"]
+    ):
+        raise ValidationError("OpenPARF atomic placement database seal is invalid")
+    return database_path
+
+
+def _valid_unreferenced_certificate_store(
+    selector_path: Path, candidate: Path,
+) -> bool:
+    """Recognize only a complete writer-owned generation before orphan GC."""
+
+    prefix = f"{selector_path.stem}."
+    if candidate.is_symlink() or not candidate.name.endswith(
+        _PLACEMENT_CERTIFICATE_STORE_SUFFIX
+    ) or not candidate.name.startswith(prefix):
+        return False
+    digest = candidate.name[
+        len(prefix):-len(_PLACEMENT_CERTIFICATE_STORE_SUFFIX)
+    ]
+    if (
+        len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        or _sha256(candidate) != digest
+    ):
+        return False
+    try:
+        with sqlite3.connect(
+            f"file:{candidate.resolve()}?mode=ro&immutable=1", uri=True
+        ) as database:
+            if (
+                int(database.execute("PRAGMA application_id").fetchone()[0])
+                != OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID
+                or int(database.execute("PRAGMA user_version").fetchone()[0])
+                != OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION
+                or list(database.execute(
+                    "SELECT type,name,tbl_name FROM sqlite_master "
+                    "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+                )) != [
+                    ("table", "assignments", "assignments"),
+                    ("table", "clusters", "clusters"),
+                    ("table", "metadata", "metadata"),
+                ]
+            ):
+                return False
+            metadata = dict(database.execute("SELECT key,value FROM metadata"))
+            if (
+                set(metadata)
+                != {"schema", "clusters", "assignments", "logical_sha256"}
+                or metadata["schema"]
+                != OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
+                or len(metadata["logical_sha256"]) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in metadata["logical_sha256"]
+                )
+                or any(
+                    [tuple(row) for row in database.execute(
+                        f"PRAGMA table_xinfo({table})"
+                    )] != expected
+                    for table, expected in _PLACEMENT_TABLE_XINFO.items()
+                )
+            ):
+                return False
+            clusters = int(metadata["clusters"])
+            assignments = int(metadata["assignments"])
+            return (
+                clusters > 0
+                and assignments > 0
+                and database.execute("SELECT COUNT(*) FROM clusters").fetchone()[0]
+                == clusters
+                and database.execute(
+                    "SELECT COUNT(*) FROM assignments"
+                ).fetchone()[0] == assignments
+                and database.execute(
+                    "SELECT 1 FROM assignments a LEFT JOIN clusters c "
+                    "USING(cluster_index) WHERE c.cluster_index IS NULL LIMIT 1"
+                ).fetchone() is None
+                and database.execute(
+                    "SELECT 1 FROM clusters c LEFT JOIN assignments a "
+                    "USING(cluster_index) WHERE a.cluster_index IS NULL LIMIT 1"
+                ).fetchone() is None
+                and database.execute(
+                    "SELECT 1 FROM (SELECT MIN(cluster_index) lo,"
+                    "MAX(cluster_index) hi,COUNT(*) n FROM clusters) "
+                    "WHERE lo!=0 OR hi+1!=n LIMIT 1"
+                ).fetchone() is None
+                and database.execute(
+                    "SELECT 1 FROM assignments GROUP BY cluster_index "
+                    "HAVING MIN(assignment_index)!=0 OR "
+                    "MAX(assignment_index)+1!=COUNT(*) LIMIT 1"
+                ).fetchone() is None
+            )
+    except (OSError, ValueError, sqlite3.DatabaseError):
+        return False
+
+
+class _AtomicPlacementCertificateBuilder:
+    """Stream validated site groups into one typed certificate generation."""
+
+    def __init__(self, selector_path: Path) -> None:
+        selector_path.parent.mkdir(parents=True, exist_ok=True)
+        self.selector_path = selector_path
+        self.lease = _PlacementCertificateLease(selector_path, exclusive=True)
+        self.closed = False
+        self.temporary_path: Optional[Path] = None
+        self.database: Optional[sqlite3.Connection] = None
+        self.previous_store: Optional[Path] = None
+        self.cluster_count = 0
+        self.assignment_count = 0
+        try:
+            if selector_path.exists():
+                if selector_path.is_symlink():
+                    raise ValidationError(
+                        "previous OpenPARF placement certificate is a symbolic link"
+                    )
+                try:
+                    previous = read_json(selector_path)
+                except (OSError, ValueError) as error:
+                    raise ValidationError(
+                        "previous OpenPARF placement certificate is corrupt"
+                    ) from error
+                self.previous_store = _validate_atomic_placement_descriptor(
+                    selector_path, previous.get("cluster_storage")
+                )
+                previous_descriptor = previous["cluster_storage"]
+                previous_header = dict(previous)
+                previous_header.pop("cluster_storage")
+                try:
+                    with sqlite3.connect(
+                        f"file:{self.previous_store}?mode=ro&immutable=1",
+                        uri=True,
+                    ) as previous_database:
+                        _validate_placement_database_contract(
+                            previous_database,
+                            descriptor=previous_descriptor,
+                            header=previous_header,
+                            legacy=False,
+                        )
+                except sqlite3.DatabaseError as error:
+                    raise ValidationError(
+                        "previous OpenPARF placement-certificate store is invalid"
+                    ) from error
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{selector_path.name}.", suffix=".sqlite.tmp",
+                dir=selector_path.parent,
+            )
+            os.close(descriptor)
+            self.temporary_path = Path(temporary)
+            self.database = sqlite3.connect(self.temporary_path)
+            self.database.executescript(f"""
             PRAGMA page_size = 65536;
             PRAGMA journal_mode = OFF;
-            PRAGMA synchronous = OFF;
-            PRAGMA temp_store = MEMORY;
+            PRAGMA synchronous = FULL;
+            PRAGMA temp_store = FILE;
+            PRAGMA application_id = {OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID};
+            PRAGMA user_version = {OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION};
             CREATE TABLE metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             ) WITHOUT ROWID;
             CREATE TABLE clusters (
                 cluster_index INTEGER PRIMARY KEY,
-                cluster TEXT NOT NULL,
-                site TEXT NOT NULL,
+                cluster TEXT NOT NULL UNIQUE,
+                site TEXT NOT NULL UNIQUE,
                 site_type TEXT NOT NULL,
                 x INTEGER NOT NULL,
                 y INTEGER NOT NULL
             );
             CREATE TABLE assignments (
-                cluster_index INTEGER NOT NULL,
+                cluster_index INTEGER NOT NULL REFERENCES clusters(cluster_index),
                 assignment_index INTEGER NOT NULL,
-                instance TEXT NOT NULL,
+                instance TEXT NOT NULL UNIQUE,
                 cell_type TEXT NOT NULL,
                 bel TEXT NOT NULL,
                 physical_site TEXT NOT NULL,
                 placement_mode TEXT NOT NULL,
                 source_cluster TEXT NOT NULL,
-                bram_tile_group TEXT,
+                bram_tile_group TEXT CHECK(
+                    bram_tile_group IS NULL OR json_valid(bram_tile_group)
+                ),
                 PRIMARY KEY (cluster_index, assignment_index)
             ) WITHOUT ROWID;
-        """)
-        database.executemany(
-            "INSERT INTO metadata(key, value) VALUES (?, ?)",
+            """)
+        except sqlite3.DatabaseError as error:
+            self.close()
+            raise ValidationError(
+                "OpenPARF atomic placement database is invalid"
+            ) from error
+        except BaseException:
+            self.close()
+            raise
+
+    def append(self, cluster: Mapping[str, Any]) -> None:
+        assignments = cluster.get("assignments")
+        if (
+            not isinstance(assignments, Sequence)
+            or isinstance(assignments, (str, bytes))
+            or not assignments
+        ):
+            raise ValidationError("OpenPARF atomic placement cluster is invalid")
+        cluster_index = self.cluster_count
+        if self.database is None:
+            raise ValidationError("OpenPARF placement-certificate writer is closed")
+        try:
+            self.database.execute(
+                "INSERT INTO clusters VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    cluster_index, str(cluster["cluster"]), str(cluster["site"]),
+                    str(cluster["site_type"]), int(cluster["x"]), int(cluster["y"]),
+                ),
+            )
+            self.database.executemany(
+                "INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    (
+                        cluster_index, assignment_index,
+                        str(assignment["instance"]),
+                        str(assignment["cell_type"]), str(assignment["bel"]),
+                        str(assignment["physical_site"]),
+                        str(assignment["placement_mode"]),
+                        str(assignment["source_cluster"]),
+                        (
+                            json.dumps(
+                                assignment["bram_tile_group"], sort_keys=True,
+                                separators=(",", ":"),
+                            )
+                            if assignment.get("bram_tile_group") is not None
+                            else None
+                        ),
+                    )
+                    for assignment_index, assignment in enumerate(assignments)
+                ),
+            )
+        except (KeyError, TypeError, ValueError, sqlite3.IntegrityError) as error:
+            raise ValidationError(
+                "OpenPARF atomic placement cluster cannot be stored"
+            ) from error
+        self.cluster_count += 1
+        self.assignment_count += len(assignments)
+
+    def publish(self, header: Mapping[str, Any]) -> Dict[str, Any]:
+        if self.cluster_count <= 0 or self.assignment_count <= 0:
+            raise ValidationError("OpenPARF atomic placement clusters are invalid")
+        if self.database is None or self.temporary_path is None:
+            raise ValidationError("OpenPARF placement-certificate writer is closed")
+        compact = dict(header)
+        compact.pop("clusters", None)
+        compact.pop("cluster_storage", None)
+        logical_sha256 = _logical_record_digest(compact, self.database)
+        self.database.executemany(
+            "INSERT INTO metadata VALUES (?, ?)",
             (
                 ("schema", OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA),
-                ("clusters", str(len(clusters))),
-                ("assignments", str(assignment_count)),
+                ("clusters", str(self.cluster_count)),
+                ("assignments", str(self.assignment_count)),
+                ("logical_sha256", logical_sha256),
             ),
         )
-        database.executemany(
-            "INSERT INTO clusters VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                (
-                    cluster_index,
-                    str(cluster["cluster"]),
-                    str(cluster["site"]),
-                    str(cluster["site_type"]),
-                    int(cluster["x"]),
-                    int(cluster["y"]),
-                )
-                for cluster_index, cluster in enumerate(clusters)
-            ),
+        self.database.commit()
+        self.database.close()
+        self.database = None
+        with self.temporary_path.open("rb") as stream:
+            os.fsync(stream.fileno())
+        digest = _sha256(self.temporary_path)
+        store_path = self.selector_path.parent / _certificate_store_name(
+            self.selector_path, digest
         )
-        database.executemany(
-            "INSERT INTO assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                (
-                    cluster_index,
-                    assignment_index,
-                    str(assignment["instance"]),
-                    str(assignment["cell_type"]),
-                    str(assignment["bel"]),
-                    str(assignment["physical_site"]),
-                    str(assignment["placement_mode"]),
-                    str(assignment["source_cluster"]),
-                    (
-                        json.dumps(
-                            assignment["bram_tile_group"],
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        )
-                        if assignment.get("bram_tile_group") is not None
-                        else None
-                    ),
+        if store_path.is_symlink():
+            raise ValidationError(
+                "OpenPARF atomic placement database is a symbolic link"
+            )
+        if store_path.exists():
+            if _sha256(store_path) != digest:
+                raise ValidationError(
+                    "OpenPARF atomic placement content-addressed store disagrees"
                 )
-                for cluster_index, cluster in enumerate(clusters)
-                for assignment_index, assignment in enumerate(
-                    cluster["assignments"]
-                )
-            ),
+            self.temporary_path.unlink()
+        else:
+            os.replace(self.temporary_path, store_path)
+        descriptor = {
+            "schema": OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
+            "application_id": OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID,
+            "user_version": OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION,
+            "file": store_path.name,
+            "bytes": store_path.stat().st_size,
+            "sha256": digest,
+            "clusters": self.cluster_count,
+            "assignments": self.assignment_count,
+            "logical_sha256": logical_sha256,
+        }
+        compact["cluster_storage"] = descriptor
+        temporary_selector = self.selector_path.with_name(
+            f".{self.selector_path.name}.{os.getpid()}.tmp"
         )
-        database.commit()
-        with sqlite3.connect(path) as destination:
-            destination.executescript("""
-                PRAGMA journal_mode = OFF;
-                PRAGMA synchronous = OFF;
-            """)
-            database.backup(destination, pages=4096)
-    return {
-        "schema": OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
-        "file": path.name,
-        "bytes": path.stat().st_size,
-        "sha256": _sha256(path),
-        "clusters": len(clusters),
-        "assignments": assignment_count,
-    }
+        try:
+            write_json(temporary_selector, compact, compact=True)
+            with temporary_selector.open("rb") as stream:
+                os.fsync(stream.fileno())
+            os.replace(temporary_selector, self.selector_path)
+            _fsync_directory(self.selector_path.parent)
+            for candidate in self.selector_path.parent.glob(
+                f"{self.selector_path.stem}.*"
+                f"{_PLACEMENT_CERTIFICATE_STORE_SUFFIX}"
+            ):
+                if (
+                    candidate.is_symlink()
+                    or candidate.resolve() == store_path.resolve()
+                ):
+                    continue
+                if (
+                    self.previous_store is None
+                    or candidate.resolve() != self.previous_store.resolve()
+                ) and not _valid_unreferenced_certificate_store(
+                    self.selector_path, candidate
+                ):
+                    continue
+                try:
+                    candidate.unlink()
+                except OSError:
+                    pass
+            _fsync_directory(self.selector_path.parent)
+            return compact
+        finally:
+            temporary_selector.unlink(missing_ok=True)
+            self.close()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        database = self.database
+        self.database = None
+        if database is not None:
+            database.close()
+        temporary_path = self.temporary_path
+        self.temporary_path = None
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        self.lease.close()
+
+    def __del__(self) -> None:
+        self.close()
 
 
 def write_xilinx_openparf_atomic_placement_certificate(
@@ -404,135 +1261,243 @@ def write_xilinx_openparf_atomic_placement_certificate(
     clusters = certificate.get("clusters")
     if not isinstance(clusters, list) or not clusters:
         raise ValidationError("OpenPARF atomic placement clusters are invalid")
-    descriptor = _write_atomic_placement_database(
-        _atomic_placement_database_path(path), clusters
-    )
-    compact = {
-        key: value for key, value in certificate.items() if key != "clusters"
-    }
-    compact["cluster_storage"] = descriptor
-    write_json(path, compact, compact=True)
-    return compact
+    builder = _AtomicPlacementCertificateBuilder(path)
+    try:
+        for cluster in clusters:
+            builder.append(cluster)
+        return builder.publish(certificate)
+    except BaseException:
+        builder.close()
+        raise
 
 
 def load_xilinx_openparf_atomic_placement_clusters(
     path: Path, certificate: Mapping[str, Any]
 ) -> List[Dict[str, Any]]:
-    """Load legacy inline rows or the normalized placement sidecar."""
+    """Explicit compatibility materialization of certified cluster rows."""
 
-    inline = certificate.get("clusters")
-    if inline is not None:
-        if not isinstance(inline, list) or not inline:
-            raise ValidationError("OpenPARF atomic placement clusters are invalid")
-        return [dict(cluster) for cluster in inline]
-    descriptor = certificate.get("cluster_storage")
-    if (
-        not isinstance(descriptor, Mapping)
-        or descriptor.get("schema")
-        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
-        or not isinstance(descriptor.get("file"), str)
-        or Path(descriptor["file"]).name != descriptor["file"]
-        or not isinstance(descriptor.get("clusters"), int)
-        or not isinstance(descriptor.get("assignments"), int)
-        or descriptor["clusters"] <= 0
-        or descriptor["assignments"] <= 0
-    ):
-        raise ValidationError(
-            "OpenPARF atomic placement storage descriptor is invalid"
-        )
-    database_path = path.parent / descriptor["file"]
-    if (
-        not database_path.is_file()
-        or database_path.stat().st_size != descriptor.get("bytes")
-        or _sha256(database_path) != descriptor.get("sha256")
-    ):
-        raise ValidationError("OpenPARF atomic placement database seal is invalid")
-    uri = f"file:{database_path.resolve()}?mode=ro&immutable=1"
-    clusters: List[Dict[str, Any]] = []
-    with sqlite3.connect(uri, uri=True) as database:
-        metadata = dict(database.execute("SELECT key, value FROM metadata"))
-        if metadata != {
-            "schema": OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
-            "clusters": str(descriptor["clusters"]),
-            "assignments": str(descriptor["assignments"]),
-        }:
-            raise ValidationError(
-                "OpenPARF atomic placement database metadata is invalid"
-            )
-        cluster_rows = list(database.execute(
-            "SELECT cluster_index, cluster, site, site_type, x, y "
-            "FROM clusters ORDER BY cluster_index"
-        ))
-        by_index: Dict[int, Dict[str, Any]] = {}
-        cluster_names = set()
-        site_names = set()
-        for row in cluster_rows:
-            if (
-                row[0] in by_index
-                or row[1] in cluster_names
-                or row[2] in site_names
-            ):
+    return list(iter_xilinx_openparf_atomic_placement_clusters(
+        path, certificate, allow_legacy=True
+    ))
+
+
+def _iter_placement_database_clusters(
+    database: sqlite3.Connection, descriptor: Mapping[str, Any],
+) -> Iterator[Dict[str, Any]]:
+    cluster_total = 0
+    assignment_total = 0
+    rows = database.execute(
+        "SELECT c.cluster_index,c.cluster,c.site,c.site_type,c.x,c.y,"
+        "a.assignment_index,a.instance,a.cell_type,a.bel,a.physical_site,"
+        "a.placement_mode,a.source_cluster,a.bram_tile_group "
+        "FROM clusters c LEFT JOIN assignments a "
+        "ON a.cluster_index=c.cluster_index "
+        "ORDER BY c.cluster_index,a.assignment_index"
+    )
+    current_index = None
+    current: Optional[Dict[str, Any]] = None
+    expected_assignment_index = 0
+    for row in rows:
+        if row[0] != current_index:
+            if current is not None:
+                yield current
+            if row[0] != cluster_total:
                 raise ValidationError(
-                    "OpenPARF atomic placement database has duplicate clusters"
+                    "OpenPARF atomic placement cluster ordering is invalid"
                 )
-            cluster = {
-                "cluster": row[1],
-                "site": row[2],
-                "site_type": row[3],
-                "x": row[4],
-                "y": row[5],
+            current_index = row[0]
+            current = {
+                "cluster": row[1], "site": row[2],
+                "site_type": row[3], "x": row[4], "y": row[5],
                 "assignments": [],
             }
-            by_index[row[0]] = cluster
-            cluster_names.add(row[1])
-            site_names.add(row[2])
-            clusters.append(cluster)
-        assignment_total = 0
-        instances = set()
-        for assignment in database.execute(
-            "SELECT cluster_index, instance, cell_type, bel, physical_site, "
-            "placement_mode, source_cluster, bram_tile_group FROM assignments "
-            "ORDER BY cluster_index, assignment_index"
-        ):
-            cluster = by_index.get(assignment[0])
-            if cluster is None:
-                raise ValidationError(
-                    "OpenPARF atomic placement database has an orphan assignment"
-                )
-            if assignment[1] in instances:
-                raise ValidationError(
-                    "OpenPARF atomic placement database has duplicate assignments"
-                )
-            instances.add(assignment[1])
-            cluster["assignments"].append({
-                "instance": assignment[1],
-                "cell_type": assignment[2],
-                "bel": assignment[3],
-                "physical_site": assignment[4],
-                "placement_mode": assignment[5],
-                "source_cluster": assignment[6],
-                "bram_tile_group": (
-                    json.loads(assignment[7])
-                    if assignment[7] is not None else None
-                ),
-            })
-            assignment_total += 1
-        if any(not cluster["assignments"] for cluster in clusters):
+            cluster_total += 1
+            expected_assignment_index = 0
+        if current is None or row[6] is None:
             raise ValidationError(
                 "OpenPARF atomic placement database has an empty cluster"
             )
+        if row[6] != expected_assignment_index:
+            raise ValidationError(
+                "OpenPARF atomic placement assignment ordering is invalid"
+            )
+        expected_assignment_index += 1
+        current["assignments"].append({
+            "instance": row[7], "cell_type": row[8], "bel": row[9],
+            "physical_site": row[10], "placement_mode": row[11],
+            "source_cluster": row[12],
+            "bram_tile_group": (
+                json.loads(row[13]) if row[13] is not None else None
+            ),
+        })
+        assignment_total += 1
+    if current is not None:
+        yield current
     if (
-        len(clusters) != descriptor["clusters"]
+        cluster_total != descriptor["clusters"]
         or assignment_total != descriptor["assignments"]
     ):
         raise ValidationError(
             "OpenPARF atomic placement database coverage is invalid"
         )
-    return clusters
+
+
+class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
+    """Selector and ordered rows held under one shared generation lease."""
+
+    def __init__(self, path: Path, *, allow_legacy: bool = False) -> None:
+        self.path = path
+        self.lease = _PlacementCertificateLease(path, exclusive=False)
+        self.database: Optional[sqlite3.Connection] = None
+        self.closed = False
+        try:
+            if path.is_symlink():
+                raise ValidationError(
+                    "OpenPARF atomic placement certificate is a symbolic link"
+                )
+            try:
+                selector = read_json(path)
+            except (OSError, ValueError) as error:
+                raise ValidationError(
+                    "OpenPARF atomic placement selector is invalid"
+                ) from error
+            if not isinstance(selector, Mapping):
+                raise ValidationError(
+                    "OpenPARF atomic placement selector is invalid"
+                )
+            self.selector = selector
+            inline = selector.get("clusters")
+            if inline is not None:
+                if not allow_legacy or not isinstance(inline, list) or not inline:
+                    raise ValidationError(
+                        "inline OpenPARF placement clusters require explicit "
+                        "legacy mode"
+                    )
+                self.inline = inline
+                self.descriptor = None
+                self.legacy = True
+                return
+            self.inline = None
+            descriptor = selector.get("cluster_storage")
+            self.legacy = (
+                isinstance(descriptor, Mapping)
+                and descriptor.get("schema")
+                == _LEGACY_OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
+            )
+            if self.legacy:
+                if (
+                    not allow_legacy
+                    or not isinstance(descriptor, Mapping)
+                    or set(descriptor) != {
+                        "schema", "file", "bytes", "sha256", "clusters",
+                        "assignments",
+                    }
+                    or not isinstance(descriptor.get("file"), str)
+                    or Path(descriptor["file"]).name != descriptor["file"]
+                    or any(
+                        isinstance(descriptor.get(key), bool)
+                        or not isinstance(descriptor.get(key), int)
+                        or descriptor[key] <= 0
+                        for key in ("bytes", "clusters", "assignments")
+                    )
+                    or not isinstance(descriptor.get("sha256"), str)
+                    or len(descriptor["sha256"]) != 64
+                    or any(
+                        c not in "0123456789abcdef"
+                        for c in descriptor["sha256"]
+                    )
+                ):
+                    raise ValidationError(
+                        "legacy OpenPARF placement database requires explicit "
+                        "compatibility mode"
+                    )
+                unresolved = path.parent / descriptor["file"]
+                if unresolved.is_symlink():
+                    raise ValidationError(
+                        "OpenPARF atomic placement database is a symbolic link"
+                    )
+                database_path = unresolved.resolve(strict=True)
+                if (
+                    database_path.parent != path.parent.resolve()
+                    or database_path.stat().st_size != descriptor["bytes"]
+                    or _sha256(database_path) != descriptor["sha256"]
+                ):
+                    raise ValidationError(
+                        "OpenPARF atomic placement database seal is invalid"
+                    )
+            else:
+                database_path = _validate_atomic_placement_descriptor(
+                    path, descriptor
+                )
+            assert isinstance(descriptor, Mapping)
+            self.descriptor = descriptor
+            database = sqlite3.connect(
+                f"file:{database_path}?mode=ro&immutable=1", uri=True
+            )
+            self.database = database
+            header = dict(selector)
+            header.pop("cluster_storage", None)
+            _validate_placement_database_contract(
+                database, descriptor=descriptor, header=header,
+                legacy=self.legacy,
+            )
+        except BaseException:
+            self.close()
+            raise
+
+    def __getitem__(self, key: str) -> Any:
+        return self.selector[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.selector)
+
+    def __len__(self) -> int:
+        return len(self.selector)
+
+    def iter_clusters(self) -> Iterator[Dict[str, Any]]:
+        if self.closed:
+            raise ValidationError("OpenPARF atomic placement view is closed")
+        if self.inline is not None:
+            for cluster in self.inline:
+                if not isinstance(cluster, Mapping):
+                    raise ValidationError(
+                        "OpenPARF atomic placement cluster is invalid"
+                    )
+                yield dict(cluster)
+            return
+        assert self.database is not None and self.descriptor is not None
+        yield from _iter_placement_database_clusters(
+            self.database, self.descriptor
+        )
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        if self.database is not None:
+            self.database.close()
+            self.database = None
+        self.lease.close()
+
+    def __enter__(self) -> "XilinxOpenparfAtomicPlacementView":
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        if hasattr(self, "closed"):
+            self.close()
+
+
+def open_xilinx_openparf_atomic_placement(
+    path: Path, *, allow_legacy: bool = False,
+) -> XilinxOpenparfAtomicPlacementView:
+    return XilinxOpenparfAtomicPlacementView(path, allow_legacy=allow_legacy)
 
 
 def iter_xilinx_openparf_atomic_placement_clusters(
-    path: Path, certificate: Mapping[str, Any]
+    path: Path, certificate: Mapping[str, Any], *, allow_legacy: bool = False,
 ) -> Iterator[Dict[str, Any]]:
     """Stream certified clusters from the normalized placement sidecar.
 
@@ -541,108 +1506,17 @@ def iter_xilinx_openparf_atomic_placement_clusters(
     the packed and placement trees that it is used to construct.
     """
 
-    inline = certificate.get("clusters")
-    if inline is not None:
-        if not isinstance(inline, list) or not inline:
-            raise ValidationError("OpenPARF atomic placement clusters are invalid")
-        for cluster in inline:
-            if not isinstance(cluster, Mapping):
-                raise ValidationError(
-                    "OpenPARF atomic placement cluster is invalid"
-                )
-            yield dict(cluster)
-        return
-    descriptor = certificate.get("cluster_storage")
-    if (
-        not isinstance(descriptor, Mapping)
-        or descriptor.get("schema")
-        != OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA
-        or not isinstance(descriptor.get("file"), str)
-        or Path(descriptor["file"]).name != descriptor["file"]
-        or not isinstance(descriptor.get("clusters"), int)
-        or not isinstance(descriptor.get("assignments"), int)
-        or descriptor["clusters"] <= 0
-        or descriptor["assignments"] <= 0
-    ):
-        raise ValidationError(
-            "OpenPARF atomic placement storage descriptor is invalid"
-        )
-    database_path = path.parent / descriptor["file"]
-    if (
-        not database_path.is_file()
-        or database_path.stat().st_size != descriptor.get("bytes")
-        or _sha256(database_path) != descriptor.get("sha256")
-    ):
-        raise ValidationError("OpenPARF atomic placement database seal is invalid")
-    uri = f"file:{database_path.resolve()}?mode=ro&immutable=1"
-    cluster_total = 0
-    assignment_total = 0
-    with sqlite3.connect(uri, uri=True) as database:
-        metadata = dict(database.execute("SELECT key, value FROM metadata"))
-        if metadata != {
-            "schema": OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
-            "clusters": str(descriptor["clusters"]),
-            "assignments": str(descriptor["assignments"]),
-        }:
+    view = open_xilinx_openparf_atomic_placement(
+        path, allow_legacy=allow_legacy
+    )
+    try:
+        if dict(view) != dict(certificate):
             raise ValidationError(
-                "OpenPARF atomic placement database metadata is invalid"
+                "OpenPARF atomic placement selector changed before leased read"
             )
-        rows = database.execute(
-            "SELECT c.cluster_index,c.cluster,c.site,c.site_type,c.x,c.y,"
-            "a.assignment_index,a.instance,a.cell_type,a.bel,a.physical_site,"
-            "a.placement_mode,a.source_cluster,a.bram_tile_group "
-            "FROM clusters c LEFT JOIN assignments a "
-            "ON a.cluster_index=c.cluster_index "
-            "ORDER BY c.cluster_index,a.assignment_index"
-        )
-        current_index = None
-        current: Optional[Dict[str, Any]] = None
-        expected_assignment_index = 0
-        for row in rows:
-            if row[0] != current_index:
-                if current is not None:
-                    if not current["assignments"]:
-                        raise ValidationError(
-                            "OpenPARF atomic placement database has an empty cluster"
-                        )
-                    yield current
-                current_index = row[0]
-                current = {
-                    "cluster": row[1], "site": row[2],
-                    "site_type": row[3], "x": row[4], "y": row[5],
-                    "assignments": [],
-                }
-                cluster_total += 1
-                expected_assignment_index = 0
-            if current is None or row[6] is None:
-                continue
-            if row[6] != expected_assignment_index:
-                raise ValidationError(
-                    "OpenPARF atomic placement assignment ordering is invalid"
-                )
-            expected_assignment_index += 1
-            current["assignments"].append({
-                "instance": row[7], "cell_type": row[8], "bel": row[9],
-                "physical_site": row[10], "placement_mode": row[11],
-                "source_cluster": row[12],
-                "bram_tile_group": (
-                    json.loads(row[13]) if row[13] is not None else None
-                ),
-            })
-            assignment_total += 1
-        if current is not None:
-            if not current["assignments"]:
-                raise ValidationError(
-                    "OpenPARF atomic placement database has an empty cluster"
-                )
-            yield current
-    if (
-        cluster_total != descriptor["clusters"]
-        or assignment_total != descriptor["assignments"]
-    ):
-        raise ValidationError(
-            "OpenPARF atomic placement database coverage is invalid"
-        )
+        yield from view.iter_clusters()
+    finally:
+        view.close()
 
 
 def _write_site_database(
@@ -804,13 +1678,32 @@ def load_xilinx_openparf_sites(
     expected_name_map_schema: str,
     coordinates: Optional[Sequence[Tuple[int, int]]] = None,
     resources: Optional[Sequence[str]] = None,
+    mapped_sha256: Optional[str] = None,
+    packed_sha256: Optional[str] = None,
+    architecture_sha256: Optional[str] = None,
+    allow_legacy_name_map: bool = False,
 ) -> List[Dict[str, Any]]:
     """Read only requested site rows from the normalized placement contract."""
 
-    name_map = read_json(name_map_path)
-    if name_map.get("schema") != expected_name_map_schema:
-        raise ValidationError("OpenPARF name map is invalid")
-    database_path, expected_count = _site_database_path(name_map_path, name_map)
+    name_map = (
+        read_xilinx_openparf_atomic_name_map(
+            name_map_path,
+            mapped_sha256=mapped_sha256,
+            packed_sha256=packed_sha256,
+            architecture_sha256=architecture_sha256,
+            allow_legacy=allow_legacy_name_map,
+        )
+        if expected_name_map_schema == OPENPARF_ATOMIC_NAME_MAP_SCHEMA
+        else read_json(name_map_path)
+    )
+    try:
+        if name_map.get("schema") != expected_name_map_schema:
+            raise ValidationError("OpenPARF name map is invalid")
+        database_path, expected_count = _site_database_path(name_map_path, name_map)
+    finally:
+        close_name_map = getattr(name_map, "close", None)
+        if callable(close_name_map):
+            close_name_map()
     requested = {
         (int(coordinate[0]), int(coordinate[1])) for coordinate in coordinates or []
     }
@@ -890,6 +1783,10 @@ def load_xilinx_openparf_atomic_sites(
     *,
     coordinates: Optional[Sequence[Tuple[int, int]]] = None,
     resources: Optional[Sequence[str]] = None,
+    mapped_sha256: Optional[str] = None,
+    packed_sha256: Optional[str] = None,
+    architecture_sha256: Optional[str] = None,
+    allow_legacy_name_map: bool = False,
 ) -> List[Dict[str, Any]]:
     """Read selected sites from an atomic OpenPARF placement contract."""
 
@@ -898,6 +1795,10 @@ def load_xilinx_openparf_atomic_sites(
         expected_name_map_schema=OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
         coordinates=coordinates,
         resources=resources,
+        mapped_sha256=mapped_sha256,
+        packed_sha256=packed_sha256,
+        architecture_sha256=architecture_sha256,
+        allow_legacy_name_map=allow_legacy_name_map,
     )
 
 
@@ -1206,6 +2107,7 @@ def legalize_xilinx_openparf_ff_control_sets(
     output_path: Path,
     *,
     mapped_value: Optional[Mapping[str, Any]] = None,
+    packed_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Repair only native FF slots that violate UltraScale+ control sets.
 
@@ -1216,20 +2118,33 @@ def legalize_xilinx_openparf_ff_control_sets(
     still rechecks the complete result after this bounded legalization pass.
     """
 
-    name_map = read_json(name_map_path)
+    mapped_digest = _sha256(mapped_path)
+    packed_digest = _sha256(packed_path) if packed_path is not None else None
+    name_map = read_xilinx_openparf_atomic_name_map(
+        name_map_path,
+        mapped_sha256=mapped_digest,
+        packed_sha256=packed_digest,
+    )
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
-    if name_map.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA:
-        raise ValidationError("OpenPARF atomic name map is invalid")
-    _top, module = _select_module(mapped, name_map.get("top"))
+    try:
+        if name_map.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA:
+            raise ValidationError("OpenPARF atomic name map is invalid")
+        name_map_top = name_map.get("top")
+        atom_sequence = name_map.get("atoms", [])
+        atoms = {
+            item["openparf"]: item for item in atom_sequence
+            if isinstance(item, Mapping) and isinstance(item.get("openparf"), str)
+        }
+        if len(atoms) != len(atom_sequence) or not atoms:
+            raise ValidationError("OpenPARF atomic name map has duplicate atoms")
+    finally:
+        close_name_map = getattr(name_map, "close", None)
+        if callable(close_name_map):
+            close_name_map()
+    _top, module = _select_module(mapped, name_map_top)
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped JSON cells are invalid")
-    atoms = {
-        item["openparf"]: item for item in name_map.get("atoms", [])
-        if isinstance(item, Mapping) and isinstance(item.get("openparf"), str)
-    }
-    if len(atoms) != len(name_map.get("atoms", [])) or not atoms:
-        raise ValidationError("OpenPARF atomic name map has duplicate atoms")
 
     raw: Dict[str, Tuple[int, int, int]] = {}
     with placement_path.open("r", encoding="utf-8") as stream:
@@ -1256,7 +2171,9 @@ def legalize_xilinx_openparf_ff_control_sets(
     ff_sites = {
         (site["dense_x"], site["dense_y"]): site
         for site in load_xilinx_openparf_atomic_sites(
-            name_map_path, resources=["FF"]
+            name_map_path, resources=["FF"],
+            mapped_sha256=mapped_digest,
+            packed_sha256=packed_digest,
         )
         if site.get("resources", {}).get("FF", 0) >= 16
         and len(site.get("physical_sites", {}).get("FF", [])) == 1
@@ -1833,26 +2750,156 @@ def _validate_native_density_contract(
     return per_site_capacity, result
 
 
+class _IndexedAtomSequence(Sequence[Mapping[str, str]]):
+    """File-backed lexical atom relation used only during Bookshelf export."""
+
+    def __init__(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory(
+            prefix="emuflow-openparf-atoms-"
+        )
+        self.path = Path(self._temporary.name) / "atoms.sqlite"
+        self._writer = sqlite3.connect(self.path)
+        self._writer.executescript(
+            """
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=FILE;
+            CREATE TABLE raw_atoms(
+              instance TEXT PRIMARY KEY,
+              cell_type TEXT NOT NULL,
+              source_cluster TEXT NOT NULL,
+              resource TEXT NOT NULL
+            ) WITHOUT ROWID;
+            """
+        )
+        self._count: Optional[int] = None
+        self._closed = False
+
+    def append(self, atom: Mapping[str, str]) -> None:
+        if self._count is not None or self._closed:
+            raise ValidationError("OpenPARF atom index is not writable")
+        try:
+            self._writer.execute(
+                "INSERT INTO raw_atoms VALUES (?,?,?,?)",
+                (
+                    atom["instance"], atom["cell_type"],
+                    atom["source_cluster"], atom["resource"],
+                ),
+            )
+        except sqlite3.IntegrityError as error:
+            raise ValidationError(
+                f"mapped instance {atom.get('instance')!r} is packed twice"
+            ) from error
+
+    def finalize(self) -> None:
+        if self._count is not None:
+            return
+        if self._closed:
+            raise ValidationError("OpenPARF atom index is closed")
+        self._writer.executescript(
+            """
+            CREATE TABLE atoms(
+              seq INTEGER PRIMARY KEY,
+              instance TEXT NOT NULL UNIQUE,
+              cell_type TEXT NOT NULL,
+              source_cluster TEXT NOT NULL,
+              resource TEXT NOT NULL
+            );
+            INSERT INTO atoms(instance,cell_type,source_cluster,resource)
+            SELECT instance,cell_type,source_cluster,resource
+            FROM raw_atoms ORDER BY instance;
+            DROP TABLE raw_atoms;
+            CREATE INDEX atoms_cell_type ON atoms(cell_type);
+            CREATE INDEX atoms_resource ON atoms(resource);
+            """
+        )
+        self._count = int(
+            self._writer.execute("SELECT count(*) FROM atoms").fetchone()[0]
+        )
+        self._writer.commit()
+        self._writer.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        if self._count is None or self._closed:
+            raise ValidationError("OpenPARF atom index is not readable")
+        connection = sqlite3.connect(
+            f"file:{self.path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    @staticmethod
+    def _record(row: sqlite3.Row) -> Dict[str, str]:
+        return {
+            "instance": str(row["instance"]),
+            "cell_type": str(row["cell_type"]),
+            "source_cluster": str(row["source_cluster"]),
+            "resource": str(row["resource"]),
+        }
+
+    def __len__(self) -> int:
+        if self._count is None or self._closed:
+            raise ValidationError("OpenPARF atom index is not readable")
+        return self._count
+
+    def __iter__(self) -> Iterator[Mapping[str, str]]:
+        with self._connect() as connection:
+            for row in connection.execute(
+                "SELECT instance,cell_type,source_cluster,resource "
+                "FROM atoms ORDER BY seq"
+            ):
+                yield self._record(row)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return list(self)[index]
+        count = len(self)
+        if index < 0:
+            index += count
+        if not 0 <= index < count:
+            raise IndexError(index)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT instance,cell_type,source_cluster,resource "
+                "FROM atoms WHERE seq=?", (index + 1,),
+            ).fetchone()
+        if row is None:
+            raise IndexError(index)
+        return self._record(row)
+
+    def ordinal_for_instance(self, instance: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT seq FROM atoms WHERE instance=?", (instance,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(instance)
+        return int(row[0]) - 1
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._count is None:
+            self._writer.close()
+        self._temporary.cleanup()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
+
+
 def _collect_atoms(
     mapped: Mapping[str, Any], packed: Mapping[str, Any], top: Optional[str],
     *, allow_hardblock_cascades: bool = False,
     physical_macro_contract: Optional[Mapping[str, Any]] = None,
-) -> Tuple[str, Mapping[str, Any], List[Dict[str, str]]]:
+) -> Tuple[str, Mapping[str, Any], _IndexedAtomSequence]:
     selected_top, module = _select_module(mapped, top)
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped JSON cells are invalid")
-    # ``cells`` is an indexed SQLite mapping in the production Phase 7 path.
-    # Looking up every packed assignment with ``cells.get(instance)`` turns a
-    # linear validation into hundreds of thousands of individual SQL queries.
-    # Retain only the small type projection needed by this function and build
-    # it in one ordered scan.  Full cell records remain in SQLite and are
-    # streamed separately when Bookshelf pins/nets are rendered.
-    cell_types: Dict[str, str] = {}
-    for name, cell in _ordered_cell_items(cells):
-        if not isinstance(cell, Mapping) or not isinstance(cell.get("type"), str):
-            raise ValidationError("mapped JSON cell is invalid")
-        cell_types[name] = cell["type"]
     cascades = packed.get("cascade_chains", [])
     if not isinstance(cascades, Sequence) or isinstance(cascades, (str, bytes)):
         raise ValidationError("atomic mixed-resource cascade constraints are invalid")
@@ -1874,8 +2921,7 @@ def _collect_atoms(
                 raise ValidationError(
                     "RAMB18E2 dedicated cascades are not yet qualified"
                 )
-    atoms: List[Dict[str, str]] = []
-    seen = set()
+    atoms = _IndexedAtomSequence()
     site_macros = []
     if physical_macro_contract is not None:
         site_macros = [
@@ -2010,10 +3056,10 @@ def _collect_atoms(
                 )
             instance = assignment.get("instance")
             cell_type = assignment.get("cell_type")
-            mapped_cell_type = (
-                cell_types.get(instance) if isinstance(instance, str) else None
-            )
-            if mapped_cell_type != cell_type:
+            if (
+                not isinstance(instance, str) or not instance
+                or not isinstance(cell_type, str) or not cell_type
+            ):
                 raise ValidationError("packed assignment does not match mapped JSON")
             if cell_type not in _SUPPORTED:
                 raise ValidationError(
@@ -2031,9 +3077,6 @@ def _collect_atoms(
                 )
             if kind == "hard" and cell_type not in _HARD_RESOURCES:
                 raise ValidationError("hard cluster contains an unsupported primitive")
-            if instance in seen:
-                raise ValidationError(f"mapped instance {instance!r} is packed twice")
-            seen.add(instance)
             atoms.append({
                 "instance": instance,
                 "cell_type": cell_type,
@@ -2049,12 +3092,32 @@ def _collect_atoms(
     expected_site_macros = {macro["id"] for macro in site_macros}
     if covered_site_macros != expected_site_macros:
         raise ValidationError("connectivity-derived slice macro coverage is incomplete")
-    physical_cells = {
-        name for name, cell_type in cell_types.items()
-        if cell_type not in {"GND", "VCC"}
-    }
-    if seen != physical_cells:
-        missing = sorted(physical_cells - seen)
+    # Validate type and complete ownership with one merge over the authoritative
+    # mapped index. Atom identities are sorted in a private file-backed
+    # relation, so neither the final atom population nor a duplicate ownership
+    # set remains resident in Python.
+    atoms.finalize()
+    atom_iterator = iter(atoms)
+    current = next(atom_iterator, None)
+    missing: List[str] = []
+    for name, cell in _ordered_cell_items(cells):
+        if not isinstance(cell, Mapping) or not isinstance(cell.get("type"), str):
+            raise ValidationError("mapped JSON cell is invalid")
+        mapped_cell_type = cell["type"]
+        if mapped_cell_type in {"GND", "VCC"}:
+            continue
+        if current is not None and current["instance"] < name:
+            raise ValidationError("packed assignment does not match mapped JSON")
+        if current is None or current["instance"] > name:
+            if len(missing) < 16:
+                missing.append(name)
+            continue
+        if current["cell_type"] != mapped_cell_type:
+            raise ValidationError("packed assignment does not match mapped JSON")
+        current = next(atom_iterator, None)
+    if current is not None:
+        raise ValidationError("packed assignment does not match mapped JSON")
+    if missing:
         raise ValidationError(
             "atomic mixed-resource adapter requires complete physical cell coverage; "
             f"uncovered cells: {missing!r}"
@@ -2064,7 +3127,7 @@ def _collect_atoms(
         raise ValidationError(
             "pinned OpenPARF direct legalization requires at least one LUT and one FF"
         )
-    return selected_top, cells, sorted(atoms, key=lambda item: item["instance"])
+    return selected_top, cells, atoms
 
 
 def _ordered_cell_items(
@@ -2075,6 +3138,50 @@ def _ordered_cell_items(
         yield from indexed()
         return
     yield from sorted(cells.items())
+
+
+class _OrdinalSafeNames(MappingABC[str, str]):
+    """Resolve deterministic ``aN`` identities without an instance-sized dict.
+
+    ``_collect_atoms`` has already established unique lexical instance order.
+    The ordinal is therefore the safe name's only stored information. Rare
+    macro lookups use binary search; sequential exporters use ``name_at`` and
+    remain linear.
+    """
+
+    def __init__(self, atoms: Sequence[Mapping[str, str]]) -> None:
+        self.atoms = atoms
+
+    def __len__(self) -> int:
+        return len(self.atoms)
+
+    def __iter__(self) -> Iterator[str]:
+        return (atom["instance"] for atom in self.atoms)
+
+    def name_at(self, index: int, instance: str) -> str:
+        if not 0 <= index < len(self.atoms):
+            raise KeyError(instance)
+        atom = self.atoms[index]
+        if atom["instance"] != instance:
+            raise KeyError(instance)
+        return f"a{index}"
+
+    def __getitem__(self, instance: str) -> str:
+        if not isinstance(instance, str):
+            raise KeyError(instance)
+        indexed_lookup = getattr(self.atoms, "ordinal_for_instance", None)
+        if callable(indexed_lookup):
+            return f"a{indexed_lookup(instance)}"
+        lower = 0
+        upper = len(self.atoms)
+        while lower < upper:
+            middle = (lower + upper) // 2
+            candidate = self.atoms[middle]["instance"]
+            if candidate < instance:
+                lower = middle + 1
+            else:
+                upper = middle
+        return self.name_at(lower, instance)
 
 
 def build_xilinx_openparf_atomic_source(
@@ -2187,6 +3294,7 @@ def probe_xilinx_openparf_atomic_eligibility(
 ) -> Dict[str, Any]:
     """Return a side-effect-free design-specific adapter decision."""
 
+    atoms: Optional[_IndexedAtomSequence] = None
     try:
         _selected_top, _cells, atoms = _collect_atoms(mapped, packed, top)
         if (
@@ -2207,22 +3315,25 @@ def probe_xilinx_openparf_atomic_eligibility(
         slice_count = sum("LUT" in capacity for _site, capacity in sites)
         if resources["LUT"] > 8 * slice_count or resources["FF"] > 16 * slice_count:
             raise ValidationError("atomic LUT/FF demand exceeds slice capacity")
+        return {
+            "status": "adapter_required", "eligible": True,
+            "adapter_validation": "pass",
+            "reason": (
+                "ordinary LUT/FF clusters and independent singleton hard resources "
+                "can be atomized without discarding a dedicated, relative, "
+                "cascade, half-site, or coincident-site constraint"
+            ),
+            "atoms": len(atoms), "sites": len(sites),
+            "resources": dict(sorted(resources.items())),
+        }
     except ValidationError as error:
         return {
             "status": "adapter_required", "eligible": False,
             "adapter_validation": "missing", "reason": str(error),
         }
-    return {
-        "status": "adapter_required", "eligible": True,
-        "adapter_validation": "pass",
-        "reason": (
-            "ordinary LUT/FF clusters and independent singleton hard resources "
-            "can be atomized without discarding a dedicated, relative, "
-            "cascade, half-site, or coincident-site constraint"
-        ),
-        "atoms": len(atoms), "sites": len(sites),
-        "resources": dict(sorted(resources.items())),
-    }
+    finally:
+        if atoms is not None:
+            atoms.close()
 
 
 def _render_library(
@@ -2304,86 +3415,191 @@ def _render_library_and_nets(
     names: Mapping[str, str],
     *,
     platform_mux_types: Sequence[str] = (),
-) -> Tuple[str, str, int, int]:
-    """Render both Bookshelf contracts from one sequential cell scan.
+    nets_path: Optional[Path] = None,
+) -> Tuple[str, Optional[str], int, int]:
+    """Render library data and stream net endpoints through a file relation.
 
-    The production mapped netlist is a SQLite-backed mapping.  The old code
-    called ``cells[instance]`` once while discovering primitive ports and a
-    second time while collecting net endpoints.  On a real partition that was
-    roughly two random SQL queries per atom.  Scan the indexed records once,
-    derive both products together, and retain only bounded atom metadata plus
-    the endpoint table required to emit the final nets.
+    Atom and mapped-cell identities are merged in lexical order. Endpoint rows
+    are spooled once, then read by numeric net ID and source order; only one
+    net's fanout is resident while ``design.nets`` is emitted. An omitted
+    ``nets_path`` explicitly materializes the final text for small compatibility
+    callers and differential tests.
     """
 
-    atoms_by_instance = {atom["instance"]: atom for atom in atoms}
-    if len(atoms_by_instance) != len(atoms):
-        raise ValidationError("OpenPARF atom instances are duplicated")
     ports_by_type: Dict[str, Dict[str, str]] = defaultdict(dict)
-    endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
-    seen = set()
-    for instance, cell in _ordered_cell_items(cells):
-        atom = atoms_by_instance.get(instance)
-        if atom is None:
-            continue
-        if not isinstance(cell, Mapping) or cell.get("type") != atom["cell_type"]:
-            raise ValidationError("OpenPARF atom does not match mapped JSON")
-        seen.add(instance)
-        cell_type = atom["cell_type"]
-        for port, direction, bit in _expanded_pins(cell):
-            previous = ports_by_type[cell_type].setdefault(port, direction)
-            if previous != direction:
-                raise ValidationError(
-                    f"primitive {cell_type!r} has inconsistent pin direction"
-                )
-            if isinstance(bit, int) and not isinstance(bit, bool):
-                endpoints[bit].append((names[instance], port, direction))
-    if seen != set(atoms_by_instance):
-        raise ValidationError("mapped JSON does not cover every OpenPARF atom")
-
-    for cell_type in platform_mux_types:
-        ports_by_type.setdefault(cell_type, {}).update({
-            "I0": "input", "I1": "input", "S": "input", "O": "output",
-        })
-    library_blocks = []
-    for cell_type, ports in sorted(ports_by_type.items()):
-        lines = [f"CELL {cell_type}"]
-        for port, direction in sorted(ports.items()):
-            suffix = ""
-            if cell_type in FF_TYPES and port == _FF_CLOCK:
-                suffix = " CLOCK"
-            elif cell_type in FF_TYPES and port == _FF_ENABLE:
-                suffix = " CTRL_CE"
-            elif cell_type in FF_TYPES and port == _FF_SR[cell_type]:
-                suffix = " CTRL_SR"
-            elif cell_type == "CARRY8" and port in {"CI", "CO[7]"}:
-                suffix = " CAS"
-            lines.append(f"  PIN {port} {direction.upper()}{suffix}")
-        lines.append("END CELL")
-        library_blocks.append("\n".join(lines))
-
-    net_lines = []
-    emitted = 0
-    dropped_single_endpoint = 0
-    for _bit, pins in sorted(endpoints.items()):
-        drivers = [pin for pin in pins if pin[2] == "output"]
-        if len(drivers) > 1:
-            raise ValidationError("mapped net has multiple atomic-resource drivers")
-        if len(pins) < 2:
-            dropped_single_endpoint += 1
-            continue
-        ordered = [*drivers, *(pin for pin in pins if pin[2] != "output")]
-        net_lines.append(f"net n{emitted} {len(ordered)}")
-        net_lines.extend(
-            f"  {instance} {port}" for instance, port, _direction in ordered
+    atom_iterator = iter(enumerate(atoms))
+    current = next(atom_iterator, None)
+    with tempfile.TemporaryDirectory(
+        prefix="emuflow-openparf-net-endpoints-"
+    ) as temporary:
+        endpoint_path = Path(temporary) / "endpoints.sqlite"
+        connection = sqlite3.connect(endpoint_path)
+        connection.executescript(
+            """
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=FILE;
+            CREATE TABLE endpoints(
+              net INTEGER NOT NULL,
+              seq INTEGER PRIMARY KEY,
+              instance TEXT NOT NULL,
+              port TEXT NOT NULL,
+              is_driver INTEGER NOT NULL CHECK(is_driver IN (0,1))
+            );
+            """
         )
-        net_lines.append("endnet")
-        emitted += 1
-    return (
-        "\n\n".join(library_blocks) + "\n",
-        "\n".join(net_lines) + "\n",
-        emitted,
-        dropped_single_endpoint,
-    )
+        batch: List[Tuple[int, int, str, str, int]] = []
+        endpoint_seq = 0
+        try:
+            for instance, cell in _ordered_cell_items(cells):
+                if (
+                    isinstance(cell, Mapping)
+                    and cell.get("type") in {"GND", "VCC"}
+                ):
+                    continue
+                if current is None or current[1]["instance"] != instance:
+                    raise ValidationError(
+                        "mapped JSON does not cover every OpenPARF atom"
+                    )
+                atom_index, atom = current
+                if (
+                    not isinstance(cell, Mapping)
+                    or cell.get("type") != atom["cell_type"]
+                ):
+                    raise ValidationError(
+                        "OpenPARF atom does not match mapped JSON"
+                    )
+                cell_type = atom["cell_type"]
+                safe_name = (
+                    f"a{atom_index}"
+                    if isinstance(names, _OrdinalSafeNames)
+                    else names[instance]
+                )
+                for port, direction, bit in _expanded_pins(cell):
+                    previous = ports_by_type[cell_type].setdefault(
+                        port, direction
+                    )
+                    if previous != direction:
+                        raise ValidationError(
+                            f"primitive {cell_type!r} has inconsistent pin direction"
+                        )
+                    if isinstance(bit, int) and not isinstance(bit, bool):
+                        batch.append((
+                            bit, endpoint_seq, safe_name, port,
+                            int(direction == "output"),
+                        ))
+                        endpoint_seq += 1
+                        if len(batch) >= 8192:
+                            connection.executemany(
+                                "INSERT INTO endpoints VALUES (?,?,?,?,?)", batch
+                            )
+                            batch.clear()
+                current = next(atom_iterator, None)
+            if current is not None:
+                raise ValidationError(
+                    "mapped JSON does not cover every OpenPARF atom"
+                )
+            if batch:
+                connection.executemany(
+                    "INSERT INTO endpoints VALUES (?,?,?,?,?)", batch
+                )
+                batch.clear()
+            connection.execute(
+                "CREATE INDEX endpoints_net_order ON endpoints(net,seq)"
+            )
+            connection.commit()
+        except (OverflowError, sqlite3.DatabaseError) as error:
+            raise ValidationError(
+                "OpenPARF endpoint relation cannot represent the mapped netlist"
+            ) from error
+
+        for cell_type in platform_mux_types:
+            ports_by_type.setdefault(cell_type, {}).update({
+                "I0": "input", "I1": "input", "S": "input", "O": "output",
+            })
+        library_blocks = []
+        for cell_type, ports in sorted(ports_by_type.items()):
+            lines = [f"CELL {cell_type}"]
+            for port, direction in sorted(ports.items()):
+                suffix = ""
+                if cell_type in FF_TYPES and port == _FF_CLOCK:
+                    suffix = " CLOCK"
+                elif cell_type in FF_TYPES and port == _FF_ENABLE:
+                    suffix = " CTRL_CE"
+                elif cell_type in FF_TYPES and port == _FF_SR[cell_type]:
+                    suffix = " CTRL_SR"
+                elif cell_type == "CARRY8" and port in {"CI", "CO[7]"}:
+                    suffix = " CAS"
+                lines.append(f"  PIN {port} {direction.upper()}{suffix}")
+            lines.append("END CELL")
+            library_blocks.append("\n".join(lines))
+        library = "\n\n".join(library_blocks) + "\n"
+
+        materialized_path = (
+            Path(temporary) / "design.nets"
+            if nets_path is None else nets_path
+        )
+        materialized_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{materialized_path.name}.",
+            suffix=".tmp",
+            dir=materialized_path.parent,
+        )
+        os.close(descriptor)
+        temporary_output = Path(temporary_name)
+        emitted = 0
+        dropped_single_endpoint = 0
+        try:
+            with temporary_output.open("w", encoding="utf-8") as stream:
+                active_net: Optional[int] = None
+                pins: List[Tuple[str, str, bool]] = []
+
+                def emit_net() -> None:
+                    nonlocal emitted, dropped_single_endpoint
+                    if not pins:
+                        return
+                    if len(pins) < 2:
+                        dropped_single_endpoint += 1
+                        return
+                    drivers = [pin for pin in pins if pin[2]]
+                    if len(drivers) > 1:
+                        raise ValidationError(
+                            "mapped net has multiple atomic-resource drivers"
+                        )
+                    ordered = [
+                        *drivers, *(pin for pin in pins if not pin[2])
+                    ]
+                    stream.write(f"net n{emitted} {len(ordered)}\n")
+                    for instance, port, _is_driver in ordered:
+                        stream.write(f"  {instance} {port}\n")
+                    stream.write("endnet\n")
+                    emitted += 1
+
+                for row in connection.execute(
+                    "SELECT net,instance,port,is_driver FROM endpoints "
+                    "ORDER BY net,seq"
+                ):
+                    net = int(row[0])
+                    if active_net is None:
+                        active_net = net
+                    elif net != active_net:
+                        emit_net()
+                        pins.clear()
+                        active_net = net
+                    pins.append((str(row[1]), str(row[2]), bool(row[3])))
+                emit_net()
+            os.replace(temporary_output, materialized_path)
+        except BaseException:
+            temporary_output.unlink(missing_ok=True)
+            raise
+        finally:
+            connection.close()
+
+        nets = (
+            materialized_path.read_text(encoding="utf-8")
+            if nets_path is None else None
+        )
+        return library, nets, emitted, dropped_single_endpoint
 
 
 def _complete_clock_region_boxes(
@@ -3142,29 +4358,34 @@ def export_xilinx_openparf_atomic(
             raise ValidationError(
                 f"atomic demand {count} exceeds {resource} capacity {capacity[resource]}"
             )
-    names = {
-        atom["instance"]: f"a{index}" for index, atom in enumerate(atoms)
-    }
-    library, nets, net_count, dropped_single_endpoint_nets = (
+    names = _OrdinalSafeNames(atoms)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    library, materialized_nets, net_count, dropped_single_endpoint_nets = (
         _render_library_and_nets(
-            cells, atoms, names, platform_mux_types=mux,
+            cells,
+            atoms,
+            names,
+            platform_mux_types=mux,
+            nets_path=output_dir / "design.nets",
         )
     )
+    if materialized_nets is not None:
+        raise AssertionError("production net export unexpectedly materialized text")
     coordinate_system = device_static["coordinate_system"]
     site_text = _render_sites(device_static, atoms, platform_mux_types=mux)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    node_path = output_dir / "design.nodes"
+    with node_path.open("w", encoding="utf-8") as stream:
+        for index, atom in enumerate(atoms):
+            stream.write(f"a{index} {atom['cell_type']}\n")
     files = {
-        "design.nodes": "".join(
-            f"{names[atom['instance']]} {atom['cell_type']}\n" for atom in atoms
-        ),
         "design.lib": library,
-        "design.nets": nets,
         "design.scl": site_text,
         "design.pl": "",
         "design.aux": "design : design.nodes design.nets design.pl design.scl design.lib\n",
     }
     for name, text in files.items():
         (output_dir / name).write_text(text, encoding="utf-8")
+    file_names = ["design.nodes", "design.nets", *files]
     model_map = {}
     for primitive in sorted(
         {atom["cell_type"] for atom in atoms}, key=_primitive_sort_key
@@ -3732,12 +4953,9 @@ def export_xilinx_openparf_atomic(
     write_json(
         output_dir / "openparf.json", config, compact=True, sort_keys=False
     )
-    name_map = {
+    name_map_header = {
         "schema": OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
         "top": selected_top,
-        "atoms": [
-            {"openparf": names[atom["instance"]], **atom} for atom in atoms
-        ],
         "coordinate_system": {
             "x_axis": coordinate_system["x_axis"],
             "y_axis": coordinate_system["y_axis"],
@@ -3745,18 +4963,33 @@ def export_xilinx_openparf_atomic(
         },
         "site_database": site_database_descriptor,
     }
+    carry_cascade_chains = []
     if has_carry8:
-        name_map["carry_cascade_chains"] = [
+        carry_cascade_chains = [
             chain for chain in packed.get("cascade_chains", [])
             if chain.get("cell_type") == "CARRY8"
         ]
     if hardblock_groups:
-        name_map["physical_macro_constraints"] = {
+        name_map_header["physical_macro_constraints"] = {
             "schema": OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA,
             "file": "physical-macro-groups.json",
             "groups": len(hardblock_groups),
         }
-    write_json(output_dir / "name_map.json", name_map, compact=True)
+    name_map = write_xilinx_openparf_atomic_name_map_storage(
+        output_dir / "name_map.json",
+        header=name_map_header,
+        atoms=(
+            {"openparf": f"a{index}", **atom}
+            for index, atom in enumerate(atoms)
+        ),
+        carry_cascade_chains=carry_cascade_chains,
+        mapped_sha256=_sha256(mapped_path),
+        packed_sha256=_sha256(packed_path),
+        architecture_sha256=_sha256(architecture_path),
+    )
+    name_map_selector = name_map.selector
+    name_map_store_path = name_map.store_path
+    name_map.close()
     manifest = {
         "schema": OPENPARF_ATOMIC_MANIFEST_SCHEMA,
         "status": "pass", "mode": "native-atomic-mixed-resource-qualification",
@@ -3801,6 +5034,25 @@ def export_xilinx_openparf_atomic(
             },
         },
         "runtime_validation": "unverified",
+        "name_map_storage": {
+            "schema": OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA,
+            "logical_sha256": name_map_selector["logical_sha256"],
+            "source": dict(name_map_selector["source"]),
+            "atoms": name_map_selector["counts"]["atoms"],
+            "carry_cascade_chains": name_map_selector["counts"][
+                "carry_cascade_chains"
+            ],
+            "selector": {
+                "file": "name_map.json",
+                "bytes": (output_dir / "name_map.json").stat().st_size,
+                "sha256": _sha256(output_dir / "name_map.json"),
+            },
+            "store": {
+                "file": name_map_store_path.name,
+                "bytes": name_map_store_path.stat().st_size,
+                "sha256": name_map_selector["store_sha256"],
+            },
+        },
         "constraint_policy": {
             "ordinary_slice_clusters_are_repackable": True,
             "singleton_dsp_bram_uram_use_native_sssir_mcf": (
@@ -3833,11 +5085,13 @@ def export_xilinx_openparf_atomic(
             "lut_policy": "8 independent 6LUT BELs; no paired 5LUT use",
         },
         "files": sorted([
-            *files, "openparf.json", "name_map.json", "site-map.sqlite3",
+            *file_names, "openparf.json", "name_map.json", "site-map.sqlite3",
+            name_map_store_path.name,
             *(["physical-macro-groups.json"] if hardblock_groups else []),
         ]),
     }
     write_json(output_dir / "manifest.json", manifest, compact=True)
+    atoms.close()
     return manifest
 
 
@@ -3868,620 +5122,661 @@ def validate_xilinx_openparf_atomic_placement(
     provider_manifest_path: Optional[Path] = None,
     mapped_value: Optional[Mapping[str, Any]] = None,
     architecture: Optional[ArchitectureDB] = None,
+    packed_path: Optional[Path] = None,
+    materialize_result: bool = True,
+    certificate_metadata: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Validate and aggregate native atom placement without fallback."""
 
-    name_map = read_json(name_map_path)
+    mapped_digest = _sha256(mapped_path)
+    packed_digest = _sha256(packed_path) if packed_path is not None else None
+    architecture_digest = _sha256(architecture_path)
+    if (native_constraints_path is None) != (provider_manifest_path is None):
+        raise ValidationError(
+            "OpenPARF placement validation requires both native constraints "
+            "and provider manifest"
+        )
+    name_map = read_xilinx_openparf_atomic_name_map(
+        name_map_path,
+        mapped_sha256=mapped_digest,
+        packed_sha256=packed_digest,
+        architecture_sha256=architecture_digest,
+    )
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     architecture = (
         ArchitectureDB.load(architecture_path)
         if architecture is None else architecture
     )
-    if name_map.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA:
-        raise ValidationError("OpenPARF atomic name map is invalid")
-    _top, module = _select_module(mapped, name_map.get("top"))
-    cells = module.get("cells")
-    if not isinstance(cells, Mapping):
-        raise ValidationError("mapped JSON cells are invalid")
-    atoms = {
-        item["openparf"]: item for item in name_map.get("atoms", [])
-        if isinstance(item, Mapping) and isinstance(item.get("openparf"), str)
-    }
-    if len(atoms) != len(name_map.get("atoms", [])) or not atoms:
-        raise ValidationError("OpenPARF atomic name map has duplicate atoms")
-    raw_placement: Dict[str, Tuple[int, int, int]] = {}
-    with placement_path.open("r", encoding="utf-8") as stream:
-        for line_number, raw in enumerate(stream, start=1):
-            fields = raw.strip().split()
-            if not fields or fields[0].startswith("#"):
-                continue
-            if len(fields) not in {4, 5} or fields[0] not in atoms:
-                raise ImportError(
-                    f"{placement_path}:{line_number}: invalid atomic placement row"
-                )
-            if fields[0] in raw_placement:
-                raise ValidationError("OpenPARF atomic placement duplicates an atom")
-            try:
-                values = [float(value) for value in fields[1:4]]
-            except ValueError as error:
-                raise ImportError("OpenPARF atomic placement is non-numeric") from error
-            if any(
-                not math.isfinite(value) or not value.is_integer()
-                for value in values
-            ):
-                raise ValidationError("OpenPARF atomic placement is not discrete")
-            raw_placement[fields[0]] = tuple(int(value) for value in values)
-    if set(raw_placement) != set(atoms):
-        raise ValidationError("OpenPARF atomic placement does not cover every atom")
-    requested_coordinates = sorted({
-        (x, y) for x, y, _z in raw_placement.values()
-    })
-    site_map = {
-        (item["dense_x"], item["dense_y"]): item
-        for item in load_xilinx_openparf_atomic_sites(
-            name_map_path, coordinates=requested_coordinates
-        )
-    }
-    hardblock_groups = _load_physical_macro_groups(name_map_path, name_map)
-    carry_cascade_chains = name_map.get("carry_cascade_chains", [])
-    if not isinstance(carry_cascade_chains, list) or any(
-        not isinstance(chain, Mapping)
-        or chain.get("cell_type") != "CARRY8"
-        or not isinstance(chain.get("instances"), list)
-        or len(chain["instances"]) < 2
-        for chain in carry_cascade_chains
-    ):
-        raise ValidationError("OpenPARF CARRY8 cascade contract is invalid")
-    native_hardblock_groups = [
-        group for group in hardblock_groups
-        if group.get("resource") in _HARD_RESOURCES.values()
-    ]
-    native = None
-    native_report = None
-    bram_view_by_slot: Dict[Tuple[int, int, str, int], Mapping[str, Any]] = {}
-    if native_hardblock_groups or carry_cascade_chains:
-        if native_constraints_path is None or provider_manifest_path is None:
+    certificate_builder: Optional[_AtomicPlacementCertificateBuilder] = None
+    try:
+        if name_map.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA:
+            raise ValidationError("OpenPARF atomic name map is invalid")
+        if not isinstance(name_map, XilinxOpenparfAtomicNameMapView):
             raise ValidationError(
-                "typed hardblock placement validation requires native constraints"
+                "production OpenPARF placement validation requires the typed "
+                "atomic name map"
             )
-        native, native_report = load_xilinx_native_device_constraints(
-            native_constraints_path,
-            architecture_path=architecture_path,
-            provider_manifest_path=provider_manifest_path,
-        )
-        bram_sites = load_xilinx_openparf_atomic_sites(
-            name_map_path, resources=("RAMB18E2", "RAMB36E2")
-        )
-        bram_candidates = _native_bram_candidates({"sites": bram_sites}, native)
-        dense_by_anchor = {}
-        for entry in bram_sites:
-            dense_x, dense_y = entry["dense_x"], entry["dense_y"]
-            physical = entry.get("physical_sites", {})
-            if not isinstance(physical, Mapping):
-                continue
-            for resource in ("RAMB18E2", "RAMB36E2"):
-                for anchor in physical.get(resource, []):
-                    dense_by_anchor[(resource, anchor)] = (dense_x, dense_y)
-        for resource, candidates in bram_candidates.items():
-            for candidate in candidates:
-                dense = dense_by_anchor.get((resource, candidate["anchor"]))
-                if dense is None:
-                    raise ValidationError("native BRAM candidate has no Bookshelf anchor")
-                key = (dense[0], dense[1], resource, int(candidate["z"]))
-                if key in bram_view_by_slot:
-                    raise ValidationError("native BRAM slot mapping is ambiguous")
-                bram_view_by_slot[key] = candidate
-    placed: Dict[str, Dict[str, Any]] = {}
-    occupied = set()
-    for openparf_name, (x, y, z) in raw_placement.items():
-            site_entry = site_map.get((x, y))
-            if site_entry is None:
-                raise ValidationError("OpenPARF atomic placement uses an unknown site")
-            atom = atoms[openparf_name]
-            cell_type = atom["cell_type"]
-            resource = atom.get("resource")
-            candidate = None
-            resources = site_entry.get("resources")
-            if (
-                not isinstance(resources, Mapping)
-                or (
-                    resource not in {"LUT", "FF", "CARRY8"}
-                    | set(_MUX_RESOURCES.values())
-                    and resources.get(resource, 0) < 1
-                )
-            ):
+        name_map_top = name_map.get("top")
+        hardblock_groups = _load_physical_macro_groups(name_map_path, name_map)
+        carry_cascade_chains = list(name_map.get("carry_cascade_chains", []))
+        placement_index = _IndexedAtomicPlacement(placement_path, name_map)
+    except BaseException:
+        name_map.close()
+        raise
+    try:
+        _top, module = _select_module(mapped, name_map_top)
+        cells = module.get("cells")
+        if not isinstance(cells, Mapping):
+            raise ValidationError("mapped JSON cells are invalid")
+        requested_coordinates = placement_index.requested_coordinates()
+        site_map = {
+            (item["dense_x"], item["dense_y"]): item
+            for item in load_xilinx_openparf_atomic_sites(
+                name_map_path, coordinates=requested_coordinates,
+                mapped_sha256=mapped_digest,
+                packed_sha256=packed_digest,
+                architecture_sha256=architecture_digest,
+            )
+        }
+        if (
+            not isinstance(carry_cascade_chains, Sequence)
+            or isinstance(carry_cascade_chains, (str, bytes))
+            or any(
+            not isinstance(chain, Mapping)
+            or chain.get("cell_type") != "CARRY8"
+            or not isinstance(chain.get("instances"), list)
+            or len(chain["instances"]) < 2
+            for chain in carry_cascade_chains
+            )
+        ):
+            raise ValidationError("OpenPARF CARRY8 cascade contract is invalid")
+        native_hardblock_groups = [
+            group for group in hardblock_groups
+            if group.get("resource") in _HARD_RESOURCES.values()
+        ]
+        native = None
+        native_report = None
+        bram_view_by_slot: Dict[Tuple[int, int, str, int], Mapping[str, Any]] = {}
+        if native_hardblock_groups or carry_cascade_chains:
+            if native_constraints_path is None or provider_manifest_path is None:
                 raise ValidationError(
-                    "OpenPARF atomic placement uses a site without the required resource"
+                    "typed hardblock placement validation requires native constraints"
                 )
-            if resource in {"LUT", "FF"}:
-                if not isinstance(resources, Mapping) or resource not in resources:
+            native, native_report = load_xilinx_native_device_constraints(
+                native_constraints_path,
+                architecture_path=architecture_path,
+                provider_manifest_path=provider_manifest_path,
+            )
+            bram_sites = load_xilinx_openparf_atomic_sites(
+                name_map_path, resources=("RAMB18E2", "RAMB36E2"),
+                mapped_sha256=mapped_digest,
+                packed_sha256=packed_digest,
+                architecture_sha256=architecture_digest,
+            )
+            bram_candidates = _native_bram_candidates({"sites": bram_sites}, native)
+            dense_by_anchor = {}
+            for entry in bram_sites:
+                dense_x, dense_y = entry["dense_x"], entry["dense_y"]
+                physical = entry.get("physical_sites", {})
+                if not isinstance(physical, Mapping):
+                    continue
+                for resource in ("RAMB18E2", "RAMB36E2"):
+                    for anchor in physical.get(resource, []):
+                        dense_by_anchor[(resource, anchor)] = (dense_x, dense_y)
+            for resource, candidates in bram_candidates.items():
+                for candidate in candidates:
+                    dense = dense_by_anchor.get((resource, candidate["anchor"]))
+                    if dense is None:
+                        raise ValidationError("native BRAM candidate has no Bookshelf anchor")
+                    key = (dense[0], dense[1], resource, int(candidate["z"]))
+                    if key in bram_view_by_slot:
+                        raise ValidationError("native BRAM slot mapping is ambiguous")
+                    bram_view_by_slot[key] = candidate
+        try:
+            for atom, (x, y, z) in placement_index.iter_joined():
+                site_entry = site_map.get((x, y))
+                if site_entry is None:
+                    raise ValidationError("OpenPARF atomic placement uses an unknown site")
+                cell_type = atom["cell_type"]
+                resource = atom.get("resource")
+                candidate = None
+                resources = site_entry.get("resources")
+                if (
+                    not isinstance(resources, Mapping)
+                    or (
+                        resource not in {"LUT", "FF", "CARRY8"}
+                        | set(_MUX_RESOURCES.values())
+                        and resources.get(resource, 0) < 1
+                    )
+                ):
                     raise ValidationError(
                         "OpenPARF atomic placement uses a site without the required resource"
                     )
-                bel_name = _slot_bel(resource, z, cell_type)
-            elif resource in _MUX_RESOURCES.values():
-                roles = _MUX_BELS.get(cell_type)
-                if roles is None or z < 0 or z >= len(roles):
-                    raise ValidationError(
-                        "OpenPARF MUX placement uses an invalid BEL slot"
-                    )
-                bel_name = roles[z]
-                physical_sites = site_entry.get("physical_sites", {}).get(resource)
-                if not isinstance(physical_sites, list) or len(physical_sites) != 1:
-                    raise ValidationError(
-                        "OpenPARF MUX placement has no unique physical slice"
-                    )
-                site_name = physical_sites[0]
-            elif resource == "CARRY8":
-                if z != 0 or cell_type != "CARRY8":
-                    raise ValidationError(
-                        "OpenPARF CARRY8 placement uses an invalid resource slot"
-                    )
-                bel_name = "CARRY8"
-                physical_sites = site_entry.get("physical_sites", {}).get(resource)
-                if not isinstance(physical_sites, list) or len(physical_sites) != 1:
-                    raise ValidationError(
-                        "OpenPARF CARRY8 placement has no unique physical slice"
-                    )
-                site_name = physical_sites[0]
-            elif resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot:
-                candidate = bram_view_by_slot.get((x, y, resource, z))
-                if candidate is None:
-                    raise ValidationError(
-                        "OpenPARF BRAM placement uses an uncertified tile view"
-                    )
-                site_name = candidate["site"]
-                bel_name = candidate["bel"]
-            elif resource in _HARD_RESOURCES.values():
-                physical_sites = site_entry.get("physical_sites", {}).get(resource)
-                if (
-                    not isinstance(physical_sites, list)
-                    or z < 0 or z >= len(physical_sites)
-                ):
-                    raise ValidationError(
-                        "OpenPARF hard-resource placement uses an invalid site slot"
-                    )
-                site_name = physical_sites[z]
-                bel_name = None
-            else:
-                raise ValidationError("OpenPARF atomic placement has an unknown resource")
-            if resource in {"LUT", "FF"}:
-                physical_sites = site_entry.get("physical_sites", {}).get(resource)
-                if not isinstance(physical_sites, list) or len(physical_sites) != 1:
-                    raise ValidationError(
-                        "OpenPARF logic placement has no unique physical slice"
-                    )
-                site_name = physical_sites[0]
-            collision = (site_name, resource, z)
-            if collision in occupied:
-                raise ValidationError("OpenPARF atomic placement overlaps a BEL slot")
-            occupied.add(collision)
-            anchor_names = site_entry.get("physical_sites", {}).get(resource)
-            anchor_name = (
-                anchor_names[0]
-                if resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot
-                and isinstance(anchor_names, list) and len(anchor_names) == 1
-                else site_name
-            )
-            site = architecture.site_named(anchor_name)
-            compatible = [
-                bel for bel in site["bels"]
-                if cell_type in bel["compatible_cells"]
-                and (bel_name is None or bel["name"] == bel_name)
-            ] if site is not None else []
-            if len(compatible) != 1:
-                raise ValidationError(
-                    "OpenPARF atomic placement has no unique compatible physical BEL"
-                )
-            physical_bel = compatible[0]
-            placed[openparf_name] = {
-                **atom, "site": site_name, "resource": resource, "z": z,
-                "x": site_entry["placement_x"],
-                "y": site_entry["placement_y"],
-                "bel": physical_bel["name"],
-                "placement_mode": (
-                    candidate["placement_mode"]
-                    if resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot
-                    else physical_bel.get("placement_mode", site["type"])
-                ),
-                "anchor_site": anchor_name,
-                "bram_tile_group": (
-                    {
-                        "anchor": candidate["anchor"],
-                        "claims": list(candidate["claims"]),
-                        "role": candidate["role"],
-                        "tile": candidate["tile"],
-                    }
-                    if candidate is not None else None
-                ),
-            }
-
-    checked_native_edges = 0
-    if hardblock_groups:
-        family_for_resource = {
-            "DSP48E2": "DSP_CASCADE", "RAMB36E2": "BRAM_CASCADE",
-            "URAM288": "URAM_CASCADE",
-        }
-        native_families = {
-            family.get("kind"): family
-            for family in (
-                native.get("payload", {}).get("dedicated_adjacency", [])
-                if native is not None else []
-            )
-            if isinstance(family, Mapping)
-        }
-        by_source_instance = {
-            item["instance"]: item for item in placed.values()
-        }
-        covered = set()
-        occupied_claims = set()
-        for group in hardblock_groups:
-            if not isinstance(group, Mapping):
-                raise ValidationError("typed hardblock group is invalid")
-            resource = group.get("resource")
-            instances = group.get("source_instances")
-            if (
-                resource not in set(_HARD_RESOURCES.values()) | {"SLICE_MACRO"}
-                or not isinstance(instances, list)
-            ):
-                raise ValidationError("typed hardblock group header is invalid")
-            if covered.intersection(instances):
-                raise ValidationError("typed hardblock placement ownership overlaps")
-            covered.update(instances)
-            try:
-                selected = [by_source_instance[name] for name in instances]
-            except KeyError as error:
-                raise ValidationError(
-                    "typed hardblock group references an unknown instance"
-                ) from error
-            template = group.get("window_template")
-            chain_template = group.get("chain_template")
-            if group.get("kind") == "site_cascade" and chain_template is not None:
-                unit_members = (
-                    chain_template.get("unit_members")
-                    if isinstance(chain_template, Mapping) else None
-                )
-                chain_length = (
-                    chain_template.get("chain_length")
-                    if isinstance(chain_template, Mapping) else None
-                )
-                chain_set = group.get("site_chain_set")
-                if (
-                    not isinstance(chain_template, Mapping)
-                    or chain_template.get("kind") != "directed-site-chain/v1"
-                    or not isinstance(unit_members, list)
-                    or not unit_members
-                    or not isinstance(chain_length, int)
-                    or isinstance(chain_length, bool)
-                    or chain_length < 2
-                    or len(selected) != chain_length * len(unit_members)
-                    or not isinstance(chain_set, Mapping)
-                ):
-                    raise ValidationError(
-                        "OpenPARF site cascade has an invalid compact template"
-                    )
-                units = [
-                    selected[index:index + len(unit_members)]
-                    for index in range(0, len(selected), len(unit_members))
-                ]
-                unit_sites = []
-                for unit in units:
+                if resource in {"LUT", "FF"}:
+                    if not isinstance(resources, Mapping) or resource not in resources:
+                        raise ValidationError(
+                            "OpenPARF atomic placement uses a site without the required resource"
+                        )
+                    bel_name = _slot_bel(resource, z, cell_type)
+                elif resource in _MUX_RESOURCES.values():
+                    roles = _MUX_BELS.get(cell_type)
+                    if roles is None or z < 0 or z >= len(roles):
+                        raise ValidationError(
+                            "OpenPARF MUX placement uses an invalid BEL slot"
+                        )
+                    bel_name = roles[z]
+                    physical_sites = site_entry.get("physical_sites", {}).get(resource)
+                    if not isinstance(physical_sites, list) or len(physical_sites) != 1:
+                        raise ValidationError(
+                            "OpenPARF MUX placement has no unique physical slice"
+                        )
+                    site_name = physical_sites[0]
+                elif resource == "CARRY8":
+                    if z != 0 or cell_type != "CARRY8":
+                        raise ValidationError(
+                            "OpenPARF CARRY8 placement uses an invalid resource slot"
+                        )
+                    bel_name = "CARRY8"
+                    physical_sites = site_entry.get("physical_sites", {}).get(resource)
+                    if not isinstance(physical_sites, list) or len(physical_sites) != 1:
+                        raise ValidationError(
+                            "OpenPARF CARRY8 placement has no unique physical slice"
+                        )
+                    site_name = physical_sites[0]
+                elif resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot:
+                    candidate = bram_view_by_slot.get((x, y, resource, z))
+                    if candidate is None:
+                        raise ValidationError(
+                            "OpenPARF BRAM placement uses an uncertified tile view"
+                        )
+                    site_name = candidate["site"]
+                    bel_name = candidate["bel"]
+                elif resource in _HARD_RESOURCES.values():
+                    physical_sites = site_entry.get("physical_sites", {}).get(resource)
                     if (
-                        len({item["site"] for item in unit}) != 1
+                        not isinstance(physical_sites, list)
+                        or z < 0 or z >= len(physical_sites)
+                    ):
+                        raise ValidationError(
+                            "OpenPARF hard-resource placement uses an invalid site slot"
+                        )
+                    site_name = physical_sites[z]
+                    bel_name = None
+                else:
+                    raise ValidationError("OpenPARF atomic placement has an unknown resource")
+                if resource in {"LUT", "FF"}:
+                    physical_sites = site_entry.get("physical_sites", {}).get(resource)
+                    if not isinstance(physical_sites, list) or len(physical_sites) != 1:
+                        raise ValidationError(
+                            "OpenPARF logic placement has no unique physical slice"
+                        )
+                    site_name = physical_sites[0]
+                placement_index.claim_occupancy(site_name, resource, z)
+                anchor_names = site_entry.get("physical_sites", {}).get(resource)
+                anchor_name = (
+                    anchor_names[0]
+                    if resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot
+                    and isinstance(anchor_names, list) and len(anchor_names) == 1
+                    else site_name
+                )
+                site = architecture.site_named(anchor_name)
+                compatible = [
+                    bel for bel in site["bels"]
+                    if cell_type in bel["compatible_cells"]
+                    and (bel_name is None or bel["name"] == bel_name)
+                ] if site is not None else []
+                if len(compatible) != 1:
+                    raise ValidationError(
+                        "OpenPARF atomic placement has no unique compatible physical BEL"
+                    )
+                physical_bel = compatible[0]
+                placement_index.append_normalized(
+                    atom,
+                    z=z,
+                    x=site_entry["placement_x"],
+                    y=site_entry["placement_y"],
+                    site=site_name,
+                    anchor_site=anchor_name,
+                    bel=physical_bel["name"],
+                    placement_mode=(
+                        candidate["placement_mode"]
+                        if resource in {"RAMB18E2", "RAMB36E2"} and bram_view_by_slot
+                        else physical_bel.get("placement_mode", site["type"])
+                    ),
+                    bram_tile_group=(
+                        {
+                            "anchor": candidate["anchor"],
+                            "claims": list(candidate["claims"]),
+                            "role": candidate["role"],
+                            "tile": candidate["tile"],
+                        }
+                        if candidate is not None else None
+                    ),
+                )
+        except BaseException:
+            raise
+
+        checked_native_edges = 0
+        if hardblock_groups:
+            family_for_resource = {
+                "DSP48E2": "DSP_CASCADE", "RAMB36E2": "BRAM_CASCADE",
+                "URAM288": "URAM_CASCADE",
+            }
+            native_families = {
+                family.get("kind"): family
+                for family in (
+                    native.get("payload", {}).get("dedicated_adjacency", [])
+                    if native is not None else []
+                )
+                if isinstance(family, Mapping)
+            }
+            covered = set()
+            occupied_claims = set()
+            for group in hardblock_groups:
+                if not isinstance(group, Mapping):
+                    raise ValidationError("typed hardblock group is invalid")
+                resource = group.get("resource")
+                instances = group.get("source_instances")
+                if (
+                    resource not in set(_HARD_RESOURCES.values()) | {"SLICE_MACRO"}
+                    or not isinstance(instances, list)
+                ):
+                    raise ValidationError("typed hardblock group header is invalid")
+                if covered.intersection(instances):
+                    raise ValidationError("typed hardblock placement ownership overlaps")
+                covered.update(instances)
+                try:
+                    selected = placement_index.instances(instances)
+                except KeyError as error:
+                    raise ValidationError(
+                        "typed hardblock group references an unknown instance"
+                    ) from error
+                template = group.get("window_template")
+                chain_template = group.get("chain_template")
+                if group.get("kind") == "site_cascade" and chain_template is not None:
+                    unit_members = (
+                        chain_template.get("unit_members")
+                        if isinstance(chain_template, Mapping) else None
+                    )
+                    chain_length = (
+                        chain_template.get("chain_length")
+                        if isinstance(chain_template, Mapping) else None
+                    )
+                    chain_set = group.get("site_chain_set")
+                    if (
+                        not isinstance(chain_template, Mapping)
+                        or chain_template.get("kind") != "directed-site-chain/v1"
+                        or not isinstance(unit_members, list)
+                        or not unit_members
+                        or not isinstance(chain_length, int)
+                        or isinstance(chain_length, bool)
+                        or chain_length < 2
+                        or len(selected) != chain_length * len(unit_members)
+                        or not isinstance(chain_set, Mapping)
+                    ):
+                        raise ValidationError(
+                            "OpenPARF site cascade has an invalid compact template"
+                        )
+                    units = [
+                        selected[index:index + len(unit_members)]
+                        for index in range(0, len(selected), len(unit_members))
+                    ]
+                    unit_sites = []
+                    for unit in units:
+                        if (
+                            len({item["site"] for item in unit}) != 1
+                            or not all(
+                                member.get("resource") == item["resource"]
+                                and member.get("bel") == item["bel"]
+                                and isinstance(member.get("z"), (int, float))
+                                and not isinstance(member.get("z"), bool)
+                                and float(member["z"]) == float(item["z"])
+                                for member, item in zip(unit_members, unit)
+                            )
+                        ):
+                            raise ValidationError(
+                                "OpenPARF site cascade unit violates its slice template"
+                            )
+                        unit_sites.append(unit[0]["site"])
+                    matching_chains = sum(
+                        chain[start:start + chain_length] == unit_sites
+                        for chain in chain_set["chains"]
+                        for start in range(len(chain) - chain_length + 1)
+                    )
+                    if matching_chains != 1:
+                        raise ValidationError(
+                            "OpenPARF site cascade does not match one directed site window"
+                        )
+                    selected_window = [
+                        {
+                            **dict(member), "site": item["site"],
+                            "x": item["x"], "y": item["y"],
+                            "claims": _site_claim(item["site"]),
+                        }
+                        for unit in units
+                        for member, item in zip(unit_members, unit)
+                    ]
+                elif group.get("kind") == "site_macro" and template is not None:
+                    members = (
+                        template.get("members")
+                        if isinstance(template, Mapping) else None
+                    )
+                    if (
+                        not isinstance(template, Mapping)
+                        or template.get("kind") != "same-site-slice/v1"
+                        or template.get("site_resource") != "LUT"
+                        or not isinstance(group.get("window_count"), int)
+                        or isinstance(group.get("window_count"), bool)
+                        or group["window_count"] <= 0
+                        or not isinstance(members, list)
+                        or len(members) != len(selected)
+                        or not all(isinstance(member, Mapping) for member in members)
+                        or len({item["site"] for item in selected}) != 1
                         or not all(
                             member.get("resource") == item["resource"]
                             and member.get("bel") == item["bel"]
                             and isinstance(member.get("z"), (int, float))
                             and not isinstance(member.get("z"), bool)
                             and float(member["z"]) == float(item["z"])
-                            for member, item in zip(unit_members, unit)
+                            for member, item in zip(members, selected)
                         )
                     ):
                         raise ValidationError(
-                            "OpenPARF site cascade unit violates its slice template"
+                            "OpenPARF site macro does not match its compact window template"
                         )
-                    unit_sites.append(unit[0]["site"])
-                matching_chains = sum(
-                    chain[start:start + chain_length] == unit_sites
-                    for chain in chain_set["chains"]
-                    for start in range(len(chain) - chain_length + 1)
-                )
-                if matching_chains != 1:
-                    raise ValidationError(
-                        "OpenPARF site cascade does not match one directed site window"
-                    )
-                selected_window = [
-                    {
-                        **dict(member), "site": item["site"],
-                        "x": item["x"], "y": item["y"],
-                        "claims": _site_claim(item["site"]),
-                    }
-                    for unit in units
-                    for member, item in zip(unit_members, unit)
-                ]
-            elif group.get("kind") == "site_macro" and template is not None:
-                members = (
-                    template.get("members")
-                    if isinstance(template, Mapping) else None
-                )
-                if (
-                    not isinstance(template, Mapping)
-                    or template.get("kind") != "same-site-slice/v1"
-                    or template.get("site_resource") != "LUT"
-                    or not isinstance(group.get("window_count"), int)
-                    or isinstance(group.get("window_count"), bool)
-                    or group["window_count"] <= 0
-                    or not isinstance(members, list)
-                    or len(members) != len(selected)
-                    or not all(isinstance(member, Mapping) for member in members)
-                    or len({item["site"] for item in selected}) != 1
-                    or not all(
-                        member.get("resource") == item["resource"]
-                        and member.get("bel") == item["bel"]
-                        and isinstance(member.get("z"), (int, float))
-                        and not isinstance(member.get("z"), bool)
-                        and float(member["z"]) == float(item["z"])
+                    selected_window = [
+                        {
+                            **dict(member), "site": item["site"],
+                            "x": item["x"], "y": item["y"],
+                            "claims": _site_claim(item["site"]),
+                        }
                         for member, item in zip(members, selected)
-                    )
-                ):
-                    raise ValidationError(
-                        "OpenPARF site macro does not match its compact window template"
-                    )
-                selected_window = [
-                    {
-                        **dict(member), "site": item["site"],
-                        "x": item["x"], "y": item["y"],
-                        "claims": _site_claim(item["site"]),
-                    }
-                    for member, item in zip(members, selected)
-                ]
-            else:
-                matching_windows = []
-                for window in group.get("windows", []):
-                    if not isinstance(window, list) or len(window) != len(selected):
-                        continue
-                    if not all(isinstance(entry, Mapping) for entry in window):
-                        continue
-                    if all(
-                        entry.get("site") == item["site"]
-                        and isinstance(entry.get("z"), (int, float))
-                        and not isinstance(entry.get("z"), bool)
-                        and float(entry["z"]) == float(item["z"])
-                        for entry, item in zip(window, selected)
-                    ):
-                        matching_windows.append(window)
-                if len(matching_windows) != 1:
-                    raise ValidationError(
-                        "OpenPARF typed hardblock placement does not match exactly "
-                        "one certified window"
-                    )
-                selected_window = matching_windows[0]
-            claims = []
-            for entry in selected_window:
-                raw_claims = entry.get("claims")
-                if (
-                    not isinstance(raw_claims, list) or not raw_claims
-                    or not all(isinstance(claim, str) and claim for claim in raw_claims)
-                ):
-                    raise ValidationError(
-                        "OpenPARF typed hardblock window has invalid occupancy claims"
-                    )
-                claims.extend(raw_claims)
-            unique_claims = set(claims)
-            internally_valid = (
-                group.get("kind") == "site_macro"
-                and len({item["site"] for item in selected}) == 1
-                and unique_claims == {"site:" + selected[0]["site"]}
-            ) or (
-                group.get("kind") == "site_cascade"
-                and unique_claims == {"site:" + site for site in unit_sites}
-                and len(unit_sites) == len(set(unit_sites))
-            ) or len(claims) == len(unique_claims)
-            if not internally_valid or occupied_claims.intersection(unique_claims):
-                raise ValidationError(
-                    "OpenPARF typed hardblock placement has conflicting occupancy claims"
-                )
-            occupied_claims.update(unique_claims)
-            sites = [item["site"] for item in selected]
-            if group.get("kind") == "cascade" and len(instances) > 1:
-                assert native is not None and native_report is not None
-                if resource not in family_for_resource:
-                    raise ValidationError(
-                        "typed hardblock cascade uses an unqualified resource"
-                    )
-                kind = family_for_resource[resource]
-                require_xilinx_native_constraint_capability(
-                    native_report, "dedicated_adjacency." + kind
-                )
-                family = native_families.get(kind, {})
-                native_edges = {
-                    edge
-                    for chain in family.get("chains", [])
-                    for edge in zip(chain, chain[1:])
-                }
-                for edge in zip(sites, sites[1:]):
-                    if edge not in native_edges:
+                    ]
+                else:
+                    matching_windows = []
+                    for window in group.get("windows", []):
+                        if not isinstance(window, list) or len(window) != len(selected):
+                            continue
+                        if not all(isinstance(entry, Mapping) for entry in window):
+                            continue
+                        if all(
+                            entry.get("site") == item["site"]
+                            and isinstance(entry.get("z"), (int, float))
+                            and not isinstance(entry.get("z"), bool)
+                            and float(entry["z"]) == float(item["z"])
+                            for entry, item in zip(window, selected)
+                        ):
+                            matching_windows.append(window)
+                    if len(matching_windows) != 1:
                         raise ValidationError(
-                            "OpenPARF typed hardblock chain violates native adjacency"
+                            "OpenPARF typed hardblock placement does not match exactly "
+                            "one certified window"
                         )
-                    checked_native_edges += 1
-        has_site_macro_groups = any(
-            group.get("kind") in {"site_macro", "site_cascade"}
-            for group in hardblock_groups
-        )
-        derived_macro_contract = (
-            build_xilinx_physical_macro_contract(
-                mapped_path, top=name_map.get("top"), source=mapped
-            )
-            if has_site_macro_groups else {"site_macros": []}
-        )
-        expected_mux_members = {
-            member["instance"]
-            for macro in derived_macro_contract.get("site_macros", [])
-            if macro.get("kind") in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
-            for member in macro.get("members", [])
-        }
-        expected_carry_members = {
-            member["instance"]
-            for macro in derived_macro_contract.get("site_macros", [])
-            if macro.get("kind") == "carry8-lut6_2"
-            for member in macro.get("members", [])
-        }
-        expected = {
-            item["instance"] for item in placed.values()
-            if item["resource"] in _HARD_RESOURCES.values()
-        } | expected_mux_members | expected_carry_members
-        if covered != expected:
-            raise ValidationError("typed hardblock placement coverage is incomplete")
-
-    checked_carry_edges = 0
-    if carry_cascade_chains:
-        assert native is not None and native_report is not None
-        require_xilinx_native_constraint_capability(
-            native_report, "dedicated_adjacency.CARRY_NEXT"
-        )
-        carry_family = next((
-            family
-            for family in native.get("payload", {}).get("dedicated_adjacency", [])
-            if isinstance(family, Mapping) and family.get("kind") == "CARRY_NEXT"
-        ), None)
-        if not isinstance(carry_family, Mapping):
-            raise ValidationError("native constraints contain no CARRY_NEXT family")
-        native_carry_edges = {
-            edge for chain in carry_family.get("chains", [])
-            if isinstance(chain, list) for edge in zip(chain, chain[1:])
-        }
-        by_instance = {item["instance"]: item for item in placed.values()}
-        for chain in carry_cascade_chains:
-            instances = chain["instances"]
-            try:
-                sites = [by_instance[name]["site"] for name in instances]
-            except KeyError as error:
-                raise ValidationError(
-                    "CARRY8 cascade references an unknown placed instance"
-                ) from error
-            for edge in zip(sites, sites[1:]):
-                if edge not in native_carry_edges:
+                    selected_window = matching_windows[0]
+                claims = []
+                for entry in selected_window:
+                    raw_claims = entry.get("claims")
+                    if (
+                        not isinstance(raw_claims, list) or not raw_claims
+                        or not all(isinstance(claim, str) and claim for claim in raw_claims)
+                    ):
+                        raise ValidationError(
+                            "OpenPARF typed hardblock window has invalid occupancy claims"
+                        )
+                    claims.extend(raw_claims)
+                unique_claims = set(claims)
+                internally_valid = (
+                    group.get("kind") == "site_macro"
+                    and len({item["site"] for item in selected}) == 1
+                    and unique_claims == {"site:" + selected[0]["site"]}
+                ) or (
+                    group.get("kind") == "site_cascade"
+                    and unique_claims == {"site:" + site for site in unit_sites}
+                    and len(unit_sites) == len(set(unit_sites))
+                ) or len(claims) == len(unique_claims)
+                if not internally_valid or occupied_claims.intersection(unique_claims):
                     raise ValidationError(
-                        "OpenPARF CARRY8 chain "
-                        f"{chain.get('id')!r} violates native adjacency at "
-                        f"{edge!r}; placed sites are {sites!r}"
+                        "OpenPARF typed hardblock placement has conflicting occupancy claims"
                     )
-                checked_carry_edges += 1
+                occupied_claims.update(unique_claims)
+                sites = [item["site"] for item in selected]
+                if group.get("kind") == "cascade" and len(instances) > 1:
+                    assert native is not None and native_report is not None
+                    if resource not in family_for_resource:
+                        raise ValidationError(
+                            "typed hardblock cascade uses an unqualified resource"
+                        )
+                    kind = family_for_resource[resource]
+                    require_xilinx_native_constraint_capability(
+                        native_report, "dedicated_adjacency." + kind
+                    )
+                    family = native_families.get(kind, {})
+                    native_edges = {
+                        edge
+                        for chain in family.get("chains", [])
+                        for edge in zip(chain, chain[1:])
+                    }
+                    for edge in zip(sites, sites[1:]):
+                        if edge not in native_edges:
+                            raise ValidationError(
+                                "OpenPARF typed hardblock chain violates native adjacency"
+                            )
+                        checked_native_edges += 1
+            has_site_macro_groups = any(
+                group.get("kind") in {"site_macro", "site_cascade"}
+                for group in hardblock_groups
+            )
+            derived_macro_contract = (
+                build_xilinx_physical_macro_contract(
+                    mapped_path, top=name_map_top, source=mapped
+                )
+                if has_site_macro_groups else {"site_macros": []}
+            )
+            expected_mux_members = {
+                member["instance"]
+                for macro in derived_macro_contract.get("site_macros", [])
+                if macro.get("kind") in {"muxf7-cone", "muxf8-cone", "muxf9-cone"}
+                for member in macro.get("members", [])
+            }
+            expected_carry_members = {
+                member["instance"]
+                for macro in derived_macro_contract.get("site_macros", [])
+                if macro.get("kind") == "carry8-lut6_2"
+                for member in macro.get("members", [])
+            }
+            expected = (
+                placement_index.hard_resource_instances()
+                | expected_mux_members | expected_carry_members
+            )
+            if covered != expected:
+                raise ValidationError("typed hardblock placement coverage is incomplete")
 
-    by_site: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for item in placed.values():
-        by_site[item["anchor_site"]].append(item)
-    for site_name, items in by_site.items():
-        if sum(item["resource"] == "LUT" for item in items) > 8:
-            raise ValidationError(f"site {site_name!r} exceeds physical LUT capacity")
-        if sum(item["resource"] == "FF" for item in items) > 16:
-            raise ValidationError(f"site {site_name!r} exceeds physical FF capacity")
-        carry_items = [item for item in items if item["resource"] == "CARRY8"]
-        if carry_items:
-            if (
-                len(carry_items) != 1
-                or len(items) != 9
-                or Counter(item["cell_type"] for item in items)
-                != Counter({"CARRY8": 1, DUAL_OUTPUT_LUT_TYPE: 8})
-                or {item["bel"] for item in items}
-                != {"CARRY8", *{f"{letter}6LUT" for letter in "ABCDEFGH"}}
+        checked_carry_edges = 0
+        if carry_cascade_chains:
+            assert native is not None and native_report is not None
+            require_xilinx_native_constraint_capability(
+                native_report, "dedicated_adjacency.CARRY_NEXT"
+            )
+            carry_family = next((
+                family
+                for family in native.get("payload", {}).get("dedicated_adjacency", [])
+                if isinstance(family, Mapping) and family.get("kind") == "CARRY_NEXT"
+            ), None)
+            if not isinstance(carry_family, Mapping):
+                raise ValidationError("native constraints contain no CARRY_NEXT family")
+            native_carry_edges = {
+                edge for chain in carry_family.get("chains", [])
+                if isinstance(chain, list) for edge in zip(chain, chain[1:])
+            }
+            for chain in carry_cascade_chains:
+                instances = chain["instances"]
+                try:
+                    sites = [
+                        item["site"] for item in placement_index.instances(instances)
+                    ]
+                except KeyError as error:
+                    raise ValidationError(
+                        "CARRY8 cascade references an unknown placed instance"
+                    ) from error
+                for edge in zip(sites, sites[1:]):
+                    if edge not in native_carry_edges:
+                        raise ValidationError(
+                            "OpenPARF CARRY8 chain "
+                            f"{chain.get('id')!r} violates native adjacency at "
+                            f"{edge!r}; placed sites are {sites!r}"
+                        )
+                    checked_carry_edges += 1
+
+        clusters: list[Dict[str, Any]] = []
+        if output_path is not None and not materialize_result:
+            certificate_builder = _AtomicPlacementCertificateBuilder(output_path)
+        for site_name, items in placement_index.iter_site_groups():
+            if sum(item["resource"] == "LUT" for item in items) > 8:
+                raise ValidationError(f"site {site_name!r} exceeds physical LUT capacity")
+            if sum(item["resource"] == "FF" for item in items) > 16:
+                raise ValidationError(f"site {site_name!r} exceeds physical FF capacity")
+            carry_items = [item for item in items if item["resource"] == "CARRY8"]
+            if carry_items:
+                if (
+                    len(carry_items) != 1
+                    or len(items) != 9
+                    or Counter(item["cell_type"] for item in items)
+                    != Counter({"CARRY8": 1, DUAL_OUTPUT_LUT_TYPE: 8})
+                    or {item["bel"] for item in items}
+                    != {"CARRY8", *{f"{letter}6LUT" for letter in "ABCDEFGH"}}
+                ):
+                    raise ValidationError(
+                        f"site {site_name!r} does not contain one exclusive full-slice "
+                        "CARRY8/LUT6_2 macro"
+                    )
+            hard_items = [
+                item for item in items if item["resource"] in _HARD_RESOURCES.values()
+            ]
+            ramb18_items = [
+                item for item in hard_items if item["resource"] == "RAMB18E2"
+            ]
+            if len(hard_items) > 1 and (
+                len(hard_items) != len(ramb18_items)
+                or len(ramb18_items) > 2
+                or len({item["bel"] for item in ramb18_items}) != len(ramb18_items)
             ):
                 raise ValidationError(
-                    f"site {site_name!r} does not contain one exclusive full-slice "
-                    "CARRY8/LUT6_2 macro"
+                    f"site {site_name!r} has incompatible hard-resource occupancy"
                 )
-        hard_items = [
-            item for item in items if item["resource"] in _HARD_RESOURCES.values()
-        ]
-        ramb18_items = [
-            item for item in hard_items if item["resource"] == "RAMB18E2"
-        ]
-        if len(hard_items) > 1 and (
-            len(hard_items) != len(ramb18_items)
-            or len(ramb18_items) > 2
-            or len({item["bel"] for item in ramb18_items}) != len(ramb18_items)
-        ):
-            raise ValidationError(
-                f"site {site_name!r} has incompatible hard-resource occupancy"
-            )
-        half_cksr: Dict[int, Tuple[Any, Any]] = {}
-        quarter_ce: Dict[Tuple[int, int], Any] = {}
-        for item in items:
-            if item["resource"] != "FF":
-                continue
-            clock, sr, enable = _control_tuple(
-                item["cell_type"], cells[item["instance"]]
-            )
-            half = 0 if item["z"] < 8 else 1
-            quarter = (half, item["z"] % 2)
-            previous_cksr = half_cksr.setdefault(half, (clock, sr))
-            previous_ce = quarter_ce.setdefault(quarter, enable)
-            if previous_cksr != (clock, sr) or previous_ce != enable:
-                raise ValidationError(
-                    f"site {site_name!r} violates native FF control-set legality"
+            half_cksr: Dict[int, Tuple[Any, Any]] = {}
+            quarter_ce: Dict[Tuple[int, int], Any] = {}
+            for item in items:
+                if item["resource"] != "FF":
+                    continue
+                clock, sr, enable = _control_tuple(
+                    item["cell_type"], cells[item["instance"]]
                 )
-
-    clusters = []
-    for site_name, items in sorted(by_site.items()):
-        site = architecture.site_named(site_name)
-        clusters.append({
-            "cluster": f"openparf:{site_name}", "site": site_name,
-            "site_type": site["type"], "x": site["x"], "y": site["y"],
-            "assignments": [
-                {
-                    "instance": item["instance"],
-                    "cell_type": item["cell_type"], "bel": item["bel"],
-                    "placement_mode": item["placement_mode"],
-                    "physical_site": item["site"],
-                    "bram_tile_group": item["bram_tile_group"],
-                    "source_cluster": item["source_cluster"],
-                }
-                for item in sorted(items, key=lambda value: value["instance"])
-            ],
-        })
-    result = {
-        "schema": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
-        "status": "pass", "part": architecture.part,
-        "provider": OPENPARF_ATOMIC_PROVIDER,
-        "runtime_validation": "unverified",
-        "source": {
-            "native_placement_sha256": _sha256(placement_path),
-            "name_map_sha256": _sha256(name_map_path),
-            "mapped_sha256": _sha256(mapped_path),
-            "architecture_sha256": _sha256(architecture_path),
-        },
-        "clusters": clusters,
-        "summary": {
-            "atoms": len(placed), "occupied_sites": len(clusters),
-            "luts": sum(item["resource"] == "LUT" for item in placed.values()),
-            "ffs": sum(item["resource"] == "FF" for item in placed.values()),
-            "hard_resources": dict(sorted(Counter(
-                item["resource"] for item in placed.values()
-                if item["resource"] in _HARD_RESOURCES.values()
-            ).items())),
-        },
-    }
-    carry8_macro_count = sum(
-        item["resource"] == "CARRY8" for item in placed.values()
-    )
-    if carry8_macro_count:
-        result["summary"]["carry8_macros"] = carry8_macro_count
-    if checked_carry_edges:
-        result["summary"]["native_carry_edges"] = checked_carry_edges
-    if hardblock_groups:
-        if native_hardblock_groups or carry_cascade_chains:
-            assert native_constraints_path is not None
+                half = 0 if item["z"] < 8 else 1
+                quarter = (half, item["z"] % 2)
+                previous_cksr = half_cksr.setdefault(half, (clock, sr))
+                previous_ce = quarter_ce.setdefault(quarter, enable)
+                if previous_cksr != (clock, sr) or previous_ce != enable:
+                    raise ValidationError(
+                        f"site {site_name!r} violates native FF control-set legality"
+                    )
+            site = architecture.site_named(site_name)
+            cluster = {
+                "cluster": f"openparf:{site_name}", "site": site_name,
+                "site_type": site["type"], "x": site["x"], "y": site["y"],
+                "assignments": [
+                    {
+                        "instance": item["instance"],
+                        "cell_type": item["cell_type"], "bel": item["bel"],
+                        "placement_mode": item["placement_mode"],
+                        "physical_site": item["site"],
+                        "bram_tile_group": item["bram_tile_group"],
+                        "source_cluster": item["source_cluster"],
+                    }
+                    for item in sorted(items, key=lambda value: value["instance"])
+                ],
+            }
+            if certificate_builder is not None:
+                certificate_builder.append(cluster)
+            else:
+                clusters.append(cluster)
+        atom_count, resource_counts = placement_index.summary()
+        result = {
+            "schema": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
+            "status": "pass", "part": architecture.part,
+            "provider": OPENPARF_ATOMIC_PROVIDER,
+            "runtime_validation": "unverified",
+            "source": {
+                "native_placement_sha256": _sha256(placement_path),
+                "name_map_sha256": _sha256(name_map_path),
+                "mapped_sha256": _sha256(mapped_path),
+                "architecture_sha256": _sha256(architecture_path),
+            },
+            "summary": {
+                "atoms": atom_count,
+                "occupied_sites": (
+                    certificate_builder.cluster_count
+                    if certificate_builder is not None else len(clusters)
+                ),
+                "luts": resource_counts["LUT"],
+                "ffs": resource_counts["FF"],
+                "hard_resources": dict(sorted(
+                    (resource, resource_counts[resource])
+                    for resource in _HARD_RESOURCES.values()
+                    if resource_counts[resource]
+                )),
+            },
+        }
+        carry8_macro_count = resource_counts["CARRY8"]
+        if carry8_macro_count:
+            result["summary"]["carry8_macros"] = carry8_macro_count
+        if packed_digest is not None:
+            result["source"]["packed_sha256"] = packed_digest
+        if native_constraints_path is not None:
             assert provider_manifest_path is not None
             result["source"].update({
                 "native_constraints_sha256": _sha256(native_constraints_path),
                 "provider_manifest_sha256": _sha256(provider_manifest_path),
             })
-        if checked_native_edges:
-            result["summary"]["native_hardblock_edges"] = checked_native_edges
-    if output_path is not None:
-        write_xilinx_openparf_atomic_placement_certificate(output_path, result)
-    return result
+        if checked_carry_edges:
+            result["summary"]["native_carry_edges"] = checked_carry_edges
+        if hardblock_groups:
+            if native_hardblock_groups or carry_cascade_chains:
+                assert native_constraints_path is not None
+                assert provider_manifest_path is not None
+            if checked_native_edges:
+                result["summary"]["native_hardblock_edges"] = checked_native_edges
+        if certificate_metadata is not None:
+            if (
+                not isinstance(certificate_metadata, Mapping)
+                or set(certificate_metadata)
+                - {
+                    "ff_control_legalization", "native_convergence",
+                    "runtime_validation",
+                }
+                or (
+                    "runtime_validation" in certificate_metadata
+                    and certificate_metadata["runtime_validation"]
+                    not in {"unverified", "native-openparf"}
+                )
+            ):
+                raise ValidationError(
+                    "OpenPARF placement-certificate metadata is invalid"
+                )
+            result.update(certificate_metadata)
+        if certificate_builder is not None:
+            result = certificate_builder.publish(result)
+            certificate_builder = None
+        else:
+            result["clusters"] = clusters
+            if output_path is not None:
+                write_xilinx_openparf_atomic_placement_certificate(
+                    output_path, result
+                )
+        return result
+    finally:
+        if certificate_builder is not None:
+            certificate_builder.close()
+        placement_index.close()
 
 
 def run_xilinx_openparf_atomic_qualification(
@@ -4531,24 +5826,15 @@ def run_xilinx_openparf_atomic_qualification(
         placement, output_dir / "name_map.json", mapped_path,
         output_dir / "ff-control-set-legalization.json",
         mapped_value=mapped_value,
+        packed_path=packed_path,
     )
     checkpoint_path = _write_openparf_result_checkpoint(output_dir, placement)
-    certificate = validate_xilinx_openparf_atomic_placement(
-        placement, output_dir / "name_map.json", mapped_path,
-        architecture_path, output_dir / "placement-certificate.json",
-        native_constraints_path=native_constraints_path,
-        provider_manifest_path=provider_manifest_path,
-        mapped_value=mapped_value,
-        architecture=architecture,
-    )
-    serialized_certificate = read_json(
-        output_dir / "placement-certificate.json"
-    )
-    certificate["ff_control_legalization"] = ff_control_legalization
-    serialized_certificate["ff_control_legalization"] = ff_control_legalization
+    certificate_metadata: Dict[str, Any] = {
+        "ff_control_legalization": ff_control_legalization,
+    }
     convergence_path = native_metrics_path(placement)
     if convergence_path.is_file():
-        convergence = {
+        certificate_metadata["native_convergence"] = {
             "artifact": {
                 "path": str(convergence_path),
                 "bytes": convergence_path.stat().st_size,
@@ -4559,13 +5845,6 @@ def run_xilinx_openparf_atomic_qualification(
                 allow_detailed_legalization_handoff=True,
             ),
         }
-        certificate["native_convergence"] = convergence
-        serialized_certificate["native_convergence"] = convergence
-        write_json(
-            output_dir / "placement-certificate.json",
-            serialized_certificate,
-            compact=True,
-        )
     installation = Path(str(runtime.get("installation", "")))
     python = Path(str(runtime.get("python", "")))
     if (
@@ -4573,13 +5852,18 @@ def run_xilinx_openparf_atomic_qualification(
         and (installation / "openparf").is_dir()
         and python.is_file()
     ):
-        certificate["runtime_validation"] = "native-openparf"
-        serialized_certificate["runtime_validation"] = "native-openparf"
-        write_json(
-            output_dir / "placement-certificate.json",
-            serialized_certificate,
-            compact=True,
-        )
+        certificate_metadata["runtime_validation"] = "native-openparf"
+    certificate = validate_xilinx_openparf_atomic_placement(
+        placement, output_dir / "name_map.json", mapped_path,
+        architecture_path, output_dir / "placement-certificate.json",
+        native_constraints_path=native_constraints_path,
+        provider_manifest_path=provider_manifest_path,
+        mapped_value=mapped_value,
+        architecture=architecture,
+        packed_path=packed_path,
+        materialize_result=False,
+        certificate_metadata=certificate_metadata,
+    )
     return {
         "status": "pass", "runtime": runtime,
         "manifest": manifest, "placement": str(placement),
@@ -4629,21 +5913,15 @@ def run_xilinx_openparf_hardblock_qualification(
     ff_control_legalization = legalize_xilinx_openparf_ff_control_sets(
         placement, output_dir / "name_map.json", mapped_path,
         output_dir / "ff-control-set-legalization.json",
+        packed_path=packed_path,
     )
-    certificate = validate_xilinx_openparf_atomic_placement(
-        placement, output_dir / "name_map.json", mapped_path,
-        architecture_path, output_dir / "placement-certificate.json",
-        native_constraints_path=native_constraints_path,
-        provider_manifest_path=provider_manifest_path,
-    )
-    serialized_certificate = read_json(
-        output_dir / "placement-certificate.json"
-    )
-    certificate["ff_control_legalization"] = ff_control_legalization
-    serialized_certificate["ff_control_legalization"] = ff_control_legalization
+    certificate_metadata = {
+        "ff_control_legalization": ff_control_legalization,
+        "runtime_validation": "native-openparf",
+    }
     convergence_path = native_metrics_path(placement)
     if convergence_path.is_file():
-        convergence = {
+        certificate_metadata["native_convergence"] = {
             "artifact": {
                 "path": str(convergence_path),
                 "bytes": convergence_path.stat().st_size,
@@ -4654,14 +5932,14 @@ def run_xilinx_openparf_hardblock_qualification(
                 allow_detailed_legalization_handoff=True,
             ),
         }
-        certificate["native_convergence"] = convergence
-        serialized_certificate["native_convergence"] = convergence
-    certificate["runtime_validation"] = "native-openparf"
-    serialized_certificate["runtime_validation"] = "native-openparf"
-    write_json(
-        output_dir / "placement-certificate.json",
-        serialized_certificate,
-        compact=True,
+    certificate = validate_xilinx_openparf_atomic_placement(
+        placement, output_dir / "name_map.json", mapped_path,
+        architecture_path, output_dir / "placement-certificate.json",
+        native_constraints_path=native_constraints_path,
+        provider_manifest_path=provider_manifest_path,
+        packed_path=packed_path,
+        materialize_result=False,
+        certificate_metadata=certificate_metadata,
     )
     return {
         "status": "pass", "runtime": runtime, "manifest": manifest,

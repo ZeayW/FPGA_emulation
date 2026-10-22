@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from .academic_chimew import materialize_academic_chimew_inputs
+from .chimew_bank_channel_storage import chimew_bank_channel_store_path
 from .chimew_pipeline import (
     read_chimew_phase6_pipeline,
     run_chimew_phase6_pipeline,
@@ -1067,12 +1068,10 @@ def validate_physical_lookahead(
         if _physical_report is not None
         else read_json(physical_path)
     )
-    session.validate_physical(
-        physical_report,
-        read_physical_summary(
-            _require_file(root, "physical/physical-summary.json")
-        ),
-    )
+    with read_physical_summary(
+        _require_file(root, "physical/physical-summary.json")
+    ) as physical_summary:
+        session.validate_physical(physical_report, physical_summary)
     expected = {
         "seed": expected_seed,
         "workers": expected_workers,
@@ -1152,6 +1151,25 @@ def validate_physical_lookahead(
         path = _require_file(root, f"lookahead/inputs/{label}.json")
         if lookahead.get("artifacts", {}).get(label, {}).get("sha256") != _sha256(path):
             raise ValidationError(f"experiment Chimew lookahead {label} seal is broken")
+    bank_selector = root / "lookahead/inputs/bank_channel_input.json"
+    bank_store = chimew_bank_channel_store_path(bank_selector)
+    if bank_store is not None:
+        bank_selector_document = read_json(bank_selector)
+        store_record = lookahead.get("artifacts", {}).get(
+            "bank_channel_input_store"
+        )
+        supplied_path = (
+            store_record.get("path") if isinstance(store_record, dict) else None
+        )
+        if (
+            not isinstance(supplied_path, str)
+            or Path(supplied_path).resolve() != bank_store.resolve()
+            or store_record.get("sha256")
+            != bank_selector_document.get("store_sha256")
+        ):
+            raise ValidationError(
+                "experiment Chimew bank/channel sidecar seal is broken"
+            )
     result = {"status": "pass", "seed": report["seed"], "metrics": report["metrics"]}
     session.lookahead[cache_key] = copy.deepcopy(result)
     return result
@@ -1693,50 +1711,54 @@ def validate_phase7_checkpoint(
     physical_report = read_json(
         _require_file(root, "physical/multi-fpga-physical-flow-report.json")
     )
-    physical_summary = read_physical_summary(
+    physical_summary_owner = read_physical_summary(
         _require_file(root, "physical/physical-summary.json")
     )
-    session.validate_physical(
-        physical_report,
-        physical_summary,
-    )
-    routes = read_json(paths["routes"])
-    schedule = read_json(phase6_schedule_path)
-    cross_layer_timing = read_json(paths["cross_layer_timing"])
-    semantic_contract = (
-        semantic_contract_for_routes(
-            read_phase3_assignment_view(
-                paths["assignment"], include_semantic_contract=False
-            ),
+    physical_summary = physical_summary_owner
+    try:
+        session.validate_physical(
+            physical_report,
+            physical_summary,
+        )
+        routes = read_json(paths["routes"])
+        schedule = read_json(phase6_schedule_path)
+        cross_layer_timing = read_json(paths["cross_layer_timing"])
+        semantic_contract = (
+            semantic_contract_for_routes(
+                read_phase3_assignment_view(
+                    paths["assignment"], include_semantic_contract=False
+                ),
+                routes,
+            )
+            if routes.get("semantic_contract_schema") is not None
+            else None
+        )
+        validate_cross_layer_timing_contract(
             routes,
+            cross_layer_timing,
+            schedule,
+            semantic_contract,
         )
-        if routes.get("semantic_contract_schema") is not None
-        else None
-    )
-    validate_cross_layer_timing_contract(
-        routes,
-        cross_layer_timing,
-        schedule,
-        semantic_contract,
-    )
-    board_link_timing_path = _board_link_timing(shared_root)
-    if board_link_timing_path is not None:
-        physical_summary = dict(physical_summary)
-        physical_summary["board_link_timing"] = read_json(
-            board_link_timing_path
+        board_link_timing_path = _board_link_timing(shared_root)
+        if board_link_timing_path is not None:
+            physical_summary = dict(physical_summary)
+            physical_summary["board_link_timing"] = read_json(
+                board_link_timing_path
+            )
+        physical_binding_path = _require_file(
+            root, "runtime/cross_layer_physical_binding.json"
         )
-    physical_binding_path = _require_file(
-        root, "runtime/cross_layer_physical_binding.json"
-    )
-    physical_binding = read_json(physical_binding_path)
-    physical_binding_validation = validate_cross_layer_physical_binding(
-        cross_layer_timing,
-        schedule,
-        physical_summary,
-        Platform.load(platform_path),
-        physical_binding,
-        paths["assignment"].with_name("assignment.sqlite"),
-    )
+        physical_binding = read_json(physical_binding_path)
+        physical_binding_validation = validate_cross_layer_physical_binding(
+            cross_layer_timing,
+            schedule,
+            physical_summary,
+            Platform.load(platform_path),
+            physical_binding,
+            paths["assignment"].with_name("assignment.sqlite"),
+        )
+    finally:
+        physical_summary_owner.close()
     if physical_binding_validation.get("status") != "pass":
         raise ValidationError(
             "experiment Phase 7 physical timing evidence is incomplete"

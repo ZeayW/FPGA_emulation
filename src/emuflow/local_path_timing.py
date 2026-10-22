@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping
@@ -22,6 +23,7 @@ from .logic_segment_timing import (
     _vpr_atom_pin,
     _xilinx_object,
 )
+from .local_path_timing_storage import write_local_path_timing_storage
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .phase3_storage import read_phase3_assignment_view
 from .routing import system_route_timing_paths
@@ -42,6 +44,66 @@ LOCAL_PATH_TIMING_SCHEMA = "emuflow.local-path-timing/v1"
 LOCAL_PATH_QUERY_HEADER_V2 = (
     "endpoint\tkind\tstart_pin\tend_pin\tpath_pins"
 )
+
+
+def local_path_timing_header(
+    identity: Mapping[str, Any], *, provider: str, qualification: str
+) -> Dict[str, Any]:
+    """Return the bounded header shared by local-path timing stores."""
+
+    return {
+        "schema": LOCAL_PATH_TIMING_SCHEMA,
+        "status": "pass",
+        "design": identity["design"],
+        "fpga": identity["fpga"],
+        "provider": provider,
+        "qualification": qualification,
+        "source": identity["source"],
+        "identity_schema": identity["schema"],
+        "coverage": identity["coverage"],
+    }
+
+
+class _WithoutDelayPath(Mapping[str, Any]):
+    """Expose one timing record as its identity without copying its payload."""
+
+    def __init__(self, source: Mapping[str, Any]):
+        self.source = source
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "delay_ns":
+            raise KeyError(key)
+        return self.source[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return (key for key in self.source if key != "delay_ns")
+
+    def __len__(self) -> int:
+        return len(self.source) - ("delay_ns" in self.source)
+
+
+class _WithoutDelayPaths(Sequence[Mapping[str, Any]]):
+    """Repeatable identity projection over list- or store-backed timing rows."""
+
+    def __init__(self, source: Sequence[Mapping[str, Any]]):
+        self.source = source
+
+    def __len__(self) -> int:
+        return len(self.source)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(len(self)))]
+        item = self.source[index]
+        if not isinstance(item, Mapping):
+            raise ValidationError("local path timing record is invalid")
+        return _WithoutDelayPath(item)
+
+    def __iter__(self) -> Iterator[Mapping[str, Any]]:
+        for item in self.source:
+            if not isinstance(item, Mapping):
+                raise ValidationError("local path timing record is invalid")
+            yield _WithoutDelayPath(item)
 
 
 def _sha256(path: Path) -> str:
@@ -95,7 +157,7 @@ def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
     if not isinstance(fpga, str) or not fpga:
         raise ValidationError("local path identity FPGA is invalid")
     source = database.get("source")
-    if not isinstance(source, dict) or set(source) != {
+    if not isinstance(source, Mapping) or set(source) != {
         "path_database_sha256",
         "original_ir_sha256",
         "assignment_sha256",
@@ -121,7 +183,9 @@ def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
     ):
         raise ValidationError("local path identity source seal is invalid")
     paths = database.get("paths")
-    if not isinstance(paths, list):
+    if not isinstance(paths, Sequence) or isinstance(
+        paths, (str, bytes, bytearray)
+    ):
         raise ValidationError("local path identity paths are invalid")
     ids = set()
     for index, path in enumerate(paths):
@@ -139,7 +203,7 @@ def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
             expected_fields.update(
                 {"required_time_ns", "measurement", "path_pins"}
             )
-        if not isinstance(path, dict) or set(path) != expected_fields:
+        if not isinstance(path, Mapping) or set(path) != expected_fields:
             raise ValidationError(f"{context} is invalid")
         path_id = path["id"]
         if (
@@ -174,7 +238,9 @@ def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
             if measurement not in {
                 "explicit-routed-path-chain",
                 "endpoint-longest-path-fallback",
-            } or not isinstance(pins, list):
+            } or not isinstance(pins, Sequence) or isinstance(
+                pins, (str, bytes, bytearray)
+            ):
                 raise ValidationError(f"{context} measurement is invalid")
             if measurement == "explicit-routed-path-chain":
                 if (
@@ -191,7 +257,7 @@ def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
                 raise ValidationError(f"{context} fallback chain is invalid")
         ids.add(path_id)
     coverage = database.get("coverage")
-    if not isinstance(coverage, dict) or coverage != {
+    if not isinstance(coverage, Mapping) or coverage != {
         "local_paths": len(paths)
     }:
         raise ValidationError("local path identity coverage is invalid")
@@ -879,36 +945,41 @@ def import_vpr_local_path_timing(
             "VPR local path timing coverage is incomplete: "
             f"{sorted(set(expected) - set(measured))[:10]}"
         )
-    database = {
-        "schema": LOCAL_PATH_TIMING_SCHEMA,
-        "status": "pass",
-        "design": identity["design"],
-        "fpga": identity["fpga"],
-        "provider": "vpr-tatum-selected-local-setup-path-delay-v2",
-        "qualification": (
+    # This identity document is private to the importer.  Add the one timing
+    # field in place so publication does not retain a second complete list of
+    # path dictionaries beside the source identities.
+    for item in identity["paths"]:
+        item["delay_ns"] = measured[item["id"]]
+    header = local_path_timing_header(
+        identity,
+        provider="vpr-tatum-selected-local-setup-path-delay-v2",
+        qualification=(
             "source-bound-routed-selected-path-delay-with-exact-fallback-"
             "launch-clock-to-q-and-capture-setup"
         ),
-        "source": identity["source"],
-        "identity_schema": identity["schema"],
-        "coverage": identity["coverage"],
-        "paths": [
-            {**item, "delay_ns": measured[item["id"]]}
-            for item in identity["paths"]
-        ],
-    }
-    validation = validate_local_path_timing(database)
-    write_json(output_path, database)
+    )
+    with write_local_path_timing_storage(
+        output_path, header, identity["paths"]
+    ) as database:
+        validation = validate_local_path_timing(database)
     return {**validation, "output": str(output_path)}
 
 
 def validate_local_path_timing(database: Mapping[str, Any]) -> Dict[str, Any]:
+    indexed_validator = getattr(database, "validate_timing", None)
+    if callable(indexed_validator):
+        return indexed_validator()
     if database.get("schema") != LOCAL_PATH_TIMING_SCHEMA:
         raise ValidationError("local path timing schema is invalid")
+    paths = database.get("paths")
+    if not isinstance(paths, Sequence) or isinstance(
+        paths, (str, bytes, bytearray)
+    ):
+        raise ValidationError("local path timing paths are invalid")
     identity = {
         key: database[key]
         for key in (
-            "status", "design", "fpga", "source", "coverage", "paths"
+            "status", "design", "fpga", "source", "coverage"
         )
     }
     identity.update(
@@ -917,15 +988,18 @@ def validate_local_path_timing(database: Mapping[str, Any]) -> Dict[str, Any]:
                 "identity_schema", LOCAL_PATH_IDENTITY_SCHEMA
             ),
             "provider": "local-path-timing-validation",
-            "paths": [
-                {key: value for key, value in item.items() if key != "delay_ns"}
-                for item in database["paths"]
-            ],
+            "paths": _WithoutDelayPaths(paths),
         }
     )
     checked = validate_local_path_identity(identity)
     maximum = 0.0
-    for item in database["paths"]:
+    measurement_counts = {
+        "explicit-routed-path-chain": 0,
+        "endpoint-longest-path-fallback": 0,
+    }
+    for item in paths:
+        if not isinstance(item, Mapping):
+            raise ValidationError("local path timing record is invalid")
         delay = item.get("delay_ns")
         if (
             isinstance(delay, bool)
@@ -935,18 +1009,12 @@ def validate_local_path_timing(database: Mapping[str, Any]) -> Dict[str, Any]:
         ):
             raise ValidationError("local path timing delay is invalid")
         maximum = max(maximum, float(delay))
-    measurement_counts = {}
-    if database.get("identity_schema") == LOCAL_PATH_IDENTITY_SCHEMA_V2:
-        measurement_counts = {
-            name: sum(
-                item.get("measurement") == name
-                for item in database["paths"]
-            )
-            for name in (
-                "explicit-routed-path-chain",
-                "endpoint-longest-path-fallback",
-            )
-        }
+        if database.get("identity_schema") == LOCAL_PATH_IDENTITY_SCHEMA_V2:
+            measurement = item.get("measurement")
+            if measurement in measurement_counts:
+                measurement_counts[measurement] += 1
+    if database.get("identity_schema") != LOCAL_PATH_IDENTITY_SCHEMA_V2:
+        measurement_counts = {}
     return {
         **checked,
         "maximum_delay_ns": maximum,

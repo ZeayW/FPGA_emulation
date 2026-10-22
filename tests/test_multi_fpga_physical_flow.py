@@ -31,7 +31,7 @@ from emuflow.multi_fpga_physical_flow import (
     validate_multi_fpga_physical_report,
 )
 from emuflow.physical_summary_storage import (
-    PHYSICAL_EVIDENCE_REFERENCE_SCHEMA,
+    PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA,
     read_physical_summary,
 )
 from emuflow.physical_backend import physical_backend_descriptor
@@ -617,7 +617,16 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     },
                     "endpoints": [],
                 }
-                write_json(boundary_path, boundary)
+                from emuflow.boundary_identity_storage import (
+                    write_boundary_identity_storage,
+                )
+
+                header = {key: boundary[key] for key in (
+                    "schema", "status", "design", "platform", "fpga", "provider",
+                )}
+                write_boundary_identity_storage(
+                    boundary_path, header, boundary["endpoints"]
+                ).close()
                 result = {
                     "schema": "emuflow.placement-ir-report/v1",
                     "status": "pass",
@@ -788,20 +797,24 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 physical_summary = read_json(
                     root / "physical/physical-summary.json"
                 )
-                for field in ("boundary_identities", "boundary_timing"):
-                    self.assertTrue(
-                        all(
-                            item["schema"]
-                            == PHYSICAL_EVIDENCE_REFERENCE_SCHEMA
-                            for item in physical_summary[field].values()
-                        )
-                    )
+                self.assertTrue(all(
+                    item["schema"] == PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA
+                    for item in physical_summary["boundary_identities"].values()
+                ))
+                self.assertTrue(all(
+                    item["schema"] == PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA
+                    for item in physical_summary["boundary_timing"].values()
+                ))
                 lazy_summary = read_physical_summary(
                     root / "physical/physical-summary.json"
                 )
                 self.assertEqual(
                     lazy_summary["boundary_identities"]["fpga0"]["schema"],
                     "emuflow.boundary-identity/v1",
+                )
+                self.assertEqual(
+                    lazy_summary["boundary_timing"]["fpga0"]["schema"],
+                    "emuflow.boundary-timing/v1",
                 )
                 self.assertEqual(
                     (root / "physical/architecture/vtr-flagship.xml").read_bytes(),

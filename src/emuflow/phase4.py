@@ -131,18 +131,18 @@ def run_phase4(
                 )
             physical_feedback = read_json(physical_feedback_path)
             feedback_runtime = read_json(physical_feedback_runtime_path)
-            feedback_summary = read_physical_summary(
+            with read_physical_summary(
                 physical_feedback_summary_path
-            )
-            physical_feedback_validation = validate_physical_route_feedback(
-                feedback_runtime,
-                feedback_routes,
-                platform,
-                feedback_schedule,
-                feedback_summary,
-                physical_feedback,
-                feedback_ratio_plan,
-            )
+            ) as feedback_summary:
+                physical_feedback_validation = validate_physical_route_feedback(
+                    feedback_runtime,
+                    feedback_routes,
+                    platform,
+                    feedback_schedule,
+                    feedback_summary,
+                    physical_feedback,
+                    feedback_ratio_plan,
+                )
             tdm_feedback = combine_tdm_and_physical_feedback(
                 tdm_feedback,
                 physical_feedback,

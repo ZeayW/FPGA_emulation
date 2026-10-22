@@ -1,14 +1,21 @@
 import copy
 import itertools
 import math
+import os
+import random
+import sqlite3
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
+from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
+from emuflow.partition_ir import load_partition_ir
 from emuflow.partition import (
     CUT_MODE_SEQUENTIAL_ONLY,
     CUT_MODE_STATIC_EXACT,
@@ -21,6 +28,8 @@ from emuflow.combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
 )
 from emuflow.partition_pressure import (
+    _PackedPressureNetSequence,
+    _PackedStringOrdinalIndex,
     _canonical_digest,
     _flow_refinement_configuration,
     _parse_patron_native_output,
@@ -294,6 +303,505 @@ class PartitionPressureTest(unittest.TestCase):
             self.timing,
             self.route_constraints,
         )
+
+    def test_compact_pressure_model_matches_reference_and_native_bytes(
+        self,
+    ) -> None:
+        expected = build_partition_pressure_model(
+            self.ir,
+            self.platform,
+            self.clusters,
+            self.constraints,
+            self.timing,
+            self.route_constraints,
+            independent_validation=False,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "design.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            with (
+                patch(
+                    "emuflow.partition_ir._CompactPartitionInstances.__iter__",
+                    side_effect=AssertionError("cell dictionaries were decoded"),
+                ),
+                patch(
+                    "emuflow.partition_ir._CompactPartitionNets.__iter__",
+                    side_effect=AssertionError("net dictionaries were decoded"),
+                ),
+            ):
+                actual = build_partition_pressure_model(
+                    load_partition_ir(ir_path),
+                    self.platform,
+                    self.clusters,
+                    self.constraints,
+                    self.timing,
+                    self.route_constraints,
+                    independent_validation=False,
+                )
+            self.assertIsInstance(
+                actual["nets"], _PackedPressureNetSequence
+            )
+            self.assertEqual(actual, expected)
+            reference_input = root / "reference.patron"
+            compact_input = root / "compact.patron"
+            _write_patron_native_input(
+                reference_input,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                self.route_constraints,
+                expected,
+                self.initial,
+                0,
+                6,
+            )
+            indexes = _write_patron_native_input(
+                compact_input,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                self.route_constraints,
+                actual,
+                self.initial,
+                0,
+                6,
+            )
+            self.assertEqual(
+                compact_input.read_bytes(), reference_input.read_bytes()
+            )
+            self.assertEqual(list(indexes["clusters"]), sorted(
+                cluster["id"] for cluster in self.clusters["clusters"]
+            ))
+
+    def test_compact_pressure_model_randomized_differential(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for seed in range(24):
+                generator = random.Random(seed)
+                instance_count = 12
+                value = {
+                    "schema": "emuflow.emuir/v1",
+                    "design": {
+                        "name": f"pressure_random_{seed}",
+                        "top": "pressure_random",
+                        "source_format": "fixture",
+                    },
+                    "ports": [],
+                    "instances": [
+                        {
+                            "id": f"u{index:02d}",
+                            "type": "LUT1",
+                            "resources": {"lut": 1},
+                        }
+                        for index in range(instance_count)
+                    ],
+                    "nets": [],
+                    "clocks": [],
+                    "warnings": [],
+                }
+                for index in range(24):
+                    drivers = generator.sample(
+                        range(instance_count), generator.choice((1, 1, 2))
+                    )
+                    sinks = generator.sample(
+                        range(instance_count), generator.randrange(1, 7)
+                    )
+                    value["nets"].append(
+                        {
+                            "id": f"n{index:02d}",
+                            "cut_class": generator.choice(
+                                ("register_output", "register_input", "clock")
+                            ),
+                            "drivers": [
+                                _endpoint(f"u{owner:02d}", "O")
+                                for owner in drivers
+                            ],
+                            "sinks": [
+                                _endpoint(f"u{owner:02d}", "I")
+                                for owner in sinks
+                            ],
+                        }
+                    )
+                reference_ir = EmuIR(value)
+                constraints = normalize_partition_constraints(
+                    {
+                        "schema": "emuflow.partition-constraints/v1",
+                        "min_used_fpgas": 2,
+                        "balance_tolerance": 1.0,
+                    },
+                    reference_ir,
+                    self.platform,
+                )
+                clusters = build_clusters(reference_ir, constraints)
+                timing = {
+                    **self.timing,
+                    "design": value["design"]["name"],
+                    "paths": [
+                        {
+                            "id": f"p{index:02d}",
+                            "startpoint": _endpoint(
+                                f"u{generator.randrange(instance_count):02d}",
+                                "O",
+                            ),
+                            "endpoint": _endpoint(
+                                f"u{generator.randrange(instance_count):02d}",
+                                "I",
+                            ),
+                            "clock_domain": "clk",
+                            "clock_period_ns": 10.0,
+                            "slack_ns": float(generator.randrange(-2, 6)),
+                            "path_nets": [
+                                f"n{net:02d}"
+                                for net in generator.sample(
+                                    range(24), generator.randrange(1, 6)
+                                )
+                            ],
+                        }
+                        for index in range(10)
+                    ],
+                }
+                expected = build_partition_pressure_model(
+                    reference_ir,
+                    self.platform,
+                    clusters,
+                    constraints,
+                    timing,
+                    self.route_constraints,
+                    independent_validation=False,
+                )
+                path = root / f"random-{seed}.emuir.sqlite"
+                write_compact_emuir(path, value)
+                actual = build_partition_pressure_model(
+                    load_partition_ir(path),
+                    self.platform,
+                    clusters,
+                    constraints,
+                    timing,
+                    self.route_constraints,
+                    independent_validation=False,
+                )
+                self.assertEqual(actual, expected, f"seed={seed}")
+
+    def test_compact_pressure_model_rejects_corrupt_relations(self) -> None:
+        mutations = [
+            ("logical-schema", "logical schema is invalid", lambda connection: connection.execute(
+                "UPDATE metadata SET value='emuflow.emuir/v999' "
+                "WHERE key='logical_schema'"
+            )),
+            ("invalid-cut-class", "net cut class is invalid", lambda connection: connection.execute(
+                "UPDATE net_records SET cut_class='not-a-cut-class' WHERE seq=0"
+            )),
+            ("invalid-role", "endpoint role is invalid", lambda connection: connection.execute(
+                "UPDATE endpoint_records SET role=2 "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0"
+            )),
+            ("negative-ordinal", "endpoint sequence is invalid", lambda connection: connection.execute(
+                "UPDATE endpoint_records SET ordinal=-1 "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0"
+            )),
+            ("orphan-net", "orphaned endpoints", lambda connection: connection.execute(
+                "UPDATE endpoint_records SET net_seq=999 "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0"
+            )),
+            ("missing-port", "endpoint port is invalid", lambda connection: connection.execute(
+                "UPDATE endpoint_records SET port_seq=999 "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0"
+            )),
+            ("missing-owner", "endpoint owner is invalid", lambda connection: connection.execute(
+                "UPDATE endpoint_records SET instance_seq=999 "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0"
+            )),
+            ("wrong-top-level-owner", "top-level endpoint is invalid", lambda connection: connection.execute(
+                "UPDATE endpoint_records SET instance_seq=NULL "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0"
+            )),
+            ("negative-bit", "endpoint bit is invalid", lambda connection: connection.execute(
+                "UPDATE endpoint_records SET bit=-1 "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0"
+            )),
+            ("real-bit", "endpoint bit is invalid", lambda connection: connection.execute(
+                "UPDATE endpoint_records SET bit=0.5 "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0"
+            )),
+            ("text-bit", "endpoint bit is invalid", lambda connection: connection.execute(
+                "UPDATE endpoint_records SET bit='zero' "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0"
+            )),
+            ("net-gap", "net sequence is invalid", lambda connection: (
+                connection.execute(
+                    "UPDATE endpoint_records SET net_seq=9 WHERE net_seq=1"
+                ),
+                connection.execute(
+                    "UPDATE net_records SET seq=9 WHERE seq=1"
+                ),
+            )),
+            ("missing-endpoint", "record counts disagree", lambda connection: connection.execute(
+                "DELETE FROM endpoint_records "
+                "WHERE net_seq=0 AND role=0 AND ordinal=0"
+            )),
+        ]
+        for label, message, mutate in mutations:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "design.emuir.sqlite"
+                write_compact_emuir(path, self.ir.to_dict())
+                with sqlite3.connect(path) as connection:
+                    mutate(connection)
+                with self.assertRaisesRegex(ValidationError, message):
+                    build_partition_pressure_model(
+                        load_partition_ir(path),
+                        self.platform,
+                        self.clusters,
+                        self.constraints,
+                        self.timing,
+                        self.route_constraints,
+                        independent_validation=False,
+                    )
+
+    def test_compact_pressure_model_accepts_sparse_endpoint_ordinals(self) -> None:
+        expected = build_partition_pressure_model(
+            self.ir,
+            self.platform,
+            self.clusters,
+            self.constraints,
+            self.timing,
+            self.route_constraints,
+            independent_validation=False,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, self.ir.to_dict())
+            with sqlite3.connect(path) as connection:
+                connection.execute(
+                    "UPDATE endpoint_records SET ordinal=ordinal+1000000"
+                )
+            actual = build_partition_pressure_model(
+                load_partition_ir(path),
+                self.platform,
+                self.clusters,
+                self.constraints,
+                self.timing,
+                self.route_constraints,
+                independent_validation=False,
+            )
+        self.assertEqual(actual, expected)
+
+    def test_native_input_publish_is_atomic_on_validation_and_io_faults(
+        self,
+    ) -> None:
+        parent_fsync_calls = 0
+
+        def fail_parent_fsync(_descriptor: int) -> None:
+            nonlocal parent_fsync_calls
+            parent_fsync_calls += 1
+            if parent_fsync_calls == 2:
+                raise OSError("synthetic parent fsync fault")
+
+        fault_patches = (
+            (
+                "validation",
+                patch(
+                    "emuflow.partition_pressure._NativeLineWriter.append",
+                    side_effect=ValidationError("synthetic validation fault"),
+                ),
+                ValidationError,
+            ),
+            (
+                "file-fsync",
+                patch(
+                    "emuflow.partition_pressure.os.fsync",
+                    side_effect=OSError("synthetic fsync fault"),
+                ),
+                OSError,
+            ),
+            (
+                "parent-fsync",
+                patch(
+                    "emuflow.partition_pressure.os.fsync",
+                    side_effect=fail_parent_fsync,
+                ),
+                OSError,
+            ),
+            (
+                "replace",
+                patch(
+                    "emuflow.partition_pressure.os.replace",
+                    side_effect=OSError("synthetic replace fault"),
+                ),
+                OSError,
+            ),
+        )
+        for label, fault, exception in fault_patches:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                target = root / "patron.in"
+                target.write_bytes(b"existing-published-input\n")
+                with fault, self.assertRaises(exception):
+                    _write_patron_native_input(
+                        target,
+                        self.platform,
+                        self.clusters,
+                        self.constraints,
+                        self.route_constraints,
+                        self.model,
+                        self.initial,
+                        0,
+                        6,
+                    )
+                self.assertEqual(
+                    target.read_bytes(), b"existing-published-input\n"
+                )
+                self.assertEqual(
+                    list(root.glob(f".{target.name}.*.tmp")), []
+                )
+                self.assertEqual(
+                    list(root.glob(f".{target.name}.*.backup")), []
+                )
+
+    def test_native_input_foreign_backup_collision_is_never_unlinked(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "patron.in"
+            target.write_bytes(b"existing-published-input\n")
+            foreign = root / ".patron.in.foreign.backup"
+            foreign.write_bytes(b"foreign-owner\n")
+            identities = (
+                SimpleNamespace(hex="owned-temp"),
+                SimpleNamespace(hex="foreign"),
+            )
+            with patch(
+                "emuflow.partition_pressure.uuid.uuid4",
+                side_effect=identities,
+            ), self.assertRaises(FileExistsError):
+                _write_patron_native_input(
+                    target,
+                    self.platform,
+                    self.clusters,
+                    self.constraints,
+                    self.route_constraints,
+                    self.model,
+                    self.initial,
+                    0,
+                    6,
+                )
+            self.assertEqual(
+                target.read_bytes(), b"existing-published-input\n"
+            )
+            self.assertEqual(foreign.read_bytes(), b"foreign-owner\n")
+            self.assertFalse((root / ".patron.in.owned-temp.tmp").exists())
+
+    def test_native_input_rollback_failure_retains_recovery_backup(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "patron.in"
+            original = b"existing-published-input\n"
+            target.write_bytes(original)
+            recovery = root / ".patron.in.recovery.backup"
+            real_replace = os.replace
+            replace_calls = 0
+            fsync_calls = 0
+
+            def fail_rollback(source: Path, destination: Path) -> None:
+                nonlocal replace_calls
+                replace_calls += 1
+                if replace_calls == 1:
+                    real_replace(source, destination)
+                    return
+                raise OSError("synthetic rollback replace fault")
+
+            def fail_parent_fsync(_descriptor: int) -> None:
+                nonlocal fsync_calls
+                fsync_calls += 1
+                if fsync_calls == 2:
+                    raise OSError("synthetic parent fsync fault")
+
+            identities = (
+                SimpleNamespace(hex="owned-temp"),
+                SimpleNamespace(hex="recovery"),
+            )
+            with patch(
+                "emuflow.partition_pressure.uuid.uuid4",
+                side_effect=identities,
+            ), patch(
+                "emuflow.partition_pressure.os.fsync",
+                side_effect=fail_parent_fsync,
+            ), patch(
+                "emuflow.partition_pressure.os.replace",
+                side_effect=fail_rollback,
+            ), self.assertRaises(ValidationError) as caught:
+                _write_patron_native_input(
+                    target,
+                    self.platform,
+                    self.clusters,
+                    self.constraints,
+                    self.route_constraints,
+                    self.model,
+                    self.initial,
+                    0,
+                    6,
+                )
+            self.assertIn(str(recovery), str(caught.exception))
+            self.assertEqual(recovery.read_bytes(), original)
+            self.assertTrue(target.is_file())
+            self.assertNotEqual(target.read_bytes(), original)
+            self.assertFalse((root / ".patron.in.owned-temp.tmp").exists())
+
+    def test_compact_pressure_model_rejects_cluster_coverage_corruption(
+        self,
+    ) -> None:
+        variants = []
+        missing = copy.deepcopy(self.clusters)
+        missing["clusters"][0]["instances"].clear()
+        variants.append(("coverage disagrees", missing))
+        duplicate = copy.deepcopy(self.clusters)
+        duplicate["clusters"][1]["instances"].append(
+            duplicate["clusters"][0]["instances"][0]
+        )
+        variants.append(("duplicated", duplicate))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, self.ir.to_dict())
+            for message, clusters in variants:
+                with self.subTest(message=message), self.assertRaisesRegex(
+                    ValidationError, message
+                ):
+                    build_partition_pressure_model(
+                        load_partition_ir(path),
+                        self.platform,
+                        clusters,
+                        self.constraints,
+                        self.timing,
+                        self.route_constraints,
+                        independent_validation=False,
+                    )
+
+    def test_packed_pressure_million_sink_membership_is_fixed_width(
+        self,
+    ) -> None:
+        class LazyClusters(Sequence):
+            def __len__(self) -> int:
+                return 1_000_001
+
+            def __getitem__(self, index: int) -> dict:
+                if index < 0 or index >= len(self):
+                    raise IndexError(index)
+                return {"cluster": f"c{index:07d}"}
+
+        identities = _PackedStringOrdinalIndex()
+        nets = _PackedPressureNetSequence(LazyClusters(), identities)
+        nets.append_record(
+            "million_fanout",
+            "register_output",
+            (0,),
+            range(1, 1_000_001),
+        )
+        self.assertEqual(len(nets), 1)
+        self.assertEqual(len(nets._sinks), 1_000_000)
+        self.assertLess(nets.payload_bytes, 8_100_000)
 
     def test_path_objective_uses_maximum_of_per_path_tdm_ratio_sums(self) -> None:
         evaluated = evaluate_partition_pressure(
@@ -629,6 +1137,24 @@ class PartitionPressureTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValidationError, "coverage"):
                 _parse_patron_native_output(path, indexes)
+
+            attacks = (
+                ("assignment-order", lines[:6] + [lines[7], lines[6], "END"], "ASSIGN order"),
+                ("assignment-range", lines[:6] + ["ASSIGN 9 1", lines[7], "END"], "out of range"),
+                ("assignment-duplicate", lines[:7] + [lines[6], "END"], "duplicate ASSIGN"),
+                ("assignment-missing", lines[:7] + ["END"], "coverage"),
+                ("missing-end", lines[:-1], "END is missing"),
+                ("duplicate-end", lines + ["END"], "after END"),
+                ("record-after-end", lines + ["ASSIGN 0 1"], "after END"),
+                ("early-end", lines[:6] + ["END", lines[6], lines[7]], "after END"),
+            )
+            for label, attacked, message in attacks:
+                with self.subTest(label=label):
+                    path.write_text(
+                        "\n".join(attacked) + "\n", encoding="utf-8"
+                    )
+                    with self.assertRaisesRegex(ValidationError, message):
+                        _parse_patron_native_output(path, indexes)
 
     def test_shared_bank_pressure_is_reported_but_not_a_partition_gate(self) -> None:
         value = _platform_value(
@@ -1652,6 +2178,31 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(
                 report["provider"], "patron-endpoint-exact-native-v6"
             )
+            compact_ir_path = root / "ir.emuir.sqlite"
+            write_compact_emuir(compact_ir_path, self.ir.to_dict())
+            compact_report = run_phase3(
+                compact_ir_path,
+                platform_path,
+                root / "phase3-compact-metric",
+                min_used_fpgas=2,
+                balance_tolerance=1.0,
+                provider="patron",
+                cut_mode="sequential-only",
+                patron_algorithm_version=6,
+                tritonpart_solution=solution_path,
+                route_constraints_path=route_path,
+                timing_database_path=timing_path,
+                patron_refiner=str(patron_refiner()),
+            )
+            self.assertEqual(compact_report["status"], "pass")
+            compact_runtime = read_json(
+                root / "phase3-compact-metric/phase3-runtime.json"
+            )
+            observations = compact_runtime["observations"]
+            self.assertGreater(
+                observations["pressure_compact_net_payload_bytes"], 0
+            )
+            self.assertNotIn("pressure_model_payload_bytes", observations)
             baseline = promote_patron_baseline(
                 ir_path, platform_path, root / "phase3"
             )

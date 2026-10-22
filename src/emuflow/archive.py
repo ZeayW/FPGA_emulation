@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import ctypes
+import errno
 import json
 import os
 import platform as host_platform
 import shutil
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
@@ -52,6 +55,117 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _fsync_file(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_tree_directories(root: Path) -> None:
+    directories = [path for path in root.rglob("*") if path.is_dir()]
+    for path in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+        _fsync_directory(path)
+    _fsync_directory(root)
+
+
+def _rename_noreplace(source: Path, target: Path) -> None:
+    """Atomically rename a directory only when the target is absent."""
+
+    library = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    target_bytes = os.fsencode(target)
+    if sys.platform == "darwin":
+        rename = library.renameatx_np
+        rename.argtypes = (
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        rename.restype = ctypes.c_int
+        result = rename(-2, source_bytes, -2, target_bytes, 0x00000004)
+    elif hasattr(library, "renameat2"):
+        rename = library.renameat2
+        rename.argtypes = (
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        rename.restype = ctypes.c_int
+        result = rename(-100, source_bytes, -100, target_bytes, 1)
+    else:
+        raise OSError(
+            errno.ENOTSUP,
+            "atomic no-replace rename is unavailable",
+            str(target),
+        )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), str(target))
+
+
+def _rollback_published_directory(
+    path: Path, identity: tuple[int, int]
+) -> None:
+    """Isolate target first, then remove only the published directory."""
+
+    quarantine = path.with_name(
+        f".{path.name}.rollback-{os.getpid()}-{uuid.uuid4().hex}"
+    )
+    try:
+        os.replace(path, quarantine)
+    except FileNotFoundError:
+        return
+    descriptor = None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(quarantine, flags)
+        isolated_stat = os.fstat(descriptor)
+    except BaseException as error:
+        raise EmuFlowError(
+            "archive durability rollback could not inspect isolated output "
+            f"at {quarantine}"
+        ) from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if (isolated_stat.st_dev, isolated_stat.st_ino) == identity:
+        shutil.rmtree(quarantine)
+        try:
+            _fsync_directory(path.parent)
+        except OSError:
+            pass
+        return
+    try:
+        _rename_noreplace(quarantine, path)
+    except FileExistsError as error:
+        raise EmuFlowError(
+            "archive durability rollback preserved a foreign isolated output "
+            f"at {quarantine}; target is occupied at {path}"
+        ) from error
+    except OSError as error:
+        raise EmuFlowError(
+            "archive durability rollback preserved a foreign isolated output "
+            f"at {quarantine}; atomic restore to {path} failed"
+        ) from error
+    try:
+        _fsync_directory(path.parent)
+    except OSError:
+        pass
+    raise EmuFlowError(
+        "archive durability rollback restored a foreign output at "
+        f"{path}; published identity was not removed"
+    )
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
@@ -267,8 +381,14 @@ def _might_declare_sidecar(path: Path) -> bool:
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(64 * 1024), b""):
             window = overlap + chunk
-            found_artifact = found_artifact or b'"artifact"' in window
-            found_digest = found_digest or b'"store_sha256"' in window
+            found_artifact = found_artifact or (
+                b'"artifact"' in window
+                or b'"cluster_storage"' in window
+            )
+            found_digest = found_digest or (
+                b'"store_sha256"' in window
+                or b'"cluster_storage"' in window
+            )
             if found_artifact and found_digest:
                 return True
             overlap = window[-64:]
@@ -290,8 +410,26 @@ def _selector_sidecar(flow_root: Path, relative: Path) -> Path | None:
         ) from error
     if not isinstance(selector, dict):
         return None
+    generic_declared = any(
+        key in selector for key in ("artifact", "store_sha256", "store_bytes")
+    )
+    nested_declared = "cluster_storage" in selector
+    if generic_declared and nested_declared:
+        raise ValidationError(
+            f"archive selector dependency is ambiguous: {relative.as_posix()}"
+        )
     artifact = selector.get("artifact")
     digest = selector.get("store_sha256")
+    expected_bytes = selector.get("store_bytes")
+    cluster_storage = selector.get("cluster_storage")
+    if nested_declared:
+        if not isinstance(cluster_storage, dict):
+            raise ValidationError(
+                f"archive selector dependency is malformed: {relative.as_posix()}"
+            )
+        artifact = cluster_storage.get("file")
+        digest = cluster_storage.get("sha256")
+        expected_bytes = cluster_storage.get("bytes")
     if artifact is None and digest is None:
         return None
     if (
@@ -330,7 +468,6 @@ def _selector_sidecar(flow_root: Path, relative: Path) -> Path | None:
             "archive selector dependency SHA-256 disagrees: "
             f"{relative.as_posix()}"
         )
-    expected_bytes = selector.get("store_bytes")
     if expected_bytes is not None and (
         isinstance(expected_bytes, bool)
         or not isinstance(expected_bytes, int)
@@ -378,6 +515,51 @@ def _atomic_retention_groups(
             )
         union(relative, dependency)
 
+    for relative in sorted(candidates, key=lambda item: item.as_posix()):
+        if relative.name != "physical-summary.json":
+            continue
+        summary = read_json(_source_file(flow_root, relative))
+        if summary.get("schema") not in {
+            "emuflow.physical-summary/v1",
+            "emuflow.phase7b-physical-summary/v1",
+        }:
+            continue
+        for field in (
+            "boundary_identities", "boundary_timing",
+            "logic_segment_timing", "local_path_timing",
+        ):
+            values = summary.get(field, {})
+            if not isinstance(values, dict):
+                raise ValidationError(
+                    f"archive physical summary {field} is malformed"
+                )
+            for reference in values.values():
+                if not isinstance(reference, dict) or reference.get("schema") not in {
+                    "emuflow.physical-evidence-reference/v1",
+                    "emuflow.physical-evidence-reference/v2",
+                }:
+                    continue
+                raw_path = reference.get("path")
+                if not isinstance(raw_path, str):
+                    raise ValidationError(
+                        "archive physical evidence reference is malformed"
+                    )
+                dependency = (relative.parent / _checked_relative_path(raw_path))
+                if dependency not in parents:
+                    raise ValidationError(
+                        "archive physical evidence dependency was not discovered: "
+                        f"{dependency.as_posix()}"
+                    )
+                source = _source_file(flow_root, dependency)
+                if (
+                    source.stat().st_size != reference.get("bytes")
+                    or _sha256(source) != reference.get("sha256")
+                ):
+                    raise ValidationError(
+                        "archive physical evidence reference seal disagrees"
+                    )
+                union(relative, dependency)
+
     components: Dict[Path, set[Path]] = {}
     for relative in parents:
         components.setdefault(find(relative), set()).add(relative)
@@ -424,7 +606,23 @@ def _merge_external_inputs(
 
 def _validate_json(path: Path) -> None:
     if path.suffix == ".json":
-        read_json(path)
+        if path.name == "physical-summary.json":
+            from .physical_summary_storage import read_physical_summary
+
+            summary = read_physical_summary(path)
+            try:
+                for field in (
+                    "boundary_identities", "boundary_timing",
+                    "logic_segment_timing", "local_path_timing",
+                ):
+                    evidence = summary.get(field)
+                    if isinstance(evidence, dict):
+                        for fpga in tuple(evidence):
+                            evidence[fpga]
+            finally:
+                summary.close()
+        else:
+            read_json(path)
 
 
 def create_validation_archive(
@@ -493,6 +691,10 @@ def create_validation_archive(
             size = candidate_sizes[relative]
             retained = (
                 relative == Path("multi-fpga-flow-report.json")
+                or any(
+                    member.name == "physical-summary.json"
+                    for member in retention_groups[relative]
+                )
                 or all(
                     candidate_sizes[member] <= max_copy_bytes
                     for member in retention_groups[relative]
@@ -503,6 +705,7 @@ def create_validation_archive(
                 destination = temporary / "files" / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, destination)
+                _fsync_file(destination)
                 if _sha256(destination) != digest:
                     raise ValidationError(
                         f"copied archive artifact changed: {relative.as_posix()}"
@@ -574,6 +777,7 @@ def create_validation_archive(
             },
         }
         write_json(temporary / "archive-manifest.json", manifest)
+        _fsync_file(temporary / "archive-manifest.json")
         manifest_sha256 = _sha256(temporary / "archive-manifest.json")
         seal = {
             "schema": CLEANUP_SEAL_SCHEMA,
@@ -582,8 +786,17 @@ def create_validation_archive(
             "manifest_sha256": manifest_sha256,
         }
         write_json(temporary / "cleanup-seal.json", seal)
+        _fsync_file(temporary / "cleanup-seal.json")
+        _fsync_tree_directories(temporary)
         archive_dir.parent.mkdir(parents=True, exist_ok=True)
-        temporary.rename(archive_dir)
+        published_stat = os.stat(temporary, follow_symlinks=False)
+        published_identity = (published_stat.st_dev, published_stat.st_ino)
+        os.replace(temporary, archive_dir)
+        try:
+            _fsync_directory(archive_dir.parent)
+        except BaseException:
+            _rollback_published_directory(archive_dir, published_identity)
+            raise
     except BaseException:
         shutil.rmtree(temporary, ignore_errors=True)
         raise

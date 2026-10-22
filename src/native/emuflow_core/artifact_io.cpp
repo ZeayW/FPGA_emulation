@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 
 #if defined(_WIN32)
@@ -57,22 +58,28 @@ void SyncDirectory(const std::filesystem::path& path) {
 
 }  // namespace
 
-BinaryReader::BinaryReader(const std::string& path) {
-  std::ifstream stream(path, std::ios::binary | std::ios::ate);
-  if (!stream) throw std::runtime_error("cannot open native input");
-  const auto size = stream.tellg();
-  if (size < 0) throw std::runtime_error("cannot size native input");
-  bytes_.resize(static_cast<std::size_t>(size));
-  stream.seekg(0);
-  if (!bytes_.empty()) {
-    stream.read(bytes_.data(), static_cast<std::streamsize>(bytes_.size()));
+BinaryReader::BinaryReader(const std::string& path)
+    : stream_(path, std::ios::binary) {
+  if (!stream_) throw std::runtime_error("cannot open native input");
+  std::error_code error;
+  const auto file_size = std::filesystem::file_size(path, error);
+  if (error || file_size > std::numeric_limits<std::size_t>::max()) {
+    throw std::runtime_error("cannot size native input");
   }
-  if (!stream) throw std::runtime_error("cannot read native input");
+  size_ = static_cast<std::size_t>(file_size);
 }
 
 void BinaryReader::RequireEnd() const {
-  if (offset_ != bytes_.size()) {
+  if (offset_ != size_) {
     throw std::runtime_error("native input has trailing bytes");
+  }
+}
+
+void ReadAndValidateHeader(BinaryReader& reader, const ArtifactSchema& schema) {
+  if (reader.Read<std::uint64_t>() != schema.magic ||
+      reader.Read<std::uint32_t>() != schema.version) {
+    throw std::runtime_error(std::string("unsupported ") + schema.name +
+                             " header");
   }
 }
 

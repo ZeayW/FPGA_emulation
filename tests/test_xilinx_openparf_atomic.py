@@ -1,7 +1,11 @@
 import json
+import fcntl
+import os
 import shutil
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -29,9 +33,11 @@ from emuflow.xilinx_openparf_atomic import (
     iter_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_sites,
+    open_xilinx_openparf_atomic_placement,
     run_xilinx_openparf_atomic_qualification,
     validate_xilinx_openparf_atomic_placement,
     materialize_xilinx_openparf_atomic_source,
+    read_xilinx_openparf_atomic_name_map,
 )
 from emuflow.xilinx_openparf_source_storage import (
     OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
@@ -551,9 +557,23 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             actual = atomic_adapter._render_library_and_nets(
                 indexed_cells, atoms, names
             )
+            streamed_path = root / "streamed.nets"
+            streamed = atomic_adapter._render_library_and_nets(
+                indexed_cells, atoms, names, nets_path=streamed_path
+            )
+            streamed_text = streamed_path.read_text(encoding="utf-8")
 
-        self.assertEqual(atoms, expected_atoms)
+        self.assertNotIsInstance(atoms, list)
+        atom_store = atoms.path
+        expected_atom_store = expected_atoms.path
+        self.assertEqual(list(atoms), list(expected_atoms))
         self.assertEqual(actual, expected)
+        self.assertEqual(streamed, (expected[0], None, *expected[2:]))
+        self.assertEqual(streamed_text, expected[1])
+        atoms.close()
+        expected_atoms.close()
+        self.assertFalse(atom_store.exists())
+        self.assertFalse(expected_atom_store.exists())
 
     def test_non_degenerate_runtime_fixture_export_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -564,7 +584,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 mapped, packed, architecture, output
             )
             config = json.loads((output / "openparf.json").read_text())
-            names = json.loads((output / "name_map.json").read_text())
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -576,6 +596,17 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             ).is_file()
             sites = (output / "design.scl").read_text()
             net_lines = (output / "design.nets").read_text().splitlines()
+            name_selector = json.loads(
+                (output / "name_map.json").read_text(encoding="utf-8")
+            )
+            self.assertNotIn("atoms", name_selector)
+            self.assertIn(name_selector["artifact"], manifest["files"])
+            self.assertTrue((output / name_selector["artifact"]).is_file())
+            self.assertEqual(manifest["name_map_storage"]["atoms"], 128)
+            self.assertEqual(
+                manifest["name_map_storage"]["store"]["sha256"],
+                name_selector["store_sha256"],
+            )
 
         declarations = [
             line.split() for line in net_lines if line.startswith("net ")
@@ -900,9 +931,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
             name_map_path = output / "name_map.json"
-            name_map = json.loads(name_map_path.read_text(encoding="utf-8"))
+            name_map = read_xilinx_openparf_atomic_name_map(name_map_path)
 
             site_database = output / name_map["site_database"]["file"]
+            name_map.close()
             site_database.unlink()
             with self.assertRaisesRegex(ValidationError, "database is missing"):
                 load_xilinx_openparf_atomic_sites(name_map_path)
@@ -914,6 +946,45 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 )
             with self.assertRaisesRegex(ValidationError, "metadata is invalid"):
                 load_xilinx_openparf_atomic_sites(name_map_path)
+
+    def test_all_placement_consumers_reject_mixed_packed_generation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_runtime_fixture(root)
+            output = root / "output"
+            manifest = export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output
+            )
+            packed.write_text(
+                packed.read_text(encoding="utf-8") + "\n",
+                encoding="utf-8",
+            )
+            mismatched_packed_sha = atomic_adapter._sha256(packed)
+            self.assertEqual(
+                manifest["name_map_storage"]["source"]["mapped_sha256"],
+                atomic_adapter._sha256(mapped),
+            )
+            with self.assertRaisesRegex(ValidationError, "packed source seal"):
+                load_xilinx_openparf_atomic_sites(
+                    output / "name_map.json",
+                    packed_sha256=mismatched_packed_sha,
+                )
+            with self.assertRaisesRegex(ValidationError, "packed source seal"):
+                legalize_xilinx_openparf_ff_control_sets(
+                    output / "missing.pl",
+                    output / "name_map.json",
+                    mapped,
+                    output / "legalization.json",
+                    packed_path=packed,
+                )
+            with self.assertRaisesRegex(ValidationError, "packed source seal"):
+                validate_xilinx_openparf_atomic_placement(
+                    output / "missing.pl",
+                    output / "name_map.json",
+                    mapped,
+                    architecture,
+                    packed_path=packed,
+                )
 
     def test_parallel_exports_share_immutable_device_geometry_and_database(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1002,7 +1073,11 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 mapped, packed, architecture, output
             )
             config = json.loads((output / "openparf.json").read_text())
-            names = json.loads((output / "name_map.json").read_text())
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            hard_atoms = [
+                atom for atom in names["atoms"]
+                if atom["resource"] in {"DSP48E2", "RAMB36E2", "URAM288"}
+            ]
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1027,10 +1102,6 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             sorted(int(fields[2]) for fields in declarations),
             [2] * 131 + [64],
         )
-        hard_atoms = [
-            atom for atom in names["atoms"]
-            if atom["resource"] in {"DSP48E2", "RAMB36E2", "URAM288"}
-        ]
         self.assertEqual(len(hard_atoms), 3)
         pin_rows = [
             line.strip() for line in net_lines
@@ -1076,7 +1147,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             architecture.write_text(json.dumps(value), encoding="utf-8")
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            names = json.loads((output / "name_map.json").read_text())
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1133,7 +1204,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             export_xilinx_openparf_atomic(
                 mapped, packed, architecture, output
             )
-            names = json.loads((output / "name_map.json").read_text())
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1351,6 +1422,460 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 list(iter_xilinx_openparf_atomic_placement_clusters(
                     certificate_path, persisted
                 ))
+
+    def test_production_import_streams_directly_to_content_addressed_store(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "placed.pl"
+            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+            certificate_path = output / "placement-certificate.json"
+            certificate = validate_xilinx_openparf_atomic_placement(
+                placement, output / "name_map.json", mapped, architecture,
+                certificate_path, materialize_result=False,
+            )
+            self.assertNotIn("clusters", certificate)
+            descriptor = certificate["cluster_storage"]
+            self.assertEqual(
+                descriptor["file"],
+                f"placement-certificate.{descriptor['sha256']}.sqlite",
+            )
+            self.assertEqual(descriptor["clusters"], 1)
+            self.assertEqual(descriptor["assignments"], 2)
+            self.assertEqual(
+                [
+                    assignment["instance"]
+                    for cluster in iter_xilinx_openparf_atomic_placement_clusters(
+                        certificate_path, certificate
+                    )
+                    for assignment in cluster["assignments"]
+                ],
+                ["ff", "lut"],
+            )
+
+    def test_production_bridge_rejects_inline_legacy_certificate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "placed.pl"
+            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+            certificate = validate_xilinx_openparf_atomic_placement(
+                placement, output / "name_map.json", mapped, architecture,
+            )
+            certificate_path = output / "legacy-certificate.json"
+            certificate_path.write_text(
+                json.dumps(certificate), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "typed placement-certificate store"
+            ):
+                materialize_xilinx_openparf_atomic_contract(
+                    mapped, architecture, certificate_path,
+                    output / "unused-packed.json",
+                    output / "unused-placement.json",
+                    physical_handoff_path=output / "physical-handoff.sqlite",
+                )
+
+    def test_production_certificate_binds_packed_source_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "placed.pl"
+            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+            certificate_path = output / "placement-certificate.json"
+            validate_xilinx_openparf_atomic_placement(
+                placement, output / "name_map.json", mapped, architecture,
+                certificate_path, packed_path=packed,
+                materialize_result=False,
+            )
+            packed_value = json.loads(packed.read_text(encoding="utf-8"))
+            packed_value["source"] = {
+                "mapped_json_sha256": atomic_adapter._sha256(mapped),
+            }
+            packed.write_text(
+                packed.read_text(encoding="utf-8") + "\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "packed-source identity"
+            ):
+                materialize_xilinx_openparf_atomic_contract(
+                    mapped, architecture, certificate_path,
+                    output / "unused-packed.json",
+                    output / "unused-placement.json",
+                    source_packed_path=packed,
+                    source_packed_value=packed_value,
+                    physical_handoff_path=output / "physical-handoff.sqlite",
+                )
+
+    def test_certificate_publication_is_selector_last_and_reader_leased(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "placed.pl"
+            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+            certificate_path = output / "placement-certificate.json"
+            first = validate_xilinx_openparf_atomic_placement(
+                placement, output / "name_map.json", mapped, architecture,
+                certificate_path, materialize_result=False,
+            )
+            selector_bytes = certificate_path.read_bytes()
+            first_store = output / first["cluster_storage"]["file"]
+            placement.write_text("a0 0 0 0\na1 0 1 1\n", encoding="utf-8")
+            real_replace = os.replace
+
+            def fail_selector(source, destination):
+                if Path(destination) == certificate_path:
+                    raise OSError("injected selector commit failure")
+                return real_replace(source, destination)
+
+            with mock.patch(
+                "emuflow.xilinx_openparf_atomic.os.replace",
+                side_effect=fail_selector,
+            ):
+                with self.assertRaisesRegex(OSError, "injected"):
+                    validate_xilinx_openparf_atomic_placement(
+                        placement, output / "name_map.json", mapped,
+                        architecture, certificate_path,
+                        materialize_result=False,
+                    )
+            self.assertEqual(certificate_path.read_bytes(), selector_bytes)
+            self.assertTrue(first_store.is_file())
+            self.assertEqual(
+                len(list(output.glob("placement-certificate.*.sqlite"))), 2
+            )
+            self.assertEqual(
+                len(list(iter_xilinx_openparf_atomic_placement_clusters(
+                    certificate_path, first
+                ))),
+                1,
+            )
+
+            view = open_xilinx_openparf_atomic_placement(certificate_path)
+            writer_started = threading.Event()
+
+            def publish_replacement():
+                writer_started.set()
+                return validate_xilinx_openparf_atomic_placement(
+                    placement, output / "name_map.json", mapped, architecture,
+                    certificate_path, materialize_result=False,
+                )
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(publish_replacement)
+                self.assertTrue(writer_started.wait(timeout=1))
+                time.sleep(0.05)
+                self.assertFalse(future.done())
+                self.assertEqual(
+                    next(view.iter_clusters())["site"], "SLICE_X0Y0"
+                )
+                view.close()
+                second = future.result(timeout=5)
+            self.assertNotEqual(
+                second["cluster_storage"]["sha256"],
+                first["cluster_storage"]["sha256"],
+            )
+            self.assertFalse(first_store.exists())
+            self.assertEqual(
+                len(list(output.glob("placement-certificate.*.sqlite"))), 1
+            )
+
+    def test_typed_certificate_rejects_resealed_schema_extension(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "placed.pl"
+            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+            certificate_path = output / "placement-certificate.json"
+            certificate = validate_xilinx_openparf_atomic_placement(
+                placement, output / "name_map.json", mapped, architecture,
+                certificate_path, materialize_result=False,
+            )
+            old_store = output / certificate["cluster_storage"]["file"]
+            mutated = output / "mutated.sqlite"
+            shutil.copy2(old_store, mutated)
+            with sqlite3.connect(mutated) as database:
+                database.execute("CREATE TABLE injected(value TEXT)")
+            digest = atomic_adapter._sha256(mutated)
+            new_store = output / f"placement-certificate.{digest}.sqlite"
+            mutated.rename(new_store)
+            descriptor = dict(certificate["cluster_storage"])
+            descriptor.update({
+                "file": new_store.name,
+                "bytes": new_store.stat().st_size,
+                "sha256": digest,
+            })
+            certificate["cluster_storage"] = descriptor
+            certificate_path.write_text(json.dumps(certificate), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "database schema"):
+                list(iter_xilinx_openparf_atomic_placement_clusters(
+                    certificate_path, certificate
+                ))
+
+    def test_typed_certificate_rejects_resealed_column_contract_changes(self):
+        def certificate_at(root):
+            path = root / "certificate.json"
+            value = atomic_adapter.write_xilinx_openparf_atomic_placement_certificate(
+                path,
+                {
+                    "schema": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
+                    "clusters": [{
+                        "cluster": "openparf:SLICE_X0Y0",
+                        "site": "SLICE_X0Y0", "site_type": "SLICEL",
+                        "x": 0, "y": 0,
+                        "assignments": [{
+                            "instance": "u0", "cell_type": "LUT6",
+                            "bel": "A6LUT", "physical_site": "SLICE_X0Y0",
+                            "placement_mode": "SLICEL",
+                            "source_cluster": "atomic-source:u0",
+                            "bram_tile_group": None,
+                        }],
+                    }],
+                },
+            )
+            return path, value
+
+        mutations = {
+            "extra": "ALTER TABLE assignments ADD COLUMN injected TEXT",
+            "missing": """
+                ALTER TABLE assignments RENAME TO old_assignments;
+                CREATE TABLE assignments (
+                    cluster_index INTEGER NOT NULL REFERENCES clusters(cluster_index),
+                    assignment_index INTEGER NOT NULL,
+                    instance TEXT NOT NULL UNIQUE,
+                    cell_type TEXT NOT NULL,
+                    bel TEXT NOT NULL,
+                    physical_site TEXT NOT NULL,
+                    placement_mode TEXT NOT NULL,
+                    source_cluster TEXT NOT NULL,
+                    PRIMARY KEY (cluster_index, assignment_index)
+                ) WITHOUT ROWID;
+                INSERT INTO assignments SELECT cluster_index,assignment_index,
+                    instance,cell_type,bel,physical_site,placement_mode,
+                    source_cluster FROM old_assignments;
+                DROP TABLE old_assignments;
+            """,
+        }
+        for name, statement in mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                path, value = certificate_at(root)
+                original = root / value["cluster_storage"]["file"]
+                mutated = root / "mutated.sqlite"
+                shutil.copy2(original, mutated)
+                with sqlite3.connect(mutated) as database:
+                    database.executescript(statement)
+                digest = atomic_adapter._sha256(mutated)
+                store = root / f"certificate.{digest}.sqlite"
+                mutated.rename(store)
+                descriptor = dict(value["cluster_storage"])
+                descriptor.update({
+                    "file": store.name, "bytes": store.stat().st_size,
+                    "sha256": digest,
+                })
+                value["cluster_storage"] = descriptor
+                path.write_text(json.dumps(value), encoding="utf-8")
+                with self.assertRaisesRegex(ValidationError, "column contract"):
+                    list(iter_xilinx_openparf_atomic_placement_clusters(
+                        path, value
+                    ))
+
+    def test_typed_certificate_rejects_orphan_even_when_resealed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "certificate.json"
+            value = atomic_adapter.write_xilinx_openparf_atomic_placement_certificate(
+                path,
+                {
+                    "schema": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
+                    "clusters": [{
+                        "cluster": "openparf:SLICE_X0Y0",
+                        "site": "SLICE_X0Y0", "site_type": "SLICEL",
+                        "x": 0, "y": 0,
+                        "assignments": [{
+                            "instance": "u0", "cell_type": "LUT6",
+                            "bel": "A6LUT", "physical_site": "SLICE_X0Y0",
+                            "placement_mode": "SLICEL",
+                            "source_cluster": "atomic-source:u0",
+                            "bram_tile_group": None,
+                        }],
+                    }],
+                },
+            )
+            original = root / value["cluster_storage"]["file"]
+            mutated = root / "mutated.sqlite"
+            shutil.copy2(original, mutated)
+            descriptor = dict(value["cluster_storage"])
+            descriptor["assignments"] = 2
+            header = dict(value)
+            header.pop("cluster_storage")
+            with sqlite3.connect(mutated) as database:
+                database.execute(
+                    "INSERT INTO assignments VALUES (?,?,?,?,?,?,?,?,?)",
+                    (7, 0, "orphan", "LUT6", "B6LUT", "SLICE_X0Y1",
+                     "SLICEL", "atomic-source:orphan", None),
+                )
+                database.execute(
+                    "UPDATE metadata SET value='2' WHERE key='assignments'"
+                )
+                logical = atomic_adapter._logical_record_digest(header, database)
+                database.execute(
+                    "UPDATE metadata SET value=? WHERE key='logical_sha256'",
+                    (logical,),
+                )
+            descriptor["logical_sha256"] = logical
+            digest = atomic_adapter._sha256(mutated)
+            store = root / f"certificate.{digest}.sqlite"
+            mutated.rename(store)
+            descriptor.update({
+                "file": store.name, "bytes": store.stat().st_size,
+                "sha256": digest,
+            })
+            value["cluster_storage"] = descriptor
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "coverage"):
+                list(iter_xilinx_openparf_atomic_placement_clusters(path, value))
+
+    def test_logical_digest_detects_tamper_and_is_layout_independent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "certificate.json"
+            value = atomic_adapter.write_xilinx_openparf_atomic_placement_certificate(
+                path,
+                {
+                    "schema": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
+                    "clusters": [{
+                        "cluster": "openparf:SLICE_X0Y0",
+                        "site": "SLICE_X0Y0", "site_type": "SLICEL",
+                        "x": 0, "y": 0,
+                        "assignments": [{
+                            "instance": "u0", "cell_type": "LUT6",
+                            "bel": "A6LUT", "physical_site": "SLICE_X0Y0",
+                            "placement_mode": "SLICEL",
+                            "source_cluster": "atomic-source:u0",
+                            "bram_tile_group": None,
+                        }],
+                    }],
+                },
+            )
+            original_descriptor = dict(value["cluster_storage"])
+            original = root / original_descriptor["file"]
+
+            layout = root / "layout.sqlite"
+            shutil.copy2(original, layout)
+            with sqlite3.connect(layout) as database:
+                database.execute("PRAGMA page_size=4096")
+                database.execute("VACUUM")
+            layout_sha = atomic_adapter._sha256(layout)
+            self.assertNotEqual(layout_sha, original_descriptor["sha256"])
+            layout_store = root / f"certificate.{layout_sha}.sqlite"
+            layout.rename(layout_store)
+            layout_descriptor = dict(original_descriptor)
+            layout_descriptor.update({
+                "file": layout_store.name,
+                "bytes": layout_store.stat().st_size,
+                "sha256": layout_sha,
+            })
+            value["cluster_storage"] = layout_descriptor
+            path.write_text(json.dumps(value), encoding="utf-8")
+            self.assertEqual(
+                len(list(iter_xilinx_openparf_atomic_placement_clusters(
+                    path, value
+                ))),
+                1,
+            )
+            self.assertEqual(
+                layout_descriptor["logical_sha256"],
+                original_descriptor["logical_sha256"],
+            )
+
+            tampered = root / "tampered.sqlite"
+            shutil.copy2(original, tampered)
+            with sqlite3.connect(tampered) as database:
+                database.execute(
+                    "UPDATE assignments SET cell_type='LUT5' WHERE instance='u0'"
+                )
+            tampered_sha = atomic_adapter._sha256(tampered)
+            tampered_store = root / f"certificate.{tampered_sha}.sqlite"
+            tampered.rename(tampered_store)
+            tampered_descriptor = dict(original_descriptor)
+            tampered_descriptor.update({
+                "file": tampered_store.name,
+                "bytes": tampered_store.stat().st_size,
+                "sha256": tampered_sha,
+            })
+            value["cluster_storage"] = tampered_descriptor
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValidationError, "logical digest"):
+                list(iter_xilinx_openparf_atomic_placement_clusters(path, value))
+
+    def test_legacy_v2_certificate_store_requires_explicit_materializer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            certificate_path = root / "certificate.json"
+            certificate = atomic_adapter.write_xilinx_openparf_atomic_placement_certificate(
+                certificate_path,
+                {
+                    "schema": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
+                    "clusters": [{
+                        "cluster": "openparf:SLICE_X0Y0",
+                        "site": "SLICE_X0Y0", "site_type": "SLICEL",
+                        "x": 0, "y": 0,
+                        "assignments": [{
+                            "instance": "u0", "cell_type": "LUT6",
+                            "bel": "A6LUT", "physical_site": "SLICE_X0Y0",
+                            "placement_mode": "SLICEL",
+                            "source_cluster": "atomic-source:u0",
+                            "bram_tile_group": None,
+                        }],
+                    }],
+                },
+            )
+            current_store = root / certificate["cluster_storage"]["file"]
+            legacy_store = root / "certificate.sqlite3"
+            shutil.copy2(current_store, legacy_store)
+            with sqlite3.connect(legacy_store) as database:
+                database.execute("PRAGMA application_id = 0")
+                database.execute("PRAGMA user_version = 0")
+                database.execute(
+                    "UPDATE metadata SET value=? WHERE key='schema'",
+                    ("emuflow.openparf-atomic-placement-database/v2",),
+                )
+                database.execute(
+                    "DELETE FROM metadata WHERE key='logical_sha256'"
+                )
+            descriptor = {
+                "schema": "emuflow.openparf-atomic-placement-database/v2",
+                "file": legacy_store.name,
+                "bytes": legacy_store.stat().st_size,
+                "sha256": atomic_adapter._sha256(legacy_store),
+                "clusters": 1,
+                "assignments": 1,
+            }
+            legacy = {
+                "schema": OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
+                "cluster_storage": descriptor,
+            }
+            certificate_path.write_text(json.dumps(legacy), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValidationError, "explicit compatibility mode"
+            ):
+                list(iter_xilinx_openparf_atomic_placement_clusters(
+                    certificate_path, legacy
+                ))
+            materialized = load_xilinx_openparf_atomic_placement_clusters(
+                certificate_path, legacy
+            )
+            self.assertEqual(materialized[0]["assignments"][0]["instance"], "u0")
 
     def test_compact_certificate_serializes_bram_tile_group(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1615,7 +2140,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             mapped, packed, architecture = _fixture(root, mixed=True)
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            names = json.loads((output / "name_map.json").read_text())
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1740,7 +2265,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 if window[0]["anchor"] == lo_window["anchor"]
                 and window[0]["z"] != lo_window["z"]
             )
-            names = json.loads((output / "name_map.json").read_text())
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1898,7 +2423,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 [member["z"] for member in group["window_template"]["members"]],
                 [1, 3, 0],
             )
-            names = json.loads((output / "name_map.json").read_text(encoding="utf-8"))
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             openparf = {atom["instance"]: atom["openparf"] for atom in names["atoms"]}
             sites = load_xilinx_openparf_atomic_sites(output / "name_map.json")
             slice_sites = [site for site in sites if "LUT" in site["resources"]]
@@ -2029,9 +2554,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                         f"{instance} {macro_site_entry['dense_x']} "
                         f"{macro_site_entry['dense_y']} {entry['z']}"
                     )
-                names = json.loads(
-                    (output / "name_map.json").read_text(encoding="utf-8")
-                )
+                names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
                 ff = next(atom for atom in names["atoms"] if atom["instance"] == "ff")
                 macro_site = macro_site_entry["site"]
                 ff_site = next(site for site in sites.values()
@@ -2151,6 +2674,144 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     malformed, output / "name_map.json", mapped, architecture
                 )
 
+    def test_validator_joins_typed_atoms_without_materializing_name_map(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "shuffled.pl"
+            placement.write_text(
+                "a1 0 0 1 trailing-solver-field\n"
+                "# solver comment\n"
+                "a0 0 0 0\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "emuflow.xilinx_openparf_name_map_storage."
+                "_AtomSequence.__iter__",
+                side_effect=AssertionError("atom sequence was materialized"),
+            ):
+                certificate = validate_xilinx_openparf_atomic_placement(
+                    placement, output / "name_map.json", mapped, architecture
+                )
+            self.assertEqual(certificate["status"], "pass")
+            self.assertEqual(certificate["summary"]["atoms"], 2)
+            self.assertFalse(list(output.glob(".openparf-placement-*.sqlite3")))
+
+    def test_validator_releases_system_index_and_name_map_lease_on_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "placed.pl"
+            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+            created = []
+            real_mkstemp = tempfile.mkstemp
+
+            def tracked_mkstemp(*args, **kwargs):
+                descriptor, path = real_mkstemp(*args, **kwargs)
+                if kwargs.get("prefix") == "emuflow-openparf-placement-":
+                    created.append(Path(path))
+                return descriptor, path
+
+            with mock.patch(
+                "emuflow.xilinx_openparf_atomic.tempfile.mkstemp",
+                side_effect=tracked_mkstemp,
+            ), mock.patch(
+                "emuflow.xilinx_openparf_atomic."
+                "load_xilinx_openparf_atomic_sites",
+                side_effect=ValidationError("injected site failure"),
+            ):
+                with self.assertRaisesRegex(ValidationError, "injected site"):
+                    validate_xilinx_openparf_atomic_placement(
+                        placement, output / "name_map.json", mapped, architecture
+                    )
+            self.assertEqual(len(created), 1)
+            self.assertFalse(created[0].exists())
+            lock_path = output / ".name_map.json.lock"
+            descriptor = os.open(lock_path, os.O_RDWR)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+
+    def test_parser_preserves_earliest_source_error_across_batches(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            cases = (
+                (
+                    "unknown-before-duplicate.pl",
+                    "a999 0 0 0\na0 0 0 0\na0 0 0 1\n",
+                ),
+                (
+                    "unknown-before-malformed.pl",
+                    "a999 0 0 0\nmalformed\n",
+                ),
+                (
+                    "wrong-prefix-before-malformed.pl",
+                    "b0 0 0 0\nmalformed\n",
+                ),
+                (
+                    "wrong-prefix-before-duplicate.pl",
+                    "x0 0 0 0\na0 0 0 0\na0 0 0 1\n",
+                ),
+            )
+            for filename, contents in cases:
+                placement = output / filename
+                placement.write_text(contents, encoding="utf-8")
+                with self.assertRaisesRegex(
+                    ImportError, rf"{filename}:1: invalid atomic placement row"
+                ):
+                    validate_xilinx_openparf_atomic_placement(
+                        placement, output / "name_map.json", mapped, architecture
+                    )
+
+            duplicate_first = output / "duplicate-before-malformed.pl"
+            duplicate_first.write_text(
+                "a0 0 0 0\na0 0 0 1\nmalformed\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValidationError, "duplicates an atom"):
+                validate_xilinx_openparf_atomic_placement(
+                    duplicate_first,
+                    output / "name_map.json",
+                    mapped,
+                    architecture,
+                )
+
+            for filename, second_row in (
+                ("duplicate-before-nonnumeric.pl", "a0 q 0 1"),
+                ("duplicate-before-nondiscrete.pl", "a0 0.5 0 1"),
+            ):
+                duplicate_coordinate = output / filename
+                duplicate_coordinate.write_text(
+                    f"a0 0 0 0\n{second_row}\n", encoding="utf-8"
+                )
+                with self.assertRaisesRegex(
+                    ValidationError, "duplicates an atom"
+                ):
+                    validate_xilinx_openparf_atomic_placement(
+                        duplicate_coordinate,
+                        output / "name_map.json",
+                        mapped,
+                        architecture,
+                    )
+
+            duplicate = output / "duplicate.pl"
+            duplicate.write_text(
+                "a0 0 0 0\na0 0 0 1\na1 0 0 1\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValidationError, "duplicates an atom"):
+                validate_xilinx_openparf_atomic_placement(
+                    duplicate, output / "name_map.json", mapped, architecture
+                )
+            self.assertFalse(list(output.glob(".openparf-placement-*.sqlite3")))
+
     def test_exports_exact_native_dsp_chain_windows_for_in_core_legalizer(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2252,9 +2913,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 [site["site"] for site in chain["windows"][0]],
                 ["DSP48E2_X0Y0", "DSP48E2_X1Y0"],
             )
-            names = json.loads(
-                (output / "name_map.json").read_text(encoding="utf-8")
-            )
+            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )

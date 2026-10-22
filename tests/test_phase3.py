@@ -20,6 +20,7 @@ from emuflow.partition import (
     validate_partition_artifacts,
     validate_partition_artifacts_online,
 )
+from emuflow.partition_ir import load_partition_ir
 from emuflow.phase3 import run_phase3, validate_phase3_indexed
 from emuflow.phase3_assignment_index import (
     validate_phase3_assignment_index,
@@ -59,6 +60,205 @@ class Phase3Test(unittest.TestCase):
             seed=7,
         )
         return constraints, clusters, assignment
+
+    def test_compact_cluster_builder_matches_reference_without_graph_decode(
+        self,
+    ) -> None:
+        constraints = normalize_partition_constraints(
+            {
+                "schema": "emuflow.partition-constraints/v1",
+                "groups": [
+                    {
+                        "id": "low_bits",
+                        "instances": ["q_reg[0]", "q_reg[1]"],
+                    }
+                ],
+                "fixed": [
+                    {"fpga": "fpga1", "instance": "q_reg[0]"}
+                ],
+            },
+            self.ir,
+            self.platform,
+        )
+        expected = build_clusters(self.ir, constraints)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            ir_path = Path(temporary_directory) / "design.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            compact_ir = load_partition_ir(ir_path)
+            with patch(
+                "emuflow.partition_ir._CompactPartitionInstances.__iter__",
+                side_effect=AssertionError("cell dictionaries were decoded"),
+            ), patch(
+                "emuflow.partition_ir._CompactPartitionNets.__iter__",
+                side_effect=AssertionError("net dictionaries were decoded"),
+            ):
+                actual = build_clusters(compact_ir, constraints)
+            expected_exact = build_clusters(
+                self.ir,
+                constraints,
+                cut_mode="static-exact-combinational",
+            )
+            actual_exact = build_clusters(
+                compact_ir,
+                constraints,
+                cut_mode="static-exact-combinational",
+            )
+            streamed_exact = build_clusters(
+                compact_ir,
+                constraints,
+                cut_mode="static-exact-combinational",
+                _stream_eligible_policy_names=True,
+            )
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual_exact, expected_exact)
+        streamed_names = streamed_exact["policy"][
+            "eligible_combinational_cut_nets"
+        ]
+        self.assertIsInstance(streamed_names, list)
+        self.assertEqual(list.__len__(streamed_names), 0)
+        self.assertEqual(streamed_exact, expected_exact)
+        self.assertEqual(
+            json.dumps(streamed_exact, sort_keys=True, separators=(",", ":")),
+            json.dumps(expected_exact, sort_keys=True, separators=(",", ":")),
+        )
+        copied = copy.deepcopy(streamed_exact)
+        self.assertIs(
+            type(copied["policy"]["eligible_combinational_cut_nets"]),
+            list,
+        )
+        self.assertEqual(copied, expected_exact)
+        streamed_assignment = assign_clusters(
+            self.ir,
+            self.platform,
+            streamed_exact,
+            constraints,
+            seed=3,
+        )
+        self.assertEqual(
+            validate_partition_artifacts(
+                self.ir,
+                self.platform,
+                streamed_exact,
+                streamed_assignment,
+            )["status"],
+            "pass",
+        )
+
+    def test_compact_cluster_builder_decodes_each_resource_payload_once(
+        self,
+    ) -> None:
+        constraints = normalize_partition_constraints(
+            None, self.ir, self.platform
+        )
+        expected = build_clusters(self.ir, constraints)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            ir_path = Path(temporary_directory) / "design.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            with sqlite3.connect(ir_path) as connection:
+                unique_payloads = connection.execute(
+                    "SELECT COUNT(DISTINCT resources_seq) FROM cell_records"
+                ).fetchone()[0]
+                cell_count = connection.execute(
+                    "SELECT COUNT(*) FROM cell_records"
+                ).fetchone()[0]
+            self.assertLess(unique_payloads, cell_count)
+            compact_ir = load_partition_ir(ir_path)
+            with patch(
+                "emuflow.partition.ResourceVector.from_mapping",
+                wraps=ResourceVector.from_mapping,
+            ) as decode:
+                actual = build_clusters(compact_ir, constraints)
+        self.assertEqual(actual, expected)
+        self.assertEqual(decode.call_count, unique_payloads)
+
+    def test_compact_default_constraints_skip_instance_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            ir_path = Path(temporary_directory) / "design.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            compact_ir = load_partition_ir(ir_path)
+            with patch(
+                "emuflow.partition_ir._CompactPartitionInstances.__iter__",
+                side_effect=AssertionError(
+                    "default constraints must not scan every instance"
+                ),
+            ):
+                constraints = normalize_partition_constraints(
+                    None,
+                    compact_ir,
+                    self.platform,
+                    min_used_fpgas=2,
+                )
+        self.assertEqual(constraints["groups"], [])
+        self.assertEqual(constraints["fixed"], [])
+        self.assertEqual(constraints["active_fpgas"], ["fpga0", "fpga1"])
+
+    def test_compact_cluster_builder_rejects_invalid_endpoint_owner(self) -> None:
+        constraints = normalize_partition_constraints(
+            None, self.ir, self.platform
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            ir_path = Path(temporary_directory) / "design.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            with sqlite3.connect(ir_path) as connection:
+                endpoint = connection.execute(
+                    """SELECT net_seq,role,ordinal FROM endpoint_records
+                        WHERE instance_seq IS NOT NULL LIMIT 1"""
+                ).fetchone()
+                self.assertIsNotNone(endpoint)
+                connection.execute(
+                    """UPDATE endpoint_records SET instance_seq=?
+                        WHERE net_seq=? AND role=? AND ordinal=?""",
+                    (2**31, *endpoint),
+                )
+            compact_ir = load_partition_ir(ir_path)
+            with self.assertRaisesRegex(
+                ValidationError, "endpoint owner is invalid"
+            ):
+                build_clusters(compact_ir, constraints)
+
+    def test_compact_cluster_builder_rejects_missing_resource_payload(
+        self,
+    ) -> None:
+        constraints = normalize_partition_constraints(
+            None, self.ir, self.platform
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            ir_path = Path(temporary_directory) / "design.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            with sqlite3.connect(ir_path) as connection:
+                missing_seq = connection.execute(
+                    "SELECT coalesce(max(seq), -1) + 1 FROM payloads"
+                ).fetchone()[0]
+                connection.execute(
+                    "UPDATE cell_records SET resources_seq=? WHERE seq=0",
+                    (missing_seq,),
+                )
+            compact_ir = load_partition_ir(ir_path)
+            with self.assertRaisesRegex(
+                ValidationError, "resource payload is missing"
+            ):
+                build_clusters(compact_ir, constraints)
+
+    def test_compact_cluster_builder_rejects_non_object_resources(self) -> None:
+        constraints = normalize_partition_constraints(
+            None, self.ir, self.platform
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            ir_path = Path(temporary_directory) / "design.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            with sqlite3.connect(ir_path) as connection:
+                resources_seq = connection.execute(
+                    "SELECT resources_seq FROM cell_records WHERE seq=0"
+                ).fetchone()[0]
+                connection.execute(
+                    "UPDATE payloads SET value='[123456789]' WHERE seq=?",
+                    (resources_seq,),
+                )
+            compact_ir = load_partition_ir(ir_path)
+            with self.assertRaisesRegex(
+                ValidationError, "resources: expected an object"
+            ):
+                build_clusters(compact_ir, constraints)
 
     def test_indexed_terminal_validation_avoids_graph_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

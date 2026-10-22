@@ -22,6 +22,7 @@ from .chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
 )
+from .chimew_bank_channel_storage import write_chimew_bank_channel_storage
 from .chimew_grouping import (
     CHIMEW_ACADEMIC_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
@@ -238,7 +239,11 @@ def _instance_locations(
             raise ValidationError(
                 f"academic Chimew prepass FPGA {fpga!r} has no boundary identity"
             )
-        boundary_document = read_json(Path(boundary_path))
+        from .boundary_identity_storage import read_boundary_identity_storage
+
+        boundary_document = read_boundary_identity_storage(
+            Path(boundary_path), allow_legacy=True
+        )
         boundary_map: Dict[str, Tuple[float, float, float, float]] = {}
         for endpoint in boundary_document.get("endpoints", []):
             if not isinstance(endpoint, Mapping):
@@ -268,6 +273,9 @@ def _instance_locations(
                     f"academic Chimew boundary entry {entry_id!r} is duplicated"
                 )
             boundary_map[entry_id] = point
+        close_boundary = getattr(boundary_document, "close", None)
+        if callable(close_boundary):
+            close_boundary()
         boundary_locations[fpga] = boundary_map
         placement_records.append(
             {
@@ -1791,8 +1799,14 @@ def materialize_academic_chimew_inputs(
     paths = {}
     for label, document in documents.items():
         path = inputs_dir / f"{label}.json"
-        write_json(path, document)
+        if label == "bank_channel_input":
+            indexed_bank_input = write_chimew_bank_channel_storage(path, document)
+            indexed_bank_input_store = indexed_bank_input.store_path
+            indexed_bank_input.close()
+        else:
+            write_json(path, document)
         paths[label] = path
+    paths["bank_channel_input_store"] = indexed_bank_input_store
     report = {
         "schema": ACADEMIC_CHIMEW_LOOKAHEAD_SCHEMA,
         "status": "pass",

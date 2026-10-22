@@ -12,6 +12,9 @@ from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
 )
+from emuflow.chimew_bank_channel_storage import (
+    write_chimew_bank_channel_storage,
+)
 from emuflow.chimew_grouping import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
@@ -499,7 +502,12 @@ class ContestChimewCrossFlowTest(unittest.TestCase):
                 ("electrical", electrical_map),
             ):
                 inputs[label] = root / f"chimew-{label}.json"
-                write_json(inputs[label], document)
+                if label == "bank":
+                    write_chimew_bank_channel_storage(
+                        inputs[label], document
+                    ).close()
+                else:
+                    write_json(inputs[label], document)
             pipeline_root = root / "chimew-pipeline"
             pipeline = run_chimew_phase6_pipeline(
                 schedule_path,

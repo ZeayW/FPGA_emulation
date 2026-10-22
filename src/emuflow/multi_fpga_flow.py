@@ -30,6 +30,7 @@ from .frame_search import (
 )
 from .io import read_json, write_json
 from .multi_fpga_physical_flow import (
+    DEFAULT_RAPIDWRIGHT_PLACER,
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
 )
@@ -1175,9 +1176,8 @@ def validate_multi_fpga_flow_bundle(
             Path("physical/physical-summary.json"),
             "physical summary",
         )
-        validate_multi_fpga_physical_report(
-            live_physical, read_physical_summary(physical_summary_path)
-        )
+        with read_physical_summary(physical_summary_path) as summary_view:
+            validate_multi_fpga_physical_report(live_physical, summary_view)
         candidate_link_timing = flow_root / "timing/board-link-timing.json"
         if candidate_link_timing.is_file():
             board_link_timing_path = _checked_flow_member(
@@ -1213,14 +1213,14 @@ def validate_multi_fpga_flow_bundle(
         from .global_sta import adopt_opensta_results, bind_physical_checks, compare_system_timing, read_engine_identity, read_measurements
         if physical_summary_path is None:
             raise ValidationError("global OpenSTA qualification lacks physical inputs")
-        physical = read_physical_summary(physical_summary_path)
-        if board_link_timing_path is not None:
-            physical["board_link_timing"] = read_json(board_link_timing_path)
-        checks = bind_physical_checks(
-            read_json(flow_root / "runtime/runtime_contract.json"),
-            read_json(routes_path), read_json(schedule_path), physical,
-            Platform.load(platform_path),
-        )
+        with read_physical_summary(physical_summary_path) as physical:
+            if board_link_timing_path is not None:
+                physical["board_link_timing"] = read_json(board_link_timing_path)
+            checks = bind_physical_checks(
+                read_json(flow_root / "runtime/runtime_contract.json"),
+                read_json(routes_path), read_json(schedule_path), physical,
+                Platform.load(platform_path),
+            )
         # Explicit terminal validation reconstructs the binding and checks the
         # raw engine scalars, without running the same external STA twice.
         measurements = read_measurements(_checked_flow_member(
@@ -1564,7 +1564,18 @@ def run_multi_fpga_flow(
     # interpreter inside the physical-flow helper is much too late for a
     # one-shot Phase 1--7 invocation.  Reject an unusable OpenPARF/PyTorch
     # binding before creating any frontend artifact or doing synthesis.
-    if physical and physical_backend == "open":
+    physical_uses_openparf = physical and (
+        physical_backend == "open"
+        or (
+            physical_backend == "rapidwright"
+            and (
+                physical_rapidwright_placer
+                or DEFAULT_RAPIDWRIGHT_PLACER
+            )
+            == "openparf-native"
+        )
+    )
+    if physical_uses_openparf:
         validate_openparf_runtime(
             install_root=physical_openparf_install,
             python_executable=physical_openparf_python,

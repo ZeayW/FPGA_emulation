@@ -35,6 +35,13 @@ saved indexed Phase 2 publication. This mode validates the native SQLite
 version, clocks, row counts, and design identity without rerunning OpenSTA or
 converting the database to whole-graph JSON.
 
+The native migration keeps the large Phase 3–7 relations in typed, indexed
+storage and streams them through unified native entry points. Phase 6 publishes
+virtual wiring, binding, differential-I/O, and XDC contracts in the sealed
+transport store; Phase 7 reads those contracts lazily. See the
+[Phase 3 native migration](docs/PHASE3_NATIVE_MIGRATION.md) for the storage
+and migration contracts.
+
 ## Flow
 
 | Phase | Responsibility | Algorithms and tools |

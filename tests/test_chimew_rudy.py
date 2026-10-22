@@ -1,10 +1,13 @@
 import copy
+import io
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from emuflow import chimew_rudy as rudy_module
 from emuflow.chimew_rudy import (
     CHIMEW_RUDY_INPUT_PROVIDER,
     CHIMEW_RUDY_INPUT_SCHEMA,
@@ -13,6 +16,7 @@ from emuflow.chimew_rudy import (
     validate_chimew_rudy_input,
 )
 from emuflow.errors import ValidationError
+from tests.native_build import emuflow_native
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +98,43 @@ class ChimewRudyTest(unittest.TestCase):
         self.assertEqual(
             [round(record["load"], 9) for record in result["bins"]],
             [30.0, 10.0, 10.0, 10.0],
+        )
+        self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
+
+    def test_unified_rudy_is_byte_exact_and_accepts_streams(self) -> None:
+        problem = validate_chimew_rudy_input(self.document)
+        input_stream = io.StringIO()
+        rudy_module._write_native_input(problem, input_stream)
+        payload = input_stream.getvalue()
+        standalone = subprocess.run(
+            [str(self.executable), "-", "-"],
+            input=payload,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        unified = subprocess.run(
+            [str(emuflow_native()), "phase6", "rudy", "-", "-"],
+            input=payload,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(unified.stdout, standalone.stdout)
+
+    def test_production_uses_unified_stage_resolver_without_scratch_payloads(self) -> None:
+        with mock.patch.object(
+            rudy_module,
+            "resolve_native_stage_command",
+            return_value=[str(self.executable)],
+        ) as resolver, mock.patch.object(
+            Path,
+            "write_text",
+            side_effect=AssertionError("RUDY scratch payload was written"),
+        ):
+            result = evaluate_chimew_rudy(self.document)
+        resolver.assert_called_once_with(
+            "emuflow_chimew_rudy", "phase6", "rudy", explicit=None
         )
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
 

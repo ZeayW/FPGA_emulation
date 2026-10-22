@@ -14,6 +14,9 @@ from emuflow.chimew_bank_channel import (
     evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
+from emuflow.chimew_bank_channel_storage import (
+    write_chimew_bank_channel_storage,
+)
 from emuflow.chimew_binding_storage import (
     CHIMEW_BINDING_STORAGE_SCHEMA,
     ChimewBindingEntrySequence,
@@ -961,7 +964,10 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 ("platform", self.platform_document),
                 ("assignment", self.assignment_input),
             ):
-                write_json(paths[key], document)
+                if key == "assignment":
+                    write_chimew_bank_channel_storage(paths[key], document).close()
+                else:
+                    write_json(paths[key], document)
             electrical_map = copy.deepcopy(self.electrical_map)
             electrical_map["provenance"]["boarddb_sha256"] = hashlib.sha256(
                 paths["platform"].read_bytes()
@@ -1032,7 +1038,10 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 ("platform", self.platform_document),
                 ("assignment", self.assignment_input),
             ):
-                write_json(paths[key], document)
+                if key == "assignment":
+                    write_chimew_bank_channel_storage(paths[key], document).close()
+                else:
+                    write_json(paths[key], document)
             electrical_map = copy.deepcopy(self.electrical_map)
             electrical_map["provenance"]["boarddb_sha256"] = hashlib.sha256(
                 paths["platform"].read_bytes()
@@ -1218,7 +1227,10 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 ("platform", self.platform_document),
                 ("assignment", self.assignment_input),
             ):
-                write_json(paths[key], document)
+                if key == "assignment":
+                    write_chimew_bank_channel_storage(paths[key], document).close()
+                else:
+                    write_json(paths[key], document)
             electrical_map = copy.deepcopy(self.electrical_map)
             electrical_map["provenance"]["boarddb_sha256"] = hashlib.sha256(
                 paths["platform"].read_bytes()
@@ -1301,7 +1313,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 fake_bank,
                 {
                     "schema": original_bank["schema"],
-                    "provider": original_bank["provider"],
+                    "provider": original_bank["header"]["provider"],
                 },
             )
             fake_bank_digest = hashlib.sha256(fake_bank.read_bytes()).hexdigest()

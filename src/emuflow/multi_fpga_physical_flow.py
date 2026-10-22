@@ -14,9 +14,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 
 from .boundary_timing import (
-    build_boundary_timing_database,
+    boundary_timing_header,
     validate_boundary_identity_database,
     validate_boundary_timing_database,
+)
+from .boundary_identity_storage import read_boundary_identity_storage
+from .boundary_timing_storage import (
+    read_boundary_timing_storage,
+    write_boundary_timing_storage,
 )
 from .chimew_binding_storage import (
     open_chimew_binding_schedule_entry_lookup,
@@ -34,12 +39,16 @@ from .logic_segment_timing import (
     write_vpr_logic_segment_query,
 )
 from .local_path_timing import (
-    LOCAL_PATH_TIMING_SCHEMA,
+    local_path_timing_header,
     import_vpr_local_path_timing,
     prepare_vpr_local_path_query_inputs,
     validate_local_path_timing,
     write_vpr_local_path_query,
     write_xilinx_local_path_query,
+)
+from .local_path_timing_storage import (
+    read_local_path_timing_storage,
+    write_local_path_timing_storage,
 )
 from .ir import EMUIR_SCHEMA, EmuIR
 from .emuir_storage import open_emuir_sqlite_read_only
@@ -60,7 +69,13 @@ from .physical_backend import (
     validate_physical_backend_descriptor,
     validate_physical_partition_result,
 )
-from .physical_summary_storage import publish_physical_evidence
+from .physical_summary_storage import (
+    publish_boundary_identity_store,
+    publish_boundary_timing_store,
+    publish_logic_segment_timing_store,
+    publish_local_path_timing_store,
+    publish_physical_evidence,
+)
 from .platform import Platform
 from .partition_limits import planning_resource_capacities
 from .position_hints_storage import PositionHintsView, read_position_hints
@@ -306,8 +321,12 @@ def _inactive_transport_ir(transport: Mapping[str, Any]) -> EmuIR:
 def _write_inactive_logic_timing(
     identity_path: Path, output_path: Path
 ) -> Dict[str, Any]:
-    identity = read_json(identity_path)
-    database = {
+    from .logic_segment_identity_storage import (
+        read_logic_segment_identity_storage,
+    )
+
+    identity = read_logic_segment_identity_storage(identity_path)
+    header = {
         "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
         "status": "pass",
         "design": identity["design"],
@@ -315,22 +334,36 @@ def _write_inactive_logic_timing(
         "fpga": identity["fpga"],
         "provider": _INACTIVE_PARTITION_PROVIDER,
         "qualification": "not-applicable-empty-partition",
+        "system_routes_sha256": identity["system_routes_sha256"],
+        "tdm_schedule_sha256": identity["tdm_schedule_sha256"],
         "coverage": {
             **identity["coverage"],
             "endpoint_exact_segments": 0,
             "cone_bound_segments": 0,
         },
-        "unsupported_member_paths": identity["unsupported_member_paths"],
-        "unmeasured_segments": [],
-        "segments": [],
         **(
             {"semantic_contract_sha256": identity["semantic_contract_sha256"]}
             if "semantic_contract_sha256" in identity
             else {}
         ),
     }
-    validation = validate_logic_segment_timing(database)
-    write_json(output_path, database)
+    from .logic_segment_timing_storage import write_logic_segment_timing_storage
+
+    try:
+        view = write_logic_segment_timing_storage(
+            output_path,
+            header=header,
+            segments=(),
+            unsupported_member_paths=identity["unsupported_member_paths"],
+        )
+        try:
+            validation = view.validate_timing()
+        finally:
+            view.close()
+    finally:
+        close = getattr(identity, "close", None)
+        if callable(close):
+            close()
     return {**validation, "output": str(output_path)}
 
 
@@ -338,20 +371,13 @@ def _write_inactive_local_timing(
     identity_path: Path, output_path: Path
 ) -> Dict[str, Any]:
     identity = read_json(identity_path)
-    database = {
-        "schema": LOCAL_PATH_TIMING_SCHEMA,
-        "status": "pass",
-        "design": identity["design"],
-        "fpga": identity["fpga"],
-        "provider": _INACTIVE_PARTITION_PROVIDER,
-        "qualification": "not-applicable-empty-partition",
-        "source": identity["source"],
-        "identity_schema": identity["schema"],
-        "coverage": identity["coverage"],
-        "paths": [],
-    }
-    validation = validate_local_path_timing(database)
-    write_json(output_path, database)
+    header = local_path_timing_header(
+        identity,
+        provider=_INACTIVE_PARTITION_PROVIDER,
+        qualification="not-applicable-empty-partition",
+    )
+    with write_local_path_timing_storage(output_path, header, ()) as database:
+        validation = validate_local_path_timing(database)
     return {**validation, "output": str(output_path)}
 
 
@@ -1029,7 +1055,10 @@ def run_multi_fpga_physical_flow(
         raise EmuFlowError(
             f"multi-FPGA physical output must be an empty directory: {output_dir}"
         )
-    if backend in {"open", "rapidwright"}:
+    if backend == "open" or (
+        backend == "rapidwright"
+        and effective_rapidwright_placer == "openparf-native"
+    ):
         # Validate the compiled OpenPARF/PyTorch runtime before reading the
         # graph-sized EmuIR and timing databases.  A loader mismatch must fail
         # in seconds, not after minutes of deterministic input preparation.
@@ -1327,18 +1356,24 @@ def run_multi_fpga_physical_flow(
             boundary_identity_path = Path(
                 lowering_report["boundary_identity"]["output"]
             )
-            boundary_identity = read_json(boundary_identity_path)
+            boundary_identity = read_boundary_identity_storage(
+                boundary_identity_path, allow_legacy=True
+            )
             boundary_timing_path = fpga_root / "boundary-timing.json"
-            boundary_timing = build_boundary_timing_database(
+            boundary_header = boundary_timing_header(
                 boundary_identity,
-                {},
                 provider=_INACTIVE_PARTITION_PROVIDER,
                 qualification="not-applicable-empty-partition",
             )
-            boundary_validation = validate_boundary_timing_database(
-                boundary_timing, boundary_identity
-            )
-            write_json(boundary_timing_path, boundary_timing)
+            with write_boundary_timing_storage(
+                boundary_timing_path, boundary_header, ()
+            ) as boundary_timing:
+                boundary_validation = validate_boundary_timing_database(
+                    boundary_timing, boundary_identity
+                )
+            close_boundary = getattr(boundary_identity, "close", None)
+            if callable(close_boundary):
+                close_boundary()
             stages: Dict[str, Any] = {
                 "transport_synthesis": transport_report,
                 "placement_ir": lowering_report,
@@ -1649,7 +1684,10 @@ def run_multi_fpga_physical_flow(
                     (item["port"], item["bit"]): item["packed_block"]
                     for item in eblif_report.get("top_ports", [])
                 }
-                boundary_endpoints = read_json(boundary_identity_path)["endpoints"]
+                boundary_document = read_boundary_identity_storage(
+                    boundary_identity_path, allow_legacy=True
+                )
+                boundary_endpoints = boundary_document["endpoints"]
                 packed_groups: Dict[str, str] = {}
                 group_packed_blocks: Dict[str, str] = {}
                 binding_schema = electrical_binding.get("schema", "")
@@ -1719,6 +1757,9 @@ def run_multi_fpga_physical_flow(
                             group=binding["group"],
                             target_y=target_y,
                         )
+                close_boundary = getattr(boundary_document, "close", None)
+                if callable(close_boundary):
+                    close_boundary()
             placement_report = run_packed_openparf_placement(
                 packed_contract,
                 architecture_db,
@@ -2317,45 +2358,84 @@ def _assemble_multi_fpga_physical_results(
         identity_path = Path(
             item["stages"]["placement_ir"]["boundary_identity"]["output"]
         )
-        identity_database, identity_reference = publish_physical_evidence(
+        _identity_selector, identity_reference = publish_boundary_identity_store(
             identity_path,
             output_dir,
             Path(fpga_id) / identity_path.name,
         )
-        validate_boundary_identity_database(
-            identity_database, transports_by_fpga[fpga_id]
-        )
         physical_summary["boundary_identities"][fpga_id] = identity_reference
-        timing_path = Path(
-            _implementation_stage(item, backend, "boundary_timing")[
-                "import"
-            ]["output"]
-        )
-        timing_database, timing_reference = publish_physical_evidence(
-            timing_path,
-            output_dir,
-            Path(fpga_id) / timing_path.name,
-        )
-        validate_boundary_timing_database(
-            timing_database,
-            identity_database,
-        )
+        with read_boundary_identity_storage(
+            output_dir / identity_reference["path"]
+        ) as identity_database:
+            validate_boundary_identity_database(
+                identity_database, transports_by_fpga[fpga_id]
+            )
+            timing_path = Path(
+                _implementation_stage(item, backend, "boundary_timing")[
+                    "import"
+                ]["output"]
+            )
+            _timing_selector, timing_reference = publish_boundary_timing_store(
+                timing_path,
+                output_dir,
+                Path(fpga_id) / timing_path.name,
+            )
+            with read_boundary_timing_storage(
+                output_dir / timing_reference["path"]
+            ) as timing_database:
+                validate_boundary_timing_database(
+                    timing_database,
+                    identity_database,
+                )
         physical_summary["boundary_timing"][fpga_id] = timing_reference
     if include_logic_timing:
         physical_summary["logic_segment_timing"] = {}
+        logic_semantic_seals = set()
+        logic_route_seals = set()
+        logic_schedule_seals = set()
         for item in records:
             path = Path(
                 _implementation_stage(item, backend, "logic_segment_timing")[
                     "import"
                 ]["output"]
             )
-            database, reference = publish_physical_evidence(
+            selector, reference = publish_logic_segment_timing_store(
                 path,
                 output_dir,
-                Path(item["fpga"]) / path.name,
+                Path(item["fpga"]) / "logic-segment-timing.json",
             )
-            validate_logic_segment_timing(database)
+            source = selector["source"]
+            if (
+                source["design"] != physical_summary["design"]
+                or source["platform"] != physical_summary["platform"]
+                or source["fpga"] != item["fpga"]
+            ):
+                raise ValidationError(
+                    "logic segment timing source disagrees with physical summary"
+                )
+            logic_semantic_seals.add(source["semantic_contract_sha256"])
+            logic_route_seals.add(source["system_routes_sha256"])
+            logic_schedule_seals.add(source["tdm_schedule_sha256"])
             physical_summary["logic_segment_timing"][item["fpga"]] = reference
+        if len(logic_semantic_seals) != 1:
+            raise ValidationError(
+                "logic segment timing semantic seals disagree"
+            )
+        if len(logic_route_seals) != 1 or len(logic_schedule_seals) != 1:
+            raise ValidationError(
+                "logic segment timing route/schedule seals disagree"
+            )
+        physical_summary["logic_segment_system_routes_sha256"] = next(
+            iter(logic_route_seals)
+        )
+        physical_summary["logic_segment_tdm_schedule_sha256"] = next(
+            iter(logic_schedule_seals)
+        )
+        logic_semantic_seal = next(iter(logic_semantic_seals))
+        if logic_semantic_seal is not None:
+            physical_summary[
+                "logic_segment_semantic_contract_sha256"
+            ] = logic_semantic_seal
         if backend in {"open", "rapidwright"}:
             physical_summary["local_path_timing"] = {}
             for item in records:
@@ -2364,12 +2444,17 @@ def _assemble_multi_fpga_physical_results(
                         "import"
                     ]["output"]
                 )
-                database, reference = publish_physical_evidence(
+                _selector, reference = publish_local_path_timing_store(
                     path,
                     output_dir,
                     Path(item["fpga"]) / path.name,
                 )
-                validate_local_path_timing(database)
+                with read_local_path_timing_storage(
+                    output_dir / reference["path"],
+                    expected_design=physical_summary["design"],
+                    expected_fpga=item["fpga"],
+                ) as database:
+                    validate_local_path_timing(database)
                 physical_summary["local_path_timing"][item["fpga"]] = reference
     physical_summary["validation"] = validate_physical_summary(
         physical_summary, runtime, platform

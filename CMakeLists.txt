@@ -290,6 +290,48 @@ if(BUILD_TESTING)
   )
 endif()
 
+add_library(
+  emuflow_native_stages STATIC
+  "${CMAKE_SOURCE_DIR}/src/native/static_exact_analyzer.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/tdm_exact_scheduler.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/chimew_bank_channel_assigner.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/chimew_rudy.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/chimew_signal_grouper.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/chimew_position_refiner.cpp"
+)
+target_compile_features(emuflow_native_stages PUBLIC cxx_std_17)
+target_compile_options(emuflow_native_stages PRIVATE -O3)
+target_compile_definitions(
+  emuflow_native_stages PRIVATE EMUFLOW_NATIVE_STAGE_LIBRARY=1
+)
+target_include_directories(
+  emuflow_native_stages PUBLIC "${CMAKE_SOURCE_DIR}/src/native"
+)
+find_package(Threads REQUIRED)
+target_link_libraries(
+  emuflow_native_stages PUBLIC emuflow_core Threads::Threads
+)
+
+add_executable(
+  emuflow_native
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_native.cpp"
+)
+set_target_properties(
+  emuflow_native
+  PROPERTIES
+    OUTPUT_NAME "emuflow-native"
+    RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
+)
+target_compile_features(emuflow_native PRIVATE cxx_std_17)
+target_compile_options(emuflow_native PRIVATE -O3)
+target_link_libraries(emuflow_native PRIVATE emuflow_native_stages)
+if(BUILD_TESTING)
+  add_test(
+    NAME emuflow_native_cli
+    COMMAND "$<TARGET_FILE:emuflow_native>" --help
+  )
+endif()
+
 # Keep root-built products self-consistent without installing libraries into
 # system directories. General-purpose dependency prefixes remain external to
 # the source tree, but their runtime libraries are recorded in local products.
@@ -808,7 +850,6 @@ if(EMUFLOW_BUILD_MFSPART_COARSENER)
 endif()
 
 if(EMUFLOW_BUILD_PIN_PLANNER)
-  find_package(Threads REQUIRED)
   add_executable(
     emuflow_pin_planner
     "${CMAKE_SOURCE_DIR}/src/native/placement_aware_pin_planner.cpp"

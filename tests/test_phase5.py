@@ -61,6 +61,7 @@ from emuflow.tdm_oracle import (
 )
 from emuflow.timing_routing import route_system_native
 from tests.native_build import (
+    emuflow_native,
     tdm_exact_scheduler,
     tdm_ratio_optimizer,
     tdm_slot_optimizer,
@@ -213,6 +214,35 @@ def _candidate_fallback_patches(schedule_side_effect):
 
 
 class Phase5Test(unittest.TestCase):
+    def test_unified_native_entry_matches_exact_scheduler(self):
+        legacy = tdm_exact_scheduler()
+        unified = emuflow_native()
+        payload = bytearray(
+            struct.pack(
+                "<Q7I", 0x3149534D44544545, 1, 16, 1, 1, 2, 1, 1
+            )
+        )
+        payload.extend(struct.pack("<I", 1))
+        payload.extend(struct.pack("<7I", 0, 1, 0, 1, 0, 0, 0))
+        payload.extend(struct.pack("<I", 1))
+        payload.extend(
+            struct.pack(
+                "<10I", 0, 0, 0, 0, 1, 0, 1, (1 << 32) - 1, 1, 1
+            )
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "input.bin"
+            old_output = root / "legacy.bin"
+            new_output = root / "unified.bin"
+            source.write_bytes(payload)
+            subprocess.run([legacy, source, old_output], check=True)
+            subprocess.run(
+                [unified, "phase5", "schedule", source, new_output],
+                check=True,
+            )
+            self.assertEqual(new_output.read_bytes(), old_output.read_bytes())
+
     def test_native_exact_schedule_protocol_rejects_corruption(self):
         executable = tdm_exact_scheduler()
         payload = bytearray()

@@ -1,4 +1,5 @@
 from collections import defaultdict
+from contextlib import contextmanager
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -38,18 +39,38 @@ class SharedBoundaryTests(unittest.TestCase):
             g.longest(["a"], "top:tx0")
 
     def run_boundary(self, g, ports):
-        identity = {"endpoints": [{
-            "id": port, "kind": "rx" if port == "rx" else "tx",
-            "merged_ir": {"external_port": port, "external_port_bit": 0,
-                          "boundary_register_instances": ["shadow"]},
-        } for port in ports]}
-        with patch.object(timing, "read_json", return_value=identity), \
+        identity = {
+            "schema": "emuflow.boundary-identity/v1",
+            "status": "pass",
+            "design": "dut",
+            "platform": "board",
+            "fpga": "fpga0",
+            "provider": "test",
+            "endpoints": [{
+                "id": port, "kind": "rx" if port == "rx" else "tx",
+                "schedule_entry": f"schedule-{index}",
+                "merged_ir": {
+                    "external_port": port, "external_port_bit": 0,
+                    "boundary_register_instances": ["shadow"],
+                },
+            } for index, port in enumerate(ports)],
+        }
+        captured = {}
+
+        @contextmanager
+        def writer(_path, _header, records):
+            captured.update((record["id"], record) for record in records)
+            yield {}
+
+        with patch.object(
+                timing, "read_boundary_identity_storage", return_value=identity
+             ), \
              patch.object(timing, "_graph", return_value=g), \
-             patch.object(timing, "build_boundary_timing_database", side_effect=lambda i, m, **kw: m), \
+             patch.object(timing, "write_boundary_timing_storage", side_effect=writer), \
              patch.object(timing, "validate_boundary_timing_database", return_value={}), \
-             patch.object(timing, "write_json") as write:
+             patch.object(timing, "boundary_timing_header", return_value={}):
             timing.build_xilinx_boundary_timing(*[Path("unused")] * 4)
-            return write.call_args.args[1]
+            return captured
 
     def test_one_tx_solve_per_invocation_and_separate_rx(self):
         g = graph()

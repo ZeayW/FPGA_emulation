@@ -1,9 +1,9 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from emuflow.io import write_json
+from emuflow.boundary_timing_storage import read_boundary_timing_storage
 from emuflow.vpr_boundary_timing import (
     import_vpr_boundary_timing,
     write_vpr_boundary_timing_query,
@@ -199,11 +199,11 @@ class VprBoundaryTimingTest(unittest.TestCase):
                 timing_tsv, identity_path, query_path, output
             )
             self.assertEqual(imported["maximum_delay_ns"], 1.25)
-            database = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(
-                database["qualification"],
-                "routed-academic-architecture-endpoint-exact",
-            )
+            with read_boundary_timing_storage(output) as database:
+                self.assertEqual(
+                    database["qualification"],
+                    "routed-academic-architecture-endpoint-exact",
+                )
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 import pytest
 
+from emuflow.boundary_timing_storage import read_boundary_timing_storage
 from emuflow.errors import ValidationError
 
 import emuflow.xilinx_segment_timing as xilinx_segment_timing
@@ -12,6 +13,7 @@ from emuflow.xilinx_segment_timing import (
     build_xilinx_local_path_timing,
     build_xilinx_segment_timing_bundle,
 )
+from emuflow.local_path_timing_storage import read_local_path_timing_storage
 from emuflow.xilinx_timing import (
     XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
     XILINX_ROUTED_TIMING_STREAM_SCHEMA,
@@ -183,6 +185,11 @@ def test_boundary_timing_covers_rx_and_tx_with_routed_delays():
             identity_path, mapped_path, timing_path, output
         )
         database = json.loads(output.read_text())
+        with read_boundary_timing_storage(output) as boundary_view:
+            delays = {
+                item["id"]: item["delay_ns"]
+                for item in boundary_view["endpoints"]
+            }
         endpoints = timing.pop("endpoints")
         encoded = b"".join(
             json.dumps(
@@ -209,8 +216,7 @@ def test_boundary_timing_covers_rx_and_tx_with_routed_delays():
         streamed_database = json.loads(streamed_output.read_text())
     assert result["endpoints"] == 2
     assert streamed_result["endpoints"] == 2
-    assert streamed_database == database
-    delays = {item["id"]: item["delay_ns"] for item in database["endpoints"]}
+    assert streamed_database["logical_sha256"] == database["logical_sha256"]
     assert abs(delays["rx0"] - 0.38) < 1e-12
     assert abs(delays["tx0"] - 0.795) < 1e-12
 
@@ -323,13 +329,13 @@ def test_local_path_timing_is_source_bound_and_uses_routed_graph():
         result = build_xilinx_local_path_timing(
             identity_path, mapped_path, timing_path, output
         )
-        database = json.loads(output.read_text())
-    assert result["local_paths"] == 1
-    assert result["measurement_counts"] == {
-        "explicit-routed-path-chain": 0,
-        "endpoint-longest-path-fallback": 1,
-    }
-    assert abs(database["paths"][0]["delay_ns"] - 0.595) < 1e-12
+        with read_local_path_timing_storage(output) as database:
+            assert result["local_paths"] == 1
+            assert result["measurement_counts"] == {
+                "explicit-routed-path-chain": 0,
+                "endpoint-longest-path-fallback": 1,
+            }
+            assert abs(database["paths"][0]["delay_ns"] - 0.595) < 1e-12
 
 
 def test_segment_timing_bundle_loads_the_routed_graph_once(

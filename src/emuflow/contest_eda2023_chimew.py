@@ -18,6 +18,7 @@ from .chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
 )
+from .chimew_bank_channel_storage import write_chimew_bank_channel_storage
 from .chimew_grouping import (
     CHIMEW_ACADEMIC_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
@@ -723,8 +724,14 @@ def materialize_eda2023_contest_chimew_inputs(
             if label == "schedule"
             else inputs_dir / f"{label}.json"
         )
-        write_json(path, document)
+        if label == "bank_channel_input":
+            indexed_bank_input = write_chimew_bank_channel_storage(path, document)
+            indexed_bank_input_store = indexed_bank_input.store_path
+            indexed_bank_input.close()
+        else:
+            write_json(path, document)
         paths[label] = path
+    paths["bank_channel_input_store"] = indexed_bank_input_store
     report = {
         "schema": EDA2023_CONTEST_CHIMEW_MATERIALIZATION_SCHEMA,
         "status": "pass",
