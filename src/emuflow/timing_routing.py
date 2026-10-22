@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import heapq
 import math
 import subprocess
@@ -919,6 +920,398 @@ class _PackedNativePathSequence(list):
         del self._demands[:]
 
 
+class _PackedNativeRouteSequence(list):
+    """Variable-length native routes backed by fixed-width columns.
+
+    Native output is allowed to arrive in any demand order.  Offsets therefore
+    point into one append-only arc column instead of relying on CSR arrival
+    order.  Logical dictionaries are created only for the record currently
+    consumed by validation or RouteStore publication.
+    """
+
+    def __init__(self, count: int) -> None:
+        super().__init__()
+        self._coverage = bytearray(count)
+        self._delays = array("d", [0.0]) * count
+        self._arc_offsets = array("Q", [0]) * count
+        self._arc_counts = array("Q", [0]) * count
+        self._arcs = array("Q")
+        self._covered = 0
+
+    def __len__(self) -> int:
+        return len(self._coverage)
+
+    def covered(self, index: int) -> bool:
+        return bool(self._coverage[index])
+
+    @property
+    def complete(self) -> bool:
+        return self._covered == len(self)
+
+    def set_record(
+        self, index: int, delay_ns: float, arcs: Sequence[int]
+    ) -> None:
+        if index < 0 or index >= len(self) or self._coverage[index]:
+            raise EmuFlowError("TLR router returned duplicate/unknown route")
+        offset = len(self._arcs)
+        self._arcs.extend(arcs)
+        self._arc_offsets[index] = offset
+        self._arc_counts[index] = len(arcs)
+        self._delays[index] = delay_ns
+        self._coverage[index] = 1
+        self._covered += 1
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        if not self._coverage[index]:
+            raise EmuFlowError("TLR router route coverage is incomplete")
+        offset = self._arc_offsets[index]
+        end = offset + self._arc_counts[index]
+        return {
+            "max_delay_ns": float(self._delays[index]),
+            "arcs": [int(value) for value in self._arcs[offset:end]],
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        return self._record(index)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Sequence) and not isinstance(other, (str, bytes)):
+            return len(self) == len(other) and all(
+                left == right for left, right in zip(self, other)
+            )
+        return False
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    @property
+    def payload_bytes(self) -> int:
+        return len(self._coverage) + sum(
+            len(values) * values.itemsize
+            for values in (
+                self._delays,
+                self._arc_offsets,
+                self._arc_counts,
+                self._arcs,
+            )
+        )
+
+
+class _PackedNativeSelectionSequence(list):
+    """One-byte native candidate selection ordinals."""
+
+    _MISSING = 0xFF
+
+    def __init__(self, count: int) -> None:
+        super().__init__()
+        self._ordinals = bytearray([self._MISSING]) * count
+        self._covered = 0
+
+    def __len__(self) -> int:
+        return len(self._ordinals)
+
+    def covered(self, index: int) -> bool:
+        return self._ordinals[index] != self._MISSING
+
+    @property
+    def complete(self) -> bool:
+        return self._covered == len(self)
+
+    def set_record(self, index: int, generator: str) -> None:
+        if index < 0 or index >= len(self) or self.covered(index):
+            raise EmuFlowError(
+                "TLR router returned duplicate/unknown selection"
+            )
+        try:
+            ordinal = ROUTE_CANDIDATE_GENERATORS.index(generator)
+        except ValueError as error:
+            raise EmuFlowError(
+                "TLR router returned duplicate/unknown selection"
+            ) from error
+        self._ordinals[index] = ordinal
+        self._covered += 1
+
+    def __iter__(self) -> Iterator[str]:
+        for index in range(len(self)):
+            yield self[index]
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        ordinal = self._ordinals[index]
+        if ordinal == self._MISSING:
+            raise EmuFlowError("TLR router selection coverage is incomplete")
+        return ROUTE_CANDIDATE_GENERATORS[ordinal]
+
+    @property
+    def payload_bytes(self) -> int:
+        return len(self._ordinals)
+
+
+class _PackedNativeTimingSequence(list):
+    """Fixed-width native path results without transient result dictionaries."""
+
+    def __init__(self, count: int) -> None:
+        super().__init__()
+        self._coverage = bytearray(count)
+        self._delays = array("d", [0.0]) * count
+        self._slacks = array("d", [0.0]) * count
+        self._normalized_slacks = array("d", [0.0]) * count
+        self._covered = 0
+
+    def __len__(self) -> int:
+        return len(self._coverage)
+
+    def covered(self, index: int) -> bool:
+        return bool(self._coverage[index])
+
+    @property
+    def complete(self) -> bool:
+        return self._covered == len(self)
+
+    def set_record(
+        self,
+        index: int,
+        delay_ns: float,
+        slack_ns: float,
+        normalized_slack: float,
+    ) -> None:
+        if index < 0 or index >= len(self) or self._coverage[index]:
+            raise EmuFlowError(
+                "TLR router returned duplicate/unknown timing path"
+            )
+        self._delays[index] = delay_ns
+        self._slacks[index] = slack_ns
+        self._normalized_slacks[index] = normalized_slack
+        self._coverage[index] = 1
+        self._covered += 1
+
+    def _record(self, index: int) -> Dict[str, float]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        if not self._coverage[index]:
+            raise EmuFlowError("TLR router timing coverage is incomplete")
+        return {
+            "delay_ns": float(self._delays[index]),
+            "slack_ns": float(self._slacks[index]),
+            "normalized_slack": float(self._normalized_slacks[index]),
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, float]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        return self._record(index)
+
+    @property
+    def payload_bytes(self) -> int:
+        return len(self._coverage) + sum(
+            len(values) * values.itemsize
+            for values in (
+                self._delays,
+                self._slacks,
+                self._normalized_slacks,
+            )
+        )
+
+
+class _ProjectedSystemRouteSequence(list):
+    """Repeatable public route cursor over demands and packed native results."""
+
+    def __init__(
+        self,
+        demands: Sequence[Mapping[str, Any]],
+        native_routes: _PackedNativeRouteSequence,
+        arc_keys: Sequence[ArcKey],
+        latency_cycles: array,
+    ) -> None:
+        super().__init__()
+        self._demands = demands
+        self._native_routes = native_routes
+        self._arc_keys = arc_keys
+        self._latency_cycles = latency_cycles
+
+    def __len__(self) -> int:
+        return len(self._demands)
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        demand = self._demands[index]
+        native = self._native_routes[index]
+        return {
+            **demand,
+            "tree_edges": [
+                {"link": key[0], "from": key[1], "to": key[2]}
+                for key in (self._arc_keys[item] for item in native["arcs"])
+            ],
+            "max_latency_cycles": int(self._latency_cycles[index]),
+            "predicted_max_delay_ns": native["max_delay_ns"],
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        return self._record(index)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Sequence) and not isinstance(other, (str, bytes)):
+            return len(self) == len(other) and all(
+                left == right for left, right in zip(self, other)
+            )
+        return False
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> list[Dict[str, Any]]:
+        return [copy.deepcopy(record, memo) for record in self]
+
+
+class _ProjectedMasterSelectionSequence(list):
+    """Repeatable master-selection cursor without route-scale dictionaries."""
+
+    def __init__(
+        self,
+        demands: Sequence[Mapping[str, Any]],
+        selections: _PackedNativeSelectionSequence,
+    ) -> None:
+        super().__init__()
+        self._demands = demands
+        self._selections = selections
+
+    def __len__(self) -> int:
+        return len(self._demands)
+
+    def _record(self, index: int) -> Dict[str, str]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return {
+            "demand": str(self._demands[index]["id"]),
+            "generator": self._selections[index],
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, str]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        return self._record(index)
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> list[Dict[str, str]]:
+        return [copy.deepcopy(record, memo) for record in self]
+
+
+class _ProjectedTimingRecordSequence(list):
+    """Repeatable timing cursor joining packed native results by demand ordinal."""
+
+    def __init__(
+        self,
+        paths: Sequence[Mapping[str, Any]],
+        native_paths: _PackedNativePathSequence,
+        native_timing: _PackedNativeTimingSequence,
+        native_routes: _PackedNativeRouteSequence,
+        arc_keys: Sequence[ArcKey],
+        physical_arc_index: Mapping[ArcKey, int],
+    ) -> None:
+        super().__init__()
+        self._paths = paths
+        self._native_paths = native_paths
+        self._native_timing = native_timing
+        self._native_routes = native_routes
+        self._arc_keys = arc_keys
+        self._physical_arc_index = physical_arc_index
+
+    def __len__(self) -> int:
+        return len(self._paths)
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        path = self._paths[index]
+        demand_indices = self._native_paths[index]["demands"]
+        signature = [
+            arc
+            for demand_index in demand_indices
+            for arc in sorted(
+                self._physical_arc_index[
+                    self._arc_keys[native_arc]
+                ]
+                for native_arc in self._native_routes[demand_index]["arcs"]
+            )
+        ]
+        return {
+            "path": path["id"],
+            "clock_domain": path["clock_domain"],
+            "clock_period_ns": path["clock_period_ns"],
+            "required_time_ns": path["fixed_delay_ns"] + path["slack_ns"],
+            "fixed_delay_ns": path["fixed_delay_ns"],
+            "cut_nets": path["cut_nets"],
+            "cut_signature": path["cut_signature"],
+            "compressed_path_ids": path["compressed_path_ids"],
+            **(
+                {"cut_transitions": path["cut_transitions"]}
+                if "cut_transitions" in path
+                else {}
+            ),
+            **self._native_timing[index],
+            "route_signature": ",".join(str(arc) for arc in signature) or "-",
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        return self._record(index)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Sequence) and not isinstance(other, (str, bytes)):
+            return len(self) == len(other) and all(
+                left == right for left, right in zip(self, other)
+            )
+        return False
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> list[Dict[str, Any]]:
+        return [copy.deepcopy(record, memo) for record in self]
+
+
 def _prepare_native_model(
     assignment: Mapping[str, Any],
     platform: Platform,
@@ -1426,11 +1819,11 @@ def _parse_native_output(
 ) -> Dict[str, Any]:
     demand_count = len(model["demands"])
     path_count = len(model["paths"])
-    routes: List[Optional[Dict[str, Any]]] = [None] * demand_count
+    routes = _PackedNativeRouteSequence(demand_count)
     candidates: Dict[int, Dict[str, Any]] = defaultdict(dict)
-    selections: List[Optional[str]] = [None] * demand_count
+    selections = _PackedNativeSelectionSequence(demand_count)
     locks = {}
-    timing: List[Optional[Dict[str, Any]]] = [None] * path_count
+    timing = _PackedNativeTimingSequence(path_count)
     candidate_coverage = bytearray(demand_count)
     candidate_domains = [0] * demand_count
     candidate_counts = [0] * len(ROUTE_CANDIDATE_GENERATORS)
@@ -1462,22 +1855,15 @@ def _parse_native_output(
                 locks[group] = arc_index
             elif fields[0] == "ROUTE" and len(fields) == 4:
                 demand_index = int(fields[1])
-                if (
-                    demand_index < 0
-                    or demand_index >= demand_count
-                    or routes[demand_index] is not None
-                ):
-                    raise EmuFlowError(
-                        "TLR router returned duplicate/unknown route"
-                    )
-                routes[demand_index] = {
-                    "max_delay_ns": float(fields[2]),
-                    "arcs": (
-                        []
+                routes.set_record(
+                    demand_index,
+                    float(fields[2]),
+                    (
+                        ()
                         if fields[3] == "-"
-                        else [int(item) for item in fields[3].split(",")]
+                        else tuple(int(item) for item in fields[3].split(","))
                     ),
-                }
+                )
             elif fields[0] == "CANDIDATE" and len(fields) == 5:
                 demand_index = int(fields[1])
                 generator = fields[2]
@@ -1532,32 +1918,15 @@ def _parse_native_output(
                     }
             elif fields[0] == "SELECTION" and len(fields) == 3:
                 demand_index = int(fields[1])
-                if (
-                    fields[2] not in ROUTE_CANDIDATE_GENERATORS
-                    or demand_index < 0
-                    or demand_index >= demand_count
-                    or selections[demand_index] is not None
-                ):
-                    raise EmuFlowError(
-                        "TLR router returned duplicate/unknown selection"
-                    )
-                selections[demand_index] = fields[2]
+                selections.set_record(demand_index, fields[2])
             elif fields[0] == "PATH" and len(fields) == 6:
                 path_index = int(fields[1])
-                if (
-                    path_index < 0
-                    or path_index >= path_count
-                    or timing[path_index] is not None
-                ):
-                    raise EmuFlowError(
-                        "TLR router returned duplicate/unknown timing path"
-                    )
-                timing[path_index] = {
-                    "delay_ns": float(fields[2]),
-                    "slack_ns": float(fields[3]),
-                    "normalized_slack": float(fields[4]),
-                    "route_signature": fields[5],
-                }
+                timing.set_record(
+                    path_index,
+                    float(fields[2]),
+                    float(fields[3]),
+                    float(fields[4]),
+                )
             elif fields[0] == "METRIC" and len(fields) == 3:
                 value: Any = float(fields[2])
                 if fields[1] in {
@@ -1585,9 +1954,9 @@ def _parse_native_output(
                 metrics[fields[1]] = value
             else:
                 raise EmuFlowError(f"TLR router returned malformed record: {line}")
-    if any(route is None for route in routes):
+    if not routes.complete:
         raise EmuFlowError("TLR router did not return exact demand coverage")
-    if any(record is None for record in timing):
+    if not timing.complete:
         raise EmuFlowError("TLR router did not return exact timing-path coverage")
     expected_metrics = {
         "iterations",
@@ -1626,7 +1995,7 @@ def _parse_native_output(
             raise EmuFlowError(
                 "TLR router did not return each selected route as a candidate"
             )
-        if any(selection is None for selection in selections):
+        if not selections.complete:
             raise EmuFlowError(
                 "TLR router master selection coverage is not exact"
             )
@@ -1693,6 +2062,7 @@ def route_system_native(
     candidate_pool_path: Optional[Path] = None,
     tdm_feedback: Optional[Mapping[str, Any]] = None,
     candidate_workers: int = 1,
+    materialize_result: bool = True,
 ) -> Dict[str, Any]:
     if provider not in {
         NATIVE_ROUTER_PROVIDER,
@@ -1883,15 +2253,13 @@ def route_system_native(
             assignment_has_static_exact_contract(assignment)
         ),
     )
-    routes = []
+    native_routes = native["routes"]
+    route_latency_cycles = array("Q", [0]) * len(model["demands"])
     usage = {key: 0 for key in capacities}
     round_usage: Dict[Tuple[str, int], int] = defaultdict(int)
     maximum_observed_hops = 0
     for demand_index, demand in enumerate(model["demands"]):
-        native_route = native["routes"][demand_index]
-        if native_route is None:
-            raise EmuFlowError("TLR router route coverage was released early")
-        native["routes"][demand_index] = None
+        native_route = native_routes[demand_index]
         edge_keys = [
             model["arc_keys"][index] for index in native_route["arcs"]
         ]
@@ -1903,20 +2271,27 @@ def route_system_native(
                     int(demand.get("transport_round", 0)),
                 )
             ] += demand["width_bits"]
+        latency_cycles = _tree_latency_cycles(
+            demand["source"], demand["sinks"], edge_keys, arcs
+        )
+        route_latency_cycles[demand_index] = latency_cycles
         route = {
             **demand,
             "tree_edges": [
                 {"link": key[0], "from": key[1], "to": key[2]}
                 for key in edge_keys
             ],
-            "max_latency_cycles": _tree_latency_cycles(
-                demand["source"], demand["sinks"], edge_keys, arcs
-            ),
+            "max_latency_cycles": latency_cycles,
             "predicted_max_delay_ns": native_route["max_delay_ns"],
         }
         _, _, route_hops = _validate_route_tree(route, arcs)
         maximum_observed_hops = max(maximum_observed_hops, route_hops)
-        routes.append(route)
+    routes = _ProjectedSystemRouteSequence(
+        model["demands"],
+        native_routes,
+        model["arc_keys"],
+        route_latency_cycles,
+    )
 
     utilization = []
     for key in sorted(capacities):
@@ -2039,53 +2414,18 @@ def route_system_native(
     physical_arc_index = {
         key: index for index, key in enumerate(sorted(arcs))
     }
-    route_signature_by_net = {
-        route["net"]: sorted(
-            physical_arc_index[
-                _arc_key(edge["link"], edge["from"], edge["to"])
-            ]
-            for edge in route["tree_edges"]
-        )
-        for route in routes
-    }
-    timing_records = []
+    timing_records: Sequence[Mapping[str, Any]] = []
     if timing_paths is not None:
-        for index, path in enumerate(timing_paths["paths"]):
-            native_timing = native["timing"][index]
-            if native_timing is None:
-                raise EmuFlowError(
-                    "TLR router timing coverage was released early"
-                )
-            native["timing"][index] = None
-            native_timing["route_signature"] = (
-                ",".join(
-                    str(arc)
-                    for net in path["cut_nets"]
-                    for arc in route_signature_by_net[net]
-                )
-                or "-"
-            )
-            timing_records.append(
-                {
-                    "path": path["id"],
-                    "clock_domain": path["clock_domain"],
-                    "clock_period_ns": path["clock_period_ns"],
-                    "required_time_ns": (
-                        path["fixed_delay_ns"] + path["slack_ns"]
-                    ),
-                    "fixed_delay_ns": path["fixed_delay_ns"],
-                    "cut_nets": path["cut_nets"],
-                    "cut_signature": path["cut_signature"],
-                    "compressed_path_ids": path["compressed_path_ids"],
-                    **(
-                        {"cut_transitions": path["cut_transitions"]}
-                        if "cut_transitions" in path
-                        else {}
-                    ),
-                    **native_timing,
-                }
-            )
-    model["paths"].clear()
+        timing_records = _ProjectedTimingRecordSequence(
+            timing_paths["paths"],
+            model["paths"],
+            native["timing"],
+            native_routes,
+            model["arc_keys"],
+            physical_arc_index,
+        )
+    else:
+        model["paths"].clear()
     result = {
         "schema": "emuflow.system-routes/v1",
         "design": assignment.get("design"),
@@ -2239,13 +2579,9 @@ def route_system_native(
             }
         result["joint_optimization"]["candidate_generation"][
             "master_selection"
-        ] = [
-            {
-                "demand": model["demands"][index]["id"],
-                "generator": native["selections"][index],
-            }
-            for index in range(len(model["demands"]))
-        ]
+        ] = _ProjectedMasterSelectionSequence(
+            model["demands"], native["selections"]
+        )
         if candidate_pool is not None:
             selected_candidates = {
                 (candidate["demand_id"], candidate["generator"]): candidate
@@ -2301,6 +2637,22 @@ def route_system_native(
         result["semantic_contract_sha256"] = assignment[
             "semantic_contract_sha256"
         ]
+    if materialize_result:
+        # Keep the public Python API mutable for reference callers and tests.
+        # The production Phase 4 adapter disables this compatibility
+        # materialization and feeds the repeatable projections directly into
+        # independent validation and RouteStore publication.
+        result["routes"] = list(result["routes"])
+        timing_result = result.get("timing")
+        if isinstance(timing_result, dict):
+            timing_result["paths"] = list(timing_result["paths"])
+        if provider == GLOBAL_CANDIDATE_PROVIDER:
+            candidate_generation = result["joint_optimization"][
+                "candidate_generation"
+            ]
+            candidate_generation["master_selection"] = list(
+                candidate_generation["master_selection"]
+            )
     return result
 
 

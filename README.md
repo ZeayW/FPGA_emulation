@@ -390,7 +390,21 @@ traversal reduced retained traced allocation from 83,580,870 to 10,741,799
 bytes and process peak RSS from 226,361,344 to 35,667,968 bytes. The packed
 payload was 10,400,016 bytes and the checksum was unchanged; wall time changed
 from 0.247 to 0.431 seconds. This isolates Phase 4 model representation and is
-not NVDLA qualification. RouteStore publication validates the previous selector before writing, restores it on a
+not NVDLA qualification. Native result parsing now keeps route arc spans,
+delays, timing scalars and master-selection ordinals in fixed-width columns.
+The production `run_phase4` path exposes repeatable logical cursors over those
+columns, so independent validation and RouteStore publication no longer retain
+the native route dictionaries beside a second complete public route/timing/
+selection object graph. Direct `route_system_native` callers retain an explicit
+mutable compatibility materialization. On 100,000 one-edge routes plus timing
+and selection results, the isolated additional result state and a complete
+route/selection traversal reduced retained traced allocation from 144,806,088
+to 6,737,103 bytes and process peak RSS from 352,944,128 to 71,499,776 bytes;
+the packed payload was 6,700,000 bytes and wall time changed from 0.405 to 1.066
+seconds. This is adapter evidence rather than NVDLA qualification. C++ still
+emits its result protocol for Python to check and project; writing RouteStore
+relations directly from the native stage remains migration work. RouteStore
+publication validates the previous selector before writing, restores it on a
 selector or post-publication validation failure, and removes an obsolete
 sidecar only after the new view passes. The selector binds the sidecar filename
 to its store digest. Normal publication does not run `VACUUM`, because the

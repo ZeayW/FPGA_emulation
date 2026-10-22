@@ -175,6 +175,7 @@ def run_phase4(
             candidate_pool_path=candidate_pool_path,
             tdm_feedback=tdm_feedback,
             candidate_workers=candidate_workers,
+            materialize_result=False,
         )
         validation = validate_native_system_routes(
             assignment,
@@ -202,6 +203,7 @@ def run_phase4(
             executable=router,
             provider=NATIVE_ROUTER_PROVIDER,
             candidate_pool_path=candidate_pool_path,
+            materialize_result=False,
         )
         routes = annotate_system_route_timing(
             assignment, platform, routes, timing_paths
@@ -237,6 +239,7 @@ def run_phase4(
             candidate_pool_path=candidate_pool_path,
             tdm_feedback=tdm_feedback,
             candidate_workers=candidate_workers,
+            materialize_result=False,
         )
         validation = validate_native_system_routes(
             assignment,

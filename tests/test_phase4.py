@@ -516,11 +516,34 @@ class Phase4Test(unittest.TestCase):
             timing,
             executable=str(tlr_router()),
             provider=GLOBAL_CANDIDATE_PROVIDER,
+            materialize_result=False,
         )
         timing_checked = validate_native_system_routes(
             assignment, platform, timing_routes, timing
         )
         self.assertEqual(timing_checked["round_capacity_boundary"], 4)
+        # Production route/timing/selection populations are repeatable lazy
+        # projections over packed native columns.  Their inherited list
+        # storage must stay empty even though the logical lengths are nonzero.
+        self.assertEqual(list.__len__(timing_routes["routes"]), 0)
+        self.assertEqual(
+            list.__len__(timing_routes["timing"]["paths"]), 0
+        )
+        self.assertEqual(
+            list.__len__(
+                timing_routes["joint_optimization"][
+                    "candidate_generation"
+                ]["master_selection"]
+            ),
+            0,
+        )
+        self.assertEqual(
+            len(timing_routes["routes"]), len(assignment["cut_nets"])
+        )
+        self.assertEqual(
+            len(timing_routes["timing"]["paths"]),
+            len(timing["paths"]),
+        )
 
     def test_path_compression_keeps_distinct_required_times(self) -> None:
         normalized = normalize_sta_paths(
