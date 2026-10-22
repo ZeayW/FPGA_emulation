@@ -3000,6 +3000,47 @@ def _ordered_cell_items(
     yield from sorted(cells.items())
 
 
+class _OrdinalSafeNames(MappingABC[str, str]):
+    """Resolve deterministic ``aN`` identities without an instance-sized dict.
+
+    ``_collect_atoms`` has already established unique lexical instance order.
+    The ordinal is therefore the safe name's only stored information. Rare
+    macro lookups use binary search; sequential exporters use ``name_at`` and
+    remain linear.
+    """
+
+    def __init__(self, atoms: Sequence[Mapping[str, str]]) -> None:
+        self.atoms = atoms
+
+    def __len__(self) -> int:
+        return len(self.atoms)
+
+    def __iter__(self) -> Iterator[str]:
+        return (atom["instance"] for atom in self.atoms)
+
+    def name_at(self, index: int, instance: str) -> str:
+        if not 0 <= index < len(self.atoms):
+            raise KeyError(instance)
+        atom = self.atoms[index]
+        if atom["instance"] != instance:
+            raise KeyError(instance)
+        return f"a{index}"
+
+    def __getitem__(self, instance: str) -> str:
+        if not isinstance(instance, str):
+            raise KeyError(instance)
+        lower = 0
+        upper = len(self.atoms)
+        while lower < upper:
+            middle = (lower + upper) // 2
+            candidate = self.atoms[middle]["instance"]
+            if candidate < instance:
+                lower = middle + 1
+            else:
+                upper = middle
+        return self.name_at(lower, instance)
+
+
 def build_xilinx_openparf_atomic_source(
     mapped_path: Path,
     output_path: Path,
@@ -3238,20 +3279,27 @@ def _render_library_and_nets(
     the endpoint table required to emit the final nets.
     """
 
-    atoms_by_instance = {atom["instance"]: atom for atom in atoms}
-    if len(atoms_by_instance) != len(atoms):
-        raise ValidationError("OpenPARF atom instances are duplicated")
     ports_by_type: Dict[str, Dict[str, str]] = defaultdict(dict)
     endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
-    seen = set()
+    atom_iterator = iter(enumerate(atoms))
+    current = next(atom_iterator, None)
     for instance, cell in _ordered_cell_items(cells):
-        atom = atoms_by_instance.get(instance)
-        if atom is None:
+        if (
+            isinstance(cell, Mapping)
+            and cell.get("type") in {"GND", "VCC"}
+        ):
             continue
+        if current is None or current[1]["instance"] != instance:
+            raise ValidationError("mapped JSON does not cover every OpenPARF atom")
+        atom_index, atom = current
         if not isinstance(cell, Mapping) or cell.get("type") != atom["cell_type"]:
             raise ValidationError("OpenPARF atom does not match mapped JSON")
-        seen.add(instance)
         cell_type = atom["cell_type"]
+        safe_name = (
+            names.name_at(atom_index, instance)
+            if isinstance(names, _OrdinalSafeNames)
+            else names[instance]
+        )
         for port, direction, bit in _expanded_pins(cell):
             previous = ports_by_type[cell_type].setdefault(port, direction)
             if previous != direction:
@@ -3259,8 +3307,9 @@ def _render_library_and_nets(
                     f"primitive {cell_type!r} has inconsistent pin direction"
                 )
             if isinstance(bit, int) and not isinstance(bit, bool):
-                endpoints[bit].append((names[instance], port, direction))
-    if seen != set(atoms_by_instance):
+                endpoints[bit].append((safe_name, port, direction))
+        current = next(atom_iterator, None)
+    if current is not None:
         raise ValidationError("mapped JSON does not cover every OpenPARF atom")
 
     for cell_type in platform_mux_types:
@@ -4065,9 +4114,7 @@ def export_xilinx_openparf_atomic(
             raise ValidationError(
                 f"atomic demand {count} exceeds {resource} capacity {capacity[resource]}"
             )
-    names = {
-        atom["instance"]: f"a{index}" for index, atom in enumerate(atoms)
-    }
+    names = _OrdinalSafeNames(atoms)
     library, nets, net_count, dropped_single_endpoint_nets = (
         _render_library_and_nets(
             cells, atoms, names, platform_mux_types=mux,
@@ -4076,10 +4123,11 @@ def export_xilinx_openparf_atomic(
     coordinate_system = device_static["coordinate_system"]
     site_text = _render_sites(device_static, atoms, platform_mux_types=mux)
     output_dir.mkdir(parents=True, exist_ok=True)
+    node_path = output_dir / "design.nodes"
+    with node_path.open("w", encoding="utf-8") as stream:
+        for index, atom in enumerate(atoms):
+            stream.write(f"a{index} {atom['cell_type']}\n")
     files = {
-        "design.nodes": "".join(
-            f"{names[atom['instance']]} {atom['cell_type']}\n" for atom in atoms
-        ),
         "design.lib": library,
         "design.nets": nets,
         "design.scl": site_text,
@@ -4088,6 +4136,7 @@ def export_xilinx_openparf_atomic(
     }
     for name, text in files.items():
         (output_dir / name).write_text(text, encoding="utf-8")
+    file_names = ["design.nodes", *files]
     model_map = {}
     for primitive in sorted(
         {atom["cell_type"] for atom in atoms}, key=_primitive_sort_key
@@ -4667,8 +4716,8 @@ def export_xilinx_openparf_atomic(
         output_dir / "name_map.json",
         header=name_map_header,
         atoms=(
-            {"openparf": names[atom["instance"]], **atom}
-            for atom in atoms
+            {"openparf": f"a{index}", **atom}
+            for index, atom in enumerate(atoms)
         ),
         carry_cascade_chains=carry_cascade_chains,
         mapped_sha256=_sha256(mapped_path),
@@ -4770,7 +4819,7 @@ def export_xilinx_openparf_atomic(
             "lut_policy": "8 independent 6LUT BELs; no paired 5LUT use",
         },
         "files": sorted([
-            *files, "openparf.json", "name_map.json", "site-map.sqlite3",
+            *file_names, "openparf.json", "name_map.json", "site-map.sqlite3",
             name_map_store_path.name,
             *(["physical-macro-groups.json"] if hardblock_groups else []),
         ]),

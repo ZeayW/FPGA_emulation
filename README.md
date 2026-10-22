@@ -692,6 +692,12 @@ MiB of traced Python allocation in 0.614 seconds. Explicitly materializing the
 legacy JSON produced 28,500,397 bytes and peaked at 167.93 MiB in 3.10 seconds.
 This isolates the representation boundary; NVDLA Phase 7 wall time, process
 RSS and temporary-I/O qualification remain pending.
+The atomic Bookshelf exporter also derives each `aN` identity from the sorted
+atom ordinal, merges mapped cells and atoms in one pass, and streams
+`design.nodes` directly. It no longer retains separate safe-name, atom lookup,
+and coverage containers. A 500,000-atom comparison reduced incremental traced
+allocation from 50.92 MB to 0.003 MB and process peak RSS from 323.37 MB to
+212.01 MB; this is isolated adapter evidence.
 RWRoute TSV export likewise derives route-cell rows directly from the physical
 binding and no longer duplicates every cell in a second route-cell dictionary.
 Its report separates binding, cell/I/O
