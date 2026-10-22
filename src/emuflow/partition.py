@@ -82,15 +82,158 @@ class _UnionFind:
 
 
 class _CompactClusterRecords(list):
-    """JSON-compatible clusters plus dense source-cell ownership."""
+    """Lazy v1 cluster records backed by packed ordinal columns.
+
+    The public Phase 3 contract deliberately remains a ``list`` so existing
+    providers and the canonical JSON encoder keep the same behavior.  The
+    base list is empty, however: production retains cell names once in a UTF-8
+    pool, cluster membership as CSR ordinals, resource totals in uint32
+    columns, and only the sparse fixed/group constraints.  Iteration expands
+    one record at a time.
+    """
 
     def __init__(
         self,
-        records: Iterable[Dict[str, Any]],
+        *,
+        name_bytes: bytearray,
+        name_offsets: array,
+        member_offsets: array,
+        member_ordinals: array,
+        resource_columns: Tuple[array, ...],
+        fixed_by_cluster: Mapping[int, str],
+        groups_by_cluster: Mapping[int, Sequence[str]],
         source_cluster_indices: array,
     ) -> None:
-        super().__init__(records)
+        super().__init__()
+        cluster_count = len(member_offsets) - 1
+        if (
+            cluster_count < 0
+            or len(name_offsets) != len(source_cluster_indices) + 1
+            or len(member_ordinals) != len(source_cluster_indices)
+            or len(resource_columns) != len(RESOURCE_FIELDS)
+            or any(len(column) != cluster_count for column in resource_columns)
+            or not member_offsets
+            or member_offsets[0] != 0
+            or member_offsets[-1] != len(member_ordinals)
+        ):
+            raise ValidationError("compact partition cluster columns are invalid")
+        self._name_bytes = name_bytes
+        self._name_offsets = name_offsets
+        self._member_offsets = member_offsets
+        self._member_ordinals = member_ordinals
+        self._resource_columns = resource_columns
+        self._fixed_by_cluster = dict(fixed_by_cluster)
+        self._groups_by_cluster = {
+            int(index): tuple(groups)
+            for index, groups in groups_by_cluster.items()
+        }
         self.source_cluster_indices = source_cluster_indices
+
+    def __len__(self) -> int:
+        return len(self._member_offsets) - 1
+
+    def _name(self, ordinal: int) -> str:
+        begin = self._name_offsets[ordinal]
+        end = self._name_offsets[ordinal + 1]
+        return self._name_bytes[begin:end].decode("utf-8")
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("compact cluster index out of range")
+        begin = self._member_offsets[index]
+        end = self._member_offsets[index + 1]
+        return {
+            "id": f"c{index:06d}",
+            "instances": [
+                self._name(self._member_ordinals[offset])
+                for offset in range(begin, end)
+            ],
+            "resources": {
+                field: column[index]
+                for field, column in zip(
+                    RESOURCE_FIELDS, self._resource_columns
+                )
+                if column[index]
+            },
+            "fixed_fpga": self._fixed_by_cluster.get(index),
+            "groups": list(self._groups_by_cluster.get(index, ())),
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def cluster_member_count(self, index: int) -> int:
+        if index < 0 or index >= len(self):
+            raise IndexError("compact cluster index out of range")
+        return self._member_offsets[index + 1] - self._member_offsets[index]
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("compact cluster indices must be integers or slices")
+        return self._record(index)
+
+    def __contains__(self, item: object) -> bool:
+        return any(record == item for record in self)
+
+    def __reversed__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self) - 1, -1, -1):
+            yield self._record(index)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, (list, tuple)):
+            return list(self) == list(other)
+        return False
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    def copy(self) -> List[Dict[str, Any]]:
+        return list(self)
+
+    def __copy__(self) -> List[Dict[str, Any]]:
+        return list(self)
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> List[Dict[str, Any]]:
+        import copy
+
+        result = copy.deepcopy(list(self), memo)
+        memo[id(self)] = result
+        return result
+
+    @property
+    def packed_payload_bytes(self) -> int:
+        columns = (
+            self._name_offsets,
+            self._member_offsets,
+            self._member_ordinals,
+            self.source_cluster_indices,
+            *self._resource_columns,
+        )
+        return len(self._name_bytes) + sum(
+            len(column) * column.itemsize for column in columns
+        )
+
+    @staticmethod
+    def _immutable(*_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("compact cluster records are immutable")
+
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+    __delitem__ = _immutable
+    __setitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
 
 
 class _CompactInstanceAssignment(Mapping[str, str]):
@@ -107,14 +250,12 @@ class _CompactInstanceAssignment(Mapping[str, str]):
         part_index = {part: index for index, part in enumerate(self.part_ids)}
         self._cluster_parts = array("I")
         self._cluster_member_counts = array("I")
-        for index, cluster in enumerate(clusters):
-            cluster_id = cluster.get("id")
-            members = cluster.get("instances")
+        for index in range(len(clusters)):
+            cluster_id = f"c{index:06d}"
+            member_count = clusters.cluster_member_count(index)
             if (
-                cluster_id != f"c{index:06d}"
-                or cluster_id not in cluster_assignment
-                or not isinstance(members, list)
-                or len(members) >= 2**32
+                cluster_id not in cluster_assignment
+                or member_count >= 2**32
             ):
                 raise ValidationError(
                     "compact partition cluster ownership is invalid"
@@ -122,7 +263,7 @@ class _CompactInstanceAssignment(Mapping[str, str]):
             self._cluster_parts.append(
                 part_index[cluster_assignment[cluster_id]]
             )
-            self._cluster_member_counts.append(len(members))
+            self._cluster_member_counts.append(member_count)
         self._source_clusters = clusters.source_cluster_indices
         if sum(self._cluster_member_counts) != len(self._source_clusters):
             raise ValidationError(
@@ -423,12 +564,18 @@ def _build_clusters_from_compact_ir(
         if endpoint is not None:
             raise ValidationError("compact EmuIR has orphaned endpoints")
 
-        # Build the final records in lexical cell order.  The first member of
-        # each component therefore establishes the same cluster ordering as
-        # sorting all grouped member lists, without retaining those lists a
-        # second time.
+        # Build packed authoritative columns in lexical cell order.  The first
+        # member of each component therefore establishes the same cluster
+        # ordering as sorting all grouped member lists.  Unlike the former
+        # implementation, this does not retain one dictionary, list and set of
+        # Python strings for every cluster.
         root_to_cluster = array("I", [missing]) * instance_count
-        clusters: List[Dict[str, Any]] = []
+        lexical_clusters = array("I")
+        member_counts = array("I")
+        first_member_ordinals = array("I")
+        name_bytes = bytearray()
+        name_offsets = array("Q", [0])
+        resource_columns = tuple(array("I") for _ in RESOURCE_FIELDS)
         resources_by_payload: Dict[int, ResourceVector] = {}
         cells = connection.execute(
             """SELECT id,resources_seq
@@ -446,19 +593,17 @@ def _build_clusters_from_compact_ir(
             root = union_find.find(ordinal)
             cluster_index = root_to_cluster[root]
             if cluster_index == missing:
-                cluster_index = len(clusters)
+                cluster_index = len(member_counts)
                 root_to_cluster[root] = cluster_index
-                clusters.append(
-                    {
-                        "id": f"c{cluster_index:06d}",
-                        "instances": [],
-                        "resources": {},
-                        "fixed_fpga": None,
-                        "groups": [],
-                    }
-                )
-            cluster = clusters[cluster_index]
-            cluster["instances"].append(instance_id)
+                member_counts.append(0)
+                first_member_ordinals.append(ordinal)
+                for column in resource_columns:
+                    column.append(0)
+            lexical_clusters.append(cluster_index)
+            member_counts[cluster_index] += 1
+            encoded_name = instance_id.encode("utf-8")
+            name_bytes.extend(encoded_name)
+            name_offsets.append(len(name_bytes))
             payload_seq = row["resources_seq"]
             if payload_seq is None:
                 raise ValidationError(
@@ -483,12 +628,15 @@ def _build_clusters_from_compact_ir(
                     f"instance {instance_id!r} resources",
                 )
                 resources_by_payload[payload_seq] = resources
-            for field in RESOURCE_FIELDS:
+            for field_index, field in enumerate(RESOURCE_FIELDS):
                 amount = getattr(resources, field)
                 if amount:
-                    cluster["resources"][field] = (
-                        cluster["resources"].get(field, 0) + amount
-                    )
+                    total = resource_columns[field_index][cluster_index] + amount
+                    if total >= 2**32:
+                        raise ValidationError(
+                            "compact partition cluster resource exceeds uint32"
+                        )
+                    resource_columns[field_index][cluster_index] = total
         if resource_cell_count != instance_count:
             raise ValidationError(
                 "compact EmuIR resource cell sequence is incomplete"
@@ -501,12 +649,14 @@ def _build_clusters_from_compact_ir(
             fixed_by_cluster[cluster_index].add(item["fpga"])
         for cluster_index, fixed_fpgas in fixed_by_cluster.items():
             if len(fixed_fpgas) > 1:
-                members = clusters[cluster_index]["instances"]
+                member_ordinal = first_member_ordinals[cluster_index]
+                begin = name_offsets[member_ordinal]
+                end = name_offsets[member_ordinal + 1]
+                first_member = name_bytes[begin:end].decode("utf-8")
                 raise ValidationError(
-                    f"cluster containing {members[0]!r} has conflicting fixed "
+                    f"cluster containing {first_member!r} has conflicting fixed "
                     f"FPGA constraints {sorted(fixed_fpgas)}"
                 )
-            clusters[cluster_index]["fixed_fpga"] = next(iter(fixed_fpgas))
 
         groups_by_cluster: Dict[int, Set[str]] = defaultdict(set)
         for group, ordinals in zip(constraints["groups"], group_ordinals):
@@ -514,8 +664,19 @@ def _build_clusters_from_compact_ir(
                 groups_by_cluster[
                     root_to_cluster[union_find.find(ordinal)]
                 ].add(group["id"])
-        for cluster_index, group_ids in groups_by_cluster.items():
-            clusters[cluster_index]["groups"] = sorted(group_ids)
+        member_offsets = array("I", [0])
+        member_total = 0
+        for count in member_counts:
+            member_total += count
+            member_offsets.append(member_total)
+        if member_total != instance_count:
+            raise ValidationError("compact partition cluster membership is incomplete")
+        next_member_offsets = array("I", member_offsets[:-1])
+        member_ordinals = array("I", [0]) * instance_count
+        for ordinal, cluster_index in enumerate(lexical_clusters):
+            offset = next_member_offsets[cluster_index]
+            member_ordinals[offset] = ordinal
+            next_member_offsets[cluster_index] = offset + 1
         source_cluster_indices = array(
             "I",
             (
@@ -523,7 +684,22 @@ def _build_clusters_from_compact_ir(
                 for source_seq in range(instance_count)
             ),
         )
-        return _CompactClusterRecords(clusters, source_cluster_indices)
+        return _CompactClusterRecords(
+            name_bytes=name_bytes,
+            name_offsets=name_offsets,
+            member_offsets=member_offsets,
+            member_ordinals=member_ordinals,
+            resource_columns=resource_columns,
+            fixed_by_cluster={
+                index: next(iter(values))
+                for index, values in fixed_by_cluster.items()
+            },
+            groups_by_cluster={
+                index: sorted(values)
+                for index, values in groups_by_cluster.items()
+            },
+            source_cluster_indices=source_cluster_indices,
+        )
     finally:
         connection.close()
 

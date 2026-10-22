@@ -556,6 +556,13 @@ def run_phase3(
         clusters=len(clusters["clusters"]),
         active_fpgas=len(constraints["active_fpgas"]),
     )
+    packed_cluster_payload_bytes = getattr(
+        clusters["clusters"], "packed_payload_bytes", None
+    )
+    if packed_cluster_payload_bytes is not None:
+        phase3_runtime_observe(
+            cluster_compact_payload_bytes=int(packed_cluster_payload_bytes)
+        )
     if cut_mode == CUT_MODE_STATIC_EXACT:
         phase3_runtime_observe(
             static_exact_native=int(

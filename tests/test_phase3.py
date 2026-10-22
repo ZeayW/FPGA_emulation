@@ -109,7 +109,21 @@ class Phase3Test(unittest.TestCase):
                 cut_mode="static-exact-combinational",
                 _stream_eligible_policy_names=True,
             )
+            packed_clusters = actual["clusters"]
+            self.assertIsInstance(packed_clusters, list)
+            self.assertEqual(list.__len__(packed_clusters), 0)
+            self.assertGreater(packed_clusters.packed_payload_bytes, 0)
         self.assertEqual(actual, expected)
+        self.assertEqual(list(actual["clusters"]), expected["clusters"])
+        self.assertEqual(actual["clusters"][0], expected["clusters"][0])
+        self.assertEqual(actual["clusters"][-1], expected["clusters"][-1])
+        self.assertEqual(
+            json.dumps(actual, sort_keys=True, separators=(",", ":")),
+            json.dumps(expected, sort_keys=True, separators=(",", ":")),
+        )
+        copied_clusters = copy.deepcopy(actual)["clusters"]
+        self.assertIs(type(copied_clusters), list)
+        self.assertEqual(copied_clusters, expected["clusters"])
         self.assertEqual(actual_exact, expected_exact)
         streamed_names = streamed_exact["policy"][
             "eligible_combinational_cut_nets"
