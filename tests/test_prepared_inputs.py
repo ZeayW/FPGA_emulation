@@ -8,7 +8,7 @@ from emuflow.default_platform import DEFAULT_PLATFORM_PATH
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
-from emuflow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.multi_fpga_flow import _checked_flow_member, run_multi_fpga_flow
 from emuflow.prepared_inputs import (
     bind_prepared_inputs,
     validate_prepared_timing_boundary,
@@ -51,6 +51,25 @@ def test_binds_payloads_without_copying_or_loading_graph(tmp_path, boundaries):
     assert (tmp_path / "out/front/design.emuir.sqlite").resolve() == front / "design.emuir.sqlite"
     assert (tmp_path / "out/timing/path-database.json.sqlite").is_symlink()
     assert read_json(tmp_path / "out/front/platform.normalized.json") == Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
+
+
+def test_terminal_validation_accepts_only_the_declared_prepared_emuir(tmp_path, boundaries):
+    root = tmp_path / "flow"
+    front = root / "frontend/phase1"
+    bind_prepared_inputs(*boundaries, front, root / "timing",
+                         DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
+    emuir = Path("frontend/phase1/design.emuir.sqlite")
+    assert _checked_flow_member(root, emuir, "EmuIR") == root / emuir
+    report = read_json(front / "phase1_report.json")
+    report["continuation"]["source"] = str(tmp_path / "other.sqlite")
+    write_json(front / "phase1_report.json", report)
+    with pytest.raises(ValidationError, match="missing"):
+        _checked_flow_member(root, emuir, "EmuIR")
+    board = front / "platform.normalized.json"
+    board.unlink()
+    board.symlink_to(boundaries[0] / "platform.normalized.json")
+    with pytest.raises(ValidationError, match="missing"):
+        _checked_flow_member(root, board, "platform")
 
 
 def test_rejects_changed_clock_contract(tmp_path, boundaries):

@@ -290,10 +290,24 @@ def _validate_physical_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _checked_flow_member(root: Path, path: Path, label: str) -> Path:
-    """Return a regular, non-symlink file contained by a flow root."""
+    """Check a flow member, including its explicitly bound prepared EmuIR."""
 
     root = root.resolve()
     path = path if path.is_absolute() else root / path
+    if path.is_symlink() and path == root / "frontend/phase1/design.emuir.sqlite":
+        frontend_path = _checked_flow_member(
+            root, Path("frontend/phase1/phase1_report.json"), "frontend report"
+        )
+        frontend = read_json(frontend_path)
+        binding = frontend.get("continuation", {})
+        source = binding.get("source")
+        if (frontend.get("status") == "pass"
+                and binding.get("mode") == "read-only-indexed-boundary"
+                and isinstance(source, str) and Path(source).is_absolute()
+                and path.is_file() and path.resolve() == Path(source).resolve()):
+            # Preserve the local artifact name for sealing. The terminal
+            # validator hashes these input bytes just like every other member.
+            return path
     if path.is_symlink() or not path.is_file():
         raise ValidationError(f"multi-FPGA checkpoint {label} is missing")
     resolved = path.resolve()

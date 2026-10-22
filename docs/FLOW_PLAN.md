@@ -39,6 +39,12 @@ EmuIR retains directed endpoints, hierarchy, cell types and parameters,
 resource vectors, clock/reset classification, and cut eligibility. Logical
 schema identity is separate from its physical storage representation.
 
+Phase 6 copies the bounded `resource_reservations_by_fpga` seal directly from
+the Phase 3 assignment index into its split manifest. Its independent validator
+compares that seal with the assignment index, rejecting missing or changed
+reservations before the physical backend consumes the split. This control
+metadata check does not load the instance ownership graph.
+
 BoardDB describes FPGA nodes, resource budgets, and inter-FPGA links. An
 academic BoardDB can omit package pins. Concrete deployment additionally
 needs authoritative device resources, physical connections, electrical rules,

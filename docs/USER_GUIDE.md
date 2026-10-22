@@ -15,7 +15,10 @@ The saved BoardDB is read only for its device part identity. Its historical
 interconnect fields are not interpreted or migrated. The explicitly selected
 current BoardDB is validated in full and supplies all Phase 3–7 capacities,
 topology, and link models. Missing or changed saved device identities still
-reject the continuation. Input databases remain read-only.
+reject the continuation. Input databases remain read-only. Terminal validation
+accepts the EmuIR symlink only when it resolves to the input declared in the
+passing Phase 1 continuation report, and hashes those original bytes as part
+of the flow artifact seal. Other flow artifacts still reject symlinks.
 
 ## Complete build
 

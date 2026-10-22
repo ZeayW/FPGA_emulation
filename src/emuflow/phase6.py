@@ -41,6 +41,7 @@ from .runtime import (
 )
 from .split_netlist_storage import (
     read_compact_emuir_control_metadata,
+    read_split_resource_reservations,
     validate_split_netlists_sqlite,
     write_split_netlists_sqlite,
 )
@@ -248,6 +249,7 @@ def run_phase6(
             "Phase 6 requires the Phase 3 assignment.sqlite data-plane "
             "artifact; rerun Phase 3 with this EmuFlow version"
         )
+    resource_reservations = read_split_resource_reservations(assignment_index_path)
     schedule = read_tdm_schedule(schedule_path)
     platform = Platform.load(platform_path)
     pin_plan = read_pin_plan(pin_plan_path) if pin_plan_path is not None else None
@@ -420,6 +422,8 @@ def run_phase6(
         ],
         "lane_map": "lane_map.json",
         "runtime_controller_rtl": "virtual_runtime_controller.sv",
+        **({"resource_reservations_by_fpga": resource_reservations}
+           if resource_reservations else {}),
         **(
             {
                 "cut_mode": "static-exact-combinational",
@@ -770,6 +774,12 @@ def validate_phase6(
     )
     platform = Platform.load(platform_path)
     manifest = read_json(manifest_path)
+    if manifest.get("resource_reservations_by_fpga", {}) != (
+        read_split_resource_reservations(assignment_index_path)
+    ):
+        raise ValidationError(
+            "split manifest resource reservations disagree with Phase 3"
+        )
     transports = {
         item["fpga"]: read_transport(
             manifest_path.parent / item["transport"]

@@ -24,6 +24,8 @@ selected BoardDB for Phases 3–7. See the
 [user guide](docs/USER_GUIDE.md) for input requirements and failure behavior.
 The saved BoardDB supplies only the mapping device identity; older link-model
 fields do not need migration to continue with the current BoardDB.
+Terminal validation also verifies the declared read-only EmuIR binding and
+hashes its original bytes without copying the database.
 
 Phases 3–7 exchange compact selector manifests and content-addressed SQLite
 sidecars for assignments, routes, schedules, transport, and physical handoffs.
@@ -73,7 +75,8 @@ Phase 3 can seal per-FPGA downstream resource reservations in
 `resource_reservations_by_fpga`. Every partition provider then limits the
 original design to the 25%-capped physical capacity minus that reservation,
 while balance shares remain based on the unchanged physical devices. Phase 6
-carries the seal into the split manifest; Phase 7 streams the synthesized
+carries the seal from the assignment index into the split manifest and
+independently rejects missing or changed reservations; Phase 7 streams the synthesized
 transport resource totals from SQLite, rejects any reservation overrun, and
 still checks the combined implementation against the original physical cap.
 
