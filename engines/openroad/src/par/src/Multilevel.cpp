@@ -431,6 +431,43 @@ void MultilevelPartitioner::InitialPartition(
                initial_solutions_cost.back(),
                (bool) initial_solutions_flag.back());
   }
+  // A finer graph can become packable only after it exceeds the cut-ILP
+  // threshold. Keep resource feasibility available there without building
+  // a graph-sized cut MILP: the empty edge set creates only packing variables.
+  constexpr int max_resource_initialization_vertices = 10000;
+  if (hgraph->GetNumVertices() > num_vertices_threshold_ilp_
+      && hgraph->GetNumVertices() <= max_resource_initialization_vertices
+      && std::none_of(initial_solutions_flag.begin(),
+                      initial_solutions_flag.end(),
+                      [](bool legal) { return legal; })) {
+    std::map<int, int> fixed;
+    if (hgraph->HasFixedVertices()) {
+      for (int v = 0; v < hgraph->GetNumVertices(); ++v) {
+        if (hgraph->GetFixedAttr(v) >= 0) {
+          fixed[v] = hgraph->GetFixedAttr(v);
+        }
+      }
+    }
+    std::vector<int> resource_solution;
+    if (ILPPartitionInst(num_parts_, hgraph->GetVertexDimensions(),
+                         resource_solution, fixed, {}, {},
+                         hgraph->GetVertexWeights(), upper_block_balance,
+                         lower_block_balance)) {
+      k_way_fm_refiner_->SetMaxMove(hgraph->GetNumVertices());
+      k_way_fm_refiner_->Refine(hgraph, upper_block_balance,
+                               lower_block_balance, resource_solution);
+      k_way_fm_refiner_->RestoreDefaultParameters();
+      const auto token = evaluator_->CutEvaluator(hgraph, resource_solution, false);
+      initial_solutions.push_back(std::move(resource_solution));
+      initial_solutions_cost.push_back(token.cost);
+      initial_solutions_flag.push_back(ResourceBalanced(
+          token.block_balance, lower_block_balance, upper_block_balance));
+      debugPrint(logger_, PAR, "initial_partitioning", 1,
+                 "Resource ILP part cutcost = {}, balance_flag = {}",
+                 token.cost, static_cast<bool>(initial_solutions_flag.back()));
+    }
+  }
+
   // sort the solutions based on cost
   std::vector<int> solution_ids(initial_solutions_cost.size(), 0);
   std::iota(solution_ids.begin(), solution_ids.end(), 0);

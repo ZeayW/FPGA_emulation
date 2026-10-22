@@ -49,6 +49,10 @@ no legal incumbent exists, then optimizes cut for up to 30 seconds. It accepts
 either optimal or feasible integer solutions and retains the legal incumbent
 when cut optimization exhausts its budget. Independent resource checks still
 gate acceptance.
+If packing requires a finer graph beyond the cut-ILP threshold, native
+resource-only ILP remains available up to 10,000 vertices; it borrows the
+existing vertex weights, omits connectivity variables, and hands the legal
+seed back to FM and uncoarsening. It does not repair a published partition.
 There is no external balance legalizer. EmuFlow checks
 and repairs configured hop constraints before handing the initial assignment
 to PATRON. See the [TritonPart project and publication](https://github.com/ABKGroup/TritonPart).
