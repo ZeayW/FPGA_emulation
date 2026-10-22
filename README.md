@@ -129,10 +129,20 @@ Peak process-tree RSS remained 42.70 GiB in that earlier replay. Since then,
 the native analyzer result has stopped rebuilding dependency, launch, level,
 and depth dictionaries in Python: those relations now remain in fixed-width
 integer arrays/CSR and expand only the current cut while byte-backed semantic
-records are emitted. A fresh NVDLA replay is still required to measure the new
-peak and attribute the remaining final cluster/path objects, eligible-candidate
-identity set, semantic-record, exact-binary and native internal graph/capture
-costs.
+records are emitted. The authoritative compact cluster owner now also keeps
+cell identities in one UTF-8 pool, membership in CSR, resources in fixed-width
+columns and only sparse fixed/group constraints; it exposes the unchanged v1
+records lazily. `phase3-runtime.json` reports its retained column bytes as
+`cluster_compact_payload_bytes`. On 200,000 singleton clusters, retained traced
+allocation fell from 141.62 MB to 16.13 MB and process peak RSS from 323.91 MB
+to 34.18 MB, with a byte-identical canonical SHA. Streamed JSON encoding changed
+from 2.01 to 3.12 seconds. The native analyzer now stores instances, nets,
+cuts, incoming/outgoing incidence and dependencies in flat columns/CSR. A
+500,000-instance/net/cut differential run reduced its peak RSS from 136.89 MB
+to 53.92 MB and produced identical bytes. These are isolated representation
+measurements. A fresh NVDLA replay is still required to measure the stage peak
+and attribute the remaining capture, policy-publication and compatibility
+artifact costs.
 `assignment.json` contains only the contract schema and SHA-256 identity;
 explicit legacy-style reads reconstruct and verify the same logical contract.
 Completed assignment-index v1/v2 artifacts remain readable.
@@ -229,8 +239,10 @@ view back into a retained Python string list before publication. In a separate
 14,000,014-character JSON used 11,327 versus 68,009,482 bytes of incremental
 traced peak allocation and 64,749,568 versus 203,161,600 bytes of process peak
 RSS; wall time was 1.780 versus 1.618 seconds. The policy array remains
-graph-sized in the logical v1 schema; final cluster/path objects and the C++
-analyzer's graph/capture vectors remain graph-scale migration work.
+graph-sized in the logical v1 schema, and the persisted cluster compatibility
+envelope still contains the logical cluster population. The C++ analyzer still
+retains and sorts the complete capture population required by protocol v3
+ordering.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
