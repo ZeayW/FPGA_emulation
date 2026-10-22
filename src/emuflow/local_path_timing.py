@@ -966,6 +966,9 @@ def import_vpr_local_path_timing(
 
 
 def validate_local_path_timing(database: Mapping[str, Any]) -> Dict[str, Any]:
+    indexed_validator = getattr(database, "validate_timing", None)
+    if callable(indexed_validator):
+        return indexed_validator()
     if database.get("schema") != LOCAL_PATH_TIMING_SCHEMA:
         raise ValidationError("local path timing schema is invalid")
     paths = database.get("paths")

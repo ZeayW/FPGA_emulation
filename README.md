@@ -1066,9 +1066,9 @@ timing store 27,766,784 bytes. Local-path timing now has a selector-backed typed
 owner as well. Validation uses a lazy identity projection and one statistics
 pass instead of copying every path and rescanning the population; VPR and
 RapidWright producers write the measured records directly into that owner.
-On 100,000 synthetic paths, typed read and full seal validation used 42,778,624
-bytes peak RSS versus 250,118,144 bytes for legacy JSON and occupied 24 MiB
-versus 30 MiB, while wall time changed from 0.69 to 1.88 seconds. Unique
+On 100,000 synthetic paths, typed read and full seal validation used 32,653,312
+bytes peak RSS versus 251,887,616 bytes for legacy JSON and occupied 24 MiB
+versus 30 MiB, while wall time changed from 0.73 to 0.90 seconds. Unique
 event/check identity tables remain W6 migration work; formal NVDLA Phase 7C
 wall/RSS/I/O and complete original-path coverage are still pending.
 
