@@ -274,6 +274,19 @@ class MultiFpgaFlowTest(unittest.TestCase):
             routes = read_json(output / "system-route/routes.json")
             schedule = read_json(output / "tdm/schedule.json")
             replay = validate_multi_fpga_flow_bundle(output)
+
+            def bounded_control_read(path, *args, **kwargs):
+                if Path(path).name in {"routes.json", "schedule.json"}:
+                    raise AssertionError(
+                        "terminal replay expanded a typed data-plane store"
+                    )
+                return read_json(path, *args, **kwargs)
+
+            with patch(
+                "emuflow.multi_fpga_flow.read_json",
+                side_effect=bounded_control_read,
+            ):
+                typed_replay = validate_multi_fpga_flow_bundle(output)
             self.assertEqual(
                 report["stages"]["partition"]["validation"]["cut_nets"],
                 0,
@@ -293,6 +306,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             self.assertNotIn("frame_search", report)
             self.assertNotIn("cross_stage", report)
             self.assertEqual(replay["status"], "pass")
+            self.assertEqual(typed_replay, replay)
 
     def test_static_exact_acceptance_fixture_is_not_vacuous(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

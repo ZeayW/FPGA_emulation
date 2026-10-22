@@ -135,6 +135,7 @@ CREATE TABLE schedule_completion_arrivals(
   PRIMARY KEY(completion_seq,seq),
   UNIQUE(completion_seq,sink_fpga)
 ) WITHOUT ROWID;
+CREATE INDEX schedule_routes_net ON schedule_routes(net);
 """
 
 TYPED_INDEX_DDL = """
@@ -205,6 +206,16 @@ class ScheduleTransportRecord(NamedTuple):
     route_source: str
 
 
+class ScheduleDeadlineArrival(NamedTuple):
+    entry_id: str
+    arrival_slot: int
+
+
+class ScheduleDeadlineSource(NamedTuple):
+    deadline_slot: int
+    causal_sink: str
+
+
 class ScheduleValidationRecord(NamedTuple):
     """Typed ScheduleStore projection used by independent validators."""
 
@@ -240,6 +251,260 @@ class ScheduleValidationRecord(NamedTuple):
         if self.tdm_ratio is not None:
             value["tdm_ratio"] = self.tdm_ratio
         return value
+
+
+class ScheduleStaticExactTimingIndex:
+    """Narrow deadline queries over the authoritative schedule entry rows."""
+
+    def __init__(
+        self,
+        store_path: Path,
+        expected_entries: int,
+        *,
+        producer_owned_entries: bool,
+        producer_owned_routes: bool,
+    ) -> None:
+        self._connection = sqlite3.connect(
+            f"file:{store_path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        self._expected_entries = expected_entries
+        self._producer_owned_entries = producer_owned_entries
+        self._producer_owned_routes = producer_owned_routes
+        self._entry_relation = "schedule_entries"
+        self._route_relation = "schedule_routes"
+        try:
+            if producer_owned_routes:
+                indexes = {
+                    str(row[1])
+                    for row in self._connection.execute(
+                        "PRAGMA index_list(schedule_routes)"
+                    )
+                }
+                if "schedule_routes_net" in indexes:
+                    columns = tuple(
+                        str(row[2])
+                        for row in self._connection.execute(
+                            "PRAGMA index_info(schedule_routes_net)"
+                        )
+                    )
+                    if columns != ("net",):
+                        raise ValidationError(
+                            "static exact route lookup index is malformed"
+                        )
+                else:
+                    self._connection.execute("PRAGMA temp_store=FILE")
+                    self._connection.execute(
+                        "CREATE TEMP TABLE static_exact_routes("
+                        "net TEXT NOT NULL,demand TEXT NOT NULL)"
+                    )
+                    self._connection.execute(
+                        "INSERT INTO static_exact_routes "
+                        "SELECT net,demand FROM schedule_routes"
+                    )
+                    self._connection.execute(
+                        "CREATE INDEX static_exact_routes_net "
+                        "ON static_exact_routes(net)"
+                    )
+                    self._route_relation = "static_exact_routes"
+            else:
+                self._connection.execute("PRAGMA temp_store=FILE")
+                self._connection.execute(
+                    "CREATE TEMP TABLE static_exact_entries("
+                    "entry_id TEXT PRIMARY KEY,demand TEXT NOT NULL,"
+                    "net TEXT NOT NULL,link_id TEXT NOT NULL,"
+                    "source_fpga TEXT NOT NULL,sink_fpga TEXT NOT NULL,"
+                    "slot INTEGER NOT NULL,arrival_slot INTEGER NOT NULL) "
+                    "WITHOUT ROWID"
+                )
+                if producer_owned_entries:
+                    self._connection.execute(
+                        "INSERT INTO static_exact_entries "
+                        "SELECT entry_id,demand,net,link_id,source_fpga,"
+                        "sink_fpga,slot,arrival_slot FROM schedule_entries"
+                    )
+                else:
+                    self._connection.execute(
+                        "INSERT INTO static_exact_entries "
+                        "SELECT identity,"
+                        "json_extract(record_json,'$.demand'),"
+                        "json_extract(record_json,'$.net'),"
+                        "json_extract(record_json,'$.link'),"
+                        "json_extract(record_json,'$.from'),"
+                        "json_extract(record_json,'$.to'),"
+                        "json_extract(record_json,'$.slot'),"
+                        "json_extract(record_json,'$.arrival_slot') "
+                        "FROM records WHERE section='entries'"
+                    )
+                self._connection.execute(
+                    "CREATE INDEX static_exact_entries_source "
+                    "ON static_exact_entries(net,source_fpga,entry_id)"
+                )
+                self._connection.execute(
+                    "CREATE UNIQUE INDEX static_exact_entries_arrival "
+                    "ON static_exact_entries(net,sink_fpga)"
+                )
+                self._entry_relation = "static_exact_entries"
+            count = self._connection.execute(
+                f"SELECT count(*) FROM {self._entry_relation}"
+            ).fetchone()[0]
+            duplicate = self._connection.execute(
+                f"SELECT demand,sink_fpga FROM {self._entry_relation} "
+                "GROUP BY demand,sink_fpga HAVING count(*)!=1 LIMIT 1"
+            ).fetchone()
+            if count != expected_entries:
+                raise ValidationError(
+                    "static exact schedule entry coverage disagrees"
+                )
+            if duplicate is not None:
+                raise ValidationError(
+                    "static exact schedule has a duplicate current-frame "
+                    "arrival"
+                )
+        except ValidationError:
+            self.close()
+            raise
+        except (sqlite3.DatabaseError, sqlite3.IntegrityError) as error:
+            self.close()
+            raise ValidationError(
+                "static exact schedule timing index is unreadable"
+            ) from error
+
+    def __enter__(self) -> "ScheduleStaticExactTimingIndex":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
+    def close(self) -> None:
+        connection = self._connection
+        if connection is not None:
+            connection.close()
+            self._connection = None
+
+    def _open_connection(self) -> sqlite3.Connection:
+        if self._connection is None:
+            raise RuntimeError("static exact schedule timing index is closed")
+        return self._connection
+
+    def iter_link_ids(self) -> Iterator[str]:
+        connection = self._open_connection()
+        try:
+            rows = connection.execute(
+                f"SELECT DISTINCT link_id FROM {self._entry_relation} "
+                "ORDER BY link_id"
+            )
+            for row in rows:
+                if not isinstance(row[0], str) or not row[0]:
+                    raise ValidationError(
+                        "static exact schedule link identity is malformed"
+                    )
+                yield row[0]
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "static exact schedule link identities are unreadable"
+            ) from error
+
+    def _demand_for_net(self, net: str) -> Optional[str]:
+        if not self._producer_owned_routes:
+            return None
+        connection = self._open_connection()
+        rows = connection.execute(
+            f"SELECT demand FROM {self._route_relation} WHERE net=? LIMIT 2",
+            (net,),
+        ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1 or not isinstance(rows[0][0], str):
+            raise ValidationError(
+                "static exact schedule route identity is malformed"
+            )
+        return rows[0][0]
+
+    def source(self, net: str, fpga: str) -> ScheduleDeadlineSource:
+        connection = self._open_connection()
+        try:
+            demand = self._demand_for_net(net)
+            if self._producer_owned_routes:
+                if demand is None:
+                    rows = ()
+                else:
+                    rows = connection.execute(
+                        "SELECT entry_id,slot FROM schedule_entries "
+                        "WHERE demand=? AND source_fpga=? ORDER BY entry_id",
+                        (demand, fpga),
+                    )
+            else:
+                rows = connection.execute(
+                    f"SELECT entry_id,slot FROM {self._entry_relation} "
+                    "WHERE net=? AND source_fpga=? ORDER BY entry_id",
+                    (net, fpga),
+                )
+            identities: list[str] = []
+            deadline = None
+            for identity, slot in rows:
+                if (
+                    not isinstance(identity, str)
+                    or not identity
+                    or isinstance(slot, bool)
+                    or not isinstance(slot, int)
+                ):
+                    raise ValidationError(
+                        "static exact source entry is malformed"
+                    )
+                identities.append(identity)
+                deadline = slot if deadline is None else min(deadline, slot)
+            if deadline is None:
+                raise ValidationError(
+                    f"static exact cut {net!r} has no TX from source "
+                    f"{fpga!r}"
+                )
+            return ScheduleDeadlineSource(deadline, ",".join(identities))
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "static exact source entries are unreadable"
+            ) from error
+
+    def arrival(
+        self, net: str, fpga: str
+    ) -> Optional[ScheduleDeadlineArrival]:
+        connection = self._open_connection()
+        try:
+            demand = self._demand_for_net(net)
+            if self._producer_owned_routes:
+                if demand is None:
+                    rows = []
+                else:
+                    rows = connection.execute(
+                        "SELECT entry_id,arrival_slot FROM schedule_entries "
+                        "WHERE demand=? AND sink_fpga=? "
+                        "ORDER BY entry_id LIMIT 2",
+                        (demand, fpga),
+                    ).fetchall()
+            else:
+                rows = connection.execute(
+                    f"SELECT entry_id,arrival_slot FROM {self._entry_relation} "
+                    "WHERE net=? AND sink_fpga=? ORDER BY entry_id LIMIT 2",
+                    (net, fpga),
+                ).fetchall()
+        except sqlite3.DatabaseError as error:
+            raise ValidationError(
+                "static exact arrival entry is unreadable"
+            ) from error
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ValidationError(
+                "static exact schedule has a duplicate current-frame arrival"
+            )
+        identity, arrival_slot = rows[0]
+        if (
+            not isinstance(identity, str)
+            or not identity
+            or isinstance(arrival_slot, bool)
+            or not isinstance(arrival_slot, int)
+        ):
+            raise ValidationError("static exact arrival entry is malformed")
+        return ScheduleDeadlineArrival(identity, arrival_slot)
 
 
 def _validate_typed_relation_structure(
@@ -2519,6 +2784,18 @@ class TDMScheduleView(Mapping[str, Any]):
             self.store_path,
             len(self._sections["entries"]),
             producer_owned=self._producer_owned_entries,
+        )
+
+    def open_static_exact_timing_index(
+        self,
+    ) -> ScheduleStaticExactTimingIndex:
+        """Open bounded source/arrival queries for Phase 7C deadlines."""
+
+        return ScheduleStaticExactTimingIndex(
+            self.store_path,
+            len(self._sections["entries"]),
+            producer_owned_entries=self._producer_owned_entries,
+            producer_owned_routes=self._producer_owned_routes,
         )
 
     def iter_entry_route_records(

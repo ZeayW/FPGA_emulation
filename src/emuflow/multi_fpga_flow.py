@@ -70,7 +70,7 @@ from .runtime import validate_virtual_runtime
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
 from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
 from .tdm_schedule_storage import read_tdm_schedule, tdm_schedule_store_path
-from .system_route_storage import system_route_store_path
+from .system_route_storage import read_system_routes, system_route_store_path
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     NATIVE_ROUTER_PROVIDER,
@@ -1143,9 +1143,15 @@ def validate_multi_fpga_flow_bundle(
         raise ValidationError(
             "split manifest lacks the DUT clock-period contract"
         )
-    runtime_validation = validate_virtual_runtime(
-        runtime_contract, read_json(schedule_path), platform, clock_periods
-    )
+    terminal_schedule = read_tdm_schedule(schedule_path)
+    try:
+        runtime_validation = validate_virtual_runtime(
+            runtime_contract, terminal_schedule, platform, clock_periods
+        )
+    finally:
+        close_schedule = getattr(terminal_schedule, "close", None)
+        if callable(close_schedule):
+            close_schedule()
     if runtime_validation != report["runtime"].get("validation"):
         raise ValidationError("independent runtime replay disagrees")
 
@@ -1213,14 +1219,27 @@ def validate_multi_fpga_flow_bundle(
         from .global_sta import adopt_opensta_results, bind_physical_checks, compare_system_timing, read_engine_identity, read_measurements
         if physical_summary_path is None:
             raise ValidationError("global OpenSTA qualification lacks physical inputs")
-        with read_physical_summary(physical_summary_path) as physical:
-            if board_link_timing_path is not None:
-                physical["board_link_timing"] = read_json(board_link_timing_path)
-            checks = bind_physical_checks(
-                read_json(flow_root / "runtime/runtime_contract.json"),
-                read_json(routes_path), read_json(schedule_path), physical,
-                Platform.load(platform_path),
-            )
+        terminal_routes = read_system_routes(routes_path)
+        terminal_schedule = read_tdm_schedule(schedule_path)
+        try:
+            with read_physical_summary(physical_summary_path) as physical:
+                if board_link_timing_path is not None:
+                    physical["board_link_timing"] = read_json(
+                        board_link_timing_path
+                    )
+                checks = bind_physical_checks(
+                    read_json(
+                        flow_root / "runtime/runtime_contract.json"
+                    ),
+                    terminal_routes,
+                    terminal_schedule,
+                    physical,
+                    Platform.load(platform_path),
+                )
+        finally:
+            close_schedule = getattr(terminal_schedule, "close", None)
+            if callable(close_schedule):
+                close_schedule()
         # Explicit terminal validation reconstructs the binding and checks the
         # raw engine scalars, without running the same external STA twice.
         measurements = read_measurements(_checked_flow_member(

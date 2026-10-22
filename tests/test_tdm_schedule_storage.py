@@ -728,6 +728,24 @@ def test_schedule_store_publishes_large_section_in_one_pass(tmp_path):
         assert list(view["entries"]) == expected["entries"]
 
 
+@pytest.mark.parametrize("storage_version", ["v4", "v3"])
+def test_static_exact_timing_index_queries_typed_relations(
+    tmp_path, storage_version
+):
+    expected = _typed_exact_schedule(3)
+    path = tmp_path / "schedule.json"
+    write_tdm_schedule_storage(path, expected)
+    if storage_version == "v3":
+        _downgrade_v4_store_to_v3(path, expected)
+
+    with open_tdm_schedule_view(path) as view:
+        with view.open_static_exact_timing_index() as index:
+            assert list(index.iter_link_ids()) == ["ab"]
+            assert index.source("n1", "a") == (1, "s000001")
+            assert index.arrival("n1", "b") == ("s000001", 2)
+            assert index.arrival("unknown", "b") is None
+
+
 def test_schedule_store_consumes_canonical_entry_cursor_without_decode(tmp_path):
     class CanonicalEntryRecords(list):
         canonical_record_cursor_schema = (

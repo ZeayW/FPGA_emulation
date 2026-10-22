@@ -30,6 +30,7 @@ from emuflow.tdm import (
 )
 from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
+    TypedScheduleEntrySequence,
     read_tdm_schedule,
     write_tdm_schedule_storage,
 )
@@ -508,6 +509,43 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             self.physical,
             self.platform,
         )
+        self.assertEqual(validation["status"], "pass")
+
+    def test_indexed_deadline_build_and_validation_do_not_decode_hop_rows(
+        self,
+    ):
+        expected = build_static_exact_segment_deadlines(
+            self.schedule,
+            self.assignment["semantic_contract"],
+            self.physical,
+            self.platform,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "schedule.json"
+            write_tdm_schedule_storage(path, self.schedule)
+            indexed = read_tdm_schedule(path)
+            with mock.patch.object(
+                TypedScheduleEntrySequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "static exact deadline path decoded all schedule hops"
+                ),
+            ):
+                actual = build_static_exact_segment_deadlines(
+                    indexed,
+                    self.assignment["semantic_contract"],
+                    self.physical,
+                    self.platform,
+                )
+                validation = validate_static_exact_segment_deadlines(
+                    actual,
+                    indexed,
+                    self.assignment["semantic_contract"],
+                    self.physical,
+                    self.platform,
+                )
+
+        self.assertEqual(actual, expected)
         self.assertEqual(validation["status"], "pass")
 
     def test_schedule_references_semantics_without_duplicating_contract(self):

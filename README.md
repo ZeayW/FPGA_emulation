@@ -480,6 +480,17 @@ peak allocation from 346.1 MB to 108.2 MB, retained allocation from 332.9 MB
 to 83.5 MB, and route artifact bytes from 46.60 MB to 32.19 MB; two repeated
 runs measured the typed build at 8.16--8.32 seconds versus 8.92--9.59 seconds
 for whole-JSON loading. This is adapter evidence rather than NVDLA
+qualification. Canonical full-bundle validation now opens RouteStore and
+ScheduleStore with their typed readers for runtime replay and Global STA; it no
+longer expands either logical document through `read_json`. Static Exact deadline
+generation and its independent validator also query the ScheduleStore directly:
+a `schedule_routes(net)` index resolves the demand, and the existing demand-led
+entry key supplies source and arrival hops without H-sized entry, source or
+arrival maps. Older stores build a file-backed compatibility index. On 20,000
+unique segments, complete build plus validation reduced traced peak from
+76,146,572 to 18,087,840 bytes and process peak RSS from 209,158,144 to
+88,129,536 bytes; wall time improved from 2.14 to 0.90 seconds with the same
+status and record count. This is adapter evidence pending NVDLA Phase 7C
 qualification. The independent typed validator now reconstructs the exact
 ready order with packed CSR arrays and net ranks, stores arrivals in a compact
 integer matrix, streams certificate digests and compares recomputed completion
