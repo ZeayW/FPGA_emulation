@@ -182,7 +182,8 @@ void Partitioner::RandomPart(const HGraphPtr& hgraph,
       solution[v] = block_id;
       block_balance[block_id]
           = block_balance[block_id] + hgraph->GetVertexWeights(v);
-      if (block_balance[block_id] >= lower_block_balance[block_id]) {
+      if (ResourceWithin(lower_block_balance[block_id],
+                         block_balance[block_id])) {
         block_id++;
         block_id = block_id % num_parts_;  // adjust the block_id
       }
@@ -197,8 +198,9 @@ void Partitioner::RandomPart(const HGraphPtr& hgraph,
       solution[v] = block_id;
       block_balance[block_id]
           = block_balance[block_id] + hgraph->GetVertexWeights(v);
-      if (block_balance[block_id] >= upper_block_balance[block_id]
-          && stop_flag == false) {
+      if (!ResourceWithin(block_balance[block_id],
+                          upper_block_balance[block_id]) &&
+          stop_flag == false) {
         block_id++;
         solution[v] = block_id;  // move the vertex to next block
         if (block_id == num_parts_ - 1) {

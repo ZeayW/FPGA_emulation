@@ -103,10 +103,12 @@ std::shared_ptr<VertexGain> PriorityQueue::GetBestCandidate(
     const int vertex_id = vertices_[index]->GetVertex();
     const int to_pid = vertices_[index]->GetDestinationPart();
     const int from_pid = vertices_[index]->GetSourcePart();
-    if ((curr_block_balance[to_pid] + hgraph->GetVertexWeights(vertex_id)
-         < upper_block_balance[to_pid])
-        && (curr_block_balance[from_pid] - hgraph->GetVertexWeights(vertex_id)
-            > lower_block_balance[from_pid])) {
+    if (ResourceWithin(curr_block_balance[to_pid] +
+                           hgraph->GetVertexWeights(vertex_id),
+                       upper_block_balance[to_pid]) &&
+        ResourceWithin(lower_block_balance[from_pid],
+                       curr_block_balance[from_pid] -
+                           hgraph->GetVertexWeights(vertex_id))) {
       return true;
     }
     return false;

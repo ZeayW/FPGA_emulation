@@ -115,20 +115,18 @@ class DefaultPlatformTest(unittest.TestCase):
             "--clock", "clk", "--clock-period", "clk=10", "--out", "unused",
         ])
         self.assertEqual(args.platform, DEFAULT_PLATFORM_PATH)
-        self.assertTrue(args.partition_repair_balance)
         self.assertTrue(args.partition_repair_min_used_fpgas)
         disabled = parser.parse_args([
             "multi-fpga", "compile", "design.v", "--top", "top",
             "--clock", "clk", "--clock-period", "clk=10", "--out", "unused",
-            "--no-partition-repair-balance", "--no-partition-repair-min-used-fpgas",
+            "--no-partition-repair-min-used-fpgas",
         ])
-        self.assertFalse(disabled.partition_repair_balance)
         self.assertFalse(disabled.partition_repair_min_used_fpgas)
         for function, prefix in ((run_multi_fpga_flow, "partition_"),
                                  (run_phase3, "tritonpart_"),
                                  (run_tritonpart, ""), (run_partition_checkpoint, ""),
                                  (run_cross_stage_optimization, "partition_")):
-            for suffix in ("repair_balance", "repair_min_used_fpgas"):
+            for suffix in ("repair_min_used_fpgas",):
                 self.assertIs(inspect.signature(function).parameters[prefix + suffix].default, True)
         self.assertEqual(
             inspect.signature(run_multi_fpga_flow).parameters["platform_path"].default,

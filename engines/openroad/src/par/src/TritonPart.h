@@ -134,19 +134,15 @@ class TritonPart
   // placement information is specified in placement file The format is that
   // each line cooresponds to a group fixed vertices, community and placement
   // attributes both follows the hMETIS format
-  void PartitionHypergraph(unsigned int num_parts,
-                           float balance_constraint,
-                           const std::vector<float>& base_balance,
-                           const std::vector<float>& scale_factor,
-                           unsigned int seed,
-                           int vertex_dimension,
-                           int hyperedge_dimension,
-                           int placement_dimension,
-                           const char* hypergraph_file,
-                           const char* fixed_file,
-                           const char* community_file,
-                           const char* group_file,
-                           const char* placement_file);
+  void PartitionHypergraph(unsigned int num_parts, float balance_constraint,
+                           const std::vector<float> &base_balance,
+                           const std::vector<float> &scale_factor,
+                           unsigned int seed, int vertex_dimension,
+                           int hyperedge_dimension, int placement_dimension,
+                           const char *hypergraph_file, const char *fixed_file,
+                           const char *community_file, const char *group_file,
+                           const char *placement_file,
+                           const char *resource_bounds_file = "");
 
   // Evaluate a given solution of a hypergraph
   // The fixed vertices should statisfy the fixed vertices constraint
@@ -277,6 +273,8 @@ class TritonPart
   // constraints information
   float ub_factor_ = 1.0;            // balance constraint
   int num_parts_ = 2;                // number of partitions
+  Matrix<float> resource_upper_bounds_;
+  Matrix<float> resource_lower_bounds_;
   std::vector<float> base_balance_;  // the target balance for each block
   std::vector<float> scale_factor_;  // the scale factor for each block
                                      // (multi-technology-nodes)
@@ -335,10 +333,9 @@ class TritonPart
   float coarsening_ratio_
       = 1.5;  // the ratio of number of vertices of adjacent coarse hypergraphs
   int max_coarsen_iters_ = 20;  // maxinum number of coarsening iterations
-  float adj_diff_ratio_
-      = 0.0001;  // the ratio of number of vertices of adjacent coarse
-                 // hypergraphs if the ratio is less than adj_diff_ratio_, then
-                 // stop coarsening
+  float adj_diff_ratio_ = 0.0001; // the ratio of number of vertices of adjacent
+                                  // coarse hypergraphs if the ratio is less
+                                  // than adj_diff_ratio_, then stop coarsening
   int min_num_vertices_each_part_
       = 4;  // minimum number of vertices in each block
             // for the partitioning solution of the coareset hypergraph

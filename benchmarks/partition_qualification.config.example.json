@@ -28,6 +28,5 @@
   },
   "partition_provider": "mfspart",
   "partition_seed": 0,
-  "partition_seed_attempts": 1,
-  "partition_repair_balance": false
+  "partition_seed_attempts": 1
 }

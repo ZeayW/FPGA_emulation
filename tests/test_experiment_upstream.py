@@ -1051,7 +1051,6 @@ class ExperimentUpstreamTest(unittest.TestCase):
             "provider": "tritonpart",
             "seed": 0,
             "seed_attempts": 2,
-            "repair_balance": True,
             "emuir_sha256": _sha256(
                 frontend / "phase1/design.emuir.sqlite"
             ),
@@ -1089,7 +1088,6 @@ class ExperimentUpstreamTest(unittest.TestCase):
                 expected_provider="tritonpart",
                 expected_seed=0,
                 expected_seed_attempts=2,
-                expected_repair_balance=True,
             )
             self.assertEqual(checked["status"], "pass")
 
@@ -1186,15 +1184,6 @@ class ExperimentUpstreamTest(unittest.TestCase):
                     frontend, timing, platform, partition
                 )
 
-            report["seed_attempts"] = 2
-            report["repair_balance"] = False
-            report_path.write_text(json.dumps(report), encoding="utf-8")
-            with self.assertRaisesRegex(
-                ValidationError, "balance-repair report disagrees"
-            ):
-                validate_partition_checkpoint(
-                    frontend, timing, platform, partition
-                )
 
     @mock.patch("emuflow.experiment_partition.validate_phase3_indexed")
     def test_partition_validator_binds_static_exact_cut_policy(

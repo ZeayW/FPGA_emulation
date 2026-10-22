@@ -574,11 +574,6 @@ class CrossStageCandidateTest(unittest.TestCase):
                         "partition_repair_min_used_fpgas"
                     ]
                 )
-                self.assertTrue(
-                    report["configuration"][
-                        "partition_repair_balance"
-                    ]
-                )
                 self.assertEqual(len(report["candidates"]), 5)
                 self.assertEqual(
                     [

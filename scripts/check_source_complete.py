@@ -174,7 +174,6 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "examples/rtl/xilinx_hard_blocks_smoke.v",
     "src/native/tlr_router.cpp",
     "src/native/hop_partition_refiner.cpp",
-    "src/native/tritonpart_balance_legalizer.cpp",
     "src/emuflow/partition_hops.py",
     "src/native/mfspart_coarsener.cpp",
     "src/emuflow/mfspart.py",

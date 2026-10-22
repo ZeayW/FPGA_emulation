@@ -97,6 +97,9 @@ platform.
 The CLI defaults to timing-driven PATRON partitioning with a TritonPart
 initializer, sequential-only cut semantics, and baseline Phase 6.
 Select alternatives explicitly:
+Use the bundled OpenROAD build: Phase 3 requires its `-resource_bounds_file`
+interface to enforce independent resource limits inside TritonPart. Illegal
+provider output fails validation instead of being repaired after partitioning.
 
 ```bash
 emuflow multi-fpga compile --help

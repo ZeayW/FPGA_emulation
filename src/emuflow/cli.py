@@ -751,14 +751,6 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--timeout-seconds", type=int, default=3600)
     partition_run.add_argument("--seed-attempts", type=int, default=1)
     partition_run.add_argument(
-        "--repair-balance",
-        action=_BooleanOptionalAction, default=True,
-        help=(
-            "deterministically legalize a TritonPart candidate against "
-            "the independently checked multi-resource upper bounds"
-        ),
-    )
-    partition_run.add_argument(
         "--repair-min-used-fpgas", action=_BooleanOptionalAction, default=True,
         help="Populate required FPGAs after capacity legalization",
     )
@@ -842,11 +834,6 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--patron-max-moves", type=int)
     partition_validate.add_argument("--seed", type=int)
     partition_validate.add_argument("--seed-attempts", type=int)
-    partition_validate.add_argument(
-        "--repair-balance",
-        action=_BooleanOptionalAction,
-        default=None,
-    )
     partition_validate.add_argument(
         "--repair-min-used-fpgas", action=_BooleanOptionalAction, default=None,
     )
@@ -2072,15 +2059,6 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     multi_fpga_compile.add_argument(
-        "--partition-repair-balance",
-        action=_BooleanOptionalAction,
-        default=True,
-        help=(
-            "legalize a best-effort assignment "
-            "against independently checked multi-resource balance bounds"
-        ),
-    )
-    multi_fpga_compile.add_argument(
         "--cut-mode",
         choices=("sequential-only", "static-exact-combinational"),
         default="sequential-only",
@@ -3258,16 +3236,6 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     phase3.add_argument(
-        "--tritonpart-repair-balance",
-        action=_BooleanOptionalAction,
-        default=True,
-        help=(
-            "legalize a best-effort TritonPart "
-            "solution against EmuFlow's independently checked "
-            "multi-resource upper bounds"
-        ),
-    )
-    phase3.add_argument(
         "--repart",
         help=(
             "explicit comparison override; defaults to the in-tree "
@@ -3825,9 +3793,6 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument(
         "--partition-repair-min-used-fpgas", action=_BooleanOptionalAction, default=True
     )
-    cross_stage_optimize.add_argument(
-        "--partition-repair-balance", action=_BooleanOptionalAction, default=True
-    )
     cross_stage_optimize.add_argument("--router")
     cross_stage_optimize.add_argument(
         "--route-provider",
@@ -4341,7 +4306,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                     ),
                     timeout_seconds=args.timeout_seconds,
                     seed_attempts=args.seed_attempts,
-                    repair_balance=args.repair_balance,
                     repair_min_used_fpgas=args.repair_min_used_fpgas,
                     num_initial_solutions=args.num_initial_solutions,
                     num_best_initial_solutions=args.num_best_initial_solutions,
@@ -4389,7 +4353,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_provider=args.provider,
                 expected_seed=args.seed,
                 expected_seed_attempts=args.seed_attempts,
-                expected_repair_balance=args.repair_balance,
                 expected_repair_min_used_fpgas=args.repair_min_used_fpgas,
                 expected_mfspart_post_refinement=(
                     args.mfspart_post_refinement
@@ -5946,7 +5909,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             partition_repair_min_used_fpgas=(
                 args.partition_repair_min_used_fpgas
             ),
-            partition_repair_balance=args.partition_repair_balance,
             cut_mode=args.cut_mode,
             max_cross_fpga_dependency_depth=(
                 args.max_cross_fpga_dependency_depth
@@ -6133,7 +6095,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             tritonpart_repair_min_used_fpgas=(
                 args.tritonpart_repair_min_used_fpgas
             ),
-            tritonpart_repair_balance=args.tritonpart_repair_balance,
             repart=args.repart,
             repart_solution=args.repart_solution,
             repart_timeout_seconds=args.repart_timeout_seconds,
@@ -6404,9 +6365,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 ),
                 partition_repair_min_used_fpgas=(
                     args.partition_repair_min_used_fpgas
-                ),
-                partition_repair_balance=(
-                    args.partition_repair_balance
                 ),
                 router=args.router,
                 route_provider=args.route_provider,

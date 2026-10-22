@@ -1292,7 +1292,6 @@ def run_multi_fpga_flow(
     partition_num_initial_solutions: int = 50,
     partition_num_best_initial_solutions: int = 10,
     partition_repair_min_used_fpgas: bool = True,
-    partition_repair_balance: bool = True,
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
@@ -1968,7 +1967,6 @@ def run_multi_fpga_flow(
         tritonpart_repair_min_used_fpgas=(
             partition_repair_min_used_fpgas
         ),
-        tritonpart_repair_balance=partition_repair_balance,
         repart=repart,
         repart_timeout_seconds=partition_timeout_seconds,
         net_weights_path=(
@@ -2183,7 +2181,6 @@ def run_multi_fpga_flow(
             partition_repair_min_used_fpgas=(
                 partition_repair_min_used_fpgas
             ),
-            partition_repair_balance=partition_repair_balance,
             router=router,
             route_provider=route_provider,
             route_candidate_workers=route_candidate_workers,

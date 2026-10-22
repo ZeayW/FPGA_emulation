@@ -101,8 +101,10 @@ float KWayFMRefine::Pass(
   // Otherwise we should only accept better solutions
   float best_gain = 0.0;
   for (int block_id = 0; block_id < num_parts_; block_id++) {
-    if (upper_block_balance[block_id] < block_balance[block_id]
-        || block_balance[block_id] < lower_block_balance[block_id]) {
+    if (!ResourceWithin(block_balance[block_id],
+                        upper_block_balance[block_id]) ||
+        !ResourceWithin(lower_block_balance[block_id],
+                        block_balance[block_id])) {
       best_gain = -std::numeric_limits<float>::max();
       break;
     }

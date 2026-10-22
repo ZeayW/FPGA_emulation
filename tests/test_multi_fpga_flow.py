@@ -525,20 +525,6 @@ class MultiFpgaFlowTest(unittest.TestCase):
         )
         self.assertEqual(phase3.provider, "patron")
         self.assertEqual(phase3.cut_mode, "sequential-only")
-        self.assertTrue(phase3.tritonpart_repair_balance)
-        phase3_with_repair = _build_parser().parse_args(
-            [
-                "phase3",
-                "--ir",
-                "design.emuir.json",
-                "--platform",
-                "platform.json",
-                "--out",
-                "phase3",
-                "--tritonpart-repair-balance",
-            ]
-        )
-        self.assertTrue(phase3_with_repair.tritonpart_repair_balance)
         checkpoint = _build_parser().parse_args(
             [
                 "experiment-stage",
@@ -1447,7 +1433,6 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 ),
                 partition_seed_attempts=2,
                 partition_repair_min_used_fpgas=True,
-                partition_repair_balance=True,
                 equivalence_cycles=2,
                 mapping_profile="vtr-hard-blocks",
             )
@@ -1570,11 +1555,6 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             self.assertTrue(
                 report["cross_stage"]["configuration"][
                     "partition_repair_min_used_fpgas"
-                ]
-            )
-            self.assertTrue(
-                report["cross_stage"]["configuration"][
-                    "partition_repair_balance"
                 ]
             )
             broken_cross_stage = copy.deepcopy(report)

@@ -610,8 +610,10 @@ bool GoldenEvaluator::ConstraintAndCutEvaluator(
   const Matrix<float> lower_block_balance
       = hgraph->GetLowerVertexBalance(num_parts_, ub_factor, base_balance);
   for (int i = 0; i < num_parts_; i++) {
-    if (solution_token.block_balance[i] > upper_block_balance[i]
-        || solution_token.block_balance[i] < lower_block_balance[i]) {
+    if (!ResourceWithin(solution_token.block_balance[i],
+                        upper_block_balance[i]) ||
+        !ResourceWithin(lower_block_balance[i],
+                        solution_token.block_balance[i])) {
       balance_satisfied_flag = false;
       break;
     }

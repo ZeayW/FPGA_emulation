@@ -213,7 +213,6 @@ def run_partition_checkpoint(
     mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     timeout_seconds: int = 3600,
     seed_attempts: int = 1,
-    repair_balance: bool = True,
     repair_min_used_fpgas: bool = True,
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
@@ -290,7 +289,6 @@ def run_partition_checkpoint(
         tritonpart_solution=tritonpart_solution,
         tritonpart_timeout_seconds=timeout_seconds,
         tritonpart_seed_attempts=seed_attempts,
-        tritonpart_repair_balance=repair_balance,
         tritonpart_repair_min_used_fpgas=repair_min_used_fpgas,
         tritonpart_num_initial_solutions=num_initial_solutions,
         tritonpart_num_best_initial_solutions=num_best_initial_solutions,
@@ -339,7 +337,6 @@ def run_partition_checkpoint(
         "provider": provider,
         "seed": seed,
         "seed_attempts": seed_attempts,
-        "repair_balance": repair_balance,
         "repair_min_used_fpgas": repair_min_used_fpgas,
         "mfspart_post_refinement": mfspart_post_refinement,
         "mfspart_post_refinement_early_stop": (
@@ -492,7 +489,6 @@ def validate_partition_checkpoint(
     expected_provider: str | None = None,
     expected_seed: int | None = None,
     expected_seed_attempts: int | None = None,
-    expected_repair_balance: bool | None = None,
     expected_repair_min_used_fpgas: bool | None = None,
     expected_mfspart_post_refinement: bool | None = None,
     expected_mfspart_post_refinement_early_stop: int | None = None,
@@ -536,11 +532,6 @@ def validate_partition_checkpoint(
         and report.get("seed_attempts") != expected_seed_attempts
     ):
         raise ValidationError("partition seed-attempt contract disagrees")
-    if (
-        expected_repair_balance is not None
-        and report.get("repair_balance") is not expected_repair_balance
-    ):
-        raise ValidationError("partition balance-repair contract disagrees")
     if (
         expected_mfspart_post_refinement is not None
         and report.get("mfspart_post_refinement", False)
@@ -945,7 +936,6 @@ def validate_partition_checkpoint(
             for item in attempts
             if isinstance(item, dict)
         )
-        actual_repair_balance = metadata.get("balance_repair", {}).get("enabled")
         if ("repair_min_used_fpgas" in report
             and report["repair_min_used_fpgas"]
             is not metadata.get("min_used_fpgas_repair", {}).get("enabled")):
@@ -956,13 +946,6 @@ def validate_partition_checkpoint(
         ):
             raise ValidationError(
                 "partition seed-attempt report disagrees with assignment"
-            )
-        if (
-            "repair_balance" in report
-            and report["repair_balance"] is not actual_repair_balance
-        ):
-            raise ValidationError(
-                "partition balance-repair report disagrees with assignment"
             )
     checked = validate_phase3_indexed(
         ir_path,

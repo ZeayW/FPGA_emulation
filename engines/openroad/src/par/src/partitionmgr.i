@@ -107,7 +107,8 @@ void triton_part_hypergraph(unsigned int num_parts,
                             int max_num_vcycle,
                             int num_coarsen_solutions,
                             int num_vertices_threshold_ilp,
-                            int global_net_threshold)
+                            int global_net_threshold,
+    const char* resource_bounds_file)
 {
   getPartitionMgr()->tritonPartHypergraph(
       num_parts,
@@ -148,7 +149,8 @@ void triton_part_hypergraph(unsigned int num_parts,
       max_num_vcycle,
       num_coarsen_solutions,
       num_vertices_threshold_ilp,
-      global_net_threshold);
+      global_net_threshold,
+      resource_bounds_file);
 }
 
 void evaluate_hypergraph_solution(unsigned int num_parts,

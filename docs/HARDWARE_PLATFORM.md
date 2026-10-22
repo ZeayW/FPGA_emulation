@@ -76,27 +76,28 @@ the combined mapped and materialized design to fit the unchanged physical
 capacity. An underestimated reservation fails closed and must be increased by
 an explicit rerun from the saved Phase 1--2 boundary.
 
-OpenROAD/TritonPart can return a best-effort partition that still requires
-resource legalization. Capacity legalization and minimum-used-FPGA repair
-are enabled by default. Phase 3 invokes the compiled
-`emuflow_tritonpart_balance_legalizer` directly on the native hMetis graph and
-solution. It uses exact integer bounds, moves no fixed vertex, and either emits
-a legal assignment or fails the seed explicitly; it cannot widen a capacity or
-balance bound. Its compact `balance-repair-report.txt` records RUNNING/PASS/FAILED
-state, initial/final/allowed loads, and direct, paired, or bounded ejection-chain
-move counts. The bounded chain handles cases where several complementary
-resource vectors must move before a scarce-resource cluster can enter a target.
-Python does not perform this capacity-legalization search: it parses the result and
-independently recomputes the final per-FPGA resource loads before Phase 3 can
-publish it.
-The existing minimum-used-FPGA repair then handles empty required partitions,
-and final validation checks both capacity and occupancy. The `balance`
-spelling in the repair option and executable name is retained; under the
-default policy their limits come from device capacity. Explicit
-`--no-partition-repair-balance` and `--no-partition-repair-min-used-fpgas` on
-`multi-fpga compile` disable the corresponding repairs, but never disable
-the acceptance checks. Phase 3 uses the corresponding
-`--no-tritonpart-repair-*` options.
+Phase 3 passes exact per-FPGA, per-resource integer upper bounds to the
+in-tree OpenROAD/TritonPart solver with `-resource_bounds_file`. Its compact
+text format starts with `num_parts num_dimensions`; each subsequent row is one
+partition, with `lower upper` pairs in hMetis vertex-weight dimension order.
+EmuFlow exports zero lower bounds because its contract limits maximum loads;
+minimum occupancy is checked separately. This represents capacity-only rare
+resources, explicitly balanced dimensions, and transport reservations without
+relaxing unrelated dimensions through a scalar UBfactor. The scalar remains an
+envelope for the upstream evaluation interface.
+
+Coarsening, FM moves, initialization selection, and final acceptance check every
+resource independently, including equality at a bound and zero-weight resources.
+If a coarse graph has no feasible initial candidate, initialization retries at a
+finer level. An illegal candidate is never padded into the chosen set or written
+as a successful solution. Python independently recomputes resource loads before
+publishing an assignment. There is no post-provider resource legalizer and no
+balance-repair CLI option. PATRON starts only from an accepted legal assignment.
+The separate minimum-used-FPGA repair remains controlled by
+`--no-partition-repair-min-used-fpgas` (or the Phase 3
+`--no-tritonpart-repair-min-used-fpgas` option), with final capacity and occupancy
+checks always enforced.
+
 Design and communication logic consume the device resources. FPGA-internal
 path delays come from the physical backend and STA.
 RapidWright checks the whole-device budget after transport mapping, before

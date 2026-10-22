@@ -92,8 +92,7 @@ for tool in \
   tdm_exact_scheduler \
   tdm_ratio_optimizer \
   tdm_slot_optimizer \
-  tdm_timing_dag_optimizer \
-  tritonpart_balance_legalizer
+  tdm_timing_dag_optimizer
 do
   target="$runtime_dir/bin/emuflow_$tool"
   rm -f "$target"

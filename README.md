@@ -171,6 +171,9 @@ timing-driven PATRON post-processing, `sequential-only` cuts, baseline Phase 6,
 and OpenSTA global physical timing. Generalized Static Exact combinational
 cuts and Chimew are explicit options. The integrated Chimew
 lookahead path currently requires the explicit VTR backend/profile combination.
+Phase 3 supplies exact resource limits to TritonPart and independently validates
+its output; PATRON receives a legal initial assignment. No external balance
+legalizer modifies the solver output.
 
 For very large PATRON v14 designs, Phase 3 performs one local-move seed sweep
 over the configured critical-cluster budget before the existing ejection/comove

@@ -491,8 +491,8 @@ bool Refiner::CheckVertexMoveLegality(
       = curr_block_balance[to_pid] + hgraph->GetVertexWeights(v);
   const std::vector<float> total_wt_from_block
       = curr_block_balance[from_pid] - hgraph->GetVertexWeights(v);
-  return total_wt_to_block <= upper_block_balance[to_pid]
-         && lower_block_balance[from_pid] <= total_wt_from_block;
+  return ResourceWithin(total_wt_to_block, upper_block_balance[to_pid]) &&
+         ResourceWithin(lower_block_balance[from_pid], total_wt_from_block);
 }
 
 // calculate the possible gain of moving a entire hyperedge
@@ -666,13 +666,15 @@ bool Refiner::CheckHyperedgeMoveLegality(
     }
   }
   // Violate the upper bound
-  if (upper_block_balance[to_pid] < update_block_balance[to_pid]) {
+  if (!ResourceWithin(update_block_balance[to_pid],
+                      upper_block_balance[to_pid])) {
     return false;
   }
   // Violate the lower bound
   for (int pid = 0; pid < num_parts_; pid++) {
     if (pid != to_pid) {
-      if (update_block_balance[pid] < lower_block_balance[pid]) {
+      if (!ResourceWithin(lower_block_balance[pid],
+                          update_block_balance[pid])) {
         return false;
       }
     }

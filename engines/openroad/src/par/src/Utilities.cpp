@@ -270,15 +270,7 @@ bool operator==(const std::vector<float>& a, const std::vector<float>& b)
 
 bool operator<=(const Matrix<float>& a, const Matrix<float>& b)
 {
-  const int num_dim
-      = std::min(static_cast<int>(a.size()), static_cast<int>(b.size()));
-  for (int dim = 0; dim < num_dim; dim++) {
-    if ((a[dim] < b[dim]) || (a[dim] == b[dim])) {
-      continue;
-    }
-    return false;
-  }
-  return true;
+  return ResourceWithin(a, b);
 }
 
 // Basic functions for a vector

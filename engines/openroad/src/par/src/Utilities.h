@@ -40,6 +40,7 @@
 #include <string>
 #include <vector>
 
+#include "ResourceBalance.h"
 #ifdef LOAD_CPLEX
 // for ILP solver in CPLEX
 #include "ilcplex/cplex.h"
