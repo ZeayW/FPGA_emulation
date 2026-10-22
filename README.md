@@ -1411,7 +1411,10 @@ and Boost. The complete build also needs the development dependencies for
 OpenROAD, OpenSTA, OpenPARF, and VPR: Bison, Flex, Tcl, SWIG, Eigen3, zlib,
 spdlog, LEMON, OR-Tools, OpenMP, and the appropriate Python/PyTorch packages.
 CUDA is optional and disabled by default. The OpenPARF Python/PyTorch ABI must
-match the interpreter selected when compiling its native operators.
+match the interpreter selected when compiling its native operators. Versioned
+validation runtimes probe the compiler for usable C++17 filesystem support and
+rebuild every modified core-linked Phase 3–5 kernel from the exact source commit;
+they fail instead of silently reusing an older native executable.
 
 ```bash
 cmake --preset release
