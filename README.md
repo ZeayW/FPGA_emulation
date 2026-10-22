@@ -100,12 +100,21 @@ weight pool still scale with graph content. This is adapter evidence, not NVDLA
 qualification.
 In the production PATRON path, the pressure model now has an explicit ownership
 boundary: after native output parsing and optional diagnostic hashing, its
-cluster/net/path/capacity views are cleared and collected before the final
-candidate assignment and Static Exact semantic contract are constructed. The
-remaining timing, trace and initial-candidate state is released after online
-validation and candidate selection, before assignment-index publication.
-`phase3-runtime.json` records both release steps. This removes overlapping
-graph-scale lifetimes; its NVDLA peak-RSS effect remains pending the full replay.
+cluster/net/path/capacity views are cleared and collected before a compact
+selection-only candidate is constructed. That transient candidate owns packed
+cluster and instance placement plus resource summaries, but deliberately has no
+cut records or Static Exact semantic contract because neither participates in
+the PATRON v14 ranking. After online validation and candidate selection, the
+timing source, trace and unselected candidate state are released; the cut
+relation and Static Exact contract are then constructed exactly once for the
+selected assignment before the independent hop audit and assignment-index
+publication. `phase3-runtime.json` records both release steps and the candidate
+deferral. On an isolated 10,000-instance/9,999-cut compact chain, candidate
+construction changed from 7.114 to 0.223 seconds, traced peak allocation from
+44,885,378 to 96,969 bytes, and process peak RSS from 120,946,688 to 50,102,272
+bytes. The deferred object is never published; the final artifact remains the
+complete independently validated contract. This is adapter evidence, and its
+NVDLA peak-RSS effect remains pending an exact-HEAD full replay.
 Production clustering now consumes compact EmuIR through ordered integer
 SQLite cursors. It keeps only a four-byte original-to-lexical cell permutation,
 compact union-find arrays and the final cluster records; it no longer decodes a

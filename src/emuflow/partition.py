@@ -2386,8 +2386,17 @@ def build_partition_assignment(
     *,
     _include_semantic_contract: bool = True,
     _stream_semantic_records: bool = False,
+    _defer_derived_records: bool = False,
 ) -> Dict[str, Any]:
     """Build the common Phase 3 assignment artifact for any provider."""
+
+    if not isinstance(_defer_derived_records, bool):
+        raise ValidationError("partition derived-record deferral is invalid")
+    if _defer_derived_records and _include_semantic_contract:
+        raise ValidationError(
+            "partition derived records cannot be deferred while building "
+            "the semantic contract"
+        )
 
     cluster_records = clusters_artifact["clusters"]
     if not isinstance(cluster_records, list):
@@ -2434,7 +2443,17 @@ def build_partition_assignment(
         cut_policy.get("cut_mode") == CUT_MODE_STATIC_EXACT
         and _include_semantic_contract
     )
-    if build_exact_contract:
+    if _defer_derived_records:
+        # PATRON v14 selects between assignments using the native predictive
+        # path objective and scheduler-independent legality.  Cut records and
+        # Static Exact topology do not participate in that decision.  Keeping
+        # them out of this transient selection object lets the caller release
+        # the pressure graph and unselected assignment before constructing the
+        # one authoritative final contract.
+        cut_nets = None
+        cut_metrics: Dict[str, Any] = {}
+        cut_net_ordinals = None
+    elif build_exact_contract:
         cut_nets, cut_metrics, cut_net_ordinals = (
             _compute_cut_nets_with_ordinals(ir, instance_assignment)
         )
@@ -2591,7 +2610,6 @@ def build_partition_assignment(
             else dict(sorted(instance_assignment.items()))
         ),
         "partitions": partition_records,
-        "cut_nets": cut_nets,
         "metrics": {
             "instances": len(instance_assignment),
             "clusters": len(cluster_records),
@@ -2601,6 +2619,10 @@ def build_partition_assignment(
             **cut_metrics,
         },
     }
+    if cut_nets is None:
+        result["_derived_records"] = "deferred-selection-only"
+    else:
+        result["cut_nets"] = cut_nets
     if provider_metadata is not None:
         result["provider_metadata"] = dict(provider_metadata)
     if semantic_contract is not None:

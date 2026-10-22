@@ -462,6 +462,57 @@ class PartitionPressureTest(unittest.TestCase):
         self.assertIsInstance(trace["native_input_crc32"], int)
         self.assertNotIn("moves", trace)
 
+    def test_production_candidate_defers_cut_and_semantic_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "design.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            compact_ir = load_partition_ir(ir_path)
+            compact_clusters = build_clusters(compact_ir, self.constraints)
+            compact_initial = build_partition_assignment(
+                compact_ir,
+                self.platform,
+                compact_clusters,
+                self.constraints,
+                self.initial["cluster_assignment"],
+                provider="fixture",
+                seed=7,
+                _include_semantic_contract=False,
+                _stream_semantic_records=True,
+            )
+            compact_model = build_partition_pressure_model(
+                compact_ir,
+                self.platform,
+                compact_clusters,
+                self.constraints,
+                self.timing,
+                self.route_constraints,
+                independent_validation=False,
+            )
+            final, trace = run_partition_pressure_native(
+                compact_ir,
+                self.platform,
+                compact_clusters,
+                self.constraints,
+                self.route_constraints,
+                compact_model,
+                compact_initial,
+                executable=str(patron_refiner()),
+                max_moves=0,
+                output_validation="caller",
+                retain_trace_seals=False,
+                stream_semantic_records=True,
+                _release_model_before_assignment=True,
+                _defer_candidate_derived_records=True,
+            )
+
+        self.assertEqual(
+            final["_derived_records"], "deferred-selection-only"
+        )
+        self.assertNotIn("cut_nets", final)
+        self.assertNotIn("semantic_contract", final)
+        self.assertEqual(trace["trace_storage"], "summary-only")
+
     def test_native_patron_explicit_input_copy_preserves_debug_protocol(
         self,
     ) -> None:
@@ -2850,6 +2901,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(
                 assignment["metrics"]["combinational_cut_nets"], 1
             )
+            self.assertNotIn("_derived_records", assignment)
             self.assertIn("semantic_contract", assignment)
             self.assertEqual(
                 assignment["metrics"][
@@ -2874,11 +2926,21 @@ class PartitionPressureTest(unittest.TestCase):
             )
             self.assertLess(
                 step_names.index("patron.release_post_selection_state"),
+                step_names.index("static_exact.build_semantic_contract"),
+            )
+            self.assertLess(
+                step_names.index("static_exact.build_semantic_contract"),
                 step_names.index("publish.write_assignment_index"),
             )
             self.assertEqual(
                 runtime["observations"][
                     "pressure_model_released_before_candidate_assignment"
+                ],
+                1,
+            )
+            self.assertEqual(
+                runtime["observations"][
+                    "patron_candidate_derived_records_deferred"
                 ],
                 1,
             )

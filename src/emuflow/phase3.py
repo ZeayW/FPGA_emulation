@@ -851,6 +851,10 @@ def run_phase3(
             stream_semantic_records=not retain_diagnostics,
             timeout_seconds=tritonpart_timeout_seconds,
             _release_model_before_assignment=not retain_diagnostics,
+            _defer_candidate_derived_records=(
+                not retain_diagnostics
+                and cut_mode == CUT_MODE_STATIC_EXACT
+            ),
         )
         if retain_diagnostics:
             write_json(output_dir / "patron" / "pressure_model.json", model)
@@ -1007,7 +1011,10 @@ def run_phase3(
                 "patron.release_post_selection_state", gc.collect
             )
             phase3_runtime_observe(
-                pressure_model_released_before_candidate_assignment=1
+                pressure_model_released_before_candidate_assignment=1,
+                patron_candidate_derived_records_deferred=int(
+                    cut_mode == CUT_MODE_STATIC_EXACT
+                ),
             )
     else:
         raise ValueError(
@@ -1053,6 +1060,28 @@ def run_phase3(
             route_constraints,
         )
     elif provider == "patron":
+        if (
+            cut_mode == CUT_MODE_STATIC_EXACT
+            and assignment.get("semantic_contract") is None
+        ):
+            # Native v14 selection is complete and the pressure graph plus
+            # unselected candidate have already been released.  Build the
+            # cut relation and Static Exact contract exactly once for the
+            # selected assignment before the independent hop audit consumes
+            # those cut records.
+            assignment = phase3_runtime_call(
+                "static_exact.build_semantic_contract",
+                build_partition_assignment,
+                ir,
+                platform,
+                clusters,
+                constraints,
+                assignment["cluster_assignment"],
+                provider=str(assignment["provider"]),
+                seed=int(assignment["seed"]),
+                provider_metadata=assignment.get("provider_metadata"),
+                _stream_semantic_records=not retain_diagnostics,
+            )
         # PATRON already evaluates reachability and max-hop legality for every
         # native candidate. A second topology FM pass duplicates a large input
         # and obscures the exact assignment PATRON selected.

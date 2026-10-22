@@ -4313,6 +4313,7 @@ def run_partition_pressure_native(
     stream_semantic_records: bool = False,
     timeout_seconds: int = 3600,
     _release_model_before_assignment: bool = False,
+    _defer_candidate_derived_records: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     limit = len(model["clusters"]) if max_moves is None else max_moves
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
@@ -4327,11 +4328,23 @@ def run_partition_pressure_native(
         raise ValidationError("native PATRON record-stream flag is invalid")
     if not isinstance(_release_model_before_assignment, bool):
         raise ValidationError("native PATRON model-release flag is invalid")
+    if not isinstance(_defer_candidate_derived_records, bool):
+        raise ValidationError(
+            "native PATRON candidate derived-record deferral is invalid"
+        )
     if _release_model_before_assignment and (
         retain_trace_seals or not stream_semantic_records
     ):
         raise ValidationError(
             "native PATRON model release requires summary-only streamed output"
+        )
+    if _defer_candidate_derived_records and (
+        not _release_model_before_assignment
+        or output_validation != "caller"
+    ):
+        raise ValidationError(
+            "native PATRON candidate derived-record deferral requires the "
+            "production caller-validation path"
         )
     if (
         isinstance(timeout_seconds, bool)
@@ -4589,7 +4602,9 @@ def run_partition_pressure_native(
         ),
         seed=initial_assignment.get("seed", 0),
         provider_metadata=provider_metadata,
+        _include_semantic_contract=not _defer_candidate_derived_records,
         _stream_semantic_records=stream_semantic_records,
+        _defer_derived_records=_defer_candidate_derived_records,
     )
     if output_validation == "full":
         validate_partition_artifacts(ir, platform, clusters_artifact, final)
