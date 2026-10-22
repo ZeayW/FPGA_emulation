@@ -37,7 +37,7 @@ def build_board_link_timing_model(
     *,
     reference: str = "BoardDB declared interconnect model",
 ) -> Dict[str, Any]:
-    """Materialize the declared delay model; ratio models carry an R=1 reference."""
+    """Materialize each link at the minimum supported TDM ratio."""
     if not reference:
         raise ValidationError("board link timing reference is empty")
     records = []
@@ -52,11 +52,12 @@ def build_board_link_timing_model(
                 "to": sink,
                 "fabric_clock_mhz": link.fabric_clock_mhz,
                 "latency_cycles": link.latency_cycles,
-                "delay_bound_ns": (link.tdm_delay_model.delay_ns(1)
+                "delay_bound_ns": (link.tdm_delay_model.delay_ns(
+                                       link.tdm_delay_model.min_ratio)
                                    if link.tdm_delay_model is not None
                                    else link.latency_cycles * slot_ns),
                 **({"tdm_delay_model": link.tdm_delay_model.to_dict(),
-                    "reference_tdm_ratio": 1}
+                    "reference_tdm_ratio": link.tdm_delay_model.min_ratio}
                    if link.tdm_delay_model is not None else {}),
                 "qualification": "model-only",
                 "source": {
@@ -143,8 +144,15 @@ def validate_board_link_timing(
         }[qualification]
         if link.tdm_delay_model is not None:
             if (record.get("tdm_delay_model") != link.tdm_delay_model.to_dict()
-                    or record.get("reference_tdm_ratio") != 1
-                    or not math.isclose(delay, link.tdm_delay_model.delay_ns(1), abs_tol=1e-9)
+                    or record.get("reference_tdm_ratio")
+                    != link.tdm_delay_model.min_ratio
+                    or not math.isclose(
+                        delay,
+                        link.tdm_delay_model.delay_ns(
+                            link.tdm_delay_model.min_ratio
+                        ),
+                        abs_tol=1e-9,
+                    )
                     or qualification != "model-only"):
                 raise ValidationError(f"{context}: TDM ratio model disagrees with BoardDB")
         elif "tdm_delay_model" in record:

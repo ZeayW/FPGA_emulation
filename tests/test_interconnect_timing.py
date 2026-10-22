@@ -2,7 +2,11 @@
 import copy
 import pytest
 
-from emuflow.board_link_timing import build_board_link_timing_model, validate_board_link_timing
+from emuflow.board_link_timing import (
+    build_board_link_timing_model,
+    directed_route_link_delays,
+    validate_board_link_timing,
+)
 from emuflow.cross_stage import _scheduled_transport_delay_by_net
 from emuflow.errors import ValidationError
 from emuflow.global_sta import bind_physical_checks
@@ -31,8 +35,19 @@ def test_ratio_timing_database_keeps_model_and_rejects_stale_constants():
     platform = Platform.load(research_platform_path())
     database = build_board_link_timing_model(platform)
     assert validate_board_link_timing(database, platform)["status"] == "pass"
-    assert database["links"][0]["delay_bound_ns"] == 30.5
+    assert database["links"][0]["reference_tdm_ratio"] == 8
+    assert database["links"][0]["delay_bound_ns"] == 34.0
     assert database["links"][0]["tdm_delay_model"]["ratio_coefficient_ns"] == .5
+    directed, _ = directed_route_link_delays(database, platform)
+    constraints = normalize_route_constraints(
+        {
+            "schema": "emuflow.system-route-constraints/v1",
+            "frame_slots": 1024,
+            "directed_link_delay_ns": directed,
+        },
+        platform,
+    )
+    assert constraints["tdm_max_ratio"] == 256
     database["links"][0]["delay_bound_ns"] = 50
     with pytest.raises(ValidationError, match="disagrees with BoardDB"):
         validate_board_link_timing(database, platform)

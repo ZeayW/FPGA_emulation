@@ -6,7 +6,7 @@ import json
 import pytest
 
 from emuflow.bank_allocation import allocate_shared_banks
-from emuflow.errors import EmuFlowError
+from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.ir import EmuIR
 from emuflow.partition import (
     build_clusters,
@@ -40,7 +40,10 @@ from tests import test_partition_pressure as pressure_fixture
 from tests.test_phase4 import _assignment, _link, _platform_value
 
 
-def bank_link(link_id, left, right, *, banks=18, wires=20, mhz=250.0):
+def bank_link(
+    link_id, left, right, *, banks=18, wires=20, mhz=250.0,
+    min_ratio=8, max_ratio=256, ratio_quantum=8,
+):
     value = _link(link_id, left, right, lanes=banks * wires)
     value.update(
         capacity_sharing="shared_bidirectional",
@@ -48,7 +51,9 @@ def bank_link(link_id, left, right, *, banks=18, wires=20, mhz=250.0):
         wires_per_bank=wires,
         fabric_clock_mhz=mhz,
         tdm_delay_model={"model": "linear-ratio-v1", "intercept_ns": 30.0,
-                         "ratio_coefficient_ns": 0.5},
+                         "ratio_coefficient_ns": 0.5,
+                         "min_ratio": min_ratio, "max_ratio": max_ratio,
+                         "ratio_quantum": ratio_quantum},
     )
     return value
 
@@ -87,7 +92,9 @@ def test_per_hop_ratio_delay_does_not_use_fabric_slot_period():
     ratios["ab:a->b"] = 8
     ratios["bc:b->c"] = 16
     route = [arcs[("ab", "a", "b")], arcs[("bc", "b", "c")]]
-    assert route_hop_delay_ns(platform, "ab", "a", "b", constraints, 1) == 30.5
+    assert route_hop_delay_ns(platform, "ab", "a", "b", constraints, 8) == 34.0
+    with pytest.raises(ValidationError, match="supported ratio"):
+        route_hop_delay_ns(platform, "ab", "a", "b", constraints, 1)
     assert _predicted_route_delay(
         platform, constraints, domain_by_arc, ratios, route,
         include_tdm_wait=True,
@@ -104,6 +111,10 @@ def test_partition_python_and_native_share_bank_delay_model():
     value = fixture.platform.to_dict()
     value["links"] = [bank_link("ab", "a", "b")]
     platform = Platform.from_dict(value)
+    fixture.route_constraints = normalize_route_constraints(
+        {"schema": "emuflow.system-route-constraints/v1", "frame_slots": 8},
+        platform,
+    )
     model = build_partition_pressure_model(
         fixture.ir, platform, fixture.clusters, fixture.constraints,
         fixture.timing, fixture.route_constraints,
@@ -112,7 +123,7 @@ def test_partition_python_and_native_share_bank_delay_model():
         fixture.ir, platform, fixture.clusters, fixture.constraints,
         fixture.route_constraints, model, fixture.initial["cluster_assignment"],
     )
-    assert all(row["transport_delay_ns"] == 30.5 for row in initial["paths"])
+    assert all(row["transport_delay_ns"] == 34.0 for row in initial["paths"])
     final, trace = run_partition_pressure_native(
         fixture.ir, platform, fixture.clusters, fixture.constraints,
         fixture.route_constraints, model, fixture.initial,
@@ -127,7 +138,10 @@ def test_partition_python_and_native_share_bank_delay_model():
 
 def test_native_router_and_exact_oracle_use_direction_bank_pressure(tmp_path):
     platform = Platform.from_dict(_platform_value(
-        "bank_pair", ["b", "a"], [bank_link("ab", "b", "a", banks=2, wires=1)],
+        "bank_pair", ["b", "a"], [bank_link(
+            "ab", "b", "a", banks=2, wires=1,
+            min_ratio=1, max_ratio=8, ratio_quantum=1,
+        )],
     ))
     # Endpoint order is reversed intentionally; deterministic allocation follows
     # canonical direction keys in Python and native code.
@@ -160,7 +174,10 @@ def test_native_router_and_exact_oracle_use_direction_bank_pressure(tmp_path):
 
 def test_native_router_rejects_fractional_direction_bank_capacity():
     platform = Platform.from_dict(_platform_value(
-        "indivisible_banks", ["a", "b"], [bank_link("ab", "a", "b", banks=2, wires=1)],
+        "indivisible_banks", ["a", "b"], [bank_link(
+            "ab", "a", "b", banks=2, wires=1,
+            min_ratio=1, max_ratio=2, ratio_quantum=1,
+        )],
     ))
     assignment = _assignment(platform, [
         ("n0", "a", ["b"]), ("n1", "a", ["b"]),
@@ -189,7 +206,10 @@ def test_partition_move_recomputes_opposite_direction_pressure():
     } for i in range(4)]
     ir = EmuIR(value)
     platform = Platform.from_dict(_platform_value(
-        "bank_move", ["a", "b"], [bank_link("ab", "a", "b", banks=2, wires=1)],
+        "bank_move", ["a", "b"], [bank_link(
+            "ab", "a", "b", banks=2, wires=1,
+            min_ratio=1, max_ratio=8, ratio_quantum=1,
+        )],
     ))
     constraints = normalize_partition_constraints({
         "schema": "emuflow.partition-constraints/v1", "min_used_fpgas": 2,

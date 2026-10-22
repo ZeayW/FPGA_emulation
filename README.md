@@ -51,6 +51,10 @@ Each stage has versioned artifacts and independent structural, legality,
 coverage, or equivalence checks. Passing an intermediate stage does not
 establish physical timing closure.
 
+The bundled XCVU19P cable model admits only the discrete TDM ratios
+`8, 16, ..., 256`. The schedule frame may contain more slots, but its length
+does not expand this platform ratio domain.
+
 The Xilinx Phase 7 path combines fanout-aware placement, RUDY/pin-density area
 adjustment, and a reserved post-adjustment convergence window before exact
 legalization and negotiated routing. The final route still requires zero

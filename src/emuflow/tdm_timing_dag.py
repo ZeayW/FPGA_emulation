@@ -573,6 +573,10 @@ def build_timing_dag_ratio_plan(
     if max_ratio is None:
         from .tdm_ratio import _schedule_safe_max_ratio
         max_ratio = _schedule_safe_max_ratio(model, platform, ratio_quantum)
+    if max_ratio > int(model["constraints"].get("tdm_max_ratio", max_ratio)):
+        raise ValidationError(
+            "TDM timing-DAG max_ratio exceeds the route/BoardDB ratio domain"
+        )
     seed = optimize_prepared_timing_dag(
         model,
         executable=dag_executable,

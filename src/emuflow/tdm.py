@@ -1174,7 +1174,7 @@ def _bank_direction_allocations(
             link.wires_per_bank,
             min_ratio=int(constraints.get("tdm_min_ratio", 1)),
             ratio_quantum=int(constraints["tdm_ratio_quantum"]),
-            max_ratio=int(constraints["frame_slots"]),
+            max_ratio=int(constraints["tdm_max_ratio"]),
         )
         if allocation is None:
             raise TDMScheduleInfeasibleError(
@@ -1210,8 +1210,7 @@ def tdm_hop_latency_cycles(
         return link.latency_cycles
     if isinstance(ratio, bool) or not isinstance(ratio, int) or ratio < 1:
         raise ValidationError("TDM hop latency requires a positive integer ratio")
-    delay = (link.tdm_delay_model.intercept_ns
-             + link.tdm_delay_model.ratio_coefficient_ns * ratio)
+    delay = link.tdm_delay_model.delay_ns(ratio)
     if base_delay_ns is not None:
         delay = base_delay_ns + link.tdm_delay_model.ratio_coefficient_ns * (ratio - 1)
     return math.ceil(delay / (1000.0 / link.fabric_clock_mhz))
@@ -1252,7 +1251,7 @@ def _baseline_ratio_hops(
             raw = max(count, int(constraints.get("tdm_min_ratio", 1)))
             quantum = int(constraints["tdm_ratio_quantum"])
             ratio = 1 if raw == 1 else math.ceil(raw / quantum) * quantum
-            if ratio > constraints["frame_slots"]:
+            if ratio > constraints["tdm_max_ratio"]:
                 raise TDMScheduleInfeasibleError("baseline wire group exceeds maximum TDM ratio")
             result[key] = {"lane": offset + local_lane, "discrete_ratio": ratio}
     return result
@@ -2676,11 +2675,8 @@ def _validate_indexed_exact_tdm_schedule(
                     if (
                         entry.tdm_ratio is None
                         or entry.tdm_ratio < minimum
-                        or entry.tdm_ratio > frame_slots
-                        or (
-                            entry.tdm_ratio != 1
-                            and entry.tdm_ratio % quantum
-                        )
+                        or entry.tdm_ratio > constraints["tdm_max_ratio"]
+                        or entry.tdm_ratio % quantum
                     ):
                         raise ValidationError(
                             "schedule entry tdm_ratio is invalid for the net "
@@ -2796,6 +2792,10 @@ def _validate_indexed_exact_tdm_schedule(
                 if raw_ratio == 1
                 else math.ceil(raw_ratio / quantum) * quantum
             )
+            if ratio > constraints["tdm_max_ratio"]:
+                raise ValidationError(
+                    "baseline schedule exceeds the BoardDB maximum TDM ratio"
+                )
             if (
                 entry.lane != capacity_offset + local_lane
                 or entry.tdm_ratio != ratio
@@ -3095,8 +3095,8 @@ def validate_tdm_schedule(
             quantum = int(constraints["tdm_ratio_quantum"])
             minimum = int(constraints.get("tdm_min_ratio", 1))
             if (isinstance(ratio, bool) or not isinstance(ratio, int)
-                    or ratio < minimum or ratio > frame_slots
-                    or (ratio != 1 and ratio % quantum)):
+                    or ratio < minimum or ratio > constraints["tdm_max_ratio"]
+                    or ratio % quantum):
                 raise ValidationError("schedule entry tdm_ratio is invalid for the net delay model")
         collision = (slot, lane)
         if collision in occupancy[arc["capacity_key"]]:

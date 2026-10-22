@@ -172,10 +172,12 @@ path delay = intra-FPGA delay + sum_h d_net(R_h)
 
 Thus `R=8` gives 34 ns and `R=16` gives 38 ns. A two-hop path with ratios 8 and
 16 contributes 72 ns of cross-FPGA delay; each hop is evaluated separately.
+This platform permits exactly `R = 8, 16, ..., 256`. A load requiring `R > 256`
+is infeasible for the link; increasing `frame_slots` does not legalize it.
 The ratio term is already included in `d_net`, so this model does not add a
 second slot-wait or serialization-delay term. The 250 MHz fabric clock controls
 the concrete slot schedule; it does not replace the nanosecond delay formula.
-`latency_cycles: 8` is the rounded-up R=1 reference (`ceil(30.5 / 4)`). The
+`latency_cycles: 9` is the minimum-ratio bound (`ceil(d_net(8) / 4)`). The
 scheduler computes `ceil(d_net(R) / 4)` for each entry's actual ratio.
 BoardDB records the formula explicitly:
 
@@ -184,10 +186,18 @@ BoardDB records the formula explicitly:
   "tdm_delay_model": {
     "model": "linear-ratio-v1",
     "intercept_ns": 30.0,
-    "ratio_coefficient_ns": 0.5
+    "ratio_coefficient_ns": 0.5,
+    "min_ratio": 8,
+    "max_ratio": 256,
+    "ratio_quantum": 8
   }
 }
 ```
+
+BoardDB is the canonical owner of this ratio domain. Normalized Phase 3--5
+route constraints copy it as `tdm_min_ratio`, `tdm_max_ratio`, and
+`tdm_ratio_quantum` so native optimizers and independent validators consume
+the same sealed values.
 
 Export either bundled platform for inspection or standalone phase commands.
 `--wires-per-bank` explicitly overrides the effective data width when defining

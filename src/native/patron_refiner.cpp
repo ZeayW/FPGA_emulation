@@ -78,7 +78,7 @@ struct Model {
   int nets = 0;
   int paths = 0;
   int max_hops = -1;
-  int frame_slots = 0;
+  int max_ratio = 0;
   int ratio_quantum = 1;
   int min_ratio = 1;
   int min_used_parts = 1;
@@ -321,7 +321,7 @@ int tdm_ratio(const Model& model, int load, const Domain& domain) {
   }
   raw = ((raw + model.ratio_quantum - 1) / model.ratio_quantum)
         * model.ratio_quantum;
-  return std::min(model.frame_slots, raw);
+  return model.min_ratio > 1 ? raw : std::min(model.max_ratio, raw);
 }
 
 std::vector<int> paired_domain_ratios(const Model& model, const std::vector<int>& loads) {
@@ -332,7 +332,7 @@ std::vector<int> paired_domain_ratios(const Model& model, const std::vector<int>
     const Domain& d = model.domain[i];
     if (d.banks == 0 || i >= d.opposite) continue;
     const auto ratios = shared_bank_ratios(loads[i], loads[d.opposite],
-        d.banks, d.wires, model.ratio_quantum, model.min_ratio, model.frame_slots + 1);
+        d.banks, d.wires, model.ratio_quantum, model.min_ratio, model.max_ratio + 1);
     result[i] = ratios.first; result[d.opposite] = ratios.second;
   }
   return result;
@@ -348,7 +348,7 @@ std::pair<int, long long> transport_capacity_pressure(
     const Domain& domain = model.domain[i];
     const long long capacity = domain.capacity_bits > 0
         ? domain.capacity_bits
-        : static_cast<long long>(domain.lanes) * model.frame_slots;
+        : static_cast<long long>(domain.lanes) * model.max_ratio;
     if (loads[i] > capacity) {
       ++violations;
       excess_bits += static_cast<long long>(loads[i]) - capacity;
@@ -358,7 +358,7 @@ std::pair<int, long long> transport_capacity_pressure(
     }
     const long long shared_capacity =
         static_cast<long long>(domain.banks) * domain.wires
-        * model.frame_slots;
+        * model.max_ratio;
     const long long shared_load =
         static_cast<long long>(loads[i]) + loads[domain.opposite];
     if (shared_load > shared_capacity) {
@@ -415,7 +415,7 @@ Model read_model(const std::string& path) {
   stream >> token;
   require(token == "PARAM", "missing PARAM");
   stream >> model.parts >> model.clusters >> model.dimensions >> model.domains
-      >> model.nets >> model.paths >> model.max_hops >> model.frame_slots
+      >> model.nets >> model.paths >> model.max_hops >> model.max_ratio
       >> model.ratio_quantum >> model.min_used_parts >> model.max_moves
       >> model.positive_scale >> model.negative_scale >> model.max_period
       >> model.boundary_fanout_penalty_scale_ns >> model.max_sweeps
@@ -425,7 +425,7 @@ Model read_model(const std::string& path) {
   require(stream.good() && model.parts > 0 && model.clusters > 0
               && model.dimensions > 0 && model.domains > 0
               && model.nets > 0 && model.paths > 0
-              && model.frame_slots > 0 && model.ratio_quantum > 0
+              && model.max_ratio > 0 && model.ratio_quantum > 0
               && model.min_used_parts > 0 && model.max_moves >= 0
               && model.max_sweeps > 0
               && model.ejection_critical_limit >= 0

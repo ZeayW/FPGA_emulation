@@ -14,6 +14,7 @@ from emuflow.errors import ValidationError
 from emuflow.combinational_cut import semantic_contract_sha256
 from emuflow.phase5 import validate_phase5
 from emuflow.platform import Platform
+from emuflow.routing import normalize_route_constraints
 from emuflow.static_exact_timing import (
     build_static_exact_segment_deadlines,
     validate_static_exact_segment_deadlines,
@@ -366,11 +367,21 @@ class StaticExactSystemTimingTest(unittest.TestCase):
                     "model": "linear-ratio-v1",
                     "intercept_ns": 8.0,
                     "ratio_coefficient_ns": 0.5,
+                    "min_ratio": 1,
+                    "max_ratio": 16,
+                    "ratio_quantum": 1,
                 },
             }
         )
         platform = Platform.from_dict(platform_value)
         routes = fixture._exact_routes(assignment)
+        routes["constraints"] = normalize_route_constraints(
+            {
+                "schema": "emuflow.system-route-constraints/v1",
+                "frame_slots": routes["constraints"]["frame_slots"],
+            },
+            platform,
+        )
         routes["semantic_contract"] = {
             "schema": assignment["semantic_contract"]["schema"],
             "mode": "static-exact-combinational",

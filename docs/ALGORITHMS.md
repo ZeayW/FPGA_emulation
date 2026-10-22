@@ -82,6 +82,10 @@ Estimated per-link capacity pressure is reported by Phase 3 but is not a hard
 PATRON acceptance gate. Phase 3 uses a fixed shortest-route estimate and cannot
 prove that a physical link is overloaded because Phase 4 may reroute a net
 through another FPGA and Phase 5 assigns the concrete TDM ratios and events.
+The platform's declared ratio domain is authoritative throughout these
+estimates and later legalization. For the bundled XCVU19P cable model it is
+`R in {8, 16, ..., 256}`; `frame_slots` describes the event schedule and is
+never substituted for the maximum legal ratio.
 PATRON does not run a capacity-closure repair loop; failure to improve its soft
 path objective retains the legal TritonPart assignment. Per-FPGA resource
 capacity, any explicitly configured balance dimensions, fixed placement, board

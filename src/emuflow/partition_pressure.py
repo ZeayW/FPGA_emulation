@@ -530,6 +530,7 @@ def _reconstruct_partition_pressure_model(
             "max_scalable_ejections": MAX_SCALABLE_EJECTIONS,
             "max_route_hops": route_constraints.get("max_route_hops"),
             "frame_slots": route_constraints["frame_slots"],
+            "tdm_max_ratio": route_constraints["tdm_max_ratio"],
             "tdm_ratio_quantum": route_constraints["tdm_ratio_quantum"],
             "predicted_wait": "sum((domain_ratio-1)*ratio_delay_slope_ns)",
             "path_delay": (
@@ -689,11 +690,16 @@ def _predicted_route_delay(
     delay = 0.0
     for arc in route:
         domain = domain_by_arc[(arc["link"], arc["from"], arc["to"])]
-        ratio = domain_ratios[domain] if include_tdm_wait else 1
-        delay += route_hop_delay_ns(
-            platform, arc["link"], arc["from"], arc["to"],
-            route_constraints, ratio,
-        )
+        if include_tdm_wait:
+            delay += route_hop_delay_ns(
+                platform, arc["link"], arc["from"], arc["to"],
+                route_constraints, domain_ratios[domain],
+            )
+        else:
+            delay += route_link_delay_ns(
+                platform, arc["link"], arc["from"], arc["to"],
+                route_constraints,
+            )
         delay += physical_hop_guard_scale_ns
     return delay
 
@@ -1598,7 +1604,7 @@ def _write_patron_native_input(
             f"PARAM {len(parts)} {len(clusters)} {len(dimensions)} "
             f"{len(domains)} {len(nets)} {len(model['paths'])} "
             f"{-1 if max_hops is None else max_hops} "
-            f"{model['configuration']['frame_slots']} "
+            f"{model['configuration']['tdm_max_ratio']} "
             f"{model['configuration']['tdm_ratio_quantum']} "
             f"{constraints['min_used_fpgas']} {max_moves} "
             f"{model['normalization']['positive_slack_scale_ns']:.17g} "

@@ -1035,7 +1035,7 @@ def _write_native_input(
             f"{constraints.get('lambda_history', 1.0):.17g} "
             f"{constraints.get('lambda_tdm', 0.1):.17g} "
             f"{constraints.get('tdm_ratio_quantum', 8)} "
-            f"{constraints['frame_slots']} "
+            f"{constraints['tdm_max_ratio']} "
             f"{normalization['positive_slack_scale_ns']:.17g} "
             f"{normalization['negative_slack_scale_ns']:.17g} "
             f"{normalization['max_clock_period_ns']:.17g} "

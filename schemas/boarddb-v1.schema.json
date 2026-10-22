@@ -145,7 +145,10 @@
             "required": [
               "model",
               "intercept_ns",
-              "ratio_coefficient_ns"
+              "ratio_coefficient_ns",
+              "min_ratio",
+              "max_ratio",
+              "ratio_quantum"
             ],
             "properties": {
               "model": {
@@ -158,6 +161,18 @@
               "ratio_coefficient_ns": {
                 "type": "number",
                 "minimum": 0
+              },
+              "min_ratio": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "max_ratio": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "ratio_quantum": {
+                "type": "integer",
+                "minimum": 1
               }
             },
             "additionalProperties": false

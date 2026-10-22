@@ -161,30 +161,77 @@ class RatioDelayModel:
     model: str
     intercept_ns: float
     ratio_coefficient_ns: float
+    min_ratio: int
+    max_ratio: int
+    ratio_quantum: int
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "RatioDelayModel":
         if not isinstance(value, dict) or value.get("model") != "linear-ratio-v1":
             raise ValidationError("tdm_delay_model: expected linear-ratio-v1")
-        if set(value) != {"model", "intercept_ns", "ratio_coefficient_ns"}:
+        if set(value) != {
+            "model",
+            "intercept_ns",
+            "ratio_coefficient_ns",
+            "min_ratio",
+            "max_ratio",
+            "ratio_quantum",
+        }:
             raise ValidationError("tdm_delay_model: unexpected or missing fields")
         for key in ("intercept_ns", "ratio_coefficient_ns"):
             number = value[key]
             if (isinstance(number, bool) or not isinstance(number, (int, float))
                     or not math.isfinite(number) or number < 0):
                 raise ValidationError(f"tdm_delay_model.{key}: expected finite non-negative ns")
-        return cls(value["model"], float(value["intercept_ns"]),
-                   float(value["ratio_coefficient_ns"]))
+        for key in ("min_ratio", "max_ratio", "ratio_quantum"):
+            number = value[key]
+            if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                raise ValidationError(
+                    f"tdm_delay_model.{key}: expected a positive integer"
+                )
+        if (
+            value["min_ratio"] > value["max_ratio"]
+            or value["min_ratio"] % value["ratio_quantum"]
+            or value["max_ratio"] % value["ratio_quantum"]
+        ):
+            raise ValidationError(
+                "tdm_delay_model: ratio bounds must be ordered multiples of "
+                "ratio_quantum"
+            )
+        return cls(
+            value["model"],
+            float(value["intercept_ns"]),
+            float(value["ratio_coefficient_ns"]),
+            value["min_ratio"],
+            value["max_ratio"],
+            value["ratio_quantum"],
+        )
 
     def delay_ns(self, ratio: float) -> float:
-        if (isinstance(ratio, bool) or not isinstance(ratio, (int, float))
-                or not math.isfinite(ratio) or ratio < 1):
-            raise ValidationError("net TDM ratio: expected a finite value >= 1")
+        if (
+            isinstance(ratio, bool)
+            or not isinstance(ratio, (int, float))
+            or not math.isfinite(ratio)
+            or ratio < self.min_ratio
+            or ratio > self.max_ratio
+            or ratio % self.ratio_quantum
+        ):
+            raise ValidationError(
+                "net TDM ratio: expected a supported ratio in "
+                f"[{self.min_ratio}, {self.max_ratio}] at quantum "
+                f"{self.ratio_quantum}"
+            )
         return self.intercept_ns + self.ratio_coefficient_ns * ratio
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"model": self.model, "intercept_ns": self.intercept_ns,
-                "ratio_coefficient_ns": self.ratio_coefficient_ns}
+        return {
+            "model": self.model,
+            "intercept_ns": self.intercept_ns,
+            "ratio_coefficient_ns": self.ratio_coefficient_ns,
+            "min_ratio": self.min_ratio,
+            "max_ratio": self.max_ratio,
+            "ratio_quantum": self.ratio_quantum,
+        }
 
 
 @dataclass(frozen=True)

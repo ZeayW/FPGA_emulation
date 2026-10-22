@@ -1419,7 +1419,8 @@ def validate_tdm_checkpoint(
             if (
                 configuration.get("ratio_quantum")
                 != constraints["tdm_ratio_quantum"]
-                or configuration.get("max_ratio") != constraints["frame_slots"]
+                or configuration.get("max_ratio")
+                != constraints["tdm_max_ratio"]
             ):
                 raise ValidationError(
                     "TDM ratio constraints contract disagrees"
