@@ -403,7 +403,19 @@ to 6,737,103 bytes and process peak RSS from 352,944,128 to 71,499,776 bytes;
 the packed payload was 6,700,000 bytes and wall time changed from 0.405 to 1.066
 seconds. This is adapter evidence rather than NVDLA qualification. C++ still
 emits its result protocol for Python to check and project; writing RouteStore
-relations directly from the native stage remains migration work. RouteStore
+relations directly from the native stage remains migration work. The
+independent Phase 4 timing validator now retains one `net -> rank` identity
+index plus fixed-width route-delay, TDM-delay and route-signature columns. It
+releases those columns before the second common timing reconstruction, which
+uses the same bounded representation independently and accumulates worst-path
+summaries online unless a timing-evaluated compatibility caller explicitly
+requests every path record. On 100,000 single-route/single-path records, an
+isolated representation and full traversal comparison reduced retained traced
+allocation from 55,930,961 to 11,253,809 bytes and process peak RSS from
+158,416,896 to 47,890,432 bytes; the fixed-width payload was 3,200,008 bytes,
+the checksum and worst path were unchanged, and wall time changed from 0.221
+to 0.248 seconds. This is adapter evidence rather than NVDLA qualification.
+RouteStore
 publication validates the previous selector before writing, restores it on a
 selector or post-publication validation failure, and removes an obsolete
 sidecar only after the new view passes. The selector binds the sidecar filename

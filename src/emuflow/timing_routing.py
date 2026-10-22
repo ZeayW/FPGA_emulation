@@ -2680,13 +2680,16 @@ def reconstruct_system_route_timing(
 
     ordered_arc_keys = sorted(arcs)
     arc_index = {key: index for index, key in enumerate(ordered_arc_keys)}
-    route_delay_by_net = {}
-    route_signature_by_net = {}
+    route_count = len(routes["routes"])
+    route_rank_by_net: Dict[str, int] = {}
+    route_delays = array("d", [0.0]) * route_count
+    route_signature_offsets = array("Q", [0])
+    route_signature_arcs = array("Q")
     round_aware = sorted(
         {int(route.get("transport_round", 0)) for route in routes["routes"]}
     ) == [0, 1]
     capacity_usage: Dict[Any, int] = defaultdict(int)
-    for route in routes["routes"]:
+    for route_rank, route in enumerate(routes["routes"]):
         graph: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
         signature = []
         for edge in route["tree_edges"]:
@@ -2712,10 +2715,17 @@ def reconstruct_system_route_timing(
                     )
                 )
                 queue.append(sink)
-        route_delay_by_net[route["net"]] = max(
+        net = route["net"]
+        if net in route_rank_by_net:
+            raise ValidationError(
+                f"routes contain duplicate net identity {net!r}"
+            )
+        route_rank_by_net[net] = route_rank
+        route_delays[route_rank] = max(
             delay_by_node[sink] for sink in route["sinks"]
         )
-        route_signature_by_net[route["net"]] = sorted(signature)
+        route_signature_arcs.extend(sorted(signature))
+        route_signature_offsets.append(len(route_signature_arcs))
 
     ratios: Dict[Any, int] = {}
     ratio_keys = (
@@ -2742,8 +2752,8 @@ def reconstruct_system_route_timing(
         )
 
     ratios = apply_bank_domain_ratios(capacities, capacity_usage, ratios, constraints)
-    route_tdm_delay_by_net = {}
-    for route in routes["routes"]:
+    route_tdm_delays = array("d", [0.0]) * route_count
+    for route_rank, route in enumerate(routes["routes"]):
         graph: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
         for edge in route["tree_edges"]:
             key = _arc_key(edge["link"], edge["from"], edge["to"])
@@ -2781,7 +2791,7 @@ def reconstruct_system_route_timing(
                 )
                 queue.append(sink)
         if constraints.get("tree_edge_sum_tdm", False):
-            route_tdm_delay_by_net[route["net"]] = sum(
+            route_tdm_delays[route_rank] = sum(
                 route_link_delay_ns(
                     platform,
                     edge["link"],
@@ -2824,16 +2834,31 @@ def reconstruct_system_route_timing(
                 for edge in route["tree_edges"]
             )
         else:
-            route_tdm_delay_by_net[route["net"]] = max(
+            route_tdm_delays[route_rank] = max(
                 delay_by_node[sink] for sink in route["sinks"]
             )
 
     normalization = timing_paths["normalization"]
-    path_records = []
+    path_records = [] if include_records else None
+    path_count = 0
+    worst_slack = (float("inf"), "")
+    worst_normalized = (float("inf"), "")
+    worst_tdm_slack = (float("inf"), "")
+    worst_tdm_normalized = (float("inf"), "")
     for path in timing_paths["paths"]:
+        path_count += 1
+        try:
+            path_route_ranks = [
+                route_rank_by_net[net] for net in path["cut_nets"]
+            ]
+        except KeyError as error:
+            raise ValidationError(
+                f"route timing path {path['id']!r} references an unknown "
+                "cut net"
+            ) from error
         required_time = path["fixed_delay_ns"] + path["slack_ns"]
         delay = path["fixed_delay_ns"] + sum(
-            route_delay_by_net[net] for net in path["cut_nets"]
+            route_delays[rank] for rank in path_route_ranks
         )
         slack = required_time - delay
         normalized = (
@@ -2851,7 +2876,7 @@ def reconstruct_system_route_timing(
             )
         )
         tdm_delay = path["fixed_delay_ns"] + sum(
-            route_tdm_delay_by_net[net] for net in path["cut_nets"]
+            route_tdm_delays[rank] for rank in path_route_ranks
         )
         tdm_slack = required_time - tdm_delay
         tdm_normalized = (
@@ -2868,8 +2893,30 @@ def reconstruct_system_route_timing(
                 * path["clock_period_ns"]
             )
         )
-        path_records.append(
-            {
+        route_signature = (
+            ",".join(
+                str(arc)
+                for rank in path_route_ranks
+                for arc in route_signature_arcs[
+                    route_signature_offsets[rank]
+                    : route_signature_offsets[rank + 1]
+                ]
+            )
+            or "-"
+        )
+        path_id = path["id"]
+        worst_slack = min(worst_slack, (slack, path_id))
+        worst_normalized = min(
+            worst_normalized, (normalized, path_id)
+        )
+        worst_tdm_slack = min(
+            worst_tdm_slack, (tdm_slack, path_id)
+        )
+        worst_tdm_normalized = min(
+            worst_tdm_normalized, (tdm_normalized, path_id)
+        )
+        if path_records is not None:
+            path_records.append({
                 "path": path["id"],
                 "clock_domain": path["clock_domain"],
                 "clock_period_ns": path["clock_period_ns"],
@@ -2888,48 +2935,12 @@ def reconstruct_system_route_timing(
                 "normalized_slack": normalized,
                 "estimated_tdm_slack_ns": tdm_slack,
                 "estimated_tdm_normalized_slack": tdm_normalized,
-                "route_signature": (
-                    ",".join(
-                        str(arc)
-                        for net in path["cut_nets"]
-                        for arc in route_signature_by_net[net]
-                    )
-                    or "-"
-                ),
-            }
-        )
-    if not path_records:
+                "route_signature": route_signature,
+            })
+    if path_count == 0:
         raise ValidationError(
             "route timing reconstruction has no normalized STA paths"
         )
-    worst_slack = min(
-        path_records,
-        key=lambda record: (
-            record["slack_ns"],
-            record["path"],
-        ),
-    )
-    worst_normalized = min(
-        path_records,
-        key=lambda record: (
-            record["normalized_slack"],
-            record["path"],
-        ),
-    )
-    worst_tdm_slack = min(
-        path_records,
-        key=lambda record: (
-            record["estimated_tdm_slack_ns"],
-            record["path"],
-        ),
-    )
-    worst_tdm_normalized = min(
-        path_records,
-        key=lambda record: (
-            record["estimated_tdm_normalized_slack"],
-            record["path"],
-        ),
-    )
     result = {
         **validation,
         "provider": routes["provider"],
@@ -2939,25 +2950,18 @@ def reconstruct_system_route_timing(
         "timing_paths_compressed": timing_paths["compression"][
             "compressed_paths"
         ],
-        "worst_slack_path": worst_slack["path"],
-        "worst_slack_ns": worst_slack["slack_ns"],
-        "worst_normalized_path": worst_normalized["path"],
-        "worst_normalized_slack": worst_normalized[
-            "normalized_slack"
-        ],
-        "estimated_worst_tdm_slack_path": worst_tdm_slack["path"],
-        "estimated_worst_tdm_slack_ns": worst_tdm_slack[
-            "estimated_tdm_slack_ns"
-        ],
-        "estimated_worst_tdm_normalized_path": (
-            worst_tdm_normalized["path"]
-        ),
-        "estimated_worst_tdm_normalized_slack": worst_tdm_normalized[
-            "estimated_tdm_normalized_slack"
-        ],
+        "worst_slack_path": worst_slack[1],
+        "worst_slack_ns": worst_slack[0],
+        "worst_normalized_path": worst_normalized[1],
+        "worst_normalized_slack": worst_normalized[0],
+        "estimated_worst_tdm_slack_path": worst_tdm_slack[1],
+        "estimated_worst_tdm_slack_ns": worst_tdm_slack[0],
+        "estimated_worst_tdm_normalized_path": worst_tdm_normalized[1],
+        "estimated_worst_tdm_normalized_slack": worst_tdm_normalized[0],
         "estimated_max_tdm_ratio": max(ratios.values(), default=1),
     }
     if include_records:
+        assert path_records is not None
         result["_timing_records"] = path_records
     return result
 
@@ -3074,15 +3078,34 @@ def validate_native_system_routes(
             selection = joint.get("candidate_generation", {}).get(
                 "master_selection"
             )
+            projected_selection = isinstance(
+                selection, _ProjectedMasterSelectionSequence
+            )
+            projected_identity_valid = (
+                projected_selection
+                and all(
+                    selection_record.get("demand") == route.get("id")
+                    for selection_record, route in zip(
+                        selection, routes.get("routes", [])
+                    )
+                )
+            )
             if (
                 not isinstance(selection, list)
                 or len(selection) != len(routes.get("routes", []))
-                or {
-                    record.get("demand")
-                    for record in selection
-                    if isinstance(record, dict)
-                }
-                != {route.get("id") for route in routes.get("routes", [])}
+                or (
+                    not projected_identity_valid
+                    if projected_selection
+                    else {
+                        record.get("demand")
+                        for record in selection
+                        if isinstance(record, dict)
+                    }
+                    != {
+                        route.get("id")
+                        for route in routes.get("routes", [])
+                    }
+                )
                 or any(
                     not isinstance(record, dict)
                     or record.get("generator") not in ROUTE_CANDIDATE_GENERATORS
@@ -3144,14 +3167,17 @@ def validate_native_system_routes(
             assignment
         ),
     )
-    route_delay_by_net = {}
-    route_by_net = {}
+    timed_provider = provider != NATIVE_ROUTER_PROVIDER
+    route_count = len(routes["routes"])
+    route_rank_by_net: Dict[str, int] = {}
+    route_delays = array("d", [0.0]) * route_count
+    route_signature_offsets = array("Q", [0])
+    route_signature_arcs = array("Q")
     ordered_arc_keys = sorted(
         build_directed_graph(platform, constraints)[1]
     )
     arc_index = {key: index for index, key in enumerate(ordered_arc_keys)}
-    route_signature_by_net = {}
-    for route in routes["routes"]:
+    for route_rank, route in enumerate(routes["routes"]):
         graph: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
         signature = []
         for edge in route["tree_edges"]:
@@ -3182,9 +3208,16 @@ def validate_native_system_routes(
                 f"route {route['id']!r}.predicted_max_delay_ns does not "
                 "match independent edge-delay recomputation"
             )
-        route_delay_by_net[route["net"]] = predicted_delay
-        route_by_net[route["net"]] = route
-        route_signature_by_net[route["net"]] = sorted(signature)
+        route_delays[route_rank] = predicted_delay
+        if timed_provider:
+            net = route["net"]
+            if net in route_rank_by_net:
+                raise ValidationError(
+                    f"routes contain duplicate net identity {net!r}"
+                )
+            route_rank_by_net[net] = route_rank
+            route_signature_arcs.extend(sorted(signature))
+            route_signature_offsets.append(len(route_signature_arcs))
 
     if provider == NATIVE_ROUTER_PROVIDER:
         if "timing" in routes:
@@ -3256,8 +3289,8 @@ def validate_native_system_routes(
             is_sll=capacity["link"] in constraints["sll_links"],
         )
     ratios = apply_bank_domain_ratios(capacities, capacity_usage, ratios, constraints)
-    route_tdm_delay_by_net = {}
-    for net, route in route_by_net.items():
+    route_tdm_delays = array("d", [0.0]) * route_count
+    for route_rank, route in enumerate(routes["routes"]):
         graph: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
         for edge in route["tree_edges"]:
             key = _arc_key(edge["link"], edge["from"], edge["to"])
@@ -3287,7 +3320,7 @@ def validate_native_system_routes(
                 )
                 queue.append(sink)
         if constraints.get("tree_edge_sum_tdm", False):
-            route_tdm_delay_by_net[net] = sum(
+            route_tdm_delays[route_rank] = sum(
                 route_link_delay_ns(
                     platform,
                     edge["link"],
@@ -3330,7 +3363,7 @@ def validate_native_system_routes(
                 for edge in route["tree_edges"]
             )
         else:
-            route_tdm_delay_by_net[net] = max(
+            route_tdm_delays[route_rank] = max(
                 delay_by_node[sink] for sink in route["sinks"]
             )
 
@@ -3390,9 +3423,17 @@ def validate_native_system_routes(
                 f"routes.timing path {expected['id']!r}.cut_transitions: "
                 "does not match normalized STA input"
             )
+        try:
+            path_route_ranks = [
+                route_rank_by_net[net] for net in expected["cut_nets"]
+            ]
+        except KeyError as error:
+            raise ValidationError(
+                f"routes.timing path {expected['id']!r} references an "
+                "unknown cut net"
+            ) from error
         delay = expected["fixed_delay_ns"] + sum(
-            route_delay_by_net[net]
-            for net in expected["cut_nets"]
+            route_delays[rank] for rank in path_route_ranks
         )
         slack = required_time - delay
         if slack >= 0.0:
@@ -3417,8 +3458,11 @@ def validate_native_system_routes(
                 )
         expected_signature = ",".join(
             str(arc)
-            for net in expected["cut_nets"]
-            for arc in route_signature_by_net[net]
+            for rank in path_route_ranks
+            for arc in route_signature_arcs[
+                route_signature_offsets[rank]
+                : route_signature_offsets[rank + 1]
+            ]
         )
         if not expected_signature:
             expected_signature = "-"
@@ -3430,8 +3474,7 @@ def validate_native_system_routes(
         worst_slack = min(worst_slack, slack)
         worst_normalized = min(worst_normalized, normalized)
         tdm_delay = expected["fixed_delay_ns"] + sum(
-            route_tdm_delay_by_net[net]
-            for net in expected["cut_nets"]
+            route_tdm_delays[rank] for rank in path_route_ranks
         )
         tdm_slack = required_time - tdm_delay
         if tdm_slack >= 0.0:
@@ -3488,6 +3531,15 @@ def validate_native_system_routes(
                 f"routes.metrics.{key} does not match independent "
                 "route/TDM proxy recomputation"
             )
+    # The common timing reconstruction below is a separate implementation
+    # check.  Release this validator's route-scale identity/metric columns
+    # before invoking it so the two independent representations never overlap
+    # at peak RSS.
+    del route_rank_by_net
+    del route_delays
+    del route_signature_offsets
+    del route_signature_arcs
+    del route_tdm_delays
     common_timing = reconstruct_system_route_timing(
         assignment, platform, routes, timing_paths
     )
