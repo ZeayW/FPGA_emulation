@@ -817,6 +817,12 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
         self.assertNotIn("WHERE n.cut_class='combinational'", endpoint_scans[0])
         self.assertNotIn("JOIN pin_names", endpoint_scans[0])
         self.assertNotIn("JOIN cell_records", endpoint_scans[0])
+        self.assertFalse(
+            any("FROM cell_records GROUP BY id" in item for item in statements)
+        )
+        self.assertFalse(
+            any("FROM net_records GROUP BY id" in item for item in statements)
+        )
 
     def test_compact_v2_candidate_index_streams_many_cyclic_owners(self):
         value = _chain_ir().to_dict()

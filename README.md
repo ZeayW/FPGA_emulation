@@ -89,7 +89,10 @@ The remaining primary scan now reads only six integer endpoint columns. Cell
 types are reduced to a one-byte sequential-input policy during the existing
 cell pass, and the small interned pin-name table is loaded once by integer ID;
 SQLite no longer performs two indexed joins or returns repeated type/port text
-for every endpoint. A
+for every endpoint. Cell and net identity uniqueness is proven from SQLite's
+complete single-column unique indexes instead of grouping both multi-million
+row tables after their ordered scans; a missing or partial constraint still
+fails closed. A
 1,000,000-endpoint high-fanout regression stays below 16 MiB of traced Python
 allocation. A separate 100,001-instance chain used 11.38 MB peak versus 90.99
 MB for the reference path while preserving the same 100,000 eligible cuts.

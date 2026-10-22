@@ -199,6 +199,27 @@ def _safe_sequential_input(instance_type: str, port: str) -> bool:
     return port in _TRANSPORT_SAFE_SEQUENTIAL_INPUTS.get(instance_type, set())
 
 
+def _has_unique_single_column_index(
+    connection: sqlite3.Connection, table: str, column: str
+) -> bool:
+    """Return whether SQLite enforces one complete unique identity column."""
+
+    if table not in {"cell_records", "net_records"} or column != "id":
+        raise ValueError("unsupported compact identity index request")
+    for index in connection.execute(f"PRAGMA index_list({table})"):
+        if not index["unique"] or index["partial"]:
+            continue
+        columns = [
+            row["name"]
+            for row in connection.execute(
+                f"PRAGMA index_info({json.dumps(index['name'])})"
+            )
+        ]
+        if columns == [column]:
+            return True
+    return False
+
+
 def _instance_members(net: Mapping[str, Any]) -> List[str]:
     return sorted(
         {
@@ -928,10 +949,9 @@ def _compact_combinational_cut_candidate_ids(
             cell_count += 1
         if cell_count != instance_count or unknown_class in classes:
             raise ValidationError("compact EmuIR cell sequence is incomplete")
-        if connection.execute(
-            """SELECT 1 FROM cell_records GROUP BY id
-                 HAVING COUNT(*) != 1 LIMIT 1"""
-        ).fetchone() is not None:
+        if not _has_unique_single_column_index(
+            connection, "cell_records", "id"
+        ):
             raise ValidationError("compact EmuIR cell identity is duplicated")
 
         # TEMP storage is explicitly file-backed.  The primary key both
@@ -1113,10 +1133,9 @@ def _compact_combinational_cut_candidate_ids(
             raise ValidationError("compact EmuIR net sequence is incomplete")
         if endpoint_count != expected_endpoints:
             raise ValidationError("compact EmuIR record counts disagree")
-        if connection.execute(
-            """SELECT 1 FROM net_records GROUP BY id
-                 HAVING COUNT(*) != 1 LIMIT 1"""
-        ).fetchone() is not None:
+        if not _has_unique_single_column_index(
+            connection, "net_records", "id"
+        ):
             raise ValidationError("compact EmuIR net identity is duplicated")
 
         cyclic = _packed_cyclic_nodes(connection, classes)
