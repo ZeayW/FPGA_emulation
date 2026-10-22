@@ -704,6 +704,11 @@ incremental traced peak allocation from 112.10 MB to 0.030 MB and process RSS
 from 257.20 MB to 46.99 MB, using a 46.15 MB temporary relation; wall time
 changed from 1.41 to 2.98 seconds. The relation is deleted after the sealed
 name-map store is published.
+Bookshelf net construction now spools fixed endpoint rows, scans one numeric
+net at a time, and streams `design.nets` atomically. A 100,000-cell/net
+byte-identical comparison reduced incremental traced peak allocation from
+65.40 MB to 1.20 MB and process RSS from 311.62 MB to 188.87 MB, while
+operation time changed from 2.204 to 1.377 seconds.
 RWRoute TSV export likewise derives route-cell rows directly from the physical
 binding and no longer duplicates every cell in a second route-cell dictionary.
 Its report separates binding, cell/I/O

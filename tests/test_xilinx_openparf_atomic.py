@@ -557,12 +557,19 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             actual = atomic_adapter._render_library_and_nets(
                 indexed_cells, atoms, names
             )
+            streamed_path = root / "streamed.nets"
+            streamed = atomic_adapter._render_library_and_nets(
+                indexed_cells, atoms, names, nets_path=streamed_path
+            )
+            streamed_text = streamed_path.read_text(encoding="utf-8")
 
         self.assertNotIsInstance(atoms, list)
         atom_store = atoms.path
         expected_atom_store = expected_atoms.path
         self.assertEqual(list(atoms), list(expected_atoms))
         self.assertEqual(actual, expected)
+        self.assertEqual(streamed, (expected[0], None, *expected[2:]))
+        self.assertEqual(streamed_text, expected[1])
         atoms.close()
         expected_atoms.close()
         self.assertFalse(atom_store.exists())

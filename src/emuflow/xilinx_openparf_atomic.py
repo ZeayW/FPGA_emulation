@@ -3411,94 +3411,191 @@ def _render_library_and_nets(
     names: Mapping[str, str],
     *,
     platform_mux_types: Sequence[str] = (),
-) -> Tuple[str, str, int, int]:
-    """Render both Bookshelf contracts from one sequential cell scan.
+    nets_path: Optional[Path] = None,
+) -> Tuple[str, Optional[str], int, int]:
+    """Render library data and stream net endpoints through a file relation.
 
-    The production mapped netlist is a SQLite-backed mapping.  The old code
-    called ``cells[instance]`` once while discovering primitive ports and a
-    second time while collecting net endpoints.  On a real partition that was
-    roughly two random SQL queries per atom.  Scan the indexed records once,
-    derive both products together, and retain only bounded atom metadata plus
-    the endpoint table required to emit the final nets.
+    Atom and mapped-cell identities are merged in lexical order. Endpoint rows
+    are spooled once, then read by numeric net ID and source order; only one
+    net's fanout is resident while ``design.nets`` is emitted. An omitted
+    ``nets_path`` explicitly materializes the final text for small compatibility
+    callers and differential tests.
     """
 
     ports_by_type: Dict[str, Dict[str, str]] = defaultdict(dict)
-    endpoints: Dict[int, List[Tuple[str, str, str]]] = defaultdict(list)
     atom_iterator = iter(enumerate(atoms))
     current = next(atom_iterator, None)
-    for instance, cell in _ordered_cell_items(cells):
-        if (
-            isinstance(cell, Mapping)
-            and cell.get("type") in {"GND", "VCC"}
-        ):
-            continue
-        if current is None or current[1]["instance"] != instance:
-            raise ValidationError("mapped JSON does not cover every OpenPARF atom")
-        atom_index, atom = current
-        if not isinstance(cell, Mapping) or cell.get("type") != atom["cell_type"]:
-            raise ValidationError("OpenPARF atom does not match mapped JSON")
-        cell_type = atom["cell_type"]
-        safe_name = (
-            f"a{atom_index}"
-            if isinstance(names, _OrdinalSafeNames)
-            else names[instance]
+    with tempfile.TemporaryDirectory(
+        prefix="emuflow-openparf-net-endpoints-"
+    ) as temporary:
+        endpoint_path = Path(temporary) / "endpoints.sqlite"
+        connection = sqlite3.connect(endpoint_path)
+        connection.executescript(
+            """
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=FILE;
+            CREATE TABLE endpoints(
+              net INTEGER NOT NULL,
+              seq INTEGER PRIMARY KEY,
+              instance TEXT NOT NULL,
+              port TEXT NOT NULL,
+              is_driver INTEGER NOT NULL CHECK(is_driver IN (0,1))
+            );
+            """
         )
-        for port, direction, bit in _expanded_pins(cell):
-            previous = ports_by_type[cell_type].setdefault(port, direction)
-            if previous != direction:
-                raise ValidationError(
-                    f"primitive {cell_type!r} has inconsistent pin direction"
+        batch: List[Tuple[int, int, str, str, int]] = []
+        endpoint_seq = 0
+        try:
+            for instance, cell in _ordered_cell_items(cells):
+                if (
+                    isinstance(cell, Mapping)
+                    and cell.get("type") in {"GND", "VCC"}
+                ):
+                    continue
+                if current is None or current[1]["instance"] != instance:
+                    raise ValidationError(
+                        "mapped JSON does not cover every OpenPARF atom"
+                    )
+                atom_index, atom = current
+                if (
+                    not isinstance(cell, Mapping)
+                    or cell.get("type") != atom["cell_type"]
+                ):
+                    raise ValidationError(
+                        "OpenPARF atom does not match mapped JSON"
+                    )
+                cell_type = atom["cell_type"]
+                safe_name = (
+                    f"a{atom_index}"
+                    if isinstance(names, _OrdinalSafeNames)
+                    else names[instance]
                 )
-            if isinstance(bit, int) and not isinstance(bit, bool):
-                endpoints[bit].append((safe_name, port, direction))
-        current = next(atom_iterator, None)
-    if current is not None:
-        raise ValidationError("mapped JSON does not cover every OpenPARF atom")
+                for port, direction, bit in _expanded_pins(cell):
+                    previous = ports_by_type[cell_type].setdefault(
+                        port, direction
+                    )
+                    if previous != direction:
+                        raise ValidationError(
+                            f"primitive {cell_type!r} has inconsistent pin direction"
+                        )
+                    if isinstance(bit, int) and not isinstance(bit, bool):
+                        batch.append((
+                            bit, endpoint_seq, safe_name, port,
+                            int(direction == "output"),
+                        ))
+                        endpoint_seq += 1
+                        if len(batch) >= 8192:
+                            connection.executemany(
+                                "INSERT INTO endpoints VALUES (?,?,?,?,?)", batch
+                            )
+                            batch.clear()
+                current = next(atom_iterator, None)
+            if current is not None:
+                raise ValidationError(
+                    "mapped JSON does not cover every OpenPARF atom"
+                )
+            if batch:
+                connection.executemany(
+                    "INSERT INTO endpoints VALUES (?,?,?,?,?)", batch
+                )
+                batch.clear()
+            connection.execute(
+                "CREATE INDEX endpoints_net_order ON endpoints(net,seq)"
+            )
+            connection.commit()
+        except (OverflowError, sqlite3.DatabaseError) as error:
+            raise ValidationError(
+                "OpenPARF endpoint relation cannot represent the mapped netlist"
+            ) from error
 
-    for cell_type in platform_mux_types:
-        ports_by_type.setdefault(cell_type, {}).update({
-            "I0": "input", "I1": "input", "S": "input", "O": "output",
-        })
-    library_blocks = []
-    for cell_type, ports in sorted(ports_by_type.items()):
-        lines = [f"CELL {cell_type}"]
-        for port, direction in sorted(ports.items()):
-            suffix = ""
-            if cell_type in FF_TYPES and port == _FF_CLOCK:
-                suffix = " CLOCK"
-            elif cell_type in FF_TYPES and port == _FF_ENABLE:
-                suffix = " CTRL_CE"
-            elif cell_type in FF_TYPES and port == _FF_SR[cell_type]:
-                suffix = " CTRL_SR"
-            elif cell_type == "CARRY8" and port in {"CI", "CO[7]"}:
-                suffix = " CAS"
-            lines.append(f"  PIN {port} {direction.upper()}{suffix}")
-        lines.append("END CELL")
-        library_blocks.append("\n".join(lines))
+        for cell_type in platform_mux_types:
+            ports_by_type.setdefault(cell_type, {}).update({
+                "I0": "input", "I1": "input", "S": "input", "O": "output",
+            })
+        library_blocks = []
+        for cell_type, ports in sorted(ports_by_type.items()):
+            lines = [f"CELL {cell_type}"]
+            for port, direction in sorted(ports.items()):
+                suffix = ""
+                if cell_type in FF_TYPES and port == _FF_CLOCK:
+                    suffix = " CLOCK"
+                elif cell_type in FF_TYPES and port == _FF_ENABLE:
+                    suffix = " CTRL_CE"
+                elif cell_type in FF_TYPES and port == _FF_SR[cell_type]:
+                    suffix = " CTRL_SR"
+                elif cell_type == "CARRY8" and port in {"CI", "CO[7]"}:
+                    suffix = " CAS"
+                lines.append(f"  PIN {port} {direction.upper()}{suffix}")
+            lines.append("END CELL")
+            library_blocks.append("\n".join(lines))
+        library = "\n\n".join(library_blocks) + "\n"
 
-    net_lines = []
-    emitted = 0
-    dropped_single_endpoint = 0
-    for _bit, pins in sorted(endpoints.items()):
-        drivers = [pin for pin in pins if pin[2] == "output"]
-        if len(drivers) > 1:
-            raise ValidationError("mapped net has multiple atomic-resource drivers")
-        if len(pins) < 2:
-            dropped_single_endpoint += 1
-            continue
-        ordered = [*drivers, *(pin for pin in pins if pin[2] != "output")]
-        net_lines.append(f"net n{emitted} {len(ordered)}")
-        net_lines.extend(
-            f"  {instance} {port}" for instance, port, _direction in ordered
+        materialized_path = (
+            Path(temporary) / "design.nets"
+            if nets_path is None else nets_path
         )
-        net_lines.append("endnet")
-        emitted += 1
-    return (
-        "\n\n".join(library_blocks) + "\n",
-        "\n".join(net_lines) + "\n",
-        emitted,
-        dropped_single_endpoint,
-    )
+        materialized_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{materialized_path.name}.",
+            suffix=".tmp",
+            dir=materialized_path.parent,
+        )
+        os.close(descriptor)
+        temporary_output = Path(temporary_name)
+        emitted = 0
+        dropped_single_endpoint = 0
+        try:
+            with temporary_output.open("w", encoding="utf-8") as stream:
+                active_net: Optional[int] = None
+                pins: List[Tuple[str, str, bool]] = []
+
+                def emit_net() -> None:
+                    nonlocal emitted, dropped_single_endpoint
+                    if not pins:
+                        return
+                    if len(pins) < 2:
+                        dropped_single_endpoint += 1
+                        return
+                    drivers = [pin for pin in pins if pin[2]]
+                    if len(drivers) > 1:
+                        raise ValidationError(
+                            "mapped net has multiple atomic-resource drivers"
+                        )
+                    ordered = [
+                        *drivers, *(pin for pin in pins if not pin[2])
+                    ]
+                    stream.write(f"net n{emitted} {len(ordered)}\n")
+                    for instance, port, _is_driver in ordered:
+                        stream.write(f"  {instance} {port}\n")
+                    stream.write("endnet\n")
+                    emitted += 1
+
+                for row in connection.execute(
+                    "SELECT net,instance,port,is_driver FROM endpoints "
+                    "ORDER BY net,seq"
+                ):
+                    net = int(row[0])
+                    if active_net is None:
+                        active_net = net
+                    elif net != active_net:
+                        emit_net()
+                        pins.clear()
+                        active_net = net
+                    pins.append((str(row[1]), str(row[2]), bool(row[3])))
+                emit_net()
+            os.replace(temporary_output, materialized_path)
+        except BaseException:
+            temporary_output.unlink(missing_ok=True)
+            raise
+        finally:
+            connection.close()
+
+        nets = (
+            materialized_path.read_text(encoding="utf-8")
+            if nets_path is None else None
+        )
+        return library, nets, emitted, dropped_single_endpoint
 
 
 def _complete_clock_region_boxes(
@@ -4258,28 +4355,33 @@ def export_xilinx_openparf_atomic(
                 f"atomic demand {count} exceeds {resource} capacity {capacity[resource]}"
             )
     names = _OrdinalSafeNames(atoms)
-    library, nets, net_count, dropped_single_endpoint_nets = (
+    output_dir.mkdir(parents=True, exist_ok=True)
+    library, materialized_nets, net_count, dropped_single_endpoint_nets = (
         _render_library_and_nets(
-            cells, atoms, names, platform_mux_types=mux,
+            cells,
+            atoms,
+            names,
+            platform_mux_types=mux,
+            nets_path=output_dir / "design.nets",
         )
     )
+    if materialized_nets is not None:
+        raise AssertionError("production net export unexpectedly materialized text")
     coordinate_system = device_static["coordinate_system"]
     site_text = _render_sites(device_static, atoms, platform_mux_types=mux)
-    output_dir.mkdir(parents=True, exist_ok=True)
     node_path = output_dir / "design.nodes"
     with node_path.open("w", encoding="utf-8") as stream:
         for index, atom in enumerate(atoms):
             stream.write(f"a{index} {atom['cell_type']}\n")
     files = {
         "design.lib": library,
-        "design.nets": nets,
         "design.scl": site_text,
         "design.pl": "",
         "design.aux": "design : design.nodes design.nets design.pl design.scl design.lib\n",
     }
     for name, text in files.items():
         (output_dir / name).write_text(text, encoding="utf-8")
-    file_names = ["design.nodes", *files]
+    file_names = ["design.nodes", "design.nets", *files]
     model_map = {}
     for primitive in sorted(
         {atom["cell_type"] for atom in atoms}, key=_primitive_sort_key
