@@ -752,7 +752,7 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--seed-attempts", type=int, default=1)
     partition_run.add_argument(
         "--repair-min-used-fpgas", action=_BooleanOptionalAction, default=True,
-        help="Populate required FPGAs after capacity legalization",
+        help="Populate empty required FPGAs after native resource validation",
     )
     partition_run.add_argument("--num-initial-solutions", type=int, default=50)
     partition_run.add_argument("--num-best-initial-solutions", type=int, default=10)

@@ -83,6 +83,10 @@ echo "RUNTIME_CXX=$selected_cxx"
 
 for binary in "$native_base"/bin/*; do
   test -e "$binary" || continue
+  # Retired provider binaries must not leak in through an older native base.
+  if test "$(basename "$binary")" = emuflow_tritonpart_balance_legalizer; then
+    continue
+  fi
   ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")"
 done
 for tool in \
