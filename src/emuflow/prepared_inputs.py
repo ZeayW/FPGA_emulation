@@ -52,6 +52,46 @@ def _published_timing_report(timing, database, weights, clock_periods):
             "publication_validation": "sqlite-version-clocks-row-counts-v1"}
 
 
+def validate_prepared_timing_boundary(frontend, timing, clock_periods):
+    """Validate an indexed Phase-2 publication without replaying STA.
+
+    Prepared continuations predate the reusable experiment-checkpoint report
+    schema. Their manifests and SQLite payloads are nevertheless a complete
+    immutable Phase-2 boundary. Validate those native relations directly so
+    later experiment stages can reuse them without materializing graph JSON or
+    rerunning OpenSTA.
+    """
+
+    frontend, timing = Path(frontend).resolve(), Path(timing).resolve()
+    phase1 = frontend / "phase1" if (frontend / "phase1").is_dir() else frontend
+    source_ir = phase1 / "design.emuir.sqlite"
+    if not source_ir.is_file():
+        raise ValidationError("prepared Phase 1 indexed database is missing")
+    control = read_compact_emuir_control_metadata(source_ir)
+    design = control["design"]["name"]
+    database = read_json(timing / "path-database.json")
+    weights = read_json(timing / "partition-net-weights.json")
+    if (
+        database.get("schema") != "emuflow.sta-path-database/v3"
+        or database.get("design") != design
+        or weights.get("schema") != "emuflow.partition-net-weights/v2"
+        or weights.get("design") != design
+    ):
+        raise ValidationError("prepared Phase 2 indexed identity mismatch")
+    report = _published_timing_report(timing, database, weights, clock_periods)
+    published_report_path = timing / "experiment-timing-report.json"
+    if published_report_path.is_file():
+        published_report = read_json(published_report_path)
+        if (
+            published_report.get("status") != "pass"
+            or published_report.get("clocks") != dict(clock_periods)
+        ):
+            raise ValidationError(
+                "prepared Phase 2 publication or clock constraints mismatch"
+            )
+    return report
+
+
 def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path,
                          clock_periods: Mapping[str, float], mapping_profile):
     frontend, timing = Path(frontend).resolve(), Path(timing).resolve()
@@ -80,10 +120,20 @@ def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path
         raise ValidationError("prepared Phase 2 must be the indexed database for this design")
     weights = read_json(timing / "partition-net-weights.json")
     timing_report_path = timing / "experiment-timing-report.json"
-    timing_report = (read_json(timing_report_path) if timing_report_path.is_file()
-                     else _published_timing_report(timing, database, weights, clock_periods))
-    if timing_report.get("status") != "pass" or timing_report.get("clocks") != dict(clock_periods):
-        raise ValidationError("prepared Phase 2 publication or clock constraints mismatch")
+    timing_report = (
+        read_json(timing_report_path)
+        if timing_report_path.is_file()
+        else _published_timing_report(
+            timing, database, weights, clock_periods
+        )
+    )
+    if (
+        timing_report.get("status") != "pass"
+        or timing_report.get("clocks") != dict(clock_periods)
+    ):
+        raise ValidationError(
+            "prepared Phase 2 publication or clock constraints mismatch"
+        )
     phase1_out.mkdir(parents=True, exist_ok=True)
     timing_out.mkdir(parents=True, exist_ok=True)
     (phase1_out / "design.emuir.sqlite").symlink_to(source_ir)

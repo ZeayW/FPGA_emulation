@@ -49,6 +49,7 @@ from .phase5 import (
     validate_phase5_generation,
 )
 from .platform import Platform
+from .prepared_inputs import validate_prepared_timing_boundary
 from .phase3_storage import (
     read_phase3_assignment_view,
     read_phase3_cut_timing_view,
@@ -919,10 +920,17 @@ def run_cut_timing_checkpoint(
     opensta: Optional[str] = None,
     max_paths: int = 200000,
     managed_dag_node: bool = False,
+    prepared_timing_boundary: bool = False,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")
     assignment_path = _require(partition_root, "assignment.json")
-    if not managed_dag_node:
+    if prepared_timing_boundary:
+        if managed_dag_node:
+            raise ValidationError(
+                "prepared timing boundaries cannot use managed DAG validation"
+            )
+        validate_prepared_timing_boundary(frontend_root, timing_root, clocks)
+    elif not managed_dag_node:
         validate_timing_checkpoint(frontend_root, timing_root)
     assignment = read_phase3_cut_timing_view(
         assignment_path,
@@ -981,6 +989,11 @@ def run_cut_timing_checkpoint(
         "cut_segment_qualification_summary": qualification["summary"],
         "complete_path_database_sha256": database_sha256,
         "projection": projection,
+        "timing_input_mode": (
+            "prepared-indexed-boundary"
+            if prepared_timing_boundary
+            else "experiment-checkpoint"
+        ),
     }
     if managed_dag_node:
         report["validation_mode"] = MANAGED_DAG_VALIDATION_MODE
@@ -1014,11 +1027,11 @@ def validate_cut_timing_checkpoint(
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
     managed_dag_node: bool = False,
+    prepared_timing_boundary: bool = False,
+    clocks: Mapping[str, float] | None = None,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")
     complete_database = _require(timing_root, "path-database.json")
-    if not managed_dag_node:
-        validate_timing_checkpoint(frontend_root, timing_root)
     assignment_path = _require(partition_root, "assignment.json")
     report = read_json(_require(root, "experiment-cut-timing-report.json"))
     if report.get("schema") != EXPERIMENT_CUT_TIMING_SCHEMA or report.get("status") != "pass":
@@ -1028,6 +1041,25 @@ def validate_cut_timing_checkpoint(
             raise ValidationError("cut-timing managed-validation contract is invalid")
     elif report.get("validation_mode") is not None:
         raise ValidationError("cut-timing checkpoint requires managed validation")
+    expected_input_mode = (
+        "prepared-indexed-boundary"
+        if prepared_timing_boundary
+        else "experiment-checkpoint"
+    )
+    if report.get("timing_input_mode", "experiment-checkpoint") != expected_input_mode:
+        raise ValidationError("cut-timing input mode disagrees")
+    if prepared_timing_boundary:
+        if managed_dag_node:
+            raise ValidationError(
+                "prepared timing boundaries cannot use managed DAG validation"
+            )
+        if clocks is None or report.get("clocks") != dict(clocks):
+            raise ValidationError(
+                "prepared cut-timing validation requires matching clocks"
+            )
+        validate_prepared_timing_boundary(frontend_root, timing_root, clocks)
+    elif not managed_dag_node:
+        validate_timing_checkpoint(frontend_root, timing_root)
     qualification_path = _require(root, "cut-segment-qualification.json")
     projected = _require(root, "cut-timing-paths.json")
     if not managed_dag_node:

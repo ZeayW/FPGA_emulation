@@ -28,6 +28,12 @@ sidecars for assignments, routes, schedules, transport, and physical handoffs.
 Production readers stream typed indexed relations; whole-graph materialization is
 an explicit compatibility operation. A continued run uses the current BoardDB
 and does not inherit an older interconnect configuration from the saved input.
+When driving the reusable stage commands directly, pass
+`experiment-stage cut-timing-run --prepared-timing-boundary` (and the same flag
+plus the expected `--clock-period` values to `cut-timing-validate`) to consume a
+saved indexed Phase 2 publication. This mode validates the native SQLite
+version, clocks, row counts, and design identity without rerunning OpenSTA or
+converting the database to whole-graph JSON.
 
 ## Flow
 

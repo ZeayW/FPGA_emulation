@@ -880,6 +880,14 @@ def _build_parser() -> argparse.ArgumentParser:
     cut_timing_run.add_argument("--opensta")
     cut_timing_run.add_argument("--max-paths", type=int, default=200000)
     cut_timing_run.add_argument("--managed-dag-node", action="store_true")
+    cut_timing_run.add_argument(
+        "--prepared-timing-boundary",
+        action="store_true",
+        help=(
+            "reuse and validate an indexed Phase-2 publication without "
+            "rerunning STA"
+        ),
+    )
     cut_timing_run.add_argument("--out", type=Path, required=True)
     cut_timing_validate = experiment_stage_subparsers.add_parser(
         "cut-timing-validate", help="independently validate cut timing"
@@ -893,6 +901,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cut_timing_validate.add_argument("--architecture-timing-db", type=Path)
     cut_timing_validate.add_argument("--managed-dag-node", action="store_true")
+    cut_timing_validate.add_argument("--clock-period", action="append", default=[])
+    cut_timing_validate.add_argument(
+        "--prepared-timing-boundary", action="store_true"
+    )
 
     route_run = experiment_stage_subparsers.add_parser(
         "route-run", help="run one reusable timing-aware Phase 4 checkpoint"
@@ -4430,6 +4442,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                     opensta=args.opensta,
                     max_paths=args.max_paths,
                     managed_dag_node=args.managed_dag_node,
+                    prepared_timing_boundary=args.prepared_timing_boundary,
                 )
         elif args.experiment_stage_command == "cut-timing-validate":
             report = validate_cut_timing_checkpoint(
@@ -4440,6 +4453,12 @@ def _dispatch(args: argparse.Namespace) -> int:
                 timing_model_path=args.timing_model,
                 architecture_timing_db_path=args.architecture_timing_db,
                 managed_dag_node=args.managed_dag_node,
+                prepared_timing_boundary=args.prepared_timing_boundary,
+                clocks=(
+                    parse_clock_definitions(args.clock_period)
+                    if args.clock_period
+                    else None
+                ),
             )
         elif args.experiment_stage_command == "route-run":
             with json_write_policy(durable=not args.managed_dag_node):
