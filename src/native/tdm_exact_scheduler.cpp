@@ -3,6 +3,7 @@
 #include <iostream>
 #include <limits>
 #include <queue>
+#include <sstream>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -256,7 +257,17 @@ void Run(const std::string& input_path, const std::string& output_path) {
         hop_ready = static_cast<std::uint32_t>(route_arrivals[hop.from]) + 1;
       }
       if (hop.latency >= frame_slots - barrier_slots) {
-        throw std::runtime_error("exact schedule is infeasible");
+        std::ostringstream detail;
+        detail << "exact schedule is infeasible: route=" << route_index
+               << " demand_rank=" << route.demand_rank
+               << " hop=" << hop_index << " capacity=" << hop.capacity
+               << " link=" << hop.link << " from=" << hop.from
+               << " to=" << hop.to << " ready=" << hop_ready
+               << " frame_slots=" << frame_slots
+               << " barrier_slots=" << barrier_slots
+               << " latency=" << hop.latency << " ratio=" << hop.ratio
+               << " reason=hop-latency-exceeds-frame";
+        throw std::runtime_error(detail.str());
       }
       const auto latest = frame_slots - barrier_slots - hop.latency;
       std::uint32_t slot = hop_ready;
@@ -273,9 +284,30 @@ void Run(const std::string& input_path, const std::string& output_path) {
           ++slot;
         }
       }
-      if (slot >= latest) throw std::runtime_error("exact schedule is infeasible");
+      if (slot >= latest) {
+        std::ostringstream detail;
+        detail << "exact schedule is infeasible: route=" << route_index
+               << " demand_rank=" << route.demand_rank
+               << " hop=" << hop_index << " capacity=" << hop.capacity
+               << " link=" << hop.link << " from=" << hop.from
+               << " to=" << hop.to << " ready=" << hop_ready
+               << " selected_slot=" << slot << " latest_exclusive=" << latest
+               << " frame_slots=" << frame_slots
+               << " barrier_slots=" << barrier_slots
+               << " latency=" << hop.latency << " ratio=" << hop.ratio
+               << " lane=" << lane << " reason=no-slot-before-frame-boundary";
+        throw std::runtime_error(detail.str());
+      }
       if (hop.assigned_lane != kUnassignedLane && slot >= hop_ready + hop.ratio) {
-        throw std::runtime_error("exact ratio window is infeasible");
+        std::ostringstream detail;
+        detail << "exact ratio window is infeasible: route=" << route_index
+               << " demand_rank=" << route.demand_rank
+               << " hop=" << hop_index << " capacity=" << hop.capacity
+               << " link=" << hop.link << " from=" << hop.from
+               << " to=" << hop.to << " ready=" << hop_ready
+               << " selected_slot=" << slot << " ratio=" << hop.ratio
+               << " lane=" << lane << " reason=lane-window-exhausted";
+        throw std::runtime_error(detail.str());
       }
       if (hop.assigned_lane != kUnassignedLane) {
         occupied[hop.capacity].insert({slot, lane});
