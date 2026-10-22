@@ -1261,13 +1261,26 @@ and query publication took 2.388 seconds, measurement import took 6.444
 seconds, traced Python peak was 7.962 MiB, and the importer executed 15 SQL
 queries with no per-row identity lookup. The identity store was 22,040,576
 bytes, query TSV 4,700,032 bytes, input measurements 5,200,041 bytes and final
-timing store 27,766,784 bytes. Local-path timing now has a selector-backed typed
-owner as well. Validation uses a lazy identity projection and one statistics
-pass instead of copying every path and rescanning the population; VPR and
-RapidWright producers write the measured records directly into that owner.
-On 100,000 synthetic paths, typed read and full seal validation used 32,653,312
-bytes peak RSS versus 251,887,616 bytes for legacy JSON and occupied 24 MiB
-versus 30 MiB, while wall time changed from 0.73 to 0.90 seconds. Unique
+timing store 27,766,784 bytes. Local-path query identity now has a
+selector-backed typed owner as well. The per-FPGA query producer writes each
+identity row once into that owner while streaming the backend TSV, so it no
+longer retains the final record list, a second list of TSV rows, or a large
+identity JSON document. VPR measurement import spools its input into a private
+typed relation and ordered-merges it with the leased identity cursor; the
+RapidWright timing projection similarly writes graph measurements directly.
+Legacy identity JSON remains an explicit read-only compatibility input.
+
+On 100,000 synthetic paths, query/identity publication reduced process peak
+RSS from 133,185,536 to 51,118,080 bytes and total artifacts from 54,000,804 to
+36,858,235 bytes. Wall time changed from 0.948 to 2.265 seconds because the new
+path includes indexed publication, fsync and full validation; identity-record
+SHA-256 and the 11,900,042 query bytes were unchanged. A separate VPR import
+comparison reduced peak RSS from 373,506,048 to 75,022,336 bytes while wall
+time changed from 2.371 to 3.445 seconds; the final timing store had the same
+logical SHA-256 and byte count. These are adapter measurements, not NVDLA
+qualification. A separate 100,000-path typed read and full-seal validation used
+32,653,312 bytes peak RSS versus 251,887,616 bytes for legacy JSON and occupied
+24 MiB versus 30 MiB, while wall time changed from 0.73 to 0.90 seconds. Unique
 event/check identity tables remain W6 migration work; formal NVDLA Phase 7C
 wall/RSS/I/O and complete original-path coverage are still pending.
 

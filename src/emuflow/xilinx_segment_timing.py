@@ -24,6 +24,7 @@ from .logic_segment_timing import (
 )
 from .local_path_timing import (
     local_path_timing_header,
+    read_local_path_identity,
     validate_local_path_identity,
     validate_local_path_timing,
 )
@@ -501,33 +502,39 @@ def build_xilinx_local_path_timing(
     _timing_graph: Optional[_TimingGraph] = None,
 ) -> Dict[str, Any]:
     """Measure all original same-FPGA paths on the routed Xilinx graph."""
-    identity = read_json(identity_path)
-    validate_local_path_identity(identity)
-    graph = (
-        _timing_graph
-        if _timing_graph is not None
-        else _graph(mapped_path, timing_path)
-    )
-    for path in identity["paths"]:
-        delay, _actual_start = graph.longest(
-            [path["start_pin"]], path["end_pin"]
+    identity = read_local_path_identity(identity_path)
+    try:
+        validate_local_path_identity(identity)
+        graph = (
+            _timing_graph
+            if _timing_graph is not None
+            else _graph(mapped_path, timing_path)
         )
-        # The loaded identity is private to this producer.  Extend each record
-        # in place instead of retaining an equally large timing-record list.
-        path["delay_ns"] = delay
-    header = local_path_timing_header(
-        identity,
-        provider="rapidwright-lightweight-local-path-graph-v1",
-        qualification=(
-            "source-bound-routed-endpoint-longest-path-upper-bound-"
-            "with-launch-clock-to-q-and-capture-setup"
-        ),
-    )
-    with write_local_path_timing_storage(
-        output_path, header, identity["paths"]
-    ) as database:
-        validation = validate_local_path_timing(database)
-    return {**validation, "output": str(output_path)}
+        header = local_path_timing_header(
+            identity,
+            provider="rapidwright-lightweight-local-path-graph-v1",
+            qualification=(
+                "source-bound-routed-endpoint-longest-path-upper-bound-"
+                "with-launch-clock-to-q-and-capture-setup"
+            ),
+        )
+
+        def records() -> Iterator[Mapping[str, Any]]:
+            for path in identity["paths"]:
+                delay, _actual_start = graph.longest(
+                    [path["start_pin"]], path["end_pin"]
+                )
+                yield {**path, "delay_ns": delay}
+
+        with write_local_path_timing_storage(
+            output_path, header, records()
+        ) as database:
+            validation = validate_local_path_timing(database)
+        return {**validation, "output": str(output_path)}
+    finally:
+        close = getattr(identity, "close", None)
+        if callable(close):
+            close()
 
 
 def build_xilinx_segment_timing_bundle(

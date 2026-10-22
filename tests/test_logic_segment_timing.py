@@ -35,15 +35,23 @@ from emuflow.logic_segment_identity_storage import (
 import emuflow.logic_segment_identity_storage as identity_storage
 import emuflow.logic_segment_timing as logic_segment_timing
 from emuflow.local_path_timing import (
+    LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
     _explicit_vpr_path_pins,
     _resolve_local_path_fpga,
     import_vpr_local_path_timing,
+    local_path_timing_header,
     path_id_set_sha256,
     prepare_vpr_local_path_query_inputs,
+    read_local_path_identity,
     validate_local_path_identity,
     validate_local_path_timing,
+    write_xilinx_local_path_query,
 )
-from emuflow.local_path_timing_storage import read_local_path_timing_storage
+from emuflow.local_path_timing_storage import (
+    LOCAL_PATH_TIMING_STORAGE_SCHEMA,
+    read_local_path_timing_storage,
+    write_local_path_timing_storage,
+)
 from emuflow.routing import SYSTEM_ROUTES_SCHEMA, system_route_timing_paths
 from emuflow.platform import Platform
 
@@ -153,6 +161,35 @@ class LogicSegmentTimingTest(unittest.TestCase):
                     ir_path, assignment, paths, routes, schedule, platform,
                     allow_legacy_schedule=True,
                 )
+            value["design"]["name"] = "dut__fpga0"
+            merged = root / "merged.emuir.sqlite"
+            EmuIR(value).save(merged)
+            query = root / "local-path-query.tsv"
+            identity_path = root / "local-path-identity.json"
+            query_report = write_xilinx_local_path_query(
+                ir_path,
+                assignment,
+                paths,
+                routes,
+                merged,
+                "fpga0",
+                query,
+                identity_path,
+                prepared_inputs=prepared,
+            )
+            self.assertEqual(query_report["local_paths"], 1)
+            selector = read_json(identity_path)
+            self.assertEqual(selector["schema"], LOCAL_PATH_TIMING_STORAGE_SCHEMA)
+            self.assertNotIn("paths", selector)
+            with read_local_path_identity(identity_path) as identity:
+                self.assertEqual(
+                    validate_local_path_identity(identity)["local_paths"], 1
+                )
+                self.assertEqual(identity["paths"][0]["id"], "p0")
+            self.assertEqual(
+                query.read_text(encoding="utf-8").splitlines()[0],
+                "endpoint\tkind\tstart_pin\tend_pin\tpath_pins",
+            )
         self.assertIsNone(prepared.original_ir)
         self.assertNotIsInstance(prepared.local_paths_by_fpga, dict)
         self.assertNotIsInstance(prepared.cross_path_ids, (set, frozenset))
@@ -712,28 +749,34 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 "measurement": "explicit-routed-path-chain",
                 "path_pins": ["i0.Q[0]", "i1.D[0]"],
             }
-            write_json(
-                identity_path,
-                {
-                    "schema": "emuflow.local-path-identity/v2",
-                    "status": "pass",
-                    "design": "dut",
-                    "fpga": "fpga0",
-                    "provider": "test",
-                    "source": {
-                        "path_database_sha256": "a" * 64,
-                        "original_ir_sha256": "b" * 64,
-                        "assignment_sha256": "c" * 64,
-                        "routes_sha256": "d" * 64,
-                        "original_paths": 1,
-                        "original_path_ids_sha256": path_id_set_sha256(
-                            ["local-a"]
-                        ),
-                    },
-                    "coverage": {"local_paths": 1},
-                    "paths": [record],
+            identity = {
+                "schema": "emuflow.local-path-identity/v2",
+                "status": "pass",
+                "design": "dut",
+                "fpga": "fpga0",
+                "provider": "test",
+                "source": {
+                    "path_database_sha256": "a" * 64,
+                    "original_ir_sha256": "b" * 64,
+                    "assignment_sha256": "c" * 64,
+                    "routes_sha256": "d" * 64,
+                    "original_paths": 1,
+                    "original_path_ids_sha256": path_id_set_sha256(
+                        ["local-a"]
+                    ),
                 },
-            )
+                "coverage": {"local_paths": 1},
+            }
+            with write_local_path_timing_storage(
+                identity_path,
+                local_path_timing_header(
+                    identity,
+                    provider=identity["provider"],
+                    qualification=LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
+                ),
+                [{**record, "delay_ns": 0.0}],
+            ):
+                pass
             raw = root / "local.tsv"
             raw.write_text(
                 "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n"

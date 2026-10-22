@@ -13,7 +13,14 @@ from emuflow.xilinx_segment_timing import (
     build_xilinx_local_path_timing,
     build_xilinx_segment_timing_bundle,
 )
-from emuflow.local_path_timing_storage import read_local_path_timing_storage
+from emuflow.local_path_timing import (
+    LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
+    local_path_timing_header,
+)
+from emuflow.local_path_timing_storage import (
+    read_local_path_timing_storage,
+    write_local_path_timing_storage,
+)
 from emuflow.xilinx_timing import (
     XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
     XILINX_ROUTED_TIMING_STREAM_SCHEMA,
@@ -324,7 +331,16 @@ def test_local_path_timing_is_source_bound_and_uses_routed_graph():
         timing_path = root / "timing.json"
         timing_path.write_text(json.dumps(timing), encoding="utf-8")
         identity_path = root / "identity.json"
-        identity_path.write_text(json.dumps(identity), encoding="utf-8")
+        with write_local_path_timing_storage(
+            identity_path,
+            local_path_timing_header(
+                identity,
+                provider=identity["provider"],
+                qualification=LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
+            ),
+            [{**identity["paths"][0], "delay_ns": 0.0}],
+        ):
+            pass
         output = root / "local.json"
         result = build_xilinx_local_path_timing(
             identity_path, mapped_path, timing_path, output

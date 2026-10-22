@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import sqlite3
 import tempfile
 from collections import OrderedDict
 from collections.abc import Iterator, Sequence, Set
 from dataclasses import dataclass
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
@@ -26,7 +28,11 @@ from .logic_segment_timing import (
     _vpr_atom_pin,
     _xilinx_object,
 )
-from .local_path_timing_storage import write_local_path_timing_storage
+from .local_path_timing_storage import (
+    LOCAL_PATH_TIMING_STORAGE_SCHEMA,
+    read_local_path_timing_storage,
+    write_local_path_timing_storage,
+)
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .phase3_storage import read_phase3_assignment_view
 from .routing import system_route_timing_paths
@@ -46,6 +52,9 @@ LOCAL_PATH_IDENTITY_SCHEMA_V2 = "emuflow.local-path-identity/v2"
 LOCAL_PATH_TIMING_SCHEMA = "emuflow.local-path-timing/v1"
 LOCAL_PATH_QUERY_HEADER_V2 = (
     "endpoint\tkind\tstart_pin\tend_pin\tpath_pins"
+)
+LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION = (
+    "typed-local-path-query-identity-owner-v1"
 )
 
 
@@ -107,6 +116,80 @@ class _WithoutDelayPaths(Sequence[Mapping[str, Any]]):
             if not isinstance(item, Mapping):
                 raise ValidationError("local path timing record is invalid")
             yield _WithoutDelayPath(item)
+
+
+class _StoredLocalPathIdentity(Mapping[str, Any]):
+    """Logical identity projection over a leased typed timing owner."""
+
+    _KEYS = (
+        "schema", "status", "design", "fpga", "provider", "source",
+        "coverage", "paths",
+    )
+
+    def __init__(self, timing: Any) -> None:
+        self.timing = timing
+        self._paths = _WithoutDelayPaths(timing["paths"])
+
+    def validate_identity(self) -> Dict[str, Any]:
+        validation = self.timing.validate_timing()
+        if (
+            self.timing["qualification"]
+            != LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION
+            or self.timing["identity_schema"]
+            != LOCAL_PATH_IDENTITY_SCHEMA_V2
+            or validation["maximum_delay_ns"] != 0.0
+        ):
+            raise ValidationError(
+                "typed local path identity owner is invalid"
+            )
+        return {
+            "status": "pass",
+            "fpga": self.timing["fpga"],
+            "local_paths": validation["local_paths"],
+        }
+
+    def close(self) -> None:
+        self.timing.close()
+
+    def __enter__(self) -> "_StoredLocalPathIdentity":
+        self.validate_identity()
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "schema":
+            return self.timing["identity_schema"]
+        if key == "paths":
+            return self._paths
+        if key in self._KEYS:
+            return self.timing[key]
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._KEYS)
+
+    def __len__(self) -> int:
+        return len(self._KEYS)
+
+
+def read_local_path_identity(path: Path) -> Mapping[str, Any]:
+    """Open a typed production identity or an explicit legacy JSON value."""
+
+    raw = read_json(path)
+    if not isinstance(raw, Mapping):
+        raise ValidationError("local path identity root is invalid")
+    if raw.get("schema") != LOCAL_PATH_TIMING_STORAGE_SCHEMA:
+        return raw
+    timing = read_local_path_timing_storage(path)
+    identity = _StoredLocalPathIdentity(timing)
+    try:
+        identity.validate_identity()
+    except BaseException:
+        identity.close()
+        raise
+    return identity
 
 
 def _sha256(path: Path) -> str:
@@ -603,6 +686,9 @@ def _source_manifest(
 
 
 def validate_local_path_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
+    indexed_validator = getattr(database, "validate_identity", None)
+    if callable(indexed_validator):
+        return indexed_validator()
     schema = database.get("schema")
     if schema not in {
         LOCAL_PATH_IDENTITY_SCHEMA,
@@ -1226,9 +1312,45 @@ def _write_local_path_query(
             merged_ir, endpoint, merged_pins, merged_instances
         )[1]
 
-    records = []
-    try:
-        for path in local_paths:
+    identity_provider = (
+        "original-timing-pathdb-to-vpr-selected-chain-v2"
+        if object_provider == "vpr"
+        else "original-timing-pathdb-to-xilinx-endpoint-bound-v1"
+    )
+    local_path_count = len(local_paths)
+    identity_header = {
+        "schema": LOCAL_PATH_IDENTITY_SCHEMA_V2,
+        "status": "pass",
+        "design": assignment["design"],
+        "fpga": fpga,
+        "provider": identity_provider,
+        "source": dict(prepared.source_manifest),
+        "coverage": {"local_paths": local_path_count},
+    }
+    storage_header = local_path_timing_header(
+        identity_header,
+        provider=identity_provider,
+        qualification=LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
+    )
+    measurement_counts = {
+        "explicit-routed-path-chain": 0,
+        "endpoint-longest-path-fallback": 0,
+    }
+    identity_path.parent.mkdir(parents=True, exist_ok=True)
+    query_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, query_temporary_name = tempfile.mkstemp(
+        prefix=f".{query_path.name}.", suffix=".tmp", dir=query_path.parent
+    )
+    query_temporary = Path(query_temporary_name)
+    query_stream = os.fdopen(descriptor, "w", encoding="utf-8", newline="")
+
+    def identity_records() -> Iterator[Mapping[str, Any]]:
+        paths = (
+            local_paths
+            if isinstance(local_paths, _PreparedLocalPathSequence)
+            else sorted(local_paths, key=lambda item: item["id"])
+        )
+        for path in paths:
             start = path["startpoint"]
             end = path["endpoint"]
             record = {
@@ -1255,72 +1377,62 @@ def _write_local_path_query(
                 if object_provider == "vpr"
                 else []
             )
-            record.update(
-                {
-                    "measurement": (
-                        "explicit-routed-path-chain"
-                        if path_pins
-                        else "endpoint-longest-path-fallback"
-                    ),
-                    "path_pins": path_pins,
-                }
+            measurement = (
+                "explicit-routed-path-chain"
+                if path_pins
+                else "endpoint-longest-path-fallback"
             )
-            records.append(record)
+            record.update({"measurement": measurement, "path_pins": path_pins})
+            measurement_counts[measurement] += 1
+            query_stream.write(
+                "\t".join(
+                    (
+                        record["id"],
+                        "local",
+                        record["start_pin"],
+                        record["end_pin"],
+                        ",".join(path_pins) if path_pins else "-",
+                    )
+                )
+                + "\n"
+            )
+            yield {**record, "delay_ns": 0.0}
+
+    try:
+        query_stream.write(LOCAL_PATH_QUERY_HEADER_V2 + "\n")
+        with write_local_path_timing_storage(
+            identity_path, storage_header, identity_records()
+        ) as identity_store:
+            validation = identity_store.validate_timing()
+            if (
+                validation["local_paths"] != local_path_count
+                or validation["maximum_delay_ns"] != 0.0
+            ):
+                raise ValidationError(
+                    "typed local path identity publication disagrees"
+                )
+        query_stream.flush()
+        os.fsync(query_stream.fileno())
+        query_stream.close()
+        os.replace(query_temporary, query_path)
+        directory = os.open(query_path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
+        if not query_stream.closed:
+            query_stream.close()
+        query_temporary.unlink(missing_ok=True)
         if bounded_original_nets is not None:
             bounded_original_nets.close()
-    records.sort(key=lambda item: item["id"])
-    identity = {
-        "schema": LOCAL_PATH_IDENTITY_SCHEMA_V2,
-        "status": "pass",
-        "design": assignment["design"],
-        "fpga": fpga,
-        "provider": (
-            "original-timing-pathdb-to-vpr-selected-chain-v2"
-            if object_provider == "vpr"
-            else "original-timing-pathdb-to-xilinx-endpoint-bound-v1"
-        ),
-        "source": dict(prepared.source_manifest),
-        "coverage": {"local_paths": len(records)},
-        "paths": records,
-    }
-    validate_local_path_identity(identity)
-    identity_path.parent.mkdir(parents=True, exist_ok=True)
-    write_json(identity_path, identity)
-    rows = [
-        LOCAL_PATH_QUERY_HEADER_V2,
-        *(
-            "\t".join(
-                (
-                    item["id"],
-                    "local",
-                    item["start_pin"],
-                    item["end_pin"],
-                    (
-                        ",".join(item["path_pins"])
-                        if item["path_pins"]
-                        else "-"
-                    ),
-                )
-            )
-            for item in records
-        ),
-    ]
-    query_path.parent.mkdir(parents=True, exist_ok=True)
-    query_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    if indexed_merged:
-        merged_ir.close()
+        if indexed_merged:
+            merged_ir.close()
     return {
         "status": "pass",
         "fpga": fpga,
-        "local_paths": len(records),
-        "measurement_counts": {
-            name: sum(item["measurement"] == name for item in records)
-            for name in (
-                "explicit-routed-path-chain",
-                "endpoint-longest-path-fallback",
-            )
-        },
+        "local_paths": local_path_count,
+        "measurement_counts": measurement_counts,
         "query": str(query_path),
         "identity": str(identity_path),
     }
@@ -1385,60 +1497,141 @@ def import_vpr_local_path_timing(
     identity_path: Path,
     output_path: Path,
 ) -> Dict[str, Any]:
-    identity = read_json(identity_path)
-    validate_local_path_identity(identity)
-    expected = {item["id"]: item for item in identity["paths"]}
-    lines = input_path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != LOGIC_SEGMENT_TIMING_HEADER:
-        raise ValidationError("VPR local path timing header is invalid")
-    measured: Dict[str, float] = {}
-    for line_number, line in enumerate(lines[1:], start=2):
-        if not line:
-            continue
-        fields = line.split("\t")
-        item = expected.get(fields[0]) if len(fields) == 5 else None
-        try:
-            delay = float(fields[2])
-        except (IndexError, ValueError) as error:
-            raise ValidationError(
-                f"VPR local path timing line {line_number} is invalid"
-            ) from error
-        if (
-            item is None
-            or fields[0] in measured
-            or fields[1] != "local"
-            or fields[3] != item["start_pin"]
-            or fields[4] != item["end_pin"]
-            or not math.isfinite(delay)
-            or delay < 0.0
-        ):
-            raise ValidationError(
-                f"VPR local path timing line {line_number} is invalid"
-            )
-        measured[fields[0]] = delay
-    if set(measured) != set(expected):
-        raise ValidationError(
-            "VPR local path timing coverage is incomplete: "
-            f"{sorted(set(expected) - set(measured))[:10]}"
+    identity = read_local_path_identity(identity_path)
+    try:
+        validate_local_path_identity(identity)
+        header = local_path_timing_header(
+            identity,
+            provider="vpr-tatum-selected-local-setup-path-delay-v2",
+            qualification=(
+                "source-bound-routed-selected-path-delay-with-exact-fallback-"
+                "launch-clock-to-q-and-capture-setup"
+            ),
         )
-    # This identity document is private to the importer.  Add the one timing
-    # field in place so publication does not retain a second complete list of
-    # path dictionaries beside the source identities.
-    for item in identity["paths"]:
-        item["delay_ns"] = measured[item["id"]]
-    header = local_path_timing_header(
-        identity,
-        provider="vpr-tatum-selected-local-setup-path-delay-v2",
-        qualification=(
-            "source-bound-routed-selected-path-delay-with-exact-fallback-"
-            "launch-clock-to-q-and-capture-setup"
-        ),
-    )
-    with write_local_path_timing_storage(
-        output_path, header, identity["paths"]
-    ) as database:
-        validation = validate_local_path_timing(database)
-    return {**validation, "output": str(output_path)}
+        with tempfile.TemporaryDirectory(
+            prefix="emuflow-vpr-local-timing-"
+        ) as temporary:
+            measured_path = Path(temporary) / "measurements.sqlite"
+            connection = sqlite3.connect(measured_path)
+            connection.row_factory = sqlite3.Row
+            connection.executescript(
+                """
+                PRAGMA journal_mode=OFF;
+                PRAGMA synchronous=OFF;
+                CREATE TABLE measurements(
+                  id TEXT PRIMARY KEY NOT NULL,
+                  kind TEXT NOT NULL,
+                  delay_ns REAL NOT NULL,
+                  start_pin TEXT NOT NULL,
+                  end_pin TEXT NOT NULL
+                ) WITHOUT ROWID;
+                """
+            )
+            batch: list[tuple[str, str, float, str, str]] = []
+            try:
+                with input_path.open("r", encoding="utf-8", newline="") as stream:
+                    if stream.readline().rstrip("\r\n") != LOGIC_SEGMENT_TIMING_HEADER:
+                        raise ValidationError(
+                            "VPR local path timing header is invalid"
+                        )
+                    for line_number, line in enumerate(stream, start=2):
+                        line = line.rstrip("\r\n")
+                        if not line:
+                            continue
+                        fields = line.split("\t")
+                        try:
+                            delay = float(fields[2])
+                        except (IndexError, ValueError) as error:
+                            raise ValidationError(
+                                f"VPR local path timing line {line_number} is invalid"
+                            ) from error
+                        if (
+                            len(fields) != 5
+                            or not fields[0]
+                            or fields[1] != "local"
+                            or not fields[3]
+                            or not fields[4]
+                            or not math.isfinite(delay)
+                            or delay < 0.0
+                        ):
+                            raise ValidationError(
+                                f"VPR local path timing line {line_number} is invalid"
+                            )
+                        batch.append(
+                            (fields[0], fields[1], delay, fields[3], fields[4])
+                        )
+                        if len(batch) >= 8192:
+                            try:
+                                connection.executemany(
+                                    "INSERT INTO measurements VALUES (?,?,?,?,?)",
+                                    batch,
+                                )
+                            except sqlite3.IntegrityError as error:
+                                raise ValidationError(
+                                    "VPR local path timing contains duplicate identities"
+                                ) from error
+                            batch.clear()
+                if batch:
+                    try:
+                        connection.executemany(
+                            "INSERT INTO measurements VALUES (?,?,?,?,?)", batch
+                        )
+                    except sqlite3.IntegrityError as error:
+                        raise ValidationError(
+                            "VPR local path timing contains duplicate identities"
+                        ) from error
+                    batch.clear()
+                connection.commit()
+
+                paths = identity["paths"]
+                expected_paths = (
+                    paths
+                    if isinstance(identity, _StoredLocalPathIdentity)
+                    else sorted(paths, key=lambda item: item["id"])
+                )
+
+                def timing_records() -> Iterator[Mapping[str, Any]]:
+                    sentinel = object()
+                    measurements = connection.execute(
+                        "SELECT * FROM measurements ORDER BY id"
+                    )
+                    for expected, measured in zip_longest(
+                        expected_paths, measurements, fillvalue=sentinel
+                    ):
+                        if expected is sentinel:
+                            assert measured is not sentinel
+                            raise ValidationError(
+                                "VPR local path timing contains unexpected identity: "
+                                f"{measured['id']}"
+                            )
+                        if measured is sentinel:
+                            raise ValidationError(
+                                "VPR local path timing coverage is incomplete: "
+                                f"{expected['id']}"
+                            )
+                        if (
+                            expected["id"] != measured["id"]
+                            or measured["kind"] != "local"
+                            or measured["start_pin"] != expected["start_pin"]
+                            or measured["end_pin"] != expected["end_pin"]
+                        ):
+                            raise ValidationError(
+                                "VPR local path timing identity disagrees: "
+                                f"expected {expected['id']}, observed {measured['id']}"
+                            )
+                        yield {**expected, "delay_ns": float(measured["delay_ns"])}
+
+                with write_local_path_timing_storage(
+                    output_path, header, timing_records()
+                ) as database:
+                    validation = validate_local_path_timing(database)
+            finally:
+                connection.close()
+        return {**validation, "output": str(output_path)}
+    finally:
+        close = getattr(identity, "close", None)
+        if callable(close):
+            close()
 
 
 def validate_local_path_timing(database: Mapping[str, Any]) -> Dict[str, Any]:

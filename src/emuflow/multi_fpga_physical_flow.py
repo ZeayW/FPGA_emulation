@@ -42,6 +42,7 @@ from .local_path_timing import (
     local_path_timing_header,
     import_vpr_local_path_timing,
     prepare_vpr_local_path_query_inputs,
+    read_local_path_identity,
     validate_local_path_timing,
     write_vpr_local_path_query,
     write_xilinx_local_path_query,
@@ -312,15 +313,20 @@ def _write_inactive_logic_timing(
 def _write_inactive_local_timing(
     identity_path: Path, output_path: Path
 ) -> Dict[str, Any]:
-    identity = read_json(identity_path)
-    header = local_path_timing_header(
-        identity,
-        provider=_INACTIVE_PARTITION_PROVIDER,
-        qualification="not-applicable-empty-partition",
-    )
-    with write_local_path_timing_storage(output_path, header, ()) as database:
-        validation = validate_local_path_timing(database)
-    return {**validation, "output": str(output_path)}
+    identity = read_local_path_identity(identity_path)
+    try:
+        header = local_path_timing_header(
+            identity,
+            provider=_INACTIVE_PARTITION_PROVIDER,
+            qualification="not-applicable-empty-partition",
+        )
+        with write_local_path_timing_storage(output_path, header, ()) as database:
+            validation = validate_local_path_timing(database)
+        return {**validation, "output": str(output_path)}
+    finally:
+        close = getattr(identity, "close", None)
+        if callable(close):
+            close()
 
 
 def _sha256(path: Path) -> str:
