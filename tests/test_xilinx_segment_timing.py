@@ -13,6 +13,7 @@ from emuflow.xilinx_segment_timing import (
     build_xilinx_local_path_timing,
     build_xilinx_segment_timing_bundle,
 )
+from emuflow.local_path_timing_storage import read_local_path_timing_storage
 from emuflow.xilinx_timing import (
     XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
     XILINX_ROUTED_TIMING_STREAM_SCHEMA,
@@ -328,13 +329,13 @@ def test_local_path_timing_is_source_bound_and_uses_routed_graph():
         result = build_xilinx_local_path_timing(
             identity_path, mapped_path, timing_path, output
         )
-        database = json.loads(output.read_text())
-    assert result["local_paths"] == 1
-    assert result["measurement_counts"] == {
-        "explicit-routed-path-chain": 0,
-        "endpoint-longest-path-fallback": 1,
-    }
-    assert abs(database["paths"][0]["delay_ns"] - 0.595) < 1e-12
+        with read_local_path_timing_storage(output) as database:
+            assert result["local_paths"] == 1
+            assert result["measurement_counts"] == {
+                "explicit-routed-path-chain": 0,
+                "endpoint-longest-path-fallback": 1,
+            }
+            assert abs(database["paths"][0]["delay_ns"] - 0.595) < 1e-12
 
 
 def test_segment_timing_bundle_loads_the_routed_graph_once(

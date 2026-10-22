@@ -357,6 +357,7 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/phase7c.py",
         "src/emuflow/system_timing.py",
         "src/emuflow/local_path_timing.py",
+        "src/emuflow/local_path_timing_storage.py",
         "src/emuflow/logic_segment_timing.py",
         "src/emuflow/static_exact_timing.py",
         "src/emuflow/combinational_cut.py",

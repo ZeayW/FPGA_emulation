@@ -23,6 +23,7 @@ from .logic_segment_timing import (
     _vpr_atom_pin,
     _xilinx_object,
 )
+from .local_path_timing_storage import write_local_path_timing_storage
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .phase3_storage import read_phase3_assignment_view
 from .routing import system_route_timing_paths
@@ -43,6 +44,24 @@ LOCAL_PATH_TIMING_SCHEMA = "emuflow.local-path-timing/v1"
 LOCAL_PATH_QUERY_HEADER_V2 = (
     "endpoint\tkind\tstart_pin\tend_pin\tpath_pins"
 )
+
+
+def local_path_timing_header(
+    identity: Mapping[str, Any], *, provider: str, qualification: str
+) -> Dict[str, Any]:
+    """Return the bounded header shared by local-path timing stores."""
+
+    return {
+        "schema": LOCAL_PATH_TIMING_SCHEMA,
+        "status": "pass",
+        "design": identity["design"],
+        "fpga": identity["fpga"],
+        "provider": provider,
+        "qualification": qualification,
+        "source": identity["source"],
+        "identity_schema": identity["schema"],
+        "coverage": identity["coverage"],
+    }
 
 
 class _WithoutDelayPath(Mapping[str, Any]):
@@ -931,23 +950,18 @@ def import_vpr_local_path_timing(
     # path dictionaries beside the source identities.
     for item in identity["paths"]:
         item["delay_ns"] = measured[item["id"]]
-    database = {
-        "schema": LOCAL_PATH_TIMING_SCHEMA,
-        "status": "pass",
-        "design": identity["design"],
-        "fpga": identity["fpga"],
-        "provider": "vpr-tatum-selected-local-setup-path-delay-v2",
-        "qualification": (
+    header = local_path_timing_header(
+        identity,
+        provider="vpr-tatum-selected-local-setup-path-delay-v2",
+        qualification=(
             "source-bound-routed-selected-path-delay-with-exact-fallback-"
             "launch-clock-to-q-and-capture-setup"
         ),
-        "source": identity["source"],
-        "identity_schema": identity["schema"],
-        "coverage": identity["coverage"],
-        "paths": identity["paths"],
-    }
-    validation = validate_local_path_timing(database)
-    write_json(output_path, database)
+    )
+    with write_local_path_timing_storage(
+        output_path, header, identity["paths"]
+    ) as database:
+        validation = validate_local_path_timing(database)
     return {**validation, "output": str(output_path)}
 
 

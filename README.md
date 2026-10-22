@@ -559,7 +559,8 @@ in one read pass, then validates one FPGA at a time;
 Phase 4 feedback, Phase 7C, global timing, Vivado timing import and experiment
 validation resolve those files lazily. Logical canonical hashing streams one
 referenced database at a time and remains equal to the previous inline JSON
-hash. Logic-segment timing, boundary identities and boundary timing now use
+hash. Logic-segment timing, boundary identities, boundary timing and local-path
+timing now use
 direct typed owners: each producer writes a content-addressed SQLite generation
 and commits a small selector last, without retaining a production JSON copy.
 Boundary validation merges the ordered identity and timing cursors, and the
@@ -568,8 +569,8 @@ The selectors and physical summary bind the route, schedule and Phase 3 logical
 seals. Exact schema/count/key validation, owner-scoped generation leases and
 garbage collection, and a bounded multi-FPGA ordered merge preserve global
 segment and path-key uniqueness beyond ten FPGAs. Archive retention follows and
-validates the complete summary-selector-store group. Boundary, local-path and
-other per-FPGA evidence databases remain JSON migration work.
+validates the complete summary-selector-store group. Remaining per-FPGA
+evidence databases are still JSON migration work.
 
 The native OpenPARF Phase 7 bridge now streams placement-certificate clusters
 from their sealed SQLite sidecar. Production placement validation writes each
@@ -1061,12 +1062,14 @@ and query publication took 2.388 seconds, measurement import took 6.444
 seconds, traced Python peak was 7.962 MiB, and the importer executed 15 SQL
 queries with no per-row identity lookup. The identity store was 22,040,576
 bytes, query TSV 4,700,032 bytes, input measurements 5,200,041 bytes and final
-timing store 27,766,784 bytes. Local-path validation now uses a lazy
-identity projection and one statistics pass instead of copying every path and
-rescanning the population. VPR and RapidWright timing producers also attach
-the measured delay to their private identity rows in place, avoiding a second
-path-dictionary population. The local-path production file and unique event/check
-identity tables remain W6 migration work; formal NVDLA Phase 7C
+timing store 27,766,784 bytes. Local-path timing now has a selector-backed typed
+owner as well. Validation uses a lazy identity projection and one statistics
+pass instead of copying every path and rescanning the population; VPR and
+RapidWright producers write the measured records directly into that owner.
+On 100,000 synthetic paths, typed read and full seal validation used 42,778,624
+bytes peak RSS versus 250,118,144 bytes for legacy JSON and occupied 24 MiB
+versus 30 MiB, while wall time changed from 0.69 to 1.88 seconds. Unique
+event/check identity tables remain W6 migration work; formal NVDLA Phase 7C
 wall/RSS/I/O and complete original-path coverage are still pending.
 
 ### Selected research references

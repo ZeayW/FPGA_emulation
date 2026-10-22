@@ -39,12 +39,16 @@ from .logic_segment_timing import (
     write_vpr_logic_segment_query,
 )
 from .local_path_timing import (
-    LOCAL_PATH_TIMING_SCHEMA,
+    local_path_timing_header,
     import_vpr_local_path_timing,
     prepare_vpr_local_path_query_inputs,
     validate_local_path_timing,
     write_vpr_local_path_query,
     write_xilinx_local_path_query,
+)
+from .local_path_timing_storage import (
+    read_local_path_timing_storage,
+    write_local_path_timing_storage,
 )
 from .ir import EMUIR_SCHEMA, EmuIR
 from .emuir_storage import open_emuir_sqlite_read_only
@@ -69,6 +73,7 @@ from .physical_summary_storage import (
     publish_boundary_identity_store,
     publish_boundary_timing_store,
     publish_logic_segment_timing_store,
+    publish_local_path_timing_store,
     publish_physical_evidence,
 )
 from .platform import Platform
@@ -308,20 +313,13 @@ def _write_inactive_local_timing(
     identity_path: Path, output_path: Path
 ) -> Dict[str, Any]:
     identity = read_json(identity_path)
-    database = {
-        "schema": LOCAL_PATH_TIMING_SCHEMA,
-        "status": "pass",
-        "design": identity["design"],
-        "fpga": identity["fpga"],
-        "provider": _INACTIVE_PARTITION_PROVIDER,
-        "qualification": "not-applicable-empty-partition",
-        "source": identity["source"],
-        "identity_schema": identity["schema"],
-        "coverage": identity["coverage"],
-        "paths": [],
-    }
-    validation = validate_local_path_timing(database)
-    write_json(output_path, database)
+    header = local_path_timing_header(
+        identity,
+        provider=_INACTIVE_PARTITION_PROVIDER,
+        qualification="not-applicable-empty-partition",
+    )
+    with write_local_path_timing_storage(output_path, header, ()) as database:
+        validation = validate_local_path_timing(database)
     return {**validation, "output": str(output_path)}
 
 
@@ -2335,12 +2333,17 @@ def _assemble_multi_fpga_physical_results(
                         "import"
                     ]["output"]
                 )
-                database, reference = publish_physical_evidence(
+                _selector, reference = publish_local_path_timing_store(
                     path,
                     output_dir,
                     Path(item["fpga"]) / path.name,
                 )
-                validate_local_path_timing(database)
+                with read_local_path_timing_storage(
+                    output_dir / reference["path"],
+                    expected_design=physical_summary["design"],
+                    expected_fpga=item["fpga"],
+                ) as database:
+                    validate_local_path_timing(database)
                 physical_summary["local_path_timing"][item["fpga"]] = reference
     physical_summary["validation"] = validate_physical_summary(
         physical_summary, runtime, platform

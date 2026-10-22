@@ -43,6 +43,7 @@ from emuflow.local_path_timing import (
     validate_local_path_identity,
     validate_local_path_timing,
 )
+from emuflow.local_path_timing_storage import read_local_path_timing_storage
 from emuflow.routing import SYSTEM_ROUTES_SCHEMA, system_route_timing_paths
 from emuflow.platform import Platform
 
@@ -734,19 +735,21 @@ class LogicSegmentTimingTest(unittest.TestCase):
             )
             output = root / "local.json"
             import_vpr_local_path_timing(raw, identity_path, output)
-            database = read_json(output)
-            self.assertEqual(
-                database["identity_schema"],
-                "emuflow.local-path-identity/v2",
-            )
-            self.assertEqual(database["paths"][0]["path_pins"], record["path_pins"])
-            self.assertEqual(
-                validate_local_path_timing(database)["measurement_counts"],
-                {
-                    "explicit-routed-path-chain": 1,
-                    "endpoint-longest-path-fallback": 0,
-                },
-            )
+            with read_local_path_timing_storage(output) as database:
+                self.assertEqual(
+                    database["identity_schema"],
+                    "emuflow.local-path-identity/v2",
+                )
+                self.assertEqual(
+                    database["paths"][0]["path_pins"], record["path_pins"]
+                )
+                self.assertEqual(
+                    validate_local_path_timing(database)["measurement_counts"],
+                    {
+                        "explicit-routed-path-chain": 1,
+                        "endpoint-longest-path-fallback": 0,
+                    },
+                )
 
     def test_local_path_import_is_source_bound_and_coverage_exact(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -796,10 +799,10 @@ class LogicSegmentTimingTest(unittest.TestCase):
             )
             self.assertEqual(report["local_paths"], 1)
             self.assertEqual(report["maximum_delay_ns"], 3.25)
-            database = read_json(output)
-            self.assertEqual(
-                validate_local_path_timing(database)["status"], "pass"
-            )
+            with read_local_path_timing_storage(output) as database:
+                self.assertEqual(
+                    validate_local_path_timing(database)["status"], "pass"
+                )
             raw.write_text(
                 "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n",
                 encoding="utf-8",
