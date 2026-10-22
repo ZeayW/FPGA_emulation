@@ -321,6 +321,65 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
             )
         pins.finish()
 
+    def cell_type_counts(self) -> Dict[str, int]:
+        """Return the typed primitive inventory without rebuilding cell pins."""
+
+        if self.schema == XILINX_MAPPED_INDEX_SCHEMA:
+            return {
+                str(row["type"]): int(row["records"])
+                for row in self.connection.execute(
+                    """
+                    SELECT type,count(*) AS records
+                      FROM cells
+                     GROUP BY type
+                     ORDER BY type
+                    """
+                )
+            }
+        counts: Counter[str] = Counter()
+        for cell in self.cells.values():
+            cell_type = cell.get("type")
+            if not isinstance(cell_type, str) or not cell_type:
+                raise ValidationError("indexed mapped cell type is invalid")
+            counts[cell_type] += 1
+        return dict(counts)
+
+    def cell_type_and_parameters(
+        self, name: str,
+    ) -> Tuple[str, Mapping[str, Any]]:
+        """Read only the sparse logical metadata needed by physical adapters."""
+
+        if not isinstance(name, str) or not name:
+            raise ValidationError("indexed mapped cell identity is invalid")
+        if self.schema != XILINX_MAPPED_INDEX_SCHEMA:
+            cell = self.cells[name]
+            cell_type = cell.get("type")
+            parameters = cell.get("parameters", {})
+        else:
+            row = self.connection.execute(
+                "SELECT type,record_json FROM cells WHERE id=?", (name,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(name)
+            record = json.loads(row["record_json"])
+            if not isinstance(record, dict):
+                raise ValidationError(
+                    f"indexed mapped record {name!r} is invalid"
+                )
+            cell_type = str(row["type"])
+            if record.get("type") != cell_type:
+                raise ValidationError(
+                    f"indexed mapped record {name!r} type projection disagrees"
+                )
+            parameters = record.get("parameters", {})
+        if not isinstance(cell_type, str) or not cell_type:
+            raise ValidationError("indexed mapped cell type is invalid")
+        if not isinstance(parameters, MappingABC):
+            raise ValidationError(
+                f"indexed mapped record {name!r} parameters are invalid"
+            )
+        return cell_type, parameters
+
     def _physical_connection(self, handoff_path: Path) -> sqlite3.Connection:
         if self.schema != XILINX_MAPPED_INDEX_SCHEMA:
             raise ValidationError(
@@ -435,6 +494,29 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
         handling for any other non-constant LUT6_2 pin.
         """
 
+        for (
+            bit, cell_id, _cell_type, port, port_bit, port_width, direction,
+            physical_site, route_ordinal, route_pin,
+        ) in self.iter_physical_route_endpoints_by_net(
+            handoff_path, ordinal_offset=ordinal_offset
+        ):
+            yield (
+                bit, cell_id, port, port_bit, port_width, direction,
+                physical_site, route_ordinal, route_pin,
+            )
+
+    def iter_physical_route_endpoints_by_net(
+        self, handoff_path: Path, *, ordinal_offset: int = 0,
+    ) -> Iterator[
+        Tuple[int, str, str, str, int, int, str, str, Optional[int], str]
+    ]:
+        """Stream placed route pins together with their typed cell identity.
+
+        RWRoute needs the driver primitive type for CARRY8 exit validation.
+        Carry it in the existing mapped/physical join so the net loop never
+        performs a per-net cell JSON lookup or reconstructs that cell's pins.
+        """
+
         if (
             isinstance(ordinal_offset, bool)
             or not isinstance(ordinal_offset, int)
@@ -493,7 +575,7 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
                     else:
                         route_ordinal = None
                 yield (
-                    int(row["net_bit"]), str(row["cell_id"]), port,
+                    int(row["net_bit"]), str(row["cell_id"]), cell_type, port,
                     int(row["port_bit"]), int(row["port_width"]), direction,
                     str(row["physical_site"]), route_ordinal, route_pin,
                 )

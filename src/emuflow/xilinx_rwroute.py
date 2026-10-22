@@ -577,10 +577,11 @@ def export_rwroute_input(
     binding_started = time.perf_counter()
     indexed_physical_cells = getattr(mapped, "iter_physical_cells", None)
     indexed_physical_pins = getattr(mapped, "iter_physical_pins_by_net", None)
-    indexed_physical_route_pins = getattr(
-        mapped, "iter_physical_route_pins_by_net", None
+    indexed_physical_route_endpoints = getattr(
+        mapped, "iter_physical_route_endpoints_by_net", None
     )
     indexed_cells_by_type = getattr(mapped, "iter_cells_by_type", None)
+    indexed_cell_metadata = getattr(mapped, "cell_type_and_parameters", None)
     indexed_clock_gate_source = getattr(
         mapped, "iter_qualified_lut_clock_gates", None
     )
@@ -590,7 +591,7 @@ def export_rwroute_input(
         and callable(indexed_physical_pins)
     )
     use_typed_route_ordinals = (
-        use_typed_physical and callable(indexed_physical_route_pins)
+        use_typed_physical and callable(indexed_physical_route_endpoints)
     )
     physical: Optional[Dict[str, Tuple[str, str]]] = None
     if not use_typed_physical:
@@ -783,8 +784,15 @@ def export_rwroute_input(
                 f"\t{site}\t{route_bel}"
             )
         if cell_type in {"RAMB18E2", "RAMB36E2"}:
-            parameters = cells[name].get("parameters", {})
-            if not isinstance(parameters, dict):
+            if use_typed_physical and callable(indexed_cell_metadata):
+                parameter_type, parameters = indexed_cell_metadata(name)
+                if parameter_type != cell_type:
+                    raise ValidationError(
+                        f"hard primitive {name!r} type projection disagrees"
+                    )
+            else:
+                parameters = cells[name].get("parameters", {})
+            if not isinstance(parameters, Mapping):
                 raise ValidationError(
                     f"hard primitive {name!r} parameters are invalid"
                 )
@@ -837,11 +845,14 @@ def export_rwroute_input(
 
     def physical_route_pin_rows(
     ) -> Iterator[
-        Tuple[int, str, str, int, int, str, str, Optional[int], str]
+        Tuple[
+            int, str, Optional[str], str, int, int, str, str,
+            Optional[int], str,
+        ]
     ]:
         if use_typed_route_ordinals:
-            assert callable(indexed_physical_route_pins)
-            yield from indexed_physical_route_pins(
+            assert callable(indexed_physical_route_endpoints)
+            yield from indexed_physical_route_endpoints(
                 packed_path, ordinal_offset=len(io_ordinals)
             )
             return
@@ -850,7 +861,7 @@ def export_rwroute_input(
         ):
             logical_pin = _logical_pin(port, port_bit, port_width)
             yield (
-                bit, name, port, port_bit, port_width, direction, site,
+                bit, name, None, port, port_bit, port_width, direction, site,
                 None, logical_pin,
             )
 
@@ -873,7 +884,7 @@ def export_rwroute_input(
         clock_route_ordinals: Dict[str, int] = {}
         if candidate_bits:
             for (
-                bit, name, port, port_bit, port_width, direction, _site,
+                bit, name, _cell_type, port, port_bit, port_width, direction, _site,
                 route_ordinal, _route_pin,
             ) in physical_route_pin_rows():
                 if bit not in candidate_bits:
@@ -961,11 +972,11 @@ def export_rwroute_input(
     ) -> Iterator[
         Tuple[
             int,
-            List[Tuple[str, str, str, str, Optional[int], str]],
+            List[Tuple[str, str, str, str, Optional[int], str, Optional[str]]],
         ]
     ]:
         cell_groups: List[
-            Tuple[str, str, str, str, Optional[int], str]
+            Tuple[str, str, str, str, Optional[int], str, Optional[str]]
         ] = []
         current_bit: Optional[int] = None
         io_items = iter(sorted(io_by_bit.items()))
@@ -974,12 +985,12 @@ def export_rwroute_input(
         def emit_cell_group(
             bit: int,
             values: List[
-                Tuple[str, str, str, str, Optional[int], str]
+                Tuple[str, str, str, str, Optional[int], str, Optional[str]]
             ],
         ) -> Iterator[
             Tuple[
                 int,
-                List[Tuple[str, str, str, str, Optional[int], str]],
+                List[Tuple[str, str, str, str, Optional[int], str, Optional[str]]],
             ]
         ]:
             nonlocal current_io
@@ -988,7 +999,7 @@ def export_rwroute_input(
                 yield current_io[0], [(
                     io_name, io_pin, io_role,
                     str(io_rows[io_name]["p"]["site"]),
-                    io_ordinals[io_name], io_pin,
+                    io_ordinals[io_name], io_pin, None,
                 )]
                 current_io = next(io_items, None)
             if current_io is not None and current_io[0] == bit:
@@ -996,13 +1007,13 @@ def export_rwroute_input(
                 values.append((
                     io_name, io_pin, io_role,
                     str(io_rows[io_name]["p"]["site"]),
-                    io_ordinals[io_name], io_pin,
+                    io_ordinals[io_name], io_pin, None,
                 ))
                 current_io = next(io_items, None)
             yield bit, values
 
         for (
-            bit, name, port, port_bit, port_width, direction, site,
+            bit, name, cell_type, port, port_bit, port_width, direction, site,
             route_ordinal, route_pin,
         ) in physical_route_pin_rows():
             if current_bit is not None and bit != current_bit:
@@ -1013,7 +1024,7 @@ def export_rwroute_input(
             cell_groups.append(
                 (
                     name, _logical_pin(port, port_bit, port_width), role,
-                    site, route_ordinal, route_pin,
+                    site, route_ordinal, route_pin, cell_type,
                 )
             )
         if current_bit is not None:
@@ -1023,7 +1034,7 @@ def export_rwroute_input(
             yield current_io[0], [(
                 io_name, io_pin, io_role,
                 str(io_rows[io_name]["p"]["site"]),
-                io_ordinals[io_name], io_pin,
+                io_ordinals[io_name], io_pin, None,
             )]
             current_io = next(io_items, None)
 
@@ -1031,7 +1042,7 @@ def export_rwroute_input(
     ) -> Iterator[
         Tuple[
             int,
-            List[Tuple[str, str, str, str, Optional[int], str]],
+            List[Tuple[str, str, str, str, Optional[int], str, Optional[str]]],
         ]
     ]:
         assert endpoints is not None
@@ -1044,6 +1055,7 @@ def export_rwroute_input(
                     if name in physical
                     else str(io_rows[name]["p"]["site"]),
                     None, pin,
+                    str(cells[name]["type"]) if name in cells else None,
                 )
                 for name, pin, role in endpoints[bit]
             ]
@@ -1092,9 +1104,11 @@ def export_rwroute_input(
             continue
         (
             driver_cell, driver_pin, _driver_role, _driver_site,
-            _driver_ordinal, _driver_route_pin,
+            _driver_ordinal, _driver_route_pin, driver_cell_type,
         ) = drivers[0]
-        if driver_cell in cells and cells[driver_cell].get("type") == "CARRY8":
+        if driver_cell_type is None and driver_cell in cells:
+            driver_cell_type = cells[driver_cell].get("type")
+        if driver_cell_type == "CARRY8":
             match = re.fullmatch(r"(CO|O)\[(\d+)\]", driver_pin)
             if match is not None and int(match.group(2)) < 7:
                 exit_key = (driver_cell, int(match.group(2)))
@@ -1112,7 +1126,7 @@ def export_rwroute_input(
         kind = "clock" if boundary_clock else "signal"
         lines.append(f"NET\t{net_name}\t{kind}")
         for (
-            name, pin, role, _site, route_ordinal, typed_route_pin
+            name, pin, role, _site, route_ordinal, typed_route_pin, _cell_type
         ) in [drivers[0], *sinks]:
             if use_typed_route_ordinals:
                 route_name = name
@@ -1476,23 +1490,44 @@ def validate_xilinx_route_db(
         if not isinstance(top, str):
             raise ValidationError("PackedSiteNetlist top is invalid")
         mapped_cells = _select_module(mapped, top)["cells"]
-        expected_lut6_2 = sum(
-            cell.get("type") == "LUT6_2" for cell in mapped_cells.values()
-        )
-        expected_dsp48e2 = sum(
-            cell.get("type") == "DSP48E2" for cell in mapped_cells.values()
-        )
+        indexed_type_counts = getattr(mapped, "cell_type_counts", None)
+        indexed_cell_metadata = getattr(mapped, "cell_type_and_parameters", None)
+        if callable(indexed_type_counts):
+            type_counts = indexed_type_counts()
+            expected_lut6_2 = type_counts.get("LUT6_2", 0)
+            expected_dsp48e2 = type_counts.get("DSP48E2", 0)
+        else:
+            expected_lut6_2 = sum(
+                cell.get("type") == "LUT6_2" for cell in mapped_cells.values()
+            )
+            expected_dsp48e2 = sum(
+                cell.get("type") == "DSP48E2" for cell in mapped_cells.values()
+            )
         expected_route_cells = len(mapped_cells) + expected_lut6_2 + len(virtual_io)
         if route_cells != expected_route_cells:
             raise ValidationError("XilinxRouteDB route-cell accounting disagrees")
         if transformed_dsp48e2 != expected_dsp48e2:
             raise ValidationError("XilinxRouteDB DSP48E2 transform count disagrees")
         for gate in clock_gates:
-            logical = mapped_cells.get(gate["logical_cell"])
+            if callable(indexed_cell_metadata):
+                try:
+                    logical_type, logical_parameters = indexed_cell_metadata(
+                        gate["logical_cell"]
+                    )
+                except KeyError:
+                    logical_type, logical_parameters = None, {}
+            else:
+                logical = mapped_cells.get(gate["logical_cell"])
+                logical_type = (
+                    logical.get("type") if isinstance(logical, Mapping) else None
+                )
+                logical_parameters = (
+                    logical.get("parameters", {})
+                    if isinstance(logical, Mapping) else {}
+                )
             if (
-                not isinstance(logical, Mapping)
-                or logical.get("type") != "LUT2"
-                or _primitive_parameter(logical.get("parameters", {}), "INIT") != "8"
+                logical_type != "LUT2"
+                or _primitive_parameter(logical_parameters, "INIT") != "8"
             ):
                 raise ValidationError(
                     "XilinxRouteDB clock-gate logical identity disagrees"

@@ -101,6 +101,11 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                 rows = list(indexed.iter_physical_route_pins_by_net(
                     handoff, ordinal_offset=3
                 ))
+                endpoint_rows = list(
+                    indexed.iter_physical_route_endpoints_by_net(
+                        handoff, ordinal_offset=3
+                    )
+                )
                 with self.assertRaisesRegex(ValidationError, "ordinal offset"):
                     list(indexed.iter_physical_route_pins_by_net(
                         handoff, ordinal_offset=-1
@@ -115,6 +120,17 @@ class XilinxMappedNetlistTests(unittest.TestCase):
         self.assertEqual(by_pin[("a_lut", "O6")], (4, "O"))
         self.assertEqual(by_pin[("z_ff", "D")], (5, "D"))
         self.assertEqual(by_pin[("z_ff", "Q")], (5, "Q"))
+        self.assertEqual(
+            {(row[1], row[3]): row[2] for row in endpoint_rows},
+            {
+                ("a_lut", "I0"): "LUT6_2",
+                ("a_lut", "I1"): "LUT6_2",
+                ("a_lut", "O5"): "LUT6_2",
+                ("a_lut", "O6"): "LUT6_2",
+                ("z_ff", "D"): "FDRE",
+                ("z_ff", "Q"): "FDRE",
+            },
+        )
 
     def test_v1_index_remains_readable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -162,6 +178,10 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                 self.assertEqual(
                     indexed["modules"]["top"]["cells"]["lut"], cell
                 )
+                self.assertEqual(indexed.cell_type_counts(), {"LUT1": 1})
+                self.assertEqual(
+                    indexed.cell_type_and_parameters("lut"), ("LUT1", {})
+                )
 
     def test_production_index_is_the_only_mapped_artifact(self) -> None:
         mapped = {
@@ -191,6 +211,11 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             import_yosys_json(source).save(ir_path)
             report = emit_xilinx_mapped_index(ir_path, index)
             with open_xilinx_mapped_index(index) as indexed:
+                self.assertEqual(indexed.cell_type_counts(), {"LUT1": 1})
+                self.assertEqual(
+                    indexed.cell_type_and_parameters("lut"),
+                    ("LUT1", {"INIT": "10"}),
+                )
                 self.assertEqual(
                     indexed["modules"]["top"]["cells"]["lut"]["type"],
                     "LUT1",

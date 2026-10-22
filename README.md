@@ -972,6 +972,17 @@ construction-plus-qualification comparison reduced process peak RSS from 114.49 
 wall time changed from 0.202 to 0.598 seconds because the new path performs
 file-backed joins and closure checks. This is adapter evidence, not NVDLA
 qualification.
+The same routed-endpoint cursor now carries the mapped primitive type used by
+CARRY8 exit validation. Production net emission therefore performs no
+per-net cell lookup, `record_json` decode, or pin reconstruction. Block-RAM
+parameters use a sparse metadata projection, while routed-result validation
+obtains LUT6_2/DSP48E2 totals from the typed cell-type relation instead of
+rebuilding every mapped cell and its pins twice. On a 100,000-cell fixture
+with 50,000 cross-site nets, the median of three isolated exports fell from
+1.381 to 0.546 seconds; net-row emission fell from 1.185 to 0.352 seconds and
+median process peak RSS fell from 51.72 MB to 45.89 MB. Both implementations
+produced the same 8,033,642-byte output and SHA-256. This is isolated adapter
+evidence; NVDLA qualification remains required.
 
 ## Flow
 
