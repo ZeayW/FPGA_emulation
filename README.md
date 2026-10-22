@@ -70,7 +70,10 @@ Compact candidate classification and final cluster aggregation decode and
 validate each interned resource payload once, then reuse its immutable class or
 resource vector for every cell that references it. This preserves per-cell
 identity and resource accounting while avoiding repeated JSON parsing for the
-millions of cells that share a small resource vocabulary.
+millions of cells that share a small resource vocabulary. Their hot cell
+cursors carry only the interned integer key; the JSON payload is fetched by
+primary key only when that key first appears, rather than repeated by a
+million-row join.
 On a synthetic 300,000-cell singleton input, loading plus clustering reduced
 traced peak allocation from 436.58 MiB to 212.52 MiB and wall time from 9.94 to
 5.70 seconds. This is isolated construction evidence, not NVDLA qualification.

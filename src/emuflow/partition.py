@@ -285,11 +285,9 @@ def _build_clusters_from_compact_ir(
         clusters: List[Dict[str, Any]] = []
         resources_by_payload: Dict[int, ResourceVector] = {}
         cells = connection.execute(
-            """SELECT c.id,r.seq AS resources_payload_seq,
-                      r.value AS resources_json
-                 FROM cell_records c
-                 LEFT JOIN payloads r ON r.seq=c.resources_seq
-                ORDER BY c.id"""
+            """SELECT id,resources_seq
+                 FROM cell_records
+                ORDER BY id"""
         )
         resource_cell_count = 0
         for ordinal, row in enumerate(cells):
@@ -315,17 +313,21 @@ def _build_clusters_from_compact_ir(
                 )
             cluster = clusters[cluster_index]
             cluster["instances"].append(instance_id)
-            if (
-                row["resources_payload_seq"] is None
-                or row["resources_json"] is None
-            ):
+            payload_seq = row["resources_seq"]
+            if payload_seq is None:
                 raise ValidationError(
                     f"instance {instance_id!r} resource payload is missing"
                 )
-            payload_seq = row["resources_payload_seq"]
             resources = resources_by_payload.get(payload_seq)
             if resources is None:
-                resources_value = _decode(row["resources_json"], "resources")
+                payload = connection.execute(
+                    "SELECT value FROM payloads WHERE seq=?", (payload_seq,)
+                ).fetchone()
+                if payload is None or payload["value"] is None:
+                    raise ValidationError(
+                        f"instance {instance_id!r} resource payload is missing"
+                    )
+                resources_value = _decode(payload["value"], "resources")
                 if not isinstance(resources_value, Mapping):
                     raise ValidationError(
                         f"instance {instance_id!r} resources: expected an object"

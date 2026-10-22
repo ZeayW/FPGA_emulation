@@ -852,11 +852,9 @@ def _compact_combinational_cut_candidate_ids(
         classes = bytearray([unknown_class]) * instance_count
         cell_count = 0
         for row in connection.execute(
-            """SELECT c.seq,c.id,c.type,r.seq AS resources_payload_seq,
-                      r.value AS resources_json
-                 FROM cell_records c
-                 LEFT JOIN payloads r ON r.seq=c.resources_seq
-                ORDER BY c.seq"""
+            """SELECT seq,id,type,resources_seq
+                 FROM cell_records
+                ORDER BY seq"""
         ):
             sequence = row["seq"]
             if sequence != cell_count or sequence >= instance_count:
@@ -865,16 +863,20 @@ def _compact_combinational_cut_candidate_ids(
                 raise ValidationError("compact EmuIR cell identity is invalid")
             if not isinstance(row["type"], str) or not row["type"]:
                 raise ValidationError("compact EmuIR cell type is invalid")
-            if (
-                row["resources_payload_seq"] is None
-                or row["resources_json"] is None
-            ):
+            payload_seq = row["resources_seq"]
+            if payload_seq is None:
                 raise ValidationError("compact EmuIR resource payload is missing")
-            payload_seq = row["resources_payload_seq"]
             classification_code = class_by_resource_payload.get(payload_seq)
             if classification_code is None:
+                payload = connection.execute(
+                    "SELECT value FROM payloads WHERE seq=?", (payload_seq,)
+                ).fetchone()
+                if payload is None or payload["value"] is None:
+                    raise ValidationError(
+                        "compact EmuIR resource payload is missing"
+                    )
                 try:
-                    resources = json.loads(row["resources_json"])
+                    resources = json.loads(payload["value"])
                 except (TypeError, json.JSONDecodeError) as error:
                     raise ValidationError(
                         "compact EmuIR instance resources are invalid"
