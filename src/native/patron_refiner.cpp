@@ -129,6 +129,139 @@ class PackedAdjacency {
   std::vector<int> values_;
 };
 
+template <typename Key>
+int ordered_path(const std::pair<Key, int>& record) {
+  return record.second;
+}
+
+template <typename First, typename Second>
+int ordered_path(const std::tuple<First, Second, int>& record) {
+  return std::get<2>(record);
+}
+
+template <typename Record>
+class SparsePathOrder {
+ public:
+  void append(const Record& record) {
+    require(dirty_.empty(), "PATRON path order is already finalized");
+    base_.push_back(record);
+  }
+
+  void finalize(int paths) {
+    require(paths > 0 && base_.size() == static_cast<std::size_t>(paths) &&
+                dirty_.empty(),
+            "invalid PATRON path order population");
+    std::sort(base_.begin(), base_.end());
+    dirty_.assign(paths, 0);
+    for (const Record& record : base_) {
+      const int path = ordered_path(record);
+      require(path >= 0 && path < paths && !dirty_[path],
+              "invalid PATRON ordered path identity");
+      dirty_[path] = 1;
+    }
+    std::fill(dirty_.begin(), dirty_.end(), 0);
+  }
+
+  void update(const Record& old_record, const Record& new_record) {
+    const int path = ordered_path(old_record);
+    require(path >= 0 && path < static_cast<int>(dirty_.size()) &&
+                ordered_path(new_record) == path,
+            "invalid PATRON path-order update");
+    if (dirty_[path]) {
+      require(changed_.erase(old_record) == 1,
+              "missing PATRON sparse path-order record");
+    } else {
+      dirty_[path] = 1;
+    }
+    require(changed_.insert(new_record).second,
+            "duplicate PATRON sparse path-order record");
+  }
+
+  template <typename Callback>
+  void for_each_ascending(Callback callback) const {
+    std::size_t base_index = 0;
+    const auto skip_dirty_base = [&]() {
+      while (base_index < base_.size() &&
+             dirty_[ordered_path(base_[base_index])]) {
+        ++base_index;
+      }
+    };
+    skip_dirty_base();
+    auto changed = changed_.begin();
+    while (base_index < base_.size() || changed != changed_.end()) {
+      const bool use_changed =
+          base_index == base_.size() ||
+          (changed != changed_.end() && *changed < base_[base_index]);
+      const Record& record = use_changed ? *changed : base_[base_index];
+      if (!callback(record)) return;
+      if (use_changed) {
+        ++changed;
+      } else {
+        ++base_index;
+        skip_dirty_base();
+      }
+    }
+  }
+
+  template <typename Callback>
+  void for_each_descending(Callback callback) const {
+    std::size_t base_index = base_.size();
+    const auto skip_dirty_base = [&]() {
+      while (base_index > 0 &&
+             dirty_[ordered_path(base_[base_index - 1])]) {
+        --base_index;
+      }
+    };
+    skip_dirty_base();
+    auto changed = changed_.rbegin();
+    while (base_index > 0 || changed != changed_.rend()) {
+      const bool use_changed =
+          base_index == 0 ||
+          (changed != changed_.rend() && base_[base_index - 1] < *changed);
+      const Record& record =
+          use_changed ? *changed : base_[base_index - 1];
+      if (!callback(record)) return;
+      if (use_changed) {
+        ++changed;
+      } else {
+        --base_index;
+        skip_dirty_base();
+      }
+    }
+  }
+
+  Record minimum() const {
+    Record result{};
+    bool found = false;
+    for_each_ascending([&](const Record& record) {
+      result = record;
+      found = true;
+      return false;
+    });
+    require(found, "empty PATRON path order");
+    return result;
+  }
+
+  Record maximum() const {
+    Record result{};
+    bool found = false;
+    for_each_descending([&](const Record& record) {
+      result = record;
+      found = true;
+      return false;
+    });
+    require(found, "empty PATRON path order");
+    return result;
+  }
+
+  bool empty() const { return base_.empty(); }
+
+ private:
+  std::vector<Record> base_;
+  std::vector<unsigned char> dirty_;
+  std::set<Record> changed_;
+};
+
 struct Net {
   PackedIndexRange drivers;
   PackedIndexRange sinks;
@@ -242,10 +375,11 @@ struct ProxyState {
   std::vector<ProxyNetState> net;
   std::vector<ProxyPathState> path;
   std::vector<std::set<int>> domain_paths;
-  std::set<std::pair<double, int>> slack_path_order;
-  std::set<std::pair<long long, int>> hop_path_order;
-  std::set<std::pair<long long, int>> ratio_sum_path_order;
-  std::set<std::tuple<long long, long long, int>> objective_path_order;
+  SparsePathOrder<std::pair<double, int>> slack_path_order;
+  SparsePathOrder<std::pair<long long, int>> hop_path_order;
+  SparsePathOrder<std::pair<long long, int>> ratio_sum_path_order;
+  SparsePathOrder<std::tuple<long long, long long, int>>
+      objective_path_order;
   double total_negative = 0.0;
   long long negative_paths = 0;
   long long snaking = 0;
@@ -1596,13 +1730,13 @@ ProxyPathState build_proxy_path(
 
 Evaluation proxy_evaluation(const Model& model, const ProxyState& state) {
   Evaluation result;
-  const double worst = state.slack_path_order.begin()->first;
+  const double worst = state.slack_path_order.minimum().first;
   const int maximum_ratio = *state.ratio_order.rbegin();
   const int maximum_load = *std::max_element(
       state.domain_load.begin(), state.domain_load.end());
-  const long long maximum_path_hops = state.hop_path_order.rbegin()->first;
+  const long long maximum_path_hops = state.hop_path_order.maximum().first;
   const long long maximum_path_ratio_sum
-      = state.ratio_sum_path_order.rbegin()->first;
+      = state.ratio_sum_path_order.maximum().first;
   result.objective = {
       -worst,
       -state.total_negative,
@@ -1687,17 +1821,22 @@ ProxyState build_proxy_state(
     for (int domain : state.path[path].dependency_domains) {
       state.domain_paths[domain].insert(path);
     }
-    state.slack_path_order.emplace(
-        state.path[path].normalized_slack, path);
-    state.hop_path_order.emplace(state.path[path].hops, path);
-    state.ratio_sum_path_order.emplace(state.path[path].ratio_sum, path);
-    state.objective_path_order.emplace(
-        state.path[path].hops, state.path[path].ratio_sum, path);
+    state.slack_path_order.append(
+        {state.path[path].normalized_slack, path});
+    state.hop_path_order.append({state.path[path].hops, path});
+    state.ratio_sum_path_order.append(
+        {state.path[path].ratio_sum, path});
+    state.objective_path_order.append(
+        {state.path[path].hops, state.path[path].ratio_sum, path});
     state.total_negative += std::min(0.0, state.path[path].normalized_slack);
     state.negative_paths += state.path[path].negative ? 1 : 0;
     state.snaking += state.path[path].snaking;
     state.transitions += state.path[path].transitions;
   }
+  state.slack_path_order.finalize(model.paths);
+  state.hop_path_order.finalize(model.paths);
+  state.ratio_sum_path_order.finalize(model.paths);
+  state.objective_path_order.finalize(model.paths);
   require(!state.slack_path_order.empty() && !state.hop_path_order.empty()
               && !state.ratio_sum_path_order.empty()
               && !state.objective_path_order.empty()
@@ -3837,13 +3976,14 @@ ProxyDelta evaluate_proxy_changes(
   for (const auto& item : delta.paths) {
     worst = std::min(worst, item.second.normalized_slack);
   }
-  for (const auto& item : state.slack_path_order) {
+  state.slack_path_order.for_each_ascending([&](const auto& item) {
     if (!std::binary_search(
             affected_paths.begin(), affected_paths.end(), item.second)) {
       worst = std::min(worst, item.first);
-      break;
+      return false;
     }
-  }
+    return true;
+  });
   require(std::isfinite(worst), "empty scalable candidate path order");
   long long maximum_path_hops = 0;
   long long maximum_path_ratio_sum = 0;
@@ -3852,23 +3992,23 @@ ProxyDelta evaluate_proxy_changes(
     maximum_path_ratio_sum = std::max(
         maximum_path_ratio_sum, item.second.ratio_sum);
   }
-  for (auto item = state.hop_path_order.rbegin();
-       item != state.hop_path_order.rend(); ++item) {
+  state.hop_path_order.for_each_descending([&](const auto& item) {
     if (!std::binary_search(
-            affected_paths.begin(), affected_paths.end(), item->second)) {
-      maximum_path_hops = std::max(maximum_path_hops, item->first);
-      break;
+            affected_paths.begin(), affected_paths.end(), item.second)) {
+      maximum_path_hops = std::max(maximum_path_hops, item.first);
+      return false;
     }
-  }
-  for (auto item = state.ratio_sum_path_order.rbegin();
-       item != state.ratio_sum_path_order.rend(); ++item) {
+    return true;
+  });
+  state.ratio_sum_path_order.for_each_descending([&](const auto& item) {
     if (!std::binary_search(
-            affected_paths.begin(), affected_paths.end(), item->second)) {
+            affected_paths.begin(), affected_paths.end(), item.second)) {
       maximum_path_ratio_sum = std::max(
-          maximum_path_ratio_sum, item->first);
-      break;
+          maximum_path_ratio_sum, item.first);
+      return false;
     }
-  }
+    return true;
+  });
   const int maximum_ratio = *std::max_element(
       projected_ratios.begin(), projected_ratios.end());
   const int maximum_load = *std::max_element(
@@ -4009,20 +4149,17 @@ void apply_proxy_delta(const Model& model,
       const std::size_t erased = state.domain_paths[domain].erase(item.first);
       require(erased == 1, "missing scalable domain/path dependency");
     }
-    const std::size_t hop_erased = state.hop_path_order.erase(
-        {old.hops, item.first});
-    require(hop_erased == 1, "missing scalable hop/path record");
-    const std::size_t ratio_sum_erased = state.ratio_sum_path_order.erase(
-        {old.ratio_sum, item.first});
-    require(ratio_sum_erased == 1,
-            "missing scalable ratio-sum/path record");
-    const std::size_t objective_erased = state.objective_path_order.erase(
-        {old.hops, old.ratio_sum, item.first});
-    require(objective_erased == 1,
-            "missing scalable objective/path record");
-    const std::size_t slack_erased = state.slack_path_order.erase(
-        {old.normalized_slack, item.first});
-    require(slack_erased == 1, "missing scalable slack/path record");
+    state.hop_path_order.update(
+        {old.hops, item.first}, {item.second.hops, item.first});
+    state.ratio_sum_path_order.update(
+        {old.ratio_sum, item.first},
+        {item.second.ratio_sum, item.first});
+    state.objective_path_order.update(
+        {old.hops, old.ratio_sum, item.first},
+        {item.second.hops, item.second.ratio_sum, item.first});
+    state.slack_path_order.update(
+        {old.normalized_slack, item.first},
+        {item.second.normalized_slack, item.first});
     state.total_negative += std::min(0.0, item.second.normalized_slack)
                             - std::min(0.0, old.normalized_slack);
     state.negative_paths += (item.second.negative ? 1 : 0)
@@ -4033,11 +4170,6 @@ void apply_proxy_delta(const Model& model,
     for (int domain : old.dependency_domains) {
       state.domain_paths[domain].insert(item.first);
     }
-    state.slack_path_order.emplace(old.normalized_slack, item.first);
-    state.hop_path_order.emplace(old.hops, item.first);
-    state.ratio_sum_path_order.emplace(old.ratio_sum, item.first);
-    state.objective_path_order.emplace(
-        old.hops, old.ratio_sum, item.first);
   }
   state.evaluation = proxy_evaluation(model, state);
   require(state.evaluation.ranked == delta.evaluation.ranked,
@@ -4643,9 +4775,9 @@ void run_scalable(const Model& model,
                              right);
   });
   if (!current_paths.empty()) {
-    const long long maximum_hops = state.hop_path_order.rbegin()->first;
+    const long long maximum_hops = state.hop_path_order.maximum().first;
     const long long maximum_ratio_sum
-        = state.ratio_sum_path_order.rbegin()->first;
+        = state.ratio_sum_path_order.maximum().first;
     int maximum_hop_paths = 0;
     int maximum_ratio_sum_paths = 0;
     std::set<int> critical_domains;
@@ -4768,9 +4900,9 @@ void run_scalable(const Model& model,
     long long tns_cost = 0;
   };
   std::set<int> frontier_domains;
-  const long long frontier_hops = state.hop_path_order.rbegin()->first;
+  const long long frontier_hops = state.hop_path_order.maximum().first;
   const long long frontier_ratio_sum
-      = state.ratio_sum_path_order.rbegin()->first;
+      = state.ratio_sum_path_order.maximum().first;
   std::vector<int> hop_frontier_domain_paths(model.domains, 0);
   std::vector<int> ratio_frontier_domain_paths(model.domains, 0);
   for (int path : current_paths) {
@@ -4875,31 +5007,32 @@ void run_scalable(const Model& model,
             }
           };
           const long long maximum_hops
-              = refined.hop_path_order.rbegin()->first;
+              = refined.hop_path_order.maximum().first;
           const long long maximum_ratio_sum
-              = refined.ratio_sum_path_order.rbegin()->first;
+              = refined.ratio_sum_path_order.maximum().first;
           std::set<int> exact_frontier_paths;
           int selected_hop_paths = 0;
-          for (auto item = refined.hop_path_order.rbegin();
-               item != refined.hop_path_order.rend(); ++item) {
-            if (item->first != maximum_hops
+          refined.hop_path_order.for_each_descending([&](const auto& item) {
+            if (item.first != maximum_hops
                 || selected_hop_paths >= model.flow_max_frontier_paths) {
-              break;
+              return false;
             }
-            exact_frontier_paths.insert(item->second);
+            exact_frontier_paths.insert(item.second);
             ++selected_hop_paths;
-          }
+            return true;
+          });
           int selected_ratio_sum_paths = 0;
-          for (auto item = refined.ratio_sum_path_order.rbegin();
-               item != refined.ratio_sum_path_order.rend(); ++item) {
-            if (item->first != maximum_ratio_sum
+          refined.ratio_sum_path_order.for_each_descending(
+              [&](const auto& item) {
+            if (item.first != maximum_ratio_sum
                 || selected_ratio_sum_paths
                        >= model.flow_max_frontier_paths) {
-              break;
+              return false;
             }
-            exact_frontier_paths.insert(item->second);
+            exact_frontier_paths.insert(item.second);
             ++selected_ratio_sum_paths;
-          }
+            return true;
+          });
           for (int path : exact_frontier_paths) {
             add_path_candidates(path);
           }
@@ -4951,14 +5084,15 @@ void run_scalable(const Model& model,
             const int frontier_paths = std::min(
                 model.flow_max_frontier_paths, model.paths);
             int ranked_count = 0;
-            for (auto item = refined.objective_path_order.rbegin();
-                 item != refined.objective_path_order.rend(); ++item) {
+            refined.objective_path_order.for_each_descending(
+                [&](const auto& item) {
               if (ranked_count >= frontier_paths) {
-                break;
+                return false;
               }
-              add_path_candidates(std::get<2>(*item));
+              add_path_candidates(std::get<2>(item));
               ++ranked_count;
-            }
+              return true;
+            });
             evaluate_candidates();
           }
           if (!found) {
