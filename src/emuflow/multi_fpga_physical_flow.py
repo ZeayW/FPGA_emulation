@@ -974,7 +974,10 @@ def run_multi_fpga_physical_flow(
         raise EmuFlowError(
             f"multi-FPGA physical output must be an empty directory: {output_dir}"
         )
-    if backend in {"open", "rapidwright"}:
+    if backend == "open" or (
+        backend == "rapidwright"
+        and effective_rapidwright_placer == "openparf-native"
+    ):
         # Validate the compiled OpenPARF/PyTorch runtime before reading the
         # graph-sized EmuIR and timing databases.  A loader mismatch must fail
         # in seconds, not after minutes of deterministic input preparation.

@@ -867,6 +867,14 @@ and routing work are cited below. RapidWright device support does not itself
 supply a multi-FPGA board topology, cable specification, or board-link latency;
 those belong to the separate platform model.
 
+A one-shot physical compile validates the configured OpenPARF interpreter and
+PyTorch extension before creating frontend artifacts when the selected backend
+uses OpenPARF. This includes the default RapidWright `openparf-native` placer as
+well as the VTR/OpenPARF backend. The explicit RapidWright `legacy` placer does
+not require that runtime. This fail-fast boundary prevents a large Phase 1--6
+run from reaching Phase 7 before discovering an unusable Python ABI or missing
+OpenPARF installation.
+
 For an explicitly requested debugging continuation, `multi-fpga physical
 --resume` with the native OpenPARF placer can reuse an existing route inside
 the active experiment. It regenerates the route input and independently checks

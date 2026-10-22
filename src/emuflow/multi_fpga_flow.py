@@ -30,6 +30,7 @@ from .frame_search import (
 )
 from .io import read_json, write_json
 from .multi_fpga_physical_flow import (
+    DEFAULT_RAPIDWRIGHT_PLACER,
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
 )
@@ -1563,7 +1564,18 @@ def run_multi_fpga_flow(
     # interpreter inside the physical-flow helper is much too late for a
     # one-shot Phase 1--7 invocation.  Reject an unusable OpenPARF/PyTorch
     # binding before creating any frontend artifact or doing synthesis.
-    if physical and physical_backend == "open":
+    physical_uses_openparf = physical and (
+        physical_backend == "open"
+        or (
+            physical_backend == "rapidwright"
+            and (
+                physical_rapidwright_placer
+                or DEFAULT_RAPIDWRIGHT_PLACER
+            )
+            == "openparf-native"
+        )
+    )
+    if physical_uses_openparf:
         validate_openparf_runtime(
             install_root=physical_openparf_install,
             python_executable=physical_openparf_python,
