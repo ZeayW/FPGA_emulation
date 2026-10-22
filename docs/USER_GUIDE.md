@@ -75,6 +75,34 @@ recovers completeness from the original uncapped OpenSTA export log, and seals
 the reused payloads once. It records the original producer separately from the
 new prefix producer; missing evidence or upstream computation changes reject
 reuse. This continuation rebuilds Phase 3 and does not reuse an assignment.
+Before sealing a completed prefix, replay its independent qualification:
+
+```bash
+python scripts/phase4_nvdla_qualification.py \
+  --common-run COMMON --provenance PROVENANCE \
+  --architecture-timing-db ARCHITECTURE_TIMING_DB --output QUALIFICATION.json
+python scripts/phase4_nvdla_compare.py \
+  --common-run COMMON --platform PLATFORM --provenance PROVENANCE \
+  --qualification QUALIFICATION.json --seal-contract CONTRACT.json
+```
+
+Use new output paths and the architecture timing database sealed by the producer.
+The replay checks every original representative's local/crossing membership,
+output copies, clock, required time and ownership, then independently rebuilds
+the full-cut structural contract. `uncovered_cut_nets` remains reported: it
+counts cuts absent from the projected representative population, not omitted
+original members. This is not an assertion that STA enumerated every possible
+path; transport can change which path is worst at an endpoint. Both arms still
+require complete routing and schedule validation. Raw and Phase1-normalized
+forms of the repository platform are accepted only when their parsed hardware
+contracts agree; both file identities are sealed.
+
+Replay leaves producer reports unchanged and seals its evaluator identity
+separately. The historical source exception permits only the comparison gate
+script to change; changes to computation sources or the prefix runner reject
+reuse. Qualification does not turn an explicitly budgeted, non-converged
+partition into a formal complete-search result.
+
 `scripts/phase4_nvdla_compare.py --contract ... --common-run ... --platform ...
 --output ...` runs the explicit old and author routers against this same prefix
 and identical Phase 5 settings; its `--help` lists the required native tools.
@@ -91,7 +119,8 @@ paths. For whole-original-population estimates, use
 `scripts/phase4_nvdla_timing.py --producer-root ... --contract ...
 --comparison-root ... --output ...`. It restores each original path’s own logic
 delay, checks population coverage, and counts the worst output copy once.
-The evaluator accepts ordinary and managed route/schedule artifacts while
+Its population is the fixed original STA representatives, including local paths;
+it is not all-path STA. The evaluator accepts ordinary and managed route/schedule artifacts while
 sealing the original stored files. These estimates do not establish physical
 timing closure. Successful preparation alone is not qualification evidence.
 

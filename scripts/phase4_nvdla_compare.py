@@ -102,9 +102,18 @@ def capture_provenance(benchmark_path, source_root, prefix_tools=()):
             "files": {str(p): digest(p) for p in sorted(set(paths))}}
 
 
-def verify_provenance(provenance):
+def verify_provenance(provenance, replay_source=None):
     require(provenance.get("schema") == "emuflow.nvdla-prefix-provenance/v1", "bad provenance")
-    require(provenance.get("source_sha256") == code_identity(), "prefix producer code changed")
+    current = code_identity()
+    if replay_source is None:
+        require(provenance.get("source_sha256") == current, "prefix producer code changed")
+    else:
+        require(replay_source == current, "qualification consumer code changed")
+        prior = provenance.get("source_sha256", {})
+        # Only the research gate changed. No computation source or prefix
+        # producer is granted a historical reuse exception here.
+        changed = {key for key in set(prior) | set(current) if prior.get(key) != current.get(key)}
+        require(changed <= {"scripts/phase4_nvdla_compare.py"}, "historical computation source changed")
     require(provenance.get("runtime") == runtime_identity(), "prefix Python runtime changed")
     require(provenance.get("files"), "missing RTL provenance")
     for name, expected in provenance["files"].items():
@@ -125,10 +134,15 @@ def check_platform(value):
                 l.get("data_lanes_per_direction") == 360 and l.get("bank_count") == 18 and
                 l.get("wires_per_bank") == 20 for l in links), "shared 360-pair banks required")
     reference = ROOT / "platforms/virtual/rapidwright_xcvu19p_4fpga_mesh.json"
-    require(value == read(reference), "platform differs from repository configuration")
+    from emuflow.platform import Platform
+    raw = read(reference)
+    # Phase1 serializes parsed defaults and drops non-consumed annotations.
+    # Accept exactly either known representation, never arbitrary extra keys.
+    require(value == raw or value == Platform.from_dict(raw).to_dict(),
+            "platform differs from repository configuration")
 
 
-def check_prefix(report):
+def check_prefix(report, qualification=None):
     require(report.get("schema") == "emuflow.multi-fpga-stage-run/v1" and
             report.get("completed_through") == "phase3" and
             report.get("validation", {}).get("status") == "pass", "completed Phase3 prefix required")
@@ -143,12 +157,33 @@ def check_prefix(report):
     projection = timing["cut_path_projection"]
     require(sta.get("status") == "pass" and sta.get("path_limit_reached") is False,
             "original timing extraction failed or reached its limit")
-    require(projection.get("status") == "pass" and projection.get("uncovered_cut_nets") == 0,
-            "incomplete projected cut coverage")
+    require(projection.get("status") == "pass", "failed original path projection")
+    if qualification is None:
+        require(projection.get("uncovered_cut_nets") == 0, "independent member/structural qualification required")
+    else:
+        require(qualification.get("schema") == "emuflow.nvdla-prefix-qualification/v1" and
+                qualification.get("status") == "pass", "invalid prefix qualification")
+        accounting = qualification["original_accounting"]
+        structural = qualification["structural_qualification"]
+        require(accounting.get("status") == structural.get("status") == "pass" and
+                accounting.get("scope") == "fixed-original-representative-population",
+                "unqualified original population/structure")
+        require(accounting["original_paths"] == sta["paths"] and
+                accounting["projected_members"] == projection["projected_paths"] and
+                structural["cut_nets"] == projection["cut_nets"], "qualification population differs")
+        for key in ("cut_nets", "covered_cut_nets", "uncovered_cut_nets"):
+            require(accounting[key] == projection[key], f"qualification coverage differs: {key}")
+        require({k: v["period_ns"] for k,v in accounting["per_clock"].items()} == CLOCKS,
+                "qualification clock coverage differs")
     require(projection.get("database_paths") == sta.get("paths") and
             projection.get("projected_paths", 0) > 0, "original/projected timing counts disagree")
-    return {"original_paths": sta["paths"], "projected_paths": projection["projected_paths"],
+    coverage = {"original_paths": sta["paths"], "projected_paths": projection["projected_paths"],
             "cut_nets": projection["cut_nets"], "scope": "projected-inter-fpga-paths"}
+    if qualification:
+        coverage.update(covered_cut_nets=projection["covered_cut_nets"],
+                        uncovered_cut_nets=projection["uncovered_cut_nets"],
+                        original_scope="fixed-original-representative-population")
+    return coverage
 
 
 def check_producer(report, provenance):
@@ -174,15 +209,24 @@ def check_patron_frame(common):
     return path.resolve()
 
 
-def seal_contract(common, platform, provenance_path):
+def seal_contract(common, platform, provenance_path, qualification_path=None, *, architecture_timing_db=None):
     provenance = read(provenance_path)
-    verify_provenance(provenance)
+    qualification = read(qualification_path) if qualification_path else None
+    verify_provenance(provenance, replay_source=qualification.get("evaluator_source_sha256") if qualification else None)
+    if qualification is None:
+        from phase4_nvdla_qualification import qualify_common
+        qualification = qualify_common(common, provenance, architecture_timing_db=architecture_timing_db)
+    verify_qualification(qualification, provenance, common)
     report = read(common / "multi-fpga-stage-report.json")
     check_producer(report, provenance)
-    coverage = check_prefix(report)
+    coverage = check_prefix(report, qualification)
     check_platform(read(platform))
     artifacts = {key: value["path"] for key, value in report["artifacts"].items()}
-    require(digest(common / artifacts["platform"]) == digest(platform), "prefix platform differs")
+    from emuflow.platform import Platform
+    producer_platform = common / artifacts["platform"]
+    check_platform(read(producer_platform))
+    require(Platform.load(producer_platform).to_dict() == Platform.load(platform).to_dict(),
+            "prefix platform differs")
     partition = read(common / "partition/phase3_report.json")
     cuts = partition.get("validation", {}).get("combinational_cut_nets", 0)
     require(cuts > 0, "Static Exact qualification requires naturally selected combinational cuts")
@@ -200,7 +244,8 @@ def seal_contract(common, platform, provenance_path):
         relative = Path(descriptor["path"])
         require(not relative.is_absolute() and relative.name == str(relative), "invalid timing sidecar path")
         paths.add(original.parent / relative)
-    files = {str(p): digest(p) for p in sorted(paths)}
+    files = dict(qualification["files"])
+    files.update({str(p): digest(p) for p in sorted(paths) if str(p) not in files})
     wiring = read(platform)["platform"].get("virtual_board_wiring")
     require(wiring, "platform wiring missing")
     wires = platform.parent / wiring
@@ -210,7 +255,23 @@ def seal_contract(common, platform, provenance_path):
     return {"schema": "emuflow.phase4-nvdla-contract/v1", "sealed_at": now(),
             "common_run": str(common.resolve()), "platform": str(platform.resolve()),
             "provenance": provenance, "files": files, "artifacts": artifacts,
-            "coverage": coverage, "configuration": report["configuration"]}
+            "coverage": coverage, "qualification": qualification, "configuration": report["configuration"]}
+
+
+def verify_qualification(qualification, provenance, common, *, verify_files=True):
+    require(qualification.get("producer_source_sha256") == provenance["source_sha256"] and
+            qualification.get("common_run") == str(common.resolve()), "qualification producer/input differs")
+    require(qualification.get("evaluator_source_sha256") == code_identity() and
+            qualification.get("evaluator_runtime") == runtime_identity(), "qualification evaluator differs")
+    required = {str((ROOT / "scripts" / name).resolve()) for name in
+                ("phase4_nvdla_qualification.py", "phase4_nvdla_timing.py")}
+    require(set(qualification.get("evaluator_sha256", {})) == required, "qualification evaluator seals missing")
+    require(qualification.get("files"), "qualification input seals missing")
+    checks = dict(qualification["evaluator_sha256"])
+    if verify_files:
+        checks.update(qualification["files"])
+    for name, expected in checks.items():
+        require(digest(name) == expected, f"qualification identity changed: {name}")
 
 
 def stat_identity(files):
@@ -222,14 +283,19 @@ def verify_contract(contract, common, platform):
     require(contract.get("schema") == "emuflow.phase4-nvdla-contract/v1", "bad common contract")
     require(contract.get("common_run") == str(common.resolve()) and
             contract.get("platform") == str(platform.resolve()), "common input location differs")
-    verify_provenance(contract["provenance"])
+    qualification = contract.get("qualification")
+    require(qualification, "independent prefix qualification required")
+    verify_provenance(contract["provenance"], replay_source=qualification["evaluator_source_sha256"])
+    verify_qualification(qualification, contract["provenance"], common, verify_files=False)
+    require(all(contract["files"].get(k) == v for k,v in qualification["files"].items()),
+            "qualification inputs missing from common seal")
     require(contract.get("files"), "missing common file seals")
     for name, expected in contract["files"].items():
         require(digest(name) == expected, f"common input changed: {name}")
     check_platform(read(platform))
     report = read(common / "multi-fpga-stage-report.json")
     check_producer(report, contract["provenance"])
-    coverage = check_prefix(report)
+    coverage = check_prefix(report, qualification)
     patron_input = check_patron_frame(common)
     require(str(patron_input) in contract["files"], "actual PATRON input is not sealed")
     coverage["combinational_cut_nets"] = read(common / "partition/phase3_report.json")["validation"]["combinational_cut_nets"]
@@ -367,6 +433,8 @@ def main():
                         help="Repeat for each prefix executable and architecture timing database")
     parser.add_argument("--seal-contract", type=Path)
     parser.add_argument("--provenance", type=Path)
+    parser.add_argument("--qualification", type=Path, help="Independent replay qualification of completed prefix")
+    parser.add_argument("--architecture-timing-db", type=Path, help="Sealed producer architecture timing model for qualification")
     parser.add_argument("--common-run", type=Path)
     parser.add_argument("--platform", type=Path)
     parser.add_argument("--contract", type=Path)
@@ -392,7 +460,8 @@ def main():
     require(args.common_run and args.platform, "common-run/platform required")
     if args.seal_contract:
         require(args.provenance and not args.seal_contract.exists(), "new contract/provenance required")
-        write(args.seal_contract, seal_contract(args.common_run, args.platform, args.provenance))
+        write(args.seal_contract, seal_contract(args.common_run, args.platform, args.provenance, args.qualification,
+                                                  architecture_timing_db=args.architecture_timing_db))
         return 0
     require(args.contract and args.output and not args.output.exists(), "contract and new output required")
     require(args.stage_timeout_seconds > 0 and args.memory_limit_gib > 0 and args.sample_seconds > 0,
@@ -436,7 +505,7 @@ def main():
                 summary["arms"][name][stage] = result
                 write(args.output / "comparison.json", summary)
         require(stat_identity(contract["files"]) == snapshots, "immutable common input changed")
-        verify_provenance(contract["provenance"])
+        verify_provenance(contract["provenance"], replay_source=contract["qualification"]["evaluator_source_sha256"])
         timing = [summary["arms"][name]["phase5"]["independent_validation"]["timing"] for name in ("A", "B")]
         require(timing[0]["timing_paths"] == timing[1]["timing_paths"], "A/B timing population differs")
         require(set(timing[0]["per_clock"]) == set(timing[1]["per_clock"]) and

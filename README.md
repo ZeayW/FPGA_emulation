@@ -142,6 +142,8 @@ An explicit `--frame-slots` applies to partition pressure and routing alike.
 Audited prefix continuation can reuse unchanged frontend/STA inputs and sealed
 successful native partition results while retaining Phase3 validation; see the
 [user guide](docs/USER_GUIDE.md).
+Independent prefix qualification checks original representative-path membership
+and all-cut structural coverage separately; see [paired validation](docs/USER_GUIDE.md#paired-phase-4-validation).
 These produce a scoped stage report, not a full-flow or physical pass. Phase 5
 distinguishes exact original-member timing from legacy compressed diagnostics. Optional
 `--synthesis-profile-passes` records live Xilinx synthesis progress. PATRON writes

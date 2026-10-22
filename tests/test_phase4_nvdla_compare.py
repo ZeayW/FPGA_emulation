@@ -23,7 +23,17 @@ def prefix():
         "timing": {"sta": {"status": "pass", "path_limit_reached": False, "paths": 1500},
                    "cut_path_projection": {"status": "pass", "uncovered_cut_nets": 0,
                                            "database_paths": 1500, "projected_paths": 700,
-                                           "cut_nets": 900}}}
+                                           "cut_nets": 900, "covered_cut_nets": 900}}}
+
+
+def qualification():
+    return {"schema": "emuflow.nvdla-prefix-qualification/v1", "status": "pass",
+            "evaluator_source_sha256": {}, "files": {},
+            "original_accounting": {"status": "pass", "scope": "fixed-original-representative-population",
+                "original_paths": 1500, "projected_members": 700, "cut_nets": 900,
+                "covered_cut_nets": 900, "uncovered_cut_nets": 0,
+                "per_clock": {k: {"period_ns": v} for k,v in compare.CLOCKS.items()}},
+            "structural_qualification": {"status": "pass", "cut_nets": 900}}
 
 
 class ContractTest(unittest.TestCase):
@@ -98,8 +108,9 @@ class ContractTest(unittest.TestCase):
             native = common / "partition/patron/patron.in"
             native.write_text("EMUFLOW_PATRON_INPUT_V14_BANKS_V1\nPARAM 4 10 4 4 10 5 -1 1024 1\n")
             board = root / "board.json"
-            board.write_text(json.dumps({"platform": {"virtual_board_wiring": "wires.csv"}}))
-            (root / "wires.csv").write_text("wire data")
+            board_value = compare.read(compare.ROOT / "platforms/virtual/rapidwright_xcvu19p_4fpga_mesh.json")
+            board.write_text(json.dumps(board_value))
+            (root / board_value["platform"]["virtual_board_wiring"]).write_text("wire data")
             report = prefix()
             report["artifacts"] = {
                 "platform": {"path": str(board)}, "ir": {"path": "design.sqlite"},
@@ -120,7 +131,8 @@ class ContractTest(unittest.TestCase):
             provenance = root / "provenance.json"
             provenance.write_text("{}")
             with patch.object(compare, "verify_provenance"), patch.object(compare, "check_platform"), \
-                 patch.object(compare, "check_producer"):
+                 patch.object(compare, "check_producer"), patch.object(compare, "verify_qualification"), \
+                 patch("phase4_nvdla_qualification.qualify_common", return_value=qualification()):
                 sealed = compare.seal_contract(common, board, provenance)
                 self.assertIn(str((common / "paths.sqlite").resolve()), sealed["files"])
                 self.assertIn(str(native.resolve()), sealed["files"])

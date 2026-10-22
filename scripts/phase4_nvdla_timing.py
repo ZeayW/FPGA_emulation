@@ -142,6 +142,58 @@ def summarize_population(originals, assignment, projected, routes, schedule, boa
                 close(actual["clock_period_ns"], expected["clock_period_ns"]) and
                 close(actual["required_time_ns"], expected["fixed_delay_ns"] + expected["slack_ns"]),
                 "routed compressed constraint differs from common projection")
+    return _summarize_members(originals, assignment, registry, copies, members,
+                              original_nets=original_nets)
+
+
+def validate_original_projection(originals, assignment, projected, *, original_nets):
+    """Account for every fixed original representative and its local/cross copies.
+
+    This preflight has no schedule and produces no transport timing estimate.
+    It does not assert that STA enumerated every possible combinational path.
+    """
+    from emuflow.output_realizations import validate_output_realizations
+    registry = projected.get("output_realizations")
+    require(isinstance(registry, dict), "full original/output population registry required")
+    copies = validate_output_realizations(registry)
+    members = {}
+    covered = set()
+    for record in projected["paths"]:
+        transitions = record.get("cut_transitions")
+        require(isinstance(transitions, list) and transitions and
+                [t["net"] for t in transitions] == record["cut_nets"],
+                "exact projected transition sequence required")
+        covered.update(record["cut_nets"])
+        ids = record.get("compressed_path_ids", [record["id"]])
+        require(ids, "empty compressed member population")
+        fixed_values = record.get("member_fixed_delay_ns")
+        require(fixed_values is None or len(fixed_values) == len(ids), "member delay population differs")
+        for index, member in enumerate(ids):
+            require(member not in members, "duplicate projected member")
+            members[member] = dict(transport_ns=0.0, transitions=transitions,
+                clock_domain=record["clock_domain"], clock_period_ns=record["clock_period_ns"],
+                required_time_ns=record["fixed_delay_ns"] + record["slack_ns"])
+            if fixed_values is not None:
+                members[member]["original_fixed_delay_ns"] = fixed_values[index]
+            elif member == record["id"]:
+                members[member]["original_fixed_delay_ns"] = record["fixed_delay_ns"]
+    result = _summarize_members(originals, assignment, registry, copies, members,
+                                original_nets=original_nets)
+    cut_ids = {cut["net"] for cut in assignment["cut_nets"]}
+    require(covered <= cut_ids, "projected net absent from assignment")
+    return {"status": "pass", "scope": "fixed-original-representative-population",
+            "limitation": "Not all possible combinational paths; transport can change the worst path per endpoint.",
+            "original_paths": result["original_paths"],
+            "original_path_ids_sha256": result["original_path_ids_sha256"],
+            "local_paths": result["local_paths"], "cross_paths": result["transport_paths"],
+            "projected_members": len(members), "cut_nets": len(cut_ids),
+            "covered_cut_nets": len(covered), "uncovered_cut_nets": len(cut_ids-covered),
+            "per_clock": {clock: {"paths": data["timing_paths"],
+                                  "period_ns": data["period_ns"]}
+                          for clock, data in result["per_clock"].items()}}
+
+
+def _summarize_members(originals, assignment, registry, copies, members, *, original_nets):
     cuts = {cut["net"]: cut for cut in assignment["cut_nets"]}
     owners = assignment["instance_assignment"]
     by_original = defaultdict(list)
@@ -164,6 +216,7 @@ def summarize_population(originals, assignment, projected, routes, schedule, boa
         candidates = by_original.get(identity, [])
         require(bool(candidates) == output, "original output coverage differs from copy registry")
         transports = []
+        crosses = False
         if output:
             net = original_nets.get(path["path_nets"][-1])
             require(net is not None, "original output net missing")
@@ -187,11 +240,14 @@ def summarize_population(originals, assignment, projected, routes, schedule, boa
                         copy["cut_transitions"] == transitions and copy["local"] == (not transitions),
                         "output copy differs from original constraint/ownership")
             if transitions:
+                crosses = True
                 require(member in members, "cross-FPGA original member was omitted")
                 data = members[member]
                 require(data["transitions"] == transitions and data["clock_domain"] == clock and
                         close(data["clock_period_ns"], period) and close(data["required_time_ns"], required),
                         "transport does not belong to original member")
+                if "original_fixed_delay_ns" in data:
+                    require(close(data["original_fixed_delay_ns"], fixed), "projected member logic delay differs")
                 transports.append(data["transport_ns"])
                 consumed.add(member)
             else:
@@ -199,10 +255,12 @@ def summarize_population(originals, assignment, projected, routes, schedule, boa
                 transports.append(0.0)
         transport = max(transports)
         final_slack = slack - transport
-        local_count += int(transport == 0)
-        cross_count += int(transport > 0)
-        stat = metrics.setdefault(clock, {"timing_paths": 0, "worst_slack_ns": final_slack,
+        local_count += int(not crosses)
+        cross_count += int(crosses)
+        require(isinstance(clock, str) and clock, "original clock missing")
+        stat = metrics.setdefault(clock, {"period_ns": period, "timing_paths": 0, "worst_slack_ns": final_slack,
             "total_negative_slack_ns": 0.0, "negative_slack_paths": 0})
+        require(close(stat["period_ns"], period), "inconsistent period for original clock")
         stat["timing_paths"] += 1
         stat["worst_slack_ns"] = min(stat["worst_slack_ns"], final_slack)
         stat["total_negative_slack_ns"] += min(final_slack, 0.0)
@@ -261,7 +319,8 @@ def main():
     verify_contract(contract, common, platform)
     produced = read(args.comparison_root / "comparison.json")
     require(produced.get("status") == "pass" and produced.get("contract_sha256") == digest(args.contract) and
-            produced.get("source_sha256") == contract["provenance"]["source_sha256"], "unqualified/mismatched produced pair")
+            produced.get("source_sha256") == contract.get("qualification", {}).get(
+                "evaluator_source_sha256", contract["provenance"]["source_sha256"]), "unqualified/mismatched produced pair")
     artifacts = contract["artifacts"]
     assignment_path = common / artifacts["assignment"]
     with sqlite3.connect(f"file:{assignment_path.with_name('assignment.sqlite').resolve()}?mode=ro&immutable=1", uri=True) as db:
@@ -275,6 +334,8 @@ def main():
     output = {"schema": "emuflow.phase4-full-original-timing/v1", "status": "running",
               "producer_source_sha256": contract["provenance"]["source_sha256"],
               "producer_pair_sha256": digest(args.comparison_root / "comparison.json"),
+              "pair_source_sha256": produced.get("source_sha256"),
+              "population_limitation": "Fixed original STA representative population; not all possible paths. Transport may change the worst path per endpoint.",
               "producer_tools": produced.get("tools"),
               "evaluator_sha256": digest(Path(__file__)), "evaluator_runtime": runtime_identity(),
               "evaluator_command": [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
@@ -314,7 +375,7 @@ def main():
         a, b = (output["arms"][name]["full_original"] for name in ("A", "B"))
         output["new_minus_old"] = {k: b[k]-a[k] for k in
             ("worst_slack_ns", "total_negative_slack_ns", "negative_slack_paths")}
-        lines = ["Whole-original-population Phase5 preplacement estimate; no physical timing claim.", "",
+        lines = ["Fixed original STA representative population Phase5 estimate; no all-path or physical timing claim.", "",
                  "| Scope / metric | Old Phase4 | Author Phase4 | New minus old |",
                  "|---|---:|---:|---:|"]
         for scope in ("all", "dla_core_clk", "dla_csb_clk"):
