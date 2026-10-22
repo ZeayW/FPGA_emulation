@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from .errors import EmuFlowError, ValidationError
-from .native_tools import resolve_native_executable
+from .native_tools import resolve_native_stage_command
 
 
 CHIMEW_RUDY_INPUT_SCHEMA = "emuflow.chimew-rudy-input/v1"
@@ -251,68 +251,161 @@ def _oracle(problem: Mapping[str, Any]) -> Tuple[list[float], Dict[str, float]]:
     return loads, metrics
 
 
+def _write_native_input(problem: Mapping[str, Any], stream: Any) -> None:
+    """Stream the historical grammar without a graph-sized line list or file."""
+
+    stream.write("EMUFLOW_CHIMEW_RUDY_INPUT_V1\n")
+    stream.write(
+        "GRID "
+        f"{problem['origin_x']:.17g} {problem['origin_y']:.17g} "
+        f"{problem['bin_width']:.17g} {problem['bin_height']:.17g} "
+        f"{problem['columns']} {problem['rows']}\n"
+    )
+    stream.write(
+        "PARAM "
+        f"{problem['wire_pitch']:.17g} {problem['max_utilization']:.17g}\n"
+    )
+    for index, capacity in enumerate(problem["capacities"]):
+        stream.write(f"CAP {index} {capacity:.17g}\n")
+    for index, (_, pins) in enumerate(problem["nets"]):
+        stream.write(f"NET {index} {len(pins)}")
+        for x, y in pins:
+            stream.write(f" {x:.17g} {y:.17g}")
+        stream.write("\n")
+
+
+def _parse_native_output(
+    stream: Any, bin_count: int
+) -> Tuple[list[float], list[float], Dict[str, float]]:
+    if stream.readline().rstrip("\r\n") != "EMUFLOW_CHIMEW_RUDY_OUTPUT_V1":
+        raise EmuFlowError("Chimew RUDY output header is invalid")
+    fields = stream.readline().split()
+    if len(fields) != 8 or fields[:1] != ["METRIC"]:
+        raise EmuFlowError("Chimew RUDY output metric is malformed")
+    try:
+        metrics = {
+            "nets": int(fields[1]),
+            "pins": int(fields[2]),
+            "total_wire_area": float(fields[3]),
+            "total_bin_load": float(fields[4]),
+            "peak_load": float(fields[5]),
+            "peak_utilization": float(fields[6]),
+            "overloaded_bins": int(fields[7]),
+        }
+    except ValueError as error:
+        raise EmuFlowError("Chimew RUDY output metric is malformed") from error
+    if (
+        metrics["nets"] < 1
+        or metrics["pins"] < 2
+        or metrics["overloaded_bins"] < 0
+        or any(
+            not math.isfinite(metrics[field])
+            for field in (
+                "total_wire_area",
+                "total_bin_load",
+                "peak_load",
+                "peak_utilization",
+            )
+        )
+    ):
+        raise EmuFlowError("Chimew RUDY output metric is invalid")
+    loads = []
+    utilizations = []
+    for expected_index in range(bin_count):
+        fields = stream.readline().split()
+        if len(fields) != 4 or fields[:1] != ["BIN"]:
+            raise EmuFlowError("Chimew RUDY output bin is malformed")
+        try:
+            index = int(fields[1])
+            load = float(fields[2])
+            utilization = float(fields[3])
+        except ValueError as error:
+            raise EmuFlowError("Chimew RUDY output bin is malformed") from error
+        if (
+            index != expected_index
+            or not math.isfinite(load)
+            or not math.isfinite(utilization)
+        ):
+            raise EmuFlowError("Chimew RUDY returned an invalid bin")
+        loads.append(load)
+        utilizations.append(utilization)
+    if stream.read(1):
+        raise EmuFlowError("Chimew RUDY output has trailing data")
+    return loads, utilizations, metrics
+
+
 def _run_native(
     problem: Mapping[str, Any], executable: Optional[str]
 ) -> Tuple[list[float], list[float], Dict[str, float]]:
     with tempfile.TemporaryDirectory(prefix="emuflow-chimew-rudy-") as temporary:
-        root = Path(temporary)
-        input_path = root / "input.txt"
-        output_path = root / "output.txt"
-        lines = [
-            "EMUFLOW_CHIMEW_RUDY_INPUT_V1",
-            "GRID "
-            f"{problem['origin_x']:.17g} {problem['origin_y']:.17g} "
-            f"{problem['bin_width']:.17g} {problem['bin_height']:.17g} "
-            f"{problem['columns']} {problem['rows']}",
-            "PARAM "
-            f"{problem['wire_pitch']:.17g} {problem['max_utilization']:.17g}",
-        ]
-        for index, capacity in enumerate(problem["capacities"]):
-            lines.append(f"CAP {index} {capacity:.17g}")
-        for index, (_, pins) in enumerate(problem["nets"]):
-            coordinates = " ".join(f"{x:.17g} {y:.17g}" for x, y in pins)
-            lines.append(f"NET {index} {len(pins)} {coordinates}")
-        input_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        command = resolve_native_executable("emuflow_chimew_rudy", executable)
-        completed = subprocess.run(
-            [command, str(input_path), str(output_path)],
-            text=True,
-            capture_output=True,
+        stderr_path = Path(temporary) / "stderr.txt"
+        command = resolve_native_stage_command(
+            "emuflow_chimew_rudy", "phase6", "rudy", explicit=executable
         )
-        if completed.returncode != 0:
-            raise EmuFlowError(
-                "Chimew RUDY kernel failed: "
-                + (completed.stderr.strip() or completed.stdout.strip())
+        with stderr_path.open("w+", encoding="utf-8") as stderr_stream:
+            process = subprocess.Popen(
+                [*command, "-", "-"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr_stream,
+                text=True,
+                encoding="utf-8",
             )
-        output_lines = output_path.read_text(encoding="utf-8").splitlines()
-    if not output_lines or output_lines[0] != "EMUFLOW_CHIMEW_RUDY_OUTPUT_V1":
-        raise EmuFlowError("Chimew RUDY output header is invalid")
-    loads = [None] * len(problem["capacities"])
-    utilizations = [None] * len(problem["capacities"])
-    metrics = None
-    for line in output_lines[1:]:
-        fields = line.split()
-        if fields[:1] == ["METRIC"] and len(fields) == 8:
-            metrics = {
-                "nets": int(fields[1]),
-                "pins": int(fields[2]),
-                "total_wire_area": float(fields[3]),
-                "total_bin_load": float(fields[4]),
-                "peak_load": float(fields[5]),
-                "peak_utilization": float(fields[6]),
-                "overloaded_bins": int(fields[7]),
-            }
-        elif fields[:1] == ["BIN"] and len(fields) == 4:
-            index = int(fields[1])
-            if not 0 <= index < len(loads) or loads[index] is not None:
-                raise EmuFlowError("Chimew RUDY returned an invalid bin")
-            loads[index] = float(fields[2])
-            utilizations[index] = float(fields[3])
-        else:
-            raise EmuFlowError("Chimew RUDY output is malformed")
-    if metrics is None or any(value is None for value in loads + utilizations):
-        raise EmuFlowError("Chimew RUDY output is incomplete")
-    return loads, utilizations, metrics
+            if process.stdin is None or process.stdout is None:
+                raise EmuFlowError("Chimew RUDY pipe is unavailable")
+            try:
+                _write_native_input(problem, process.stdin)
+                process.stdin.close()
+                process.stdin = None
+            except BrokenPipeError as error:
+                process.stdin = None
+                returncode = process.wait()
+                process.stdout.close()
+                stderr_stream.flush()
+                stderr_stream.seek(0)
+                detail = stderr_stream.read().strip()
+                raise EmuFlowError(
+                    f"Chimew RUDY kernel rejected input with exit status {returncode}"
+                    + (f": {detail}" if detail else "")
+                ) from error
+            except BaseException:
+                try:
+                    process.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+                process.stdin = None
+                process.stdout.close()
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+                raise
+            try:
+                result = _parse_native_output(
+                    process.stdout, len(problem["capacities"])
+                )
+            except EmuFlowError as grammar_error:
+                process.stdout.close()
+                returncode = process.wait()
+                stderr_stream.flush()
+                stderr_stream.seek(0)
+                detail = stderr_stream.read().strip()
+                if returncode != 0:
+                    raise EmuFlowError(
+                        f"Chimew RUDY kernel failed with exit status {returncode}"
+                        + (f": {detail}" if detail else "")
+                    ) from grammar_error
+                raise
+            process.stdout.close()
+            returncode = process.wait()
+            stderr_stream.flush()
+            stderr_stream.seek(0)
+            detail = stderr_stream.read().strip()
+            if returncode != 0:
+                raise EmuFlowError(
+                    f"Chimew RUDY kernel failed with exit status {returncode}"
+                    + (f": {detail}" if detail else "")
+                )
+    return result
 
 
 def evaluate_chimew_rudy(

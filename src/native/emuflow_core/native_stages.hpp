@@ -17,5 +17,7 @@ void GroupChimewSignals(const std::string& input_path,
 void RefineChimewPositions(const std::string& input_path,
                            const std::string& output_path, bool typed_input,
                            const std::string& expected_sha256);
+void EvaluateChimewRudy(const std::string& input_path,
+                        const std::string& output_path);
 
 }  // namespace emuflow::native

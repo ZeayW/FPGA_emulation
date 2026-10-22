@@ -295,6 +295,7 @@ add_library(
   "${CMAKE_SOURCE_DIR}/src/native/static_exact_analyzer.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/tdm_exact_scheduler.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/chimew_bank_channel_assigner.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/chimew_rudy.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/chimew_signal_grouper.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/chimew_position_refiner.cpp"
 )
