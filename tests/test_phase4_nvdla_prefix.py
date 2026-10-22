@@ -30,6 +30,22 @@ class PrefixSupervisorTest(unittest.TestCase):
             "--sta", str(binaries / "sta"), "--native-root", str(root / "native"),
         ])
 
+    def test_worker_seals_with_the_same_architecture_timing_model(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            args = self.inputs(Path(temporary))
+            args.output.mkdir()
+            runner.write(args.output / "provenance.json", {})
+            with patch.object(runner, "verify_provenance"), \
+                    patch.object(runner.BenchmarkRun, "load"), \
+                    patch.object(runner, "flow_options", return_value={}), \
+                    patch("emuflow.multi_fpga_flow.run_multi_fpga_flow",
+                          return_value={"completed_through": "phase3"}), \
+                    patch.object(runner, "seal_contract", return_value={}) as seal:
+                runner.worker(args)
+            seal.assert_called_once_with(args.output / "common", args.platform,
+                args.output / "provenance.json",
+                architecture_timing_db=args.architecture_timing_db)
+
     def test_nonzero_worker_is_not_published_as_pass(self):
         with tempfile.TemporaryDirectory() as temporary:
             args = self.inputs(Path(temporary))

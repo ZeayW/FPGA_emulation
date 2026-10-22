@@ -84,7 +84,8 @@ def worker(args):
         }
         write(args.output / "common/multi-fpga-stage-report.json", report)
     require(report.get("completed_through") == "phase3", "wrong prefix boundary")
-    contract = seal_contract(args.output / "common", args.platform, provenance)
+    contract = seal_contract(args.output / "common", args.platform, provenance,
+                             architecture_timing_db=args.architecture_timing_db)
     write(args.output / "contract.json", contract)
     write(args.output / "result.json", {
         "status": "pass", "completed_through": "phase3",

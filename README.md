@@ -141,7 +141,8 @@ Use `--stop-after phase3` or `--stop-after phase5` for an explicit intermediate
 boundary, and `--sta-require-complete` to reject truncated path exports.
 An explicit `--frame-slots` applies to partition pressure and routing alike.
 Audited prefix continuation can reuse unchanged frontend/STA inputs and sealed
-successful native partition results while retaining Phase3 validation; see the
+successful native partition results while retaining Phase3 validation and the
+same architecture timing model for independent qualification; see the
 [user guide](docs/USER_GUIDE.md).
 Independent prefix qualification checks original representative-path membership
 and all-cut structural coverage separately; see [paired validation](docs/USER_GUIDE.md#paired-phase-4-validation).
