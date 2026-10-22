@@ -1092,7 +1092,7 @@ def pack_phase3_assignment(
     partitions = value.get("partitions")
     if (
         not isinstance(clusters, list)
-        or not isinstance(cluster_assignment, dict)
+        or not isinstance(cluster_assignment, Mapping)
         or not isinstance(instance_assignment, Mapping)
         or not isinstance(partitions, list)
     ):

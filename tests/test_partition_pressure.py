@@ -54,6 +54,7 @@ from emuflow.phase3 import (
     _rebase_patron_initial_assignment,
     _select_patron_timing_assignment,
 )
+from emuflow.phase3_storage import pack_phase3_assignment
 from emuflow.platform import Platform
 from emuflow.io import read_json, write_json
 from emuflow.routing import normalize_route_constraints
@@ -382,6 +383,69 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(list(indexes["clusters"]), sorted(
                 cluster["id"] for cluster in self.clusters["clusters"]
             ))
+
+    def test_production_native_assignment_stays_packed_through_publication(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path = root / "design.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            compact_ir = load_partition_ir(ir_path)
+            compact_clusters = build_clusters(compact_ir, self.constraints)
+            compact_initial = build_partition_assignment(
+                compact_ir,
+                self.platform,
+                compact_clusters,
+                self.constraints,
+                self.initial["cluster_assignment"],
+                provider="fixture",
+                seed=7,
+                _stream_semantic_records=True,
+            )
+            compact_model = build_partition_pressure_model(
+                compact_ir,
+                self.platform,
+                compact_clusters,
+                self.constraints,
+                self.timing,
+                self.route_constraints,
+                independent_validation=False,
+            )
+            final, trace = run_partition_pressure_native(
+                compact_ir,
+                self.platform,
+                compact_clusters,
+                self.constraints,
+                self.route_constraints,
+                compact_model,
+                compact_initial,
+                executable=str(patron_refiner()),
+                max_moves=0,
+                output_validation="online",
+                retain_trace_seals=False,
+                stream_semantic_records=True,
+            )
+
+        cluster_assignment = final["cluster_assignment"]
+        instance_assignment = final["instance_assignment"]
+        self.assertNotIsInstance(cluster_assignment, dict)
+        self.assertEqual(
+            cluster_assignment.packed_payload_bytes,
+            4 * len(compact_clusters["clusters"]),
+        )
+        self.assertEqual(
+            dict(cluster_assignment.items()),
+            self.initial["cluster_assignment"],
+        )
+        self.assertNotIsInstance(instance_assignment, dict)
+        self.assertTrue(callable(instance_assignment.cluster_part))
+        packed = pack_phase3_assignment(final, compact_clusters)
+        self.assertEqual(
+            packed["cluster_count"], len(compact_clusters["clusters"])
+        )
+        self.assertEqual(trace["trace_storage"], "summary-only")
+        self.assertNotIn("moves", trace)
 
     def test_compact_pressure_model_randomized_differential(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1158,9 +1222,16 @@ class PartitionPressureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "patron.out"
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            assignment, _moves, batches, *_rest = (
-                _parse_patron_native_output(path, indexes)
-            )
+            with patch.object(
+                Path,
+                "read_text",
+                side_effect=AssertionError(
+                    "PATRON output must be parsed as a record stream"
+                ),
+            ):
+                assignment, _moves, batches, *_rest = (
+                    _parse_patron_native_output(path, indexes)
+                )
             self.assertEqual(assignment, {"c0": "b", "c1": "a"})
             self.assertEqual(
                 batches[0]["changes"],
@@ -1198,6 +1269,41 @@ class PartitionPressureTest(unittest.TestCase):
                     )
                     with self.assertRaisesRegex(ValidationError, message):
                         _parse_patron_native_output(path, indexes)
+
+    def test_native_output_packs_lexical_assignment_into_cluster_ordinals(
+        self,
+    ) -> None:
+        lines = [
+            "EMUFLOW_PATRON_OUTPUT_V14",
+            "MODE endpoint-exact-critical-flow-v14",
+            "INITIAL 0 0 0 0 0 0 0 0",
+            "FINAL 0 0 0 0 0 0 0 0",
+            "SUMMARY 0 0 0 0",
+            "ASSIGN 0 0",
+            "ASSIGN 1 1",
+            "ASSIGN 2 2",
+            "END",
+        ]
+        indexes = {
+            "clusters": ["c000002", "c000000", "c000001"],
+            "parts": ["F0", "F1", "F2"],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "patron.out"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            assignment, *_ = _parse_patron_native_output(
+                path, indexes, packed_assignment=True
+            )
+        self.assertNotIsInstance(assignment, dict)
+        self.assertEqual(
+            dict(assignment.items()),
+            {
+                "c000000": "F1",
+                "c000001": "F2",
+                "c000002": "F0",
+            },
+        )
+        self.assertEqual(assignment.packed_payload_bytes, 12)
 
     def test_shared_bank_pressure_is_reported_but_not_a_partition_gate(self) -> None:
         value = _platform_value(

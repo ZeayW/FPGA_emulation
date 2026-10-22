@@ -247,7 +247,15 @@ interns UTF-8 identities once, and keeps cluster/net membership and driver/sink
 relations in ordinal arrays. Native PATRON input is written record by record
 through a synchronized same-directory temporary file; the previous `lines`
 plus `join` copy is gone. Its strict reader checks logical schema, ownership,
-bit ordinals, endpoint order and counts before any native search. A
+bit ordinals, endpoint order and counts before any native search. Native
+PATRON output is also parsed as an ordered record stream. In the production
+compact path, final `cN -> FPGA` ownership remains a four-byte part-index
+column through assignment construction, online validation and Phase 3 packing;
+it is not expanded into a million-entry Python dictionary after the native
+search. On 200,000 synthetic `ASSIGN` records, the materialized parser retained
+10,493,049 bytes and peaked at 15,757,674 traced bytes, while the packed parser
+retained 804,115 bytes, peaked at 1,606,908 bytes and owned an 800,000-byte
+payload. This is isolated adapter evidence rather than NVDLA qualification. A
 million-sink synthetic membership comparison reduced process RSS from about
 84 MiB to 28 MiB while changing construction time from 0.101 to 0.110 seconds;
 the compact net identity/member/ordinal payload was 8,000,087 bytes. This is

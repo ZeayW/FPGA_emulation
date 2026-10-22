@@ -30,6 +30,7 @@ from .ir import EMUIR_SCHEMA, VALID_CUT_CLASSES, EmuIR
 from .io import read_json, write_json
 from .partition import (
     CUT_MODE_STATIC_EXACT,
+    _PackedClusterAssignment,
     active_partition_fpgas,
     build_partition_assignment,
     transported_cut_classes_for_clusters,
@@ -3173,9 +3174,12 @@ def _metrics_from_objective(
 
 
 def _parse_patron_native_output(
-    path: Path, indexes: Mapping[str, Any]
+    path: Path,
+    indexes: Mapping[str, Any],
+    *,
+    packed_assignment: bool = False,
 ) -> Tuple[
-    Dict[str, str],
+    Mapping[str, str],
     List[Dict[str, Any]],
     List[Dict[str, Any]],
     Dict[str, Any],
@@ -3183,8 +3187,7 @@ def _parse_patron_native_output(
     str,
     Dict[str, Any],
 ]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] not in (
+    allowed_headers = (
         "EMUFLOW_PATRON_OUTPUT_V6",
         "EMUFLOW_PATRON_OUTPUT_V7",
         "EMUFLOW_PATRON_OUTPUT_V8",
@@ -3192,9 +3195,12 @@ def _parse_patron_native_output(
         "EMUFLOW_PATRON_OUTPUT_V10",
         "EMUFLOW_PATRON_OUTPUT_V11",
         "EMUFLOW_PATRON_OUTPUT_V14",
-    ):
+    )
+    stream = path.open("r", encoding="utf-8")
+    output_version = stream.readline().rstrip("\r\n")
+    if output_version not in allowed_headers:
+        stream.close()
         raise ValidationError("native PATRON output header is invalid")
-    output_version = lines[0]
     path_transition_objective = output_version == "EMUFLOW_PATRON_OUTPUT_V14"
     def indexed(label: str, values: List[str], index: int) -> str:
         if index < 0 or index >= len(values):
@@ -3206,6 +3212,12 @@ def _parse_patron_native_output(
     moves = []
     batches = []
     assignment: Dict[str, str] = {}
+    packed_sentinel = 2**32 - 1
+    packed_parts = (
+        array("I", [packed_sentinel]) * len(indexes["clusters"])
+        if packed_assignment
+        else None
+    )
     final_metrics = None
     initial_metrics = None
     mode = None
@@ -3214,212 +3226,290 @@ def _parse_patron_native_output(
     path_max_summary = None
     ended = False
     next_assignment = 0
-    for line in lines[1:]:
-        if ended:
-            raise ValidationError(
-                "native PATRON output has records after END"
-            )
-        fields = line.split()
-        if not fields:
-            raise ValidationError("native PATRON output has an empty record")
-        if fields[0] == "MODE" and len(fields) == 2:
-            if mode is not None:
-                raise ValidationError("native PATRON returned duplicate MODE")
-            mode = fields[1]
-        elif fields[0] == "INITIAL" and len(fields) == 9:
-            if initial_metrics is not None:
-                raise ValidationError("native PATRON returned duplicate INITIAL")
-            initial_metrics = _metrics_from_objective(
-                [float(item) for item in fields[1:]],
-                path_transition_objective=path_transition_objective,
-            )
-        elif fields[0] == "STEP" and len(fields) in (34, 36):
-            (
-                index,
-                phase,
-                sweep,
-                cluster,
-                source,
-                target,
-                partner,
-                partner_source,
-                partner_target,
-            ) = map(int, fields[1:10])
-            if index != len(moves):
-                raise ValidationError("native PATRON move indexes are invalid")
-            if phase not in (0, 1) or (phase == 0) != (partner < 0):
-                raise ValidationError("native PATRON step phase is invalid")
-            before = [float(item) for item in fields[10:18]]
-            after = [float(item) for item in fields[18:26]]
-            ranked = [int(item) for item in fields[26:]]
-            moves.append(
-                {
-                    "index": index,
-                    "kind": "move" if phase == 0 else "ejection",
-                    "phase": phase,
-                    "sweep": sweep,
-                    "cluster": indexed(
-                        "cluster", indexes["clusters"], cluster
-                    ),
-                    "source": indexed("part", indexes["parts"], source),
-                    "target": indexed("part", indexes["parts"], target),
-                    "partner": (
-                        None
-                        if partner < 0
-                        else indexed(
-                            "partner cluster", indexes["clusters"], partner
-                        )
-                    ),
-                    "partner_source": (
-                        None
-                        if partner_source < 0
-                        else indexed(
-                            "partner part",
-                            indexes["parts"],
-                            partner_source,
-                        )
-                    ),
-                    "partner_target": (
-                        None
-                        if partner_target < 0
-                        else indexed(
-                            "partner part",
-                            indexes["parts"],
-                            partner_target,
-                        )
-                    ),
-                    "before_objective_key": before,
-                    "after_objective_key": after,
-                    "ranked_objective_key": ranked,
+    try:
+        for raw_line in stream:
+            line = raw_line.rstrip("\r\n")
+            if ended:
+                raise ValidationError(
+                    "native PATRON output has records after END"
+                )
+            fields = line.split()
+            if not fields:
+                raise ValidationError(
+                    "native PATRON output has an empty record"
+                )
+            if fields[0] == "MODE" and len(fields) == 2:
+                if mode is not None:
+                    raise ValidationError(
+                        "native PATRON returned duplicate MODE"
+                    )
+                mode = fields[1]
+            elif fields[0] == "INITIAL" and len(fields) == 9:
+                if initial_metrics is not None:
+                    raise ValidationError(
+                        "native PATRON returned duplicate INITIAL"
+                    )
+                initial_metrics = _metrics_from_objective(
+                    [float(item) for item in fields[1:]],
+                    path_transition_objective=path_transition_objective,
+                )
+            elif fields[0] == "STEP" and len(fields) in (34, 36):
+                (
+                    index,
+                    phase,
+                    sweep,
+                    cluster,
+                    source,
+                    target,
+                    partner,
+                    partner_source,
+                    partner_target,
+                ) = map(int, fields[1:10])
+                if index != len(moves):
+                    raise ValidationError(
+                        "native PATRON move indexes are invalid"
+                    )
+                if phase not in (0, 1) or (phase == 0) != (partner < 0):
+                    raise ValidationError(
+                        "native PATRON step phase is invalid"
+                    )
+                before = [float(item) for item in fields[10:18]]
+                after = [float(item) for item in fields[18:26]]
+                ranked = [int(item) for item in fields[26:]]
+                moves.append(
+                    {
+                        "index": index,
+                        "kind": "move" if phase == 0 else "ejection",
+                        "phase": phase,
+                        "sweep": sweep,
+                        "cluster": indexed(
+                            "cluster", indexes["clusters"], cluster
+                        ),
+                        "source": indexed(
+                            "part", indexes["parts"], source
+                        ),
+                        "target": indexed(
+                            "part", indexes["parts"], target
+                        ),
+                        "partner": (
+                            None
+                            if partner < 0
+                            else indexed(
+                                "partner cluster",
+                                indexes["clusters"],
+                                partner,
+                            )
+                        ),
+                        "partner_source": (
+                            None
+                            if partner_source < 0
+                            else indexed(
+                                "partner part",
+                                indexes["parts"],
+                                partner_source,
+                            )
+                        ),
+                        "partner_target": (
+                            None
+                            if partner_target < 0
+                            else indexed(
+                                "partner part",
+                                indexes["parts"],
+                                partner_target,
+                            )
+                        ),
+                        "before_objective_key": before,
+                        "after_objective_key": after,
+                        "ranked_objective_key": ranked,
+                    }
+                )
+            elif fields[0] == "BATCH" and len(fields) in (27, 29):
+                if output_version not in (
+                    "EMUFLOW_PATRON_OUTPUT_V7",
+                    "EMUFLOW_PATRON_OUTPUT_V8",
+                    "EMUFLOW_PATRON_OUTPUT_V9",
+                    "EMUFLOW_PATRON_OUTPUT_V10",
+                    "EMUFLOW_PATRON_OUTPUT_V11",
+                    "EMUFLOW_PATRON_OUTPUT_V14",
+                ):
+                    raise ValidationError(
+                        "native PATRON v6 returned a BATCH"
+                    )
+                index, change_count = map(int, fields[1:3])
+                if index != len(batches) or change_count <= 0:
+                    raise ValidationError(
+                        "native PATRON batch header is invalid"
+                    )
+                batches.append(
+                    {
+                        "index": index,
+                        "changes": [],
+                        "expected_changes": change_count,
+                        "before_objective_key": [
+                            float(item) for item in fields[3:11]
+                        ],
+                        "after_objective_key": [
+                            float(item) for item in fields[11:19]
+                        ],
+                        "ranked_objective_key": [
+                            int(item) for item in fields[19:]
+                        ],
+                    }
+                )
+            elif fields[0] == "CHANGE" and len(fields) == 5:
+                if output_version not in (
+                    "EMUFLOW_PATRON_OUTPUT_V7",
+                    "EMUFLOW_PATRON_OUTPUT_V8",
+                    "EMUFLOW_PATRON_OUTPUT_V9",
+                    "EMUFLOW_PATRON_OUTPUT_V10",
+                    "EMUFLOW_PATRON_OUTPUT_V11",
+                    "EMUFLOW_PATRON_OUTPUT_V14",
+                ):
+                    raise ValidationError(
+                        "native PATRON v6 returned a CHANGE"
+                    )
+                batch, cluster, source, target = map(int, fields[1:])
+                if batch < 0 or batch >= len(batches):
+                    raise ValidationError(
+                        "native PATRON batch change is orphaned"
+                    )
+                record = batches[batch]
+                if len(record["changes"]) >= record["expected_changes"]:
+                    raise ValidationError(
+                        "native PATRON batch has extra changes"
+                    )
+                record["changes"].append(
+                    {
+                        "cluster": indexed(
+                            "cluster", indexes["clusters"], cluster
+                        ),
+                        "source": indexed(
+                            "part", indexes["parts"], source
+                        ),
+                        "target": indexed(
+                            "part", indexes["parts"], target
+                        ),
+                    }
+                )
+            elif fields[0] == "FINAL" and len(fields) == 9:
+                if final_metrics is not None:
+                    raise ValidationError(
+                        "native PATRON returned duplicate FINAL"
+                    )
+                final_metrics = _metrics_from_objective(
+                    [float(item) for item in fields[1:]],
+                    path_transition_objective=path_transition_objective,
+                )
+            elif fields[0] == "CAPACITY" and len(fields) == 5:
+                if capacity_summary is not None:
+                    raise ValidationError(
+                        "native PATRON returned duplicate CAPACITY"
+                    )
+                capacity_summary = [int(item) for item in fields[1:]]
+                if any(value < 0 for value in capacity_summary):
+                    raise ValidationError(
+                        "native PATRON transport capacity summary is invalid"
+                    )
+            elif fields[0] == "PATH_MAX" and len(fields) == 5:
+                if path_max_summary is not None:
+                    raise ValidationError(
+                        "native PATRON returned duplicate PATH_MAX"
+                    )
+                path_max_summary = [int(item) for item in fields[1:]]
+                if any(value < 0 for value in path_max_summary):
+                    raise ValidationError(
+                        "native PATRON path maximum summary is invalid"
+                    )
+            elif fields[0] == "SUMMARY" and len(fields) == 5:
+                if summary is not None:
+                    raise ValidationError(
+                        "native PATRON returned duplicate SUMMARY"
+                    )
+                move_count, batch_count, change_count, detail = map(
+                    int, fields[1:]
+                )
+                if (
+                    move_count < 0
+                    or batch_count < 0
+                    or change_count < 0
+                    or detail not in (0, 1)
+                ):
+                    raise ValidationError(
+                        "native PATRON output summary is invalid"
+                    )
+                summary = {
+                    "moves": move_count,
+                    "batches": batch_count,
+                    "changes": change_count,
+                    "detail_retained": bool(detail),
                 }
-            )
-        elif fields[0] == "BATCH" and len(fields) in (27, 29):
-            if output_version not in (
-                "EMUFLOW_PATRON_OUTPUT_V7",
-                "EMUFLOW_PATRON_OUTPUT_V8",
-                "EMUFLOW_PATRON_OUTPUT_V9",
-                "EMUFLOW_PATRON_OUTPUT_V10",
-                "EMUFLOW_PATRON_OUTPUT_V11",
-                "EMUFLOW_PATRON_OUTPUT_V14",
-            ):
-                raise ValidationError("native PATRON v6 returned a BATCH")
-            index, change_count = map(int, fields[1:3])
-            if index != len(batches) or change_count <= 0:
-                raise ValidationError("native PATRON batch header is invalid")
-            batches.append(
-                {
-                    "index": index,
-                    "changes": [],
-                    "expected_changes": change_count,
-                    "before_objective_key": [
-                        float(item) for item in fields[3:11]
-                    ],
-                    "after_objective_key": [
-                        float(item) for item in fields[11:19]
-                    ],
-                    "ranked_objective_key": [
-                        int(item) for item in fields[19:]
-                    ],
-                }
-            )
-        elif fields[0] == "CHANGE" and len(fields) == 5:
-            if output_version not in (
-                "EMUFLOW_PATRON_OUTPUT_V7",
-                "EMUFLOW_PATRON_OUTPUT_V8",
-                "EMUFLOW_PATRON_OUTPUT_V9",
-                "EMUFLOW_PATRON_OUTPUT_V10",
-                "EMUFLOW_PATRON_OUTPUT_V11",
-                "EMUFLOW_PATRON_OUTPUT_V14",
-            ):
-                raise ValidationError("native PATRON v6 returned a CHANGE")
-            batch, cluster, source, target = map(int, fields[1:])
-            if batch < 0 or batch >= len(batches):
-                raise ValidationError("native PATRON batch change is orphaned")
-            record = batches[batch]
-            if len(record["changes"]) >= record["expected_changes"]:
-                raise ValidationError("native PATRON batch has extra changes")
-            record["changes"].append(
-                {
-                    "cluster": indexed(
-                        "cluster", indexes["clusters"], cluster
-                    ),
-                    "source": indexed("part", indexes["parts"], source),
-                    "target": indexed("part", indexes["parts"], target),
-                }
-            )
-        elif fields[0] == "FINAL" and len(fields) == 9:
-            if final_metrics is not None:
-                raise ValidationError("native PATRON returned duplicate FINAL")
-            final_metrics = _metrics_from_objective(
-                [float(item) for item in fields[1:]],
-                path_transition_objective=path_transition_objective,
-            )
-        elif fields[0] == "CAPACITY" and len(fields) == 5:
-            if capacity_summary is not None:
-                raise ValidationError(
-                    "native PATRON returned duplicate CAPACITY"
+            elif fields[0] == "ASSIGN" and len(fields) == 3:
+                cluster, part = map(int, fields[1:])
+                cluster_id = indexed(
+                    "cluster", indexes["clusters"], cluster
                 )
-            capacity_summary = [int(item) for item in fields[1:]]
-            if any(value < 0 for value in capacity_summary):
+                if packed_parts is None and cluster_id in assignment:
+                    raise ValidationError(
+                        "native PATRON returned duplicate ASSIGN"
+                    )
+                if cluster != next_assignment:
+                    raise ValidationError(
+                        "native PATRON ASSIGN order is invalid"
+                    )
+                part_id = indexed("part", indexes["parts"], part)
+                if packed_parts is None:
+                    assignment[cluster_id] = part_id
+                else:
+                    if (
+                        not cluster_id.startswith("c")
+                        or not cluster_id[1:].isdigit()
+                    ):
+                        raise ValidationError(
+                            "native PATRON cluster identity is not canonical"
+                        )
+                    cluster_ordinal = int(cluster_id[1:])
+                    if (
+                        cluster_ordinal < 0
+                        or cluster_ordinal >= len(packed_parts)
+                        or _PackedClusterAssignment.identity(cluster_ordinal)
+                        != cluster_id
+                    ):
+                        raise ValidationError(
+                            "native PATRON cluster identity is not canonical"
+                        )
+                    if packed_parts[cluster_ordinal] != packed_sentinel:
+                        raise ValidationError(
+                            "native PATRON returned duplicate ASSIGN"
+                        )
+                    packed_parts[cluster_ordinal] = part
+                next_assignment += 1
+            elif fields == ["END"]:
+                ended = True
+            else:
                 raise ValidationError(
-                    "native PATRON transport capacity summary is invalid"
+                    f"native PATRON output record is invalid: {line}"
                 )
-        elif fields[0] == "PATH_MAX" and len(fields) == 5:
-            if path_max_summary is not None:
-                raise ValidationError(
-                    "native PATRON returned duplicate PATH_MAX"
-                )
-            path_max_summary = [int(item) for item in fields[1:]]
-            if any(value < 0 for value in path_max_summary):
-                raise ValidationError(
-                    "native PATRON path maximum summary is invalid"
-                )
-        elif fields[0] == "SUMMARY" and len(fields) == 5:
-            if summary is not None:
-                raise ValidationError(
-                    "native PATRON returned duplicate SUMMARY"
-                )
-            move_count, batch_count, change_count, detail = map(
-                int, fields[1:]
-            )
-            if (
-                move_count < 0
-                or batch_count < 0
-                or change_count < 0
-                or detail not in (0, 1)
-            ):
-                raise ValidationError(
-                    "native PATRON output summary is invalid"
-                )
-            summary = {
-                "moves": move_count,
-                "batches": batch_count,
-                "changes": change_count,
-                "detail_retained": bool(detail),
-            }
-        elif fields[0] == "ASSIGN" and len(fields) == 3:
-            cluster, part = map(int, fields[1:])
-            cluster_id = indexed("cluster", indexes["clusters"], cluster)
-            if cluster_id in assignment:
-                raise ValidationError("native PATRON returned duplicate ASSIGN")
-            if cluster != next_assignment:
-                raise ValidationError(
-                    "native PATRON ASSIGN order is invalid"
-                )
-            assignment[cluster_id] = indexed("part", indexes["parts"], part)
-            next_assignment += 1
-        elif fields == ["END"]:
-            ended = True
-        else:
-            raise ValidationError(
-                f"native PATRON output record is invalid: {line}"
-            )
+    finally:
+        stream.close()
     if not ended:
         raise ValidationError("native PATRON output END is missing")
-    if len(assignment) != len(indexes["clusters"]) or any(
-        cluster not in assignment for cluster in indexes["clusters"]
-    ):
-        raise ValidationError("native PATRON assignment coverage is invalid")
+    if packed_parts is None:
+        if len(assignment) != len(indexes["clusters"]):
+            raise ValidationError(
+                "native PATRON assignment coverage is invalid"
+            )
+        final_assignment: Mapping[str, str] = assignment
+    else:
+        if (
+            next_assignment != len(indexes["clusters"])
+            or packed_sentinel in packed_parts
+        ):
+            raise ValidationError(
+                "native PATRON assignment coverage is invalid"
+            )
+        final_assignment = _PackedClusterAssignment(
+            indexes["parts"], packed_parts
+        )
     for batch in batches:
         expected_changes = batch.pop("expected_changes")
         if len(batch["changes"]) != expected_changes:
@@ -3478,7 +3568,7 @@ def _parse_patron_native_output(
         )
     summary["output_bytes"] = path.stat().st_size
     return (
-        assignment,
+        final_assignment,
         moves,
         batches,
         initial_metrics,
@@ -3635,6 +3725,7 @@ def run_partition_pressure_native(
             _parse_patron_native_output,
             native_output,
             indexes,
+            packed_assignment=stream_semantic_records,
         )
     provider_metadata = {
         "initial_provider": initial_assignment.get("provider"),
