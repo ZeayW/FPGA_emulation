@@ -11,6 +11,7 @@ from .boundary_timing import (
     build_boundary_timing_database,
     validate_boundary_timing_database,
 )
+from .boundary_identity_storage import read_boundary_identity_storage
 from .errors import ValidationError
 from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from .io import read_json, write_json
@@ -321,7 +322,7 @@ def build_xilinx_boundary_timing(
     *,
     _timing_graph: Optional[_TimingGraph] = None,
 ) -> Dict[str, Any]:
-    identity = read_json(identity_path)
+    identity = read_boundary_identity_storage(identity_path, allow_legacy=True)
     graph = (
         _timing_graph
         if _timing_graph is not None
@@ -393,6 +394,9 @@ def build_xilinx_boundary_timing(
     )
     validation = validate_boundary_timing_database(database, identity)
     write_json(output_path, database)
+    close_identity = getattr(identity, "close", None)
+    if callable(close_identity):
+        close_identity()
     return {**validation, "output": str(output_path)}
 
 

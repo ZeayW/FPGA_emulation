@@ -16,6 +16,7 @@ from .boundary_timing import (
     build_boundary_timing_database,
     validate_boundary_timing_database,
 )
+from .boundary_identity_storage import read_boundary_identity_storage
 from .physical_backend import (
     PHYSICAL_PARTITION_RESULT_SCHEMA,
     validate_physical_partition_result,
@@ -66,7 +67,7 @@ def write_vivado_boundary_timing_query(
     output_path: Path,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
-    identities = read_json(identity_path)
+    identities = read_boundary_identity_storage(identity_path, allow_legacy=True)
     if identities.get("schema") != BOUNDARY_IDENTITY_SCHEMA:
         raise ValidationError("Vivado boundary timing identity schema is invalid")
     net_index = {
@@ -121,7 +122,7 @@ def import_vivado_boundary_timing(
     qualification: str = "routed-device-endpoint-exact",
     measurement_scope: str = "partition-boundary",
 ) -> Dict[str, Any]:
-    identities = read_json(identity_path)
+    identities = read_boundary_identity_storage(identity_path, allow_legacy=True)
     lines = input_path.read_text(encoding="utf-8").splitlines()
     if not lines or lines[0] != _BOUNDARY_TIMING_HEADER:
         raise ValidationError("Vivado boundary timing TSV header is invalid")

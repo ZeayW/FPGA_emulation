@@ -10,6 +10,7 @@ from .boundary_timing import (
     build_boundary_timing_database,
     validate_boundary_timing_database,
 )
+from .boundary_identity_storage import read_boundary_identity_storage
 from .errors import ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
@@ -90,7 +91,7 @@ def write_vpr_boundary_timing_query(
     eblif_report: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     ir = EmuIR.load(ir_path)
-    identities = read_json(identity_path)
+    identities = read_boundary_identity_storage(identity_path, allow_legacy=True)
     if identities.get("schema") != BOUNDARY_IDENTITY_SCHEMA:
         raise ValidationError("VPR boundary timing identity schema is invalid")
     net_index = {
@@ -234,7 +235,7 @@ def import_vpr_boundary_timing(
     query_path: Path,
     output_path: Path,
 ) -> Dict[str, Any]:
-    identities = read_json(identity_path)
+    identities = read_boundary_identity_storage(identity_path, allow_legacy=True)
     query_lines = query_path.read_text(encoding="utf-8").splitlines()
     if not query_lines or query_lines[0] != VPR_BOUNDARY_QUERY_HEADER:
         raise ValidationError("VPR boundary timing query header is invalid")

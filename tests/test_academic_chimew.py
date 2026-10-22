@@ -151,6 +151,18 @@ class AcademicChimewTest(unittest.TestCase):
             write_json(
                 boundary,
                 {
+                    "schema": "emuflow.boundary-identity/v1",
+                    "status": "pass",
+                    "design": "design",
+                    "platform": "academic_vtr_2fpga_p2p",
+                    "fpga": fpga,
+                    "provider": "test",
+                    "coverage": {
+                        "endpoints": 0,
+                        "tx": 0,
+                        "rx": 0,
+                        "external_port_nets": 0,
+                    },
                     "endpoints": [],
                 },
             )

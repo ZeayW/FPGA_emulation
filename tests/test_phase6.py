@@ -789,9 +789,20 @@ class Phase6Test(unittest.TestCase):
                 EmuIR.load(direct_output).to_dict(),
                 EmuIR.load(legacy_output).to_dict(),
             )
-            self.assertEqual(
-                read_json(direct_boundary), read_json(legacy_boundary)
+            from emuflow.boundary_identity_storage import (
+                read_boundary_identity_storage,
             )
+
+            with read_boundary_identity_storage(direct_boundary) as direct_identity:
+                direct_value = {
+                    key: (
+                        list(direct_identity[key])
+                        if key == "endpoints"
+                        else direct_identity[key]
+                    )
+                    for key in direct_identity
+                }
+            self.assertEqual(direct_value, read_json(legacy_boundary))
 
     def test_legacy_assignment_migration_does_not_load_emuir_graph(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

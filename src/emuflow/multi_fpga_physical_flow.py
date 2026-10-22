@@ -18,6 +18,7 @@ from .boundary_timing import (
     validate_boundary_identity_database,
     validate_boundary_timing_database,
 )
+from .boundary_identity_storage import read_boundary_identity_storage
 from .chimew_binding_storage import (
     open_chimew_binding_schedule_entry_lookup,
     read_chimew_binding,
@@ -61,6 +62,7 @@ from .physical_backend import (
     validate_physical_partition_result,
 )
 from .physical_summary_storage import (
+    publish_boundary_identity_store,
     publish_logic_segment_timing_store,
     publish_physical_evidence,
 )
@@ -1267,7 +1269,9 @@ def run_multi_fpga_physical_flow(
             boundary_identity_path = Path(
                 lowering_report["boundary_identity"]["output"]
             )
-            boundary_identity = read_json(boundary_identity_path)
+            boundary_identity = read_boundary_identity_storage(
+                boundary_identity_path, allow_legacy=True
+            )
             boundary_timing_path = fpga_root / "boundary-timing.json"
             boundary_timing = build_boundary_timing_database(
                 boundary_identity,
@@ -1279,6 +1283,9 @@ def run_multi_fpga_physical_flow(
                 boundary_timing, boundary_identity
             )
             write_json(boundary_timing_path, boundary_timing)
+            close_boundary = getattr(boundary_identity, "close", None)
+            if callable(close_boundary):
+                close_boundary()
             stages: Dict[str, Any] = {
                 "transport_synthesis": transport_report,
                 "placement_ir": lowering_report,
@@ -1562,7 +1569,10 @@ def run_multi_fpga_physical_flow(
                     (item["port"], item["bit"]): item["packed_block"]
                     for item in eblif_report.get("top_ports", [])
                 }
-                boundary_endpoints = read_json(boundary_identity_path)["endpoints"]
+                boundary_document = read_boundary_identity_storage(
+                    boundary_identity_path, allow_legacy=True
+                )
+                boundary_endpoints = boundary_document["endpoints"]
                 packed_groups: Dict[str, str] = {}
                 group_packed_blocks: Dict[str, str] = {}
                 binding_schema = electrical_binding.get("schema", "")
@@ -1632,6 +1642,9 @@ def run_multi_fpga_physical_flow(
                             group=binding["group"],
                             target_y=target_y,
                         )
+                close_boundary = getattr(boundary_document, "close", None)
+                if callable(close_boundary):
+                    close_boundary()
             placement_report = run_packed_openparf_placement(
                 packed_contract,
                 architecture_db,
@@ -2230,29 +2243,32 @@ def _assemble_multi_fpga_physical_results(
         identity_path = Path(
             item["stages"]["placement_ir"]["boundary_identity"]["output"]
         )
-        identity_database, identity_reference = publish_physical_evidence(
+        _identity_selector, identity_reference = publish_boundary_identity_store(
             identity_path,
             output_dir,
             Path(fpga_id) / identity_path.name,
         )
-        validate_boundary_identity_database(
-            identity_database, transports_by_fpga[fpga_id]
-        )
         physical_summary["boundary_identities"][fpga_id] = identity_reference
-        timing_path = Path(
-            _implementation_stage(item, backend, "boundary_timing")[
-                "import"
-            ]["output"]
-        )
-        timing_database, timing_reference = publish_physical_evidence(
-            timing_path,
-            output_dir,
-            Path(fpga_id) / timing_path.name,
-        )
-        validate_boundary_timing_database(
-            timing_database,
-            identity_database,
-        )
+        with read_boundary_identity_storage(
+            output_dir / identity_reference["path"]
+        ) as identity_database:
+            validate_boundary_identity_database(
+                identity_database, transports_by_fpga[fpga_id]
+            )
+            timing_path = Path(
+                _implementation_stage(item, backend, "boundary_timing")[
+                    "import"
+                ]["output"]
+            )
+            timing_database, timing_reference = publish_physical_evidence(
+                timing_path,
+                output_dir,
+                Path(fpga_id) / timing_path.name,
+            )
+            validate_boundary_timing_database(
+                timing_database,
+                identity_database,
+            )
         physical_summary["boundary_timing"][fpga_id] = timing_reference
     if include_logic_timing:
         physical_summary["logic_segment_timing"] = {}

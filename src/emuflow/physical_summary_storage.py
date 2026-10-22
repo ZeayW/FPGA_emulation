@@ -178,6 +178,20 @@ def publish_logic_segment_timing_store(
         source, output_directory, relative_path
     )
 
+def publish_boundary_identity_store(
+    source: Path,
+    output_directory: Path,
+    relative_path: Path,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Relocate a typed boundary selector and generation without expansion."""
+
+    from .boundary_identity_storage import publish_boundary_identity_selector
+
+    return publish_boundary_identity_selector(
+        source, output_directory, relative_path
+    )
+
+
 def _validate_reference(value: Any) -> Mapping[str, Any]:
     if not isinstance(value, Mapping) or value.get("schema") not in {
         PHYSICAL_EVIDENCE_REFERENCE_SCHEMA,
@@ -207,9 +221,10 @@ def _validate_reference(value: Any) -> Mapping[str, Any]:
     if stored_path.is_absolute() or ".." in stored_path.parts:
         raise ValidationError("physical evidence reference path is unsafe")
     if value["schema"] == PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA:
-        if (
-            value.get("logical_schema") != "emuflow.logic-segment-timing/v1"
-        ):
+        if value.get("logical_schema") not in {
+            "emuflow.logic-segment-timing/v1",
+            "emuflow.boundary-identity/v1",
+        }:
             raise ValidationError(
                 "physical indexed evidence reference is malformed"
             )
@@ -241,6 +256,26 @@ def _read_reference(
     if stat.st_size != reference["bytes"]:
         raise ValidationError("physical evidence byte count disagrees")
     if reference["schema"] == PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA:
+        if reference["logical_schema"] == "emuflow.boundary-identity/v1":
+            from .boundary_identity_storage import read_boundary_identity_storage
+
+            result = read_boundary_identity_storage(resolved_path)
+            if (
+                (expected_design is not None and result.get("design") != expected_design)
+                or (
+                    expected_platform is not None
+                    and result.get("platform") != expected_platform
+                )
+                or (expected_fpga is not None and result.get("fpga") != expected_fpga)
+                or file_sha256(resolved_path) != reference["sha256"]
+            ):
+                close = getattr(result, "close", None)
+                if callable(close):
+                    close()
+                raise ValidationError(
+                    "boundary identity indexed evidence source disagrees"
+                )
+            return result
         from .logic_segment_timing_storage import (
             read_logic_segment_timing_storage,
         )

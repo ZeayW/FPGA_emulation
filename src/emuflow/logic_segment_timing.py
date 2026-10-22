@@ -1034,7 +1034,11 @@ def _write_logic_segment_query_impl(
         path_database = prepared.path_database
         routes = prepared.routes
         schedule = prepared.schedule
-        boundary_identity = read_json(boundary_identity_path)
+        from .boundary_identity_storage import read_boundary_identity_storage
+
+        boundary_identity = read_boundary_identity_storage(
+            boundary_identity_path, allow_legacy=True
+        )
         if merged_ir.value["design"]["name"] != f"{assignment['design']}__{fpga}":
             raise ValidationError("logic segment merged IR target is invalid")
         endpoints, _ = _boundary_maps(boundary_identity)
@@ -1753,6 +1757,9 @@ def _write_logic_segment_query_impl(
             "identity": str(identity_path),
         }
     finally:
+        close_boundary = getattr(locals().get("boundary_identity"), "close", None)
+        if callable(close_boundary):
+            close_boundary()
         if indexed_merged:
             merged_ir.close()
 

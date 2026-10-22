@@ -239,7 +239,11 @@ def _instance_locations(
             raise ValidationError(
                 f"academic Chimew prepass FPGA {fpga!r} has no boundary identity"
             )
-        boundary_document = read_json(Path(boundary_path))
+        from .boundary_identity_storage import read_boundary_identity_storage
+
+        boundary_document = read_boundary_identity_storage(
+            Path(boundary_path), allow_legacy=True
+        )
         boundary_map: Dict[str, Tuple[float, float, float, float]] = {}
         for endpoint in boundary_document.get("endpoints", []):
             if not isinstance(endpoint, Mapping):
@@ -269,6 +273,9 @@ def _instance_locations(
                     f"academic Chimew boundary entry {entry_id!r} is duplicated"
                 )
             boundary_map[entry_id] = point
+        close_boundary = getattr(boundary_document, "close", None)
+        if callable(close_boundary):
+            close_boundary()
         boundary_locations[fpga] = boundary_map
         placement_records.append(
             {
