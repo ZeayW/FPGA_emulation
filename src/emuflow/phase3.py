@@ -911,6 +911,7 @@ def run_phase3(
             )
             native_input_bytes = patron_trace.get("native_input_bytes")
             native_input_records = patron_trace.get("native_input_records")
+            native_input_crc32 = patron_trace.get("native_input_crc32")
             native_output_bytes = patron_trace.get("native_output_bytes")
             if (
                 isinstance(move_count, bool)
@@ -923,13 +924,26 @@ def run_phase3(
                 or not isinstance(change_count, int)
                 or change_count < 0
                 or native_input_transport
-                not in {"streamed-text-pipe", "atomic-text-file"}
+                not in {"typed-binary-pipe", "atomic-text-file"}
                 or isinstance(native_input_bytes, bool)
                 or not isinstance(native_input_bytes, int)
                 or native_input_bytes <= 0
                 or isinstance(native_input_records, bool)
                 or not isinstance(native_input_records, int)
                 or native_input_records <= 0
+                or (
+                    native_input_transport == "typed-binary-pipe"
+                    and (
+                        isinstance(native_input_crc32, bool)
+                        or not isinstance(native_input_crc32, int)
+                        or native_input_crc32 < 0
+                        or native_input_crc32 > 0xFFFFFFFF
+                    )
+                )
+                or (
+                    native_input_transport == "atomic-text-file"
+                    and native_input_crc32 is not None
+                )
                 or isinstance(native_output_bytes, bool)
                 or not isinstance(native_output_bytes, int)
                 or native_output_bytes <= 0
@@ -955,6 +969,7 @@ def run_phase3(
                 "native_input_transport": native_input_transport,
                 "native_input_bytes": native_input_bytes,
                 "native_input_records": native_input_records,
+                "native_input_crc32": native_input_crc32,
                 "native_output_bytes": native_output_bytes,
             }
         if patron_physical_feedback_validation is not None:

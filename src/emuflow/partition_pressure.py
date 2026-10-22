@@ -14,9 +14,11 @@ import json
 import math
 import os
 import sqlite3
+import struct
 import subprocess
 import tempfile
 import uuid
+import zlib
 from array import array
 from collections.abc import Iterator, Sequence
 from collections import defaultdict
@@ -1010,51 +1012,214 @@ class _NativeLineWriter:
         }
 
 
-class _NativePipeLineWriter:
-    """Stream the checked text grammar without a graph-sized input file."""
+_PATRON_TYPED_INPUT_MAGIC = b"EMPATRN1"
+_PATRON_TYPED_INPUT_END_MAGIC = b"EMPEND1\0"
+_PATRON_TYPED_INPUT_VERSION = 1
+_PATRON_TYPED_INPUT_ENDIAN_MARKER = 0x01020304
+_PATRON_TYPED_INPUT_BUFFER_BYTES = 1024 * 1024
+
+
+class _NativeBinaryPipeWriter:
+    """Stream the checked typed PATRON protocol in bounded batches."""
 
     def __init__(self, stream: Any) -> None:
         self._stream = stream
         self._published = False
+        self._pending = bytearray()
+        self._checksum = 0
         self._bytes = 0
         self._records = 0
 
-    def append(self, line: str) -> None:
-        if self._stream is None or not isinstance(line, str) or "\n" in line:
-            raise ValidationError("native PATRON input record is invalid")
-        self._stream.write(line)
-        self._stream.write("\n")
-        self._bytes += len(line.encode("utf-8")) + 1
-        self._records += 1
-
-    def extend(self, lines: Iterable[str]) -> None:
-        for line in lines:
-            self.append(line)
-
-    def append_fields(self, fields: Iterable[Any]) -> None:
+    def _flush_pending(self) -> None:
         if self._stream is None:
             raise ValidationError("native PATRON input writer is closed")
-        first = True
-        encoded_bytes = 0
-        for raw in fields:
-            token = str(raw)
-            if not token or any(character.isspace() for character in token):
-                raise ValidationError("native PATRON input field is invalid")
-            if not first:
-                self._stream.write(" ")
-                encoded_bytes += 1
-            self._stream.write(token)
-            encoded_bytes += len(token.encode("utf-8"))
-            first = False
-        if first:
-            raise ValidationError("native PATRON input record is empty")
-        self._stream.write("\n")
-        self._bytes += encoded_bytes + 1
+        if self._pending:
+            self._stream.write(self._pending)
+            self._pending.clear()
+
+    def _emit(self, format_string: str, *values: Any) -> None:
+        payload = struct.pack(format_string, *values)
+        self._pending.extend(payload)
+        self._checksum = zlib.crc32(payload, self._checksum)
+        self._bytes += len(payload)
+        if len(self._pending) >= _PATRON_TYPED_INPUT_BUFFER_BYTES:
+            self._flush_pending()
+
+    def _emit_u32_values(self, values: Iterable[int]) -> int:
+        count = 0
+        batch: List[int] = []
+        for raw in values:
+            value = int(raw)
+            if value < 0 or value > 0xFFFFFFFF:
+                raise ValidationError("native PATRON typed index is invalid")
+            batch.append(value)
+            count += 1
+            if len(batch) == 4096:
+                self._emit(f"<{len(batch)}I", *batch)
+                batch.clear()
+        if batch:
+            self._emit(f"<{len(batch)}I", *batch)
+        return count
+
+    def header(
+        self,
+        *,
+        flow_version: int,
+        use_physical_feedback: bool,
+        counts: Tuple[int, int, int, int, int, int],
+        integers: Tuple[int, int, int, int, int, int, int, int, int, int],
+        scalars: Tuple[float, float, float, float, float],
+        flow_configuration: Tuple[int, int, int, int, int, int, int],
+    ) -> None:
+        flags = 1
+        if flow_version != 6:
+            flags |= 2
+        if use_physical_feedback:
+            flags |= 4
+        self._emit(
+            "<8sIIII6Q10i5d7i",
+            _PATRON_TYPED_INPUT_MAGIC,
+            _PATRON_TYPED_INPUT_VERSION,
+            _PATRON_TYPED_INPUT_ENDIAN_MARKER,
+            flow_version,
+            flags,
+            *counts,
+            *integers,
+            *scalars,
+            *flow_configuration,
+        )
+        self._records += 1
+
+    def cap(
+        self,
+        index: int,
+        hard: Sequence[float],
+        allowed: Sequence[float],
+    ) -> None:
+        if len(hard) != len(allowed):
+            raise ValidationError("native PATRON capacity dimensions disagree")
+        values = [
+            value
+            for pair in zip(hard, allowed)
+            for value in pair
+        ]
+        self._emit(
+            f"<BI{len(values)}d", ord("C"), index, *values
+        )
+        self._records += 1
+
+    def cluster(
+        self,
+        index: int,
+        current: int,
+        fixed: int,
+        weights: Sequence[float],
+    ) -> None:
+        self._emit(
+            f"<BIii{len(weights)}d",
+            ord("L"),
+            index,
+            current,
+            fixed,
+            *weights,
+        )
+        self._records += 1
+
+    def domain(
+        self,
+        index: int,
+        lanes: int,
+        is_sll: bool,
+        ratio_delay_slope_ns: float,
+        opposite: int,
+        banks: int,
+        wires: int,
+        capacity_bits: int,
+    ) -> None:
+        self._emit(
+            "<BIiBdiiiq",
+            ord("D"),
+            index,
+            lanes,
+            int(is_sll),
+            ratio_delay_slope_ns,
+            opposite,
+            banks,
+            wires,
+            capacity_bits,
+        )
+        self._records += 1
+
+    def route(
+        self,
+        source: int,
+        sink: int,
+        arcs: Optional[Sequence[Tuple[int, float]]],
+    ) -> None:
+        self._emit(
+            "<BIIi",
+            ord("R"),
+            source,
+            sink,
+            -1 if arcs is None else len(arcs),
+        )
+        if arcs is not None:
+            for domain, delay_ns in arcs:
+                self._emit("<Id", domain, delay_ns)
+        self._records += 1
+
+    def net(
+        self,
+        index: int,
+        driver_count: int,
+        drivers: Iterable[int],
+        sink_count: int,
+        sinks: Iterable[int],
+    ) -> None:
+        self._emit("<BIQ", ord("N"), index, driver_count)
+        if self._emit_u32_values(drivers) != driver_count:
+            raise ValidationError("native PATRON driver count disagrees")
+        self._emit("<Q", sink_count)
+        if self._emit_u32_values(sinks) != sink_count:
+            raise ValidationError("native PATRON sink count disagrees")
+        self._records += 1
+
+    def path(
+        self,
+        index: int,
+        period_ns: float,
+        slack_ns: float,
+        start_cluster: int,
+        end_cluster: int,
+        nets: Sequence[int],
+        feedback: Optional[Tuple[int, int, float]],
+    ) -> None:
+        self._emit(
+            "<BI2diiQ",
+            ord("P"),
+            index,
+            period_ns,
+            slack_ns,
+            start_cluster,
+            end_cluster,
+            len(nets),
+        )
+        if self._emit_u32_values(nets) != len(nets):
+            raise ValidationError("native PATRON path-net count disagrees")
+        if feedback is not None:
+            self._emit("<iid", *feedback)
         self._records += 1
 
     def publish(self) -> None:
         if self._stream is None or self._published:
             raise ValidationError("native PATRON input writer is closed")
+        trailer = struct.pack(
+            "<8sI", _PATRON_TYPED_INPUT_END_MAGIC, self._checksum
+        )
+        self._pending.extend(trailer)
+        self._bytes += len(trailer)
+        self._records += 1
+        self._flush_pending()
         stream = self._stream
         self._stream = None
         stream.flush()
@@ -1073,9 +1238,10 @@ class _NativePipeLineWriter:
     @property
     def summary(self) -> Dict[str, Any]:
         return {
-            "transport": "streamed-text-pipe",
+            "transport": "typed-binary-pipe",
             "bytes": self._bytes,
             "records": self._records,
+            "crc32": self._checksum,
         }
 
 
@@ -3312,31 +3478,89 @@ def _write_patron_native_input(
                 "native PATRON input cannot use both a path and a stream"
             )
         lines = _writer
+    typed_input = isinstance(lines, _NativeBinaryPipeWriter)
     published = False
     try:
-        lines.extend([
+        physical_hop_guard_scale_ns = (
+            PATRON_FLOW_PHYSICAL_HOP_GUARD_SCALE_NS
+            if flow_version == 10
+            else 0.0
+        )
+        flow_configuration = (
             (
-                f"EMUFLOW_PATRON_INPUT_V{flow_version}_BANKS_V1"
-            ),
-            (
-                f"PARAM {len(parts)} {len(clusters)} {len(dimensions)} "
-                f"{len(domains)} {len(nets)} {len(model['paths'])} "
-                f"{-1 if max_hops is None else max_hops} "
-                f"{model['configuration']['frame_slots']} "
-                f"{model['configuration']['tdm_ratio_quantum']} "
-                f"{constraints['min_used_fpgas']} {max_moves} "
-                f"{model['normalization']['positive_slack_scale_ns']:.17g} "
-                f"{model['normalization']['negative_slack_scale_ns']:.17g} "
-                f"{model['normalization']['max_clock_period_ns']:.17g} "
-                f"{model['configuration']['boundary_fanout_penalty_scale_ns']:.17g} "
-                f"{model['configuration']['max_scalable_sweeps']} "
-                f"{model['configuration']['scalable_ejection_critical_limit']} "
-                f"{model['configuration']['scalable_ejection_donor_limit']} "
-                f"{model['configuration']['max_scalable_ejections']} "
-                f"{route_constraints.get('tdm_min_ratio', 1)}"
-            ),
-        ])
-        if flow_refinement:
+                len(clusters),
+                PATRON_FLOW_CORRIDOR_DISTANCE,
+                PATRON_FLOW_PIERCING_STRATEGY,
+                PATRON_FLOW_MAX_LEGAL_CANDIDATES,
+                PATRON_FLOW_MAX_POLISH_MOVES,
+                PATRON_FLOW_MAX_FRONTIER_PATHS,
+                PATRON_FLOW_MAX_TAIL_MOVES,
+            )
+            if flow_refinement
+            else (0, 0, 0, 0, 0, 0, 0)
+        )
+        if typed_input:
+            lines.header(
+                flow_version=flow_version,
+                use_physical_feedback=use_physical_feedback,
+                counts=(
+                    len(parts),
+                    len(clusters),
+                    len(dimensions),
+                    len(domains),
+                    len(nets),
+                    len(model["paths"]),
+                ),
+                integers=(
+                    -1 if max_hops is None else max_hops,
+                    model["configuration"]["frame_slots"],
+                    model["configuration"]["tdm_ratio_quantum"],
+                    constraints["min_used_fpgas"],
+                    max_moves,
+                    model["configuration"]["max_scalable_sweeps"],
+                    model["configuration"][
+                        "scalable_ejection_critical_limit"
+                    ],
+                    model["configuration"][
+                        "scalable_ejection_donor_limit"
+                    ],
+                    model["configuration"]["max_scalable_ejections"],
+                    route_constraints.get("tdm_min_ratio", 1),
+                ),
+                scalars=(
+                    model["normalization"]["positive_slack_scale_ns"],
+                    model["normalization"]["negative_slack_scale_ns"],
+                    model["normalization"]["max_clock_period_ns"],
+                    model["configuration"][
+                        "boundary_fanout_penalty_scale_ns"
+                    ],
+                    physical_hop_guard_scale_ns,
+                ),
+                flow_configuration=flow_configuration,
+            )
+        else:
+            lines.extend([
+                f"EMUFLOW_PATRON_INPUT_V{flow_version}_BANKS_V1",
+                (
+                    f"PARAM {len(parts)} {len(clusters)} "
+                    f"{len(dimensions)} {len(domains)} {len(nets)} "
+                    f"{len(model['paths'])} "
+                    f"{-1 if max_hops is None else max_hops} "
+                    f"{model['configuration']['frame_slots']} "
+                    f"{model['configuration']['tdm_ratio_quantum']} "
+                    f"{constraints['min_used_fpgas']} {max_moves} "
+                    f"{model['normalization']['positive_slack_scale_ns']:.17g} "
+                    f"{model['normalization']['negative_slack_scale_ns']:.17g} "
+                    f"{model['normalization']['max_clock_period_ns']:.17g} "
+                    f"{model['configuration']['boundary_fanout_penalty_scale_ns']:.17g} "
+                    f"{model['configuration']['max_scalable_sweeps']} "
+                    f"{model['configuration']['scalable_ejection_critical_limit']} "
+                    f"{model['configuration']['scalable_ejection_donor_limit']} "
+                    f"{model['configuration']['max_scalable_ejections']} "
+                    f"{route_constraints.get('tdm_min_ratio', 1)}"
+                ),
+            ])
+        if flow_refinement and not typed_input:
             fields = [
                 "FLOW",
                 "1",
@@ -3350,7 +3574,7 @@ def _write_patron_native_input(
             ]
             if flow_version >= 10:
                 fields.append(
-                    f"{(PATRON_FLOW_PHYSICAL_HOP_GUARD_SCALE_NS if flow_version == 10 else 0.0):.17g}"
+                    f"{physical_hop_guard_scale_ns:.17g}"
                 )
             lines.append(" ".join(fields))
         total_cells = sum(cluster["cells"] for cluster in clusters)
@@ -3366,11 +3590,14 @@ def _write_patron_native_input(
                 allowed.append(
                     float(balance["balance_allowed_loads"][part][dimension])
                 )
-            fields = " ".join(
-                f"{hard_value:.17g} {allowed_value:.17g}"
-                for hard_value, allowed_value in zip(hard, allowed)
-            )
-            lines.append(f"CAP {part_index[part]} {fields}")
+            if typed_input:
+                lines.cap(part_index[part], hard, allowed)
+            else:
+                fields = " ".join(
+                    f"{hard_value:.17g} {allowed_value:.17g}"
+                    for hard_value, allowed_value in zip(hard, allowed)
+                )
+                lines.append(f"CAP {part_index[part]} {fields}")
         for index, cluster in enumerate(clusters):
             current = initial_assignment["cluster_assignment"][cluster["cluster"]]
             fixed = cluster["fixed_fpga"]
@@ -3380,89 +3607,159 @@ def _write_patron_native_input(
                 else cluster["resources"].get(dimension, 0)
                 for dimension in dimensions
             ]
-            lines.append(
-                " ".join(
-                    [
-                        "CLUSTER",
-                        str(index),
-                        str(part_index[current]),
-                        str(-1 if fixed is None else part_index[fixed]),
-                        *(str(weight) for weight in weights),
-                    ]
+            current_index = part_index[current]
+            fixed_index = -1 if fixed is None else part_index[fixed]
+            if typed_input:
+                lines.cluster(index, current_index, fixed_index, weights)
+            else:
+                lines.append(
+                    " ".join(
+                        [
+                            "CLUSTER",
+                            str(index),
+                            str(current_index),
+                            str(fixed_index),
+                            *(str(weight) for weight in weights),
+                        ]
+                    )
                 )
-            )
         for index, domain in enumerate(domains):
             link = link_by_id[domain["link"]]
-            lines.append(
-                f"DOMAIN {index} {domain['lanes']} "
-                f"{int(domain['link'] in set(route_constraints['sll_links']))} "
-                f"{route_link_delay_coefficients_ns(platform, link.id, link.endpoints[0], link.endpoints[1], route_constraints)[1]:.17g} "
-                f"{domain_index.get(domain.get('opposite_capacity_key'), -1)} "
-                f"{domain.get('bank_count', 0)} {domain.get('wires_per_bank', 0)} "
-                f"{int(domain['capacity_bits'])}"
+            is_sll = domain["link"] in set(route_constraints["sll_links"])
+            ratio_delay_slope_ns = route_link_delay_coefficients_ns(
+                platform,
+                link.id,
+                link.endpoints[0],
+                link.endpoints[1],
+                route_constraints,
+            )[1]
+            opposite = domain_index.get(
+                domain.get("opposite_capacity_key"), -1
             )
+            banks = domain.get("bank_count", 0)
+            wires = domain.get("wires_per_bank", 0)
+            capacity_bits = int(domain["capacity_bits"])
+            if typed_input:
+                lines.domain(
+                    index,
+                    domain["lanes"],
+                    is_sll,
+                    ratio_delay_slope_ns,
+                    opposite,
+                    banks,
+                    wires,
+                    capacity_bits,
+                )
+            else:
+                lines.append(
+                    f"DOMAIN {index} {domain['lanes']} {int(is_sll)} "
+                    f"{ratio_delay_slope_ns:.17g} {opposite} {banks} "
+                    f"{wires} {capacity_bits}"
+                )
         for source in parts:
             for sink in parts:
                 route = model["shortest_routes"][source][sink]
                 if route is None:
-                    lines.append(
-                        f"ROUTE {part_index[source]} {part_index[sink]} -1"
-                    )
+                    if typed_input:
+                        lines.route(
+                            part_index[source], part_index[sink], None
+                        )
+                    else:
+                        lines.append(
+                            f"ROUTE {part_index[source]} "
+                            f"{part_index[sink]} -1"
+                        )
                     continue
-                fields = []
+                route_fields = []
                 for arc in route:
-                    fields.extend(
-                        [
-                            str(
-                                domain_index[
-                                    arc_domain[
-                                        (arc["link"], arc["from"], arc["to"])
-                                    ]
+                    route_fields.append(
+                        (
+                            domain_index[
+                                arc_domain[
+                                    (arc["link"], arc["from"], arc["to"])
                                 ]
+                            ],
+                            route_link_delay_ns(
+                                platform,
+                                arc["link"],
+                                arc["from"],
+                                arc["to"],
+                                route_constraints,
                             ),
-                            f"{route_link_delay_ns(platform, arc['link'], arc['from'], arc['to'], route_constraints):.17g}",
-                        ]
+                        )
                     )
-                lines.append(
-                    " ".join(
-                        [
-                            "ROUTE",
-                            str(part_index[source]),
-                            str(part_index[sink]),
-                            str(len(route)),
-                            *fields,
-                        ]
+                if typed_input:
+                    lines.route(
+                        part_index[source],
+                        part_index[sink],
+                        route_fields,
                     )
-                )
+                else:
+                    fields = [
+                        value
+                        for domain, delay_ns in route_fields
+                        for value in (str(domain), f"{delay_ns:.17g}")
+                    ]
+                    lines.append(
+                        " ".join(
+                            [
+                                "ROUTE",
+                                str(part_index[source]),
+                                str(part_index[sink]),
+                                str(len(route)),
+                                *fields,
+                            ]
+                        )
+                    )
         if packed_nets is not None:
             for index in range(len(packed_nets)):
                 drivers, sinks = packed_nets.native_net_members(index)
-                lines.append_fields(
-                    itertools.chain(
-                        ("NET", index, len(drivers)),
-                        (
-                            packed_nets.native_cluster_ordinal(item)
-                            for item in drivers
-                        ),
-                        (len(sinks),),
-                        (
-                            packed_nets.native_cluster_ordinal(item)
-                            for item in sinks
-                        ),
-                    )
+                driver_ordinals = (
+                    packed_nets.native_cluster_ordinal(item)
+                    for item in drivers
                 )
+                sink_ordinals = (
+                    packed_nets.native_cluster_ordinal(item)
+                    for item in sinks
+                )
+                if typed_input:
+                    lines.net(
+                        index,
+                        len(drivers),
+                        driver_ordinals,
+                        len(sinks),
+                        sink_ordinals,
+                    )
+                else:
+                    lines.append_fields(
+                        itertools.chain(
+                            ("NET", index, len(drivers)),
+                            driver_ordinals,
+                            (len(sinks),),
+                            sink_ordinals,
+                        )
+                    )
         else:
             for index, net in enumerate(nets):
                 drivers = [cluster_index[item] for item in net["drivers"]]
                 sinks = [cluster_index[item] for item in net["sinks"]]
-                lines.append_fields(
-                    itertools.chain(
-                        ("NET", index, len(drivers)),
+                if typed_input:
+                    lines.net(
+                        index,
+                        len(drivers),
                         drivers,
-                        (len(sinks),),
+                        len(sinks),
                         sinks,
                     )
-                )
+                else:
+                    lines.append_fields(
+                        itertools.chain(
+                            ("NET", index, len(drivers)),
+                            drivers,
+                            (len(sinks),),
+                            sinks,
+                        )
+                    )
         packed_paths = (
             model["paths"]
             if isinstance(model["paths"], _PackedPressurePathSequence)
@@ -3505,30 +3802,56 @@ def _write_patron_native_input(
                     for net in timing_path["path_nets"]
                     if net in net_index
                 ]
-            fields = (
-                "PATH",
-                index,
-                f"{clock_period_ns:.17g}",
-                f"{base_slack_ns:.17g}",
-                start_cluster_index,
-                end_cluster_index,
-                len(path_nets),
-            )
-            feedback_fields: Sequence[Any] = ()
+            feedback: Optional[Tuple[int, int, float]] = None
             if use_physical_feedback:
-                feedback = feedback_by_index.get(index)
-                if feedback is None:
-                    feedback_fields = (-1, -1, 0)
+                feedback_record = feedback_by_index.get(index)
+                if feedback_record is None:
+                    feedback = (-1, -1, 0.0)
                 else:
-                    feedback_fields = (
-                        part_index[feedback["observed_source_fpga"]],
-                        part_index[feedback["observed_sink_fpga"]],
-                        f"{float(feedback['positive_residual_ns']) * physical_feedback_scale:.17g}",
+                    feedback = (
+                        part_index[
+                            feedback_record["observed_source_fpga"]
+                        ],
+                        part_index[
+                            feedback_record["observed_sink_fpga"]
+                        ],
+                        float(feedback_record["positive_residual_ns"])
+                        * physical_feedback_scale,
                     )
-            lines.append_fields(
-                itertools.chain(fields, path_nets, feedback_fields)
-            )
-        lines.append("END")
+            if typed_input:
+                lines.path(
+                    index,
+                    clock_period_ns,
+                    base_slack_ns,
+                    start_cluster_index,
+                    end_cluster_index,
+                    path_nets,
+                    feedback,
+                )
+            else:
+                fields = (
+                    "PATH",
+                    index,
+                    f"{clock_period_ns:.17g}",
+                    f"{base_slack_ns:.17g}",
+                    start_cluster_index,
+                    end_cluster_index,
+                    len(path_nets),
+                )
+                feedback_fields: Sequence[Any] = (
+                    ()
+                    if feedback is None
+                    else (
+                        feedback[0],
+                        feedback[1],
+                        f"{feedback[2]:.17g}",
+                    )
+                )
+                lines.append_fields(
+                    itertools.chain(fields, path_nets, feedback_fields)
+                )
+        if not typed_input:
+            lines.append("END")
         lines.publish()
         published = True
     finally:
@@ -4079,7 +4402,9 @@ def run_partition_pressure_native(
                 physical_feedback,
                 physical_feedback_scale,
             )
-            command.extend((str(copy_path), str(native_output)))
+            command.extend(
+                ("--legacy-text", str(copy_path), str(native_output))
+            )
             try:
                 completed = phase3_runtime_call(
                     "patron.execute_native",
@@ -4097,7 +4422,7 @@ def run_partition_pressure_native(
                     f"{timeout_seconds} seconds"
                 ) from error
         else:
-            command.extend(("-", str(native_output)))
+            command.extend(("--typed-input", "-", str(native_output)))
             stdout_path = root / "patron.stdout"
             stderr_path = root / "patron.stderr"
             with (
@@ -4109,9 +4434,6 @@ def run_partition_pressure_native(
                     stdin=subprocess.PIPE,
                     stdout=stdout_stream,
                     stderr=stderr_stream,
-                    text=True,
-                    encoding="utf-8",
-                    errors="strict",
                     env=environment,
                 )
                 if process.stdin is None:
@@ -4135,7 +4457,7 @@ def run_partition_pressure_native(
                         algorithm_version,
                         physical_feedback,
                         physical_feedback_scale,
-                        _writer=_NativePipeLineWriter(process.stdin),
+                        _writer=_NativeBinaryPipeWriter(process.stdin),
                     )
                 except (BrokenPipeError, OSError) as error:
                     process.stdin = None
@@ -4307,6 +4629,7 @@ def run_partition_pressure_native(
         "native_input_transport": output_summary["input"]["transport"],
         "native_input_bytes": output_summary["input"]["bytes"],
         "native_input_records": output_summary["input"]["records"],
+        "native_input_crc32": output_summary["input"].get("crc32"),
         "native_output_bytes": output_summary["output_bytes"],
         "trace_storage": (
             "retained"

@@ -58,15 +58,20 @@ on Linux, parent-process I/O counters. Search, imported-solution, and replay
 runs must be compared as distinct execution modes. Assignment-index
 publication further separates exact-binary emission, primary and replica copy
 rows, cut-sink rows, commit, and independent index validation.
-Production PATRON input now streams the existing checked text grammar directly
-to the native parser over standard input. The normal path therefore does not
-create, flush, or reread the graph-sized `patron.in` temporary file. The trace
-records the exact input byte and record counts plus the selected transport, so
-large NVDLA qualification can attribute the eliminated temporary I/O without
-changing the partition algorithm or protocol semantics. Setting
-`EMUFLOW_PATRON_INPUT_COPY` explicitly retains an atomically published text
-copy for differential debugging. Text formatting and parsing still scale with
-the model; a direct typed native store/protocol remains future work.
+Production PATRON input now streams a versioned little-endian typed protocol
+directly to the native parser over standard input. Its fixed-width header,
+canonical record tags, exact counts, CRC-32 trailer and EOF check reject mixed,
+truncated, corrupted or concatenated input before partition search. The normal
+path no longer formats the graph as decimal text or creates, flushes and
+rereads `patron.in`. The trace records exact input bytes, records, CRC and
+transport. Setting `EMUFLOW_PATRON_INPUT_COPY` explicitly selects the checked
+legacy text encoder and retains an atomically published copy for differential
+debugging. On a 100,000-cluster/net/path adapter fixture, typed encoding took
+0.695 versus 0.992 seconds and native read plus execution took 0.208 versus
+1.578 seconds; combined time fell from 2.570 to 0.904 seconds with
+byte-identical native output. Typed IPC was 9,900,418 bytes versus 8,411,397
+text bytes, so this result demonstrates conversion, parsing and disk removal,
+not compression. Large NVDLA qualification remains required.
 Production clustering now consumes compact EmuIR through ordered integer
 SQLite cursors. It keeps only a four-byte original-to-lexical cell permutation,
 compact union-find arrays and the final cluster records; it no longer decodes a

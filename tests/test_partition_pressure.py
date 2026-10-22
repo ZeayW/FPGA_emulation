@@ -34,6 +34,7 @@ from emuflow.partition_pressure import (
     _PackedPressureNetSequence,
     _PackedPressurePathSequence,
     _PackedStringOrdinalIndex,
+    _NativeBinaryPipeWriter,
     _canonical_digest,
     _flow_refinement_configuration,
     _parse_patron_native_output,
@@ -454,10 +455,11 @@ class PartitionPressureTest(unittest.TestCase):
         )
         self.assertEqual(trace["trace_storage"], "summary-only")
         self.assertEqual(
-            trace["native_input_transport"], "streamed-text-pipe"
+            trace["native_input_transport"], "typed-binary-pipe"
         )
         self.assertGreater(trace["native_input_bytes"], 0)
         self.assertGreater(trace["native_input_records"], 0)
+        self.assertIsInstance(trace["native_input_crc32"], int)
         self.assertNotIn("moves", trace)
 
     def test_native_patron_explicit_input_copy_preserves_debug_protocol(
@@ -488,6 +490,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(
                 trace["native_input_transport"], "atomic-text-file"
             )
+            self.assertIsNone(trace["native_input_crc32"])
             self.assertEqual(
                 copy_path.stat().st_size, trace["native_input_bytes"]
             )
@@ -496,6 +499,59 @@ class PartitionPressureTest(unittest.TestCase):
                 copy_path.read_text().splitlines()[0],
                 "EMUFLOW_PATRON_INPUT_V6_BANKS_V1",
             )
+
+    def test_native_patron_typed_input_rejects_corruption_and_framing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            typed_path = root / "patron.bin"
+            stream = typed_path.open("wb")
+            indexes = _write_patron_native_input(
+                None,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                self.route_constraints,
+                self.model,
+                self.initial,
+                0,
+                6,
+                _writer=_NativeBinaryPipeWriter(stream),
+            )
+            self.assertTrue(stream.closed)
+            self.assertEqual(
+                indexes["input"]["transport"], "typed-binary-pipe"
+            )
+            valid = typed_path.read_bytes()
+            variants = {
+                "corrupted": (
+                    valid[: len(valid) // 2]
+                    + bytes([valid[len(valid) // 2] ^ 1])
+                    + valid[len(valid) // 2 + 1 :]
+                ),
+                "truncated": valid[:-1],
+                "trailing": valid + b"x",
+            }
+            for label, payload in variants.items():
+                with self.subTest(label=label):
+                    candidate = root / f"{label}.bin"
+                    output = root / f"{label}.out"
+                    candidate.write_bytes(payload)
+                    completed = subprocess.run(
+                        [
+                            str(patron_refiner()),
+                            "--typed-input",
+                            str(candidate),
+                            str(output),
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn("PATRON typed input", completed.stderr)
+                    self.assertFalse(output.exists())
 
     def test_compact_pressure_model_randomized_differential(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2250,7 +2306,7 @@ class PartitionPressureTest(unittest.TestCase):
     def test_native_patron_timeout_is_enforced(self) -> None:
         class TimeoutProcess:
             def __init__(self):
-                self.stdin = io.StringIO()
+                self.stdin = io.BytesIO()
                 self.killed = False
                 self.wait_timeouts = []
 
