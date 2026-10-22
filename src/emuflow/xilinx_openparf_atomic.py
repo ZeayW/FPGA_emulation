@@ -168,7 +168,10 @@ class _IndexedAtomicPlacement:
         os.close(descriptor)
         self._path = Path(temporary)
         try:
-            database = sqlite3.connect(self._path)
+            # The authenticated atom sidecar is attached by a read-only file
+            # URI below. URI parsing must be enabled on the staging connection
+            # as well; some production SQLite builds disable it by default.
+            database = sqlite3.connect(self._path, uri=True)
             self._database = database
             database.execute("PRAGMA journal_mode=OFF")
             database.execute("PRAGMA synchronous=OFF")

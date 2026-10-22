@@ -31,6 +31,11 @@ placement objective. This guides placement without changing connectivity.
 Exact legalization and an independent site/BEL validator remain responsible
 for physical legality.
 
+The OpenPARF coordinate importer joins solver rows to the authenticated atomic
+name-map sidecar through an explicitly URI-enabled SQLite connection. The
+sidecar is attached read-only and immutable; the join independently checks atom
+identity and exact coverage without expanding the complete name map in Python.
+
 The default placement region covers all SLRs of the device. The platform's
 per-FPGA utilization limit is a whole-device capacity contract and does not
 implicitly create a pblock. Using the whole device lets the placer trade

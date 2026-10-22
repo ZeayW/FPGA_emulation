@@ -2699,6 +2699,38 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             self.assertEqual(certificate["summary"]["atoms"], 2)
             self.assertFalse(list(output.glob(".openparf-placement-*.sqlite3")))
 
+    def test_typed_placement_join_explicitly_enables_file_uri_attachment(self):
+        real_connect = sqlite3.connect
+        attached = []
+
+        class ExplicitUriConnection(sqlite3.Connection):
+            def execute(self, sql, parameters=()):
+                if sql.startswith("ATTACH DATABASE") and parameters[0].startswith("file:"):
+                    if not self.uri_enabled:
+                        raise sqlite3.OperationalError("URI attachment was not enabled")
+                    attached.append(parameters[0])
+                return super().execute(sql, parameters)
+
+        def connect(*args, **kwargs):
+            kwargs["factory"] = ExplicitUriConnection
+            connection = real_connect(*args, **kwargs)
+            connection.uri_enabled = kwargs.get("uri", False)
+            return connection
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "placed.pl"
+            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+            with mock.patch.object(atomic_adapter.sqlite3, "connect", side_effect=connect):
+                certificate = validate_xilinx_openparf_atomic_placement(
+                    placement, output / "name_map.json", mapped, architecture)
+            self.assertEqual(certificate["status"], "pass")
+            self.assertTrue(attached)
+            self.assertTrue(all(uri.endswith("?mode=ro&immutable=1") for uri in attached))
+
     def test_validator_releases_system_index_and_name_map_lease_on_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
