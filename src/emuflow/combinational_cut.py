@@ -2296,7 +2296,7 @@ def _analyze_static_exact_dependencies_native(
             for index, instance in enumerate(instances)
         }
     )
-    already_ordered = all(
+    already_ordered = getattr(cut_nets, "is_canonical", False) is True or all(
         cut_nets[index - 1]["net"] < cut_nets[index]["net"]
         for index in range(1, len(cut_nets))
     )
@@ -2308,7 +2308,12 @@ def _analyze_static_exact_dependencies_native(
             range(len(cut_nets)), key=lambda index: cut_nets[index]["net"]
         )
         ordered_cuts = [cut_nets[index] for index in ordered_positions]
-    ordered_cut_ids = [cut["net"] for cut in ordered_cuts]
+    net_identities = getattr(ordered_cuts, "net_identities", None)
+    ordered_cut_ids: Sequence[str] = (
+        net_identities()
+        if callable(net_identities)
+        else [cut["net"] for cut in ordered_cuts]
+    )
     if any(
         ordered_cut_ids[index - 1] == ordered_cut_ids[index]
         for index in range(1, len(ordered_cut_ids))
@@ -3315,7 +3320,12 @@ def build_static_exact_semantic_contract(
         ordered_cut_ids = sorted(cut_by_net)
         ordered_cuts = [cut_by_net.pop(net_id) for net_id in ordered_cut_ids]
     else:
-        ordered_cut_ids = [cut["net"] for cut in ordered_cuts]
+        net_identities = getattr(ordered_cuts, "net_identities", None)
+        ordered_cut_ids = (
+            net_identities()
+            if callable(net_identities)
+            else [cut["net"] for cut in ordered_cuts]
+        )
     del cut_by_net
     if analysis_records is not None:
         if len(analysis_records) != len(ordered_cut_ids):

@@ -426,6 +426,13 @@ class Phase3Test(unittest.TestCase):
                         not isinstance(
                             assignment["instance_assignment"], dict
                         ),
+                        isinstance(assignment["cut_nets"], list),
+                        list.__len__(assignment["cut_nets"]) == 0,
+                        assignment["cut_nets"].packed_payload_bytes > 0,
+                        assignment["cut_nets"][0]
+                        in assignment["cut_nets"],
+                        list(reversed(assignment["cut_nets"]))
+                        == list(assignment["cut_nets"])[::-1],
                         contract["source_identity"][
                             "instance_assignment_sha256"
                         ]
@@ -453,7 +460,20 @@ class Phase3Test(unittest.TestCase):
                 )
             self.assertEqual(
                 observed_streams,
-                [(True, True, True, True, True)],
+                [
+                    (
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                    )
+                ],
             )
             assignment = read_json(output / "assignment.json")
             packed_assignment = json.loads(

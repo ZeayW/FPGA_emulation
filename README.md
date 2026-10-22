@@ -301,7 +301,17 @@ view back into a retained Python string list before publication. In a separate
 14,000,014-character JSON used 11,327 versus 68,009,482 bytes of incremental
 traced peak allocation and 64,749,568 versus 203,161,600 bytes of process peak
 RSS; wall time was 1.780 versus 1.618 seconds. The policy array remains
-graph-sized in the logical v1 schema. The C++ analyzer now bounds protocol-v3
+graph-sized in the logical v1 schema. Compact production cut construction now
+keeps net names in one UTF-8 pool, source/sink ownership in fixed-width CSR
+columns, and endpoint counts in uint64 columns. Native dependency analysis,
+semantic construction, validation and assignment publication expand only the
+current record and consume a repeatable lazy net-identity view, while explicit
+compatibility callers still receive the unchanged dictionaries. On 200,000
+synthetic cut records, retained traced allocation fell from 85,428,138 to
+10,995,827 bytes and process peak RSS from 246,202,368 to 35,536,896 bytes;
+construction plus a complete logical traversal changed from 1.82 to 3.74
+seconds and produced the same canonical SHA-256. This is isolated
+representation evidence, not NVDLA qualification. The C++ analyzer now bounds protocol-v3
 capture ordering to a 1,048,576-record run and a 64-way external merge instead
 of retaining and sorting the complete capture population. Runs deduplicate
 before merging; populations below one run stay in memory, while the final

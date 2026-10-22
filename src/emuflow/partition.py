@@ -236,6 +236,376 @@ class _CompactClusterRecords(list):
     __imul__ = _immutable
 
 
+class _CompactCutNetIdentities(Sequence[str]):
+    """Repeatable net-name projection without a retained Python string list."""
+
+    def __init__(self, records: "_CompactCutNetRecords") -> None:
+        self._records = records
+
+    def __len__(self) -> int:
+        return len(self._records)
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [
+                self._records.net_at(item)
+                for item in range(*index.indices(len(self)))
+            ]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("compact cut identity index must be an integer")
+        return self._records.net_at(index)
+
+    def __iter__(self) -> Iterator[str]:
+        for index in range(len(self)):
+            yield self._records.net_at(index)
+
+
+class _CompactCutNetRecords(list):
+    """Lazy cut records backed by fixed-width ownership columns.
+
+    Compact Phase 3 used to expand one dictionary plus several Python lists
+    for every transported net immediately after the endpoint scan.  The final
+    assignment index already normalizes those fields again.  This list-
+    compatible production view keeps net names once in a UTF-8 pool, FPGA
+    ownership as integer CSR columns, and expands only the record currently
+    consumed by the analyzer, validator, or writer.
+    """
+
+    _CUT_CLASSES = (
+        "clock",
+        "combinational",
+        "multi_driver",
+        "primary_input",
+        "register_input",
+        "register_output",
+        "reset",
+        "undriven",
+    )
+    _CUT_CLASS_INDEX = {
+        name: index for index, name in enumerate(_CUT_CLASSES)
+    }
+
+    def __init__(self, part_ids: Sequence[str]) -> None:
+        super().__init__()
+        if (
+            not part_ids
+            or len(part_ids) >= 2**32
+            or any(not isinstance(part, str) or not part for part in part_ids)
+            or list(part_ids) != sorted(set(part_ids))
+        ):
+            raise ValidationError("compact cut FPGA identities are invalid")
+        self._part_ids = tuple(part_ids)
+        self._part_index = {
+            part: index for index, part in enumerate(self._part_ids)
+        }
+        self._net_bytes = bytearray()
+        self._net_offsets = array("Q", [0])
+        self._cut_classes = bytearray()
+        self._source_offsets = array("Q", [0])
+        self._source_parts = array("I")
+        self._sink_offsets = array("Q", [0])
+        self._sink_parts = array("I")
+        self._sink_endpoints = array("Q")
+        self._transport_rounds = bytearray()
+        self._canonical = True
+        self._previous_net: str | None = None
+
+    def append_record(
+        self,
+        *,
+        net: Any,
+        cut_class: Any,
+        source_fpgas: Sequence[str],
+        sink_fpgas: Sequence[str],
+        sink_endpoints: Any,
+        transport_round: Any = None,
+    ) -> None:
+        if not isinstance(net, str) or not net:
+            raise ValidationError("compact cut identity is invalid")
+        try:
+            encoded = net.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ValidationError("compact cut identity is invalid") from error
+        cut_class_index = self._CUT_CLASS_INDEX.get(cut_class)
+        if cut_class_index is None:
+            raise ValidationError("compact cut class is invalid")
+        if (
+            isinstance(sink_endpoints, bool)
+            or not isinstance(sink_endpoints, int)
+            or sink_endpoints < 0
+            or sink_endpoints >= 2**64
+        ):
+            raise ValidationError("compact cut endpoint count is invalid")
+        if transport_round is not None and (
+            isinstance(transport_round, bool)
+            or not isinstance(transport_round, int)
+            or transport_round < 0
+            or transport_round >= 255
+        ):
+            raise ValidationError("compact cut transport round is invalid")
+
+        def append_parts(target: array, values: Sequence[str]) -> None:
+            if (
+                not isinstance(values, Sequence)
+                or isinstance(values, (str, bytes, bytearray))
+            ):
+                raise ValidationError("compact cut FPGA ownership is invalid")
+            previous: str | None = None
+            for part in values:
+                if (
+                    not isinstance(part, str)
+                    or not part
+                    or (previous is not None and part <= previous)
+                ):
+                    raise ValidationError(
+                        "compact cut FPGA ownership is invalid"
+                    )
+                index = self._part_index.get(part)
+                if index is None:
+                    raise ValidationError(
+                        "compact cut FPGA ownership is invalid"
+                    )
+                target.append(index)
+                previous = part
+
+        if self._previous_net is not None:
+            self._canonical = self._canonical and self._previous_net < net
+        self._previous_net = net
+        self._net_bytes.extend(encoded)
+        self._net_offsets.append(len(self._net_bytes))
+        self._cut_classes.append(cut_class_index)
+        append_parts(self._source_parts, source_fpgas)
+        self._source_offsets.append(len(self._source_parts))
+        append_parts(self._sink_parts, sink_fpgas)
+        self._sink_offsets.append(len(self._sink_parts))
+        self._sink_endpoints.append(sink_endpoints)
+        self._transport_rounds.append(
+            0 if transport_round is None else transport_round + 1
+        )
+
+    def __len__(self) -> int:
+        return len(self._cut_classes)
+
+    def net_at(self, index: int) -> str:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("compact cut index out of range")
+        return self._net_bytes[
+            self._net_offsets[index] : self._net_offsets[index + 1]
+        ].decode("utf-8")
+
+    @property
+    def is_canonical(self) -> bool:
+        return self._canonical
+
+    def net_identities(self) -> Sequence[str]:
+        return _CompactCutNetIdentities(self)
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("compact cut index out of range")
+        source_begin = self._source_offsets[index]
+        source_end = self._source_offsets[index + 1]
+        sink_begin = self._sink_offsets[index]
+        sink_end = self._sink_offsets[index + 1]
+        record: Dict[str, Any] = {
+            "net": self.net_at(index),
+            "cut_class": self._CUT_CLASSES[self._cut_classes[index]],
+            "source_fpgas": [
+                self._part_ids[self._source_parts[offset]]
+                for offset in range(source_begin, source_end)
+            ],
+            "sink_fpgas": [
+                self._part_ids[self._sink_parts[offset]]
+                for offset in range(sink_begin, sink_end)
+            ],
+            "sink_endpoints": self._sink_endpoints[index],
+        }
+        encoded_round = self._transport_rounds[index]
+        if encoded_round:
+            record["transport_round"] = encoded_round - 1
+        return record
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("compact cut indices must be integers or slices")
+        return self._record(index)
+
+    def __contains__(self, item: object) -> bool:
+        return any(record == item for record in self)
+
+    def __reversed__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self) - 1, -1, -1):
+            yield self._record(index)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Sequence):
+            return False
+        return len(self) == len(other) and all(
+            left == right for left, right in zip(self, other)
+        )
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    def copy(self) -> List[Dict[str, Any]]:
+        return list(self)
+
+    def __copy__(self) -> List[Dict[str, Any]]:
+        return list(self)
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> List[Dict[str, Any]]:
+        import copy
+
+        result = copy.deepcopy(list(self), memo)
+        memo[id(self)] = result
+        return result
+
+    @property
+    def packed_payload_bytes(self) -> int:
+        columns = (
+            self._net_offsets,
+            self._source_offsets,
+            self._source_parts,
+            self._sink_offsets,
+            self._sink_parts,
+            self._sink_endpoints,
+        )
+        return (
+            len(self._net_bytes)
+            + len(self._cut_classes)
+            + len(self._transport_rounds)
+            + sum(len(column) * column.itemsize for column in columns)
+        )
+
+    @staticmethod
+    def _immutable(*_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("compact cut records are immutable")
+
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+    __delitem__ = _immutable
+    __setitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+
+
+class _StaticExactCutNetRecords(list):
+    """Final cut records projected from compact cuts and typed cut nodes."""
+
+    def __init__(
+        self,
+        cuts: _CompactCutNetRecords,
+        nodes: Sequence[Mapping[str, Any]],
+    ) -> None:
+        super().__init__()
+        if len(cuts) != len(nodes):
+            raise ValidationError("Static Exact contract cut coverage disagrees")
+        for index in range(len(cuts)):
+            if cuts.net_at(index) != nodes[index].get("net"):
+                raise ValidationError("Static Exact contract cut order disagrees")
+        self._cuts = cuts
+        self._nodes = nodes
+
+    def __len__(self) -> int:
+        return len(self._cuts)
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        cut = self._cuts[index]
+        cut.pop("transport_round", None)
+        node = self._nodes[index]
+        cut.update(
+            {
+                "dependency_level": node["dependency_level"],
+                "combinational_dependency_depth": node[
+                    "combinational_dependency_depth"
+                ],
+                "predecessor_cut_nets": node["predecessor_cut_nets"],
+            }
+        )
+        return cut
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("Static Exact cut index must be an integer")
+        resolved = index if index >= 0 else len(self) + index
+        if resolved < 0 or resolved >= len(self):
+            raise IndexError("Static Exact cut index out of range")
+        return self._record(resolved)
+
+    def __contains__(self, item: object) -> bool:
+        return any(record == item for record in self)
+
+    def __reversed__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self) - 1, -1, -1):
+            yield self._record(index)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Sequence):
+            return False
+        return len(self) == len(other) and all(
+            left == right for left, right in zip(self, other)
+        )
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    def copy(self) -> List[Dict[str, Any]]:
+        return list(self)
+
+    def __copy__(self) -> List[Dict[str, Any]]:
+        return list(self)
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> List[Dict[str, Any]]:
+        import copy
+
+        result = copy.deepcopy(list(self), memo)
+        memo[id(self)] = result
+        return result
+
+    @property
+    def packed_payload_bytes(self) -> int:
+        return self._cuts.packed_payload_bytes
+
+    @staticmethod
+    def _immutable(*_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("Static Exact cut records are immutable")
+
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+    __delitem__ = _immutable
+    __setitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+
+
 class _CompactInstanceAssignment(Mapping[str, str]):
     """Bounded-memory instance assignment over compact EmuIR ordinals."""
 
@@ -2098,22 +2468,25 @@ def build_partition_assignment(
             raise ValidationError(
                 "Static Exact contract cut coverage disagrees"
             )
-        for cut, node in zip(cut_nets, contract_nodes):
-            if cut["net"] != node["net"]:
-                raise ValidationError(
-                    "Static Exact contract cut order disagrees"
+        if isinstance(cut_nets, _CompactCutNetRecords):
+            cut_nets = _StaticExactCutNetRecords(cut_nets, contract_nodes)
+        else:
+            for cut, node in zip(cut_nets, contract_nodes):
+                if cut["net"] != node["net"]:
+                    raise ValidationError(
+                        "Static Exact contract cut order disagrees"
+                    )
+                cut.update(
+                    {
+                        "dependency_level": node["dependency_level"],
+                        "combinational_dependency_depth": node[
+                            "combinational_dependency_depth"
+                        ],
+                        "predecessor_cut_nets": node[
+                            "predecessor_cut_nets"
+                        ],
+                    }
                 )
-            cut.update(
-                {
-                    "dependency_level": node["dependency_level"],
-                    "combinational_dependency_depth": node[
-                        "combinational_dependency_depth"
-                    ],
-                    "predecessor_cut_nets": node[
-                        "predecessor_cut_nets"
-                    ],
-                }
-            )
         cut_metrics.update(
             {
                 "combinational_cut_nets": semantic_contract["metrics"][
@@ -2561,7 +2934,9 @@ def _compute_compact_cut_nets_with_ordinals(
     from .emuir_storage import open_emuir_sqlite_read_only
 
     connection = open_emuir_sqlite_read_only(instance_assignment.path)
-    cut_nets: List[Dict[str, Any]] = []
+    cut_nets: list[Dict[str, Any]] = _CompactCutNetRecords(
+        instance_assignment.part_ids
+    )
     cut_net_ordinals = array("I") if retain_ordinals else None
     replicated_primary_inputs = 0
     global_nets = 0
@@ -2622,16 +2997,14 @@ def _compute_compact_cut_nets_with_ordinals(
                 sink_counts[part] for part in remote_sink_fpgas
             )
             cut_sink_endpoints += remote_endpoints
-            cut = {
-                "net": net["id"],
-                "cut_class": cut_class,
-                "source_fpgas": driver_fpgas,
-                "sink_fpgas": remote_sink_fpgas,
-                "sink_endpoints": remote_endpoints,
-            }
-            if cut_class == "register_input":
-                cut["transport_round"] = 1
-            cut_nets.append(cut)
+            cut_nets.append_record(
+                net=net["id"],
+                cut_class=cut_class,
+                source_fpgas=driver_fpgas,
+                sink_fpgas=remote_sink_fpgas,
+                sink_endpoints=remote_endpoints,
+                transport_round=(1 if cut_class == "register_input" else None),
+            )
             if cut_net_ordinals is not None:
                 cut_net_ordinals.append(net_seq)
         if observed_nets != len(ir.value["nets"]) or endpoint is not None:
@@ -2656,11 +3029,11 @@ def _compute_compact_cut_nets_with_ordinals(
                 "round_barriers": 1,
             }
         )
-    if any(
-        cut_nets[index - 1]["net"] >= cut_nets[index]["net"]
-        for index in range(1, len(cut_nets))
+    if (
+        isinstance(cut_nets, _CompactCutNetRecords)
+        and not cut_nets.is_canonical
     ):
-        order = sorted(range(len(cut_nets)), key=lambda index: cut_nets[index]["net"])
+        order = sorted(range(len(cut_nets)), key=cut_nets.net_at)
         cut_nets = [cut_nets[index] for index in order]
         if cut_net_ordinals is not None:
             cut_net_ordinals = array(
@@ -2682,8 +3055,9 @@ def _remove_static_exact_global_rounds(
     equivalence and scheduling reintroduce an unrelated global barrier.
     """
 
-    for cut in cut_nets:
-        cut.pop("transport_round", None)
+    if not isinstance(cut_nets, _StaticExactCutNetRecords):
+        for cut in cut_nets:
+            cut.pop("transport_round", None)
     metrics.pop("transport_rounds", None)
     metrics.pop("round_barriers", None)
     metrics["transport_ordering_policy"] = "path-local-dependency-dag-v1"
