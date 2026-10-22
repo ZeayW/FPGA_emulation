@@ -558,8 +558,15 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 indexed_cells, atoms, names
             )
 
-        self.assertEqual(atoms, expected_atoms)
+        self.assertNotIsInstance(atoms, list)
+        atom_store = atoms.path
+        expected_atom_store = expected_atoms.path
+        self.assertEqual(list(atoms), list(expected_atoms))
         self.assertEqual(actual, expected)
+        atoms.close()
+        expected_atoms.close()
+        self.assertFalse(atom_store.exists())
+        self.assertFalse(expected_atom_store.exists())
 
     def test_non_degenerate_runtime_fixture_export_contract(self):
         with tempfile.TemporaryDirectory() as temporary:

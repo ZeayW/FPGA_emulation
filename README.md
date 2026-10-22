@@ -698,6 +698,12 @@ atom ordinal, merges mapped cells and atoms in one pass, and streams
 and coverage containers. A 500,000-atom comparison reduced incremental traced
 allocation from 50.92 MB to 0.003 MB and process peak RSS from 323.37 MB to
 212.01 MB; this is isolated adapter evidence.
+The final atom population is also a private file-backed lexical cursor instead
+of a Python dictionary list. A 300,000-atom construction and traversal reduced
+incremental traced peak allocation from 112.10 MB to 0.030 MB and process RSS
+from 257.20 MB to 46.99 MB, using a 46.15 MB temporary relation; wall time
+changed from 1.41 to 2.98 seconds. The relation is deleted after the sealed
+name-map store is published.
 RWRoute TSV export likewise derives route-cell rows directly from the physical
 binding and no longer duplicates every cell in a second route-cell dictionary.
 Its report separates binding, cell/I/O

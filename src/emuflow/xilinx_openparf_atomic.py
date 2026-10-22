@@ -2746,11 +2746,152 @@ def _validate_native_density_contract(
     return per_site_capacity, result
 
 
+class _IndexedAtomSequence(Sequence[Mapping[str, str]]):
+    """File-backed lexical atom relation used only during Bookshelf export."""
+
+    def __init__(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory(
+            prefix="emuflow-openparf-atoms-"
+        )
+        self.path = Path(self._temporary.name) / "atoms.sqlite"
+        self._writer = sqlite3.connect(self.path)
+        self._writer.executescript(
+            """
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=FILE;
+            CREATE TABLE raw_atoms(
+              instance TEXT PRIMARY KEY,
+              cell_type TEXT NOT NULL,
+              source_cluster TEXT NOT NULL,
+              resource TEXT NOT NULL
+            ) WITHOUT ROWID;
+            """
+        )
+        self._count: Optional[int] = None
+        self._closed = False
+
+    def append(self, atom: Mapping[str, str]) -> None:
+        if self._count is not None or self._closed:
+            raise ValidationError("OpenPARF atom index is not writable")
+        try:
+            self._writer.execute(
+                "INSERT INTO raw_atoms VALUES (?,?,?,?)",
+                (
+                    atom["instance"], atom["cell_type"],
+                    atom["source_cluster"], atom["resource"],
+                ),
+            )
+        except sqlite3.IntegrityError as error:
+            raise ValidationError(
+                f"mapped instance {atom.get('instance')!r} is packed twice"
+            ) from error
+
+    def finalize(self) -> None:
+        if self._count is not None:
+            return
+        if self._closed:
+            raise ValidationError("OpenPARF atom index is closed")
+        self._writer.executescript(
+            """
+            CREATE TABLE atoms(
+              seq INTEGER PRIMARY KEY,
+              instance TEXT NOT NULL UNIQUE,
+              cell_type TEXT NOT NULL,
+              source_cluster TEXT NOT NULL,
+              resource TEXT NOT NULL
+            );
+            INSERT INTO atoms(instance,cell_type,source_cluster,resource)
+            SELECT instance,cell_type,source_cluster,resource
+            FROM raw_atoms ORDER BY instance;
+            DROP TABLE raw_atoms;
+            CREATE INDEX atoms_cell_type ON atoms(cell_type);
+            CREATE INDEX atoms_resource ON atoms(resource);
+            """
+        )
+        self._count = int(
+            self._writer.execute("SELECT count(*) FROM atoms").fetchone()[0]
+        )
+        self._writer.commit()
+        self._writer.close()
+
+    def _connect(self) -> sqlite3.Connection:
+        if self._count is None or self._closed:
+            raise ValidationError("OpenPARF atom index is not readable")
+        connection = sqlite3.connect(
+            f"file:{self.path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    @staticmethod
+    def _record(row: sqlite3.Row) -> Dict[str, str]:
+        return {
+            "instance": str(row["instance"]),
+            "cell_type": str(row["cell_type"]),
+            "source_cluster": str(row["source_cluster"]),
+            "resource": str(row["resource"]),
+        }
+
+    def __len__(self) -> int:
+        if self._count is None or self._closed:
+            raise ValidationError("OpenPARF atom index is not readable")
+        return self._count
+
+    def __iter__(self) -> Iterator[Mapping[str, str]]:
+        with self._connect() as connection:
+            for row in connection.execute(
+                "SELECT instance,cell_type,source_cluster,resource "
+                "FROM atoms ORDER BY seq"
+            ):
+                yield self._record(row)
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return list(self)[index]
+        count = len(self)
+        if index < 0:
+            index += count
+        if not 0 <= index < count:
+            raise IndexError(index)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT instance,cell_type,source_cluster,resource "
+                "FROM atoms WHERE seq=?", (index + 1,),
+            ).fetchone()
+        if row is None:
+            raise IndexError(index)
+        return self._record(row)
+
+    def ordinal_for_instance(self, instance: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT seq FROM atoms WHERE instance=?", (instance,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(instance)
+        return int(row[0]) - 1
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._count is None:
+            self._writer.close()
+        self._temporary.cleanup()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
+
+
 def _collect_atoms(
     mapped: Mapping[str, Any], packed: Mapping[str, Any], top: Optional[str],
     *, allow_hardblock_cascades: bool = False,
     physical_macro_contract: Optional[Mapping[str, Any]] = None,
-) -> Tuple[str, Mapping[str, Any], List[Dict[str, str]]]:
+) -> Tuple[str, Mapping[str, Any], _IndexedAtomSequence]:
     selected_top, module = _select_module(mapped, top)
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
@@ -2776,7 +2917,7 @@ def _collect_atoms(
                 raise ValidationError(
                     "RAMB18E2 dedicated cascades are not yet qualified"
                 )
-    atoms: List[Dict[str, str]] = []
+    atoms = _IndexedAtomSequence()
     site_macros = []
     if physical_macro_contract is not None:
         site_macros = [
@@ -2948,17 +3089,12 @@ def _collect_atoms(
     if covered_site_macros != expected_site_macros:
         raise ValidationError("connectivity-derived slice macro coverage is incomplete")
     # Validate type and complete ownership with one merge over the authoritative
-    # mapped index.  The previous implementation retained both a cell->type
-    # dictionary and a packed-instance set, then sorted the atom list anyway.
-    # Sorting once and merging removes those two graph-sized populations while
-    # preserving deterministic output and independent coverage checks.
-    atoms.sort(key=lambda item: item["instance"])
-    for previous, current in zip(atoms, atoms[1:]):
-        if previous["instance"] == current["instance"]:
-            raise ValidationError(
-                f"mapped instance {current['instance']!r} is packed twice"
-            )
-    atom_index = 0
+    # mapped index. Atom identities are sorted in a private file-backed
+    # relation, so neither the final atom population nor a duplicate ownership
+    # set remains resident in Python.
+    atoms.finalize()
+    atom_iterator = iter(atoms)
+    current = next(atom_iterator, None)
     missing: List[str] = []
     for name, cell in _ordered_cell_items(cells):
         if not isinstance(cell, Mapping) or not isinstance(cell.get("type"), str):
@@ -2966,16 +3102,16 @@ def _collect_atoms(
         mapped_cell_type = cell["type"]
         if mapped_cell_type in {"GND", "VCC"}:
             continue
-        if atom_index < len(atoms) and atoms[atom_index]["instance"] < name:
+        if current is not None and current["instance"] < name:
             raise ValidationError("packed assignment does not match mapped JSON")
-        if atom_index >= len(atoms) or atoms[atom_index]["instance"] > name:
+        if current is None or current["instance"] > name:
             if len(missing) < 16:
                 missing.append(name)
             continue
-        if atoms[atom_index]["cell_type"] != mapped_cell_type:
+        if current["cell_type"] != mapped_cell_type:
             raise ValidationError("packed assignment does not match mapped JSON")
-        atom_index += 1
-    if atom_index != len(atoms):
+        current = next(atom_iterator, None)
+    if current is not None:
         raise ValidationError("packed assignment does not match mapped JSON")
     if missing:
         raise ValidationError(
@@ -3029,6 +3165,9 @@ class _OrdinalSafeNames(MappingABC[str, str]):
     def __getitem__(self, instance: str) -> str:
         if not isinstance(instance, str):
             raise KeyError(instance)
+        indexed_lookup = getattr(self.atoms, "ordinal_for_instance", None)
+        if callable(indexed_lookup):
+            return f"a{indexed_lookup(instance)}"
         lower = 0
         upper = len(self.atoms)
         while lower < upper:
@@ -3151,6 +3290,7 @@ def probe_xilinx_openparf_atomic_eligibility(
 ) -> Dict[str, Any]:
     """Return a side-effect-free design-specific adapter decision."""
 
+    atoms: Optional[_IndexedAtomSequence] = None
     try:
         _selected_top, _cells, atoms = _collect_atoms(mapped, packed, top)
         if (
@@ -3171,22 +3311,25 @@ def probe_xilinx_openparf_atomic_eligibility(
         slice_count = sum("LUT" in capacity for _site, capacity in sites)
         if resources["LUT"] > 8 * slice_count or resources["FF"] > 16 * slice_count:
             raise ValidationError("atomic LUT/FF demand exceeds slice capacity")
+        return {
+            "status": "adapter_required", "eligible": True,
+            "adapter_validation": "pass",
+            "reason": (
+                "ordinary LUT/FF clusters and independent singleton hard resources "
+                "can be atomized without discarding a dedicated, relative, "
+                "cascade, half-site, or coincident-site constraint"
+            ),
+            "atoms": len(atoms), "sites": len(sites),
+            "resources": dict(sorted(resources.items())),
+        }
     except ValidationError as error:
         return {
             "status": "adapter_required", "eligible": False,
             "adapter_validation": "missing", "reason": str(error),
         }
-    return {
-        "status": "adapter_required", "eligible": True,
-        "adapter_validation": "pass",
-        "reason": (
-            "ordinary LUT/FF clusters and independent singleton hard resources "
-            "can be atomized without discarding a dedicated, relative, "
-            "cascade, half-site, or coincident-site constraint"
-        ),
-        "atoms": len(atoms), "sites": len(sites),
-        "resources": dict(sorted(resources.items())),
-    }
+    finally:
+        if atoms is not None:
+            atoms.close()
 
 
 def _render_library(
@@ -3296,7 +3439,7 @@ def _render_library_and_nets(
             raise ValidationError("OpenPARF atom does not match mapped JSON")
         cell_type = atom["cell_type"]
         safe_name = (
-            names.name_at(atom_index, instance)
+            f"a{atom_index}"
             if isinstance(names, _OrdinalSafeNames)
             else names[instance]
         )
@@ -4825,6 +4968,7 @@ def export_xilinx_openparf_atomic(
         ]),
     }
     write_json(output_dir / "manifest.json", manifest, compact=True)
+    atoms.close()
     return manifest
 
 
