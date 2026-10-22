@@ -262,6 +262,54 @@ class SparsePathOrder {
   std::set<Record> changed_;
 };
 
+class SparsePathMembership {
+ public:
+  void append(int path) {
+    require(!finalized_ && path >= 0,
+            "invalid PATRON domain/path population");
+    base_.push_back(path);
+  }
+
+  void finalize() {
+    require(!finalized_, "PATRON domain/path population is finalized");
+    std::sort(base_.begin(), base_.end());
+    base_.erase(std::unique(base_.begin(), base_.end()), base_.end());
+    finalized_ = true;
+  }
+
+  void remove(int path) {
+    require(finalized_ && path >= 0,
+            "invalid PATRON domain/path removal");
+    if (added_.erase(path) == 1) return;
+    require(std::binary_search(base_.begin(), base_.end(), path) &&
+                removed_.insert(path).second,
+            "missing PATRON domain/path dependency");
+  }
+
+  void add(int path) {
+    require(finalized_ && path >= 0,
+            "invalid PATRON domain/path insertion");
+    if (removed_.erase(path) == 1) return;
+    require(!std::binary_search(base_.begin(), base_.end(), path) &&
+                added_.insert(path).second,
+            "duplicate PATRON domain/path dependency");
+  }
+
+  void append_to(std::vector<int>& output) const {
+    require(finalized_, "PATRON domain/path population is not finalized");
+    for (int path : base_) {
+      if (!removed_.count(path)) output.push_back(path);
+    }
+    output.insert(output.end(), added_.begin(), added_.end());
+  }
+
+ private:
+  bool finalized_ = false;
+  std::vector<int> base_;
+  std::set<int> added_;
+  std::set<int> removed_;
+};
+
 struct Net {
   PackedIndexRange drivers;
   PackedIndexRange sinks;
@@ -374,7 +422,7 @@ struct ProxyState {
   std::multiset<int> ratio_order;
   std::vector<ProxyNetState> net;
   std::vector<ProxyPathState> path;
-  std::vector<std::set<int>> domain_paths;
+  std::vector<SparsePathMembership> domain_paths;
   SparsePathOrder<std::pair<double, int>> slack_path_order;
   SparsePathOrder<std::pair<long long, int>> hop_path_order;
   SparsePathOrder<std::pair<long long, int>> ratio_sum_path_order;
@@ -1819,7 +1867,7 @@ ProxyState build_proxy_state(
     state.path[path] = build_proxy_path(
         model, state, empty, state.domain_ratio, path);
     for (int domain : state.path[path].dependency_domains) {
-      state.domain_paths[domain].insert(path);
+      state.domain_paths[domain].append(path);
     }
     state.slack_path_order.append(
         {state.path[path].normalized_slack, path});
@@ -1832,6 +1880,9 @@ ProxyState build_proxy_state(
     state.negative_paths += state.path[path].negative ? 1 : 0;
     state.snaking += state.path[path].snaking;
     state.transitions += state.path[path].transitions;
+  }
+  for (SparsePathMembership& paths : state.domain_paths) {
+    paths.finalize();
   }
   state.slack_path_order.finalize(model.paths);
   state.hop_path_order.finalize(model.paths);
@@ -3936,9 +3987,7 @@ ProxyDelta evaluate_proxy_changes(
                           net_paths[item.first].end());
   }
   for (int domain : ratio_changed_domains) {
-    affected_paths.insert(affected_paths.end(),
-                          state.domain_paths[domain].begin(),
-                          state.domain_paths[domain].end());
+    state.domain_paths[domain].append_to(affected_paths);
   }
   std::sort(affected_paths.begin(), affected_paths.end());
   affected_paths.erase(
@@ -4146,8 +4195,7 @@ void apply_proxy_delta(const Model& model,
   for (const auto& item : delta.paths) {
     ProxyPathState& old = state.path[item.first];
     for (int domain : old.dependency_domains) {
-      const std::size_t erased = state.domain_paths[domain].erase(item.first);
-      require(erased == 1, "missing scalable domain/path dependency");
+      state.domain_paths[domain].remove(item.first);
     }
     state.hop_path_order.update(
         {old.hops, item.first}, {item.second.hops, item.first});
@@ -4168,7 +4216,7 @@ void apply_proxy_delta(const Model& model,
     state.transitions += item.second.transitions - old.transitions;
     old = item.second;
     for (int domain : old.dependency_domains) {
-      state.domain_paths[domain].insert(item.first);
+      state.domain_paths[domain].add(item.first);
     }
   }
   state.evaluation = proxy_evaluation(model, state);

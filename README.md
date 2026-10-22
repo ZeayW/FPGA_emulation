@@ -79,13 +79,14 @@ CSR, replacing one `std::set` and one `std::vector` object per graph row; the
 unused ranked-path tree is gone. The four required mutable path orders now
 retain their initial population in sorted vectors and allocate tree nodes only
 for paths changed by accepted moves; ordered traversal merges that sparse
-overlay with the unchanged vector and preserves every tie-break. On a
-500,000-cluster/net/path typed fixture, the complete representation changes
-reduced three-run median native time from 1.090 to 0.691 seconds and peak RSS
-from 769,146,880 to 501,432,320 bytes (-34.8%), with byte-identical output.
-ProxyNet/ProxyPath dynamic payloads and domain-to-path sets still scale with
-the graph and remain Phase 3 memory work. This is adapter evidence, not NVDLA
-qualification.
+overlay with the unchanged vector and preserves every tie-break. Domain-to-path
+membership uses the same model: one initial sorted vector per domain plus
+sparse accepted-move additions and removals. On a 500,000-cluster/net/path
+typed fixture, the complete representation changes reduced three-run median
+native time from 1.090 to 0.596 seconds and peak RSS from 769,146,880 to
+472,727,552 bytes (-38.5%), with byte-identical output. ProxyNet/ProxyPath
+dynamic payloads still scale with the graph and remain Phase 3 memory work.
+This is adapter evidence, not NVDLA qualification.
 Production clustering now consumes compact EmuIR through ordered integer
 SQLite cursors. It keeps only a four-byte original-to-lexical cell permutation,
 compact union-find arrays and the final cluster records; it no longer decodes a
