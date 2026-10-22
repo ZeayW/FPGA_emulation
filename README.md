@@ -166,6 +166,11 @@ reached. Small qualification models and older PATRON versions retain the
 configured exhaustive behavior; all capacity and lexicographic acceptance
 checks remain unchanged.
 
+Thin versioned runtime deployments rebuild the native Static Exact analyzer
+alongside the partition, routing, TDM, and balance tools. Large-design Phase 3
+therefore uses native semantic validation from the same exact source revision
+as the refiner.
+
 - State the period of every analyzed clock explicitly.
 - Mapping profiles must match the physical device model; generic soft mapping
   can expand RAM/DSP-heavy designs substantially.

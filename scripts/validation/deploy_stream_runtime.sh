@@ -27,12 +27,19 @@ done
 for tool in \
   tlr_router \
   patron_refiner \
+  static_exact_analyzer \
   tdm_slot_optimizer \
   tritonpart_balance_legalizer
 do
   target="$runtime_dir/bin/emuflow_$tool"
   rm -f "$target"
-  c++ -std=c++17 -O3 -pthread "$source_dir/src/native/$tool.cpp" -o "$target"
+  sources=("$source_dir/src/native/$tool.cpp")
+  includes=()
+  if test "$tool" = static_exact_analyzer; then
+    sources+=("$source_dir/src/native/emuflow_core/artifact_io.cpp")
+    includes+=("-I$source_dir/src/native")
+  fi
+  c++ -std=c++17 -O3 -pthread "${includes[@]}" "${sources[@]}" -o "$target"
 done
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"
