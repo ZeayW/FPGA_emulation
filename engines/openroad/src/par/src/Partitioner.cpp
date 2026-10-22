@@ -236,6 +236,7 @@ void Partitioner::ILPPart(const HGraphPtr& hgraph,
     for (int v = 0; v < hgraph->GetNumVertices(); v++) {
       if (hgraph->GetFixedAttr(v) > -1) {
         solution[v] = hgraph->GetFixedAttr(v);
+        fixed_vertices_map[v] = hgraph->GetFixedAttr(v);
       }
     }
   }
@@ -326,6 +327,15 @@ void Partitioner::ILPPart(const HGraphPtr& hgraph,
                        upper_block_balance,
                        lower_block_balance)) {
   } else {
+    const bool assigned = std::all_of(solution.begin(), solution.end(),
+                                     [&](int part) {
+                                       return part >= 0 && part < num_parts_;
+                                     });
+    if (assigned && ResourceBalanced(
+                        evaluator_->GetBlockBalance(hgraph, solution),
+                        lower_block_balance, upper_block_balance)) {
+      return;
+    }
     debugPrint(
         logger_,
         PAR,

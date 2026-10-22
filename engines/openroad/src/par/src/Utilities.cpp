@@ -343,13 +343,11 @@ bool ILPPartitionInst(
                           lower_block_balance);
 #endif
 
-  // reset variable
-  solution.clear();
-  solution.resize(num_vertices);
-  std::fill(solution.begin(), solution.end(), -1);
-
   // Google OR-Tools Implementation
   std::unique_ptr<MPSolver> solver(MPSolver::CreateSolver("SCIP"));
+  // A coarse initializer needs a feasible incumbent, not an unbounded proof
+  // of optimality. Later FM/uncoarsening still improves its cut objective.
+  solver->set_time_limit(30000);
 
   // Define constraints
   // For each vertex, define a variable x
@@ -435,22 +433,73 @@ bool ILPPartitionInst(
   }
   obj_expr->SetMaximization();
 
+  // The caller's legal incumbent is a useful primal bound. Do not discard it
+  // before solving, or replace it when a time-limited solve has no new result.
+  bool legal_hint = static_cast<int>(solution.size()) == num_vertices;
+  Matrix<float> hint_balance(num_parts,
+                             std::vector<float>(vertex_weight_dimension, 0));
+  if (legal_hint) {
+    for (int v = 0; v < num_vertices; ++v) {
+      if (solution[v] < 0 || solution[v] >= num_parts) {
+        legal_hint = false;
+        break;
+      }
+      Accumulate(hint_balance[solution[v]], vertex_weights[v]);
+    }
+  }
+  legal_hint = legal_hint
+               && ResourceBalanced(hint_balance, lower_block_balance,
+                                   upper_block_balance);
+  for (const auto& [vertex, part] : fixed_vertices) {
+    if (legal_hint && solution[vertex] != part) {
+      legal_hint = false;
+    }
+  }
+  if (legal_hint) {
+    std::vector<std::pair<const MPVariable*, double>> hint;
+    for (int v = 0; v < num_vertices; ++v) {
+      for (int part = 0; part < num_parts; ++part) {
+        hint.emplace_back(x[part][v], solution[v] == part ? 1.0 : 0.0);
+      }
+    }
+    for (int e = 0; e < num_hyperedges; ++e) {
+      const auto& edge = hyperedges[e];
+      int part = edge.empty() ? -1 : solution[edge.front()];
+      for (const int vertex : edge) {
+        if (solution[vertex] != part) {
+          part = -1;
+          break;
+        }
+      }
+      for (int block = 0; block < num_parts; ++block) {
+        hint.emplace_back(y[block][e], block == part ? 1.0 : 0.0);
+      }
+    }
+    solver->SetHint(hint);
+  }
+
   // Solve the ILP Problem
   const MPSolver::ResultStatus result_status = solver->Solve();
 
-  // Check that the problem has an optimal solution.
-  if (result_status == MPSolver::OPTIMAL) {
+  // A time-limited feasible integer solution is a valid partition too.
+  if (result_status == MPSolver::OPTIMAL
+      || result_status == MPSolver::FEASIBLE) {
+    std::vector<int> candidate(num_vertices, -1);
     // update the solution
     // all the fixed vertices has been encoded into fixed vertices constraints
     // so we do not handle fixed vertices here
     for (int v = 0; v < num_vertices; v++) {
       for (int i = 0; i < num_parts; i++) {
-        if (x[i][v]->solution_value() == 1.0) {
-          solution[v] = i;
+        if (x[i][v]->solution_value() > 0.5) {
+          candidate[v] = i;
           break;
         }
       }
+      if (candidate[v] < 0) {
+        return false;
+      }
     }
+    solution = std::move(candidate);
     return true;
   }
   return false;

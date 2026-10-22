@@ -309,6 +309,7 @@ class TritonPartTest(unittest.TestCase):
                 {
                     "num_initial_solutions": 50,
                     "num_best_initial_solutions": 10,
+                    "num_vertices_threshold_ilp": 1000,
                 },
             )
 
@@ -327,11 +328,13 @@ class TritonPartTest(unittest.TestCase):
             tcl = (output / "run_tritonpart.tcl").read_text()
         self.assertIn("-num_initial_solutions 4", tcl)
         self.assertIn("-num_best_initial_solutions 2", tcl)
+        self.assertIn("-num_vertices_threshold_ilp 1000", tcl)
         self.assertEqual(
             artifact["search_effort"],
             {
                 "num_initial_solutions": 4,
                 "num_best_initial_solutions": 2,
+                "num_vertices_threshold_ilp": 1000,
             },
         )
 

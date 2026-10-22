@@ -43,6 +43,9 @@ resource bounds are supplied directly to the native solver; all resource
 comparisons are componentwise, and only feasible candidates can be selected.
 FM rollback retains only prefixes that satisfy every resource bound, including
 when initialization starts from an unbalanced assignment.
+EmuFlow enables native ILP for coarse graphs of up to 1,000 vertices. Each
+native ILP solve has a 30-second budget and accepts either an optimal or a
+feasible integer solution; independent resource checks still gate acceptance.
 There is no external balance legalizer. EmuFlow checks
 and repairs configured hop constraints before handing the initial assignment
 to PATRON. See the [TritonPart project and publication](https://github.com/ABKGroup/TritonPart).

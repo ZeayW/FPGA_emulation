@@ -45,6 +45,7 @@ TRITONPART_INPUT_SCHEMA = "emuflow.tritonpart-input/v1"
 PARTITION_NET_WEIGHTS_SCHEMA = "emuflow.partition-net-weights/v1"
 TRITONPART_PROVIDER = "tritonpart-openroad-hypergraph-v1"
 TRITONPART_OBJECTIVE_NET_CUT = "net-cut-v1"
+TRITONPART_INITIAL_ILP_VERTEX_THRESHOLD = 1000
 
 
 def load_partition_net_weights(path: Optional[Path]) -> Dict[str, float]:
@@ -367,6 +368,7 @@ def export_tritonpart_inputs(
         f"  -scale_factor {tcl_list([1.0] * len(fpga_ids))} \\",
         f"  -seed 0 \\",
         f"  -num_initial_solutions {num_initial_solutions} \\",
+        f"  -num_vertices_threshold_ilp {TRITONPART_INITIAL_ILP_VERTEX_THRESHOLD} \\",
         (
             "  -num_best_initial_solutions "
             f"{num_best_initial_solutions} \\"
@@ -405,6 +407,7 @@ def export_tritonpart_inputs(
         "search_effort": {
             "num_initial_solutions": num_initial_solutions,
             "num_best_initial_solutions": num_best_initial_solutions,
+            "num_vertices_threshold_ilp": TRITONPART_INITIAL_ILP_VERTEX_THRESHOLD,
         },
         "files": {
             "hypergraph": hypergraph_path.name,

@@ -83,6 +83,23 @@ int main() {
             self.assertEqual(parts.count(0), 2)
             self.assertEqual(parts.count(1), 2)
             solution.unlink()
+
+            # ILP must receive fixed placements as constraints, including the
+            # symmetric case where resource limits alone cannot select labels.
+            graph.write_text("3 4 11\n1 1 2\n1 2 3\n1 3 4\n"
+                             "1 0\n1 0\n1 0\n1 0\n")
+            fixed = root / "fixed.txt"
+            fixed.write_text("1\n1\n0\n0\n")
+            bounds.write_text("2 2\n0 2 0 0\n0 2 0 0\n")
+            script.write_text(script.read_text().replace(
+                "triton_part_hypergraph",
+                f"triton_part_hypergraph -fixed_file {{{fixed}}}", 1))
+            result = subprocess.run([executable, "-exit", str(script)],
+                                    capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(list(map(int, solution.read_text().split())),
+                             [1, 1, 0, 0])
+            solution.unlink()
             bounds.write_text("2 2\n0 1 0 2\n0 1 0 0\n")
             result = subprocess.run([executable, "-exit", str(script)],
                                     capture_output=True, text=True, timeout=120)
