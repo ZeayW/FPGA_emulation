@@ -686,6 +686,15 @@ endpoint dictionaries plus a second flattened addition list. On a synthetic
 100,000-signal/300,000-overlay-row construction and full traversal, process
 peak RSS fell from 245.22 MB to 39.09 MB while wall time changed from 0.411 to
 1.021 seconds. This is isolated adapter evidence, not NVDLA qualification.
+Typed lowering also attaches the existing split, transport and compact EmuIR
+stores read-only. Ordered SQL cursors merge shadow/source signal identity,
+top-net ownership, partition membership and RX placeholder coverage, so the
+production path no longer builds `top_net_index` or `local_net_ids` in Python.
+For 300,000 synthetic signal/top/local records, relation preparation and full
+binding traversal reduced process peak RSS from 186.07 MB to 91.44 MB while
+wall time changed from 0.473 to 0.983 seconds. No duplicate local-net or
+top-net table is written. This is isolated adapter evidence, not NVDLA
+qualification.
 The legacy file-based generic Yosys and logical lowering APIs remain available
 for compatibility and differential tests.
 

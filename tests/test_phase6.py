@@ -618,6 +618,14 @@ class Phase6Test(unittest.TestCase):
             transport = control["transports"][fpga]
             transport_path = root / "transport.json"
             write_json(transport_path, transport)
+            typed_transport_path = write_transport_storage(
+                root / "typed-transport",
+                assignment_path,
+                self.schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+            )["transports"][fpga].manifest_path
 
             ports = []
             instances = []
@@ -772,6 +780,24 @@ class Phase6Test(unittest.TestCase):
                 side_effect=AssertionError(
                     "production lowering must not iterate DUT nets"
                 ),
+            ), mock.patch.object(
+                SplitNetlistView,
+                "net_ids",
+                side_effect=AssertionError(
+                    "production lowering must not materialize net identities"
+                ),
+            ), mock.patch.object(
+                TransportView,
+                "iter_rx_signal_records",
+                side_effect=AssertionError(
+                    "production lowering must join typed RX signals"
+                ),
+            ), mock.patch.object(
+                TransportView,
+                "iter_expected_rx_bindings",
+                side_effect=AssertionError(
+                    "production lowering must join typed RX bindings"
+                ),
             ), mock.patch(
                 "emuflow.lowering.EmuIR.load",
                 side_effect=AssertionError(
@@ -781,7 +807,7 @@ class Phase6Test(unittest.TestCase):
                 run_placement_ir_lowering_from_split(
                     split_path,
                     fpga,
-                    transport_path,
+                    typed_transport_path,
                     transport_ir_path,
                     direct_output,
                     boundary_identity_path=direct_boundary,
