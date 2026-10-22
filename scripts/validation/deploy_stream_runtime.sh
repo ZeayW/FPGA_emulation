@@ -89,7 +89,9 @@ for tool in \
   tlr_router \
   patron_refiner \
   static_exact_analyzer \
+  tdm_ratio_optimizer \
   tdm_slot_optimizer \
+  tdm_timing_dag_optimizer \
   tritonpart_balance_legalizer
 do
   target="$runtime_dir/bin/emuflow_$tool"
