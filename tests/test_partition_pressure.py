@@ -440,6 +440,13 @@ class PartitionPressureTest(unittest.TestCase):
         )
         self.assertNotIsInstance(instance_assignment, dict)
         self.assertTrue(callable(instance_assignment.cluster_part))
+        self.assertTrue(
+            all("clusters" not in record for record in final["partitions"])
+        )
+        self.assertEqual(
+            sum(record["cluster_count"] for record in final["partitions"]),
+            len(compact_clusters["clusters"]),
+        )
         packed = pack_phase3_assignment(final, compact_clusters)
         self.assertEqual(
             packed["cluster_count"], len(compact_clusters["clusters"])

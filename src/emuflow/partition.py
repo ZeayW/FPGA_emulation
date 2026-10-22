@@ -2127,9 +2127,16 @@ def build_partition_assignment(
             }
         )
         _remove_static_exact_global_rounds(cut_nets, cut_metrics)
+    # The packed production artifact reconstructs partition membership from
+    # the authoritative cluster-part column.  Retaining every freshly decoded
+    # ``cN`` identity in per-FPGA lists here duplicates the complete cluster
+    # population only for ``pack_phase3_assignment`` to discard it moments
+    # later.  Compatibility/reference artifacts still expose the v1 lists.
+    retain_partition_clusters = not compact_assignment
     partition_state = {
         fpga.id: {
-            "clusters": [],
+            "clusters": [] if retain_partition_clusters else None,
+            "cluster_count": 0,
             "instance_count": 0,
             "resources": {field: 0 for field in RESOURCE_FIELDS},
         }
@@ -2139,7 +2146,9 @@ def build_partition_assignment(
         cluster_id = cluster["id"]
         assigned_fpga = cluster_assignment[cluster_id]
         state = partition_state[assigned_fpga]
-        state["clusters"].append(cluster_id)
+        if retain_partition_clusters:
+            state["clusters"].append(cluster_id)
+        state["cluster_count"] += 1
         state["instance_count"] += len(cluster["instances"])
         vector = ResourceVector.from_mapping(cluster["resources"])
         for field in RESOURCE_FIELDS:
@@ -2148,7 +2157,6 @@ def build_partition_assignment(
     partition_records = []
     for fpga in platform.fpgas:
         state = partition_state[fpga.id]
-        assigned_cluster_ids = state["clusters"]
         instance_count = state["instance_count"]
         resources = {
             field: amount
@@ -2166,11 +2174,12 @@ def build_partition_assignment(
             for field in fpga.effective_capacity
             if fpga.effective_capacity[field] > 0
         }
-        partition_records.append(
+        record = {"fpga": fpga.id}
+        if retain_partition_clusters:
+            record["clusters"] = state["clusters"]
+        record.update(
             {
-                "fpga": fpga.id,
-                "clusters": assigned_cluster_ids,
-                "cluster_count": len(assigned_cluster_ids),
+                "cluster_count": state["cluster_count"],
                 "instance_count": instance_count,
                 "resources": resources,
                 "effective_capacity": dict(
@@ -2179,6 +2188,7 @@ def build_partition_assignment(
                 "utilization": dict(sorted(utilization.items())),
             }
         )
+        partition_records.append(record)
 
     cluster_assignment_is_canonical = (
         isinstance(cluster_assignment, (dict, _PackedClusterAssignment))

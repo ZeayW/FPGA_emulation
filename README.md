@@ -255,7 +255,13 @@ it is not expanded into a million-entry Python dictionary after the native
 search. On 200,000 synthetic `ASSIGN` records, the materialized parser retained
 10,493,049 bytes and peaked at 15,757,674 traced bytes, while the packed parser
 retained 804,115 bytes, peaked at 1,606,908 bytes and owned an 800,000-byte
-payload. This is isolated adapter evidence rather than NVDLA qualification. A
+payload. The same compact production path now keeps only per-FPGA cluster
+counts and resource totals while constructing its transient partition summary;
+the complete per-FPGA cluster-name lists are reconstructed only by an explicit
+compatibility read after publication. On 200,000 compact clusters, retaining
+those lists used 12,986,704 traced bytes, while the count-only traversal
+retained 5,816 bytes (1.079 versus 1.098 seconds). These are isolated adapter
+measurements rather than NVDLA qualification. A
 million-sink synthetic membership comparison reduced process RSS from about
 84 MiB to 28 MiB while changing construction time from 0.101 to 0.110 seconds;
 the compact net identity/member/ordinal payload was 8,000,087 bytes. This is
