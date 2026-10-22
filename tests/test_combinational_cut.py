@@ -815,6 +815,8 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
         ]
         self.assertEqual(len(endpoint_scans), 1)
         self.assertNotIn("WHERE n.cut_class='combinational'", endpoint_scans[0])
+        self.assertNotIn("JOIN pin_names", endpoint_scans[0])
+        self.assertNotIn("JOIN cell_records", endpoint_scans[0])
 
     def test_compact_v2_candidate_index_streams_many_cyclic_owners(self):
         value = _chain_ir().to_dict()

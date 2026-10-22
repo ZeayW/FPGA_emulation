@@ -851,6 +851,10 @@ def _compact_combinational_cut_candidate_ids(
         }
         class_by_resource_payload: Dict[int, int] = {}
         classes = bytearray([unknown_class]) * instance_count
+        safe_input_ports: List[frozenset[str]] = [frozenset()]
+        safe_input_policy_by_ports = {safe_input_ports[0]: 0}
+        safe_input_policy_by_type: Dict[str, int] = {}
+        safe_input_policies = bytearray(instance_count)
         cell_count = 0
         for row in connection.execute(
             """SELECT seq,id,type,resources_seq
@@ -898,6 +902,29 @@ def _compact_combinational_cut_candidate_ids(
                 classification_code = class_codes[classification]
                 class_by_resource_payload[payload_seq] = classification_code
             classes[sequence] = classification_code
+            if classification_code == 0:
+                instance_type = row["type"]
+                policy = safe_input_policy_by_type.get(instance_type)
+                if policy is None:
+                    allowed = frozenset(
+                        {"D"}
+                        if instance_type.startswith("$_DFF_")
+                        else _TRANSPORT_SAFE_SEQUENTIAL_INPUTS.get(
+                            instance_type, set()
+                        )
+                    )
+                    policy = safe_input_policy_by_ports.get(allowed)
+                    if policy is None:
+                        policy = len(safe_input_ports)
+                        if policy >= 256:
+                            raise ValidationError(
+                                "compact EmuIR sequential input policies "
+                                "exceed packed capacity"
+                            )
+                        safe_input_ports.append(allowed)
+                        safe_input_policy_by_ports[allowed] = policy
+                    safe_input_policy_by_type[instance_type] = policy
+                safe_input_policies[sequence] = policy
             cell_count += 1
         if cell_count != instance_count or unknown_class in classes:
             raise ValidationError("compact EmuIR cell sequence is incomplete")
@@ -917,14 +944,24 @@ def _compact_combinational_cut_candidate_ids(
                    PRIMARY KEY(source,sink)
                ) WITHOUT ROWID"""
         )
+        # SQLite INTEGER PRIMARY KEY intern tables allocate identities from 1.
+        # Keep the row ID as the direct list index without a Python dictionary.
+        pin_names: List[Optional[str]] = [None]
+        for row in connection.execute(
+            "SELECT seq,name FROM pin_names ORDER BY seq"
+        ):
+            if (
+                row["seq"] != len(pin_names)
+                or not isinstance(row["name"], str)
+                or not row["name"]
+            ):
+                raise ValidationError("compact EmuIR endpoint port is invalid")
+            pin_names.append(row["name"])
         endpoint_rows = iter(
             connection.execute(
-                """SELECT e.net_seq,e.role,e.ordinal,e.instance_seq,e.bit,
-                          p.seq AS pin_name_seq,p.name AS port,c.type
-                     FROM endpoint_records e
-                     LEFT JOIN pin_names p ON p.seq=e.port_seq
-                     LEFT JOIN cell_records c ON c.seq=e.instance_seq
-                    ORDER BY e.net_seq,e.role,e.ordinal"""
+                """SELECT net_seq,role,ordinal,instance_seq,port_seq,bit
+                     FROM endpoint_records
+                    ORDER BY net_seq,role,ordinal"""
             )
         )
         endpoint = next(endpoint_rows, None)
@@ -989,12 +1026,17 @@ def _compact_combinational_cut_candidate_ids(
                         "compact EmuIR endpoint sequence is invalid"
                     )
                 endpoint_ordinals[role] = ordinal
+                pin_name_seq = endpoint["port_seq"]
                 if (
-                    endpoint["pin_name_seq"] is None
-                    or not isinstance(endpoint["port"], str)
-                    or not endpoint["port"]
+                    isinstance(pin_name_seq, bool)
+                    or not isinstance(pin_name_seq, int)
+                    or pin_name_seq < 0
+                    or pin_name_seq >= len(pin_names)
+                    or pin_names[pin_name_seq] is None
                 ):
                     raise ValidationError("compact EmuIR endpoint port is invalid")
+                port = pin_names[pin_name_seq]
+                assert port is not None
                 bit = endpoint["bit"]
                 if isinstance(bit, bool) or not isinstance(bit, int) or bit < 0:
                     raise ValidationError("compact EmuIR endpoint bit is invalid")
@@ -1008,7 +1050,7 @@ def _compact_combinational_cut_candidate_ids(
                         raise ValidationError(
                             "compact EmuIR endpoint owner is invalid"
                         )
-                elif endpoint["port"] not in top_ports:
+                elif port not in top_ports:
                     raise ValidationError(
                         "compact EmuIR top-level endpoint is invalid"
                     )
@@ -1033,9 +1075,10 @@ def _compact_combinational_cut_candidate_ids(
                         if classification == 0:
                             candidate_reason = (
                                 candidate_reason
-                                or not _safe_sequential_input(
-                                    endpoint["type"], endpoint["port"]
-                                )
+                                or port
+                                not in safe_input_ports[
+                                    safe_input_policies[owner]
+                                ]
                             )
                         elif classification != 1:
                             candidate_reason = True
