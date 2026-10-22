@@ -70,14 +70,32 @@ int main() {
             bounds.write_text("2 2\n0 2 0 2\n0 2 0 0\n")
             script = root / "run.tcl"
             script.write_text(
+                "set_debug_level PAR initial_partitioning 1\n"
                 f"triton_part_hypergraph -hypergraph_file {{{graph}}} "
                 f"-resource_bounds_file {{{bounds}}} -num_parts 2 "
                 "-balance_constraint 50 -vertex_dimension 2 "
+                "-num_initial_solutions 0 -max_coarsen_iters 0 "
+                "-num_coarsen_solutions 1 -max_num_vcycle 0 "
                 "-min_num_vertices_each_part 1 -seed 0\nexit\n")
             result = subprocess.run([executable, "-exit", str(script)],
                                     capture_output=True, text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             solution = Path(f"{graph}.part.2")
+            parts = list(map(int, solution.read_text().split()))
+            self.assertEqual(parts[0], 0)
+            self.assertEqual(parts.count(0), 2)
+            self.assertEqual(parts.count(1), 2)
+            solution.unlink()
+
+            # The deterministic VILE seed overloads the zero-capacity device,
+            # and neither single move can fix it. Disabling cut ILP must still
+            # permit native resource-only initialization, followed by FM.
+            script.write_text(script.read_text().replace(
+                "-num_parts 2", "-num_parts 2 -num_vertices_threshold_ilp 0"))
+            result = subprocess.run([executable, "-exit", str(script)],
+                                    capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Resource ILP part", result.stdout)
             parts = list(map(int, solution.read_text().split()))
             self.assertEqual(parts[0], 0)
             self.assertEqual(parts.count(0), 2)
@@ -93,7 +111,9 @@ int main() {
             bounds.write_text("2 2\n0 2 0 0\n0 2 0 0\n")
             script.write_text(script.read_text().replace(
                 "triton_part_hypergraph",
-                f"triton_part_hypergraph -fixed_file {{{fixed}}}", 1))
+                f"triton_part_hypergraph -fixed_file {{{fixed}}}", 1).replace(
+                    "-num_vertices_threshold_ilp 0",
+                    "-num_vertices_threshold_ilp 1000"))
             result = subprocess.run([executable, "-exit", str(script)],
                                     capture_output=True, text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
