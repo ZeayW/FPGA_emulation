@@ -312,7 +312,10 @@ def run_phase4(
     report["artifacts"]["route_store"] = route_storage["artifact"]
     report["route_storage"] = {
         "schema": route_storage["schema"],
-        "dataflow": "typed-sqlite-demand-route-tree-timing-relations-v1",
+        "user_version": route_storage["user_version"],
+        "dataflow": (
+            "typed-sqlite-route-timing-selection-batch-relations-v2"
+        ),
         "bytes": route_storage["store_bytes"],
         "logical_sha256": route_storage["logical_sha256"],
         "records": {

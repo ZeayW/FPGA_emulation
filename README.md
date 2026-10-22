@@ -365,6 +365,18 @@ exact predecessors and timing paths are normalized relations instead of one
 graph-sized JSON tree. `read_system_routes` exposes ordered lazy cursors to
 Phase 5, while `read_json` remains the explicit legacy materializer. The final
 multi-FPGA report inventories and seals both selector and sidecar. RouteStore
+user version 2 also stores global-router master selections and refinement-batch
+path membership as typed relations; these route/path-sized arrays no longer
+reside in the selector header and are exposed as lazy sequences. Managed
+global routing validates each native candidate as it is parsed and retains one
+capacity-domain bitset per demand for independent batch reconstruction. It no
+longer rebuilds the complete multi-generator candidate-tree pool in Python;
+an explicit candidate-pool output remains available for diagnostics and exact
+oracle tests. On a synthetic 50,000-demand output containing 350,000 candidate
+records, the isolated parser's process peak RSS fell from 252,018,688 to
+45,809,664 bytes while wall time changed from 0.606 to 1.148 seconds because
+the compact path performs tree, delay, lock and final-route checks online.
+This is adapter evidence rather than NVDLA qualification. RouteStore
 publication validates the previous selector before writing, restores it on a
 selector or post-publication validation failure, and removes an obsolete
 sidecar only after the new view passes. The selector binds the sidecar filename

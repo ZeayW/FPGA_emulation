@@ -11,7 +11,10 @@ from emuflow.routing_candidates import (
     exact_route_candidate_selection,
     validate_route_candidate_pool,
 )
-from emuflow.routing_batches import build_route_refinement_batches
+from emuflow.routing_batches import (
+    build_compact_route_refinement_batches,
+    build_route_refinement_batches,
+)
 from emuflow.routing_oracle import exact_route_tree_selection
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
@@ -284,6 +287,15 @@ class RouteCandidatePoolTest(unittest.TestCase):
                 provider=GLOBAL_CANDIDATE_PROVIDER,
                 candidate_pool_path=path,
             )
+            compact_routes = route_system_native(
+                assignment,
+                platform,
+                constraints,
+                timing,
+                executable=str(tlr_router()),
+                provider=GLOBAL_CANDIDATE_PROVIDER,
+            )
+            self.assertEqual(compact_routes, routes)
             import json
 
             pool = json.loads(path.read_text(encoding="utf-8"))
@@ -447,6 +459,19 @@ class RouteCandidatePoolTest(unittest.TestCase):
         certificate = build_route_refinement_batches(
             assignment, platform, candidate_pool, timing_paths
         )
+        compact_certificate = build_compact_route_refinement_batches(
+            [
+                {
+                    "clock_period_ns": 1.0,
+                    "baseline_slack_ns": 1.0,
+                    "demands": [index],
+                }
+                for index in range(path_count)
+            ],
+            timing_paths["normalization"],
+            [1] * path_count,
+        )
+        self.assertEqual(compact_certificate, certificate)
         self.assertEqual(certificate["batch_count"], path_count)
         self.assertEqual(certificate["maximum_parallel_batch"], 1)
         self.assertEqual(certificate["batches"][0], [0])

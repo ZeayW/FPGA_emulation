@@ -2,12 +2,161 @@
 
 from __future__ import annotations
 
+from array import array
 from collections import defaultdict
+from functools import cmp_to_key
 from typing import Any, Dict, List, Mapping, Set
 
 from .platform import Platform
 from .routing import _arc_key, build_directed_graph, demands_from_assignment
 from .routing_candidates import ROUTE_MASTER_GENERATORS
+
+
+_SLACK_EPSILON = 1.0e-12
+
+
+def _native_path_slack(
+    path: Mapping[str, Any], normalization: Mapping[str, Any]
+) -> float:
+    slack = float(path["baseline_slack_ns"])
+    period = float(path["clock_period_ns"])
+    if slack >= 0.0:
+        return (
+            slack
+            * period
+            / (
+                float(normalization["positive_slack_scale_ns"])
+                * float(normalization["max_clock_period_ns"])
+            )
+        )
+    return slack / (
+        float(normalization["negative_slack_scale_ns"]) * period
+    )
+
+
+def build_compact_route_refinement_batches(
+    native_paths: List[Mapping[str, Any]],
+    normalization: Mapping[str, Any],
+    domains_by_demand: List[int],
+) -> Dict[str, Any]:
+    """Reconstruct native conflict batches without candidate dictionaries.
+
+    ``domains_by_demand`` stores the union of capacity domains touched by all
+    master candidates as one Python integer bitset per demand.  The inverse
+    timing-path relation is kept in two fixed-width arrays.  This preserves
+    the independent batch reconstruction while avoiding candidate-sized
+    trees, per-path dictionaries and sets on the managed production path.
+    """
+
+    path_count = len(native_paths)
+    demand_count = len(domains_by_demand)
+    degrees = array("I", [0]) * demand_count
+
+    def selected_demands(path_index: int) -> tuple[int, ...]:
+        selected = tuple(
+            sorted(
+                {int(item) for item in native_paths[path_index]["demands"]}
+            )
+        )
+        if any(item < 0 or item >= demand_count for item in selected):
+            raise ValueError("route refinement path demand is out of range")
+        return selected
+
+    for path_index in range(path_count):
+        selected = selected_demands(path_index)
+        for demand in selected:
+            degrees[demand] += 1
+
+    offsets = array("Q", [0]) * (demand_count + 1)
+    for index, degree in enumerate(degrees):
+        offsets[index + 1] = offsets[index] + degree
+    paths_by_demand = array("I", [0]) * offsets[-1]
+    cursors = array("Q", offsets[:-1])
+    for path_index in range(path_count):
+        selected = selected_demands(path_index)
+        for demand in selected:
+            position = cursors[demand]
+            paths_by_demand[position] = path_index
+            cursors[demand] = position + 1
+    del degrees, cursors
+
+    slacks = [
+        _native_path_slack(path, normalization) for path in native_paths
+    ]
+
+    def compare(left: int, right: int) -> int:
+        delta = slacks[left] - slacks[right]
+        if abs(delta) > _SLACK_EPSILON:
+            return -1 if delta < 0.0 else 1
+        return (left > right) - (left < right)
+
+    order = sorted(range(path_count), key=cmp_to_key(compare))
+    del slacks
+    batches: List[List[int]] = []
+    if path_count <= 4096:
+        batch_footprints: List[List[tuple[int, int]]] = []
+        for path_index in order:
+            domain_mask = 0
+            affected_mask = 0
+            for demand in selected_demands(path_index):
+                domain_mask |= domains_by_demand[demand]
+                for position in range(offsets[demand], offsets[demand + 1]):
+                    affected_mask |= 1 << paths_by_demand[position]
+            for batch_index, footprints in enumerate(batch_footprints):
+                if all(
+                    not (domain_mask & other_domains)
+                    and not (affected_mask & other_paths)
+                    for other_domains, other_paths in footprints
+                ):
+                    batches[batch_index].append(path_index)
+                    footprints.append((domain_mask, affected_mask))
+                    break
+            else:
+                batches.append([path_index])
+                batch_footprints.append([(domain_mask, affected_mask)])
+    else:
+        domain_count = max(
+            (mask.bit_length() for mask in domains_by_demand), default=0
+        )
+        last_domain_batch = array("i", [-1]) * domain_count
+        last_path_batch = array("i", [-1]) * path_count
+        for path_index in order:
+            domain_mask = 0
+            batch_index = 0
+            selected = selected_demands(path_index)
+            for demand in selected:
+                domain_mask |= domains_by_demand[demand]
+                for position in range(offsets[demand], offsets[demand + 1]):
+                    affected = paths_by_demand[position]
+                    batch_index = max(
+                        batch_index, last_path_batch[affected] + 1
+                    )
+            remaining = domain_mask
+            while remaining:
+                least_bit = remaining & -remaining
+                domain = least_bit.bit_length() - 1
+                batch_index = max(
+                    batch_index, last_domain_batch[domain] + 1
+                )
+                remaining ^= least_bit
+            while len(batches) <= batch_index:
+                batches.append([])
+            batches[batch_index].append(path_index)
+            remaining = domain_mask
+            while remaining:
+                least_bit = remaining & -remaining
+                domain = least_bit.bit_length() - 1
+                last_domain_batch[domain] = batch_index
+                remaining ^= least_bit
+            for demand in selected:
+                for position in range(offsets[demand], offsets[demand + 1]):
+                    last_path_batch[paths_by_demand[position]] = batch_index
+
+    return {
+        "batches": batches,
+        "batch_count": len(batches),
+        "maximum_parallel_batch": max(map(len, batches), default=0),
+    }
 
 
 def build_route_refinement_batches(

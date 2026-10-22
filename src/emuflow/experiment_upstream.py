@@ -252,19 +252,39 @@ def _trusted_route_store_path(selector: Path) -> Optional[Path]:
         or header.get("schema") != SYSTEM_ROUTES_SCHEMA
         or any(key in header for key in ("demands", "routes"))
         or not isinstance(sections, dict)
-        or set(sections) != {"demands", "routes", "timing_paths"}
+        or set(sections)
+        != {
+            "demands",
+            "routes",
+            "timing_paths",
+            "master_selections",
+            "refinement_batch_paths",
+        }
         or not _selector_digest(value.get("logical_sha256"))
         or not _selector_digest(value.get("store_sha256"))
     ):
         raise ValidationError("managed system-route selector envelope is invalid")
-    for record in sections.values():
+    for name, record in sections.items():
+        expected_keys = (
+            {"records", "batches", "sha256"}
+            if name == "refinement_batch_paths"
+            else {"records", "sha256"}
+        )
         if (
             not isinstance(record, dict)
-            or set(record) != {"records", "sha256"}
+            or set(record) != expected_keys
             or isinstance(record.get("records"), bool)
             or not isinstance(record.get("records"), int)
             or record["records"] < 0
             or not _selector_digest(record.get("sha256"))
+            or (
+                name == "refinement_batch_paths"
+                and (
+                    isinstance(record.get("batches"), bool)
+                    or not isinstance(record.get("batches"), int)
+                    or record["batches"] < 0
+                )
+            )
         ):
             raise ValidationError(
                 "managed system-route selector sections are invalid"

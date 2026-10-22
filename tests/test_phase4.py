@@ -1,12 +1,13 @@
 import copy
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from emuflow.errors import EmuFlowError, ValidationError
-from emuflow.io import read_json
+from emuflow.io import file_sha256, read_json
 from emuflow.partition import (
     PARTITION_ASSIGNMENT_SCHEMA,
     assign_clusters,
@@ -129,6 +130,52 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_route_store_v1_remains_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector_path = root / "routes.json"
+            logical = _storage_routes(0)
+            manifest = write_system_route_storage(selector_path, logical)
+            store_path = root / manifest["artifact"]
+            legacy_header = {
+                key: value
+                for key, value in logical.items()
+                if key not in {"demands", "routes"}
+            }
+            legacy_sections = {
+                key: manifest["sections"][key]
+                for key in ("demands", "routes", "timing_paths")
+            }
+            with sqlite3.connect(store_path) as connection:
+                connection.executescript(
+                    "DROP TABLE route_master_selections;"
+                    "DROP TABLE refinement_batch_paths;"
+                    "PRAGMA user_version=1;"
+                )
+                connection.executemany(
+                    "UPDATE metadata SET value=? WHERE key=?",
+                    (
+                        (json.dumps(legacy_header), "header"),
+                        (json.dumps(legacy_sections), "sections"),
+                    ),
+                )
+            store_sha256 = file_sha256(store_path)
+            legacy_store = root / f"routes.{store_sha256}.sqlite"
+            store_path.rename(legacy_store)
+            legacy_manifest = {
+                **manifest,
+                "user_version": 1,
+                "header": legacy_header,
+                "sections": legacy_sections,
+                "artifact": legacy_store.name,
+                "store_bytes": legacy_store.stat().st_size,
+                "store_sha256": store_sha256,
+            }
+            selector_path.write_text(
+                json.dumps(legacy_manifest), encoding="utf-8"
+            )
+            self.assertEqual(read_json(selector_path), logical)
+
     def test_route_store_selector_failure_preserves_previous_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1234,6 +1281,36 @@ class Phase4Test(unittest.TestCase):
             self.assertEqual(report["status"], "pass")
             self.assertEqual(report["validation"]["timing_paths_original"], 3)
             self.assertEqual(report["validation"]["timing_paths_compressed"], 2)
+            selector = json.loads(
+                (root / "phase4" / "routes.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            stored_joint = selector["header"]["joint_optimization"]
+            self.assertNotIn(
+                "master_selection",
+                stored_joint["candidate_generation"],
+            )
+            self.assertNotIn(
+                "batches", stored_joint["refinement_batches"]
+            )
+            self.assertEqual(
+                selector["sections"]["master_selections"]["records"], 2
+            )
+            self.assertEqual(
+                selector["sections"]["refinement_batch_paths"]["records"],
+                2,
+            )
+            route_view = read_system_routes(root / "phase4" / "routes.json")
+            self.assertIsInstance(route_view, SystemRoutesView)
+            lazy_selection = route_view["joint_optimization"][
+                "candidate_generation"
+            ]["master_selection"]
+            lazy_batches = route_view["joint_optimization"][
+                "refinement_batches"
+            ]["batches"]
+            self.assertEqual(list.__len__(lazy_selection), 0)
+            self.assertEqual(list.__len__(lazy_batches), 0)
             routes = read_json(root / "phase4" / "routes.json")
             self.assertEqual(
                 routes["provider"],

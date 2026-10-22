@@ -30,11 +30,15 @@ from .routing import (
 )
 from .routing_candidates import (
     ROUTE_CANDIDATE_GENERATORS,
+    ROUTE_MASTER_GENERATORS,
     ROUTE_CANDIDATE_POOL_PROVIDER,
     ROUTE_CANDIDATE_POOL_SCHEMA,
     validate_route_candidate_pool,
 )
-from .routing_batches import build_route_refinement_batches
+from .routing_batches import (
+    build_compact_route_refinement_batches,
+    build_route_refinement_batches,
+)
 from .tdm import RUNTIME_BARRIER_SLOTS
 
 
@@ -1081,12 +1085,122 @@ def _write_native_input(
             )
 
 
-def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]:
-    routes = {}
+def _validate_compact_native_candidate(
+    demand_index: int,
+    arc_indices: Sequence[int],
+    reported_delay: float,
+    model: Mapping[str, Any],
+    direction_locks: Mapping[int, int],
+    max_route_hops: Optional[int],
+) -> tuple[int, int]:
+    """Validate one candidate and return ``(max_hops, domain_bitset)``."""
+
+    if demand_index < 0 or demand_index >= len(model["native_demands"]):
+        raise EmuFlowError("TLR router returned an unknown candidate demand")
+    demand = model["native_demands"][demand_index]
+    graph: Dict[int, List[tuple[int, float]]] = defaultdict(list)
+    indegree: Dict[int, int] = defaultdict(int)
+    edge_nodes = set()
+    seen_arcs = set()
+    domain_mask = 0
+    for arc_index in arc_indices:
+        if (
+            arc_index < 0
+            or arc_index >= len(model["arcs"])
+            or arc_index in seen_arcs
+        ):
+            raise EmuFlowError(
+                "TLR router returned an invalid/duplicate candidate arc"
+            )
+        seen_arcs.add(arc_index)
+        arc = model["arcs"][arc_index]
+        source = int(arc["from"])
+        sink = int(arc["to"])
+        graph[source].append((sink, float(arc["delay_ns"])))
+        indegree[sink] += 1
+        edge_nodes.update((source, sink))
+        domain_mask |= 1 << int(arc["capacity_domain"])
+        if int(arc["bank_count"]) > 0:
+            opposite = int(arc["opposite_arc"])
+            if opposite < 0 or opposite >= len(model["arcs"]):
+                raise EmuFlowError(
+                    "TLR router candidate bank arc lacks its opposite"
+                )
+            domain_mask |= 1 << int(
+                model["arcs"][opposite]["capacity_domain"]
+            )
+        group = int(arc["direction_group"])
+        if group >= 0:
+            locked_arc = direction_locks.get(group)
+            if locked_arc is None or (
+                model["arc_keys"][locked_arc]
+                != model["arc_keys"][arc_index]
+            ):
+                raise EmuFlowError(
+                    "TLR router candidate violates a direction lock"
+                )
+
+    source = int(demand["source"])
+    reachable = {source}
+    delay = {source: 0.0}
+    hops = {source: 0}
+    queue = deque([source])
+    while queue:
+        node = queue.popleft()
+        for sink, arc_delay in sorted(graph.get(node, [])):
+            if sink in reachable:
+                raise EmuFlowError(
+                    "TLR router candidate contains a cycle or multiple path"
+                )
+            reachable.add(sink)
+            delay[sink] = delay[node] + arc_delay
+            hops[sink] = hops[node] + 1
+            queue.append(sink)
+    if not edge_nodes <= reachable:
+        raise EmuFlowError(
+            "TLR router candidate has edges disconnected from its source"
+        )
+    sinks = {int(item) for item in demand["sinks"]}
+    if not sinks <= reachable:
+        raise EmuFlowError("TLR router candidate does not cover every sink")
+    if any(node != source and count != 1 for node, count in indegree.items()):
+        raise EmuFlowError("TLR router candidate is not an arborescence")
+    maximum_hops = max((hops[sink] for sink in sinks), default=0)
+    if max_route_hops is not None and maximum_hops > max_route_hops:
+        raise EmuFlowError("TLR router candidate exceeds maximum route hops")
+    predicted_delay = max((delay[sink] for sink in sinks), default=0.0)
+    if (
+        not math.isfinite(reported_delay)
+        or abs(reported_delay - predicted_delay) > 1.0e-9
+    ):
+        raise EmuFlowError(
+            "TLR router candidate delay was not independently reconstructed"
+        )
+    return maximum_hops, domain_mask
+
+
+def _parse_native_output(
+    path: Path,
+    model: Mapping[str, Any],
+    *,
+    compact_candidates: bool = False,
+    max_route_hops: Optional[int] = None,
+) -> Dict[str, Any]:
+    demand_count = len(model["demands"])
+    path_count = len(model["paths"])
+    routes: List[Optional[Dict[str, Any]]] = [None] * demand_count
     candidates: Dict[int, Dict[str, Any]] = defaultdict(dict)
-    selections = {}
+    selections: List[Optional[str]] = [None] * demand_count
     locks = {}
-    timing = {}
+    timing: List[Optional[Dict[str, Any]]] = [None] * path_count
+    candidate_coverage = bytearray(demand_count)
+    candidate_domains = [0] * demand_count
+    candidate_counts = [0] * len(ROUTE_CANDIDATE_GENERATORS)
+    candidate_max_hops = 0
+    generator_index = {
+        generator: index
+        for index, generator in enumerate(ROUTE_CANDIDATE_GENERATORS)
+    }
     metrics: Dict[str, Any] = {}
     with path.open("r", encoding="utf-8") as stream:
         header = stream.readline().strip()
@@ -1101,9 +1215,24 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
             if not fields:
                 continue
             if fields[0] == "LOCK" and len(fields) == 3:
-                locks[int(fields[1])] = int(fields[2])
+                group = int(fields[1])
+                arc_index = int(fields[2])
+                if group in locks:
+                    raise EmuFlowError("TLR router returned a duplicate lock")
+                if arc_index < 0 or arc_index >= len(model["arcs"]):
+                    raise EmuFlowError("TLR router returned an invalid lock")
+                locks[group] = arc_index
             elif fields[0] == "ROUTE" and len(fields) == 4:
-                routes[int(fields[1])] = {
+                demand_index = int(fields[1])
+                if (
+                    demand_index < 0
+                    or demand_index >= demand_count
+                    or routes[demand_index] is not None
+                ):
+                    raise EmuFlowError(
+                        "TLR router returned duplicate/unknown route"
+                    )
+                routes[demand_index] = {
                     "max_delay_ns": float(fields[2]),
                     "arcs": (
                         []
@@ -1116,31 +1245,76 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
                 generator = fields[2]
                 if (
                     generator not in ROUTE_CANDIDATE_GENERATORS
-                    or generator in candidates[demand_index]
+                    or demand_index < 0
+                    or demand_index >= demand_count
                 ):
                     raise EmuFlowError(
                         "TLR router returned duplicate/unknown candidate"
                     )
-                candidates[demand_index][generator] = {
-                    "max_delay_ns": float(fields[3]),
-                    "arcs": (
-                        []
-                        if fields[4] == "-"
-                        else [int(item) for item in fields[4].split(",")]
-                    ),
-                }
+                ordinal = generator_index[generator]
+                bit = 1 << ordinal
+                if candidate_coverage[demand_index] & bit:
+                    raise EmuFlowError(
+                        "TLR router returned duplicate/unknown candidate"
+                    )
+                candidate_coverage[demand_index] |= bit
+                candidate_counts[ordinal] += 1
+                candidate_arcs = (
+                    []
+                    if fields[4] == "-"
+                    else [int(item) for item in fields[4].split(",")]
+                )
+                candidate_delay = float(fields[3])
+                if compact_candidates:
+                    hops, domain_mask = _validate_compact_native_candidate(
+                        demand_index,
+                        candidate_arcs,
+                        candidate_delay,
+                        model,
+                        locks,
+                        max_route_hops,
+                    )
+                    candidate_max_hops = max(candidate_max_hops, hops)
+                    if generator in ROUTE_MASTER_GENERATORS:
+                        candidate_domains[demand_index] |= domain_mask
+                    if generator == "refined-final":
+                        route = routes[demand_index]
+                        if route is None or (
+                            route["arcs"] != candidate_arcs
+                            or route["max_delay_ns"] != candidate_delay
+                        ):
+                            raise EmuFlowError(
+                                "TLR router refined candidate does not match "
+                                "its final route"
+                            )
+                else:
+                    candidates[demand_index][generator] = {
+                        "max_delay_ns": candidate_delay,
+                        "arcs": candidate_arcs,
+                    }
             elif fields[0] == "SELECTION" and len(fields) == 3:
                 demand_index = int(fields[1])
                 if (
                     fields[2] not in ROUTE_CANDIDATE_GENERATORS
-                    or demand_index in selections
+                    or demand_index < 0
+                    or demand_index >= demand_count
+                    or selections[demand_index] is not None
                 ):
                     raise EmuFlowError(
                         "TLR router returned duplicate/unknown selection"
                     )
                 selections[demand_index] = fields[2]
             elif fields[0] == "PATH" and len(fields) == 6:
-                timing[int(fields[1])] = {
+                path_index = int(fields[1])
+                if (
+                    path_index < 0
+                    or path_index >= path_count
+                    or timing[path_index] is not None
+                ):
+                    raise EmuFlowError(
+                        "TLR router returned duplicate/unknown timing path"
+                    )
+                timing[path_index] = {
                     "delay_ns": float(fields[2]),
                     "slack_ns": float(fields[3]),
                     "normalized_slack": float(fields[4]),
@@ -1173,9 +1347,9 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
                 metrics[fields[1]] = value
             else:
                 raise EmuFlowError(f"TLR router returned malformed record: {line}")
-    if len(routes) != len(model["demands"]):
+    if any(route is None for route in routes):
         raise EmuFlowError("TLR router did not return exact demand coverage")
-    if len(timing) != len(model["paths"]):
+    if any(record is None for record in timing):
         raise EmuFlowError("TLR router did not return exact timing-path coverage")
     expected_metrics = {
         "iterations",
@@ -1209,18 +1383,26 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
                 "parallel_reroute_tasks",
             }
         )
-        if set(candidates) != set(routes):
-            raise EmuFlowError(
-                "TLR router candidate demand coverage is not exact"
-            )
-        if any("refined-final" not in value for value in candidates.values()):
+        refined_bit = 1 << generator_index["refined-final"]
+        if any(not (coverage & refined_bit) for coverage in candidate_coverage):
             raise EmuFlowError(
                 "TLR router did not return each selected route as a candidate"
             )
-        if set(selections) != set(routes):
+        if any(selection is None for selection in selections):
             raise EmuFlowError(
                 "TLR router master selection coverage is not exact"
             )
+        for demand_index, selection in enumerate(selections):
+            if (
+                selection not in ROUTE_MASTER_GENERATORS
+                or not (
+                    candidate_coverage[demand_index]
+                    & (1 << generator_index[selection])
+                )
+            ):
+                raise EmuFlowError(
+                    "TLR router selected an unavailable/non-master candidate"
+                )
     if set(metrics) != expected_metrics:
         raise EmuFlowError(
             "TLR router returned incomplete metric coverage"
@@ -1232,6 +1414,15 @@ def _parse_native_output(path: Path, model: Mapping[str, Any]) -> Dict[str, Any]
         "direction_locks": locks,
         "timing": timing,
         "metrics": metrics,
+        "compact_candidate_summary": (
+            {
+                "domains_by_demand": candidate_domains,
+                "candidate_counts": candidate_counts,
+                "max_route_hops_observed": candidate_max_hops,
+            }
+            if compact_candidates and output_v2
+            else None
+        ),
     }
 
 
@@ -1431,7 +1622,15 @@ def route_system_native(
                 f"in-tree TLR router failed with exit code "
                 f"{completed.returncode}: {detail}"
             )
-        native = _parse_native_output(native_output, model)
+        native = _parse_native_output(
+            native_output,
+            model,
+            compact_candidates=(
+                provider == GLOBAL_CANDIDATE_PROVIDER
+                and candidate_pool_path is None
+            ),
+            max_route_hops=constraints.get("max_route_hops"),
+        )
     for name in ("master_rounds", "master_switches", "master_exact"):
         native["metrics"].setdefault(name, 0)
 
@@ -1451,7 +1650,10 @@ def route_system_native(
     round_usage: Dict[Tuple[str, int], int] = defaultdict(int)
     maximum_observed_hops = 0
     for demand_index, demand in enumerate(model["demands"]):
-        native_route = native["routes"].pop(demand_index)
+        native_route = native["routes"][demand_index]
+        if native_route is None:
+            raise EmuFlowError("TLR router route coverage was released early")
+        native["routes"][demand_index] = None
         edge_keys = [
             model["arc_keys"][index] for index in native_route["arcs"]
         ]
@@ -1501,10 +1703,7 @@ def route_system_native(
             }
         )
     candidate_pool = None
-    candidate_pool_is_semantic_input = provider == GLOBAL_CANDIDATE_PROVIDER
-    if native["candidates"] and (
-        candidate_pool_path is not None or candidate_pool_is_semantic_input
-    ):
+    if native["candidates"] and candidate_pool_path is not None:
         candidates = []
         candidate_max_hops = 0
         for demand_index, demand in enumerate(model["demands"]):
@@ -1566,6 +1765,39 @@ def route_system_native(
         # artifact and release the native candidate table before constructing
         # the canonical routes/timing payload.
         native["candidates"].clear()
+    batch_certificate = None
+    if provider == GLOBAL_CANDIDATE_PROVIDER:
+        compact_summary = native["compact_candidate_summary"]
+        if candidate_pool is not None:
+            batch_certificate = build_route_refinement_batches(
+                assignment, platform, candidate_pool, timing_paths
+            )
+        elif compact_summary is not None:
+            batch_certificate = build_compact_route_refinement_batches(
+                model["paths"],
+                model["normalization"],
+                compact_summary["domains_by_demand"],
+            )
+            compact_summary["domains_by_demand"].clear()
+        else:
+            raise EmuFlowError(
+                "TLR router lacks candidate evidence for batch validation"
+            )
+        if (
+            batch_certificate["batch_count"]
+            != native["metrics"]["reroute_conflict_batches"]
+            or batch_certificate["maximum_parallel_batch"]
+            != native["metrics"]["maximum_parallel_batch"]
+        ):
+            raise EmuFlowError(
+                "TLR router conflict batches do not match independent "
+                "reconstruction: native="
+                f"({native['metrics']['reroute_conflict_batches']}, "
+                f"{native['metrics']['maximum_parallel_batch']}), "
+                "independent="
+                f"({batch_certificate['batch_count']}, "
+                f"{batch_certificate['maximum_parallel_batch']})"
+            )
     physical_arc_index = {
         key: index for index, key in enumerate(sorted(arcs))
     }
@@ -1581,7 +1813,12 @@ def route_system_native(
     timing_records = []
     if timing_paths is not None:
         for index, path in enumerate(timing_paths["paths"]):
-            native_timing = native["timing"].pop(index)
+            native_timing = native["timing"][index]
+            if native_timing is None:
+                raise EmuFlowError(
+                    "TLR router timing coverage was released early"
+                )
+            native["timing"][index] = None
             native_timing["route_signature"] = (
                 ",".join(
                     str(arc)
@@ -1728,24 +1965,7 @@ def route_system_native(
             "domains": round_domains,
         }
     if provider == GLOBAL_CANDIDATE_PROVIDER:
-        batch_certificate = build_route_refinement_batches(
-            assignment, platform, candidate_pool, timing_paths
-        )
-        if (
-            batch_certificate["batch_count"]
-            != native["metrics"]["reroute_conflict_batches"]
-            or batch_certificate["maximum_parallel_batch"]
-            != native["metrics"]["maximum_parallel_batch"]
-        ):
-            raise EmuFlowError(
-                "TLR router conflict batches do not match independent "
-                "reconstruction: native="
-                f"({native['metrics']['reroute_conflict_batches']}, "
-                f"{native['metrics']['maximum_parallel_batch']}), "
-                "independent="
-                f"({batch_certificate['batch_count']}, "
-                f"{batch_certificate['maximum_parallel_batch']})"
-            )
+        assert batch_certificate is not None
         result["metrics"].update(
             {
                 "master_rounds": native["metrics"]["master_rounds"],
@@ -1788,26 +2008,28 @@ def route_system_native(
             }
             for index in range(len(model["demands"]))
         ]
-        selected_candidates = {
-            (candidate["demand_id"], candidate["generator"]): candidate
-            for candidate in candidate_pool["candidates"]
-        }
-        route_by_id = {route["id"]: route for route in routes}
-        for record in result["joint_optimization"]["candidate_generation"][
-            "master_selection"
-        ]:
-            candidate = selected_candidates[
-                (record["demand"], "refined-final")
-            ]
-            route = route_by_id[record["demand"]]
-            if (
-                route["tree_edges"] != candidate["tree_edges"]
-                or route["predicted_max_delay_ns"]
-                != candidate["predicted_max_delay_ns"]
-            ):
-                raise EmuFlowError(
-                    "TLR router refined candidate does not match final routes"
-                )
+        if candidate_pool is not None:
+            selected_candidates = {
+                (candidate["demand_id"], candidate["generator"]): candidate
+                for candidate in candidate_pool["candidates"]
+            }
+            route_by_id = {route["id"]: route for route in routes}
+            for record in result["joint_optimization"][
+                "candidate_generation"
+            ]["master_selection"]:
+                candidate = selected_candidates[
+                    (record["demand"], "refined-final")
+                ]
+                route = route_by_id[record["demand"]]
+                if (
+                    route["tree_edges"] != candidate["tree_edges"]
+                    or route["predicted_max_delay_ns"]
+                    != candidate["predicted_max_delay_ns"]
+                ):
+                    raise EmuFlowError(
+                        "TLR router refined candidate does not match final "
+                        "routes"
+                    )
     if timing_paths is not None:
         result["timing"] = {
             "schema": STA_PATHS_SCHEMA,
