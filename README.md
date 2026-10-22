@@ -235,12 +235,21 @@ Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
 publication. The installed `emuflow-native` entry now invokes the real Phase 3
-analyzer, Phase 5 exact scheduler and Phase 6 Chimew signal-grouping and bank/channel assignment
+analyzer, Phase 5 exact scheduler and Phase 6 Chimew signal-grouping,
+position-refinement and bank/channel assignment
 kernels from one linked stage library; production resolves this entry directly, while explicit differential runs retain
 each standalone executable and older installs fall back to them. This is the W0/W7
 foundation rather than a claim that native `compile` is complete; remaining
 Phase 5 validation maps, Phase 6/7 data-plane loops, and global timing evidence
 decoding are still migration work.
+The three Phase 6 stages share the core CRC-32/SHA-256 implementation. Position
+refinement now streams a sealed fixed-width protocol over stdin and parses
+ordered stdout directly, removing its signal-sized text line list and both
+input/output scratch files. A 100,000-signal serialization-only comparison
+reduced traced Python peak allocation from 14.58 MB to 1.19 MB and process RSS
+from 96.39 MB to 75.83 MB; the two-pass logical seal increased wall time from
+0.53 to 1.59 seconds. The 3.30 MB typed payload is IPC traffic in production,
+not a persistent artifact. This is adapter evidence, not NVDLA qualification.
 Phase 4 now publishes `routes.json` as a small selector plus a
 content-addressed `routes.<sha256>.sqlite` RouteStore. Demand identities are
 projected from their authoritative routed records; route sinks, tree edges,

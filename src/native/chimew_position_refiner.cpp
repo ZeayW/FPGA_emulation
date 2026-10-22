@@ -2,17 +2,25 @@
 // Deterministic position refinement bounded by Chimew Section 3.3.2.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <vector>
+
+#include "emuflow_core/hash.hpp"
+#include "emuflow_core/native_stages.hpp"
 
 namespace {
 
@@ -51,6 +59,146 @@ std::vector<Signal> read_input(const std::string& path) {
   }
   if (signals.empty()) {
     throw std::runtime_error("Chimew refiner requires at least one signal");
+  }
+  return signals;
+}
+
+void read_exact(std::istream& stream, void* destination, std::size_t size,
+                const char* label) {
+  if (!stream.read(static_cast<char*>(destination),
+                   static_cast<std::streamsize>(size))) {
+    throw std::runtime_error(std::string("truncated Chimew typed input ") +
+                             label);
+  }
+}
+
+template <typename Unsigned>
+Unsigned decode_little_endian(const unsigned char* bytes) {
+  static_assert(std::is_unsigned_v<Unsigned>);
+  Unsigned result = 0;
+  for (std::size_t index = 0; index < sizeof(Unsigned); ++index) {
+    result |= static_cast<Unsigned>(bytes[index]) << (8 * index);
+  }
+  return result;
+}
+
+template <typename Unsigned>
+Unsigned read_little_endian(std::istream& stream, std::uint32_t* checksum,
+                            const char* label) {
+  std::array<unsigned char, sizeof(Unsigned)> bytes{};
+  read_exact(stream, bytes.data(), bytes.size(), label);
+  if (checksum != nullptr) {
+    emuflow::core::UpdateCrc32(*checksum, bytes.data(), bytes.size());
+  }
+  return decode_little_endian<Unsigned>(bytes.data());
+}
+
+std::int32_t decode_i32(const unsigned char* bytes) {
+  const std::uint32_t bits = decode_little_endian<std::uint32_t>(bytes);
+  std::int32_t result = 0;
+  std::memcpy(&result, &bits, sizeof(result));
+  return result;
+}
+
+double decode_double(const unsigned char* bytes) {
+  const std::uint64_t bits = decode_little_endian<std::uint64_t>(bytes);
+  double result = 0.0;
+  std::memcpy(&result, &bits, sizeof(result));
+  return result;
+}
+
+int hex_nibble(char value) {
+  if (value >= '0' && value <= '9') return value - '0';
+  if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+  throw std::runtime_error("invalid Chimew expected logical digest");
+}
+
+std::array<unsigned char, 32> parse_digest(const std::string& value) {
+  if (value.size() != 64) {
+    throw std::runtime_error("invalid Chimew expected logical digest");
+  }
+  std::array<unsigned char, 32> digest{};
+  for (std::size_t index = 0; index < digest.size(); ++index) {
+    digest[index] = static_cast<unsigned char>(
+        (hex_nibble(value[index * 2]) << 4) |
+        hex_nibble(value[index * 2 + 1]));
+  }
+  return digest;
+}
+
+std::vector<Signal> read_typed_input(
+    const std::string& path,
+    const std::array<unsigned char, 32>& expected_digest) {
+  std::ifstream input_file;
+  std::istream* stream = &std::cin;
+  if (path != "-") {
+    input_file.open(path, std::ios::binary);
+    if (!input_file) throw std::runtime_error("cannot open Chimew typed input");
+    stream = &input_file;
+  }
+  std::uint32_t checksum = 0;
+  std::array<unsigned char, 8> magic{};
+  read_exact(*stream, magic.data(), magic.size(), "header");
+  emuflow::core::UpdateCrc32(checksum, magic.data(), magic.size());
+  const std::array<unsigned char, 8> expected_magic = {
+      'E', 'M', 'C', 'H', 'R', 'F', '2', 0};
+  if (magic != expected_magic ||
+      read_little_endian<std::uint32_t>(*stream, &checksum, "version") != 1 ||
+      read_little_endian<std::uint32_t>(*stream, &checksum, "endianness") !=
+          0x01020304U) {
+    throw std::runtime_error("invalid Chimew typed input header");
+  }
+  const std::uint64_t raw_count =
+      read_little_endian<std::uint64_t>(*stream, &checksum, "signal count");
+  if (raw_count == 0 ||
+      raw_count > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+    throw std::runtime_error("invalid Chimew typed input signal count");
+  }
+  const int signal_count = static_cast<int>(raw_count);
+  std::array<unsigned char, 32> source_digest{};
+  read_exact(*stream, source_digest.data(), source_digest.size(),
+             "source digest");
+  emuflow::core::UpdateCrc32(
+      checksum, source_digest.data(), source_digest.size());
+  if (source_digest != expected_digest) {
+    throw std::runtime_error("Chimew typed input logical digest disagrees");
+  }
+  std::vector<Signal> signals;
+  signals.reserve(signal_count);
+  emuflow::core::Sha256 observed_digest;
+  for (int index = 0; index < signal_count; ++index) {
+    std::array<unsigned char, 33> record{};
+    read_exact(*stream, record.data(), record.size(), "signal record");
+    emuflow::core::UpdateCrc32(checksum, record.data(), record.size());
+    observed_digest.update(record.data(), record.size());
+    Signal signal;
+    signal.index = decode_i32(record.data() + 1);
+    signal.domain = decode_i32(record.data() + 5);
+    signal.ratio = decode_i32(record.data() + 9);
+    signal.group = decode_i32(record.data() + 13);
+    signal.encoding = decode_little_endian<std::uint64_t>(record.data() + 17);
+    signal.source_y = decode_double(record.data() + 25);
+    if (record[0] != 'S' || signal.index != index || signal.domain < 0 ||
+        signal.ratio <= 0 || signal.group < 0 ||
+        !std::isfinite(signal.source_y)) {
+      throw std::runtime_error("invalid Chimew typed input signal");
+    }
+    signals.push_back(signal);
+  }
+  const auto actual_digest = observed_digest.finish();
+  std::array<unsigned char, 8> end_magic{};
+  read_exact(*stream, end_magic.data(), end_magic.size(), "trailer");
+  const std::array<unsigned char, 8> expected_end = {
+      'E', 'M', 'C', 'H', 'R', 'F', 'E', 0};
+  const std::uint64_t declared_checksum =
+      read_little_endian<std::uint64_t>(*stream, nullptr, "checksum");
+  std::array<unsigned char, 32> trailer_digest{};
+  read_exact(*stream, trailer_digest.data(), trailer_digest.size(),
+             "trailer digest");
+  if (end_magic != expected_end || declared_checksum != checksum ||
+      actual_digest != expected_digest || trailer_digest != expected_digest ||
+      stream->peek() != std::char_traits<char>::eof()) {
+    throw std::runtime_error("Chimew typed input seal disagrees");
   }
   return signals;
 }
@@ -185,8 +333,7 @@ void refine_bucket(std::vector<Signal>& signals,
   }
 }
 
-void run(const std::string& input_path, const std::string& output_path) {
-  auto signals = read_input(input_path);
+void run(std::vector<Signal> signals, const std::string& output_path) {
   auto members = group_members(signals);
   std::set<int> all_groups;
   std::map<std::tuple<int, int, unsigned long long>, std::vector<int>> buckets;
@@ -208,39 +355,63 @@ void run(const std::string& input_path, const std::string& output_path) {
     throw std::runtime_error("position refinement increased its objective");
   }
 
-  std::ofstream output(output_path);
-  if (!output) {
-    throw std::runtime_error("cannot open Chimew refiner output");
+  std::ofstream output_file;
+  std::ostream* output = &std::cout;
+  if (output_path != "-") {
+    output_file.open(output_path);
+    if (!output_file) {
+      throw std::runtime_error("cannot open Chimew refiner output");
+    }
+    output = &output_file;
   }
-  output << "EMUFLOW_CHIMEW_REFINER_OUTPUT_V1\n";
-  output << std::setprecision(17);
-  output << "METRIC " << accepted_buckets << " " << moved_signals << " "
-         << before << " " << after << "\n";
+  *output << "EMUFLOW_CHIMEW_REFINER_OUTPUT_V1\n";
+  *output << std::setprecision(17);
+  *output << "METRIC " << accepted_buckets << " " << moved_signals << " "
+          << before << " " << after << "\n";
   std::sort(signals.begin(), signals.end(),
             [](const Signal& lhs, const Signal& rhs) {
               return lhs.index < rhs.index;
             });
   for (const auto& signal : signals) {
-    output << "ASSIGN " << signal.index << " " << signal.group << "\n";
+    *output << "ASSIGN " << signal.index << " " << signal.group << "\n";
   }
 }
 
 }  // namespace
 
+void emuflow::native::RefineChimewPositions(
+    const std::string& input_path, const std::string& output_path,
+    bool typed_input, const std::string& expected_sha256) {
+  run(typed_input ? read_typed_input(input_path, parse_digest(expected_sha256))
+                  : read_input(input_path),
+      output_path);
+}
+
+#if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "usage: emuflow_chimew_position_refiner INPUT OUTPUT\n";
+    std::cout << "usage: emuflow_chimew_position_refiner "
+                 "--typed-input INPUT OUTPUT EXPECTED_SHA256 | "
+                 "--legacy-text INPUT OUTPUT\n";
     return 0;
   }
-  if (argc != 3) {
-    std::cerr << "usage: emuflow_chimew_position_refiner INPUT OUTPUT\n";
+  const bool typed_input =
+      argc == 5 && std::string(argv[1]) == "--typed-input";
+  const bool legacy_text =
+      argc == 4 && std::string(argv[1]) == "--legacy-text";
+  if (!typed_input && !legacy_text) {
+    std::cerr << "usage: emuflow_chimew_position_refiner "
+                 "--typed-input INPUT OUTPUT EXPECTED_SHA256 | "
+                 "--legacy-text INPUT OUTPUT\n";
     return 2;
   }
   try {
-    run(argv[1], argv[2]);
+    emuflow::native::RefineChimewPositions(
+        argv[2], argv[3], typed_input, typed_input ? argv[4] : "");
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "emuflow_chimew_position_refiner: " << error.what() << "\n";
     return 1;
   }
 }
+#endif

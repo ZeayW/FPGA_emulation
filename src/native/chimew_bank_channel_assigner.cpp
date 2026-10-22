@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "emuflow_core/hash.hpp"
 #include "emuflow_core/native_stages.hpp"
 
 namespace {
@@ -218,19 +219,6 @@ void read_exact(std::istream& stream, void* destination, std::size_t size,
   }
 }
 
-void hash_bytes(std::uint32_t& checksum, const unsigned char* data,
-                std::size_t size) {
-  checksum ^= 0xffffffffU;
-  for (std::size_t index = 0; index < size; ++index) {
-    checksum ^= data[index];
-    for (int bit = 0; bit < 8; ++bit) {
-      checksum = (checksum >> 1) ^
-                 (0xedb88320U & (0U - (checksum & 1U)));
-    }
-  }
-  checksum ^= 0xffffffffU;
-}
-
 template <typename Unsigned>
 Unsigned read_little_endian(std::istream& stream, std::uint32_t* checksum,
                             const char* label) {
@@ -238,7 +226,7 @@ Unsigned read_little_endian(std::istream& stream, std::uint32_t* checksum,
   std::array<unsigned char, sizeof(Unsigned)> bytes{};
   read_exact(stream, bytes.data(), bytes.size(), label);
   if (checksum != nullptr) {
-    hash_bytes(*checksum, bytes.data(), bytes.size());
+    emuflow::core::UpdateCrc32(*checksum, bytes.data(), bytes.size());
   }
   Unsigned result = 0;
   for (std::size_t index = 0; index < bytes.size(); ++index) {
@@ -274,7 +262,7 @@ void expect_tag(std::istream& stream, std::uint32_t& checksum,
                 unsigned char expected, const char* label) {
   unsigned char tag = 0;
   read_exact(stream, &tag, 1, label);
-  hash_bytes(checksum, &tag, 1);
+  emuflow::core::UpdateCrc32(checksum, &tag, 1);
   if (tag != expected) {
     throw std::runtime_error(std::string("invalid Chimew typed input ") +
                              label);
@@ -305,7 +293,7 @@ Input read_typed_input(const std::string& path) {
   std::uint32_t checksum = 0;
   std::array<unsigned char, 8> magic{};
   read_exact(*stream, magic.data(), magic.size(), "header");
-  hash_bytes(checksum, magic.data(), magic.size());
+  emuflow::core::UpdateCrc32(checksum, magic.data(), magic.size());
   const std::array<unsigned char, 8> expected_magic = {
       'E', 'M', 'C', 'H', 'B', 'C', '3', 0};
   if (magic != expected_magic ||
@@ -336,7 +324,7 @@ Input read_typed_input(const std::string& path) {
   std::array<unsigned char, 32> source_digest{};
   read_exact(*stream, source_digest.data(), source_digest.size(),
              "source digest");
-  hash_bytes(checksum, source_digest.data(), source_digest.size());
+  emuflow::core::UpdateCrc32(checksum, source_digest.data(), source_digest.size());
 
   Input input;
   input.cost_scale = cost_scale;

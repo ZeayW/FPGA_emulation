@@ -9,9 +9,12 @@ first-party inference instead of claiming an exact unpublished reproduction.
 
 from __future__ import annotations
 
+import hashlib
 import math
+import struct
 import subprocess
 import tempfile
+import zlib
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
@@ -28,13 +31,19 @@ from .chimew_grouping import (
     validate_chimew_crossings,
 )
 from .errors import EmuFlowError, ValidationError
-from .native_tools import resolve_native_executable
+from .native_tools import resolve_native_stage_command
 
 
 CHIMEW_POSITION_SCHEMA = "emuflow.chimew-lookahead-positions/v1"
 CHIMEW_POSITION_PROVIDER = "source-qualified-physical-site-lookahead-v1"
 CHIMEW_REFINED_GROUPING_SCHEMA = "emuflow.chimew-refined-signal-groups/v1"
 CHIMEW_REFINEMENT_PROVIDER = "chimew-section3.3.2-bounded-inference-v1"
+
+_TYPED_INPUT_MAGIC = b"EMCHRF2\0"
+_TYPED_INPUT_END_MAGIC = b"EMCHRFE\0"
+_TYPED_INPUT_VERSION = 1
+_TYPED_INPUT_ENDIAN_MARKER = 0x01020304
+_NATIVE_I32_MAX = (1 << 31) - 1
 
 
 def _number(value: Any, label: str) -> float:
@@ -344,14 +353,17 @@ def _oracle_refine(
     return assignment, accepted, moved, before_total, after_total
 
 
-def _run_native(
+def _native_i32(value: Any, label: str, *, minimum: int = 0) -> int:
+    value = _integer(value, label, minimum=minimum)
+    if value > _NATIVE_I32_MAX:
+        raise ValidationError(f"{label}: exceeds the native 32-bit limit")
+    return value
+
+
+def _refinement_domains(
     entries: Sequence[Mapping[str, Any]],
-    encodings: Mapping[str, int],
-    positions: Mapping[str, float],
-    initial: Mapping[str, int],
     guards: Mapping[str, Optional[tuple[Any, ...]]],
-    executable: Optional[str],
-) -> Tuple[Dict[str, int], int, int, float, float]:
+) -> Dict[tuple[Any, ...], int]:
     guard_sentinel = ("", "", "", -1)
     domains = sorted(
         {
@@ -370,12 +382,73 @@ def _run_native(
             item[2] if item[2] is not None else -1,
         ),
     )
-    domain_index = {domain: index for index, domain in enumerate(domains)}
-    with tempfile.TemporaryDirectory(prefix="emuflow-chimew-refinement-") as temporary:
-        root = Path(temporary)
-        input_path = root / "input.txt"
-        output_path = root / "output.txt"
-        lines = ["EMUFLOW_CHIMEW_REFINER_INPUT_V1"]
+    return {domain: index for index, domain in enumerate(domains)}
+
+
+def _typed_refinement_records(
+    entries: Sequence[Mapping[str, Any]],
+    encodings: Mapping[str, int],
+    positions: Mapping[str, float],
+    initial: Mapping[str, int],
+    guards: Mapping[str, Optional[tuple[Any, ...]]],
+    domain_index: Mapping[tuple[Any, ...], int],
+):
+    for index, entry in enumerate(entries):
+        entry_id = entry["id"]
+        domain = (
+            _domain(entry),
+            guards.get(entry_id),
+            _tdm_slot(entry, index) if "slot" in entry else None,
+        )
+        encoding = _integer(encodings[entry_id], f"{entry_id}.encoding")
+        if encoding >= 1 << 64:
+            raise ValidationError(
+                f"{entry_id}.encoding: exceeds the native 64-bit limit"
+            )
+        source_y = _number(positions[entry_id], f"{entry_id}.source_y")
+        yield struct.pack(
+            "<B4iQd",
+            ord("S"),
+            index,
+            domain_index[domain],
+            _native_i32(_tdm_ratio(entry), f"{entry_id}.tdm_ratio", minimum=1),
+            _native_i32(initial[entry_id], f"{entry_id}.group"),
+            encoding,
+            source_y,
+        )
+
+
+def _typed_refinement_sha256(
+    entries: Sequence[Mapping[str, Any]],
+    encodings: Mapping[str, int],
+    positions: Mapping[str, float],
+    initial: Mapping[str, int],
+    guards: Mapping[str, Optional[tuple[Any, ...]]],
+    domain_index: Optional[Mapping[tuple[Any, ...], int]] = None,
+) -> str:
+    if domain_index is None:
+        domain_index = _refinement_domains(entries, guards)
+    digest = hashlib.sha256()
+    for payload in _typed_refinement_records(
+        entries, encodings, positions, initial, guards, domain_index
+    ):
+        digest.update(payload)
+    return digest.hexdigest()
+
+
+def _serialize_legacy_refinement(
+    entries: Sequence[Mapping[str, Any]],
+    encodings: Mapping[str, int],
+    positions: Mapping[str, float],
+    initial: Mapping[str, int],
+    guards: Mapping[str, Optional[tuple[Any, ...]]],
+    path: Path,
+) -> None:
+    """Write the historical text protocol for explicit differential tests."""
+
+    domain_index = _refinement_domains(entries, guards)
+    with path.open("w", encoding="utf-8") as stream:
+        stream.write("EMUFLOW_CHIMEW_REFINER_INPUT_V1\n")
         for index, entry in enumerate(entries):
             entry_id = entry["id"]
             domain = (
@@ -383,46 +456,223 @@ def _run_native(
                 guards.get(entry_id),
                 _tdm_slot(entry, index) if "slot" in entry else None,
             )
-            lines.append(
-                "SIGNAL "
-                f"{index} {domain_index[domain]} "
-                f"{_tdm_ratio(entry)} "
-                f"{encodings[entry_id]} {initial[entry_id]} "
-                f"{positions[entry_id]:.17g}"
+            stream.write(
+                f"SIGNAL {index} {domain_index[domain]} "
+                f"{_tdm_ratio(entry)} {encodings[entry_id]} "
+                f"{initial[entry_id]} {positions[entry_id]:.17g}\n"
             )
-        input_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        command = resolve_native_executable(
-            "emuflow_chimew_position_refiner", executable
+
+
+def _serialize_typed_refinement(
+    entries: Sequence[Mapping[str, Any]],
+    encodings: Mapping[str, int],
+    positions: Mapping[str, float],
+    initial: Mapping[str, int],
+    guards: Mapping[str, Optional[tuple[Any, ...]]],
+    stream: Any,
+    *,
+    logical_sha256: Optional[str] = None,
+) -> Mapping[str, Any]:
+    """Stream refinement records without a signal-sized text buffer or file."""
+
+    if not entries or len(entries) > _NATIVE_I32_MAX:
+        raise ValidationError("Chimew refinement signal count is invalid")
+    domain_index = _refinement_domains(entries, guards)
+    if logical_sha256 is None:
+        logical_sha256 = _typed_refinement_sha256(
+            entries,
+            encodings,
+            positions,
+            initial,
+            guards,
+            domain_index,
         )
-        completed = subprocess.run(
-            [command, str(input_path), str(output_path)],
-            text=True,
-            capture_output=True,
+    if (
+        not isinstance(logical_sha256, str)
+        or len(logical_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in logical_sha256)
+    ):
+        raise ValidationError("Chimew refinement logical digest is invalid")
+    logical_digest = bytes.fromhex(logical_sha256)
+    header = struct.pack(
+        "<8sIIQ32s",
+        _TYPED_INPUT_MAGIC,
+        _TYPED_INPUT_VERSION,
+        _TYPED_INPUT_ENDIAN_MARKER,
+        len(entries),
+        logical_digest,
+    )
+    stream.write(header)
+    checksum = zlib.crc32(header)
+    emitted_digest = hashlib.sha256()
+    observed = 0
+    batch = bytearray()
+    for payload in _typed_refinement_records(
+        entries, encodings, positions, initial, guards, domain_index
+    ):
+        batch.extend(payload)
+        observed += 1
+        if len(batch) >= 1 << 20:
+            emitted_digest.update(batch)
+            stream.write(batch)
+            checksum = zlib.crc32(batch, checksum)
+            batch.clear()
+    if batch:
+        emitted_digest.update(batch)
+        stream.write(batch)
+        checksum = zlib.crc32(batch, checksum)
+    if observed != len(entries):
+        raise ValidationError("Chimew refinement record count disagrees")
+    if emitted_digest.digest() != logical_digest:
+        raise ValidationError("Chimew refinement input changed while streaming")
+    stream.write(
+        struct.pack(
+            "<8sQ32s", _TYPED_INPUT_END_MAGIC, checksum, logical_digest
         )
-        if completed.returncode != 0:
-            raise EmuFlowError(
-                "Chimew position refiner failed: "
-                + (completed.stderr.strip() or completed.stdout.strip())
-            )
-        lines = output_path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_CHIMEW_REFINER_OUTPUT_V1":
+    )
+    return {
+        "records": observed,
+        "logical_sha256": logical_sha256,
+        "stream_checksum": checksum,
+    }
+
+
+def _parse_native_refinement_output(
+    stream: Any, entries: Sequence[Mapping[str, Any]]
+) -> Tuple[Dict[str, int], int, int, float, float]:
+    if stream.readline().rstrip(b"\r\n") != b"EMUFLOW_CHIMEW_REFINER_OUTPUT_V1":
         raise EmuFlowError("Chimew position refiner output header is invalid")
+    fields = stream.readline().split()
+    if len(fields) != 5 or fields[:1] != [b"METRIC"]:
+        raise EmuFlowError("Chimew position refiner metric is malformed")
+    try:
+        accepted, moved = int(fields[1]), int(fields[2])
+        before, after = float(fields[3]), float(fields[4])
+    except ValueError as error:
+        raise EmuFlowError("Chimew position refiner metric is malformed") from error
+    if (
+        accepted < 0
+        or moved < 0
+        or not math.isfinite(before)
+        or not math.isfinite(after)
+    ):
+        raise EmuFlowError("Chimew position refiner metric is invalid")
     assignment: Dict[str, int] = {}
-    metrics: Optional[Tuple[int, int, float, float]] = None
-    for line in lines[1:]:
-        fields = line.split()
-        if fields[:1] == ["METRIC"] and len(fields) == 5:
-            metrics = (int(fields[1]), int(fields[2]), float(fields[3]), float(fields[4]))
-        elif fields[:1] == ["ASSIGN"] and len(fields) == 3:
-            index = int(fields[1])
-            if not 0 <= index < len(entries):
-                raise EmuFlowError("Chimew refiner returned an invalid signal")
-            assignment[entries[index]["id"]] = int(fields[2])
-        else:
+    for expected_index, entry in enumerate(entries):
+        fields = stream.readline().split()
+        if len(fields) != 3 or fields[:1] != [b"ASSIGN"]:
             raise EmuFlowError("Chimew position refiner output is malformed")
-    if len(assignment) != len(entries) or metrics is None:
-        raise EmuFlowError("Chimew position refiner output is incomplete")
-    return assignment, *metrics
+        try:
+            index, group = int(fields[1]), int(fields[2])
+        except ValueError as error:
+            raise EmuFlowError(
+                "Chimew position refiner assignment is malformed"
+            ) from error
+        if index != expected_index or group < 0:
+            raise EmuFlowError("Chimew refiner returned an invalid signal")
+        assignment[entry["id"]] = group
+    if stream.read(1):
+        raise EmuFlowError("Chimew position refiner output has trailing data")
+    return assignment, accepted, moved, before, after
+
+
+def _run_native(
+    entries: Sequence[Mapping[str, Any]],
+    encodings: Mapping[str, int],
+    positions: Mapping[str, float],
+    initial: Mapping[str, int],
+    guards: Mapping[str, Optional[tuple[Any, ...]]],
+    executable: Optional[str],
+) -> Tuple[Dict[str, int], int, int, float, float]:
+    logical_sha256 = _typed_refinement_sha256(
+        entries, encodings, positions, initial, guards
+    )
+    with tempfile.TemporaryDirectory(prefix="emuflow-chimew-refinement-") as temporary:
+        root = Path(temporary)
+        stderr_path = root / "stderr.txt"
+        native_command = resolve_native_stage_command(
+            "emuflow_chimew_position_refiner",
+            "phase6",
+            "refine-groups",
+            explicit=executable,
+        )
+        with stderr_path.open("w+", encoding="utf-8") as stderr_stream:
+            process = subprocess.Popen(
+                [
+                    *native_command,
+                    "--typed-input",
+                    "-",
+                    "-",
+                    logical_sha256,
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr_stream,
+            )
+            if process.stdin is None or process.stdout is None:
+                raise EmuFlowError("Chimew position refiner pipe is unavailable")
+            try:
+                _serialize_typed_refinement(
+                    entries,
+                    encodings,
+                    positions,
+                    initial,
+                    guards,
+                    process.stdin,
+                    logical_sha256=logical_sha256,
+                )
+                process.stdin.close()
+                process.stdin = None
+            except BrokenPipeError as error:
+                process.stdin = None
+                returncode = process.wait()
+                process.stdout.close()
+                stderr_stream.flush()
+                stderr_stream.seek(0)
+                detail = stderr_stream.read().strip()
+                raise EmuFlowError(
+                    "Chimew position refiner rejected typed input "
+                    f"with exit status {returncode}"
+                    + (f": {detail}" if detail else "")
+                ) from error
+            except BaseException:
+                try:
+                    process.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+                process.stdin = None
+                process.stdout.close()
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+                raise
+            try:
+                result = _parse_native_refinement_output(process.stdout, entries)
+            except EmuFlowError as grammar_error:
+                process.stdout.close()
+                returncode = process.wait()
+                stderr_stream.flush()
+                stderr_stream.seek(0)
+                detail = stderr_stream.read().strip()
+                if returncode != 0:
+                    raise EmuFlowError(
+                        "Chimew position refiner failed "
+                        f"with exit status {returncode}"
+                        + (f": {detail}" if detail else "")
+                    ) from grammar_error
+                raise
+            process.stdout.close()
+            returncode = process.wait()
+            stderr_stream.flush()
+            stderr_stream.seek(0)
+            detail = stderr_stream.read().strip()
+            if returncode != 0:
+                raise EmuFlowError(
+                    "Chimew position refiner failed "
+                    f"with exit status {returncode}"
+                    + (f": {detail}" if detail else "")
+                )
+    return result
 
 
 def refine_chimew_groups(

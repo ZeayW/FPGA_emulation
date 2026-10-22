@@ -296,6 +296,7 @@ add_library(
   "${CMAKE_SOURCE_DIR}/src/native/tdm_exact_scheduler.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/chimew_bank_channel_assigner.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/chimew_signal_grouper.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/chimew_position_refiner.cpp"
 )
 target_compile_features(emuflow_native_stages PUBLIC cxx_std_17)
 target_compile_options(emuflow_native_stages PRIVATE -O3)

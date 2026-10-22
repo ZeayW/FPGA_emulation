@@ -1,11 +1,14 @@
 import copy
+import io
 import random
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from emuflow import chimew_refinement as refinement_module
 from emuflow.chimew_grouping import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
@@ -20,6 +23,7 @@ from emuflow.chimew_refinement import (
     validate_chimew_positions,
 )
 from emuflow.errors import ValidationError
+from tests.native_build import emuflow_native
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -135,6 +139,119 @@ class ChimewRefinementTest(unittest.TestCase):
             self.initial["metrics"]["group_physical_sll_crossings"],
         )
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
+
+    def test_typed_legacy_and_unified_refinement_are_byte_exact(self) -> None:
+        encodings = refinement_module.validate_chimew_crossings(
+            self.schedule, self.crossings
+        )
+        positions = validate_chimew_positions(self.schedule, self.positions)
+        initial = refinement_module._validate_initial_groups(
+            self.schedule, self.initial, encodings
+        )
+        guards = refinement_module._timing_guards(self.schedule, self.initial)
+        entries = sorted(self.schedule["entries"], key=lambda entry: entry["id"])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legacy_input = root / "legacy.txt"
+            typed_input = root / "typed.bin"
+            legacy_output = root / "legacy.out"
+            typed_output = root / "typed.out"
+            unified_output = root / "unified.out"
+            refinement_module._serialize_legacy_refinement(
+                entries,
+                encodings,
+                positions,
+                initial,
+                guards,
+                legacy_input,
+            )
+            with typed_input.open("wb") as stream:
+                metadata = refinement_module._serialize_typed_refinement(
+                    entries, encodings, positions, initial, guards, stream
+                )
+            subprocess.run(
+                [
+                    str(self.refiner),
+                    "--legacy-text",
+                    str(legacy_input),
+                    str(legacy_output),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    str(self.refiner),
+                    "--typed-input",
+                    str(typed_input),
+                    str(typed_output),
+                    metadata["logical_sha256"],
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    str(emuflow_native()),
+                    "phase6",
+                    "refine-groups",
+                    "--typed-input",
+                    str(typed_input),
+                    str(unified_output),
+                    metadata["logical_sha256"],
+                ],
+                check=True,
+            )
+            self.assertEqual(typed_output.read_bytes(), legacy_output.read_bytes())
+            self.assertEqual(unified_output.read_bytes(), legacy_output.read_bytes())
+
+    def test_production_refinement_does_not_publish_legacy_text(self) -> None:
+        with mock.patch.object(
+            refinement_module,
+            "_serialize_legacy_refinement",
+            side_effect=AssertionError("legacy refinement producer was called"),
+        ):
+            result = refine_chimew_groups(
+                self.schedule,
+                self.crossings,
+                self.initial,
+                self.positions,
+                executable=str(self.refiner),
+            )
+        self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
+
+    def test_typed_refinement_rejects_corruption(self) -> None:
+        encodings = refinement_module.validate_chimew_crossings(
+            self.schedule, self.crossings
+        )
+        positions = validate_chimew_positions(self.schedule, self.positions)
+        initial = refinement_module._validate_initial_groups(
+            self.schedule, self.initial, encodings
+        )
+        guards = refinement_module._timing_guards(self.schedule, self.initial)
+        entries = sorted(self.schedule["entries"], key=lambda entry: entry["id"])
+        stream = io.BytesIO()
+        metadata = refinement_module._serialize_typed_refinement(
+            entries, encodings, positions, initial, guards, stream
+        )
+        valid = stream.getvalue()
+        variants = (valid[:-1], valid[:70] + bytes([valid[70] ^ 1]) + valid[71:])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for index, payload in enumerate(variants):
+                input_path = root / f"invalid-{index}.bin"
+                input_path.write_bytes(payload)
+                completed = subprocess.run(
+                    [
+                        str(self.refiner),
+                        "--typed-input",
+                        str(input_path),
+                        "-",
+                        metadata["logical_sha256"],
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn("typed input", completed.stderr)
 
     def test_refinement_preserves_frozen_phase5_slot_uniqueness(self) -> None:
         schedule = copy.deepcopy(self.schedule)

@@ -14,7 +14,10 @@ constexpr const char* kUsage =
     "(--typed-input|--legacy-text) INPUT OUTPUT\n"
     "  emuflow-native phase6 group-signals --typed-input "
     "INPUT OUTPUT EXPECTED_SHA256\n"
-    "  emuflow-native phase6 group-signals --legacy-text INPUT OUTPUT\n";
+    "  emuflow-native phase6 group-signals --legacy-text INPUT OUTPUT\n"
+    "  emuflow-native phase6 refine-groups --typed-input "
+    "INPUT OUTPUT EXPECTED_SHA256\n"
+    "  emuflow-native phase6 refine-groups --legacy-text INPUT OUTPUT\n";
 
 int Dispatch(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
@@ -48,6 +51,18 @@ int Dispatch(int argc, char** argv) {
     }
     if (argc == 6 && mode == "--legacy-text") {
       emuflow::native::GroupChimewSignals(argv[4], argv[5], false, "");
+      return 0;
+    }
+  }
+  if (phase == "phase6" && operation == "refine-groups") {
+    const std::string mode = argc > 3 ? argv[3] : "";
+    if (argc == 7 && mode == "--typed-input") {
+      emuflow::native::RefineChimewPositions(
+          argv[4], argv[5], true, argv[6]);
+      return 0;
+    }
+    if (argc == 6 && mode == "--legacy-text") {
+      emuflow::native::RefineChimewPositions(argv[4], argv[5], false, "");
       return 0;
     }
   }
