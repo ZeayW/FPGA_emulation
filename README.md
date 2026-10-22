@@ -90,10 +90,14 @@ sorted lookup and iteration semantics. On the same
 500,000-cluster/net/path typed fixture, a direct three-run A/B against the
 immediately preceding binary reduced maximum RSS from 448,577,536 to
 400,588,800 bytes (-10.7%); median native time was 0.66 versus 0.67 seconds and
-output was byte-identical. Relative to the original representation baseline,
-peak RSS has fallen from 769,146,880 to 400,588,800 bytes (-47.9%). The packed
-ProxyNet values still scale with graph content. This is adapter evidence, not
-NVDLA qualification.
+output was byte-identical. Cluster resource vectors now occupy one contiguous
+`cluster x dimension` double pool instead of one heap allocation per cluster.
+A second direct A/B reduced maximum RSS from 400,736,256 to 385,073,152 bytes
+(-3.9%) at the same 0.65-second median, again with byte-identical output.
+Relative to the original representation baseline, peak RSS has fallen from
+769,146,880 to 385,073,152 bytes (-49.9%). The packed ProxyNet values and
+weight pool still scale with graph content. This is adapter evidence, not NVDLA
+qualification.
 Production clustering now consumes compact EmuIR through ordered integer
 SQLite cursors. It keeps only a four-byte original-to-lexical cell permutation,
 compact union-find arrays and the final cluster records; it no longer decodes a

@@ -48,7 +48,6 @@ struct Route {
 struct Cluster {
   int part = -1;
   int fixed = -1;
-  std::vector<double> weight;
 };
 
 void require(bool condition, const char* message);
@@ -367,6 +366,7 @@ struct Model {
   std::vector<std::vector<double>> hard_capacity;
   std::vector<std::vector<double>> balance_capacity;
   std::vector<Cluster> cluster;
+  std::vector<double> cluster_weights;
   std::vector<Domain> domain;
   std::vector<std::vector<Route>> route;
   std::vector<Net> net;
@@ -374,6 +374,11 @@ struct Model {
   std::vector<int> net_members;
   std::vector<int> path_nets;
 };
+
+double cluster_weight(const Model& model, int cluster, int dimension) {
+  return model.cluster_weights[
+      static_cast<std::size_t>(cluster) * model.dimensions + dimension];
+}
 
 void bind_packed_members(Model& model) {
   for (Net& net : model.net) {
@@ -924,6 +929,8 @@ Model read_text_model(const std::string& path) {
   }
 
   model.cluster.resize(model.clusters);
+  model.cluster_weights.resize(
+      static_cast<std::size_t>(model.clusters) * model.dimensions);
   for (int cluster = 0; cluster < model.clusters; ++cluster) {
     stream >> token;
     require(token == "CLUSTER", "missing CLUSTER");
@@ -931,9 +938,9 @@ Model read_text_model(const std::string& path) {
     stream >> index >> model.cluster[cluster].part
         >> model.cluster[cluster].fixed;
     require(index == cluster, "non-canonical CLUSTER index");
-    model.cluster[cluster].weight.resize(model.dimensions);
-    for (double& weight : model.cluster[cluster].weight) {
-      stream >> weight;
+    for (int dimension = 0; dimension < model.dimensions; ++dimension) {
+      stream >> model.cluster_weights[
+          static_cast<std::size_t>(cluster) * model.dimensions + dimension];
     }
   }
 
@@ -1307,6 +1314,8 @@ Model read_typed_model(const std::string& path) {
   }
 
   model.cluster.resize(model.clusters);
+  model.cluster_weights.resize(
+      static_cast<std::size_t>(model.clusters) * model.dimensions);
   for (int cluster = 0; cluster < model.clusters; ++cluster) {
     reader.tag('L', "cluster tag");
     require(reader.u32("cluster index") ==
@@ -1319,8 +1328,9 @@ Model read_typed_model(const std::string& path) {
                 model.cluster[cluster].fixed >= -1 &&
                 model.cluster[cluster].fixed < model.parts,
             "invalid PATRON typed cluster ownership");
-    model.cluster[cluster].weight.resize(model.dimensions);
-    for (double& weight : model.cluster[cluster].weight) {
+    for (int dimension = 0; dimension < model.dimensions; ++dimension) {
+      double& weight = model.cluster_weights[
+          static_cast<std::size_t>(cluster) * model.dimensions + dimension];
       weight = reader.finite_double("cluster weight");
       require(weight >= 0.0, "invalid PATRON typed cluster weight");
     }
@@ -1499,7 +1509,7 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
     }
     ++part_counts[part];
     for (int dim = 0; dim < model.dimensions; ++dim) {
-      load[part][dim] += model.cluster[cluster].weight[dim];
+      load[part][dim] += cluster_weight(model, cluster, dim);
     }
   }
   if (std::count_if(part_counts.begin(), part_counts.end(),
@@ -1981,7 +1991,7 @@ ProxyState build_proxy_state(
     state.assignment[cluster] = part;
     ++state.part_counts[part];
     for (int dim = 0; dim < model.dimensions; ++dim) {
-      state.resource_load[part][dim] += model.cluster[cluster].weight[dim];
+      state.resource_load[part][dim] += cluster_weight(model, cluster, dim);
     }
   }
   require(std::count_if(state.part_counts.begin(), state.part_counts.end(),
@@ -2389,8 +2399,8 @@ std::vector<int> diagnose_flow_corridors(
       --candidate_counts[source];
       ++candidate_counts[target];
       for (int dim = 0; dim < model.dimensions; ++dim) {
-        candidate_load[source][dim] -= model.cluster[cluster].weight[dim];
-        candidate_load[target][dim] += model.cluster[cluster].weight[dim];
+        candidate_load[source][dim] -= cluster_weight(model, cluster, dim);
+        candidate_load[target][dim] += cluster_weight(model, cluster, dim);
       }
     }
     for (int part = 0; part < model.parts; ++part) {
@@ -2496,7 +2506,7 @@ std::vector<int> diagnose_flow_corridors(
                 model.hard_capacity[pair_target][dim],
                 model.balance_capacity[pair_target][dim]);
             if (excess[dim] > 1.0e-9 && limit > 0.0) {
-              relief += std::min(model.cluster[cluster].weight[dim],
+              relief += std::min(cluster_weight(model, cluster, dim),
                                  excess[dim])
                         / limit;
             }
@@ -2548,10 +2558,10 @@ std::vector<int> diagnose_flow_corridors(
           contributes = contributes
                         || (candidate_load[pair_target][dim]
                                     > source_limit + 1.0e-9
-                            && model.cluster[option.cluster].weight[dim]
+                            && cluster_weight(model, option.cluster, dim)
                                    > 0.0);
           if (candidate_load[option.target][dim]
-                  + model.cluster[option.cluster].weight[dim]
+                  + cluster_weight(model, option.cluster, dim)
               > target_limit + 1.0e-9) {
             contributes = false;
             break;
@@ -2566,7 +2576,7 @@ std::vector<int> diagnose_flow_corridors(
         }
         candidate_assignment[option.cluster] = option.target;
         for (int dim = 0; dim < model.dimensions; ++dim) {
-          const double weight = model.cluster[option.cluster].weight[dim];
+          const double weight = cluster_weight(model, option.cluster, dim);
           candidate_load[pair_target][dim] -= weight;
           candidate_load[option.target][dim] += weight;
         }
@@ -2623,7 +2633,7 @@ std::vector<int> diagnose_flow_corridors(
                       && raw_candidate_assignment[cluster] == pair_target) {
                     for (int dim = 0; dim < model.dimensions; ++dim) {
                       region_load[pair_target][dim]
-                          -= model.cluster[cluster].weight[dim];
+                          -= cluster_weight(model, cluster, dim);
                     }
                     region_assignment[cluster] = -1;
                     unassigned.push_back(cluster);
@@ -2667,11 +2677,11 @@ std::vector<int> diagnose_flow_corridors(
                               if (aggregate_slack[dim] > 1.0e-12) {
                                 left_constraint = std::max(
                                     left_constraint,
-                                    model.cluster[left].weight[dim]
+                                    cluster_weight(model, left, dim)
                                         / aggregate_slack[dim]);
                                 right_constraint = std::max(
                                     right_constraint,
-                                    model.cluster[right].weight[dim]
+                                    cluster_weight(model, right, dim)
                                         / aggregate_slack[dim]);
                               }
                             }
@@ -2700,7 +2710,7 @@ std::vector<int> diagnose_flow_corridors(
                           model.balance_capacity[target][dim]);
                       const double projected
                           = region_load[target][dim]
-                            + model.cluster[cluster].weight[dim];
+                            + cluster_weight(model, cluster, dim);
                       if (projected > limit + 1.0e-9) {
                         fits = false;
                         break;
@@ -2754,7 +2764,7 @@ std::vector<int> diagnose_flow_corridors(
                   region_assignment[cluster] = best_target;
                   for (int dim = 0; dim < model.dimensions; ++dim) {
                     region_load[best_target][dim]
-                        += model.cluster[cluster].weight[dim];
+                        += cluster_weight(model, cluster, dim);
                   }
                   for (int net : cluster_nets[cluster]) {
                     int occurrences = static_cast<int>(std::count(
@@ -2847,7 +2857,7 @@ std::vector<int> diagnose_flow_corridors(
                   target_side[cluster] = opposite_side[target];
                   for (int dim = 0; dim < model.dimensions; ++dim) {
                     region_load[target][dim]
-                        -= model.cluster[cluster].weight[dim];
+                        -= cluster_weight(model, cluster, dim);
                   }
                   region_assignment[cluster] = -1;
                   unassigned.push_back(cluster);
@@ -2891,14 +2901,14 @@ std::vector<int> diagnose_flow_corridors(
                                   > 1.0e-12) {
                                 left_constraint = std::max(
                                     left_constraint,
-                                    model.cluster[left].weight[dim]
+                                    cluster_weight(model, left, dim)
                                         / aggregate_slack[left_side][dim]);
                               }
                               if (aggregate_slack[right_side][dim]
                                   > 1.0e-12) {
                                 right_constraint = std::max(
                                     right_constraint,
-                                    model.cluster[right].weight[dim]
+                                    cluster_weight(model, right, dim)
                                         / aggregate_slack[right_side][dim]);
                               }
                             }
@@ -2933,7 +2943,7 @@ std::vector<int> diagnose_flow_corridors(
                           model.balance_capacity[target][dim]);
                       const double projected
                           = region_load[target][dim]
-                            + model.cluster[cluster].weight[dim];
+                            + cluster_weight(model, cluster, dim);
                       if (projected > limit + 1.0e-9) {
                         fits = false;
                         break;
@@ -2994,7 +3004,7 @@ std::vector<int> diagnose_flow_corridors(
                   region_assignment[cluster] = best_target;
                   for (int dim = 0; dim < model.dimensions; ++dim) {
                     region_load[best_target][dim]
-                        += model.cluster[cluster].weight[dim];
+                        += cluster_weight(model, cluster, dim);
                   }
                   for (int net : cluster_nets[cluster]) {
                     int occurrences = static_cast<int>(std::count(
@@ -3113,9 +3123,9 @@ std::vector<int> diagnose_flow_corridors(
                     if (side_slack[side][dim] > 1.0e-12) {
                       result = std::max(
                           result,
-                          model.cluster[cluster].weight[dim]
+                          cluster_weight(model, cluster, dim)
                               / side_slack[side][dim]);
-                    } else if (model.cluster[cluster].weight[dim] > 0.0) {
+                    } else if (cluster_weight(model, cluster, dim) > 0.0) {
                       result = std::numeric_limits<double>::infinity();
                     }
                   }
@@ -3171,7 +3181,7 @@ std::vector<int> diagnose_flow_corridors(
                             model.balance_capacity[target][dim]);
                         const double projected
                             = incremental_load[target][dim]
-                              + model.cluster[cluster].weight[dim];
+                              + cluster_weight(model, cluster, dim);
                         if (projected > limit + 1.0e-9) {
                           fits = false;
                           break;
@@ -3214,7 +3224,7 @@ std::vector<int> diagnose_flow_corridors(
                     incremental_assignment[cluster] = best_target;
                     for (int dim = 0; dim < model.dimensions; ++dim) {
                       const double weight
-                          = model.cluster[cluster].weight[dim];
+                          = cluster_weight(model, cluster, dim);
                       incremental_load[source][dim] -= weight;
                       incremental_load[best_target][dim] += weight;
                     }
@@ -3294,7 +3304,7 @@ std::vector<int> diagnose_flow_corridors(
                 && raw_candidate_assignment[cluster] == pair_target) {
               for (int dim = 0; dim < model.dimensions; ++dim) {
                 parametric_base_load[pair_target][dim]
-                    -= model.cluster[cluster].weight[dim];
+                    -= cluster_weight(model, cluster, dim);
               }
               parametric_base[cluster] = -1;
               parametric_variables.push_back(cluster);
@@ -3365,7 +3375,7 @@ std::vector<int> diagnose_flow_corridors(
           std::vector<double> variable_totals(model.dimensions, 0.0);
           for (int cluster : parametric_variables) {
             for (int dim = 0; dim < model.dimensions; ++dim) {
-              variable_totals[dim] += model.cluster[cluster].weight[dim];
+              variable_totals[dim] += cluster_weight(model, cluster, dim);
             }
           }
           std::vector<long long> balance_weight(model.clusters, 1);
@@ -3374,7 +3384,7 @@ std::vector<int> diagnose_flow_corridors(
             for (int dim = 0; dim < model.dimensions; ++dim) {
               if (variable_totals[dim] > 0.0) {
                 weight += static_cast<long long>(std::llround(
-                    1000000.0 * model.cluster[cluster].weight[dim]
+                    1000000.0 * cluster_weight(model, cluster, dim)
                     / variable_totals[dim]));
               }
             }
@@ -3410,7 +3420,7 @@ std::vector<int> diagnose_flow_corridors(
               parametric_assignment[cluster] = target;
               for (int dim = 0; dim < model.dimensions; ++dim) {
                 parametric_load[target][dim]
-                    += model.cluster[cluster].weight[dim];
+                    += cluster_weight(model, cluster, dim);
               }
             }
             bool parametric_capacity = true;
@@ -3627,7 +3637,7 @@ std::vector<int> diagnose_flow_corridors(
                     if (limit > 0.0
                         && current_piercing_load[overloaded_part][dim]
                                > limit + 1.0e-9) {
-                      score += model.cluster[cluster].weight[dim] / limit;
+                      score += cluster_weight(model, cluster, dim) / limit;
                     }
                   }
                   return score / (1.0 + std::log1p(exposure[cluster]));
@@ -3701,7 +3711,7 @@ std::vector<int> diagnose_flow_corridors(
                   piercing_assignment[cluster] = target;
                   for (int dim = 0; dim < model.dimensions; ++dim) {
                     piercing_load[target][dim]
-                        += model.cluster[cluster].weight[dim];
+                        += cluster_weight(model, cluster, dim);
                   }
                 }
                 bool piercing_capacity = true;
@@ -4039,9 +4049,9 @@ ProxyDelta evaluate_proxy_changes(
     ++projected_counts[changed_target];
     for (int dim = 0; dim < model.dimensions; ++dim) {
       projected_load[source][dim]
-          -= model.cluster[changed_cluster].weight[dim];
+          -= cluster_weight(model, changed_cluster, dim);
       projected_load[changed_target][dim]
-          += model.cluster[changed_cluster].weight[dim];
+          += cluster_weight(model, changed_cluster, dim);
     }
   }
   if (enforce_capacity) {
@@ -4307,7 +4317,7 @@ void apply_proxy_delta(const Model& model,
     const int source = std::get<1>(change);
     const int target = std::get<2>(change);
     for (int dim = 0; dim < model.dimensions; ++dim) {
-      const double weight = model.cluster[cluster].weight[dim];
+      const double weight = cluster_weight(model, cluster, dim);
       state.resource_load[source][dim] -= weight;
       state.resource_load[target][dim] += weight;
     }
@@ -5648,7 +5658,7 @@ void run_scalable(const Model& model,
           --candidate_counts[source];
           ++candidate_counts[target];
           for (int dim = 0; dim < model.dimensions; ++dim) {
-            const double weight = model.cluster[cluster].weight[dim];
+            const double weight = cluster_weight(model, cluster, dim);
             candidate_load[source][dim] -= weight;
             candidate_load[target][dim] += weight;
           }
