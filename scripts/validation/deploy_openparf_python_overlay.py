@@ -16,8 +16,11 @@ import uuid
 
 
 REPLACEMENTS = (
-    "openparf/placement/placer.py", "openparf/placement/sll_weight.py",
+    "openparf/params.json",
+    "openparf/placement/placer.py",
+    "openparf/placement/sll_weight.py",
 )
+PLACER = "openparf/placement/placer.py"
 
 
 def git(source, *args):
@@ -35,9 +38,9 @@ def deploy(source, base, output, commit, baseline):
     allowed.add("engines/openparf/EMUFLOW_PROVENANCE.md")
     if not changed or not changed.issubset(allowed):
         raise RuntimeError("OpenPARF changes are not the supported Python-only patch")
-    original = git(source, "show", baseline + ":engines/openparf/openparf/placement/placer.py")
+    original = git(source, "show", baseline + ":engines/openparf/" + PLACER)
     original_digest = hashlib.sha256(original).hexdigest()
-    if hashlib.sha256((base / REPLACEMENTS[0]).read_bytes()).hexdigest() != original_digest:
+    if hashlib.sha256((base / PLACER).read_bytes()).hexdigest() != original_digest:
         raise RuntimeError("OpenPARF native base has a different placement implementation")
     if output.exists() or output.is_symlink():
         raise RuntimeError("OpenPARF overlay output already exists")
