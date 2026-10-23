@@ -431,9 +431,14 @@ exact predecessors and timing paths are normalized relations instead of one
 graph-sized JSON tree. `read_system_routes` exposes ordered lazy cursors to
 Phase 5, while `read_json` remains the explicit legacy materializer. The final
 multi-FPGA report inventories and seals both selector and sidecar. RouteStore
-user version 2 also stores global-router master selections and refinement-batch
-path membership as typed relations; these route/path-sized arrays no longer
-reside in the selector header and are exposed as lazy sequences. Managed
+user version 2 introduced typed global-router master selections and
+refinement-batch path membership. User version 3 additionally owns route
+width, transport round, cut class, dependency level/depth, maximum latency and
+predicted delay as typed columns, removing the last per-route scalar JSON
+payload. Readers retain strict v1/v2 support, and v3 rejects unknown scalar
+fields instead of silently preserving another embedded data plane. These
+route/path-sized arrays no longer reside in the selector header and are
+exposed as lazy sequences. Managed
 global routing validates each native candidate as it is parsed and retains one
 capacity-domain bitset per demand for independent batch reconstruction. It no
 longer rebuilds the complete multi-generator candidate-tree pool in Python;
@@ -476,9 +481,13 @@ text bytes to 16,261,120 typed SQLite bytes and producer wall time fell from
 0.58 to 0.43 seconds. Independent compact parsing and semantic checks took
 2.827 versus 2.839 seconds; native peak RSS rose from 85,737,472 to 105,693,184
 bytes. These are synthetic adapter measurements rather than NVDLA
-qualification. Python still projects the independently checked result into
-the final RouteStore; direct native RouteStore relation publication remains
-migration work. The
+qualification. On an isolated 100,000-route scalar-relation comparison, v3
+used 12,832,768 bytes versus 21,127,168 bytes for the v2 JSON-bearing relation
+(-39.26%); insertion plus both identity indexes took 0.152 versus 0.155
+seconds. This measures only the route scalar relation, not a full NVDLA stage.
+Python still projects the independently checked result into the final
+RouteStore; direct native RouteStore relation publication remains migration
+work. The
 independent Phase 4 timing validator now retains one `net -> rank` identity
 index plus fixed-width route-delay, TDM-delay and route-signature columns. It
 releases those columns before the second common timing reconstruction, which

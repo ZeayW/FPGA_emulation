@@ -41,6 +41,7 @@ from emuflow.timing_routing import (
 )
 from emuflow.system_route_storage import (
     SYSTEM_ROUTE_STORAGE_SCHEMA,
+    SYSTEM_ROUTE_USER_VERSION,
     SystemRoutesView,
     read_system_routes,
     write_system_route_storage,
@@ -73,6 +74,51 @@ def _storage_routes(generation: int) -> dict:
         "demands": [demand],
         "routes": [route],
     }
+
+
+def _downgrade_route_relation_to_v2(store_path: Path) -> None:
+    with sqlite3.connect(store_path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = list(connection.execute("SELECT * FROM routes ORDER BY seq"))
+        connection.executescript(
+            "DROP INDEX routes_net_order;"
+            "DROP INDEX routes_demand_order;"
+            "ALTER TABLE routes RENAME TO routes_v3;"
+            "CREATE TABLE routes("
+            "seq INTEGER PRIMARY KEY,demand_id TEXT NOT NULL UNIQUE,"
+            "net_id TEXT NOT NULL UNIQUE,source_fpga TEXT NOT NULL,"
+            "dependency_level INTEGER,"
+            "combinational_dependency_depth INTEGER,"
+            "record_json TEXT NOT NULL,CHECK(json_valid(record_json)));"
+        )
+        for row in rows:
+            scalar = {"width_bits": int(row["width_bits"])}
+            for field in (
+                "transport_round",
+                "cut_class",
+                "max_latency_cycles",
+                "predicted_max_delay_ns",
+            ):
+                if row[field] is not None:
+                    scalar[field] = row[field]
+            connection.execute(
+                "INSERT INTO routes VALUES(?,?,?,?,?,?,?)",
+                (
+                    row["seq"],
+                    row["demand_id"],
+                    row["net_id"],
+                    row["source_fpga"],
+                    row["dependency_level"],
+                    row["combinational_dependency_depth"],
+                    json.dumps(scalar, separators=(",", ":"), sort_keys=True),
+                ),
+            )
+        connection.executescript(
+            "DROP TABLE routes_v3;"
+            "CREATE INDEX routes_net_order ON routes(net_id,seq);"
+            "CREATE INDEX routes_demand_order ON routes(demand_id,seq);"
+            "PRAGMA user_version=2;"
+        )
 
 
 def _platform_value(name, fpga_ids, links):
@@ -188,6 +234,7 @@ class Phase4Test(unittest.TestCase):
             logical = _storage_routes(0)
             manifest = write_system_route_storage(selector_path, logical)
             store_path = root / manifest["artifact"]
+            _downgrade_route_relation_to_v2(store_path)
             legacy_header = {
                 key: value
                 for key, value in logical.items()
@@ -226,6 +273,107 @@ class Phase4Test(unittest.TestCase):
                 json.dumps(legacy_manifest), encoding="utf-8"
             )
             self.assertEqual(read_json(selector_path), logical)
+
+    def test_route_store_v2_remains_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector_path = root / "routes.json"
+            logical = _storage_routes(0)
+            manifest = write_system_route_storage(selector_path, logical)
+            store_path = root / manifest["artifact"]
+            _downgrade_route_relation_to_v2(store_path)
+            store_sha256 = file_sha256(store_path)
+            legacy_store = root / f"routes.{store_sha256}.sqlite"
+            store_path.rename(legacy_store)
+            legacy_manifest = {
+                **manifest,
+                "user_version": 2,
+                "artifact": legacy_store.name,
+                "store_bytes": legacy_store.stat().st_size,
+                "store_sha256": store_sha256,
+            }
+            selector_path.write_text(
+                json.dumps(legacy_manifest), encoding="utf-8"
+            )
+            self.assertEqual(read_json(selector_path), logical)
+
+    def test_route_store_v3_owns_route_scalars_as_typed_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector_path = root / "routes.json"
+            logical = _storage_routes(0)
+            logical["routes"][0].update(
+                {
+                    "transport_round": 2,
+                    "cut_class": "register_output",
+                    "dependency_level": 0,
+                    "combinational_dependency_depth": 0,
+                    "predecessor_cut_nets": [],
+                    "max_latency_cycles": 3,
+                    "predicted_max_delay_ns": 4.5,
+                }
+            )
+            logical["demands"][0].update(
+                {
+                    "transport_round": 2,
+                    "cut_class": "register_output",
+                    "dependency_level": 0,
+                    "combinational_dependency_depth": 0,
+                    "predecessor_cut_nets": [],
+                }
+            )
+            manifest = write_system_route_storage(selector_path, logical)
+            self.assertEqual(manifest["user_version"], SYSTEM_ROUTE_USER_VERSION)
+            with sqlite3.connect(root / manifest["artifact"]) as connection:
+                columns = tuple(
+                    row[1] for row in connection.execute("PRAGMA table_info(routes)")
+                )
+                row = connection.execute(
+                    "SELECT width_bits,transport_round,cut_class,"
+                    "dependency_level,combinational_dependency_depth,"
+                    "max_latency_cycles,predicted_max_delay_ns FROM routes"
+                ).fetchone()
+            self.assertNotIn("record_json", columns)
+            self.assertEqual(row, (1, 2, "register_output", 0, 0, 3, 4.5))
+            self.assertEqual(read_json(selector_path), logical)
+
+    def test_route_store_v3_rejects_untyped_route_scalars(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            logical = _storage_routes(0)
+            logical["routes"][0]["future_payload"] = {"large": True}
+            with self.assertRaisesRegex(
+                ValidationError, "unsupported scalar fields"
+            ):
+                write_system_route_storage(
+                    Path(temporary_directory) / "routes.json", logical
+                )
+
+    def test_route_store_v3_rejects_schema_extensions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector_path = root / "routes.json"
+            manifest = write_system_route_storage(
+                selector_path, _storage_routes(0)
+            )
+            store_path = root / manifest["artifact"]
+            with sqlite3.connect(store_path) as connection:
+                connection.execute("ALTER TABLE routes ADD COLUMN hidden_json TEXT")
+            store_sha256 = file_sha256(store_path)
+            extended_path = root / f"routes.{store_sha256}.sqlite"
+            store_path.rename(extended_path)
+            extended_manifest = {
+                **manifest,
+                "artifact": extended_path.name,
+                "store_bytes": extended_path.stat().st_size,
+                "store_sha256": store_sha256,
+            }
+            selector_path.write_text(
+                json.dumps(extended_manifest), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "routes relation schema"
+            ):
+                read_system_routes(selector_path)
 
     def test_route_store_selector_failure_preserves_previous_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

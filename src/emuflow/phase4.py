@@ -325,7 +325,7 @@ def run_phase4(
         "schema": route_storage["schema"],
         "user_version": route_storage["user_version"],
         "dataflow": (
-            "typed-sqlite-route-timing-selection-batch-relations-v2"
+            "typed-sqlite-route-scalar-timing-selection-batch-relations-v3"
         ),
         "bytes": route_storage["store_bytes"],
         "logical_sha256": route_storage["logical_sha256"],
