@@ -751,6 +751,7 @@ class TritonPartTest(unittest.TestCase):
                 seed=1,
                 solution_input=solution,
                 defer_semantic_contract=True,
+                _defer_derived_records=True,
                 persist_input_manifest=False,
             )
             self.assertNotIn("semantic_contract", assignment)
@@ -782,12 +783,17 @@ class TritonPartTest(unittest.TestCase):
                 seed=1,
                 solution_input=solution,
                 defer_semantic_contract=True,
+                _defer_derived_records=True,
                 persist_input_manifest=False,
             )
             owners = assignment["instance_assignment"]
             cluster_owners = assignment["cluster_assignment"]
             self.assertNotIsInstance(owners, dict)
             self.assertNotIsInstance(cluster_owners, dict)
+            self.assertEqual(
+                assignment["_derived_records"], "deferred-selection-only"
+            )
+            self.assertNotIn("cut_nets", assignment)
             self.assertEqual(
                 cluster_owners.packed_payload_bytes,
                 4 * len(clusters["clusters"]),

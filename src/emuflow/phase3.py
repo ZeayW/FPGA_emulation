@@ -574,6 +574,7 @@ def run_phase3(
         )
     patron_validation = None
     patron_initialization = None
+    patron_initial_derived_records_deferred = False
     single_active_selection = len(constraints["active_fpgas"]) == 1
     if single_active_selection:
         assignment = phase3_runtime_call(
@@ -689,6 +690,11 @@ def run_phase3(
                 patron_initialization = (
                     "caller-supplied-generalized-tritonpart-solution-v1"
                 )
+            patron_initial_derived_records_deferred = (
+                not retain_diagnostics
+                and cut_mode == CUT_MODE_STATIC_EXACT
+                and route_constraints.get("max_route_hops") is None
+            )
             tritonpart_initial = phase3_runtime_call(
                 "patron.initialize_tritonpart",
                 run_tritonpart,
@@ -714,6 +720,9 @@ def run_phase3(
                     tritonpart_run_unweighted_baseline
                 ),
                 defer_semantic_contract=True,
+                _defer_derived_records=(
+                    patron_initial_derived_records_deferred
+                ),
                 persist_input_manifest=retain_diagnostics,
             )
             initial = tritonpart_initial
@@ -730,6 +739,11 @@ def run_phase3(
                 include_semantic_contract=(patron_algorithm_version != 14),
             )
         patron_feedback_source_assignment = initial
+        phase3_runtime_observe(
+            patron_initial_derived_records_deferred=int(
+                patron_initial_derived_records_deferred
+            )
+        )
         if patron_initial_assignment_path is not None:
             # A frozen assignment is an exact PATRON input, not a request to
             # silently optimize it again. Fail closed if it is not already

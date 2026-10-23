@@ -3010,37 +3010,44 @@ class PartitionPressureTest(unittest.TestCase):
                     "tdm_ratio_quantum": 1,
                 },
             )
-            with patch(
-                "emuflow.phase3.run_tritonpart", return_value=generalized
-            ) as tritonpart_run:
-                report = run_phase3(
-                    ir_path,
-                    platform_path,
-                    root / "phase3",
-                    constraints_path=constraints_path,
-                    provider="patron",
-                    route_constraints_path=route_path,
-                    timing_database_path=timing_path,
-                    patron_refiner=str(patron_refiner()),
-                    patron_algorithm_version=14,
-                    cut_mode=CUT_MODE_STATIC_EXACT,
-                    retain_diagnostics=False,
-                    patron_max_moves=0,
+            solution_path = root / "generalized.part.2"
+            part_index = {"a": 0, "b": 1}
+            solution_path.write_text(
+                "\n".join(
+                    str(part_index[generalized_map[cluster_id]])
+                    for cluster_id in sorted(generalized_map)
                 )
+                + "\n",
+                encoding="utf-8",
+            )
+            report = run_phase3(
+                ir_path,
+                platform_path,
+                root / "phase3",
+                constraints_path=constraints_path,
+                provider="patron",
+                route_constraints_path=route_path,
+                timing_database_path=timing_path,
+                patron_refiner=str(patron_refiner()),
+                patron_algorithm_version=14,
+                cut_mode=CUT_MODE_STATIC_EXACT,
+                retain_diagnostics=False,
+                patron_max_moves=0,
+                tritonpart_solution=solution_path,
+            )
             assignment = read_json(root / "phase3/assignment.json")
+            runtime = read_json(root / "phase3/phase3-runtime.json")
             self.assertEqual(
                 report["patron_initialization"],
-                "native-generalized-tritonpart-net-cut-v5",
-            )
-            self.assertNotIn(
-                "objective_encoding", tritonpart_run.call_args.kwargs
+                "caller-supplied-generalized-tritonpart-solution-v1",
             )
             self.assertEqual(
-                tritonpart_run.call_args.args[2]["policy"].get(
-                    "cut_mode", CUT_MODE_SEQUENTIAL_ONLY
-                ),
-                CUT_MODE_STATIC_EXACT,
+                runtime["observations"][
+                    "patron_initial_derived_records_deferred"
+                ],
+                1,
             )
+            self.assertNotIn("_derived_records", assignment)
             self.assertEqual(
                 assignment["instance_assignment"],
                 generalized["instance_assignment"],
@@ -3151,11 +3158,13 @@ class PartitionPressureTest(unittest.TestCase):
                 report["patron_initialization"],
                 "caller-supplied-generalized-tritonpart-solution-v1",
             )
+            self.assertNotIn(
+                "cut_nets",
+                report["algorithm_validation"]["initial_assignment"],
+            )
             self.assertEqual(
-                report["algorithm_validation"]["initial_assignment"][
-                    "cut_nets"
-                ],
-                initial["metrics"]["cut_nets"],
+                assignment["metrics"]["cut_nets"],
+                len(assignment["cut_nets"]),
             )
             self.assertIn("semantic_contract", assignment)
 

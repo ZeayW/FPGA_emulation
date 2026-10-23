@@ -104,7 +104,10 @@ cluster/net/path/capacity views are cleared and collected before a compact
 selection-only candidate is constructed. That transient candidate owns packed
 cluster and instance placement plus resource summaries, but deliberately has no
 cut records or Static Exact semantic contract because neither participates in
-the PATRON v14 ranking. After online validation and candidate selection, the
+the PATRON v14 ranking. The generalized TritonPart initializer uses the same
+selection-only shape when no explicit route-hop limit requires an independent
+cut audit; configurations with a hop limit retain their cut relation. After
+online validation and candidate selection, the
 timing source, trace and unselected candidate state are released; the cut
 relation and Static Exact contract are then constructed exactly once for the
 selected assignment before the independent hop audit and assignment-index

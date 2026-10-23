@@ -2294,7 +2294,14 @@ def run_tritonpart(
     persist_input_manifest: bool = True,
     run_unweighted_baseline: bool = False,
     defer_semantic_contract: bool = False,
+    _defer_derived_records: bool = False,
 ) -> Dict[str, Any]:
+    if not isinstance(_defer_derived_records, bool):
+        raise ValidationError("TritonPart derived-record deferral is invalid")
+    if _defer_derived_records and not defer_semantic_contract:
+        raise ValidationError(
+            "TritonPart derived-record deferral requires deferred semantics"
+        )
     if seed_attempts <= 0:
         raise ValueError("TritonPart seed_attempts must be positive")
     if solution_input is not None and seed_attempts != 1:
@@ -2706,4 +2713,5 @@ def run_tritonpart(
         provider_metadata=provider_metadata,
         _include_semantic_contract=not defer_semantic_contract,
         _stream_semantic_records=defer_semantic_contract,
+        _defer_derived_records=_defer_derived_records,
     )
