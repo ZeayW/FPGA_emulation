@@ -3198,7 +3198,10 @@ def run_partition_pressure_native(
             shutil.copyfile(native_input, copy_path)
         environment = dict(os.environ)
         for name in tuple(environment):
-            if name.startswith("EMUFLOW_PATRON_"):
+            # A container executable binding is transport configuration, not
+            # one of the retired implicit algorithm overrides.
+            if (name.startswith("EMUFLOW_PATRON_") and
+                    name != "EMUFLOW_PATRON_CONTAINER_BINARY"):
                 del environment[name]
         command = [resolved]
         if not retain_trace_seals:

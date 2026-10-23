@@ -1978,7 +1978,10 @@ class PartitionPressureTest(unittest.TestCase):
         )
 
     def test_native_patron_timeout_is_enforced(self) -> None:
-        with patch(
+        with patch.dict("os.environ", {
+            "EMUFLOW_PATRON_CONTAINER_BINARY": "/versioned/patron",
+            "EMUFLOW_PATRON_FLOW_APPLY": "1",
+        }), patch(
             "emuflow.partition_pressure.subprocess.run",
             side_effect=subprocess.TimeoutExpired(
                 cmd=["emuflow_patron_refiner"], timeout=7
@@ -2000,6 +2003,8 @@ class PartitionPressureTest(unittest.TestCase):
                     timeout_seconds=7,
                 )
         self.assertEqual(run.call_args.kwargs["timeout"], 7)
+        self.assertEqual(run.call_args.kwargs["env"]["EMUFLOW_PATRON_CONTAINER_BINARY"], "/versioned/patron")
+        self.assertNotIn("EMUFLOW_PATRON_FLOW_APPLY", run.call_args.kwargs["env"])
 
     def test_native_patron_timeout_must_be_positive(self) -> None:
         with self.assertRaisesRegex(

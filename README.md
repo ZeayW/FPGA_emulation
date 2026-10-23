@@ -8,7 +8,8 @@ routing, TDM assignment, physical implementation, and global timing analysis.
 The default research route uses RapidWright device resources, native OpenPARF
 placement, and RWRoute routing for supported Xilinx FPGAs. VTR/VPR remains an
 alternative academic backend, and Vivado is an optional proprietary backend.
-Optional container launchers support native-tool ABI and Tcl script bindings; see the
+Optional container launchers support native-tool ABI and Tcl script bindings,
+with runtime selection separate from algorithm settings. See the
 [build instructions](docs/USER_GUIDE.md#complete-build).
 The indexed Vivado adapter consumes current Phase 6 SQLite contracts with
 preserved net identities, fixed LVDS I/O, native sequential control pins, and

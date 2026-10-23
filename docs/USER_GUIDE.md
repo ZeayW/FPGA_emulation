@@ -51,6 +51,8 @@ If an image lacks Tcl's matching script library, explicitly set
 `EMUFLOW_OPENSTA_CONTAINER_TCL_LIBRARY` or
 `EMUFLOW_OPENROAD_CONTAINER_TCL_LIBRARY` to that tool's versioned directory
 containing `init.tcl`.
+PATRON's runtime binary binding survives the native environment filter;
+retired implicit algorithm-tuning variables remain excluded.
 
 For dependencies outside system directories:
 
