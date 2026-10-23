@@ -176,6 +176,13 @@ emuflow multi-fpga physical --split RUN/flow/split --platform PLATFORM.json \
   --routes ROUTES.json --path-database PATHS.json
 ```
 
+On hosts whose system C library is older than the versioned Yosys build,
+`scripts/yosys/container_runtime.sh` is an optional `--yosys` launcher. Set its
+`EMUFLOW_YOSYS_CONTAINER_*` variables to the executable, immutable image, binary,
+bind root, and runtime library paths listed at the top of that script, plus the
+active experiment's `TMPDIR`. This isolates the synthesis runtime from host
+Vivado and keeps writable container work under that scratch directory.
+
 Supply the exact paths from the source run, including `--logic-path-database`
 when required by its timing contract. `--fpga fpgaN` selects a representative
 partition diagnostic and does not constitute a complete global run. The
