@@ -12,6 +12,7 @@ import tempfile
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
@@ -365,6 +366,14 @@ def _vpr_atom_pin(
     )
 
 
+@lru_cache(maxsize=1)
+def _vivado_native_cell_types() -> frozenset[str]:
+    from .xilinx_primitives import load_xilinx_primitive_library
+
+    _library, contract = load_xilinx_primitive_library()
+    return frozenset(contract["cells"])
+
+
 def _vivado_object(
     ir: EmuIR,
     endpoint: Mapping[str, Any],
@@ -406,8 +415,8 @@ def _vivado_object(
     physical_port = port
     physical_bit = bit
     if cell_type.startswith("LUT"):
-        if port == "O":
-            physical_port, physical_bit = "O", 0
+        if port == "O" or (cell_type == "LUT6_2" and port in {"O5", "O6"}):
+            physical_port, physical_bit = port, 0
         elif re.fullmatch(r"I\d+", port) is None or bit != 0:
             raise ValidationError(
                 f"unsupported Vivado LUT pin {instance_id}.{port}[{bit}]"
@@ -427,10 +436,7 @@ def _vivado_object(
                 f"unsupported Vivado FF pin {instance_id}.{port}[{bit}]"
             )
     elif cell_type not in {"VTR_MULTIPLY", "VTR_SP_RAM", "VTR_DP_RAM"}:
-        from .xilinx_primitives import load_xilinx_primitive_library
-
-        _library, contract = load_xilinx_primitive_library()
-        if cell_type not in contract["cells"]:
+        if cell_type not in _vivado_native_cell_types():
             raise ValidationError(
                 f"unsupported Vivado physical logic cell {cell_type}"
             )

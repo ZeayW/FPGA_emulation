@@ -36,6 +36,16 @@ def fixture(root):
 
 
 class IndexedVivadoTests(unittest.TestCase):
+    def test_native_dual_output_lut_preserves_output_pin_identity(self):
+        from emuflow.logic_segment_timing import _vivado_object
+
+        ir = SimpleNamespace(value={})
+        instances = {"carry_lut": {"type": "LUT6_2"}}
+        pins = {"carry_lut": {("O5", 0), ("O6", 0), ("I0", 0)}}
+        for port in ("O5", "O6", "I0"):
+            self.assertEqual(_vivado_object(ir, {"instance": "carry_lut", "port": port, "bit": 0}, pins, instances),
+                             ("pin", f"carry_lut/{port}"))
+
     def test_native_export_and_runtime_never_load_whole_emuir(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

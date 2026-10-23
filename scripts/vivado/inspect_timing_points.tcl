@@ -7,7 +7,7 @@ set path [get_timing_paths -quiet -max_paths 1 -nworst 1]
 if {[llength $path] != 1} {error "no timing path for provider inspection"}
 set stream [open "$out/timing-properties.txt" w]
 foreach property [list_property $path] {
-  if {[string match *POINT* $property]} {
+  if {[string match *POINTS* $property]} {
     set points [get_property $property $path]
     puts $stream "$property count=[llength $points]"
     foreach point [lrange $points 0 15] {
