@@ -1,6 +1,7 @@
 import copy
 import io
 import itertools
+import json
 import math
 import os
 import random
@@ -68,7 +69,7 @@ from emuflow.sta import (
     import_sta_path_database_tsv_streaming,
 )
 from tests.test_phase5 import _link, _platform_value
-from tests.native_build import patron_refiner
+from tests.native_build import patron_refiner, emuflow_native
 
 
 def _endpoint(instance: str, port: str) -> dict:
@@ -558,6 +559,84 @@ class PartitionPressureTest(unittest.TestCase):
                 copy_path.read_text().splitlines()[0],
                 "EMUFLOW_PATRON_INPUT_V6_BANKS_V1",
             )
+
+    def test_unified_patron_core_matches_standalone_and_reports_failures(self):
+        unified, standalone = emuflow_native(), patron_refiner()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, actual, reference = root / "patron.bin", root / "actual.bin", root / "reference.bin"
+            report = root / "result.json"
+            indexes = _write_patron_native_input(
+                None, self.platform, self.clusters, self.constraints,
+                self.route_constraints, self.model, self.initial, 4, 6,
+                _writer=_NativeBinaryPipeWriter(source.open("wb")),
+            )
+            args = ["--summary-output", "--typed-output", "--typed-input", str(source)]
+            subprocess.run([str(standalone), *args, str(reference)], check=True, capture_output=True)
+            command = [str(unified), "--report", str(report), "phase3", "refine-patron"]
+            subprocess.run([*command, *args, str(actual)], check=True, capture_output=True)
+            self.assertEqual(actual.read_bytes(), reference.read_bytes())
+            reference_assignment, *_, reference_summary = _parse_patron_native_output(reference, indexes)
+            self.assertGreater(reference_summary["moves"], 0)
+            subprocess.run([*command, "--typed-input", str(source), str(actual)], check=True, capture_output=True)
+            self.assertEqual(actual.read_bytes(), reference.read_bytes())
+            text_reference = root / "reference.txt"
+            text_actual = root / "actual.txt"
+            subprocess.run([str(standalone), "--typed-input", str(source), str(text_reference)], check=True, capture_output=True)
+            subprocess.run([*command, "--trace-output", "--typed-input", str(source), str(text_actual)], check=True, capture_output=True)
+            self.assertEqual(text_actual.read_bytes(), text_reference.read_bytes())
+            # Restore the compact result report for the following checks.
+            subprocess.run([*command, *args, str(actual)], check=True, capture_output=True)
+            result = json.loads(report.read_text())
+            self.assertEqual(result["schema"], "emuflow.native-stage-result/v1")
+            self.assertEqual(result["stage"], "phase3.refine-patron")
+            self.assertEqual(result["status"], "pass")
+            self.assertEqual(result["inputs"][0]["schema"], "patron-input-v1")
+            self.assertEqual(result["inputs"][0]["generation"]["bytes"], source.stat().st_size)
+            self.assertEqual(result["outputs"][0]["schema"], "patron-output-v1")
+            self.assertEqual(result["outputs"][0]["generation"]["bytes"], actual.stat().st_size)
+            self.assertEqual(result["metrics"]["rss_scope"], "self-lifetime-high-water")
+            # Pipes are validated by the same CRC/EOF parser without a second
+            # file or prefix consumption in the shared runtime.
+            payload = source.read_bytes()
+            piped = subprocess.run([*command, *args[:-1], "-", str(actual)], input=payload, capture_output=True)
+            self.assertEqual(piped.returncode, 0, piped.stderr)
+            self.assertEqual(actual.read_bytes(), reference.read_bytes())
+            self.assertTrue(json.loads(report.read_text())["inputs"][0]["pipe"])
+            for bad in (payload[:-1], payload + b"trailing", payload[:-1] + bytes([payload[-1] ^ 1])):
+                failed = subprocess.run([*command, *args[:-1], "-", str(actual)], input=bad, capture_output=True)
+                self.assertNotEqual(failed.returncode, 0)
+                summary = json.loads(report.read_text())
+                self.assertEqual(summary["status"], "fail")
+                self.assertEqual(summary["error"]["code"], "execution-failed")
+                self.assertEqual(actual.read_bytes(), reference.read_bytes())
+            saved = actual.read_bytes()
+            alias = subprocess.run([str(unified), "--report", str(actual), "phase3", "refine-patron", *args, str(actual)], capture_output=True)
+            self.assertEqual(alias.returncode, 2)
+            self.assertEqual(actual.read_bytes(), saved)
+            alias_input = subprocess.run([str(unified), "--report", str(source), "phase3", "refine-patron", *args, str(actual)], capture_output=True)
+            self.assertEqual(alias_input.returncode, 2)
+            self.assertEqual(source.read_bytes(), payload)
+            # The production resolver must work with only the unified binary;
+            # the standalone executable is an explicit comparison choice.
+            installed = root / "install" / "bin"
+            installed.mkdir(parents=True)
+            (installed / "emuflow-native").symlink_to(unified)
+            with patch.dict(os.environ, {"EMUFLOW_NATIVE_ROOT": str(installed.parent)}):
+                final, trace = run_partition_pressure_native(
+                    self.ir, self.platform, self.clusters, self.constraints,
+                    self.route_constraints, self.model, self.initial, max_moves=4,
+                    retain_trace_seals=False, stream_semantic_records=True,
+                    output_validation="online",
+                )
+                reference_final, reference_trace = run_partition_pressure_native(
+                    self.ir, self.platform, self.clusters, self.constraints,
+                    self.route_constraints, self.model, self.initial, max_moves=4,
+                )
+            self.assertEqual(dict(final["cluster_assignment"]), dict(reference_assignment))
+            self.assertEqual(trace["trace_storage"], "summary-only")
+            self.assertEqual(reference_final["cluster_assignment"], dict(reference_assignment))
+            self.assertEqual(reference_trace["trace_storage"], "retained")
 
     def test_native_patron_typed_input_rejects_corruption_and_framing(
         self,

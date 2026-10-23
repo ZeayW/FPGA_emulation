@@ -125,6 +125,8 @@ rm -f "$unified"
   -DEMUFLOW_NATIVE_STAGE_LIBRARY=1 \
   "${sqlite_flags[@]}" -I"$source_dir/src/native" \
   "$source_dir/src/native/emuflow_native.cpp" \
+  "$source_dir/src/native/emuflow_core/native_pipeline.cpp" \
+  "$source_dir/src/native/patron_refiner.cpp" \
   "$source_dir/src/native/static_exact_analyzer.cpp" \
   "$source_dir/src/native/tlr_router.cpp" \
   "$source_dir/src/native/tdm_exact_scheduler.cpp" \
@@ -134,6 +136,7 @@ rm -f "$unified"
   "$source_dir/src/native/chimew_position_refiner.cpp" \
   "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
   "$source_dir/src/native/emuflow_core/sqlite.cpp" \
+  "$source_dir/src/native/emuflow_core/stage_runtime.cpp" \
   -lsqlite3 -o "$unified"
 target="$runtime_dir/bin/emuflow_xilinx_bookshelf_exporter"
 rm -f "$target"

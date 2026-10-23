@@ -1004,7 +1004,8 @@ void emuflow::native::ResolveStaticExactCaptures(
   // Lifecycle-scoped uniqueness/index spool. Ordered records themselves are
   // published as binary, and the independent validator removes this index.
   SqliteDatabase index(output_path + ".sqlite", SqliteDatabase::Mode::kCreateExclusive);
-  index.Execute("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE;"
+  index.Execute("PRAGMA application_id=0x45434150; PRAGMA user_version=1;"
+      "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE;"
       "CREATE TABLE capture_relation(cut_net TEXT NOT NULL,fpga TEXT NOT NULL,"
       "kind TEXT NOT NULL,endpoint TEXT NOT NULL,port_key TEXT NOT NULL,"
       "bit_length INTEGER NOT NULL,bit_key BLOB NOT NULL,seq INTEGER,"

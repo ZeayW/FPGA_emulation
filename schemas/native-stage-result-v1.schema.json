@@ -1,0 +1,228 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "stage",
+    "status",
+    "error",
+    "metrics",
+    "inputs",
+    "outputs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "emuflow.native-stage-result/v1"
+    },
+    "stage": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "fail"
+      ]
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "none",
+            "invalid-request",
+            "missing-artifact",
+            "invalid-artifact",
+            "mixed-generation",
+            "execution-failed",
+            "publication-failed"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wall_seconds",
+        "user_cpu_seconds",
+        "system_cpu_seconds",
+        "process_lifetime_peak_rss_kib",
+        "rss_scope",
+        "io_scope",
+        "read_bytes",
+        "write_bytes",
+        "cpu_scope"
+      ],
+      "properties": {
+        "wall_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "user_cpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "system_cpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "process_lifetime_peak_rss_kib": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rss_scope": {
+          "const": "self-lifetime-high-water"
+        },
+        "io_scope": {
+          "const": "self-proc-io-delta"
+        },
+        "read_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "write_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "cpu_scope": {
+          "const": "self-process-interval"
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmuFlow native operation result v1",
+  "$defs": {
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "device",
+        "inode",
+        "bytes",
+        "mtime_seconds",
+        "mtime_nanoseconds",
+        "ctime_seconds",
+        "ctime_nanoseconds"
+      ],
+      "properties": {
+        "device": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "inode": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mtime_seconds": {
+          "type": "integer"
+        },
+        "mtime_nanoseconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ctime_seconds": {
+          "type": "integer"
+        },
+        "ctime_nanoseconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "schema",
+        "pipe",
+        "generation"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pipe": {
+          "type": "boolean"
+        },
+        "generation": {
+          "$ref": "#/$defs/generation"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "pass"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "const": "none"
+              },
+              "message": {
+                "const": ""
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "not": {
+                  "const": "none"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

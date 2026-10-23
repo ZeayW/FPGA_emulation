@@ -8,8 +8,8 @@ OpenROAD/TritonPart, OpenPARF, RapidWright/RWRoute and optional Vivado remain
 separate engines. OpenPARF may retain its required thin Python/PyTorch host.
 A native command that only invokes the Python compiler is not this target.
 
-The current native executable links real Phase 3, 4, 5 and 6 kernels, but its
-stage dispatch is only a foundation. Complete native orchestration and the
+The current native executable links real Phase 3, 4, 5 and 6 kernels through a
+shared typed operation API, including PATRON search. Complete orchestration and the
 remaining production data-plane ownership are unfinished. W0 shared-core
 consolidation and W7 native compilation are the priority architectural delivery;
 stage adapters must converge on those interfaces rather than add independent
@@ -23,10 +23,16 @@ See [phase contracts](FLOW_PLAN.md) for the whole-flow architecture,
 
 The core owns representation-scoped typed IDs, checked artifact I/O, common
 CRC-32/SHA-256, SQLite statement/transaction lifetimes, and atomic publication.
-Complete consolidation additionally requires one versioned schema registry,
-artifact/view API, structured error protocol and runtime-metric contract across
-all production stages. An integer identity is meaningful only with its owning
-artifact; equal integers in different stores are not interchangeable.
+The linked operations use a versioned schema registry, `ArtifactRef`,
+`StageRequest` and `StageResult`. Complete consolidation still requires shared
+store/view adapters for the remaining public phase artifacts and external
+engines. An integer identity is meaningful only with its owning artifact;
+equal integers in different stores are not interchangeable.
+These operation implementations and their supporting contracts are compiled
+into one `libemuflow_core` target. The former `emuflow_native_stages` target is
+only a CMake compatibility alias; the executable and native library tests link
+the core directly. This does not yet cover every standalone adapter or supply
+the missing complete native compiler.
 
 SQLite owns relations requiring joins, uniqueness or bounded lookup. Large
 ordered populations may use typed binary sections or ordered record streams;
@@ -37,6 +43,56 @@ Normal handoffs verify schema, source identity, required row counts and circuit
 semantics. They do not run SQLite `quick_check` or `integrity_check`. Strong
 hashing belongs to publication/import and explicit terminal verification,
 not repeated routine reads of already validated immutable artifacts.
+
+### Native operation API
+
+`emuflow_core/native_pipeline.hpp` defines the typed in-process operation
+interface; CLI parsing is a separate adapter. The library executes the native
+implementation directly, with no Python invocation or graph-sized FFI transfer.
+PATRON's default production resolver uses this interface; an explicit standalone
+tool remains an independent comparison choice. A present unified binary that
+rejects a request is an error, not permission to retry an older implementation.
+The new PATRON operation defaults to compact typed summary output; detailed
+text traces require explicit `--trace-output`. Existing Python qualification
+calls select that mode explicitly when retained trace evidence is requested.
+
+`ArtifactRef` binds an explicit registered schema to a canonical path and a local
+file generation (device, inode, size, modification and change timestamps).
+Generation checks run before and after computation. File envelopes are checked
+without full payload loading or rehashing. SQLite inputs must be finalized
+single-file publications; active WAL/journal sidecars are rejected. Pipe inputs
+retain the stage's CRC/EOF and semantic parser without consuming their prefix
+twice or creating a scratch copy. Text compatibility grammars likewise remain
+stage-owned rather than being guessed from file contents.
+Native callers pass producer `ArtifactRef` objects directly; the library
+checks their declared schema and retained generation before execution. It does
+not silently rebind stale producer references to whatever now occupies a path.
+CLI paths remain an explicit import boundary. Supplying both bound artifacts
+and paths for the same request is rejected as ambiguous ownership.
+
+Local generation metadata is not a cryptographic or portable semantic identity.
+Producer seals, artifact namespace binding, cross-input provenance, row counts
+and independent circuit validation remain required. The registry does not
+replace those checks with a successful header read.
+
+`emuflow-native --report RESULT_JSON PHASE OPERATION ...` optionally publishes
+the bounded [operation result](../schemas/native-stage-result-v1.schema.json)
+atomically. It includes registered input/output references, status, an error
+code/message and common metrics. Payload stdout stays available for existing
+stream protocols. Report paths may not alias inputs, outputs or the capture
+index; invalid requests are rejected without overwriting those artifacts.
+Errors use nonzero exits and never trigger a silent reference fallback.
+
+Wall time describes the operation; CPU counters are process-interval deltas.
+Parallel operations in one process may overlap, so their CPU/I/O deltas are not
+exclusive stage costs and must not be summed. RSS is explicitly the current
+process's lifetime high-water mark, not a sampled per-operation/process-tree
+peak. Linux I/O counters are self-process physical read/write deltas; unavailable
+counters are null. An operation result does not qualify a complete phase or
+substitute for whole-flow provenance, validation or timing evidence. Exact
+section emission still leaves final manifest publication with its owning outer
+publisher; its native operation result is the section summary, not a claim that
+the complete Phase 3 assignment has been published.
 
 ## Native production entry (W7)
 

@@ -265,11 +265,15 @@ set(EMUFLOW_INSTALL_BINDIR "${EMUFLOW_INSTALL_ROOT}/${CMAKE_INSTALL_BINDIR}")
 file(MAKE_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
 
 find_package(SQLite3 3.22 REQUIRED)
+if(NOT TARGET SQLite3::SQLite3)
+  # CMake 3.x exposes the older imported-target spelling.
+  add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
+endif()
 add_executable(emuflow_xilinx_bookshelf_exporter
   "${CMAKE_SOURCE_DIR}/src/native/xilinx_bookshelf_exporter.cpp")
 target_compile_features(emuflow_xilinx_bookshelf_exporter PRIVATE cxx_std_17)
 target_compile_options(emuflow_xilinx_bookshelf_exporter PRIVATE -O3)
-target_link_libraries(emuflow_xilinx_bookshelf_exporter PRIVATE SQLite::SQLite3)
+target_link_libraries(emuflow_xilinx_bookshelf_exporter PRIVATE SQLite3::SQLite3)
 set_target_properties(emuflow_xilinx_bookshelf_exporter PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
 if(BUILD_TESTING)
@@ -281,13 +285,13 @@ add_library(
   emuflow_core STATIC
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/artifact_io.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/sqlite.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/stage_runtime.cpp"
 )
 target_compile_features(emuflow_core PUBLIC cxx_std_17)
 target_compile_options(emuflow_core PRIVATE -O3)
 target_include_directories(
   emuflow_core PUBLIC "${CMAKE_SOURCE_DIR}/src/native"
 )
-find_package(SQLite3 REQUIRED)
 target_link_libraries(emuflow_core PUBLIC SQLite3::SQLite3)
 if(BUILD_TESTING)
   add_executable(
@@ -301,8 +305,11 @@ if(BUILD_TESTING)
   )
 endif()
 
-add_library(
-  emuflow_native_stages STATIC
+# One implementation library owns both common contracts and native kernels.
+# Keep the former target spelling as a build-system alias, not a second owner.
+target_sources(emuflow_core PRIVATE
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/native_pipeline.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/patron_refiner.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/static_exact_analyzer.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/tlr_router.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/tdm_exact_scheduler.cpp"
@@ -311,18 +318,16 @@ add_library(
   "${CMAKE_SOURCE_DIR}/src/native/chimew_signal_grouper.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/chimew_position_refiner.cpp"
 )
-target_compile_features(emuflow_native_stages PUBLIC cxx_std_17)
-target_compile_options(emuflow_native_stages PRIVATE -O3)
-target_compile_definitions(
-  emuflow_native_stages PRIVATE EMUFLOW_NATIVE_STAGE_LIBRARY=1
-)
-target_include_directories(
-  emuflow_native_stages PUBLIC "${CMAKE_SOURCE_DIR}/src/native"
-)
+target_compile_definitions(emuflow_core PRIVATE EMUFLOW_NATIVE_STAGE_LIBRARY=1)
 find_package(Threads REQUIRED)
-target_link_libraries(
-  emuflow_native_stages PUBLIC emuflow_core Threads::Threads
-)
+target_link_libraries(emuflow_core PUBLIC Threads::Threads)
+add_library(emuflow_native_stages ALIAS emuflow_core)
+if(BUILD_TESTING)
+  add_executable(emuflow_native_pipeline_api_test
+    "${CMAKE_SOURCE_DIR}/tests/native_pipeline_api_test.cpp")
+  target_link_libraries(emuflow_native_pipeline_api_test PRIVATE emuflow_core)
+  add_test(NAME emuflow_native_pipeline_api COMMAND emuflow_native_pipeline_api_test)
+endif()
 
 add_executable(
   emuflow_native
@@ -336,7 +341,7 @@ set_target_properties(
 )
 target_compile_features(emuflow_native PRIVATE cxx_std_17)
 target_compile_options(emuflow_native PRIVATE -O3)
-target_link_libraries(emuflow_native PRIVATE emuflow_native_stages)
+target_link_libraries(emuflow_native PRIVATE emuflow_core)
 if(BUILD_TESTING)
   add_test(
     NAME emuflow_native_cli

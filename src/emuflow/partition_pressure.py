@@ -43,7 +43,7 @@ from .partition import (
 )
 from .platform import Platform
 from .bank_allocation import apply_bank_domain_ratios
-from .native_tools import resolve_native_executable
+from .native_tools import resolve_native_stage_command
 from .partition_physical_feedback import (
     PARTITION_PHYSICAL_FEEDBACK_SCHEMA,
     validate_partition_physical_feedback_seal,
@@ -4661,7 +4661,9 @@ def run_partition_pressure_native(
                 "native PATRON physical feedback scale has no artifact"
             )
         feedback_sha256 = None
-    resolved = resolve_native_executable("emuflow_patron_refiner", executable)
+    native_command = resolve_native_stage_command(
+        "emuflow_patron_refiner", "phase3", "refine-patron", executable
+    )
     with tempfile.TemporaryDirectory(prefix="emuflow-patron-") as temporary:
         root = Path(temporary)
         native_output = root / "patron.out"
@@ -4670,9 +4672,11 @@ def run_partition_pressure_native(
         for name in tuple(environment):
             if name.startswith("EMUFLOW_PATRON_"):
                 del environment[name]
-        command = [resolved]
+        command = list(native_command)
         if not retain_trace_seals:
             command.extend(("--summary-output", "--typed-output"))
+        elif len(native_command) > 1:
+            command.append("--trace-output")
         if native_input_copy:
             copy_path = Path(native_input_copy)
             copy_path.parent.mkdir(parents=True, exist_ok=True)

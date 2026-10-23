@@ -251,44 +251,45 @@ def tdm_exact_scheduler() -> Path:
     return executable
 
 
-@lru_cache(maxsize=1)
-def emuflow_native() -> Path:
-    compiler = (
-        shutil.which("c++")
-        or shutil.which("g++")
-        or shutil.which("clang++")
-    )
+_NATIVE_STAGE_SOURCES = (
+    "emuflow_core/native_pipeline.cpp", "patron_refiner.cpp",
+    "static_exact_analyzer.cpp", "tlr_router.cpp", "tdm_exact_scheduler.cpp",
+    "chimew_bank_channel_assigner.cpp", "chimew_rudy.cpp",
+    "chimew_signal_grouper.cpp", "chimew_position_refiner.cpp",
+    "emuflow_core/artifact_io.cpp", "emuflow_core/sqlite.cpp",
+    "emuflow_core/stage_runtime.cpp",
+)
+
+
+def _build_native_stage_program(entry: Path, executable: Path) -> Path:
+    compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
     if compiler is None:
-        raise RuntimeError("a C++17 compiler is required for native entry tests")
-    root = Path(_BUILD_ROOT.name)
-    executable = root / "unified" / "emuflow-native"
+        raise RuntimeError("a C++17 compiler is required for native API tests")
     executable.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        [
-            compiler,
-            "-std=c++17",
-            "-O2",
-            "-pthread",
-            "-DEMUFLOW_NATIVE_STAGE_LIBRARY=1",
-            str(ROOT / "src/native/emuflow_native.cpp"),
-            str(ROOT / "src/native/static_exact_analyzer.cpp"),
-            str(ROOT / "src/native/tlr_router.cpp"),
-            str(ROOT / "src/native/tdm_exact_scheduler.cpp"),
-            str(ROOT / "src/native/chimew_bank_channel_assigner.cpp"),
-            str(ROOT / "src/native/chimew_rudy.cpp"),
-            str(ROOT / "src/native/chimew_signal_grouper.cpp"),
-            str(ROOT / "src/native/chimew_position_refiner.cpp"),
-            str(ROOT / "src/native/emuflow_core/artifact_io.cpp"),
-            str(ROOT / "src/native/emuflow_core/sqlite.cpp"),
-            "-I",
-            str(ROOT / "src/native"),
-            "-lsqlite3",
-            "-o",
-            str(executable),
-        ],
+        [compiler, "-std=c++17", "-O2", "-pthread",
+         "-DEMUFLOW_NATIVE_STAGE_LIBRARY=1", str(entry),
+         *(str(ROOT / "src/native" / source) for source in _NATIVE_STAGE_SOURCES),
+         "-I", str(ROOT / "src/native"), "-lsqlite3", "-o", str(executable)],
         check=True,
     )
     return executable
+
+
+@lru_cache(maxsize=1)
+def emuflow_native() -> Path:
+    return _build_native_stage_program(
+        ROOT / "src/native/emuflow_native.cpp",
+        Path(_BUILD_ROOT.name) / "unified/emuflow-native",
+    )
+
+
+@lru_cache(maxsize=1)
+def native_pipeline_api_test() -> Path:
+    return _build_native_stage_program(
+        ROOT / "tests/native_pipeline_api_test.cpp",
+        Path(_BUILD_ROOT.name) / "native-pipeline-api-test",
+    )
 
 
 @lru_cache(maxsize=1)

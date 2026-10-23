@@ -15,6 +15,7 @@
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/hash.hpp"
 #include "emuflow_core/sqlite.hpp"
+#include "emuflow_core/stage_runtime.hpp"
 
 namespace {
 struct CellTag {};
@@ -169,6 +170,82 @@ int main() {
         throw std::runtime_error("SQLite read-only view disagrees");
       }
     }
+    const auto stage_path = (root / "stage.bin").string();
+    const auto report_path = (root / "stage-result.json").string();
+    {
+      emuflow::core::AtomicBinaryWriter writer(stage_path);
+      writer.Write(std::uint64_t{0x3149534d44544545ULL});
+      writer.Write(std::uint32_t{1});
+      writer.Commit();
+    }
+    using emuflow::core::ArtifactRef;
+    using emuflow::core::ErrorCode;
+    const auto reference = ArtifactRef::Bind(stage_path, "exact-schedule-input-v1");
+    reference.RequireUnchanged();
+    const auto success = emuflow::core::RunStage("test.stage", [&]() {
+      return std::vector<ArtifactRef>{reference};
+    }, [](const auto&) {});
+    if (!success.ok() || success.inputs.size() != 1 || success.metrics.wall_seconds < 0) {
+      throw std::runtime_error("native stage success contract disagrees");
+    }
+    emuflow::core::PublishStageResult(report_path, success);
+    bool alias_rejected = false;
+    try { emuflow::core::PublishStageResult(stage_path, success); }
+    catch (const emuflow::core::StageError& e) { alias_rejected = e.code() == ErrorCode::kInvalidRequest; }
+    if (!alias_rejected) throw std::runtime_error("stage report replaced its input");
+    reference.RequireUnchanged();
+    const auto old_time = std::filesystem::last_write_time(stage_path);
+    {
+      emuflow::core::AtomicBinaryWriter writer(stage_path);
+      writer.Write(std::uint64_t{0x3149534d44544545ULL});
+      writer.Write(std::uint32_t{1}); writer.Commit();
+    }
+    std::filesystem::last_write_time(stage_path, old_time);
+    bool stale_body_ran = false;
+    const auto stale = emuflow::core::RunStage("test.stale", [&]() {
+      return std::vector<ArtifactRef>{reference};
+    }, [&](const auto&) { stale_body_ran = true; });
+    if (stale.error != ErrorCode::kMixedGeneration || stale_body_ran) {
+      throw std::runtime_error("replaced input generation entered a native stage");
+    }
+    const auto current_reference = ArtifactRef::Bind(stage_path, "exact-schedule-input-v1");
+    const auto changed = emuflow::core::RunStage("test.changed", [&]() {
+      return std::vector<ArtifactRef>{current_reference};
+    }, [&](const auto&) {
+      std::ofstream writer(stage_path, std::ios::binary | std::ios::app);
+      writer.put('x');
+    });
+    if (changed.error != ErrorCode::kMixedGeneration) {
+      throw std::runtime_error("changed native input was accepted");
+    }
+    const auto unknown = emuflow::core::RunStage("test.unknown", [&]() {
+      return std::vector<ArtifactRef>{ArtifactRef::Bind(stage_path, "unknown-version")};
+    }, [](const auto&) {});
+    if (unknown.error != ErrorCode::kInvalidRequest) {
+      throw std::runtime_error("unknown schema silently fell back");
+    }
+    const auto malformed = emuflow::core::RunStage("test.bad-envelope", [&]() {
+      return std::vector<ArtifactRef>{ArtifactRef::Bind(stage_path, "exact-topology-v3")};
+    }, [](const auto&) {});
+    if (malformed.error != ErrorCode::kInvalidArtifact) {
+      throw std::runtime_error("mixed native envelope was accepted");
+    }
+    const auto pipe = ArtifactRef::Bind("-", "patron-input-v1", true);
+    if (!pipe.is_pipe()) throw std::runtime_error("native pipe was treated as a file");
+    const auto sqlite_artifact = (root / "source-artifact.sqlite").string();
+    {
+      emuflow::core::SqliteDatabase db(sqlite_artifact, emuflow::core::SqliteDatabase::Mode::kCreateExclusive);
+      db.Execute("PRAGMA application_id=0x454d5549; PRAGMA user_version=2; CREATE TABLE records(id INTEGER)");
+    }
+    const auto sqlite_ref = ArtifactRef::Bind(sqlite_artifact, "emuir-compact-v2");
+    {
+      std::ofstream wal(sqlite_artifact + "-wal"); wal << "active-writer";
+    }
+    bool wal_rejected = false;
+    try { sqlite_ref.RequireUnchanged(); }
+    catch (const emuflow::core::StageError& e) { wal_rejected = e.code() == ErrorCode::kMixedGeneration; }
+    if (!wal_rejected) throw std::runtime_error("mutable SQLite sidecar was accepted");
+    std::filesystem::remove(sqlite_artifact + "-wal");
   } catch (...) {
     std::filesystem::remove_all(root);
     throw;

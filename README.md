@@ -52,10 +52,12 @@ storage and streams them through unified native entry points. Phase 6 publishes
 virtual wiring, binding, differential-I/O, and XDC contracts in the sealed
 transport store; Phase 7 reads those contracts lazily. See the
 [Phase 3 native migration](docs/PHASE3_NATIVE_MIGRATION.md) for the storage
-and migration contracts. The shared core and complete native `compile` entry
-remain implementation work: the current native executable dispatches stage
-kernels, while Python still owns orchestration and portions of the production
-data plane.
+and migration contracts. Native operations now share a typed C++ request/result
+API, registered artifact envelopes, file-generation checks, and a structured
+`--report` error/metrics contract. PATRON search is linked into this entry too.
+The complete native `compile` entry and remaining shared-store integration are
+unfinished; Python still owns orchestration and portions of the production data
+plane.
 
 ## Flow
 

@@ -1,6 +1,7 @@
 #include "bank_allocation.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/hash.hpp"
+#include "emuflow_core/native_stages.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -5972,9 +5973,12 @@ void run_scalable(const Model& model,
     for (long long value : best_corridor.evaluation.ranked) {
       std::cerr << value << ',';
     }
-    std::cerr << " clusters=";
-    for (int selected : best_corridor_clusters) {
-      std::cerr << selected << ',';
+    std::cerr << " selected_cluster_count=" << best_corridor_clusters.size();
+    if (emit_trace) {
+      std::cerr << " clusters=";
+      for (int selected : best_corridor_clusters) {
+        std::cerr << selected << ',';
+      }
     }
   }
   std::cerr << '\n';
@@ -6022,6 +6026,16 @@ void run(const Model& model,
 
 }  // namespace
 
+void emuflow::native::RefinePatron(const std::string& input_path,
+                                 const std::string& output_path,
+                                 bool typed_input, bool summary_output,
+                                 bool typed_output) {
+  require(!typed_output || summary_output, "typed PATRON output requires summary mode");
+  Model model = typed_input ? read_typed_model(input_path) : read_text_model(input_path);
+  run(model, output_path, !summary_output, typed_output);
+}
+
+#ifndef EMUFLOW_NATIVE_STAGE_LIBRARY
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "usage: emuflow_patron_refiner [--summary-output] "
@@ -6058,12 +6072,12 @@ int main(int argc, char** argv) {
   try {
     // The unflagged form remains a checked legacy-text compatibility entry.
     // Production always selects --typed-input explicitly.
-    Model model = typed_input ? read_typed_model(positional[0])
-                              : read_text_model(positional[0]);
-    run(model, positional[1], !summary_output, typed_output);
+    emuflow::native::RefinePatron(positional[0], positional[1], typed_input,
+                                 summary_output, typed_output);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "emuflow_patron_refiner: " << error.what() << '\n';
     return 1;
   }
 }
+#endif
