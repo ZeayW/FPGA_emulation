@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import time
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Union
 
 from .cross_layer_timing import (
     build_cross_layer_timing_contract,
@@ -22,6 +22,8 @@ from .routing import semantic_contract_for_routes
 from .tdm import (
     TDM_BASELINE_PROVIDER,
     TDM_EXACT_DEPENDENCY_PROVIDER,
+    NativeExactScheduleRequest,
+    build_native_exact_schedule_request,
     build_tdm_schedule,
     build_transport_manifest,
     reconstruct_tdm_schedule_timing,
@@ -588,9 +590,15 @@ def run_phase5(
     else:
         raise ValueError(f"unsupported Phase 5 provider {provider!r}")
     if schedule is None:
-        schedule = build_tdm_schedule(routes, platform, ratio_plan)
+        schedule = (
+            build_native_exact_schedule_request(routes, platform)
+            if provider == TDM_EXACT_DEPENDENCY_PROVIDER and ratio_plan is None else None
+        )
+        if schedule is None:
+            schedule = build_tdm_schedule(routes, platform, ratio_plan)
+        native_generation = isinstance(schedule, NativeExactScheduleRequest)
         validation = (
-            None if getattr(schedule["entries"], "native_store_publication_source", None)
+            None if native_generation or getattr(schedule["entries"], "native_store_publication_source", None)
             is not None else validate_tdm_schedule(routes, platform, schedule, ratio_plan)
         )
         timing_validation = (
@@ -600,7 +608,7 @@ def run_phase5(
                 schedule,
                 model=prepared_ratio_model,
             )
-            if isinstance(routes.get("timing"), dict)
+            if not native_generation and isinstance(routes.get("timing"), dict)
             else None
         )
     return _finish_phase5_generation(
@@ -627,7 +635,7 @@ def _finish_phase5_generation(
     persisted_routes: Mapping[str, Any],
     routes: Mapping[str, Any],
     semantic_contract: Optional[Mapping[str, Any]],
-    schedule: Mapping[str, Any],
+    schedule: Union[Mapping[str, Any], NativeExactScheduleRequest],
     validation: Optional[Mapping[str, Any]],
     timing_validation: Optional[Mapping[str, Any]],
     candidate_selection: Optional[Mapping[str, Any]],
@@ -642,7 +650,8 @@ def _finish_phase5_generation(
 ) -> Dict[str, Any]:
     """Build every Phase 5 artifact in staging and commit the report last."""
 
-    native_production = getattr(schedule["entries"], "native_store_publication_source", None) is not None
+    native_generation = isinstance(schedule, NativeExactScheduleRequest)
+    native_production = native_generation or getattr(schedule["entries"], "native_store_publication_source", None) is not None
     emit_compatibility_exports = not managed_storage and not native_production
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
@@ -657,16 +666,20 @@ def _finish_phase5_generation(
         schedule_storage_wall_seconds = (
             time.monotonic() - schedule_storage_started
         )
-        persisted_schedule = read_tdm_schedule(staged_schedule_path)
+        persisted_schedule = read_tdm_schedule(staged_schedule_path, verify_store_hash=False)
         if validation is None:
-            if not exact_mode or ratio_plan is not None or getattr(
-                schedule["entries"], "native_store_publication_source", None
-            ) is None:
+            if not exact_mode or ratio_plan is not None or not native_production:
                 raise ValidationError("Phase 5 validation is missing")
             # Independently reconstruct from typed cursor/join relations before
             # committing the report; never inflate a private native result into
             # the generic validator's full hop dictionaries.
             validation = validate_tdm_schedule(routes, platform, persisted_schedule)
+        if native_generation:
+            schedule = persisted_schedule
+            if isinstance(routes.get("timing"), dict):
+                timing_validation = reconstruct_tdm_schedule_timing(
+                    routes, platform, persisted_schedule, model=prepared_ratio_model,
+                )
         cross_layer_timing = build_cross_layer_timing_contract(
             persisted_routes, persisted_schedule, semantic_contract
         )
@@ -773,9 +786,12 @@ def _finish_phase5_generation(
             "schema": schedule_storage["schema"],
             "implementation_id": (
                 "native-exact-schedule-store-v1"
-                if getattr(schedule["entries"], "native_store_publication_source", None)
-                is not None
+                if native_production
                 else "python-reference-schedule-store-v1"
+            ),
+            "producer_implementation_id": (
+                "native-exact-phase5-producer-v1" if native_generation
+                else "compatibility-schedule-producer-v1"
             ),
             "dataflow": (
                 "typed-sqlite-route-entry-completion-relations-v1"
@@ -789,6 +805,10 @@ def _finish_phase5_generation(
                 )
             ),
             "wall_seconds": schedule_storage_wall_seconds,
+            "wall_scope": (
+                "native-model-schedule-certificate-publication-and-store-seal"
+                if native_generation else "store-publication-and-store-seal"
+            ),
             "bytes": schedule_storage["store_bytes"],
             "logical_sha256": schedule_storage["logical_sha256"],
             "records": {

@@ -291,6 +291,17 @@ def emuflow_native() -> Path:
 
 
 @lru_cache(maxsize=1)
+def native_json_record() -> Path:
+    compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+    if compiler is None:
+        raise RuntimeError("a C++17 compiler is required for JSON record tests")
+    executable = Path(_BUILD_ROOT.name) / "native-json-record"
+    subprocess.run([compiler, "-std=c++17", "-O2", str(ROOT / "tests/native_json_record_test.cpp"),
+                    "-I", str(ROOT / "src/native"), "-o", str(executable)], check=True)
+    return executable
+
+
+@lru_cache(maxsize=1)
 def native_pipeline_api_test() -> Path:
     return _build_native_stage_program(
         ROOT / "tests/native_pipeline_api_test.cpp",

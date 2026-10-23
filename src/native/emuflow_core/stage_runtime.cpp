@@ -48,6 +48,7 @@ constexpr RegisteredSchema schemas[] = {
     {"tlr-output-text", ArtifactEncoding::kText, 0, 1},
     {"system-route-store-v3", ArtifactEncoding::kSqlite, 0x454d5552, 3},
     {"exact-schedule-publication-request-v1", ArtifactEncoding::kBinary, 0x3157534d44544545ULL, 1},
+    {"exact-schedule-generation-request-v1", ArtifactEncoding::kBinary, 0x3147534d44544545ULL, 1},
     {"tdm-schedule-store-v4", ArtifactEncoding::kSqlite, 0x454d5554, 3},
     {"exact-schedule-output-v2", ArtifactEncoding::kBinary, 0x314f534d44544545ULL, 2},
     {"exact-capture-index-private-v1", ArtifactEncoding::kSqlite, 0x45434150, 1},

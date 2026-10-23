@@ -19,7 +19,10 @@ import subprocess
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional, TYPE_CHECKING, Union
+
+if TYPE_CHECKING:
+    from .tdm import NativeExactScheduleRequest
 
 from .errors import ValidationError
 from .io import file_sha256, write_json
@@ -1904,23 +1907,76 @@ def _publish_native_exact_store(
         request.unlink(missing_ok=True)
 
 
+def _publish_native_exact_generation(
+    temporary: Path, producer: "NativeExactScheduleRequest",
+) -> tuple[str, str, dict[str, dict[str, Any]], dict[str, int]]:
+    """One core call owns model, calculation, certificate and typed records."""
+    from .tdm import _run_native_exact_schedule
+
+    board = temporary.with_name(temporary.name + ".board-request")
+    request = temporary.with_name(temporary.name + ".generation-request")
+    try:
+        producer.write_board_request(board)
+        with request.open("wb") as stream:
+            def text(value: str) -> None:
+                encoded = value.encode("utf-8")
+                stream.write(struct.pack("<I", len(encoded)))
+                stream.write(encoded)
+
+            def value(item: Any) -> None:
+                text(_canonical(item))
+                text(json.dumps(item, ensure_ascii=True, sort_keys=True, indent=2, allow_nan=False))
+
+            stream.write(struct.pack("<QI3Q4q", 0x3147534D44544545, 1, *producer.route_generation))
+            stream.write(struct.pack("<I", len(producer.header)))
+            for key, item in sorted(producer.header.items()):
+                text(key)
+                value(item)
+            stream.write(struct.pack("<I", len(producer.domain_templates)))
+            for domain in producer.domain_templates:
+                text(domain["key"])
+                value(domain)
+        _run_native_exact_schedule([
+            *producer.command, str(producer.route_store), str(board), str(request), str(temporary),
+        ])
+        with sqlite3.connect(f"file:{temporary.resolve()}?mode=ro&immutable=1", uri=True) as connection:
+            row = connection.execute("SELECT value FROM metadata WHERE key='native_publication_summary'").fetchone()
+        if row is None:
+            raise ValidationError("native ScheduleStore generation summary is missing")
+        summary = json.loads(row[0])
+        if summary.get("schema") != "emuflow.native-schedule-publication/v1":
+            raise ValidationError("unsupported native ScheduleStore generation summary")
+        sections = summary["sections"]
+        if (sections["routes"]["records"] != producer.route_count or
+                sections["demand_completions"]["records"] != producer.route_count or
+                sections["domain_schedules"]["records"] != len(producer.domain_templates)):
+            raise ValidationError("native ScheduleStore generation coverage disagrees")
+        return summary["logical_sha256"], summary["logical_pretty_sha256"], sections, summary["relation_counts"]
+    finally:
+        board.unlink(missing_ok=True)
+        request.unlink(missing_ok=True)
+
+
 def write_tdm_schedule_storage(
     manifest_path: Path,
-    schedule: Mapping[str, Any],
+    schedule: Union[Mapping[str, Any], "NativeExactScheduleRequest"],
 ) -> dict[str, Any]:
     """Atomically publish the indexed store, then its compact commit manifest."""
 
-    if schedule.get("schema") != TDM_SCHEDULE_LOGICAL_SCHEMA:
+    from .tdm import NativeExactScheduleRequest
+    native_generation = isinstance(schedule, NativeExactScheduleRequest)
+    header = schedule.header if native_generation else schedule
+    if header.get("schema") != TDM_SCHEDULE_LOGICAL_SCHEMA:
         raise ValidationError("cannot store an unsupported TDM schedule schema")
-    for section in TDM_SCHEDULE_SECTIONS:
+    for section in (() if native_generation else TDM_SCHEDULE_SECTIONS):
         records = schedule.get(section)
         if not isinstance(records, list):
             raise ValidationError(f"schedule.{section}: expected an array")
 
-    typed_entries = schedule.get("provider") == TDM_EXACT_DEPENDENCY_PROVIDER
+    typed_entries = header.get("provider") == TDM_EXACT_DEPENDENCY_PROVIDER
     fully_typed = bool(
         typed_entries
-        and schedule.get("qualification")
+        and header.get("qualification")
         == "dependency-schedule-readiness-pass"
     )
     storage_schema = (
@@ -1948,8 +2004,15 @@ def write_tdm_schedule_storage(
     store_bytes: int | None = None
     connection: sqlite3.Connection | None = None
     try:
-        native_source = getattr(schedule["entries"], "native_store_publication_source", None)
-        if native_source is not None:
+        native_source = (None if native_generation else
+                         getattr(schedule["entries"], "native_store_publication_source", None))
+        if native_generation:
+            if not fully_typed:
+                raise ValidationError("native generation requires fully typed exact semantics")
+            (logical_sha256, logical_pretty_sha256, section_summaries, relation_counts) = (
+                _publish_native_exact_generation(temporary, schedule)
+            )
+        elif native_source is not None:
             if not fully_typed:
                 raise ValidationError("native ScheduleStore publication requires fully typed exact semantics")
             (logical_sha256, logical_pretty_sha256, section_summaries, relation_counts) = (

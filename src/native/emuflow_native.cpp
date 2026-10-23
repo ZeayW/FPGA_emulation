@@ -25,6 +25,7 @@ constexpr const char* kUsage =
     "  phase4 route --typed-output INPUT OUTPUT\n"
     "  phase5 schedule INPUT OUTPUT\n"
     "  phase5 schedule-from-store ROUTE_STORE REQUEST OUTPUT\n"
+    "  phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT\n"
     "  phase5 publish-schedule INPUT RESULT ROUTE_STORE REQUEST OUTPUT\n"
     "  phase6 assign-banks (--typed-input|--legacy-text) INPUT OUTPUT\n"
     "  phase6 group-signals --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
@@ -151,6 +152,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     return run(Stage::kRoute, {argv[4]}, argv[5]);
   if (phase == "phase5" && operation == "schedule-from-store" && argc == 6)
     return run(Stage::kScheduleFromStore, {argv[3],argv[4]}, argv[5]);
+  if (phase == "phase5" && operation == "build-schedule" && argc == 7)
+    return run(Stage::kBuildSchedule, {argv[3],argv[4],argv[5]}, argv[6]);
   if (phase == "phase5" && operation == "publish-schedule" && argc == 8)
     return run(Stage::kPublishSchedule, {argv[3], argv[4], argv[5], argv[6]}, argv[7]);
   if (phase == "phase5" && operation == "schedule" && argc == 5)

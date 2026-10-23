@@ -209,6 +209,12 @@ board support package. A virtual platform does not supply those facts.
 Large indexed Static Exact Phase 5 runs publish a typed `schedule.*.sqlite`
 store, a compact `schedule.json` selector, cross-layer timing and the final
 report. Independent indexed validation completes before the report is committed.
+The producer executes model construction, scheduling, readiness certificates
+and typed publication in one native call. Python retains only its bounded
+request, then consumes the staged store; numeric intermediate input/result
+files and Python result import are absent. The report records the producer
+implementation separately from its unchanged algorithm provider and labels
+the storage timer's scope, which includes calculation on this path.
 This compact production behavior does not require a managed-storage flag.
 Native production does not implicitly emit the reference `schedule.tsv`,
 `transport_manifest.json`, testbench or feedback JSON, or run reference signal

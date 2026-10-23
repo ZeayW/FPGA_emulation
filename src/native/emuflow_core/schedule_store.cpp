@@ -6,6 +6,9 @@
 #include "emuflow_core/sqlite.hpp"
 #include "emuflow_core/stage_runtime.hpp"
 #include "emuflow_core/route_view.hpp"
+#include "emuflow_core/schedule_model.hpp"
+#include "emuflow_core/schedule_ingress.hpp"
+#include "emuflow_core/native_stages.hpp"
 
 #include <algorithm>
 #include <array>
@@ -56,12 +59,11 @@ std::vector<std::string> Strings(BinaryReader& reader) {
   return result;
 }
 struct Encoded { std::string compact, pretty; };
-struct Hop { std::uint32_t depth, capacity, link, from, to, offset, budget, assigned, ratio, latency; };
-struct Route {
+using Hop = ExactScheduleHop;
+struct Route : ExactScheduleRoute {
   std::string demand, net;
-  std::uint32_t source = 0, rank = 0;
-  std::vector<std::uint32_t> sinks, edge_order;
-  std::vector<Hop> hops;
+  std::uint32_t rank = 0, dependency_depth = 0;
+  std::vector<std::uint32_t> edge_order;
   std::map<std::tuple<std::uint32_t,std::uint32_t,std::uint32_t,std::uint32_t,std::uint32_t>,std::size_t> hop_index;
 };
 struct TemporaryStore {
@@ -82,74 +84,11 @@ Encoded ReadEncoded(BinaryReader& reader, SqliteDatabase& db) {
           "schedule publication JSON encodings disagree");
   return result;
 }
-}  // namespace
-
-void PublishExactScheduleStore(const std::string& input_path,
-    const std::string& result_path, const std::string& route_store_path,
-    const std::string& request_path, const std::string& output_path) {
-  BinaryReader input(input_path), result(result_path), request(request_path);
-  ReadAndValidateHeader(input, {kInputMagic, 1, "exact schedule input"});
-  ReadAndValidateHeader(result, {kResultMagic, 2, "exact schedule result"});
-  ReadAndValidateHeader(request, {kRequestMagic, 1, "exact schedule publication request"});
-  std::vector<ArtifactRef> sources;
-  for (const auto& item : std::vector<std::pair<std::string,std::string>>{
-      {input_path,"exact-schedule-input-v1"},{result_path,"exact-schedule-output-v2"},
-      {route_store_path,"system-route-store-v3"}}) {
-    FileGeneration expected;
-    expected.device = request.Read<std::uint64_t>(); expected.inode = request.Read<std::uint64_t>();
-    expected.bytes = request.Read<std::uint64_t>(); expected.modified_seconds = request.Read<std::int64_t>();
-    expected.modified_nanoseconds = request.Read<std::int64_t>(); expected.changed_seconds = request.Read<std::int64_t>();
-    expected.changed_nanoseconds = request.Read<std::int64_t>();
-    auto source = ArtifactRef::Bind(item.first,item.second);
-    if (!(source.generation() == expected))
-      throw StageError(ErrorCode::kMixedGeneration,"native ScheduleStore source generation changed");
-    sources.push_back(std::move(source));
-  }
-  const auto frame = input.Read<std::uint32_t>();
-  const auto barrier = input.Read<std::uint32_t>();
-  input.Read<std::uint32_t>();  // settle; already independently qualified
-  const auto fpga_count = input.Read<std::uint32_t>();
-  const auto capacity_count = input.Read<std::uint32_t>();
-  const auto route_count = input.Read<std::uint32_t>();
-  const auto fpga = Strings(request), links = Strings(request), capacities = Strings(request);
-  Require(fpga_count && frame > barrier && fpga.size() == fpga_count && capacities.size() == capacity_count &&
-          route_count <= input.remaining() / 28,
-          "schedule publication identity dimensions disagree");
-  for (std::uint32_t i = 0; i < capacity_count; ++i)
-    Require(input.Read<std::uint32_t>() > 0, "schedule publication capacity is invalid");
-  std::vector<Route> routes(route_count);
-  std::vector<std::uint32_t> demand_order(route_count);
-  std::vector<bool> ranks(route_count, false);
-  std::uint64_t expected_entries = 0;
-  for (std::uint32_t i = 0; i < route_count; ++i) {
-    auto& route = routes[i];
-    route.source = input.Read<std::uint32_t>();
-    const auto sinks = input.Read<std::uint32_t>(), predecessors = input.Read<std::uint32_t>(), hops = input.Read<std::uint32_t>();
-    input.Read<std::uint32_t>(); input.Read<std::uint32_t>();
-    route.rank = input.Read<std::uint32_t>();
-    Require(route.source < fpga_count && route.rank < route_count && !ranks[route.rank] && sinks &&
-            std::uint64_t(sinks) * 4 + std::uint64_t(predecessors) * 4 + std::uint64_t(hops) * 40 <= input.remaining(),
-            "schedule publication route dimensions are invalid");
-    ranks[route.rank] = true; demand_order[route.rank] = i;
-    for (std::uint32_t j = 0; j < sinks; ++j) {
-      auto sink = input.Read<std::uint32_t>();
-      Require(sink < fpga_count, "schedule publication sink is invalid"); route.sinks.push_back(sink);
-    }
-    for (std::uint32_t j = 0; j < predecessors; ++j)
-      Require(input.Read<std::uint32_t>() < route_count, "schedule publication predecessor is invalid");
-    for (std::uint32_t j = 0; j < hops; ++j) {
-      Hop hop{input.Read<std::uint32_t>(), input.Read<std::uint32_t>(), input.Read<std::uint32_t>(),
-              input.Read<std::uint32_t>(), input.Read<std::uint32_t>(), input.Read<std::uint32_t>(),
-              input.Read<std::uint32_t>(), input.Read<std::uint32_t>(), input.Read<std::uint32_t>(), input.Read<std::uint32_t>()};
-      Require(hop.capacity < capacity_count && hop.link < links.size() && hop.from < fpga_count && hop.to < fpga_count &&
-              hop.budget && route.hop_index.emplace(std::make_tuple(hop.depth,hop.capacity,hop.link,hop.from,hop.to),route.hops.size()).second,
-              "schedule publication hop identity is invalid");
-      route.hops.push_back(hop);
-    }
-    expected_entries += hops;
-  }
-  input.RequireEnd();
-  RouteView route_store(sources[2]);
+void BindRouteData(std::vector<Route>& routes, const ArtifactRef& source,
+                   const std::vector<std::string>& fpga, const std::vector<std::string>& links,
+                   const std::vector<std::uint32_t>& demand_order, bool exact) {
+  RouteView route_store(source);
+  const auto route_count = routes.size();
   Require(route_store.count() == route_count,"schedule publication RouteStore count disagrees");
   const auto catalog_index = [](const auto& catalog, const std::string& name) {
     auto found = std::lower_bound(catalog.begin(),catalog.end(),name);
@@ -159,6 +98,7 @@ void PublishExactScheduleStore(const std::string& input_path,
   route_store.VisitNetOrder([&](std::uint64_t index, const RouteIdentity& identity) {
     auto& route = routes[index];
     route.demand = identity.demand; route.net = identity.net;
+    route.dependency_depth = identity.dependency_depth.value_or(0);
     (void)JsonQuote(route.demand); (void)JsonQuote(route.net);
     Require(identity.source == fpga[route.source] && identity.sinks.size() == route.sinks.size() &&
             identity.edges.size() == route.hops.size(),"schedule publication RouteStore topology disagrees");
@@ -177,35 +117,180 @@ void PublishExactScheduleStore(const std::string& input_path,
       Require(found != hops.end() && !seen[found->second],"schedule publication RouteStore edge disagrees");
       seen[found->second] = true; route.edge_order.push_back(found->second);
     }
-  });
+  },exact);
   for (std::uint32_t i = 1; i < route_count; ++i)
     Require(routes[demand_order[i-1]].demand < routes[demand_order[i]].demand,
             "schedule publication demand ordering disagrees");
-  const auto entry_count = result.Read<std::uint64_t>();
-  Require(entry_count == expected_entries && result.Read<std::uint32_t>() == route_count,
-          "schedule publication result coverage disagrees");
-  std::vector<bool> order_seen(route_count, false);
-  for (std::uint32_t i = 0; i < route_count; ++i) {
-    auto route = result.Read<std::uint32_t>();
-    Require(route < route_count && !order_seen[route], "schedule publication execution order is invalid"); order_seen[route] = true;
-  }
-  const auto entry_offset = result.size() - result.remaining();
-  Require(entry_count <= result.remaining() / 48, "schedule publication entries are truncated");
-  result.Seek(entry_offset + static_cast<std::size_t>(entry_count * 48));
-  std::vector<std::size_t> completion_offsets(route_count);
-  std::vector<bool> completed(route_count, false);
-  for (std::uint32_t i = 0; i < route_count; ++i) {
-    const auto offset = result.size() - result.remaining();
+}
+ExactScheduleSolution ReadSolution(BinaryReader& result, const std::vector<Route>& routes,
+                                   std::uint64_t expected_entries) {
+  const auto route_count = routes.size();
+  const auto entries = result.Read<std::uint64_t>();
+  Require(entries == expected_entries && result.Read<std::uint32_t>() == route_count &&
+          route_count <= result.remaining() / 4,"schedule publication result coverage disagrees");
+  ExactScheduleSolution solution;
+  std::vector<bool> ordered(route_count,false);
+  for (std::size_t i = 0; i < route_count; ++i) {
     const auto route = result.Read<std::uint32_t>();
-    result.Read<std::uint32_t>(); result.Read<std::uint32_t>();
-    const auto sinks = result.Read<std::uint32_t>();
-    Require(route < route_count && !completed[route] && sinks == routes[route].sinks.size() && sinks <= result.remaining() / 8,
-            "schedule publication completion coverage is invalid");
-    completed[route] = true; completion_offsets[route] = offset;
-    result.Seek(result.size() - result.remaining() + static_cast<std::size_t>(sinks) * 8);
+    Require(route < route_count && !ordered[route],"schedule publication execution order is invalid");
+    ordered[route] = true; solution.order.push_back(route);
   }
-  result.RequireEnd();
-
+  Require(entries <= result.remaining() / 48,"schedule publication entries are truncated");
+  solution.entries.reserve(entries);
+  for (std::uint64_t i = 0; i < entries; ++i) {
+    std::array<std::uint32_t,12> row;
+    for (auto& value : row) value = result.Read<std::uint32_t>();
+    Require(row[0] < route_count,"schedule publication result route is invalid");
+    const auto& route = routes[row[0]];
+    const auto found = route.hop_index.find(std::make_tuple(row[2],row[3],row[4],row[5],row[6]));
+    Require(found != route.hop_index.end(),"schedule publication entry disagrees with its route");
+    const auto& hop = route.hops[found->second];
+    Require(row[11] == (hop.assigned_lane == UINT32_MAX ? 0u : hop.ratio),
+            "schedule publication result ratio disagrees");
+    solution.entries.push_back({row[0],static_cast<std::uint32_t>(found->second),row[1],row[7],row[8],row[9],row[10]});
+  }
+  for (std::size_t i = 0; i < route_count; ++i) {
+    const auto route = result.Read<std::uint32_t>(), ready = result.Read<std::uint32_t>();
+    const auto completion = result.Read<std::uint32_t>(), sinks = result.Read<std::uint32_t>();
+    Require(route < route_count && sinks == routes[route].sinks.size() && sinks <= result.remaining() / 8,
+            "schedule publication completion coverage is invalid");
+    ExactScheduleCompletion record{route,ready,completion,{}};
+    for (std::uint32_t j = 0; j < sinks; ++j) {
+      const auto sink = result.Read<std::uint32_t>(), arrival = result.Read<std::uint32_t>();
+      record.sink_arrivals.emplace_back(sink,arrival);
+    }
+    solution.completions.push_back(std::move(record));
+  }
+  result.RequireEnd(); return solution;
+}
+Encoded Encode(const JsonRecord& value) { return {value.Encode(),value.Encode(true)}; }
+void DeriveScheduleHeader(SqliteDatabase& db, std::map<std::string,Encoded>& header,
+    std::vector<std::pair<std::string,Encoded>>& domains, const std::vector<Route>& routes,
+    const ExactScheduleSolution& solution, const std::vector<std::string>& fpga,
+    const std::vector<std::string>& capacities, std::uint32_t frame, std::uint32_t barrier,
+    std::uint32_t settle, const std::vector<std::size_t>& completion_indices) {
+  Require(!header.count("metrics") && !header.count("schedule_dependency_certificate"),
+          "native generation header contains producer-owned results");
+  const auto policy = header.find("timing_constraints");
+  Require(policy != header.end(),"native generation timing policy is missing");
+  auto timing = db.Prepare("SELECT json_extract(?,'$.settle_slots'),json_extract(?,'$.commit_slot')");
+  timing.BindText(1,policy->second.compact); timing.BindText(2,policy->second.compact);
+  Require(timing.Step() && timing.Integer(0) == settle && timing.Integer(1) == frame - barrier,
+          "native generation timing policy disagrees");
+  std::vector<std::uint64_t> domain_counts(capacities.size(),0);
+  for (const auto& entry : solution.entries) {
+    Require(entry.route < routes.size() && entry.hop < routes[entry.route].hops.size(),
+            "native generation entry is invalid");
+    const auto capacity = routes[entry.route].hops[entry.hop].capacity;
+    Require(capacity < capacities.size(),"native generation capacity is invalid");
+    ++domain_counts[capacity];
+  }
+  Require(domains.size() == capacities.size(),"native generation domain coverage disagrees");
+  double maximum_utilization = 0.0;
+  for (std::size_t i = 0; i < domains.size(); ++i) {
+    const auto& value = domains[i].second.compact;
+    auto fields = db.Prepare("SELECT json_extract(?1,'$.key'),json_extract(?1,'$.link'),"
+        "json_extract(?1,'$.direction'),json_extract(?1,'$.lanes'),json_extract(?1,'$.frame_slots'),"
+        "json_extract(?1,'$.capacity_bit_hops'),json_type(?1,'$.lanes'),(SELECT count(*) FROM json_each(?1))");
+    fields.BindText(1,value);
+    Require(fields.Step() && domains[i].first == capacities[i] && fields.Text(0) == capacities[i] &&
+            fields.Text(6) == "integer" && fields.Integer(3) > 0 && fields.Integer(3) <= UINT32_MAX &&
+            std::uint64_t(fields.Integer(3)) <= std::uint64_t(INT64_MAX) / frame &&
+            fields.Integer(4) == frame && fields.Integer(5) == fields.Integer(3) * std::int64_t(frame) &&
+            fields.Integer(7) == 6,"native generation domain template disagrees");
+    const auto lanes = static_cast<std::uint64_t>(fields.Integer(3)), capacity = lanes * frame;
+    const double utilization = static_cast<double>(domain_counts[i]) / static_cast<double>(capacity);
+    maximum_utilization = std::max(maximum_utilization,utilization);
+    domains[i].second = Encode(JsonRecord(Object{{"key",capacities[i]},{"link",fields.Text(1)},
+       {"direction",fields.Text(2)},{"lanes",lanes},{"frame_slots",frame},
+       {"scheduled_bit_hops",domain_counts[i]},{"capacity_bit_hops",capacity},{"utilization",utilization}}));
+  }
+  Sha256 order_hash, readiness_hash, sink_hash;
+  std::uint64_t dependencies = 0, sink_count = 0, maximum_depth = 0, maximum_completion = 0;
+  std::optional<std::uint64_t> minimum_slack;
+  const auto digest = [&](Sha256& hash, const JsonRecord& record) { Hash(hash,record.Encode() + "\n"); };
+  Require(solution.order.size() == routes.size(),"native generation order coverage disagrees");
+  std::vector<bool> seen(routes.size(),false);
+  for (const auto index : solution.order) {
+    Require(index < routes.size() && !seen[index],"native generation order repeats or is invalid");
+    const auto& route = routes[index]; const auto& completion = solution.completions[completion_indices[index]];
+    digest(order_hash,JsonRecord(route.net));
+    Array evidence;
+    std::vector<std::uint32_t> predecessors = route.predecessors;
+    std::sort(predecessors.begin(),predecessors.end(),[&](auto a, auto b) { return routes.at(a).net < routes.at(b).net; });
+    std::uint64_t source_ready = settle;
+    for (const auto predecessor : predecessors) {
+      Require(predecessor < routes.size() && seen[predecessor],"native generation predecessor order is invalid");
+      const auto& previous = solution.completions[completion_indices[predecessor]];
+      const auto arrival = std::find_if(previous.sink_arrivals.begin(),previous.sink_arrivals.end(),
+          [&](const auto& item) { return item.first == route.source; });
+      Require(arrival != previous.sink_arrivals.end(),"native generation predecessor arrival is missing");
+      source_ready = std::max(source_ready,std::uint64_t(arrival->second) + settle);
+      evidence.emplace_back(Array{JsonRecord(routes[predecessor].net),JsonRecord(arrival->second)});
+    }
+    Require(source_ready == completion.ready,"native generation source readiness disagrees");
+    dependencies += evidence.size();
+    digest(readiness_hash,JsonRecord(Object{{"net",route.net},{"source",fpga[route.source]},
+        {"source_ready_slot",source_ready},{"predecessor_arrivals",JsonRecord(std::move(evidence))}}));
+    auto sinks = route.sinks;
+    std::sort(sinks.begin(),sinks.end(),[&](auto a, auto b) { return fpga.at(a) < fpga.at(b); });
+    for (const auto sink : sinks) {
+      const auto arrival = std::find_if(completion.sink_arrivals.begin(),completion.sink_arrivals.end(),
+          [&](const auto& item) { return item.first == sink; });
+      Require(arrival != completion.sink_arrivals.end(),"native generation sink arrival is missing");
+      const std::uint64_t ready = std::uint64_t(arrival->second) + settle, commit = frame - barrier;
+      Require(ready <= commit,"native generation sink misses commit deadline");
+      const auto slack = commit - ready;
+      minimum_slack = minimum_slack ? std::min(*minimum_slack,slack) : slack;
+      digest(sink_hash,JsonRecord(Object{{"net",route.net},{"fpga",fpga[sink]},
+         {"arrival_slot",arrival->second},{"budget_slots",settle},{"ready_slot",ready},
+         {"commit_slot",commit},{"slack_slots",slack}}));
+      ++sink_count;
+    }
+    maximum_depth = std::max(maximum_depth,std::uint64_t(route.dependency_depth));
+    maximum_completion = std::max(maximum_completion,std::uint64_t(completion.completion));
+    seen[index] = true;
+  }
+  const JsonRecord slack = minimum_slack ? JsonRecord(*minimum_slack) : JsonRecord();
+  header.emplace("schedule_dependency_certificate",Encode(JsonRecord(Object{
+    {"schema","emuflow.sampled-virtual-wire-schedule-certificate/v2"},
+    {"provider","indexed-conservative-readiness-certificate-v2"},
+    {"launch_readiness_policy","one-settle-slot-conservative-v1"},
+    {"capture_coverage","all-routed-sinks-conservative-v1"},
+    {"topological_cut_count",routes.size()},{"topological_cut_order_sha256",Hex(order_hash)},
+    {"dependency_edges",dependencies},{"readiness_records",routes.size()},
+    {"readiness_sha256",Hex(readiness_hash)},{"sink_readiness_checks",sink_count},
+    {"sink_readiness_sha256",Hex(sink_hash)},{"minimum_sink_slack_slots",slack}})));
+  header.emplace("metrics",Encode(JsonRecord(Object{{"demands",routes.size()},
+    {"scheduled_bit_hops",solution.entries.size()},{"frame_slots",frame},{"completion_slot",maximum_completion},
+    {"max_domain_utilization",maximum_utilization},{"collisions",0},{"transport_ordering_policy","path-local-dependency-dag-v1"},
+    {"commit_slot",frame - barrier},{"dependency_edges",dependencies},{"maximum_combinational_dependency_depth",maximum_depth},
+    {"conservative_sink_readiness_checks",sink_count},{"minimum_capture_slack_slots",slack}})));
+}
+void PublishScheduleData(const std::vector<Route>& routes, const ExactScheduleSolution& solution,
+    const std::vector<std::string>& fpga, const std::vector<std::string>& links,
+    const std::vector<std::string>& capacities, BinaryReader& request, const std::string& output_path,
+    const std::vector<ArtifactRef>& sources, std::uint32_t frame, std::uint32_t barrier,
+    std::uint32_t settle, bool derive) {
+  const auto route_count = routes.size(), fpga_count = fpga.size();
+  const auto entry_count = solution.entries.size();
+  Require(solution.completions.size() == route_count,"schedule publication completion coverage disagrees");
+  std::vector<std::uint32_t> demand_order(route_count,UINT32_MAX);
+  std::uint64_t hops = 0;
+  for (std::uint32_t i = 0; i < route_count; ++i) {
+    Require(routes[i].rank < route_count && demand_order[routes[i].rank] == UINT32_MAX,
+            "schedule publication route rank is invalid");
+    demand_order[routes[i].rank] = i; hops += routes[i].hops.size();
+  }
+  Require(hops == entry_count,"schedule publication entry coverage disagrees");
+  std::vector<std::size_t> completion_indices(route_count,SIZE_MAX);
+  for (std::size_t i = 0; i < solution.completions.size(); ++i) {
+    const auto& completion = solution.completions[i];
+    Require(completion.route < route_count && completion_indices[completion.route] == SIZE_MAX &&
+            completion.sink_arrivals.size() == routes[completion.route].sinks.size(),
+            "schedule publication completion identity is invalid");
+    completion_indices[completion.route] = i;
+  }
   TemporaryStore temporary(output_path);
   std::string summary;
   {
@@ -233,6 +318,8 @@ void PublishExactScheduleStore(const std::string& input_path,
       domain_records.emplace_back(std::move(identity), std::move(encoded));
     }
     request.RequireEnd();
+    if (derive) DeriveScheduleHeader(db,header,domain_records,routes,solution,fpga,capacities,
+                                     frame,barrier,settle,completion_indices);
     auto metadata = db.Prepare("INSERT INTO metadata VALUES(?,?)");
     const auto put_metadata = [&](const std::string& key, const std::string& value) {
       metadata.BindText(1, key); metadata.BindText(2, value); metadata.Execute();
@@ -272,28 +359,31 @@ void PublishExactScheduleStore(const std::string& input_path,
           emit_encoded(seq, {record.Encode(), record.Encode(true)});
         };
         if (key == "entries") {
-          result.Seek(entry_offset);
           std::vector<bool> sequences(entry_count, false);
           std::vector<std::vector<bool>> seen_hops;
           for (const auto& route : routes) seen_hops.emplace_back(route.hops.size(), false);
           for (std::uint64_t seq = 0; seq < entry_count; ++seq) {
-            std::array<std::uint32_t,12> values;
-            for (auto& value : values) value = result.Read<std::uint32_t>();
+            const auto& native = solution.entries[seq];
+            Require(native.route < route_count && native.hop < routes[native.route].hops.size(),
+                    "schedule publication typed entry identity is invalid");
+            const auto& model_hop = routes[native.route].hops[native.hop];
+            const std::array<std::uint32_t,12> values{native.route,native.sequence,model_hop.depth,
+                model_hop.capacity,model_hop.link,model_hop.from,model_hop.to,native.slot,native.lane,
+                native.ready,native.arrival,model_hop.assigned_lane == UINT32_MAX ? 0u : model_hop.ratio};
             const auto route_index = values[0], sequence = values[1];
             Require(route_index < route_count && sequence < entry_count && !sequences[sequence],
                     "schedule publication entry identity is invalid");
             sequences[sequence] = true;
             const auto& route = routes[route_index];
-            const auto found = route.hop_index.find(std::make_tuple(values[2],values[3],values[4],values[5],values[6]));
-            const auto selected = found == route.hop_index.end() ? route.hops.size() : found->second;
+            const auto selected = native.hop;
             Require(selected < route.hops.size() && !seen_hops[route_index][selected],
                     "schedule publication entry disagrees with its route");
             seen_hops[route_index][selected] = true;
             const auto& hop = route.hops[selected];
             const auto slot = values[7], lane = values[8], ready = values[9], arrival = values[10], ratio = values[11];
             Require(slot >= ready && slot < frame - barrier && std::uint64_t(slot) + hop.latency == arrival &&
-                    lane >= hop.offset && std::uint64_t(lane) < std::uint64_t(hop.offset) + hop.budget &&
-                    (hop.assigned == UINT32_MAX ? ratio == 0 : ratio == hop.ratio && lane == hop.assigned),
+                    lane >= hop.lane_offset && std::uint64_t(lane) < std::uint64_t(hop.lane_offset) + hop.lane_budget &&
+                    (hop.assigned_lane == UINT32_MAX ? ratio == 0 : ratio == hop.ratio && lane == hop.assigned_lane),
                     "schedule publication entry timing/lane disagrees");
             std::ostringstream identity; identity << 's'; identity.width(6); identity.fill('0'); identity << sequence;
             const auto id = identity.str();
@@ -331,16 +421,16 @@ void PublishExactScheduleStore(const std::string& input_path,
         } else if (key == "demand_completions") {
           for (std::uint32_t seq = 0; seq < route_count; ++seq) {
             const auto route_index = demand_order[seq]; const auto& route = routes[route_index];
-            result.Seek(completion_offsets[route_index]);
-            Require(result.Read<std::uint32_t>() == route_index,"schedule publication completion changed");
-            auto ready = result.Read<std::uint32_t>(), completion = result.Read<std::uint32_t>(), sinks = result.Read<std::uint32_t>();
+            const auto& native = solution.completions[completion_indices[route_index]];
+            const auto ready = native.ready, completion = native.completion;
+            const auto sinks = native.sink_arrivals.size();
             Object arrivals; std::map<std::string,std::uint32_t> values;
             std::set<std::uint32_t> seen;
             const std::set<std::uint32_t> wanted(route.sinks.begin(),route.sinks.end());
             Require(wanted.size() == sinks, "schedule publication route sinks repeat");
             std::uint32_t maximum = 0;
             for (std::uint32_t j = 0; j < sinks; ++j) {
-              auto sink = result.Read<std::uint32_t>(), arrival = result.Read<std::uint32_t>();
+              const auto sink = native.sink_arrivals[j].first, arrival = native.sink_arrivals[j].second;
               Require(sink < fpga_count && seen.insert(sink).second && wanted.count(sink) != 0,
                       "schedule publication completion sink is invalid");
               maximum = std::max(maximum,arrival); values.emplace(fpga[sink],arrival); arrivals.emplace(fpga[sink],std::uint64_t(arrival));
@@ -395,5 +485,119 @@ void PublishExactScheduleStore(const std::string& input_path,
   }
   for (const auto& source : sources) source.RequireUnchanged();
   PublishTemporaryFile(temporary.path,output_path);
+}
+}  // namespace
+
+void PublishExactScheduleStore(const std::string& input_path,
+    const std::string& result_path, const std::string& route_store_path,
+    const std::string& request_path, const std::string& output_path) {
+  BinaryReader input(input_path), result(result_path), request(request_path);
+  Require(request.size() <= 8 * 1024 * 1024,"schedule publication request exceeds bound");
+  ReadAndValidateHeader(input, {kInputMagic, 1, "exact schedule input"});
+  ReadAndValidateHeader(result, {kResultMagic, 2, "exact schedule result"});
+  ReadAndValidateHeader(request, {kRequestMagic, 1, "exact schedule publication request"});
+  std::vector<ArtifactRef> sources;
+  for (const auto& item : std::vector<std::pair<std::string,std::string>>{
+      {input_path,"exact-schedule-input-v1"},{result_path,"exact-schedule-output-v2"},
+      {route_store_path,"system-route-store-v3"}}) {
+    FileGeneration expected;
+    expected.device = request.Read<std::uint64_t>(); expected.inode = request.Read<std::uint64_t>();
+    expected.bytes = request.Read<std::uint64_t>(); expected.modified_seconds = request.Read<std::int64_t>();
+    expected.modified_nanoseconds = request.Read<std::int64_t>(); expected.changed_seconds = request.Read<std::int64_t>();
+    expected.changed_nanoseconds = request.Read<std::int64_t>();
+    auto source = ArtifactRef::Bind(item.first,item.second);
+    if (!(source.generation() == expected))
+      throw StageError(ErrorCode::kMixedGeneration,"native ScheduleStore source generation changed");
+    sources.push_back(std::move(source));
+  }
+  sources.push_back(ArtifactRef::Bind(request_path,"exact-schedule-publication-request-v1"));
+  const auto frame = input.Read<std::uint32_t>();
+  const auto barrier = input.Read<std::uint32_t>();
+  const auto settle = input.Read<std::uint32_t>();
+  const auto fpga_count = input.Read<std::uint32_t>();
+  const auto capacity_count = input.Read<std::uint32_t>();
+  const auto route_count = input.Read<std::uint32_t>();
+  const auto fpga = Strings(request), links = Strings(request), capacities = Strings(request);
+  Require(fpga_count && frame > barrier && fpga.size() == fpga_count && capacities.size() == capacity_count &&
+          route_count <= input.remaining() / 28,
+          "schedule publication identity dimensions disagree");
+  for (std::uint32_t i = 0; i < capacity_count; ++i)
+    Require(input.Read<std::uint32_t>() > 0, "schedule publication capacity is invalid");
+  std::vector<Route> routes(route_count);
+  std::vector<std::uint32_t> demand_order(route_count);
+  std::vector<bool> ranks(route_count, false);
+  std::uint64_t expected_entries = 0;
+  for (std::uint32_t i = 0; i < route_count; ++i) {
+    auto& route = routes[i];
+    route.source = input.Read<std::uint32_t>();
+    const auto sinks = input.Read<std::uint32_t>(), predecessors = input.Read<std::uint32_t>(), hops = input.Read<std::uint32_t>();
+    route.dependency_level = input.Read<std::uint32_t>(); route.maximum_depth = input.Read<std::uint32_t>();
+    route.rank = input.Read<std::uint32_t>();
+    Require(route.source < fpga_count && route.rank < route_count && !ranks[route.rank] && sinks &&
+            std::uint64_t(sinks) * 4 + std::uint64_t(predecessors) * 4 + std::uint64_t(hops) * 40 <= input.remaining(),
+            "schedule publication route dimensions are invalid");
+    ranks[route.rank] = true; demand_order[route.rank] = i;
+    for (std::uint32_t j = 0; j < sinks; ++j) {
+      auto sink = input.Read<std::uint32_t>();
+      Require(sink < fpga_count, "schedule publication sink is invalid"); route.sinks.push_back(sink);
+    }
+    for (std::uint32_t j = 0; j < predecessors; ++j) {
+      const auto pred = input.Read<std::uint32_t>();
+      Require(pred < route_count, "schedule publication predecessor is invalid"); route.predecessors.push_back(pred);
+    }
+    for (std::uint32_t j = 0; j < hops; ++j) {
+      Hop hop{input.Read<std::uint32_t>(), input.Read<std::uint32_t>(), input.Read<std::uint32_t>(),
+              input.Read<std::uint32_t>(), input.Read<std::uint32_t>(), input.Read<std::uint32_t>(),
+              input.Read<std::uint32_t>(), input.Read<std::uint32_t>(), input.Read<std::uint32_t>(), input.Read<std::uint32_t>()};
+      Require(hop.capacity < capacity_count && hop.link < links.size() && hop.from < fpga_count && hop.to < fpga_count &&
+              hop.lane_budget && route.hop_index.emplace(std::make_tuple(hop.depth,hop.capacity,hop.link,hop.from,hop.to),route.hops.size()).second,
+              "schedule publication hop identity is invalid");
+      route.hops.push_back(hop);
+    }
+    expected_entries += hops;
+  }
+  input.RequireEnd();
+  BindRouteData(routes,sources[2],fpga,links,demand_order,false);
+  auto solution = ReadSolution(result,routes,expected_entries);
+  PublishScheduleData(routes,solution,fpga,links,capacities,request,output_path,sources,frame,barrier,settle,false);
+}
+
+void BuildExactScheduleStore(const std::string& route_path, const std::string& board_path,
+                            const std::string& generation_path, const std::string& output_path) {
+  std::vector<ArtifactRef> sources{
+    ArtifactRef::Bind(route_path,"system-route-store-v3"),
+    ArtifactRef::Bind(board_path,"exact-schedule-board-request-v1"),
+    ArtifactRef::Bind(generation_path,"exact-schedule-generation-request-v1")};
+  BinaryReader request(generation_path);
+  Require(request.size() <= 8 * 1024 * 1024,"schedule generation request exceeds bound");
+  ReadAndValidateHeader(request,{0x3147534d44544545ULL,1,"exact schedule generation request"});
+  FileGeneration expected;
+  expected.device = request.Read<std::uint64_t>(); expected.inode = request.Read<std::uint64_t>();
+  expected.bytes = request.Read<std::uint64_t>(); expected.modified_seconds = request.Read<std::int64_t>();
+  expected.modified_nanoseconds = request.Read<std::int64_t>(); expected.changed_seconds = request.Read<std::int64_t>();
+  expected.changed_nanoseconds = request.Read<std::int64_t>();
+  if (!(expected == sources[0].generation()))
+    throw StageError(ErrorCode::kMixedGeneration,"native ScheduleStore generation source changed");
+  ExactScheduleBuildContext context;
+  auto model = BuildExactScheduleModel(route_path,board_path,&context);
+  const auto& catalogs = context.catalogs;
+  const auto solution = native::ComputeStaticExactSchedule(model);
+  std::vector<Route> routes(model.routes.size());
+  std::vector<std::uint32_t> demand_order(routes.size(),UINT32_MAX);
+  for (std::uint32_t i = 0; i < routes.size(); ++i) {
+    static_cast<ExactScheduleRoute&>(routes[i]) = std::move(model.routes[i]);
+    routes[i].demand = std::move(context.identities[i].demand);
+    routes[i].net = std::move(context.identities[i].net);
+    routes[i].dependency_depth = context.identities[i].dependency_depth;
+    routes[i].edge_order = std::move(context.identities[i].original_hop_order);
+    routes[i].rank = routes[i].demand_rank;
+    Require(routes[i].rank < routes.size() && demand_order[routes[i].rank] == UINT32_MAX,
+            "native schedule demand rank is invalid");
+    demand_order[routes[i].rank] = i;
+  }
+  model.routes.clear(); model.routes.shrink_to_fit();
+  context.identities.clear(); context.identities.shrink_to_fit();
+  PublishScheduleData(routes,solution,catalogs.fpgas,catalogs.links,catalogs.capacities,request,
+                      output_path,sources,model.frame_slots,model.barrier_slots,model.settle_slots,true);
 }
 }  // namespace emuflow::core

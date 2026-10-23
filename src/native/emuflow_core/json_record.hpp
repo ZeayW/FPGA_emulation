@@ -5,6 +5,16 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <cmath>
+#include <type_traits>
+#include <sstream>
+#include <iomanip>
+#include <locale>
+#include <cstdlib>
+#include <locale.h>
+#if defined(__APPLE__)
+#include <xlocale.h>
+#endif
 
 namespace emuflow::core {
 // Small typed record serializer, never a whole-graph JSON representation.
@@ -52,14 +62,80 @@ inline std::string JsonQuote(const std::string& text) {
 }
 class JsonRecord {
  public:
-  enum class Kind { kString, kInteger, kObject, kArray };
+  enum class Kind { kString, kInteger, kScalar, kObject, kArray };
+  JsonRecord() : kind_(Kind::kScalar), scalar_("null") {}
   JsonRecord(const std::string& text) : kind_(Kind::kString), scalar_(JsonQuote(text)) {}
   JsonRecord(const char* text) : JsonRecord(std::string(text)) {}
-  JsonRecord(std::uint64_t integer) : kind_(Kind::kInteger), scalar_(std::to_string(integer)) {}
+  template <typename T, std::enable_if_t<std::is_integral<T>::value && !std::is_same<T,bool>::value,int> = 0>
+  JsonRecord(T integer) : kind_(Kind::kInteger), scalar_(std::to_string(integer)) {}
+  JsonRecord(bool value) : kind_(Kind::kScalar), scalar_(value ? "true" : "false") {}
+  JsonRecord(double value) : kind_(Kind::kScalar) {
+    if (!std::isfinite(value)) throw std::runtime_error("non-finite native JSON number");
+    // Shortest round-trip digits, with Python's fixed/scientific thresholds,
+    // exponent padding and explicit .0 for integral floating-point values.
+    // Some supported C++17 standard libraries lack floating-point to_chars.
+    // Only bounded header/domain numbers use this path, so find the shortest
+    // correctly rounded decimal precision using locale-independent conversion.
+    static const locale_t c_locale = newlocale(LC_NUMERIC_MASK,"C",nullptr);
+    if (!c_locale) throw std::runtime_error("cannot create native JSON numeric locale");
+    std::string text;
+    for (unsigned precision = 1; precision <= 17; ++precision) {
+      std::ostringstream encoded; encoded.imbue(std::locale::classic());
+      encoded << std::scientific << std::setprecision(precision - 1) << value;
+      text = encoded.str(); char* end = nullptr;
+      if (strtod_l(text.c_str(),&end,c_locale) == value && end == text.c_str() + text.size()) break;
+      // At binary powers of two the rounding interval is asymmetric. The
+      // nearest p-digit decimal may be outside its narrow side while the next
+      // decimal on the wider side still round-trips (a shorter valid result).
+      const auto e = text.find('e');
+      const auto negative = text[0] == '-';
+      auto digits = text.substr(negative ? 1 : 0,e - (negative ? 1 : 0));
+      const auto dot = digits.find('.');
+      if (dot != std::string::npos) digits.erase(dot,1);
+      const auto integer = std::stoull(digits);
+      const auto exponent = std::stoi(text.substr(e + 1));
+      bool found = false;
+      for (int delta : {-1,1}) {
+        if (delta < 0 && integer == 0) continue;
+        auto adjacent = std::to_string(delta < 0 ? integer - 1 : integer + 1);
+        const auto power = exponent - static_cast<int>(precision) + 1;
+        const std::string candidate = (negative ? "-" : "") + adjacent + "e" + std::to_string(power);
+        if (strtod_l(candidate.c_str(),&end,c_locale) != value || end != candidate.c_str() + candidate.size()) continue;
+        const auto adjusted = power + static_cast<int>(adjacent.size()) - 1;
+        while (adjacent.size() > 1 && adjacent.back() == '0') adjacent.pop_back();
+        text = (negative ? "-" : "") + adjacent.substr(0,1);
+        if (adjacent.size() > 1) text += "." + adjacent.substr(1);
+        text += "e" + std::to_string(adjusted);
+        found = true; break;
+      }
+      if (found) break;
+    }
+    const auto e = text.find('e');
+    const int exponent = std::stoi(text.substr(e + 1));
+    const bool negative = text[0] == '-';
+    std::string digits = text.substr(negative ? 1 : 0,e - (negative ? 1 : 0));
+    const auto dot = digits.find('.');
+    if (dot != std::string::npos) digits.erase(dot,1);
+    scalar_ = negative ? "-" : "";
+    if (exponent < -4 || exponent >= 16) {
+      scalar_ += digits.substr(0,1);
+      if (digits.size() > 1) scalar_ += "." + digits.substr(1);
+      scalar_ += exponent < 0 ? "e-" : "e+";
+      const auto power = std::to_string(std::abs(exponent));
+      if (power.size() < 2) scalar_ += '0';
+      scalar_ += power;
+    } else if (exponent < 0) {
+      scalar_ += "0." + std::string(-exponent - 1,'0') + digits;
+    } else if (static_cast<std::size_t>(exponent + 1) >= digits.size()) {
+      scalar_ += digits + std::string(exponent + 1 - digits.size(),'0') + ".0";
+    } else {
+      scalar_ += digits.substr(0,exponent + 1) + "." + digits.substr(exponent + 1);
+    }
+  }
   JsonRecord(std::map<std::string, JsonRecord> object) : kind_(Kind::kObject), object_(std::move(object)) {}
   JsonRecord(std::vector<JsonRecord> array) : kind_(Kind::kArray), array_(std::move(array)) {}
   std::string Encode(bool pretty = false, unsigned level = 0) const {
-    if (kind_ == Kind::kString || kind_ == Kind::kInteger) return scalar_;
+    if (kind_ != Kind::kObject && kind_ != Kind::kArray) return scalar_;
     const bool object = kind_ == Kind::kObject;
     std::string out = object ? "{" : "[";
     const auto count = object ? object_.size() : array_.size();

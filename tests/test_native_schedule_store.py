@@ -169,6 +169,8 @@ def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch)
     assignment_path.write_text(json.dumps(assignment),encoding="utf-8")
     output=tmp_path/"phase5"
     with patch("emuflow.tdm_schedule_storage._publish_logical_schedule",side_effect=AssertionError("Python publisher used")), \
+         patch("emuflow.phase5.build_tdm_schedule",side_effect=AssertionError("Python schedule/result import used")), \
+         patch("emuflow.tdm._indexed_certificate",side_effect=AssertionError("Python producer certificate used")), \
          patch("emuflow.tdm._baseline_ratio_hops",side_effect=AssertionError("Python hop map rebuilt before validation")), \
          patch("emuflow.phase5.simulate_tdm_schedule",side_effect=AssertionError("graph simulation export in production")), \
          patch("emuflow.phase5.build_transport_manifest",side_effect=AssertionError("duplicate transport JSON in production")):
@@ -177,6 +179,7 @@ def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch)
     assert "simulation" not in report
     assert "transport_manifest" not in report["artifacts"]
     assert report["schedule_storage"]["implementation_id"]=="native-exact-schedule-store-v1"
+    assert report["schedule_storage"]["producer_implementation_id"]=="native-exact-phase5-producer-v1"
     assert validate_phase5(route_path,PLATFORM_PATH,output/"schedule.json",assignment_path=assignment_path)["status"]=="pass"
 
     old_report=(output/"phase5_report.json").read_bytes()

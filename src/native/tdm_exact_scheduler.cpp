@@ -22,22 +22,8 @@ constexpr std::uint32_t kOutputVersion = 2;
 constexpr std::uint32_t kUnassignedLane =
     std::numeric_limits<std::uint32_t>::max();
 
-struct Entry {
-  std::uint32_t route;
-  std::uint32_t hop;
-  std::uint32_t sequence;
-  std::uint32_t slot;
-  std::uint32_t lane;
-  std::uint32_t ready;
-  std::uint32_t arrival;
-};
-
-struct Completion {
-  std::uint32_t route;
-  std::uint32_t ready;
-  std::uint32_t completion;
-  std::vector<std::pair<std::uint32_t, std::uint32_t>> sink_arrivals;
-};
+using Entry = emuflow::core::ExactScheduleEntry;
+using Completion = emuflow::core::ExactScheduleCompletion;
 
 class AvailableSlots {
  public:
@@ -75,7 +61,7 @@ class AvailableSlots {
   std::uint32_t lane_budget_;
 };
 
-void RunModel(const emuflow::core::ExactScheduleModel& model, const std::string& output_path) {
+emuflow::core::ExactScheduleSolution Compute(const emuflow::core::ExactScheduleModel& model) {
   const auto frame_slots = model.frame_slots, barrier_slots = model.barrier_slots, settle_slots = model.settle_slots;
   const auto fpga_count = model.fpga_count;
   const auto capacity_count = static_cast<std::uint32_t>(model.capacity_lanes.size());
@@ -257,6 +243,17 @@ void RunModel(const emuflow::core::ExactScheduleModel& model, const std::string&
     return routes[lhs.route].demand_rank < routes[rhs.route].demand_rank;
   });
 
+  return {std::move(order),std::move(entries),std::move(completions)};
+}
+
+void RunModel(const emuflow::core::ExactScheduleModel& model, const std::string& output_path) {
+  const auto solution = Compute(model);
+  const auto& entries = solution.entries;
+  const auto& completions = solution.completions;
+  const auto& order = solution.order;
+  const auto& routes = model.routes;
+  const auto route_count = static_cast<std::uint32_t>(routes.size());
+
   emuflow::core::AtomicBinaryWriter output(output_path);
   output.Write(kOutputMagic);
   output.Write(kOutputVersion);
@@ -292,6 +289,11 @@ void RunModel(const emuflow::core::ExactScheduleModel& model, const std::string&
 }
 
 }  // namespace
+
+emuflow::core::ExactScheduleSolution emuflow::native::ComputeStaticExactSchedule(
+    const emuflow::core::ExactScheduleModel& model) {
+  return Compute(model);
+}
 
 void emuflow::native::ScheduleStaticExact(const std::string& input_path,
                                           const std::string& output_path) {

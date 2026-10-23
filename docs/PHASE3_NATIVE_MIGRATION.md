@@ -34,53 +34,61 @@ only a CMake compatibility alias; the executable and native library tests link
 the core directly. This does not yet cover every standalone adapter or supply
 the missing complete native compiler.
 
-`phase5 schedule-from-store ROUTE_STORE REQUEST OUTPUT` builds the shared
-integer schedule model directly from v3 RouteStore records and a bounded
-board/configuration request, then calls the same in-process scheduler as the
-existing numeric-input command. Tree traversal/order, predecessor ranks,
-capacity budgets, fixed lane/ratio groups and affine-delay cycle rounding are
-native-owned. The checked numeric model reader/writer is shared with the
-standalone scheduler; the retained numeric input is a temporary publication
-binding, not a second authoritative route store. The board request retains
-the source file generation and carries no per-route or per-hop population.
-Model and output publication reject aliases and invalid/stale inputs, and a
-failed calculation does not replace previous result/model files.
+`phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT`
+owns the complete large indexed exact producer. It builds the integer model
+from v3 RouteStore, computes a typed in-process solution, derives the dependency
+and sink-readiness certificates and domain/phase metrics, then publishes the
+existing v4 ScheduleStore through the shared writer. Python sends only bounded
+board configuration, static header fields and domain templates. It never imports
+the complete native result or builds route/predecessor arrays, completion offsets,
+hop-sequence arrays or certificate populations for this producer. No numeric
+input/result files are written or reread on this path.
 
-The native exact schedule publisher consumes the scheduler's binary input and
-result, the existing Phase 4 RouteStore, and bounded board/header/domain
-configuration. It writes the existing v4 ScheduleStore route, hop, completion and child
-relations through the shared SQLite owner. Canonical and pretty logical hashes
-are accumulated from typed records during publication; hop records do not pass
-back through Python dictionaries or JSON encoding. Original route edge order,
-Unicode identities, nullable ratios and all logical section seals are retained.
-The shared `RouteView` reads route identities, sinks and original edge order
-directly from the authoritative RouteStore through ordered joins. It does not
-create another graph identity catalog or run per-route SQL lookups. The existing
-numeric scheduler input/result remain temporary run data and are released with
-the schedule owner.
+The common model and solver preserve tree traversal/order, predecessor ranks,
+capacity budgets, fixed lane/ratio groups and affine-delay cycle rounding.
+`ComputeStaticExactSchedule` returns typed records directly to its C++ caller;
+the standalone binary-input/output command is a compatibility wrapper around
+the same computation. The legacy `schedule-from-store` and `publish-schedule`
+operations remain available for explicit API/comparison uses. Their publisher
+shares the final record writer with the complete producer.
+
+Canonical and pretty logical hashes are accumulated from typed records during
+publication. Original route edge order, Unicode identities, nullable ratios and
+section seals are retained. Bounded floating-point header/domain values use the
+same shortest round-trip decimal convention as Python, including its exponent
+thresholds and signed zero. The shared `RouteView` reads identities and original
+edge order from the authoritative RouteStore through ordered joins; there is no
+additional graph identity catalog or per-route SQL lookup.
+The complete producer keeps the publication identities and original integer
+edge order from its model-building scan and moves them into the writer;
+publication does not rescan RouteStore to reconstruct them.
 
 This production path requires current v3 typed route input and the unified
 native scheduler. Explicit standalone comparison tools, older storage versions,
 dictionary compatibility inputs and small reference schedules retain the
-reference publisher. A native
-publication failure never retries that publisher. Native record owners cannot
-be replaced independently. The publication request retains the input/result/
-RouteStore file generations captured by the producer; stale references are
-rejected before reading their records and rechecked before atomic publication.
-The Python layer still commits the compact manifest and report. Phase 5 reports
-identify the store implementation separately from the schedule algorithm.
-For this production path, independent schedule validation runs against the
-staged typed store before report commit. It does not rebuild the reference
-validator's complete route/hop dictionaries. Domain summaries reuse bounded
-counts gathered during result import. Compact output and indexed validation
-apply without a managed-storage flag; legacy TSV/transport JSON/testbench/
-feedback exports and reference simulation are not implicit native-production
-outputs. Small reference and explicit compatibility paths retain their export
-behavior; qualification tools may request those functions explicitly.
+reference path. A native failure never retries that path. Requests retain the
+source file generations captured by their producer; stale references are rejected
+before computation and rechecked before atomic publication. The Python layer
+still commits the compact manifest and report. Phase 5 reports identify the
+store and producer implementations separately from the schedule algorithm.
+Storage wall time includes native calculation for the complete producer and is
+labelled with its measurement scope.
 
-Compact Python route/certificate metadata, some scheduling validation/result
-import, timing adapters and the remaining phase orchestration are unfinished.
-This delivery does not complete W7 or establish whole-stage performance gains.
+Independent schedule validation runs against the staged typed store before
+report commit. It does not rebuild the reference validator's complete route/hop
+dictionaries. Native domain summaries use bounded counts over the in-process
+solution. Timing reconstruction consumes the staged typed view, and opening
+that freshly sealed producer-owned store does not repeat its full file hash.
+Compact output and indexed validation apply without a managed-storage flag;
+legacy TSV/transport JSON/testbench/feedback exports and reference simulation
+are not implicit native-production outputs. Small reference and explicit
+compatibility paths retain their export behavior; qualification tools may
+request those functions explicitly.
+
+The independent Python validator still has compact route-scale working data;
+non-exact providers, explicit compatibility result import, timing adapters and
+the remaining phase orchestration are unfinished. This delivery does not
+complete W7 or establish whole-stage performance gains.
 Deployment probes load the unified entry and physical bridge before publishing
 runtime provenance; launchers must repeat them in the actual execution
 environment before expensive computation.
@@ -211,7 +219,7 @@ there is no silent implementation or provider fallback.
 | Phase 1–2 | Native synthesis/STA engines; compact indexed inputs | Consolidate import, identities and timing adapters under the shared artifact API |
 | Phase 3 | Compact clustering/pressure views; native search and semantic/capture production; native exact-binary writer | Migrate cluster/pressure production owners and remaining assignment publication; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
-| Phase 5 | Native exact model construction, scheduler and direct v4 ScheduleStore publisher; staged cursor validation | Complete native certificate/result import, validation and non-exact interfaces |
+| Phase 5 | One native exact model/solver/certificate/store producer; independent staged cursor validation | Native independent validation, timing adapters and non-exact interfaces |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
 | Global STA | Typed segments/results and bounded identity/stitching views | Native check/input construction, result import and ordered complete-path stitching |

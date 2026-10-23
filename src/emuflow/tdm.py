@@ -14,6 +14,7 @@ import tempfile
 from array import array
 from collections import OrderedDict, defaultdict, deque
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .errors import TDMScheduleInfeasibleError, ValidationError
@@ -2141,6 +2142,80 @@ def _entry_ratio_delay(
         return hop_delay, prior_arrival + hop_delay, tx_time
     wait = entry["slot"] - entry["ready_slot"]
     return base + slot_period * wait, max(prior_arrival, tx_time) + base, tx_time
+
+
+@dataclass(frozen=True)
+class NativeExactScheduleRequest:
+    """Bounded producer request, deliberately not a logical schedule view."""
+
+    command: tuple[str, ...]
+    route_store: Path
+    route_generation: tuple[int, ...]
+    route_count: int
+    header: Mapping[str, Any]
+    domain_templates: tuple[Mapping[str, Any], ...]
+    platform: Platform
+    constraints: Mapping[str, Any]
+    arcs: Mapping[Any, Any]
+    bank_allocations: Mapping[Any, Any]
+    catalogs: tuple[tuple[str, ...], ...]
+
+    def write_board_request(self, path: Path) -> None:
+        _write_native_schedule_board_request(
+            path, self.route_generation, self.platform, self.constraints,
+            self.arcs, self.bank_allocations, *self.catalogs,
+        )
+
+
+def build_native_exact_schedule_request(
+    routes: Mapping[str, Any], platform: Platform,
+) -> Optional[NativeExactScheduleRequest]:
+    """Select the complete producer without importing routes or hop results.
+
+    Compatibility/reference build_tdm_schedule remains an explicit materialized
+    API. The normal Phase 5 entry sends current indexed production directly to
+    one shared-core stage; failure is fatal, with no compatibility retry.
+    """
+
+    raw = routes.get("routes")
+    if (getattr(raw, "_user_version", None) != 3 or
+            len(raw) < NATIVE_EXACT_SCHEDULE_MIN_ROUTES):
+        return None
+    contract = _static_exact_contract_from_routes(routes)
+    if contract is None or contract.get("indexed") is not True:
+        return None
+    from .native_tools import native_file_generation, resolve_native_stage_command
+
+    command = resolve_native_stage_command("emuflow_tdm_exact_scheduler", "phase5", "schedule")
+    if len(command) != 3:
+        return None
+    constraints = normalize_route_constraints(routes.get("constraints"), platform)
+    _, arcs, capacities = build_directed_graph(platform, constraints)
+    allocations = _bank_direction_allocations(routes, platform, constraints)
+    frame = constraints["frame_slots"]
+    links = _link_by_id(platform)
+    templates = []
+    for key in sorted(capacities):
+        capacity = capacities[key]
+        lanes = links[capacity["link"]].transport_bits_per_cycle_per_direction
+        templates.append({"key": key, "link": capacity["link"], "direction": capacity["direction"],
+                          "lanes": lanes, "frame_slots": frame, "capacity_bit_hops": lanes * frame})
+    header = {
+        "schema": TDM_SCHEDULE_SCHEMA, "design": routes.get("design"), "platform": platform.name,
+        "provider": TDM_EXACT_DEPENDENCY_PROVIDER, "transport_semantics": "sampled-virtual-wire",
+        "route_constraints": constraints, "qualification": "dependency-schedule-readiness-pass",
+        "timing_constraints": sampled_virtual_wire_timing_constraints(frame),
+        "semantic_contract_schema": contract["schema"],
+        "semantic_contract_sha256": routes["semantic_contract_sha256"],
+    }
+    if allocations:
+        header["bank_allocations"] = _bank_allocation_records(allocations)
+    store = Path(raw.store_path)
+    return NativeExactScheduleRequest(
+        (command[0], "phase5", "build-schedule"), store, native_file_generation(store), len(raw),
+        header, tuple(templates), platform, constraints, arcs, allocations,
+        (tuple(sorted(fpga.id for fpga in platform.fpgas)), tuple(sorted(links)), tuple(sorted(capacities))),
+    )
 
 
 def build_tdm_schedule(

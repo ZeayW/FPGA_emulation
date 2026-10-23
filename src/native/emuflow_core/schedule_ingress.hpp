@@ -3,7 +3,8 @@
 
 namespace emuflow::core {
 ExactScheduleModel BuildExactScheduleModel(const std::string& route_store,
-                                          const std::string& request);
+                                          const std::string& request,
+                                          ExactScheduleBuildContext* context = nullptr);
 void ScheduleExactFromStore(const std::string& route_store,
                             const std::string& request,
                             const std::string& output);

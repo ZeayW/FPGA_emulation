@@ -57,9 +57,10 @@ API, registered artifact envelopes, file-generation checks, and a structured
 `--report` error/metrics contract. Phase 3 analysis consumes the shared compact
 EmuIR view with artifact-scoped record IDs and ordered connectivity traversal.
 PATRON search is linked into this entry too.
-Large indexed Static Exact schedules construct their integer model and fixed
-wire groups in the shared native core, which also publishes the ScheduleStore
-and logical hashes. Independent indexed validation precedes report publication.
+Large indexed Static Exact Phase 5 runs use one shared-core call for model
+construction, scheduling, readiness certificates and ScheduleStore publication,
+without Python result import or numeric intermediate files. Independent indexed
+validation precedes report publication.
 These production outputs stay compact without requiring a managed-storage flag;
 Python still publishes the compact manifest.
 The shared core also supervises external tools with process-group cancellation,
