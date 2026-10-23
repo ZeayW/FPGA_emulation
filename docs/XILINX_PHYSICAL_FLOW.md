@@ -171,6 +171,10 @@ STA success.
 The exporter declares actual SQL net ordinals, including one-based or sparse
 keys. Disconnected input identities start beyond the maximum source ordinal,
 so they cannot alias a real net. Generated RTL disables implicit net creation.
+Before mapping, a bounded SQLite audit rejects every used net without a driver,
+including source-declared `undriven` nets, and saves a compact diagnostic sample.
+An upstream semantic repair or an explicitly specified OOC input model is
+required for these sources; the provider never invents constant bindings.
 
 Native timing bindings include FF clock-enable and reset/set controls, both
 LUT6_2 outputs, and the qualified RAMB18 physical write-enable aliases.
@@ -184,6 +188,9 @@ are initially preserved with KEEP/DONT_TOUCH to retain source-bound timing
 identities. No placement LOC/BEL or implicit pblock is imposed. This identity
 policy limits optimization across primitives and may affect timing quality.
 Whole-device resource budgets also apply to the final physical cell population.
+Resource accounting excludes MACRO wrappers while retaining LEAF and INTERNAL
+implementation components. LUT capacity is counted by occupied site/LUT letter
+(O5/O6 share one LUT); DSP and URAM components are counted by unique sites.
 
 Same-FPGA timing queries cover the complete declared original-path population;
 cross-FPGA logic and interface queries retain the Phase 6 identities. Fixed

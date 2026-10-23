@@ -2077,6 +2077,12 @@ def run_multi_fpga_physical_flow(
             boundary_identity_path = Path(
                 lowering_report["boundary_identity"]["output"]
             )
+            mapped_verilog = fpga_root / "partition.v"
+            mapped_report = emit_vivado_mapped_verilog(
+                merged_ir,
+                mapped_verilog,
+                fpga_root / "mapped-verilog-report.json",
+            )
             logic_identity_path = None
             logic_query_path = None
             logic_query_report = None
@@ -2110,12 +2116,6 @@ def run_multi_fpga_physical_flow(
                     merged_ir, fpga_id, local_query_path, local_identity_path,
                     prepared_local_inputs,
                 )
-            mapped_verilog = fpga_root / "partition.v"
-            mapped_report = emit_vivado_mapped_verilog(
-                merged_ir,
-                mapped_verilog,
-                fpga_root / "mapped-verilog-report.json",
-            )
             vivado_report = run_vivado_partition_backend(
                 fpga=fpga_id,
                 part=fpga_part,

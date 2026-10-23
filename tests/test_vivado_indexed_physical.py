@@ -40,6 +40,84 @@ def fixture(root):
 
 
 class IndexedVivadoTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("tclsh"), "requires Tcl interpreter")
+    def test_resource_inventory_counts_occupied_capacity_without_macro_wrappers(self):
+        helper = Path(__file__).resolve().parents[1] / "scripts/vivado/resource_inventory.tcl"
+        script = r'''
+set cells {lut_macro lut5 lut6 packed5 packed6 dsp_macro dsp_alu dsp_mul ff carry ram18 ram36 uram io_macro diff ctrl}
+set refs {LUT6_2 LUT5 LUT6 LUT5 LUT6 DSP48E2 DSP_ALU DSP_MULTIPLIER FDRE CARRY8 RAMB18E2 RAMB36E2 URAM288 IBUFDS DIFFINBUF IBUFCTRL}
+set levels {MACRO LEAF LEAF LEAF LEAF MACRO INTERNAL INTERNAL LEAF LEAF LEAF LEAF LEAF MACRO INTERNAL INTERNAL}
+foreach c $cells r $refs l $levels {
+  dict set props $c REF_NAME $r
+  dict set props $c PRIMITIVE_LEVEL $l
+  dict set props $c BEL A6LUT
+  dict set sites $c "site_$c"
+}
+dict set sites lut5 slice0
+dict set sites lut6 slice0
+dict set props lut5 BEL A5LUT
+dict set sites packed5 slice0
+dict set sites packed6 slice0
+dict set props packed5 BEL B5LUT
+dict set props packed6 BEL B6LUT
+dict set sites dsp_alu dsp0
+dict set sites dsp_mul dsp0
+proc get_cells {args} {global cells; return $cells}
+proc get_sites {args} {global sites; return [dict get $sites [lindex $args end]]}
+proc get_property {property object} {
+  global props
+  if {$property eq "NAME"} {return $object}
+  return [dict get $props $object $property]
+}
+set result [emuflow_resource_inventory 9]
+foreach {key expected} {lut 2 dsp48 1 ff 1 carry8 1 ramb18_cells 1 ramb36_cells 1 uram288 1 physical_cells 13 infrastructure_cells 2 optimization_cells 2} {
+  if {[dict get $result $key] != $expected} {error "$key: [dict get $result $key] != $expected"}
+}
+dict set props lut5 BEL strange
+if {![catch {emuflow_resource_inventory 9} message] || ![string match "unknown LUT BEL*" $message]} {error "bad LUT BEL accepted"}
+dict set props lut5 BEL A5LUT
+dict set sites dsp_mul {}
+if {![catch {emuflow_resource_inventory 9} message] || ![string match "primitive lacks exactly one placed site*" $message]} {error "unplaced DSP accepted"}
+dict set sites dsp_mul dsp0
+dict set props dsp_mul PRIMITIVE_LEVEL UNKNOWN
+if {![catch {emuflow_resource_inventory 9} message] || ![string match "unknown primitive level*" $message]} {error "unknown primitive level accepted"}
+puts pass
+'''
+        result = subprocess.run([shutil.which("tclsh")], input=f"source {{{helper}}}\n" + script,
+                                text=True, capture_output=True, check=True)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout.strip(), "pass")
+
+    def test_used_undriven_source_fails_before_mapping_with_bounded_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ir = fixture(root)
+            with sqlite3.connect(ir) as db:
+                net = db.execute("SELECT seq FROM net_records WHERE id='d'").fetchone()[0]
+                db.execute("DELETE FROM endpoint_records WHERE net_seq=? AND role=0", (net,))
+                db.execute("UPDATE net_records SET cut_class='undriven' WHERE seq=?", (net,))
+            output = root / "new" / "dut.v"
+            with patch("emuflow.xilinx_netlist.emit_xilinx_mapped_index") as lower:
+                with self.assertRaisesRegex(ValidationError, "1 used undriven"):
+                    emit_vivado_mapped_verilog(ir, output)
+                lower.assert_not_called()
+            self.assertFalse(output.exists())
+            report = json.loads(output.with_suffix(".source-check.json").read_text())
+            self.assertEqual(report["source_declared_undriven_nets"], 1)
+            self.assertEqual(report["examples"], [{"net": "d", "cut_class": "undriven"}])
+
+    def test_unused_undriven_source_is_not_a_missing_used_driver(self):
+        from emuflow.vivado_source import validate_vivado_source
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ir = fixture(root)
+            with sqlite3.connect(ir) as db:
+                net = db.execute("SELECT seq FROM net_records WHERE id='d'").fetchone()[0]
+                db.execute("DELETE FROM endpoint_records WHERE net_seq=?", (net,))
+                db.execute("UPDATE net_records SET cut_class='undriven' WHERE seq=?", (net,))
+            self.assertEqual(validate_vivado_source(ir)["used_undriven_nets"], 0)
+
     def test_one_based_and_sparse_net_ordinals_do_not_alias_unused_ports(self):
         from emuflow.xilinx_netlist import open_xilinx_mapped_index
 

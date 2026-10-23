@@ -21,10 +21,12 @@ def emit_indexed_vivado_verilog(
 ) -> Mapping[str, Any]:
     # Lazy import avoids the legacy lowerer's import cycle.
     from .xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
+    from .vivado_source import validate_vivado_source
 
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    source_validation = validate_vivado_source(ir_path, output_path.with_suffix(".source-check.json"))
     index_path = output_path.with_suffix(".mapped.sqlite")
     mapped_report = emit_xilinx_mapped_index(ir_path, index_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
 
     def bit(value: Any) -> str:
@@ -108,6 +110,7 @@ def emit_indexed_vivado_verilog(
         "output": str(output_path), "output_sha256": file_sha256(output_path),
         "mapped_index": {"path": str(index_path), "sha256": mapped_report["index_sha256"]},
         "primitive_audit": mapped_report["audit"],
+        "source_validation": source_validation,
     }
     if report_path is not None:
         write_json(report_path, report, compact=True)

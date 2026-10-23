@@ -4,6 +4,7 @@
 if {$argc != 15} {
   error "expected PART NETLIST TOP XDC OUT CELLS PREFIX ADAPTER WRAPPER IO_XDC IO_QUERY PLACE ROUTE DUT_CLOCKS THREADS"
 }
+source [file join [file dirname [info script]] resource_inventory.tcl]
 proc emuflow_decode {value} {
   return [encoding convertfrom utf-8 [binary decode hex $value]]
 }
@@ -127,19 +128,11 @@ if {[catch {
   set cross_metrics [emuflow_domain_metrics $fabric $dut_clocks]
   set paths [get_timing_paths -quiet -max_paths 1 -nworst 1]
   if {[llength $paths] != 1} {error "implemented design has no analyzed timing path"}
-  set physical [get_cells -quiet -hier -filter {IS_PRIMITIVE && REF_NAME != GND && REF_NAME != VCC}]
-  set infrastructure 0
-  foreach cell $physical {
-    set ref [get_property REF_NAME $cell]
-    if {[string match BUFG* $ref] || [string match IBUF* $ref] || [string match OBUF* $ref] || $ref eq "DIFFINBUF"} {incr infrastructure}
-  }
-  set optimization [expr {[llength $physical] - $expected - $infrastructure}]
-  if {$optimization < 0} {error "mapped physical accounting is inconsistent"}
+  set resources [emuflow_resource_inventory $expected]
   set metrics [open "$out/implementation_metrics.tsv" w]
   puts $metrics "metric\tvalue"
   foreach {key value} [list \
     vivado_version [version -short] part $part mapped_cells $expected \
-    physical_cells [llength $physical] infrastructure_cells $infrastructure optimization_cells $optimization \
     unrouted_nets 0 drc_violations $errors drc_warnings $warnings virtual_io_pairs $pairs \
     dut_clock_count [llength $dut_clocks] \
     fabric_period_ns [get_property PERIOD $fabric] \
@@ -149,9 +142,8 @@ if {[catch {
     fabric_to_dut_wns_ns [lindex $cross_metrics 0] fabric_to_dut_delay_ns [lindex $cross_metrics 1]] {
     puts $metrics "$key\t$value"
   }
-  foreach {key pattern} {lut LUT* ff FD* dsp48 DSP48* carry8 CARRY8 uram288 URAM288* ramb18_cells RAMB18* ramb36_cells RAMB36*} {
-    set cells [get_cells -quiet -hier -filter "IS_PRIMITIVE && REF_NAME =~ $pattern"]
-    puts $metrics "$key\t[llength $cells]"
+  dict for {key value} $resources {
+    puts $metrics "$key\t$value"
   }
   close $metrics
   puts "EMUFLOW_INDEXED_VIVADO status=pass part=$part fixed_pairs=$pairs"
