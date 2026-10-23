@@ -427,9 +427,13 @@ def _vivado_object(
                 f"unsupported Vivado FF pin {instance_id}.{port}[{bit}]"
             )
     elif cell_type not in {"VTR_MULTIPLY", "VTR_SP_RAM", "VTR_DP_RAM"}:
-        raise ValidationError(
-            f"unsupported Vivado physical logic cell {cell_type}"
-        )
+        from .xilinx_primitives import load_xilinx_primitive_library
+
+        _library, contract = load_xilinx_primitive_library()
+        if cell_type not in contract["cells"]:
+            raise ValidationError(
+                f"unsupported Vivado physical logic cell {cell_type}"
+            )
     if cell_type.startswith("LUT") or cell_type in {"$lut", "$_LUT_"}:
         pin_name = physical_port
     else:

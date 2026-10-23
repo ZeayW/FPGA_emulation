@@ -170,6 +170,13 @@ def emit_vivado_mapped_verilog(
     output_path: Path,
     report_path: Optional[Path] = None,
 ) -> Mapping[str, Any]:
+    from .emuir_compact import is_compact_emuir
+    from .emuir_storage import is_emuir_sqlite
+
+    if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path):
+        from .vivado_indexed_netlist import emit_indexed_vivado_verilog
+
+        return emit_indexed_vivado_verilog(ir_path, output_path, report_path)
     source = EmuIR.load(ir_path)
     lowered = lower_vivado_primitives(source)
     output_path.parent.mkdir(parents=True, exist_ok=True)

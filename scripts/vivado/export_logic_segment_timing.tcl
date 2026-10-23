@@ -72,20 +72,19 @@ proc emuflow_resolve_object {kind name prefix} {
 
 open_checkpoint $input_dcp
 set input [open $query_path r]
-set lines [split [read $input] "\n"]
-close $input
+gets $input header
 set legacy_header "endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex"
 set cone_header "$legacy_header\tcone_anchor_kind\tcone_anchor_object_hex"
-if {[lindex $lines 0] ne $legacy_header && [lindex $lines 0] ne $cone_header} {
+if {$header ne $legacy_header && $header ne $cone_header} {
   error "invalid logic segment timing query header"
 }
-set cone_queries [expr {[lindex $lines 0] eq $cone_header}]
+set cone_queries [expr {$header eq $cone_header}]
 
 set output [open $output_path w]
 puts $output "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex\tmeasurement\tactual_start_object_hex\tactual_end_object_hex"
 set emitted 0
 set missing 0
-foreach line [lrange $lines 1 end] {
+while {[gets $input line] >= 0} {
   if {$line eq ""} {
     continue
   }
@@ -208,4 +207,5 @@ foreach line [lrange $lines 1 end] {
   incr emitted
 }
 close $output
+close $input
 puts "EMUFLOW_LOGIC_SEGMENT_TIMING status=pass segments=$emitted missing=$missing output=$output_path"

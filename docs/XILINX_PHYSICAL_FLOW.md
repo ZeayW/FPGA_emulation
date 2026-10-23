@@ -152,3 +152,36 @@ Passing partition resource checks, placement legality, or routing alone does
 not establish whole-design timing closure. Phase 7 publishes a successful
 whole-design result only after every selected FPGA record and the global timing
 contract pass their independent validators.
+
+## Vivado indexed provider
+
+The optional `vivado` backend consumes the current compact Phase 6 split and
+transport contracts. It streams native Xilinx primitives through the canonical
+mapped SQLite index into RTL, then runs Vivado synthesis, optimization,
+placement, physical optimization, and routing. The retired whole-EmuIR adapter
+remains only for explicit legacy inputs. This integration is undergoing
+real-device qualification; unit tests alone do not establish routed or global
+STA success.
+
+The provider uses the Phase 6 sealed differential adapter and XDC through a
+physical wrapper. Post-route checks require exact P/N package pins,
+IOSTANDARD, IBUFDS/OBUFDS ownership, complete mapped-cell identity/type coverage,
+zero unrouted nets, and zero blocking DRC violations. Native mapped primitives
+are initially preserved with KEEP/DONT_TOUCH to retain source-bound timing
+identities. No placement LOC/BEL or implicit pblock is imposed. This identity
+policy limits optimization across primitives and may affect timing quality.
+Whole-device resource budgets also apply to the final physical cell population.
+
+Same-FPGA timing queries cover the complete declared original-path population;
+cross-FPGA logic and interface queries retain the Phase 6 identities. The
+indexed provider does not use the legacy sampled Vivado TimingPathDB as terminal
+evidence. Per-FPGA vendor WNS/TNS describe vendor endpoint constraints; global
+original-path WNS/TNS still require the separate complete OpenSTA composition.
+
+Use an installed Vivado with the exact part database and a valid synthesis and
+implementation license. `EMUFLOW_VIVADO_THREADS` controls the recorded thread
+limit (default 2). All generated files, checkpoints, and temporary tool files
+belong to the selected output directory and experiment scratch lifecycle.
+`scripts/validation/qualify_vivado_indexed.py` exercises a small three-clock,
+four-differential-pair implementation on XCVU19P. Its result explicitly covers
+synthetic physical/provider qualification only.

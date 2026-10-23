@@ -165,6 +165,24 @@ frontend-stage entry points. Backend selection never silently falls back to VTR.
 - `--physical-backend vivado`: optional proprietary device implementation.
   It requires the matching Vivado installation, device support, and licenses.
 
+To consume an existing current Phase 6 output with Vivado, use the standalone
+entry point and the matching original source/assignment/routing/timing inputs:
+
+```bash
+emuflow multi-fpga physical --split RUN/flow/split --platform PLATFORM.json \
+  --schedule SCHEDULE.json --out RUN/vivado-physical --backend vivado \
+  --vivado /opt2/amd/Vivado/2024.2/bin/vivado \
+  --original-ir ORIGINAL.emuir.sqlite --assignment ASSIGNMENT.json \
+  --routes ROUTES.json --path-database PATHS.json
+```
+
+Supply the exact paths from the source run, including `--logic-path-database`
+when required by its timing contract. `--fpga fpgaN` selects a representative
+partition diagnostic and does not constitute a complete global run. The
+indexed adapter uses complete timing queries; `--vivado-max-timing-paths` is a
+legacy sampled-export option. See the [provider contract](XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider)
+for current qualification and optimization limits.
+
 Standalone `multi-fpga physical` uses `--backend` for the same selection and
 also defaults to RapidWright. The integrated Chimew lookahead path currently
 requires explicit `--physical-backend open --mapping-profile vtr-hard-blocks`.

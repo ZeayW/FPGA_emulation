@@ -55,3 +55,11 @@ Python engine again.
 driver for independent model checks. It is not a production dependency or a
 second implicit large-design analysis pass. See
 [validation requirements](VALIDATION.md) for the complete claim boundary.
+
+For the indexed Vivado provider, vendor timing summary WNS/TNS are partition
+endpoint diagnostics. They cannot substitute for original-member global
+metrics. Every imported same-FPGA member and cross-FPGA segment must have
+source-bound routed evidence. A through-point query returning an enclosing
+path must not be labeled an exact subsegment merely because it traverses both
+requested pins; its delay must be restricted to the declared segment or carry
+an explicitly supported conservative qualification.

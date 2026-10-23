@@ -37,16 +37,14 @@ proc emuflow_hex_encode {value} {
 
 open_checkpoint $input_dcp
 set input [open $query_path r]
-set lines [split [read $input] "\n"]
-close $input
-if {[lindex $lines 0] ne "endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex"} {
+if {[gets $input header] < 0 || $header ne "endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex"} {
   error "invalid boundary timing query header"
 }
 
 set output [open $output_path w]
 puts $output "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
 set emitted 0
-foreach line [lrange $lines 1 end] {
+while {[gets $input line] >= 0} {
   if {$line eq ""} {
     continue
   }
@@ -167,4 +165,5 @@ foreach line [lrange $lines 1 end] {
   incr emitted
 }
 close $output
+close $input
 puts "EMUFLOW_BOUNDARY_TIMING status=pass endpoints=$emitted output=$output_path"
