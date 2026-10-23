@@ -820,6 +820,14 @@ def _expand_staged_yosys_hierarchy(
                             parent_bit,
                             f"module {module_name!r} port {port_name!r}[{index}]",
                         )
+                    elif raw_port.get("direction") in {"output", "inout"}:
+                        # A mapped child output can already be a constant.
+                        # Propagate that driver back to the parent's wire,
+                        # including consumers staged before this child.
+                        unify_bits(
+                            parent_bit, local_bit,
+                            f"module {module_name!r} port {port_name!r}[{index}]",
+                        )
 
         expanded_ports: Dict[str, Any] = {}
         for port_name, raw_port in ports:
@@ -1572,6 +1580,8 @@ def import_yosys_json_indexed(
                             if not isinstance(bits, list):
                                 continue
                             for bit_index, bit in enumerate(bits):
+                                if isinstance(bit, int):
+                                    bit = bit_aliases.get(bit, bit)
                                 if isinstance(bit, str):
                                     constants.append(
                                         {

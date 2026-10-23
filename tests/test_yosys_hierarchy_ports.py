@@ -53,6 +53,33 @@ def fixture(direction, binding):
 
 
 class HierarchyPortTest(unittest.TestCase):
+    def test_constant_child_outputs_propagate_through_nested_parent_aliases(self):
+        from emuflow.yosys import import_yosys_json_indexed
+        from emuflow.indexed_physical_ir import IndexedPhysicalIR
+        from emuflow.vivado_source import validate_vivado_source
+
+        for constant in ("0", "1", "x", "z"):
+            with self.subTest(constant=constant), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                value = {"modules": {
+                    "top": {"attributes": {"top": "1"},
+                        "ports": {"q": {"direction": "output", "bits": [3]}},
+                        "cells": {"a_sink": {"type": "LUT1", "parameters": {"INIT": "10"},
+                            "port_directions": {"I0": "input", "O": "output"},
+                            "connections": {"I0": [2], "O": [3]}},
+                            "z_source": {"type": "mid", "connections": {"y": [2]}}}},
+                    "mid": {"ports": {"y": {"direction": "output", "bits": [2]}},
+                        "cells": {"source": {"type": "const", "connections": {"y": [2]}}}},
+                    "const": {"ports": {"y": {"direction": "output", "bits": [constant]}}},
+                }}
+                source, output = root / "source.json", root / "design.emuir.sqlite"
+                source.write_text(json.dumps(value))
+                import_yosys_json_indexed(source, output, top="top", _expand_hierarchy=True)
+                with IndexedPhysicalIR(output) as ir:
+                    self.assertEqual(ir.instances["a_sink"]["constant_connections"],
+                                     [{"port": "I0", "bit": 0, "value": constant}])
+                self.assertEqual(validate_vivado_source(output)["used_undriven_nets"], 0)
+
     def test_open_output_and_inout_do_not_poison_connected_alias(self):
         for direction in ("output", "inout"):
             for binding in (None, []):
@@ -62,6 +89,15 @@ class HierarchyPortTest(unittest.TestCase):
                     self.assertEqual(ports["a"]["bits"], ports["y"]["bits"])
                     internal = names["u.internal"]["bits"][0]
                     self.assertEqual(aliases.get(internal, internal), ports["a"]["bits"][0])
+
+    def test_conflicting_child_constant_driver_is_rejected(self):
+        value = {"modules": {
+            "top": {"ports": {}, "cells": {
+                "u": {"type": "constant", "connections": {"y": ["1"]}}}},
+            "constant": {"ports": {"y": {"direction": "output", "bits": ["0"]}}},
+        }}
+        with self.assertRaisesRegex(ImportError, "incompatible constant bindings"):
+            expand(value)
 
     def test_open_output_preserves_internal_driver_and_consumer(self):
         value = fixture("output", [])
@@ -118,6 +154,10 @@ class HierarchyPortTest(unittest.TestCase):
             self.assertIsInstance(expected["z"]["bits"][0], int)
             self.assertNotEqual(actual["z"]["bits"], actual["a"]["bits"])
             self.assertNotEqual(expected["z"]["bits"], expected["a"]["bits"])
+            for name in ("zero", "pattern"):
+                self.assertEqual(actual[name]["bits"], expected[name]["bits"])
+            self.assertEqual(actual["zero"]["bits"], ["0"])
+            self.assertEqual(actual["pattern"]["bits"], ["0", "1"])
 
 
 if __name__ == "__main__":

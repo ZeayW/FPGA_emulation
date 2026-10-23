@@ -112,6 +112,13 @@ Do not change mapping profiles silently to make a capacity failure disappear.
 Match resource units, device geometry, and physical architecture to the selected
 platform.
 
+The indexed hierarchical frontend propagates child-module constant outputs
+through parent aliases, including previously visited consumers. Values `0`,
+`1`, `x`, and `z` retain their source meaning; conflicting constant bindings
+are rejected. This also preserves synthesis-model control constants across
+module boundaries. A frontend repair changes the design contract: regenerate
+Phase 1, timing, partitioning, and Phase 6 rather than patching an old split.
+
 ## Providers and boundary semantics
 
 The CLI defaults to timing-driven PATRON partitioning with a TritonPart
