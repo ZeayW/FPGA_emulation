@@ -18,3 +18,5 @@ it in the root build so compiling the vendored engine cannot write generated
 files into tracked source.  No timing algorithm is changed.
 The Tcl finder rejects headers older than 8.6 because the imported engine's own
 procedures use `try/finally`; the executable is also probed at runtime.
+The Zlib link uses its imported CMake target so non-system header paths propagate
+to the analyzer and its public consumers.

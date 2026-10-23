@@ -585,7 +585,8 @@ if(NOT HAVE_CXX_STD_FORMAT)
 endif()
 
 if (ZLIB_LIBRARIES)
-  target_link_libraries(OpenSTA ${ZLIB_LIBRARIES})
+  # EmuFlow: propagate headers for versioned, non-system dependency prefixes.
+  target_link_libraries(OpenSTA ZLIB::ZLIB)
 endif()
 
 target_include_directories(OpenSTA
