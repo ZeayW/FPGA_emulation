@@ -36,6 +36,9 @@ class ContainerRuntimeTest(unittest.TestCase):
                 "EMUFLOW_YOSYS_CONTAINER_IMAGE": "/versioned/image.sif",
                 "EMUFLOW_YOSYS_CONTAINER_BINARY": "/versioned/yosys",
                 "EMUFLOW_OPENSTA_CONTAINER_BINARY": "/versioned/sta",
+                "EMUFLOW_OPENSTA_CONTAINER_TCL_LIBRARY": "/versioned/tcl library",
+                "EMUFLOW_OPENROAD_CONTAINER_BINARY": "/versioned/openroad",
+                "EMUFLOW_OPENROAD_CONTAINER_TCL_LIBRARY": "/versioned/openroad tcl",
                 "EMUFLOW_YOSYS_CONTAINER_BIND": str(scratch),
                 "EMUFLOW_YOSYS_CONTAINER_LIBRARY_PATH": "/versioned/lib",
                 "EMUFLOW_STA_VERILOG": str(scratch / "net list.v"),
@@ -46,5 +49,11 @@ class ContainerRuntimeTest(unittest.TestCase):
             self.assertIn("--cleanenv", args)
             self.assertIn("EMUFLOW_STA_VERILOG=" + env["EMUFLOW_STA_VERILOG"], args)
             self.assertIn("EMUFLOW_STA_TOP=top with spaces", args)
+            self.assertIn("TCL_LIBRARY=/versioned/tcl library", args)
             self.assertEqual(args[-3:], ["/versioned/sta", "-exit", "query path.tcl"])
             self.assertEqual(env["EMUFLOW_YOSYS_CONTAINER_BINARY"], "/versioned/yosys")
+            road = subprocess.run([str(root / "scripts/openroad/container_runtime.sh"), "-exit", "partition.tcl"],
+                                  env=env, text=True, capture_output=True, check=True)
+            road_args = json.loads(road.stdout)
+            self.assertIn("TCL_LIBRARY=/versioned/openroad tcl", road_args)
+            self.assertEqual(road_args[-3:], ["/versioned/openroad", "-exit", "partition.tcl"])

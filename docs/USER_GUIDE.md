@@ -47,6 +47,10 @@ set each tool's `EMUFLOW_<TOOL>_CONTAINER_BINARY` independently (`YOSYS`,
 `OPENSTA`, `OPENROAD`, or `PATRON`). `TMPDIR` must point into the active
 experiment. These launchers require an existing Singularity-compatible runtime
 and image; they do not install tools or change the host ABI.
+If an image lacks Tcl's matching script library, explicitly set
+`EMUFLOW_OPENSTA_CONTAINER_TCL_LIBRARY` or
+`EMUFLOW_OPENROAD_CONTAINER_TCL_LIBRARY` to that tool's versioned directory
+containing `init.tcl`.
 
 For dependencies outside system directories:
 

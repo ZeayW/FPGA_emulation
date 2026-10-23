@@ -14,6 +14,9 @@ export SINGULARITY_TMPDIR="$task_scratch/tmp"
 export APPTAINER_CACHEDIR="$task_scratch/cache"
 export APPTAINER_TMPDIR="$task_scratch/tmp"
 task_environment=("TMPDIR=$TMPDIR" "LD_LIBRARY_PATH=$EMUFLOW_YOSYS_CONTAINER_LIBRARY_PATH")
+if test -n "${EMUFLOW_YOSYS_CONTAINER_TCL_LIBRARY:-}"; then
+  task_environment+=("TCL_LIBRARY=$EMUFLOW_YOSYS_CONTAINER_TCL_LIBRARY")
+fi
 # OpenSTA extraction passes its sealed artifact paths through this namespace.
 # --cleanenv must not drop that data-plane binding.
 for task_name in ${!EMUFLOW_STA_@}; do
