@@ -14,6 +14,7 @@
 
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/hash.hpp"
+#include "emuflow_core/sqlite.hpp"
 
 namespace {
 struct CellTag {};
@@ -66,6 +67,7 @@ int main() {
                     ("emuflow-core-artifact-" + std::to_string(ProcessId()));
   std::filesystem::create_directories(root);
   const auto target = root / "artifact.bin";
+  const auto database_path = root / "artifact.sqlite";
   try {
     {
       std::ofstream original(target, std::ios::binary | std::ios::trunc);
@@ -126,6 +128,35 @@ int main() {
       rejected = true;
     }
     if (!rejected) throw std::runtime_error("trailing bytes were accepted");
+    {
+      emuflow::core::SqliteDatabase database(
+          database_path.string(),
+          emuflow::core::SqliteDatabase::Mode::kCreateExclusive);
+      database.Execute("CREATE TABLE records(id INTEGER PRIMARY KEY,value TEXT)");
+      {
+        emuflow::core::SqliteTransaction transaction(database);
+        auto insert = database.Prepare("INSERT INTO records VALUES(?,?)");
+        insert.BindInteger(1, 7);
+        insert.BindText(2, "typed");
+        insert.Execute();
+        transaction.Commit();
+      }
+      auto select = database.Prepare(
+          "SELECT id,value FROM records ORDER BY id");
+      if (!select.Step() || select.Integer(0) != 7 ||
+          select.Text(1) != "typed" || select.Step()) {
+        throw std::runtime_error("SQLite RAII round trip disagrees");
+      }
+    }
+    {
+      emuflow::core::SqliteDatabase database(
+          database_path.string(),
+          emuflow::core::SqliteDatabase::Mode::kReadOnly);
+      auto count = database.Prepare("SELECT COUNT(*) FROM records");
+      if (!count.Step() || count.Integer(0) != 1) {
+        throw std::runtime_error("SQLite read-only view disagrees");
+      }
+    }
   } catch (...) {
     std::filesystem::remove_all(root);
     throw;

@@ -1,11 +1,13 @@
 import copy
 import json
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import emuflow.timing_routing as timing_routing
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import file_sha256, read_json
 from emuflow.partition import (
@@ -424,16 +426,21 @@ class Phase4Test(unittest.TestCase):
             binary = runtime / "bin" / "emuflow-native"
             binary.parent.mkdir()
             binary.symlink_to(emuflow_native())
-            with mock.patch.dict(
-                "os.environ",
-                {"EMUFLOW_NATIVE_ROOT": str(runtime)},
-                clear=False,
-            ):
-                routes = route_system_native(
-                    assignment,
-                    platform,
-                    constraints,
-                )
+            with mock.patch(
+                "emuflow.timing_routing._parse_native_output_sqlite",
+                wraps=timing_routing._parse_native_output_sqlite,
+            ) as typed_parser:
+                with mock.patch.dict(
+                    "os.environ",
+                    {"EMUFLOW_NATIVE_ROOT": str(runtime)},
+                    clear=False,
+                ):
+                    routes = route_system_native(
+                        assignment,
+                        platform,
+                        constraints,
+                    )
+                typed_parser.assert_called_once()
         self.assertEqual(
             validate_native_system_routes(
                 assignment, platform, routes
@@ -444,6 +451,57 @@ class Phase4Test(unittest.TestCase):
             routes["routes"][0]["tree_edges"],
             [{"link": "ab", "from": "a", "to": "b"}],
         )
+        legacy = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            executable=str(tlr_router()),
+        )
+        self.assertEqual(routes, legacy)
+
+    def test_typed_native_router_rejects_schema_extension(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "typed-schema",
+                ["a", "b"],
+                [_link("ab", "a", "b")],
+            )
+        )
+        assignment = _assignment(platform, [("n0", "a", ["b"])])
+        constraints = normalize_route_constraints(None, platform)
+        nodes, model = timing_routing._prepare_native_model(
+            assignment, platform, constraints, None
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            native_input = root / "router.in"
+            native_output = root / "router.sqlite"
+            timing_routing._write_native_input(
+                native_input,
+                len(nodes),
+                model,
+                constraints,
+                NATIVE_ROUTER_PROVIDER,
+            )
+            subprocess.run(
+                [
+                    str(emuflow_native()),
+                    "phase4",
+                    "route",
+                    "--typed-output",
+                    str(native_input),
+                    str(native_output),
+                ],
+                check=True,
+            )
+            connection = sqlite3.connect(native_output)
+            connection.execute("CREATE TABLE extension(value INTEGER)")
+            connection.commit()
+            connection.close()
+            with self.assertRaisesRegex(
+                EmuFlowError, "invalid typed output schema"
+            ):
+                timing_routing._parse_native_output(native_output, model)
 
     def test_native_router_seals_transport_round_capacity(self) -> None:
         platform = Platform.from_dict(

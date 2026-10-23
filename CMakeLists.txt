@@ -272,12 +272,15 @@ file(MAKE_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
 add_library(
   emuflow_core STATIC
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/artifact_io.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/sqlite.cpp"
 )
 target_compile_features(emuflow_core PUBLIC cxx_std_17)
 target_compile_options(emuflow_core PRIVATE -O3)
 target_include_directories(
   emuflow_core PUBLIC "${CMAKE_SOURCE_DIR}/src/native"
 )
+find_package(SQLite3 REQUIRED)
+target_link_libraries(emuflow_core PUBLIC SQLite3::SQLite3)
 if(BUILD_TESTING)
   add_executable(
     emuflow_core_artifact_io_test
@@ -627,7 +630,9 @@ if(EMUFLOW_BUILD_TLR_ROUTER)
   )
   target_compile_features(emuflow_tlr_router PRIVATE cxx_std_17)
   target_compile_options(emuflow_tlr_router PRIVATE -O3)
-  target_link_libraries(emuflow_tlr_router PRIVATE Threads::Threads)
+  target_link_libraries(
+    emuflow_tlr_router PRIVATE emuflow_core Threads::Threads
+  )
   set_target_properties(
     emuflow_tlr_router
     PROPERTIES

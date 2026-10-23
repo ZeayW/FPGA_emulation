@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import heapq
 import math
+import sqlite3
+import struct
 import subprocess
 import tempfile
 from array import array
@@ -54,6 +56,30 @@ TLR_PROVIDER = "timing-aware-load-balanced-v1"
 ROUTE_TDM_PROVIDER = "timing-aware-route-tdm-cooptimized-v1"
 GLOBAL_CANDIDATE_PROVIDER = "timing-aware-global-candidate-v1"
 ROUND_CAPACITY_CONTRACT_SCHEMA = "emuflow.route-round-capacity/v1"
+_NATIVE_ROUTE_RESULT_APPLICATION_ID = 0x45545252
+_NATIVE_ROUTE_RESULT_USER_VERSION = 1
+_INTEGER_NATIVE_METRICS = {
+    "iterations",
+    "accepted_reroutes",
+    "rolled_back_reroutes",
+    "baseline_candidate_feasible",
+    "balanced_candidate_feasible",
+    "selected_delay_demand_balanced",
+    "total_link_bit_hops",
+    "estimated_max_tdm_ratio",
+    "master_rounds",
+    "master_switches",
+    "master_exact",
+    "metric_closure_candidate_feasible",
+    "shallow_light_candidate_feasible",
+    "adaptive_hop_candidate_feasible",
+    "steiner_candidate_feasible",
+    "candidate_workers",
+    "parallel_candidate_tasks",
+    "reroute_conflict_batches",
+    "maximum_parallel_batch",
+    "parallel_reroute_tasks",
+}
 
 
 def _round_available_slots(
@@ -1810,6 +1836,378 @@ def _validate_compact_native_candidate(
     return maximum_hops, domain_mask
 
 
+def _finish_parsed_native_output(
+    *,
+    routes: _PackedNativeRouteSequence,
+    candidates: Dict[int, Dict[str, Any]],
+    selections: _PackedNativeSelectionSequence,
+    locks: Dict[int, int],
+    timing: _PackedNativeTimingSequence,
+    metrics: Dict[str, Any],
+    candidate_coverage: bytearray,
+    candidate_domains: List[int],
+    candidate_counts: List[int],
+    candidate_max_hops: int,
+    compact_candidates: bool,
+    output_v2: bool,
+) -> Dict[str, Any]:
+    if not routes.complete:
+        raise EmuFlowError("TLR router did not return exact demand coverage")
+    if not timing.complete:
+        raise EmuFlowError(
+            "TLR router did not return exact timing-path coverage"
+        )
+    expected_metrics = {
+        "iterations",
+        "accepted_reroutes",
+        "rolled_back_reroutes",
+        "baseline_candidate_feasible",
+        "balanced_candidate_feasible",
+        "selected_delay_demand_balanced",
+        "worst_slack_ns",
+        "worst_normalized_slack",
+        "estimated_worst_tdm_slack_ns",
+        "estimated_worst_tdm_normalized_slack",
+        "estimated_max_tdm_ratio",
+        "max_utilization",
+        "total_link_bit_hops",
+    }
+    generator_index = {
+        generator: index
+        for index, generator in enumerate(ROUTE_CANDIDATE_GENERATORS)
+    }
+    if output_v2:
+        expected_metrics.update(
+            {
+                "steiner_candidate_feasible",
+                "metric_closure_candidate_feasible",
+                "shallow_light_candidate_feasible",
+                "adaptive_hop_candidate_feasible",
+                "master_rounds",
+                "master_switches",
+                "master_exact",
+                "candidate_workers",
+                "parallel_candidate_tasks",
+                "reroute_conflict_batches",
+                "maximum_parallel_batch",
+                "parallel_reroute_tasks",
+            }
+        )
+        refined_bit = 1 << generator_index["refined-final"]
+        if any(not (coverage & refined_bit) for coverage in candidate_coverage):
+            raise EmuFlowError(
+                "TLR router did not return each selected route as a candidate"
+            )
+        if not selections.complete:
+            raise EmuFlowError(
+                "TLR router master selection coverage is not exact"
+            )
+        for demand_index, selection in enumerate(selections):
+            if (
+                selection not in ROUTE_MASTER_GENERATORS
+                or not (
+                    candidate_coverage[demand_index]
+                    & (1 << generator_index[selection])
+                )
+            ):
+                raise EmuFlowError(
+                    "TLR router selected an unavailable/non-master candidate"
+                )
+    if set(metrics) != expected_metrics:
+        raise EmuFlowError("TLR router returned incomplete metric coverage")
+    return {
+        "routes": routes,
+        "candidates": candidates,
+        "selections": selections,
+        "direction_locks": locks,
+        "timing": timing,
+        "metrics": metrics,
+        "compact_candidate_summary": (
+            {
+                "domains_by_demand": candidate_domains,
+                "candidate_counts": candidate_counts,
+                "max_route_hops_observed": candidate_max_hops,
+            }
+            if compact_candidates and output_v2
+            else None
+        ),
+    }
+
+
+def _parse_native_output_sqlite(
+    path: Path,
+    model: Mapping[str, Any],
+    *,
+    compact_candidates: bool,
+    max_route_hops: Optional[int],
+) -> Dict[str, Any]:
+    demand_count = len(model["demands"])
+    path_count = len(model["paths"])
+    routes = _PackedNativeRouteSequence(demand_count)
+    candidates: Dict[int, Dict[str, Any]] = defaultdict(dict)
+    selections = _PackedNativeSelectionSequence(demand_count)
+    locks: Dict[int, int] = {}
+    timing = _PackedNativeTimingSequence(path_count)
+    candidate_coverage = bytearray(demand_count)
+    candidate_domains = [0] * demand_count
+    candidate_counts = [0] * len(ROUTE_CANDIDATE_GENERATORS)
+    candidate_max_hops = 0
+    metrics: Dict[str, Any] = {}
+    expected_tables = {
+        "direction_locks": (
+            ("group_index", "INTEGER", 0, 1),
+            ("arc_index", "INTEGER", 1, 0),
+        ),
+        "routes": (
+            ("demand_index", "INTEGER", 0, 1),
+            ("max_delay_ns", "REAL", 1, 0),
+        ),
+        "route_arcs": (
+            ("demand_index", "INTEGER", 1, 1),
+            ("seq", "INTEGER", 1, 2),
+            ("arc_index", "INTEGER", 1, 0),
+        ),
+        "candidate_bundles": (
+            ("demand_index", "INTEGER", 0, 1),
+            ("record_count", "INTEGER", 1, 0),
+            ("records", "BLOB", 1, 0),
+        ),
+        "selections": (
+            ("demand_index", "INTEGER", 0, 1),
+            ("generator", "INTEGER", 1, 0),
+        ),
+        "timing_paths": (
+            ("path_index", "INTEGER", 0, 1),
+            ("delay_ns", "REAL", 1, 0),
+            ("slack_ns", "REAL", 1, 0),
+            ("normalized_slack", "REAL", 1, 0),
+        ),
+        "metrics": (
+            ("name", "TEXT", 1, 1),
+            ("kind", "INTEGER", 1, 0),
+            ("integer_value", "INTEGER", 0, 0),
+            ("real_value", "REAL", 0, 0),
+        ),
+    }
+    try:
+        connection = sqlite3.connect(
+            f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+        )
+        connection.row_factory = sqlite3.Row
+        try:
+            if (
+                connection.execute("PRAGMA application_id").fetchone()[0]
+                != _NATIVE_ROUTE_RESULT_APPLICATION_ID
+                or connection.execute("PRAGMA user_version").fetchone()[0]
+                != _NATIVE_ROUTE_RESULT_USER_VERSION
+            ):
+                raise EmuFlowError(
+                    "TLR router returned an unsupported typed output envelope"
+                )
+            objects = {
+                (str(row[0]), str(row[1]))
+                for row in connection.execute(
+                    "SELECT type,name FROM sqlite_master "
+                    "WHERE name NOT LIKE 'sqlite_%'"
+                )
+            }
+            if objects != {("table", table) for table in expected_tables}:
+                raise EmuFlowError(
+                    "TLR router returned an invalid typed output schema"
+                )
+            for table, expected_columns in expected_tables.items():
+                columns = tuple(
+                    (
+                        str(row[1]),
+                        str(row[2]).upper(),
+                        int(row[3]),
+                        int(row[5]),
+                    )
+                    for row in connection.execute(f"PRAGMA table_info({table})")
+                )
+                if columns != expected_columns:
+                    raise EmuFlowError(
+                        "TLR router returned an invalid typed output schema"
+                    )
+
+            for row in connection.execute(
+                "SELECT group_index,arc_index FROM direction_locks "
+                "ORDER BY group_index"
+            ):
+                group = int(row[0])
+                arc_index = int(row[1])
+                if group in locks or arc_index < 0 or arc_index >= len(model["arcs"]):
+                    raise EmuFlowError("TLR router returned an invalid lock")
+                locks[group] = arc_index
+
+            arc_rows = iter(
+                connection.execute(
+                    "SELECT demand_index,seq,arc_index FROM route_arcs "
+                    "ORDER BY demand_index,seq"
+                )
+            )
+            arc_row = next(arc_rows, None)
+            for row in connection.execute(
+                "SELECT demand_index,max_delay_ns FROM routes "
+                "ORDER BY demand_index"
+            ):
+                demand_index = int(row[0])
+                record_arcs = []
+                while arc_row is not None and int(arc_row[0]) == demand_index:
+                    if int(arc_row[1]) != len(record_arcs):
+                        raise EmuFlowError(
+                            "TLR router returned unordered route arcs"
+                        )
+                    record_arcs.append(int(arc_row[2]))
+                    arc_row = next(arc_rows, None)
+                if arc_row is not None and int(arc_row[0]) < demand_index:
+                    raise EmuFlowError("TLR router returned orphan route arcs")
+                routes.set_record(demand_index, float(row[1]), record_arcs)
+            if arc_row is not None:
+                raise EmuFlowError("TLR router returned orphan route arcs")
+
+            for row in connection.execute(
+                "SELECT demand_index,record_count,records "
+                "FROM candidate_bundles ORDER BY demand_index"
+            ):
+                demand_index = int(row[0])
+                record_count = int(row[1])
+                payload = bytes(row[2])
+                if demand_index < 0 or demand_index >= demand_count or not (
+                    1 <= record_count <= len(ROUTE_CANDIDATE_GENERATORS)
+                ):
+                    raise EmuFlowError(
+                        "TLR router returned duplicate/unknown candidate"
+                    )
+                offset = 0
+                previous_ordinal = -1
+                for _record in range(record_count):
+                    if len(payload) - offset < 13:
+                        raise EmuFlowError(
+                            "TLR router returned malformed candidate bundle"
+                        )
+                    ordinal = payload[offset]
+                    candidate_delay = struct.unpack_from(
+                        "<d", payload, offset + 1
+                    )[0]
+                    arc_count = struct.unpack_from(
+                        "<I", payload, offset + 9
+                    )[0]
+                    offset += 13
+                    arc_bytes = 4 * arc_count
+                    if (
+                        ordinal <= previous_ordinal
+                        or ordinal >= len(ROUTE_CANDIDATE_GENERATORS)
+                        or len(payload) - offset < arc_bytes
+                    ):
+                        raise EmuFlowError(
+                            "TLR router returned malformed candidate bundle"
+                        )
+                    record_arcs = (
+                        []
+                        if arc_count == 0
+                        else list(
+                            struct.unpack_from(
+                                f"<{arc_count}I", payload, offset
+                            )
+                        )
+                    )
+                    offset += arc_bytes
+                    previous_ordinal = ordinal
+                    bit = 1 << ordinal
+                    if candidate_coverage[demand_index] & bit:
+                        raise EmuFlowError(
+                            "TLR router returned duplicate/unknown candidate"
+                        )
+                    candidate_coverage[demand_index] |= bit
+                    candidate_counts[ordinal] += 1
+                    generator = ROUTE_CANDIDATE_GENERATORS[ordinal]
+                    if compact_candidates:
+                        hops, domain_mask = _validate_compact_native_candidate(
+                            demand_index,
+                            record_arcs,
+                            candidate_delay,
+                            model,
+                            locks,
+                            max_route_hops,
+                        )
+                        candidate_max_hops = max(candidate_max_hops, hops)
+                        if generator in ROUTE_MASTER_GENERATORS:
+                            candidate_domains[demand_index] |= domain_mask
+                        if generator == "refined-final":
+                            route = routes[demand_index]
+                            if (
+                                route["arcs"] != record_arcs
+                                or route["max_delay_ns"] != candidate_delay
+                            ):
+                                raise EmuFlowError(
+                                    "TLR router refined candidate does not "
+                                    "match its final route"
+                                )
+                    else:
+                        candidates[demand_index][generator] = {
+                            "max_delay_ns": candidate_delay,
+                            "arcs": record_arcs,
+                        }
+                if offset != len(payload):
+                    raise EmuFlowError(
+                        "TLR router returned trailing candidate bundle bytes"
+                    )
+            for row in connection.execute(
+                "SELECT demand_index,generator FROM selections "
+                "ORDER BY demand_index"
+            ):
+                ordinal = int(row[1])
+                if ordinal < 0 or ordinal >= len(ROUTE_CANDIDATE_GENERATORS):
+                    raise EmuFlowError(
+                        "TLR router returned an unknown master selection"
+                    )
+                selections.set_record(
+                    int(row[0]), ROUTE_CANDIDATE_GENERATORS[ordinal]
+                )
+            for row in connection.execute(
+                "SELECT path_index,delay_ns,slack_ns,normalized_slack "
+                "FROM timing_paths ORDER BY path_index"
+            ):
+                timing.set_record(
+                    int(row[0]), float(row[1]), float(row[2]), float(row[3])
+                )
+            for row in connection.execute(
+                "SELECT name,kind,integer_value,real_value FROM metrics "
+                "ORDER BY name"
+            ):
+                name = str(row[0])
+                kind = int(row[1])
+                if name in metrics or kind not in {0, 1}:
+                    raise EmuFlowError(
+                        "TLR router returned invalid typed metrics"
+                    )
+                if (name in _INTEGER_NATIVE_METRICS) != (kind == 0):
+                    raise EmuFlowError(
+                        "TLR router returned invalid typed metrics"
+                    )
+                metrics[name] = int(row[2]) if kind == 0 else float(row[3])
+        finally:
+            connection.close()
+    except sqlite3.DatabaseError as error:
+        raise EmuFlowError("TLR router returned corrupt typed output") from error
+
+    return _finish_parsed_native_output(
+        routes=routes,
+        candidates=candidates,
+        selections=selections,
+        locks=locks,
+        timing=timing,
+        metrics=metrics,
+        candidate_coverage=candidate_coverage,
+        candidate_domains=candidate_domains,
+        candidate_counts=candidate_counts,
+        candidate_max_hops=candidate_max_hops,
+        compact_candidates=compact_candidates,
+        output_v2=True,
+    )
+
+
 def _parse_native_output(
     path: Path,
     model: Mapping[str, Any],
@@ -1817,6 +2215,14 @@ def _parse_native_output(
     compact_candidates: bool = False,
     max_route_hops: Optional[int] = None,
 ) -> Dict[str, Any]:
+    with path.open("rb") as probe:
+        if probe.read(16) == b"SQLite format 3\x00":
+            return _parse_native_output_sqlite(
+                path,
+                model,
+                compact_candidates=compact_candidates,
+                max_route_hops=max_route_hops,
+            )
     demand_count = len(model["demands"])
     path_count = len(model["paths"])
     routes = _PackedNativeRouteSequence(demand_count)
@@ -1929,108 +2335,25 @@ def _parse_native_output(
                 )
             elif fields[0] == "METRIC" and len(fields) == 3:
                 value: Any = float(fields[2])
-                if fields[1] in {
-                    "iterations",
-                    "accepted_reroutes",
-                    "rolled_back_reroutes",
-                    "baseline_candidate_feasible",
-                    "balanced_candidate_feasible",
-                    "selected_delay_demand_balanced",
-                    "total_link_bit_hops",
-                    "estimated_max_tdm_ratio",
-                    "master_rounds",
-                    "master_switches",
-                    "master_exact",
-                    "metric_closure_candidate_feasible",
-                    "shallow_light_candidate_feasible",
-                    "adaptive_hop_candidate_feasible",
-                    "candidate_workers",
-                    "parallel_candidate_tasks",
-                    "reroute_conflict_batches",
-                    "maximum_parallel_batch",
-                    "parallel_reroute_tasks",
-                }:
+                if fields[1] in _INTEGER_NATIVE_METRICS:
                     value = int(value)
                 metrics[fields[1]] = value
             else:
                 raise EmuFlowError(f"TLR router returned malformed record: {line}")
-    if not routes.complete:
-        raise EmuFlowError("TLR router did not return exact demand coverage")
-    if not timing.complete:
-        raise EmuFlowError("TLR router did not return exact timing-path coverage")
-    expected_metrics = {
-        "iterations",
-        "accepted_reroutes",
-        "rolled_back_reroutes",
-        "baseline_candidate_feasible",
-        "balanced_candidate_feasible",
-        "selected_delay_demand_balanced",
-        "worst_slack_ns",
-        "worst_normalized_slack",
-        "estimated_worst_tdm_slack_ns",
-        "estimated_worst_tdm_normalized_slack",
-        "estimated_max_tdm_ratio",
-        "max_utilization",
-        "total_link_bit_hops",
-    }
-    if output_v2:
-        expected_metrics.update(
-            {
-                "steiner_candidate_feasible",
-                "metric_closure_candidate_feasible",
-                "shallow_light_candidate_feasible",
-                "adaptive_hop_candidate_feasible",
-                "master_rounds",
-                "master_switches",
-                "master_exact",
-                "candidate_workers",
-                "parallel_candidate_tasks",
-                "reroute_conflict_batches",
-                "maximum_parallel_batch",
-                "parallel_reroute_tasks",
-            }
-        )
-        refined_bit = 1 << generator_index["refined-final"]
-        if any(not (coverage & refined_bit) for coverage in candidate_coverage):
-            raise EmuFlowError(
-                "TLR router did not return each selected route as a candidate"
-            )
-        if not selections.complete:
-            raise EmuFlowError(
-                "TLR router master selection coverage is not exact"
-            )
-        for demand_index, selection in enumerate(selections):
-            if (
-                selection not in ROUTE_MASTER_GENERATORS
-                or not (
-                    candidate_coverage[demand_index]
-                    & (1 << generator_index[selection])
-                )
-            ):
-                raise EmuFlowError(
-                    "TLR router selected an unavailable/non-master candidate"
-                )
-    if set(metrics) != expected_metrics:
-        raise EmuFlowError(
-            "TLR router returned incomplete metric coverage"
-        )
-    return {
-        "routes": routes,
-        "candidates": candidates,
-        "selections": selections,
-        "direction_locks": locks,
-        "timing": timing,
-        "metrics": metrics,
-        "compact_candidate_summary": (
-            {
-                "domains_by_demand": candidate_domains,
-                "candidate_counts": candidate_counts,
-                "max_route_hops_observed": candidate_max_hops,
-            }
-            if compact_candidates and output_v2
-            else None
-        ),
-    }
+    return _finish_parsed_native_output(
+        routes=routes,
+        candidates=candidates,
+        selections=selections,
+        locks=locks,
+        timing=timing,
+        metrics=metrics,
+        candidate_coverage=candidate_coverage,
+        candidate_domains=candidate_domains,
+        candidate_counts=candidate_counts,
+        candidate_max_hops=candidate_max_hops,
+        compact_candidates=compact_candidates,
+        output_v2=output_v2,
+    )
 
 
 def _tree_latency_cycles(
@@ -2205,10 +2528,13 @@ def route_system_native(
         "route",
         executable,
     )
+    typed_native_output = command[-2:] == ["phase4", "route"]
     with tempfile.TemporaryDirectory(prefix="emuflow-tlr-") as temporary:
         root = Path(temporary)
         native_input = root / "router.in"
-        native_output = root / "router.out"
+        native_output = root / (
+            "router-result.sqlite" if typed_native_output else "router.out"
+        )
         _write_native_input(
             native_input,
             len(nodes),
@@ -2219,7 +2545,12 @@ def route_system_native(
             candidate_workers,
         )
         completed = subprocess.run(
-            [*command, str(native_input), str(native_output)],
+            [
+                *command,
+                *(["--typed-output"] if typed_native_output else []),
+                str(native_input),
+                str(native_output),
+            ],
             capture_output=True,
             text=True,
             check=False,

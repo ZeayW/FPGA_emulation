@@ -1,5 +1,6 @@
 #include "bank_allocation.hpp"
 #include "emuflow_core/native_stages.hpp"
+#include "emuflow_core/sqlite.hpp"
 // SPDX-License-Identifier: Apache-2.0
 //
 // Timing-aware load-balanced die-level routing for EmuFlow.
@@ -8,13 +9,14 @@
 // plus the route/TDM coupling used in the DAC 2020 routing-topology/TDM and
 // ASP-DAC 2021 hybrid routing/TDM co-optimization formulations.
 //
-// The compact line-oriented interface is intentional: it keeps the optimizer
-// independent of a particular JSON library while Python remains only the
-// artifact adapter and independent checker.
+// Production writes a typed SQLite result relation through emuflow_core;
+// the compact line-oriented output remains an explicit differential boundary.
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <future>
 #include <functional>
@@ -37,6 +39,34 @@ namespace {
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr double kEps = 1.0e-12;
+constexpr int kTypedOutputApplicationId = 0x45545252;  // ASCII "ETRR".
+constexpr int kTypedOutputUserVersion = 1;
+
+int CandidateOrdinal(const std::string& generator) {
+  static const std::vector<std::string> generators = {
+      "shortest-path-tree",       "delay-demand-balanced",
+      "nearest-terminal-steiner", "directed-metric-closure",
+      "shallow-light-tree",       "adaptive-hop-tree",
+      "refined-final"};
+  const auto found = std::find(generators.begin(), generators.end(), generator);
+  if (found == generators.end()) {
+    throw std::runtime_error("unknown route candidate generator");
+  }
+  return static_cast<int>(std::distance(generators.begin(), found));
+}
+
+void AppendUnsigned32(std::vector<unsigned char>& output, std::uint32_t value) {
+  output.push_back(static_cast<unsigned char>(value & 0xffU));
+  output.push_back(static_cast<unsigned char>((value >> 8U) & 0xffU));
+  output.push_back(static_cast<unsigned char>((value >> 16U) & 0xffU));
+  output.push_back(static_cast<unsigned char>((value >> 24U) & 0xffU));
+}
+
+void AppendUnsigned64(std::vector<unsigned char>& output, std::uint64_t value) {
+  for (int shift = 0; shift < 64; shift += 8) {
+    output.push_back(static_cast<unsigned char>((value >> shift) & 0xffU));
+  }
+}
 
 struct Arc {
   int link = -1;
@@ -73,6 +103,23 @@ struct Route {
   std::vector<int> arcs;
   double max_delay_ns = 0.0;
 };
+
+void AppendCandidate(std::vector<unsigned char>& output, int generator,
+                     const Route& route) {
+  if (generator < 0 || generator > 6) {
+    throw std::runtime_error("invalid route candidate generator");
+  }
+  output.push_back(static_cast<unsigned char>(generator));
+  std::uint64_t delay_bits = 0;
+  static_assert(sizeof(delay_bits) == sizeof(route.max_delay_ns));
+  std::memcpy(&delay_bits, &route.max_delay_ns, sizeof(delay_bits));
+  AppendUnsigned64(output, delay_bits);
+  AppendUnsigned32(output, static_cast<std::uint32_t>(route.arcs.size()));
+  for (int arc : route.arcs) {
+    if (arc < 0) throw std::runtime_error("negative route arc identity");
+    AppendUnsigned32(output, static_cast<std::uint32_t>(arc));
+  }
+}
 
 enum class CandidateGenerator {
   kShortestPath,
@@ -685,6 +732,187 @@ class Router {
            << estimated_max_tdm_ratio() << '\n';
     output << "METRIC max_utilization " << final.max_utilization << '\n';
     output << "METRIC total_link_bit_hops " << final.bit_hops << '\n';
+  }
+
+  void write_typed_output(const std::string& path) const {
+    using emuflow::core::SqliteDatabase;
+    using emuflow::core::SqliteStatement;
+    using emuflow::core::SqliteTransaction;
+
+    SqliteDatabase database(path, SqliteDatabase::Mode::kCreateExclusive);
+    database.Execute("PRAGMA journal_mode=OFF");
+    database.Execute("PRAGMA synchronous=OFF");
+    database.Execute("PRAGMA temp_store=FILE");
+    database.Execute("PRAGMA locking_mode=EXCLUSIVE");
+    database.Execute("PRAGMA application_id=" +
+                     std::to_string(kTypedOutputApplicationId));
+    database.Execute("PRAGMA user_version=" +
+                     std::to_string(kTypedOutputUserVersion));
+    database.Execute(R"SQL(
+CREATE TABLE direction_locks(
+  group_index INTEGER PRIMARY KEY,
+  arc_index INTEGER NOT NULL
+);
+CREATE TABLE routes(
+  demand_index INTEGER PRIMARY KEY,
+  max_delay_ns REAL NOT NULL
+);
+CREATE TABLE route_arcs(
+  demand_index INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  arc_index INTEGER NOT NULL,
+  PRIMARY KEY(demand_index,seq)
+) WITHOUT ROWID;
+CREATE TABLE candidate_bundles(
+  demand_index INTEGER PRIMARY KEY,
+  record_count INTEGER NOT NULL CHECK(record_count BETWEEN 1 AND 7),
+  records BLOB NOT NULL
+);
+CREATE TABLE selections(
+  demand_index INTEGER PRIMARY KEY,
+  generator INTEGER NOT NULL CHECK(generator BETWEEN 0 AND 5)
+);
+CREATE TABLE timing_paths(
+  path_index INTEGER PRIMARY KEY,
+  delay_ns REAL NOT NULL,
+  slack_ns REAL NOT NULL,
+  normalized_slack REAL NOT NULL
+);
+CREATE TABLE metrics(
+  name TEXT PRIMARY KEY,
+  kind INTEGER NOT NULL CHECK(kind IN (0,1)),
+  integer_value INTEGER,
+  real_value REAL,
+  CHECK((kind=0 AND integer_value IS NOT NULL AND real_value IS NULL) OR
+        (kind=1 AND integer_value IS NULL AND real_value IS NOT NULL))
+) WITHOUT ROWID;
+)SQL");
+
+    SqliteTransaction transaction(database);
+    auto lock_statement = database.Prepare(
+        "INSERT INTO direction_locks VALUES(?,?)");
+    auto route_statement = database.Prepare("INSERT INTO routes VALUES(?,?)");
+    auto route_arc_statement = database.Prepare(
+        "INSERT INTO route_arcs VALUES(?,?,?)");
+    auto candidate_statement = database.Prepare(
+        "INSERT INTO candidate_bundles VALUES(?,?,?)");
+    auto selection_statement = database.Prepare(
+        "INSERT INTO selections VALUES(?,?)");
+    auto timing_statement = database.Prepare(
+        "INSERT INTO timing_paths VALUES(?,?,?,?)");
+    auto metric_statement = database.Prepare(
+        "INSERT INTO metrics VALUES(?,?,?,?)");
+
+    for (int group = 0; group < static_cast<int>(direction_lock_.size()); ++group) {
+      lock_statement.BindInteger(1, group);
+      lock_statement.BindInteger(2, direction_lock_[group]);
+      lock_statement.Execute();
+    }
+    for (int demand = 0; demand < static_cast<int>(routes_.size()); ++demand) {
+      route_statement.BindInteger(1, demand);
+      route_statement.BindReal(2, routes_[demand].max_delay_ns);
+      route_statement.Execute();
+      for (int seq = 0; seq < static_cast<int>(routes_[demand].arcs.size()); ++seq) {
+        route_arc_statement.BindInteger(1, demand);
+        route_arc_statement.BindInteger(2, seq);
+        route_arc_statement.BindInteger(3, routes_[demand].arcs[seq]);
+        route_arc_statement.Execute();
+      }
+    }
+    std::vector<unsigned char> candidate_bundle;
+    for (int demand = 0; demand < static_cast<int>(routes_.size()); ++demand) {
+      candidate_bundle.clear();
+      int record_count = 0;
+      const auto append = [&](int generator,
+                              const std::vector<Route>& candidates,
+                              bool generated) {
+        if (!generated || candidates.size() != model_.demands.size()) return;
+        AppendCandidate(candidate_bundle, generator, candidates[demand]);
+        ++record_count;
+      };
+      append(0, shortest_candidate_routes_, shortest_candidate_generated_);
+      append(1, balanced_candidate_routes_, balanced_candidate_generated_);
+      append(2, steiner_candidate_routes_, steiner_candidate_generated_);
+      append(3, metric_closure_candidate_routes_,
+             metric_closure_candidate_generated_);
+      append(4, shallow_light_candidate_routes_,
+             shallow_light_candidate_generated_);
+      append(5, adaptive_hop_candidate_routes_,
+             adaptive_hop_candidate_generated_);
+      append(6, routes_, true);
+      candidate_statement.BindInteger(1, demand);
+      candidate_statement.BindInteger(2, record_count);
+      candidate_statement.BindBlob(3, candidate_bundle.data(),
+                                   candidate_bundle.size());
+      candidate_statement.Execute();
+    }
+
+    for (int demand = 0;
+         demand < static_cast<int>(master_selection_.size()); ++demand) {
+      selection_statement.BindInteger(1, demand);
+      selection_statement.BindInteger(2,
+                                      CandidateOrdinal(master_selection_[demand]));
+      selection_statement.Execute();
+    }
+    for (int path_index = 0;
+         path_index < static_cast<int>(model_.paths.size()); ++path_index) {
+      const auto [delay, slack, normalized] = path_metrics(path_index);
+      timing_statement.BindInteger(1, path_index);
+      timing_statement.BindReal(2, delay);
+      timing_statement.BindReal(3, slack);
+      timing_statement.BindReal(4, normalized);
+      timing_statement.Execute();
+    }
+
+    const auto write_integer_metric = [&](const std::string& name,
+                                          long long value) {
+      metric_statement.BindText(1, name);
+      metric_statement.BindInteger(2, 0);
+      metric_statement.BindInteger(3, value);
+      metric_statement.BindNull(4);
+      metric_statement.Execute();
+    };
+    const auto write_real_metric = [&](const std::string& name, double value) {
+      metric_statement.BindText(1, name);
+      metric_statement.BindInteger(2, 1);
+      metric_statement.BindNull(3);
+      metric_statement.BindReal(4, value);
+      metric_statement.Execute();
+    };
+    const Objective final = objective();
+    write_integer_metric("iterations", completed_iterations_);
+    write_integer_metric("accepted_reroutes", accepted_reroutes_);
+    write_integer_metric("rolled_back_reroutes", rolled_back_reroutes_);
+    write_integer_metric("baseline_candidate_feasible",
+                         baseline_candidate_feasible_);
+    write_integer_metric("balanced_candidate_feasible",
+                         balanced_candidate_feasible_);
+    write_integer_metric("steiner_candidate_feasible",
+                         steiner_candidate_feasible_);
+    write_integer_metric("metric_closure_candidate_feasible",
+                         metric_closure_candidate_feasible_);
+    write_integer_metric("shallow_light_candidate_feasible",
+                         shallow_light_candidate_feasible_);
+    write_integer_metric("adaptive_hop_candidate_feasible",
+                         adaptive_hop_candidate_feasible_);
+    write_integer_metric("master_rounds", master_rounds_);
+    write_integer_metric("master_switches", master_switches_);
+    write_integer_metric("master_exact", master_exact_);
+    write_integer_metric("candidate_workers", model_.candidate_workers);
+    write_integer_metric("parallel_candidate_tasks", parallel_candidate_tasks_);
+    write_integer_metric("reroute_conflict_batches", reroute_conflict_batches_);
+    write_integer_metric("maximum_parallel_batch", maximum_parallel_batch_);
+    write_integer_metric("parallel_reroute_tasks", parallel_reroute_tasks_);
+    write_integer_metric("selected_delay_demand_balanced", selected_balanced_);
+    write_real_metric("worst_slack_ns", final.worst_slack_ns);
+    write_real_metric("worst_normalized_slack", final.worst_normalized_slack);
+    write_real_metric("estimated_worst_tdm_slack_ns", final.worst_tdm_slack_ns);
+    write_real_metric("estimated_worst_tdm_normalized_slack",
+                      final.worst_tdm_normalized_slack);
+    write_integer_metric("estimated_max_tdm_ratio", estimated_max_tdm_ratio());
+    write_real_metric("max_utilization", final.max_utilization);
+    write_integer_metric("total_link_bit_hops", final.bit_hops);
+    transaction.Commit();
   }
 
  private:
@@ -2718,10 +2946,15 @@ void usage(const char* executable) {
 }  // namespace
 
 void emuflow::native::RouteTlr(const std::string& input_path,
-                               const std::string& output_path) {
+                               const std::string& output_path,
+                               bool typed_output) {
   Router router(read_input(input_path));
   router.run();
-  router.write_output(output_path);
+  if (typed_output) {
+    router.write_typed_output(output_path);
+  } else {
+    router.write_output(output_path);
+  }
 }
 
 #if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
@@ -2735,7 +2968,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   try {
-    emuflow::native::RouteTlr(argv[1], argv[2]);
+    emuflow::native::RouteTlr(argv[1], argv[2], false);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "emuflow_tlr_router: " << error.what() << '\n';

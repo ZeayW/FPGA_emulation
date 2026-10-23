@@ -407,7 +407,8 @@ capture runs.
 Smaller designs retain the Python implementation as an executable reference.
 The analyzer now uses the first `libemuflow_core` components: representation-
 scoped typed IDs, checked native artifact reads, and synchronized atomic binary
-publication. The installed `emuflow-native` entry now invokes the real Phase 3
+publication, plus shared SQLite RAII statements, transactions and database
+lifetime handling. The installed `emuflow-native` entry now invokes the real Phase 3
 analyzer, Phase 4 TLR router, Phase 5 exact scheduler and Phase 6 Chimew
 signal-grouping, position-refinement, RUDY and bank/channel assignment kernels from one linked
 stage library; production resolves this entry directly, while explicit differential runs retain
@@ -452,6 +453,14 @@ payload was 10,400,016 bytes and the checksum was unchanged; wall time changed
 from 0.247 to 0.431 seconds. This isolates Phase 4 model representation and is
 not NVDLA qualification. Native result parsing now keeps route arc spans,
 delays, timing scalars and master-selection ordinals in fixed-width columns.
+The production unified entry writes those records to a strict typed SQLite
+result relation instead of a graph-sized line protocol. Final route arcs stay
+normalized, while validation-only candidates are packed once per demand
+alongside typed selections, timing values and metrics. The adapter rejects an
+unknown table, column, type, version, duplicate record or trailing bundle byte,
+then performs the same independent tree, delay, lock, coverage and final-route
+checks. An explicitly selected standalone router retains the text protocol for
+differential compatibility.
 The production `run_phase4` path exposes repeatable logical cursors over those
 columns, so independent validation and RouteStore publication no longer retain
 the native route dictionaries beside a second complete public route/timing/
@@ -461,9 +470,15 @@ and selection results, the isolated additional result state and a complete
 route/selection traversal reduced retained traced allocation from 144,806,088
 to 6,737,103 bytes and process peak RSS from 352,944,128 to 71,499,776 bytes;
 the packed payload was 6,700,000 bytes and wall time changed from 0.405 to 1.066
-seconds. This is adapter evidence rather than NVDLA qualification. C++ still
-emits its result protocol for Python to check and project; writing RouteStore
-relations directly from the native stage remains migration work. The
+seconds. A separate 100,000-demand, seven-candidate, one-edge A/B produced the
+same complete logical SHA-256. The native result artifact fell from 33,100,858
+text bytes to 16,261,120 typed SQLite bytes and producer wall time fell from
+0.58 to 0.43 seconds. Independent compact parsing and semantic checks took
+2.827 versus 2.839 seconds; native peak RSS rose from 85,737,472 to 105,693,184
+bytes. These are synthetic adapter measurements rather than NVDLA
+qualification. Python still projects the independently checked result into
+the final RouteStore; direct native RouteStore relation publication remains
+migration work. The
 independent Phase 4 timing validator now retains one `net -> rank` identity
 index plus fixed-width route-delay, TDM-delay and route-signature columns. It
 releases those columns before the second common timing reconstruction, which
@@ -1754,7 +1769,8 @@ The root CMake project builds EmuFlow's native kernels and selected in-tree
 engines. Python packaging alone does not build a complete flow.
 
 Required tools include CMake 3.20+, GNU Make, a C++17 compiler, Python 3.9+,
-and Boost. The complete build also needs the development dependencies for
+Boost, and SQLite3 development headers and libraries. The complete build also
+needs the development dependencies for
 OpenROAD, OpenSTA, OpenPARF, and VPR: Bison, Flex, Tcl, SWIG, Eigen3, zlib,
 spdlog, LEMON, OR-Tools, OpenMP, and the appropriate Python/PyTorch packages.
 CUDA is optional and disabled by default. The OpenPARF Python/PyTorch ABI must

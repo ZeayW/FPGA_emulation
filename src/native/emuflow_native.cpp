@@ -9,7 +9,7 @@ namespace {
 constexpr const char* kUsage =
     "usage:\n"
     "  emuflow-native phase3 analyze INPUT OUTPUT\n"
-    "  emuflow-native phase4 route INPUT OUTPUT\n"
+    "  emuflow-native phase4 route --typed-output INPUT OUTPUT\n"
     "  emuflow-native phase5 schedule INPUT OUTPUT\n"
     "  emuflow-native phase6 assign-banks "
     "(--typed-input|--legacy-text) INPUT OUTPUT\n"
@@ -32,8 +32,9 @@ int Dispatch(int argc, char** argv) {
     emuflow::native::AnalyzeStaticExact(argv[3], argv[4]);
     return 0;
   }
-  if (argc == 5 && phase == "phase4" && operation == "route") {
-    emuflow::native::RouteTlr(argv[3], argv[4]);
+  if (argc == 6 && phase == "phase4" && operation == "route" &&
+      std::string(argv[3]) == "--typed-output") {
+    emuflow::native::RouteTlr(argv[4], argv[5], true);
     return 0;
   }
   if (argc == 5 && phase == "phase5" && operation == "schedule") {
