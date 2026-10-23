@@ -34,8 +34,9 @@ an explicit compatibility operation. Phase 7 explicitly enables immutable
 SQLite input URIs across supported runtimes. A continued run uses the current
 BoardDB and does not inherit an older interconnect configuration from the saved input.
 Mapped physical pin indexes are built in bulk before their atomic publication.
-Indexed OpenPARF Bookshelf export streams typed pins through C++ without
-reconstructing the cell and pin population in Python.
+Indexed OpenPARF Bookshelf export streams typed pins through the shared native
+core and `emuflow-native phase7 export-bookshelf`, without reconstructing the
+cell, pin or per-net fanout population in memory.
 Physical macro derivation is shared within one immutable mapped reader;
 independent artifact readers still derive and validate their own contracts.
 The native SLL weight update evaluates overflowing exponential steps against

@@ -28,6 +28,7 @@ struct RegisteredSchema {
   ArtifactEncoding encoding;
   std::uint64_t magic;
   std::uint32_t version;
+  bool immutable_read_only = false;
 };
 // Only explicitly registered versions are accepted. This registry describes
 // envelopes; circuit/record semantics remain independently checked by stages.

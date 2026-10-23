@@ -2,6 +2,8 @@
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/schedule_store.hpp"
 #include "emuflow_core/schedule_ingress.hpp"
+#include "emuflow_core/bookshelf.hpp"
+#include "emuflow_core/sqlite.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -25,6 +27,7 @@ const char* StageName(Stage stage) {
     case Stage::kGroupSignals: return "phase6.group-signals";
     case Stage::kRefinePositions: return "phase6.refine-groups";
     case Stage::kRudy: return "phase6.rudy";
+    case Stage::kExportBookshelf: return "phase7.export-bookshelf";
   }
   return "unknown-native-stage";
 }
@@ -53,6 +56,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kGroupSignals: return {request.typed_input ? "chimew-group-input-v1" : "chimew-group-legacy-text"};
     case Stage::kRefinePositions: return {request.typed_input ? "chimew-refine-input-v1" : "chimew-refine-legacy-text"};
     case Stage::kRudy: return {"chimew-rudy-input-v1"};
+    case Stage::kExportBookshelf: return {"xilinx-mapped-index-v2", "openparf-atom-index-private-v1"};
   }
   throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
 }
@@ -72,6 +76,37 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       throw core::StageError(core::ErrorCode::kInvalidRequest, "native stage artifact coverage is invalid");
     std::vector<std::string> paths = request.input_paths;
     if (bound) for (const auto& input : request.input_artifacts) paths.push_back(input.path());
+    if (request.stage == Stage::kExportBookshelf) {
+      if (!bound) {
+        try { for (auto& path : paths) path = core::SqliteFilePath(path); }
+        catch (const std::exception& error) {
+          throw core::StageError(core::ErrorCode::kInvalidRequest,error.what());
+        }
+      }
+      std::vector<std::string> destinations{
+          request.output_path,request.auxiliary_output_path,request.scratch_path};
+      if (!request.report_path.empty()) destinations.push_back(request.report_path);
+      const auto same = [&](const auto& a, const auto& b) {
+        return Equivalent(a,b) || std::filesystem::weakly_canonical(a) == std::filesystem::weakly_canonical(b);
+      };
+      for (std::size_t i=0; i<destinations.size(); ++i) {
+        const auto& destination = destinations[i];
+        if (destination.empty() || destination == "-" ||
+            !std::filesystem::is_directory(std::filesystem::absolute(destination).parent_path()) ||
+            std::filesystem::is_directory(destination))
+          throw core::StageError(core::ErrorCode::kInvalidRequest,"Bookshelf output directory is unavailable");
+        for (const auto& input : paths)
+          if (same(input,destination))
+            throw core::StageError(core::ErrorCode::kInvalidRequest,"Bookshelf destination aliases an input");
+        for (std::size_t j=0; j<i; ++j)
+          if (same(destinations[j],destination))
+            throw core::StageError(core::ErrorCode::kInvalidRequest,"Bookshelf destinations alias each other");
+      }
+      if (std::filesystem::exists(request.scratch_path) || std::filesystem::is_symlink(request.scratch_path))
+        throw core::StageError(core::ErrorCode::kInvalidRequest,"Bookshelf scratch relation already exists");
+    } else if (!request.auxiliary_output_path.empty() || !request.scratch_path.empty()) {
+      throw core::StageError(core::ErrorCode::kInvalidRequest,"unexpected auxiliary stage destinations");
+    }
     if (request.stage == Stage::kRefinePatron && request.typed_output && !request.summary_output)
       throw core::StageError(core::ErrorCode::kInvalidRequest, "typed PATRON output requires summary mode");
     const bool stream_stage = request.stage == Stage::kAssignBanks || request.stage == Stage::kGroupSignals ||
@@ -132,6 +167,9 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kGroupSignals: GroupChimewSignals(path(0), output, request.typed_input, request.expected_sha256); break;
       case Stage::kRefinePositions: RefineChimewPositions(path(0), output, request.typed_input, request.expected_sha256); break;
       case Stage::kRudy: EvaluateChimewRudy(path(0), output); break;
+      case Stage::kExportBookshelf:
+        core::ExportBookshelf(inputs[0],inputs[1],output,request.auxiliary_output_path,request.scratch_path);
+        break;
       default: throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
     }
     if (output == "-") {
@@ -156,6 +194,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kGroupSignals: schema = "chimew-group-output-text"; break;
       case Stage::kRefinePositions: schema = "chimew-refine-output-text"; break;
       case Stage::kRudy: schema = "chimew-rudy-output-text"; break;
+      case Stage::kExportBookshelf: schema = "openparf-bookshelf-nets-v1"; break;
       default: throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
     }
     std::vector<core::ArtifactRef> refs{core::ArtifactRef::Bind(request.output_path, schema, request.output_path == "-")};
@@ -163,6 +202,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       refs.push_back(core::ArtifactRef::Bind(request.output_path + ".sqlite", "exact-capture-index-private-v1"));
     if (request.stage == Stage::kScheduleFromStore)
       refs.push_back(core::ArtifactRef::Bind(request.output_path + ".input", "exact-schedule-input-v1"));
+    if (request.stage == Stage::kExportBookshelf)
+      refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path, "openparf-bookshelf-summary-v1"));
     return refs;
   });
 }

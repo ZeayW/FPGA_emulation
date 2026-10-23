@@ -107,6 +107,22 @@ std::int64_t SqliteStatement::Integer(int column) const {
   return sqlite3_column_int64(statement_, column);
 }
 
+std::int64_t SqliteStatement::TypedInteger(int column) const {
+  if (sqlite3_column_type(statement_, column) != SQLITE_INTEGER)
+    throw std::runtime_error("SQLite record has invalid integer");
+  return Integer(column);
+}
+
+std::string SqliteStatement::TypedText(int column) const {
+  if (sqlite3_column_type(statement_, column) != SQLITE_TEXT)
+    throw std::runtime_error("SQLite record has invalid text");
+  return Text(column);
+}
+
+bool SqliteStatement::IsNull(int column) const {
+  return sqlite3_column_type(statement_, column) == SQLITE_NULL;
+}
+
 double SqliteStatement::Real(int column) const {
   return sqlite3_column_double(statement_, column);
 }
@@ -126,15 +142,43 @@ std::string SqliteStatement::Text(int column) const {
                                         static_cast<std::size_t>(size));
 }
 
+std::string SqliteFilePath(const std::string& path_or_uri) {
+  if (path_or_uri.compare(0, 5, "file:") != 0) return path_or_uri;
+  sqlite3* database = nullptr;
+  const int code = sqlite3_open_v2(path_or_uri.c_str(), &database,
+                                 SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nullptr);
+  const char* name = database ? sqlite3_db_filename(database, "main") : nullptr;
+  const std::string result = name ? name : "";
+  const std::string detail = database ? sqlite3_errmsg(database) : sqlite3_errstr(code);
+  if (database) sqlite3_close(database);
+  if (code != SQLITE_OK || result.empty())
+    throw std::runtime_error("cannot resolve SQLite file URI: " + detail);
+  return result;
+}
+
 SqliteDatabase::SqliteDatabase(const std::string& path, Mode mode) {
   if (mode == Mode::kCreateExclusive && std::filesystem::exists(path)) {
     throw std::runtime_error("refusing to replace an existing SQLite artifact");
   }
-  const int flags = mode == Mode::kCreateExclusive
+  int flags = mode == Mode::kCreateExclusive
                         ? SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
                               SQLITE_OPEN_NOMUTEX
                         : SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX;
-  const int code = sqlite3_open_v2(path.c_str(), &database_, flags, nullptr);
+  std::string filename = path;
+  if (mode == Mode::kImmutableReadOnly) {
+    filename = "file:";
+    const auto absolute = std::filesystem::absolute(path).string();
+    for (unsigned char c : absolute) {
+      if (c == '%' || c == '?' || c == '#') {
+        filename += '%';
+        filename += "0123456789ABCDEF"[c >> 4];
+        filename += "0123456789ABCDEF"[c & 15];
+      } else filename += static_cast<char>(c);
+    }
+    filename += "?mode=ro&immutable=1";
+    flags |= SQLITE_OPEN_URI;
+  }
+  const int code = sqlite3_open_v2(filename.c_str(), &database_, flags, nullptr);
   if (code != SQLITE_OK) {
     sqlite3* failed = database_;
     database_ = nullptr;

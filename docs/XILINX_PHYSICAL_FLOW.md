@@ -31,14 +31,20 @@ insertion, then bulk-builds the auxiliary pin indexes before atomic publication.
 No consumer can observe a partially indexed netlist. This avoids per-pin random
 updates to the net-order index during large physical input generation.
 
-For mapped index v2, `emuflow_xilinx_bookshelf_exporter` reads the typed cell,
-pin, and validated atom relations directly. C++ checks atom ownership and types,
+For mapped index v2, `emuflow-native phase7 export-bookshelf` reads the typed
+cell, pin, and validated atom relations directly through `libemuflow_core`.
+The standalone `emuflow_xilinx_bookshelf_exporter` is a compatibility client of
+the same shared operation. C++ checks atom ownership and types,
 contiguous port bits, pin directions, and multiple drivers, then streams nets in
 numeric net order with drivers first. Constants remain in primitive pin
 signatures but do not become net endpoints; single-endpoint nets are omitted.
 Only primitive pin signatures and aggregate counts return to Python, which
 renders the small library and atomically publishes the net file. The exporter
-opens its frozen input relations with explicit immutable read-only URIs and
+uses two ordered cursors over one endpoint index instead of retaining one net's
+fanout. It binds input generations, rejects aliased destinations, stages text
+through the shared atomic writer, publishes the summary last, and retires its
+owned scratch relation on success or failure. It opens its frozen input
+relations with explicit immutable read-only URIs and
 uses the SQLite 3.22+ development library at build time. Materialized JSON callers
 retain the reference exporter for explicit compatibility and differential tests.
 This removes one graph-sized Python traversal; mapped lowering, physical macro

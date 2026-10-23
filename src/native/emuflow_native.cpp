@@ -34,7 +34,8 @@ constexpr const char* kUsage =
     "  phase6 group-signals --legacy-text INPUT OUTPUT\n"
     "  phase6 refine-groups --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
     "  phase6 refine-groups --legacy-text INPUT OUTPUT\n"
-    "  phase6 rudy INPUT OUTPUT\n";
+    "  phase6 rudy INPUT OUTPUT\n"
+    "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n";
 
 int Finish(emuflow::core::StageResult result, const std::string& report) {
   // Invalid requests may name a report which aliases an input/output. Never
@@ -180,6 +181,11 @@ int Dispatch(int argc, char** argv, const std::string& report) {
       if (argc == 6 && mode == "--legacy-text")
         return run(stage, {argv[4]}, argv[5]);
     }
+  }
+  if (phase == "phase7" && operation == "export-bookshelf" && argc == 8) {
+    StageRequest request{Stage::kExportBookshelf,{argv[3],argv[4]},argv[5]};
+    request.auxiliary_output_path = argv[6]; request.scratch_path = argv[7];
+    return Execute(std::move(request),report);
   }
   emuflow::core::StageResult result;
   result.stage = "native.request"; result.error = emuflow::core::ErrorCode::kInvalidRequest;

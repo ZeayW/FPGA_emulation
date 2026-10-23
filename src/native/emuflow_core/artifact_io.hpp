@@ -82,6 +82,8 @@ class AtomicBinaryWriter {
   void WriteBytes(const void* data, std::size_t size);
 
   void Commit();
+  // Streaming text exporters share the same flush/sync/rename owner.
+  std::ostream& stream() { return stream_; }
   const std::string& temporary_path() const { return temporary_path_; }
 
  private:

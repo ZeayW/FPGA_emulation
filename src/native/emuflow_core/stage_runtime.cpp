@@ -23,6 +23,12 @@ constexpr RegisteredSchema schemas[] = {
     {"external-tool-request-v1", ArtifactEncoding::kBinary, 0x31514552544c4645ULL, 1},
     {"external-tool-executable-v1", ArtifactEncoding::kText, 0, 1},
     {"emuir-compact-v2", ArtifactEncoding::kSqlite, 0x454d5549, 2},
+    // Existing physical index relations have zero application/user PRAGMAs.
+    // Their stage-owned metadata and complete ordered records remain mandatory.
+    {"xilinx-mapped-index-v2", ArtifactEncoding::kSqlite, 0, 0, true},
+    {"openparf-atom-index-private-v1", ArtifactEncoding::kSqlite, 0, 0, true},
+    {"openparf-bookshelf-nets-v1", ArtifactEncoding::kText, 0, 1},
+    {"openparf-bookshelf-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"exact-analysis-input-v3", ArtifactEncoding::kBinary, 0x31584553464d5545ULL, 3},
     {"exact-indexed-request-v4", ArtifactEncoding::kBinary, 0x31584553464d5545ULL, 4},
     {"exact-topology-v3", ArtifactEncoding::kBinary, 0x315845534f4d5545ULL, 3},
@@ -183,7 +189,8 @@ ArtifactRef ArtifactRef::Bind(const std::string& path, const std::string& schema
       ReadAndValidateHeader(reader, {schema.magic, schema.version, schema.name});
     } else if (schema.encoding == ArtifactEncoding::kSqlite) {
       RequireFinalizedSqlite(result.path_);
-      SqliteDatabase database(result.path_, SqliteDatabase::Mode::kReadOnly);
+      SqliteDatabase database(result.path_, schema.immutable_read_only
+          ? SqliteDatabase::Mode::kImmutableReadOnly : SqliteDatabase::Mode::kReadOnly);
       auto application = database.Prepare("PRAGMA application_id");
       auto version = database.Prepare("PRAGMA user_version");
       if (!application.Step() || !version.Step() ||

@@ -30,7 +30,7 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
 from .io import file_sha256, read_json, write_json
-from .native_tools import resolve_native_executable
+from .native_tools import resolve_native_stage_command
 from .xilinx_netlist import _IndexedCells
 from .openparf import run_openparf, validate_openparf_runtime
 from .openparf_native_driver import (
@@ -3467,7 +3467,9 @@ def _render_indexed_bookshelf(
 ) -> Tuple[str, Optional[str], int, int]:
     """Keep typed pin traversal and net text emission entirely in C++."""
 
-    executable = resolve_native_executable("emuflow_xilinx_bookshelf_exporter")
+    command = resolve_native_stage_command(
+        "emuflow_xilinx_bookshelf_exporter", "phase7", "export-bookshelf"
+    )
     database = next(
         row[2] for row in cells.connection.execute("PRAGMA database_list")
         if row[1] == "main"
@@ -3482,8 +3484,7 @@ def _render_indexed_bookshelf(
         output = root / "design.nets"
         report = root / "summary.tsv"
         result = subprocess.run(
-            [executable, Path(database).resolve().as_uri() + "?mode=ro&immutable=1",
-             atoms.path.resolve().as_uri() + "?mode=ro&immutable=1",
+            [*command, str(Path(database).resolve()), str(atoms.path.resolve()),
              str(output), str(report), str(root / "endpoints.sqlite")],
             capture_output=True, text=True, check=False,
         )
@@ -3531,8 +3532,9 @@ def _render_library_and_nets(
     """Render library data and stream net endpoints through a file relation.
 
     Atom and mapped-cell identities are merged in lexical order. Endpoint rows
-    are spooled once, then read by numeric net ID and source order; only one
-    net's fanout is resident while ``design.nets`` is emitted. An omitted
+    are spooled once, then read by numeric net ID and source order. The indexed
+    native path streams degree checks and pins without retaining a net's fanout;
+    the compatibility renderer retains one net at a time. An omitted
     ``nets_path`` explicitly materializes the final text for small compatibility
     callers and differential tests.
     """

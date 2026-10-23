@@ -78,6 +78,15 @@ before launching expensive work. The probe checks native core loading, SQLite
 External synthesis, placement, routing and timing engines require their
 separate dependency and device-data checks.
 
+`emuflow-native [--report OPERATION_JSON] phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL`
+streams the finalized mapped v2 and private lexical atom relations to OpenPARF
+net text. Inputs may be file paths or read-only SQLite file URIs. `SPOOL` must
+not exist; the operation removes its owned relation after export or failure.
+`NETS` and the primitive-signature `SUMMARY` are staged and published in that
+order, with the summary last. All destinations must be distinct from the inputs
+and each other. The normal Python adapter selects this shared operation; the
+standalone Bookshelf executable is a compatibility client of the same core.
+
 Installed Yosys streaming and OpenSTA extraction use the shared native external
 tool supervisor. It keeps diagnostics bounded and preserves the synthesis stdout
 pipe into the indexed importer. Cancellation waits for engine process-group

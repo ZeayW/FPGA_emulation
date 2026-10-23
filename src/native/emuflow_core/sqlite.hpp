@@ -29,8 +29,11 @@ class SqliteStatement {
   void Reset();
 
   std::int64_t Integer(int column) const;
+  std::int64_t TypedInteger(int column) const;
   double Real(int column) const;
   std::string Text(int column) const;
+  std::string TypedText(int column) const;
+  bool IsNull(int column) const;
   std::string Blob(int column) const;
 
  private:
@@ -39,7 +42,7 @@ class SqliteStatement {
 
 class SqliteDatabase {
  public:
-  enum class Mode { kCreateExclusive, kReadOnly };
+  enum class Mode { kCreateExclusive, kReadOnly, kImmutableReadOnly };
 
   SqliteDatabase(const std::string& path, Mode mode);
   ~SqliteDatabase();
@@ -54,6 +57,10 @@ class SqliteDatabase {
  private:
   sqlite3* database_ = nullptr;
 };
+
+// Compatibility URI normalization uses SQLite's own URI parser, never a
+// second percent-decoder. Plain paths require no database open here.
+std::string SqliteFilePath(const std::string& path_or_uri);
 
 class SqliteTransaction {
  public:

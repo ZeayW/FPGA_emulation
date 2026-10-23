@@ -123,36 +123,44 @@ done
 # standalone binaries would silently execute stale stage code.
 unified="$runtime_dir/bin/emuflow-native"
 rm -f "$unified"
-"$selected_cxx" -std=c++17 -O3 -pthread \
-  -static-libstdc++ -static-libgcc \
-  -DEMUFLOW_NATIVE_STAGE_LIBRARY=1 \
-  "${sqlite_flags[@]}" -I"$source_dir/src/native" \
-  "$source_dir/src/native/emuflow_native.cpp" \
-  "$source_dir/src/native/emuflow_core/native_pipeline.cpp" \
-  "$source_dir/src/native/emuflow_core/schedule_store.cpp" \
-  "$source_dir/src/native/emuflow_core/route_view.cpp" \
-  "$source_dir/src/native/emuflow_core/schedule_model.cpp" \
-  "$source_dir/src/native/emuflow_core/schedule_ingress.cpp" \
-  "$source_dir/src/native/emuflow_core/tool_runtime.cpp" \
-  "$source_dir/src/native/emuflow_core/compile.cpp" \
-  "$source_dir/src/native/patron_refiner.cpp" \
-  "$source_dir/src/native/static_exact_analyzer.cpp" \
-  "$source_dir/src/native/tlr_router.cpp" \
-  "$source_dir/src/native/tdm_exact_scheduler.cpp" \
-  "$source_dir/src/native/chimew_bank_channel_assigner.cpp" \
-  "$source_dir/src/native/chimew_rudy.cpp" \
-  "$source_dir/src/native/chimew_signal_grouper.cpp" \
-  "$source_dir/src/native/chimew_position_refiner.cpp" \
-  "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
-  "$source_dir/src/native/emuflow_core/sqlite.cpp" \
-  "$source_dir/src/native/emuflow_core/stage_runtime.cpp" \
-  "$source_dir/src/native/emuflow_core/emuir_view.cpp" \
-  -lsqlite3 -o "$unified"
-target="$runtime_dir/bin/emuflow_xilinx_bookshelf_exporter"
-rm -f "$target"
-"$selected_cxx" -std=c++17 -O3 -static-libstdc++ -static-libgcc \
-  "${sqlite_flags[@]}" \
-  "$source_dir/src/native/xilinx_bookshelf_exporter.cpp" -lsqlite3 -o "$target"
+# The unified entry and physical compatibility CLI link the same archive.
+# Compile the native core once rather than embedding an independent parser /
+# SQLite / lifecycle implementation in each executable.
+object_dir="$runtime_dir/tmp/core-objects"
+mkdir -p "$object_dir" "$runtime_dir/lib"
+core_sources=(
+  emuflow_core/native_pipeline.cpp emuflow_core/schedule_store.cpp
+  emuflow_core/route_view.cpp emuflow_core/schedule_model.cpp
+  emuflow_core/schedule_ingress.cpp emuflow_core/tool_runtime.cpp
+  emuflow_core/compile.cpp emuflow_core/bookshelf.cpp
+  patron_refiner.cpp static_exact_analyzer.cpp tlr_router.cpp
+  tdm_exact_scheduler.cpp chimew_bank_channel_assigner.cpp chimew_rudy.cpp
+  chimew_signal_grouper.cpp chimew_position_refiner.cpp
+  emuflow_core/artifact_io.cpp emuflow_core/sqlite.cpp
+  emuflow_core/stage_runtime.cpp emuflow_core/emuir_view.cpp
+)
+objects=()
+for source in "${core_sources[@]}"; do
+  object="$object_dir/${source//\//_}.o"
+  "$selected_cxx" -std=c++17 -O3 -pthread -DEMUFLOW_NATIVE_STAGE_LIBRARY=1 \
+    "${sqlite_flags[@]}" -I"$source_dir/src/native" \
+    -c "$source_dir/src/native/$source" -o "$object"
+  objects+=("$object")
+done
+archive="$runtime_dir/lib/libemuflow_core.a"
+"$("$selected_cxx" -print-prog-name=ar)" rcs "$archive" "${objects[@]}"
+for entry in emuflow_native.cpp xilinx_bookshelf_exporter.cpp; do
+  if test "$entry" = emuflow_native.cpp; then
+    target="$unified"
+  else
+    target="$runtime_dir/bin/emuflow_xilinx_bookshelf_exporter"
+    rm -f "$target"
+  fi
+  "$selected_cxx" -std=c++17 -O3 -pthread -static-libstdc++ -static-libgcc \
+    "${sqlite_flags[@]}" -I"$source_dir/src/native" \
+    "$source_dir/src/native/$entry" "$archive" -lsqlite3 -o "$target"
+done
+rm -rf "$object_dir"
 # Do not publish a runtime whose unified core or physical bridge cannot even
 # load its linked dependencies in the deployment environment. The run launcher
 # must repeat these probes inside its actual execution environment.

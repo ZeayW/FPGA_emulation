@@ -36,6 +36,18 @@ only a CMake compatibility alias; the executable and native library tests link
 the core directly. This does not yet cover every standalone adapter or complete
 the native production data plane.
 
+`phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL` is also a shared
+`StageRequest`/`ArtifactRef` operation. The production adapter prefers the unified
+entry, and the standalone compatibility CLI links the same core. The core owns
+typed SQLite reads, immutable input paths, ordered atom/pin joins, endpoint
+spooling, degree/driver checks, atomic text publication and scratch lifetime.
+Two ordered cursors preserve numeric net order and stable driver-first endpoint
+order without a per-net fanout vector. Counts and primitive pin signatures are
+the only summary returned to Python. Existing mapped v2 and private lexical
+atom relations retain their zero application/user PRAGMAs; their stage-owned
+metadata and ordered-record checks remain required. This integration does not
+complete the other physical exporters or full W0/W7 qualification.
+
 `phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT`
 owns the complete large indexed exact producer. It builds the integer model
 from v3 RouteStore, computes a typed in-process solution, derives the dependency

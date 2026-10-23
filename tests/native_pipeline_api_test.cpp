@@ -70,6 +70,57 @@ int main() {
     try { emuir.NetName(other.Net(0)); }
     catch (const emuflow::core::StageError& e) { mixed_identity = e.code() == ErrorCode::kMixedGeneration; }
     if (!mixed_identity) throw std::runtime_error("native EmuIR mixed artifact-local identities");
+    const auto mapped_path = (root / "mapped.sqlite").string();
+    const auto atom_path = (root / "atoms.sqlite").string();
+    {
+      emuflow::core::SqliteDatabase db(mapped_path, emuflow::core::SqliteDatabase::Mode::kCreateExclusive);
+      db.Execute(R"SQL(
+        CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);
+        INSERT INTO metadata VALUES('schema','emuflow.xilinx-mapped-index/v2');
+        CREATE TABLE cells(id TEXT PRIMARY KEY,type TEXT);
+        INSERT INTO cells VALUES('a_sink','FDRE'),('z_driver','LUT1');
+        CREATE TABLE cell_pins(cell_id TEXT,port TEXT,port_bit INTEGER,
+          port_width INTEGER,direction INTEGER,value_kind INTEGER,net_bit INTEGER,constant TEXT);
+        INSERT INTO cell_pins VALUES('a_sink','D',0,1,0,0,2,NULL),
+          ('z_driver','O',0,1,1,0,2,NULL);
+      )SQL");
+    }
+    {
+      emuflow::core::SqliteDatabase db(atom_path, emuflow::core::SqliteDatabase::Mode::kCreateExclusive);
+      db.Execute(R"SQL(
+        CREATE TABLE atoms(seq INTEGER PRIMARY KEY,instance TEXT,cell_type TEXT);
+        INSERT INTO atoms VALUES(1,'a_sink','FDRE'),(2,'z_driver','LUT1');
+      )SQL");
+    }
+    StageRequest bookshelf{Stage::kExportBookshelf, {}, (root / "design.nets").string()};
+    bookshelf.input_artifacts = {ArtifactRef::Bind(mapped_path,"xilinx-mapped-index-v2"),
+                                ArtifactRef::Bind(atom_path,"openparf-atom-index-private-v1")};
+    bookshelf.auxiliary_output_path = (root / "summary.tsv").string();
+    bookshelf.scratch_path = (root / "endpoints.sqlite").string();
+    const auto physical = emuflow::native::ExecuteStage(bookshelf);
+    if (!physical.ok() || physical.inputs.size()!=2 || physical.outputs.size()!=2 ||
+        fs::exists(bookshelf.scratch_path))
+      throw std::runtime_error("shared physical export failed: " + physical.message);
+    {
+      std::ifstream text(bookshelf.output_path);
+      const std::string value((std::istreambuf_iterator<char>(text)), {});
+      if (value != "net n0 2\n  a1 O\n  a0 D\nendnet\n")
+        throw std::runtime_error("shared physical export changed driver/atom order");
+    }
+    {
+      emuflow::core::SqliteDatabase db(atom_path, emuflow::core::SqliteDatabase::Mode::kReadOnly);
+      auto values = db.Prepare("SELECT 7,'text',NULL,'7'");
+      if (!values.Step() || values.TypedInteger(0)!=7 || values.TypedText(1)!="text" || !values.IsNull(2))
+        throw std::runtime_error("shared typed SQL values changed");
+      bool rejected = false;
+      try { values.TypedInteger(3); } catch (const std::runtime_error&) { rejected = true; }
+      if (!rejected) throw std::runtime_error("shared SQL coerced text into an integer");
+    }
+    fs::rename(atom_path,atom_path + ".previous");
+    fs::copy_file(atom_path + ".previous",atom_path);
+    if (emuflow::native::ExecuteStage(bookshelf).error != ErrorCode::kMixedGeneration)
+      throw std::runtime_error("physical exporter rebound a stale atom relation");
+    for (const auto& published : physical.outputs) published.RequireUnchanged();
     if (emuflow::native::ExecuteStage(StageRequest{}).error != ErrorCode::kInvalidRequest)
       throw std::runtime_error("native API executed an unspecified stage");
     const auto source = (root / "rudy.input").string();

@@ -273,7 +273,7 @@ add_executable(emuflow_xilinx_bookshelf_exporter
   "${CMAKE_SOURCE_DIR}/src/native/xilinx_bookshelf_exporter.cpp")
 target_compile_features(emuflow_xilinx_bookshelf_exporter PRIVATE cxx_std_17)
 target_compile_options(emuflow_xilinx_bookshelf_exporter PRIVATE -O3)
-target_link_libraries(emuflow_xilinx_bookshelf_exporter PRIVATE SQLite3::SQLite3)
+target_link_libraries(emuflow_xilinx_bookshelf_exporter PRIVATE emuflow_core)
 set_target_properties(emuflow_xilinx_bookshelf_exporter PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
 if(BUILD_TESTING)
@@ -293,6 +293,7 @@ add_library(
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/schedule_ingress.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/tool_runtime.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/compile.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/bookshelf.cpp"
 )
 target_compile_features(emuflow_core PUBLIC cxx_std_17)
 target_compile_options(emuflow_core PRIVATE -O3)
