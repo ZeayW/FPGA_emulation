@@ -8,10 +8,12 @@ import argparse
 import csv
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from emuflow.io import file_sha256, write_json
 from emuflow.vivado_netlist import emit_vivado_mapped_verilog
 from emuflow.vivado_physical import run_indexed_vivado_partition
+from emuflow.vivado_physical_timing import write_vivado_local_query
 from emuflow.yosys import import_yosys_json
 
 
@@ -70,12 +72,31 @@ def main():
         "virtual_dut_clock": {"nominal_period_ns": 20.0},
         "virtual_dut_clocks": {"clk": {"nominal_period_ns": 20.0}, "clk2": {"nominal_period_ns": 30.0}},
         "timing_model": {"dut_clock_ports": ["clk", "clk2"], "fabric_clock_port": "fabric_clk", "fabric_to_dut_max_delay_ns": 8.0}}
+    paths = []
+    for index, (start, end, clock, period) in enumerate((
+            (("launch", "Q", 0), ("capture", "D", 0), "clk", 20.0),
+            (("launch2", "Q", 0), ("capture2", "D", 0), "clk2", 30.0),
+            (("fabric_launch", "Q", 0), ("fabric_capture", "D", 0), "fabric_clk", 4.0),
+            (("capture2", "Q", 0), ("fabric_launch", "D", 0), "fabric_clk", 4.0),
+            ((None, "d", 0), ("launch", "D", 0), "clk", 20.0),
+            (("capture", "Q", 0), (None, "q", 0), "clk", 20.0))):
+        endpoint = lambda value: dict(zip(("instance", "port", "bit"), value))
+        paths.append({"id": f"path{index}", "clock_domain": clock, "clock_period_ns": period,
+            "fixed_delay_ns": 2.0, "slack_ns": period - 2.0,
+            "startpoint": endpoint(start), "endpoint": endpoint(end)})
+    from emuflow.local_path_timing import path_id_set_sha256
+    seals = {name: file_sha256(source) for name in ("path_database_sha256", "original_ir_sha256", "assignment_sha256", "routes_sha256")}
+    seals.update(original_paths=len(paths), original_path_ids_sha256=path_id_set_sha256([p["id"] for p in paths]))
+    identity, query = root / "local-identity.sqlite", root / "local-query.tsv"
+    write_vivado_local_query(ir, "fpga0", query, identity, SimpleNamespace(
+        assignment={"design": "dut"}, source_manifest=seals, local_paths_by_fpga={"fpga0": paths}))
     report = run_indexed_vivado_partition(fpga="fpga0", part="xcvu19p-fsva3824-2-e", ir_path=ir,
         mapped_verilog_path=mapped, mapped_report=mapped_report, runtime=runtime,
         original_cells=6, transport_cells=0, output_dir=root / "physical", executable=args.vivado,
-        virtual_io_contract=contract)
+        virtual_io_contract=contract, local_identity_path=identity, local_query_path=query)
     write_json(root / "qualification.json", {"status": "pass", "scope": "synthetic-indexed-physical-only",
-        "tool": report["tool"], "result": report["result"], "fixed_io": report["virtual_io_implementation"]})
+        "tool": report["tool"], "result": report["result"], "fixed_io": report["virtual_io_implementation"],
+        "local_timing": report["local_path_timing"]["import"]})
 
 
 if __name__ == "__main__":
