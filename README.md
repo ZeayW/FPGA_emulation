@@ -414,10 +414,18 @@ cut-node records from analyzer topology and streamed final identities. Python
 maps the resulting private binary artifact instead of generating per-cut Python
 dictionaries and retaining their complete packed bytearray. It independently
 recomputes topology and checks every native record before normal
-hashing/publication. Capture
-normalization, canonical contract hashing, exact-binary section publication and
-assignment/index publication still have Python owners. Full NVDLA wall/RSS/I/O
-qualification remains pending.
+hashing/publication. For compact EmuIR,
+`emuflow-native phase3 resolve-captures EMUIR REQUEST TOPOLOGY PARTS OUTPUT`
+also owns endpoint resolution, canonical sorting/deduplication and final capture
+bytes. A lifecycle-scoped SQLite uniqueness/index spool supports sorting and
+independent coverage checks; Python maps the final binary offsets/payload and
+removes that spool after validation. The independent validator scans the
+requested source endpoints, checks each returned fact and uses one coverage bit
+per canonical capture, without constructing another capture population.
+In-memory reference inputs retain the explicit Python normalizer and the
+unchanged 8192-bit logical capture contract. Canonical contract hashing,
+exact-binary section publication and assignment/index publication still have
+Python owners. Full NVDLA wall/RSS/I/O qualification remains pending.
 The C++ analyzer now bounds protocol-v3
 capture ordering to a 1,048,576-record run and a 64-way external merge instead
 of retaining and sorting the complete capture population. Runs deduplicate

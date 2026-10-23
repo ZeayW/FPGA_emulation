@@ -31,6 +31,7 @@ class SqliteStatement {
   std::int64_t Integer(int column) const;
   double Real(int column) const;
   std::string Text(int column) const;
+  std::string Blob(int column) const;
 
  private:
   sqlite3_stmt* statement_ = nullptr;

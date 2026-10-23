@@ -203,6 +203,13 @@ class StaticExactCaptureSequence(StaticExactRecordSequence):
         super().__init__("capture_requirements", count, factory)
         self._binary_factory = binary_factory
 
+    def binary_capture(self, index: int):
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        if hasattr(self, "_binary_indexer"):
+            return self._binary_indexer(index)
+        return next(row for seq, row in enumerate(self.iter_binary_captures()) if seq == index)
+
     def iter_binary_captures(
         self,
     ) -> Iterator[tuple[bytes, bytes, int, bytes, bytes, bytes]]:
@@ -614,6 +621,74 @@ def build_static_exact_capture_stream(
     return StaticExactCaptureSequence(
         count, capture_requirements, binary_captures
     )
+
+
+def read_native_static_exact_capture_stream(path: Path) -> StaticExactCaptureSequence:
+    """Map native canonical captures with direct indexed access for validation."""
+
+    try:
+        with path.open("rb") as stream:
+            data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+        if len(data) < 32:
+            raise ValidationError("native capture header is truncated")
+        magic, version, count, size = struct.unpack_from("<QIIQ", data)
+        start = 24 + 8 * (count + 1)
+        if magic != 0x31434553464D5545 or version != 1 or start + size != len(data):
+            raise ValidationError("native capture envelope is invalid")
+        offsets = memoryview(data)[24:start].cast("Q")
+        if offsets[0] != 0 or offsets[-1] != size or any(
+            offsets[index] >= offsets[index + 1] for index in range(count)
+        ):
+            raise ValidationError("native capture offsets are invalid")
+        def binary(index):
+            offset, end = start + offsets[index], start + offsets[index + 1]
+            if offset + _CAPTURE_HEADER.size > end:
+                raise ValidationError("native capture record is truncated")
+            kind, *lengths = _CAPTURE_HEADER.unpack_from(data, offset)
+            offset += _CAPTURE_HEADER.size
+            if offset + sum(lengths) != end:
+                raise ValidationError("native capture field lengths disagree")
+            fields = []
+            for length in lengths:
+                fields.append(bytes(data[offset:offset + length]))
+                offset += length
+            if kind not in (0, 1) or any(not value for value in fields[:3]) or (
+                kind == 0 and (fields[3] or fields[4])
+            ) or (kind == 1 and (not fields[3] or not fields[4] or
+                len(fields[4]) > STATIC_EXACT_CAPTURE_BIT_MAX_BYTES or
+                (len(fields[4]) > 1 and fields[4][0] == 0))):
+                raise ValidationError("native capture fields are invalid")
+            try:
+                for value in fields[:4]:
+                    value.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise ValidationError("native capture identity is invalid") from error
+            return fields[0], fields[1], kind, fields[2], fields[3], fields[4]
+        def binaries():
+            previous = None
+            for index in range(count):
+                row = binary(index)
+                key = (row[0], row[1], b"top-output" if row[2] == 0 else b"architectural-state",
+                       row[3], row[4], len(row[5]), row[5])
+                if previous is not None and key <= previous:
+                    raise ValidationError("native capture canonical order is invalid")
+                previous = key
+                yield row
+        def records():
+            for index, (net, fpga, kind, endpoint, port, bit) in enumerate(binaries()):
+                yield {
+                    "id": f"capture{index:06d}", "cut_net": net.decode("utf-8"),
+                    "fpga": fpga.decode("utf-8"),
+                    "kind": "top-output" if kind == 0 else "architectural-state",
+                    "endpoint": endpoint.decode("utf-8"),
+                    **({"port": port.decode("utf-8"), "bit": int.from_bytes(bit, "big")} if kind == 1 else {}),
+                }
+        result = StaticExactCaptureSequence(count, records, binaries)
+        result._binary_indexer = binary
+        result.native_capture_artifact_path = path
+        return result
+    except (OSError, ValueError, struct.error) as error:
+        raise ValidationError("native capture artifact is invalid") from error
 
 
 def build_static_exact_record_streams(

@@ -9,6 +9,7 @@ namespace {
 constexpr const char* kUsage =
     "usage:\n"
     "  emuflow-native phase3 analyze INPUT OUTPUT\n"
+    "  emuflow-native phase3 resolve-captures EMUIR REQUEST TOPOLOGY PARTS OUTPUT\n"
     "  emuflow-native phase3 finalize-semantics TOPOLOGY METADATA OUTPUT\n"
     "  emuflow-native phase3 analyze --indexed-input EMUIR INPUT OUTPUT\n"
     "  emuflow-native phase4 route --typed-output INPUT OUTPUT\n"
@@ -30,6 +31,10 @@ int Dispatch(int argc, char** argv) {
   }
   const std::string phase = argc > 1 ? argv[1] : "";
   const std::string operation = argc > 2 ? argv[2] : "";
+  if (argc == 8 && phase == "phase3" && operation == "resolve-captures") {
+    emuflow::native::ResolveStaticExactCaptures(argv[3], argv[4], argv[5], argv[6], argv[7]);
+    return 0;
+  }
   if (argc == 6 && phase == "phase3" && operation == "finalize-semantics") {
     emuflow::native::FinalizeStaticExact(argv[3], argv[4], argv[5]);
     return 0;

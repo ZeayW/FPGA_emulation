@@ -71,6 +71,7 @@ from emuflow.phase3_exact_records import (
     build_static_exact_capture_stream,
     build_static_exact_cut_node_stream,
     read_native_static_exact_cut_node_stream,
+    read_native_static_exact_capture_stream,
 )
 from emuflow.phase3_exact_binary import (
     validate_phase3_exact_binary,
@@ -1679,6 +1680,24 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     cut_net_ordinals=ordinals,
                 )
 
+                with patch(
+                    "emuflow.combinational_cut._normalize_native_capture_stream",
+                    side_effect=AssertionError("compact production must not normalize captures in Python"),
+                ):
+                    streamed = build_static_exact_semantic_contract(
+                        compact_ir, self.platform.to_dict(), assignment["instance_assignment"],
+                        assignment["cut_nets"], max_dependency_depth=expected["max_cross_fpga_dependency_depth"],
+                        cut_net_ordinals=ordinals, stream_records=True,
+                    )
+                capture_path = streamed["capture_requirements"].native_capture_artifact_path
+                self.assertTrue(capture_path.is_file())
+                self.assertEqual([path.name for path in capture_path.parent.iterdir()], ["captures.bin"])
+                self.assertEqual(list(streamed["capture_requirements"]), expected["capture_requirements"])
+                expected_bin, actual_bin = Path(temporary) / "expected.bin", Path(temporary) / "actual.bin"
+                write_phase3_exact_binary(expected_bin, expected, ["fpga0", "fpga1"])
+                write_phase3_exact_binary(actual_bin, streamed, ["fpga0", "fpga1"])
+                self.assertEqual(expected_bin.read_bytes(), actual_bin.read_bytes())
+
         self.assertEqual(actual, expected)
         self.assertEqual(
             semantic_contract_sha256(actual),
@@ -1738,6 +1757,103 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                             str(indexed_output)], check=True)
             self.assertEqual(indexed_output.read_bytes(), legacy_output.read_bytes())
             self.assertEqual(hashlib.sha256(database.read_bytes()).hexdigest(), source_digest)
+            # Native capture normalization must terminate at the exact record
+            # count, remain byte/record-equivalent, and reject damaged input.
+            parts_path, captures_path = root / "parts", root / "captures.bin"
+            parts_path.write_bytes(struct.pack("<QII", 0x31504553464D5545, 1, len(parts)) +
+                                   b"".join(struct.pack("<I", len(part.encode())) + part.encode() for part in parts))
+            raw_topology = indexed_output.read_bytes()
+            offset = 24
+            for _ in cuts:
+                _, edges = struct.unpack_from("<BI", raw_topology, offset)
+                offset += 5 + 4 * edges
+            def capture_command(output):
+                return [str(emuflow_native()), "phase3", "resolve-captures", str(database),
+                        str(indexed_input), str(indexed_output), str(parts_path), str(output)]
+            subprocess.run(capture_command(captures_path), check=True, timeout=15)
+            from emuflow.combinational_cut import _resolve_compact_native_coordinate_capture_stream
+            reference_captures = _resolve_compact_native_coordinate_capture_stream(
+                database, struct.iter_unpack("<4I", raw_topology[offset:]),
+                [cut["net"] for cut in cuts], parts, cuts, assignment["instance_assignment"],
+                root / "reference-captures.sqlite",
+            )
+            native_captures = read_native_static_exact_capture_stream(captures_path)
+            self.assertEqual(list(native_captures), list(reference_captures))
+            capture_bytes = captures_path.read_bytes()
+            for number, payload in enumerate((capture_bytes[:16], capture_bytes + b"extra",
+                    capture_bytes[:24] + struct.pack("<Q", 1) + capture_bytes[32:])):
+                corrupted = root / f"corrupt-captures-{number}"
+                corrupted.write_bytes(payload)
+                with self.assertRaises(ValidationError):
+                    list(read_native_static_exact_capture_stream(corrupted))
+            # Repeated physical endpoints must collapse to one canonical fact;
+            # non-ASCII ports and the largest compact integer range stay exact.
+            source_before = database.read_bytes()
+            request_before = indexed_input.read_bytes()
+            coordinates = list(struct.iter_unpack("<4I", raw_topology[offset:]))
+            self.assertTrue(coordinates)
+            _, _, capture_net, capture_sink = coordinates[0]
+            with sqlite3.connect(database) as connection:
+                next_sink = connection.execute(
+                    "SELECT max(ordinal)+1 FROM endpoint_records WHERE net_seq=? AND role=1",
+                    (capture_net,),
+                ).fetchone()[0]
+                connection.execute(
+                    "INSERT INTO endpoint_records SELECT net_seq,role,?,instance_seq,port_seq,bit,extras_seq "
+                    "FROM endpoint_records WHERE net_seq=? AND role=1 AND ordinal=?",
+                    (next_sink, capture_net, capture_sink),
+                )
+                connection.execute("UPDATE pin_names SET name=name || '端口α'")
+                connection.execute("UPDATE endpoint_records SET bit=?", (2**63-1,))
+                counts = json.loads(connection.execute(
+                    "SELECT value FROM metadata WHERE key='record_counts_json'"
+                ).fetchone()[0])
+                counts["endpoint_records"] += 1
+                connection.execute("UPDATE metadata SET value=? WHERE key='record_counts_json'", (json.dumps(counts),))
+            coordinates += [(cut, part, net, next_sink) for cut, part, net, sink in coordinates
+                            if (net, sink) == (capture_net, capture_sink)]
+            coordinates.sort(key=lambda row: (row[2], row[3], row[0], row[1]))
+            duplicate_topology = bytearray(raw_topology[:offset])
+            struct.pack_into("<Q", duplicate_topology, 16, len(coordinates))
+            duplicate_topology.extend(b"".join(struct.pack("<4I", *row) for row in coordinates))
+            indexed_output.write_bytes(duplicate_topology)
+            duplicate_request = bytearray(request_before)
+            struct.pack_into("<I", duplicate_request, 28, struct.unpack_from("<I", duplicate_request, 28)[0] + 1)
+            indexed_input.write_bytes(duplicate_request)
+            repeated_output = root / "repeated-captures.bin"
+            subprocess.run(capture_command(repeated_output), check=True, timeout=15)
+            repeated_reference = _resolve_compact_native_coordinate_capture_stream(
+                database, iter(coordinates), [cut["net"] for cut in cuts], parts, cuts,
+                assignment["instance_assignment"], root / "repeated-reference.sqlite",
+            )
+            repeated_native = read_native_static_exact_capture_stream(repeated_output)
+            self.assertEqual(list(repeated_native), list(repeated_reference))
+            self.assertLess(len(repeated_native), len(coordinates))
+            database.write_bytes(source_before)
+            indexed_input.write_bytes(request_before)
+            indexed_output.write_bytes(raw_topology)
+            valid_request, valid_parts = indexed_input.read_bytes(), parts_path.read_bytes()
+            malformed_coordinate = bytearray(raw_topology)
+            if offset < len(raw_topology):
+                struct.pack_into("<I", malformed_coordinate, offset, len(cuts))
+            for number, (request_data, topology_data, part_data) in enumerate((
+                (valid_request[:-1], raw_topology, valid_parts),
+                (valid_request, raw_topology[:-1], valid_parts),
+                (valid_request, raw_topology + b"extra", valid_parts),
+                (valid_request, malformed_coordinate, valid_parts),
+                (valid_request, raw_topology, valid_parts[:-1]),
+            )):
+                indexed_input.write_bytes(request_data)
+                indexed_output.write_bytes(topology_data)
+                parts_path.write_bytes(part_data)
+                rejected = root / f"rejected-captures-{number}"
+                rejected.write_bytes(b"previous-generation")
+                result = subprocess.run(capture_command(rejected), capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(rejected.read_bytes(), b"previous-generation")
+            indexed_input.write_bytes(valid_request)
+            indexed_output.write_bytes(raw_topology)
+            parts_path.write_bytes(valid_parts)
             pristine = database.read_bytes()
             for mutation in (
                 "PRAGMA user_version=99",

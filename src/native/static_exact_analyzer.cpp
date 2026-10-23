@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -908,12 +909,222 @@ void emuflow::native::FinalizeStaticExact(
   output.Commit();
 }
 
+void emuflow::native::ResolveStaticExactCaptures(
+    const std::string& source_path, const std::string& request_path,
+    const std::string& topology_path, const std::string& parts_path,
+    const std::string& output_path) {
+  using emuflow::core::BinaryReader;
+  using emuflow::core::SqliteDatabase;
+  BinaryReader request(request_path), topology(topology_path), identities(parts_path);
+  emuflow::core::ReadAndValidateHeader(request, {kInputMagic, 4, "indexed request"});
+  emuflow::core::ReadAndValidateHeader(topology, {kOutputMagic, 3, "exact topology"});
+  emuflow::core::ReadAndValidateHeader(identities, {0x31504553464D5545ULL, 1, "exact parts"});
+  const auto cells = request.Read<std::uint32_t>();
+  const auto nets = request.Read<std::uint32_t>();
+  const auto cuts = request.Read<std::uint32_t>();
+  const auto parts = request.Read<std::uint32_t>();
+  request.Read<std::uint32_t>();
+  if (!parts || identities.Read<std::uint32_t>() != parts ||
+      parts > identities.remaining() / 5 || cells > request.remaining() / 4 ||
+      topology.Read<std::uint32_t>() != cuts) {
+    throw std::runtime_error("native capture input coverage disagrees");
+  }
+  const auto raw_count = topology.Read<std::uint64_t>();
+  std::vector<std::string> part_ids;
+  for (std::uint32_t i = 0; i < parts; ++i) {
+    auto identity = identities.ReadString32();
+    if (i && identity <= part_ids.back()) throw std::runtime_error("native capture part order is invalid");
+    part_ids.push_back(std::move(identity));
+  }
+  identities.RequireEnd();
+  std::vector<std::uint32_t> assignments(cells);
+  for (auto& assignment : assignments) {
+    assignment = request.Read<std::uint32_t>();
+    if (assignment >= parts) throw std::runtime_error("native capture assignment is invalid");
+  }
+  SqliteDatabase source(source_path, SqliteDatabase::Mode::kReadOnly);
+  auto application = source.Prepare("PRAGMA application_id");
+  auto version = source.Prepare("PRAGMA user_version");
+  auto counts = source.Prepare(
+      "SELECT json_extract(value,'$.cell_records'),json_extract(value,'$.net_records') "
+      "FROM metadata WHERE key='record_counts_json'");
+  if (!application.Step() || application.Integer(0) != 0x454D5549 ||
+      !version.Step() || version.Integer(0) != 2 || !counts.Step() ||
+      counts.Integer(0) != cells || counts.Integer(1) != nets) {
+    throw std::runtime_error("native capture source envelope/counts disagree");
+  }
+  if (cuts > request.remaining() / 12) throw std::runtime_error("native capture cuts are truncated");
+  std::vector<std::string> cut_ids;
+  std::vector<std::uint64_t> sink_offsets{0};
+  std::vector<std::uint32_t> sink_parts;
+  auto net_id = source.Prepare("SELECT id FROM net_records WHERE seq=?");
+  for (std::uint32_t i = 0; i < cuts; ++i) {
+    const auto net = request.Read<std::uint32_t>();
+    const auto source_part = request.Read<std::uint32_t>();
+    const auto sinks = request.Read<std::uint32_t>();
+    if (net >= nets || source_part >= parts || sinks > request.remaining() / 4) {
+      throw std::runtime_error("native capture cut is invalid");
+    }
+    net_id.BindInteger(1, net);
+    if (!net_id.Step()) throw std::runtime_error("native capture cut identity is missing");
+    auto identity = net_id.Text(0); net_id.Reset();
+    if (identity.empty() || (i && identity <= cut_ids.back())) {
+      throw std::runtime_error("native capture cut order is invalid");
+    }
+    cut_ids.push_back(std::move(identity));
+    for (std::uint32_t j = 0; j < sinks; ++j) {
+      const auto sink = request.Read<std::uint32_t>();
+      if (sink >= parts || (j && sink <= sink_parts.back())) {
+        throw std::runtime_error("native capture cut sink is invalid");
+      }
+      sink_parts.push_back(sink);
+    }
+    sink_offsets.push_back(sink_parts.size());
+    const auto launch = topology.Read<std::uint8_t>();
+    const auto predecessors = topology.Read<std::uint32_t>();
+    if (launch > 1 || predecessors > cuts || predecessors > topology.remaining() / 4) {
+      throw std::runtime_error("native capture topology is invalid");
+    }
+    std::uint32_t previous = 0;
+    for (std::uint32_t j = 0; j < predecessors; ++j) {
+      const auto predecessor = topology.Read<std::uint32_t>();
+      if (predecessor >= cuts || (j && predecessor <= previous)) {
+        throw std::runtime_error("native capture predecessor is invalid");
+      }
+      previous = predecessor;
+    }
+  }
+  request.RequireEnd();
+  if (raw_count > topology.remaining() / 16 || raw_count * 16 != topology.remaining()) {
+    throw std::runtime_error("native capture coordinates are truncated");
+  }
+  // Lifecycle-scoped uniqueness/index spool. Ordered records themselves are
+  // published as binary, and the independent validator removes this index.
+  SqliteDatabase index(output_path + ".sqlite", SqliteDatabase::Mode::kCreateExclusive);
+  index.Execute("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE;"
+      "CREATE TABLE capture_relation(cut_net TEXT NOT NULL,fpga TEXT NOT NULL,"
+      "kind TEXT NOT NULL,endpoint TEXT NOT NULL,port_key TEXT NOT NULL,"
+      "bit_length INTEGER NOT NULL,bit_key BLOB NOT NULL,seq INTEGER,"
+      "PRIMARY KEY(cut_net,fpga,kind,endpoint,port_key,bit_length,bit_key)) WITHOUT ROWID");
+  emuflow::core::SqliteTransaction transaction(index);
+  auto insert = index.Prepare("INSERT OR IGNORE INTO capture_relation "
+      "VALUES(?,?,?,?,?,?,?,NULL)");
+  auto endpoints = source.Prepare(
+      "SELECT e.net_seq,e.ordinal,coalesce(e.instance_seq,-1),c.id,p.name,e.bit,"
+      "typeof(e.bit),typeof(e.instance_seq),"
+      "coalesce(json_extract(r.value,'$.ff'),0)!=0 OR "
+      "coalesce(json_extract(r.value,'$.bram'),0)!=0 OR "
+      "coalesce(json_extract(r.value,'$.bram18k'),0)!=0 OR "
+      "coalesce(json_extract(r.value,'$.uram288'),0)!=0 "
+      "FROM endpoint_records e LEFT JOIN cell_records c ON c.seq=e.instance_seq "
+      "JOIN pin_names p ON p.seq=e.port_seq LEFT JOIN payloads r ON r.seq=c.resources_seq "
+      "WHERE e.role=1 ORDER BY e.net_seq,e.ordinal");
+  bool have_endpoint = endpoints.Step();
+  std::array<std::uint32_t,4> previous{};
+  bool have_previous = false;
+  for (std::uint64_t i = 0; i < raw_count; ++i) {
+    const auto cut = topology.Read<std::uint32_t>();
+    const auto part = topology.Read<std::uint32_t>();
+    const auto net = topology.Read<std::uint32_t>();
+    const auto sink = topology.Read<std::uint32_t>();
+    const std::array<std::uint32_t,4> key{net,sink,cut,part};
+    if (cut >= cuts || part >= parts || net >= nets ||
+        (have_previous && key <= previous) ||
+        !std::binary_search(sink_parts.begin() + sink_offsets[cut],
+                            sink_parts.begin() + sink_offsets[cut + 1], part)) {
+      throw std::runtime_error("native Static Exact capture is invalid");
+    }
+    previous = key; have_previous = true;
+    while (have_endpoint && (endpoints.Integer(0) < net ||
+        (endpoints.Integer(0) == net && endpoints.Integer(1) < sink))) {
+      have_endpoint = endpoints.Step();
+    }
+    if (!have_endpoint || endpoints.Integer(0) != net || endpoints.Integer(1) != sink ||
+        endpoints.Text(6) != "integer" || endpoints.Integer(5) < 0 || endpoints.Text(4).empty()) {
+      throw std::runtime_error("native Static Exact capture endpoint is invalid");
+    }
+    const auto owner = endpoints.Integer(2);
+    const auto bit = static_cast<std::uint64_t>(endpoints.Integer(5));
+    const auto port = endpoints.Text(4);
+    std::string kind, endpoint, port_key, bit_key;
+    if (endpoints.Text(7) == "null") {
+      kind = "top-output"; endpoint = "top:" + port + "[" + std::to_string(bit) + "]";
+    } else {
+      if (endpoints.Text(7) != "integer" || owner < 0 || owner >= cells ||
+          assignments[owner] != part || endpoints.Text(3).empty() || !endpoints.Integer(8)) {
+        throw std::runtime_error("native Static Exact capture ownership is invalid");
+      }
+      kind = "architectural-state"; endpoint = endpoints.Text(3); port_key = port;
+      auto remaining = bit;
+      do { bit_key.insert(bit_key.begin(), static_cast<char>(remaining & 255)); remaining >>= 8; } while (remaining);
+    }
+    insert.BindText(1, cut_ids[cut]); insert.BindText(2, part_ids[part]);
+    insert.BindText(3, kind); insert.BindText(4, endpoint); insert.BindText(5, port_key);
+    insert.BindInteger(6, kind == "top-output" ? -1 : static_cast<std::int64_t>(bit_key.size()));
+    insert.BindBlob(7, bit_key.data(), bit_key.size()); insert.Execute();
+  }
+  topology.RequireEnd();
+  const std::string columns = "cut_net,fpga,kind,endpoint,port_key,bit_length,bit_key";
+  auto rows = index.Prepare("SELECT " + columns + " FROM capture_relation ORDER BY " + columns);
+  std::vector<std::uint64_t> positions{0};
+  while (rows.Step()) {
+    std::uint64_t size = 21;
+    for (int column : {0,1,3,4}) size += rows.Text(column).size();
+    size += rows.Blob(6).size();
+    positions.push_back(positions.back() + size);
+  }
+  rows.Reset();
+  if (positions.size() - 1 >= UINT32_MAX) throw std::runtime_error("native capture population is too large");
+  emuflow::core::AtomicBinaryWriter output(output_path);
+  output.Write(std::uint64_t{0x31434553464D5545ULL}); output.Write(std::uint32_t{1});
+  output.Write(static_cast<std::uint32_t>(positions.size() - 1)); output.Write(positions.back());
+  for (const auto position : positions) output.Write(position);
+  auto update = index.Prepare("UPDATE capture_relation SET seq=? WHERE cut_net=? AND fpga=? "
+      "AND kind=? AND endpoint=? AND port_key=? AND bit_length=? AND bit_key=?");
+  auto first = index.Prepare("SELECT " + columns + " FROM capture_relation ORDER BY " + columns + " LIMIT 1");
+  auto next = index.Prepare("SELECT " + columns + " FROM capture_relation WHERE (" + columns +
+      ") > (?,?,?,?,?,?,?) ORDER BY " + columns + " LIMIT 1");
+  const auto count = positions.size() - 1;
+  for (std::uint32_t seq = 0; seq < count; ++seq) {
+    auto& row = seq == 0 ? first : next;
+    if (!row.Step()) throw std::runtime_error("native capture ordered coverage disagrees");
+    const auto kind = row.Text(2);
+    const auto bit_length = row.Integer(5);
+    const std::array<std::string,5> keys{row.Text(0),row.Text(1),kind,row.Text(3),row.Text(4)};
+    const auto bit = row.Blob(6);
+    row.Reset();  // No active reader cursor may observe its own table updates.
+    const std::array<std::string,5> fields{keys[0],keys[1],keys[3],keys[4],bit};
+    output.Write(std::uint8_t(kind == "top-output" ? 0 : 1));
+    for (const auto& field : fields) output.Write(static_cast<std::uint32_t>(field.size()));
+    for (const auto& field : fields) output.WriteBytes(field.data(), field.size());
+    update.BindInteger(1, seq);
+    for (int column = 0; column < 5; ++column) {
+      update.BindText(column + 2, keys[column]);
+      next.BindText(column + 1, keys[column]);
+    }
+    update.BindInteger(7, bit_length); update.BindBlob(8, bit.data(), bit.size()); update.Execute();
+    next.BindInteger(6, bit_length); next.BindBlob(7, bit.data(), bit.size());
+  }
+  transaction.Commit();
+  output.Commit();
+}
+
 #if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "usage: emuflow_static_exact_analyzer [--indexed-input EMUIR] INPUT OUTPUT\n"
-                 "       emuflow_static_exact_analyzer --finalize-semantics TOPOLOGY METADATA OUTPUT\n";
+                 "       emuflow_static_exact_analyzer --finalize-semantics TOPOLOGY METADATA OUTPUT\n"
+                 "       emuflow_static_exact_analyzer --resolve-captures EMUIR REQUEST TOPOLOGY PARTS OUTPUT\n";
     return 0;
+  }
+  if (argc == 7 && std::string(argv[1]) == "--resolve-captures") {
+    try {
+      emuflow::native::ResolveStaticExactCaptures(argv[2], argv[3], argv[4], argv[5], argv[6]);
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << "emuflow_static_exact_analyzer: " << error.what() << '\n';
+      return 1;
+    }
   }
   if (argc == 5 && std::string(argv[1]) == "--finalize-semantics") {
     try {

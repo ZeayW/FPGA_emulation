@@ -111,6 +111,13 @@ double SqliteStatement::Real(int column) const {
   return sqlite3_column_double(statement_, column);
 }
 
+std::string SqliteStatement::Blob(int column) const {
+  const void* value = sqlite3_column_blob(statement_, column);
+  const int size = sqlite3_column_bytes(statement_, column);
+  return value == nullptr ? std::string()
+                          : std::string(static_cast<const char*>(value), size);
+}
+
 std::string SqliteStatement::Text(int column) const {
   const unsigned char* value = sqlite3_column_text(statement_, column);
   const int size = sqlite3_column_bytes(statement_, column);

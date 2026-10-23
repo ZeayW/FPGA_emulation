@@ -32,6 +32,7 @@ from .phase3_exact_records import (
     build_static_exact_capture_stream,
     build_static_exact_cut_node_stream,
     read_native_static_exact_cut_node_stream,
+    read_native_static_exact_capture_stream,
     build_static_exact_record_streams,
     direct_static_exact_semantic_contract_sha256,
     validate_static_exact_capture_bit,
@@ -2487,16 +2488,10 @@ def _analyze_static_exact_dependencies_native(
                         yield take("<IIII")
 
                 if compact_ir_path is not None:
-                    capture_stream = (
-                        _resolve_compact_native_coordinate_capture_stream(
-                            compact_ir_path,
-                            capture_coordinates(),
-                            ordered_cut_ids,
-                            part_ids,
-                            ordered_cuts,
-                            instance_assignment,
-                            root / "capture-relation.sqlite3",
-                        )
+                    capture_stream = _produce_native_compact_captures(
+                        compact_ir_path, native_input, native_output,
+                        capture_coordinates(), ordered_cut_ids, part_ids,
+                        ordered_cuts, instance_assignment, root,
                     )
                 else:
                     if instance_index is None:
@@ -2821,15 +2816,14 @@ def _resolve_native_coordinate_capture_stream(
     return _normalize_native_capture_stream(capture_relation(), sorter_path)
 
 
-def _resolve_compact_native_coordinate_capture_stream(
+def _iter_compact_native_capture_relation(
     path: Path,
     capture_coordinates: Iterable[Tuple[int, int, int, int]],
     ordered_cut_ids: Sequence[str],
     part_ids: Sequence[str],
     ordered_cuts: Sequence[Mapping[str, Any]],
     instance_assignment: Mapping[str, str],
-    sorter_path: Path,
-) -> StaticExactRecordSequence:
+) -> Iterator[Tuple[str, str, str, str, Any, Any]]:
     """Resolve native captures with one ordered compact-EmuIR merge.
 
     Protocol v3 coordinates already name the authoritative net and sink
@@ -2955,11 +2949,95 @@ def _resolve_compact_native_coordinate_capture_stream(
                     bit = endpoint["bit"]
                 yield cut_net, fpga, kind, identity, port, bit
 
-        return _normalize_native_capture_stream(
-            capture_relation(), sorter_path
-        )
+        yield from capture_relation()
     finally:
         connection.close()
+
+
+def _resolve_compact_native_coordinate_capture_stream(
+    path, capture_coordinates, ordered_cut_ids, part_ids, ordered_cuts,
+    instance_assignment, sorter_path,
+):
+    """Explicit reference normalizer for compact capture qualification."""
+
+    return _normalize_native_capture_stream(
+        _iter_compact_native_capture_relation(
+            path, capture_coordinates, ordered_cut_ids, part_ids,
+            ordered_cuts, instance_assignment,
+        ), sorter_path,
+    )
+
+
+def _produce_native_compact_captures(
+    path, request_path, topology_path, capture_coordinates, ordered_cut_ids,
+    part_ids, ordered_cuts, instance_assignment, root,
+):
+    """Native producer plus independently scanned source/capture coverage."""
+
+    owner = tempfile.TemporaryDirectory(prefix="emuflow-exact-captures-")
+    output = Path(owner.name) / "captures.bin"
+    parts_path = root / "capture-parts.bin"
+    try:
+        with parts_path.open("wb") as stream:
+            stream.write(struct.pack("<QII", 0x31504553464D5545, 1, len(part_ids)))
+            for part in part_ids:
+                raw = part.encode("utf-8")
+                stream.write(struct.pack("<I", len(raw)))
+                stream.write(raw)
+        command = resolve_native_stage_command(
+            "emuflow_static_exact_analyzer", "phase3", "resolve-captures"
+        )
+        if len(command) == 1:
+            command = [*command, "--resolve-captures"]
+        completed = subprocess.run(
+            [*command, str(path.resolve()), str(request_path), str(topology_path), str(parts_path), str(output)],
+            capture_output=True, text=True, check=False,
+        )
+        if completed.returncode:
+            raise ValidationError("native capture production failed: " + completed.stderr.strip())
+        result = read_native_static_exact_capture_stream(output)
+        index_path = output.with_name(output.name + ".sqlite")
+        connection = sqlite3.connect(f"file:{index_path.resolve()}?mode=ro&immutable=1", uri=True)
+        try:
+            if connection.execute("SELECT count(*) FROM capture_relation").fetchone()[0] != len(result):
+                raise ValidationError("native capture coverage disagrees")
+            seen = bytearray((len(result) + 7) // 8)
+            unique = 0
+            for net, fpga, kind, endpoint, port, bit in _iter_compact_native_capture_relation(
+                path, capture_coordinates, ordered_cut_ids, part_ids,
+                ordered_cuts, instance_assignment,
+            ):
+                key = b"" if bit is None else bit.to_bytes(max(1, (bit.bit_length() + 7) // 8), "big")
+                row = connection.execute(
+                    "SELECT seq FROM capture_relation WHERE cut_net=? AND fpga=? AND kind=? "
+                    "AND endpoint=? AND port_key=? AND bit_length=? AND bit_key=?",
+                    (net, fpga, kind, endpoint, port or "", -1 if bit is None else len(key), key),
+                ).fetchone()
+                if row is None or not isinstance(row[0], int) or not 0 <= row[0] < len(result):
+                    raise ValidationError("native capture source coverage disagrees")
+                expected = (net.encode(), fpga.encode(), 0 if kind == "top-output" else 1,
+                            endpoint.encode(), (port or "").encode(), key)
+                if result.binary_capture(row[0]) != expected:
+                    raise ValidationError("native capture record disagrees with independent source")
+                mask = 1 << (row[0] % 8)
+                if not seen[row[0] // 8] & mask:
+                    seen[row[0] // 8] |= mask
+                    unique += 1
+            if unique != len(result):
+                raise ValidationError("native capture result has unrequested records")
+            # Validate complete canonical order without a second decoded population.
+            for _ in result.iter_binary_captures():
+                pass
+        finally:
+            connection.close()
+        index_path.unlink()
+        parts_path.unlink()
+        result._native_capture_owner = owner
+        return result
+    except BaseException:
+        owner.cleanup()
+        raise
+
 
 
 def _resolve_native_capture_requests(

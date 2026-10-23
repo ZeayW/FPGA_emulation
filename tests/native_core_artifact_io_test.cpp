@@ -144,7 +144,7 @@ int main() {
       auto select = database.Prepare(
           "SELECT id,value FROM records ORDER BY id");
       if (!select.Step() || select.Integer(0) != 7 ||
-          select.Text(1) != "typed" || select.Step()) {
+          select.Text(1) != "typed" || select.Blob(1) != "typed" || select.Step()) {
         throw std::runtime_error("SQLite RAII round trip disagrees");
       }
     }
