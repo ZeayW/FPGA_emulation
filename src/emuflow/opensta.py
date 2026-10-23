@@ -6,7 +6,6 @@ import hashlib
 import math
 import os
 import re
-import subprocess
 import tempfile
 from collections import defaultdict
 from copy import deepcopy
@@ -18,6 +17,7 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
+from .process_output import run_with_bounded_output
 from .sta import (
     import_sta_path_database_tsv,
     import_sta_path_database_tsv_streaming,
@@ -121,13 +121,7 @@ def check_opensta_engine_version(executable: str) -> str:
     invocation still calls :func:`require_opensta_engine` once, where the
     executable is content-sealed for retained evidence.
     """
-    version_result = subprocess.run(
-        [executable, "-version"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
+    version_result = run_with_bounded_output([executable, "-version"])
     version_match = re.search(
         r"(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:\s|$)",
         version_result.stdout,
@@ -1738,13 +1732,9 @@ def _run_opensta_path_database(
                 ),
             }
         )
-        completed = subprocess.run(
+        completed = run_with_bounded_output(
             [opensta, "-exit", str(OPENSTA_EXPORT_SCRIPT)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-            env=environment,
+            environment=environment,
         )
         if log_path is not None:
             log_path.parent.mkdir(parents=True, exist_ok=True)

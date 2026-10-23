@@ -62,6 +62,9 @@ wire groups in the shared native core, which also publishes the ScheduleStore
 and logical hashes. Independent indexed validation precedes report publication.
 These production outputs stay compact without requiring a managed-storage flag;
 Python still publishes the compact manifest.
+The shared core also supervises external tools with process-group cancellation,
+resource limits and bounded diagnostics. Installed Yosys streaming and OpenSTA
+extraction use that lifecycle through small requests.
 The complete native `compile` entry and remaining shared-store integration are
 unfinished; Python still owns orchestration and portions of the production data
 plane.

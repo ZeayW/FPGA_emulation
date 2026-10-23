@@ -1,6 +1,7 @@
 #include "emuflow_core/native_pipeline.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/emuir_view.hpp"
+#include "emuflow_core/tool_runtime.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -17,6 +18,17 @@ int main() {
   const auto root = fs::temp_directory_path() / ("emuflow-pipeline-api-" + std::to_string(unique));
   if (!fs::create_directory(root)) throw std::runtime_error("test directory already exists");
   try {
+    emuflow::core::ToolRequest tool;
+    tool.argv = {"/bin/echo", "native tool API"};
+    tool.working_directory = root.string();
+    const auto engine = emuflow::core::RunExternalTool(tool);
+    if (!engine.operation.ok() || engine.return_code || engine.diagnostic_tail != "native tool API\n" ||
+        engine.operation.inputs.size() != 1 || !engine.started)
+      throw std::runtime_error("shared external tool lifecycle failed");
+    volatile std::sig_atomic_t cancelled = SIGTERM;
+    const auto stopped = emuflow::core::RunExternalTool(tool, &cancelled);
+    if (stopped.operation.ok() || stopped.started || stopped.cancelled_signal != SIGTERM)
+      throw std::runtime_error("native compiler cancellation launched a tool");
     const auto emuir_path = (root / "emuir.sqlite").string();
     {
       emuflow::core::SqliteDatabase db(emuir_path, emuflow::core::SqliteDatabase::Mode::kCreateExclusive);

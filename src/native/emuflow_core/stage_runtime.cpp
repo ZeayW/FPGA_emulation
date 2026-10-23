@@ -16,6 +16,8 @@
 namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
+    {"external-tool-request-v1", ArtifactEncoding::kBinary, 0x31514552544c4645ULL, 1},
+    {"external-tool-executable-v1", ArtifactEncoding::kText, 0, 1},
     {"emuir-compact-v2", ArtifactEncoding::kSqlite, 0x454d5549, 2},
     {"exact-analysis-input-v3", ArtifactEncoding::kBinary, 0x31584553464d5545ULL, 3},
     {"exact-indexed-request-v4", ArtifactEncoding::kBinary, 0x31584553464d5545ULL, 4},

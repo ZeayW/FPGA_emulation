@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, Iterable, Optional, TextIO, Tuple, TypeV
 from .errors import EmuFlowError
 from .native_tools import resolve_native_executable
 from .process_output import run_with_bounded_output
+from .tool_runtime import NativeToolProcess, native_tool_runner
 from .xilinx_primitives import (
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     normalize_xilinx_mapped_json,
@@ -492,6 +493,38 @@ def _run_yosys_json_consumer(
     """Run one JSON-producing Yosys process with bounded diagnostics."""
 
     diagnostic_parent.mkdir(parents=True, exist_ok=True)
+    runner = native_tool_runner(command[0])
+    if runner is not None:
+        with NativeToolProcess(
+            runner, command, forward_stdout=True,
+            scratch_parent=diagnostic_parent,
+        ) as process:
+            assert process.stdout is not None
+            try:
+                with io.TextIOWrapper(process.stdout, encoding="utf-8") as stream:
+                    result = consumer(stream)
+            except BaseException as error:
+                completed = process.cancel()
+                if log_path is not None:
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    log_path.write_text(process.diagnostic_tail, encoding="utf-8")
+                if (isinstance(error, Exception) and completed is not None and
+                        completed.returncode not in {0, -signal.SIGPIPE}):
+                    tail = "\n".join(completed.stdout.splitlines()[-20:])
+                    raise EmuFlowError(
+                        f"{failure_label} failed with exit code {completed.returncode}\n{tail}"
+                    ) from error
+                raise
+            completed = process.finish()
+        if log_path is not None:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(completed.stdout, encoding="utf-8")
+        if completed.returncode:
+            tail = "\n".join(completed.stdout.splitlines()[-20:])
+            raise EmuFlowError(
+                f"{failure_label} failed with exit code {completed.returncode}\n{tail}"
+            )
+        return result
     diagnostic = diagnostic_parent / f".yosys-stderr-{uuid.uuid4().hex}.tmp"
     process: Optional[subprocess.Popen[bytes]] = None
     try:

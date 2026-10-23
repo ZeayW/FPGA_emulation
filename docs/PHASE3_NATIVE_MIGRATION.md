@@ -162,6 +162,34 @@ the complete Phase 3 assignment has been published.
 
 ## Native production entry (W7)
 
+`core::RunExternalTool` owns actual engine execution: explicit executable/argv,
+working directory, inherited or replaced environment, optional wall/CPU/address
+space/file-size limits, a separate process group, deadline/cancellation escalation
+and `wait4` reaping. It does not invoke a shell. Engine diagnostics use a fixed-size
+tail rather than a full temporary log or Python string. Forwarded stdout remains
+a direct engine-to-importer pipe for production Yosys; document bytes never pass
+through the request/result protocol. A failed importer cancels the supervisor,
+which reaps its engine before the adapter removes request scratch. Remaining
+members of the engine process group are killed when the leader exits. This is
+process-group ownership, not containment of deliberately daemonized processes.
+
+The CLI boundary is `emuflow-native run-tool REQUEST RESULT_JSON`; its bounded,
+versioned binary request carries only tool configuration. The atomic
+[tool result](../schemas/external-tool-result-v1.schema.json) embeds the common
+operation result and distinguishes launch errors, engine exit/signal, timeout
+and cancellation. Diagnostic bytes use hex encoding so invalid UTF-8 cannot
+corrupt the result. Engine CPU and maximum-process high-water RSS from `wait4`
+remain separate from supervisor metrics; neither is a simultaneous process-tree
+RSS measurement. Tool artifact semantics and whole-phase publication remain the
+owning phase's responsibility.
+
+The installed production Yosys stream and OpenSTA version/extraction adapters
+select this runtime from the tool's unified sibling or configured native install.
+The bounded provider-output helper uses the same owner. Explicit comparison tools
+without a unified installation retain the Python launcher. Once a native runtime
+is selected, failure never retries the engine through Python. Other direct
+subprocess adapters and complete compile orchestration are still unfinished.
+
 The complete entry must resolve effective configuration, execute dependencies,
 manage external tools and resource limits, collect stage metrics, and publish
 terminal evidence through the shared core. Each stage consumes artifact

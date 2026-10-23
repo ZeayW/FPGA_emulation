@@ -29,6 +29,14 @@ before launching expensive work. The probe checks native core loading, SQLite
 External synthesis, placement, routing and timing engines require their
 separate dependency and device-data checks.
 
+Installed Yosys streaming and OpenSTA extraction use the shared native external
+tool supervisor. It keeps diagnostics bounded and preserves the synthesis stdout
+pipe into the indexed importer. Cancellation waits for engine process-group
+cleanup. The internal `run-tool REQUEST RESULT_JSON` boundary accepts a bounded
+versioned binary request; it is not a replacement for the full compile command.
+Explicit comparison tools without a unified installation retain their reference
+launcher. A selected native supervisor failure is fatal and never retries a tool.
+
 Build from the repository root:
 
 ```bash

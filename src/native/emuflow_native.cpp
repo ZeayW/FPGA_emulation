@@ -1,8 +1,11 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <csignal>
+#include <filesystem>
 
 #include "emuflow_core/native_pipeline.hpp"
+#include "emuflow_core/tool_runtime.hpp"
 
 namespace {
 using emuflow::native::Stage;
@@ -10,6 +13,7 @@ using emuflow::native::StageRequest;
 constexpr const char* kUsage =
     "usage: emuflow-native [--report RESULT_JSON] PHASE OPERATION ...\n"
     "  check-runtime\n"
+    "  run-tool REQUEST RESULT_JSON\n"
     "  phase3 analyze INPUT OUTPUT\n"
     "  phase3 analyze --indexed-input EMUIR INPUT OUTPUT\n"
     "  phase3 finalize-semantics TOPOLOGY METADATA OUTPUT\n"
@@ -48,12 +52,54 @@ int Execute(StageRequest request, const std::string& report) {
   return Finish(emuflow::native::ExecuteStage(request),report);
 }
 
+volatile std::sig_atomic_t tool_cancelled = 0;
+void CancelTool(int signal) { tool_cancelled = signal; }
+struct ToolSignals {
+  struct sigaction old_int{}, old_term{}, old_hup{};
+  ToolSignals() {
+    struct sigaction action{}; action.sa_handler = CancelTool; sigemptyset(&action.sa_mask);
+    sigaction(SIGINT, &action, &old_int); sigaction(SIGTERM, &action, &old_term);
+    sigaction(SIGHUP, &action, &old_hup);
+  }
+  ~ToolSignals() {
+    sigaction(SIGINT, &old_int, nullptr); sigaction(SIGTERM, &old_term, nullptr);
+    sigaction(SIGHUP, &old_hup, nullptr);
+  }
+};
+bool SamePath(const std::string& a, const std::string& b) {
+  std::error_code error;
+  return std::filesystem::equivalent(a,b,error) ||
+      std::filesystem::weakly_canonical(a) == std::filesystem::weakly_canonical(b);
+}
+int RunTool(const std::string& input, const std::string& output) {
+  // Reject aliases before launching an engine, not after it has had side effects.
+  auto ref = emuflow::core::ArtifactRef::Bind(input,"external-tool-request-v1");
+  auto request = emuflow::core::ReadToolRequest(ref.path());
+  if (output.empty() || output == "-" || SamePath(input,output) || SamePath(request.argv[0],output))
+    throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,
+                                  "external tool result aliases a source or is not a file");
+  const auto parent = std::filesystem::absolute(output).parent_path();
+  if (!std::filesystem::is_directory(parent) || std::filesystem::is_directory(output))
+    throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,
+                                  "external tool result directory is unavailable");
+  ToolSignals signals;
+  const auto result = emuflow::core::RunExternalTool(request,&tool_cancelled,{ref});
+  emuflow::core::PublishToolResult(output,result);
+  // A cancelled supervisor completes group cleanup and evidence publication
+  // before returning. No tool output is mixed into forwarded Yosys stdout.
+  if (!result.operation.ok())
+    std::cerr << "emuflow-native: " << emuflow::core::StageResultJson(result.operation);
+  return result.operation.ok() ? 0 : 1;
+}
+
 int Dispatch(int argc, char** argv, const std::string& report) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << kUsage; return 0;
   }
   if (argc == 2 && std::string(argv[1]) == "check-runtime")
     return Finish(emuflow::core::CheckNativeRuntime(),report);
+  if (argc == 4 && std::string(argv[1]) == "run-tool" && report.empty())
+    return RunTool(argv[2],argv[3]);
   const std::string phase = argc > 1 ? argv[1] : "";
   const std::string operation = argc > 2 ? argv[2] : "";
   auto run = [&](Stage stage, std::vector<std::string> inputs,
@@ -141,6 +187,12 @@ int main(int argc, char** argv) {
       report = argv[2]; argc -= 2; argv += 2;
     }
     return Dispatch(argc, argv, report);
+  } catch (const emuflow::core::StageError& error) {
+    emuflow::core::StageResult result;
+    result.stage = "native.request"; result.error = error.code();
+    result.message = error.what();
+    std::cerr << "emuflow-native: " << emuflow::core::StageResultJson(result);
+    return result.error == emuflow::core::ErrorCode::kInvalidRequest ? 2 : 1;
   } catch (const std::exception& error) {
     emuflow::core::StageResult result;
     result.stage = "native.request"; result.error = emuflow::core::ErrorCode::kExecutionFailed;
