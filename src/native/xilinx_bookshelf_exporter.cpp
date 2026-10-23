@@ -86,6 +86,8 @@ void Token(const std::string& value) {
 
 void Export(const char* mapped_path, const char* atoms_path,
             const char* nets_path, const char* report_path, const char* spool_path) {
+  if (sqlite3_libversion_number() < 3022000)
+    throw std::runtime_error("Bookshelf export requires SQLite 3.22 or newer");
   Database mapped(mapped_path, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI);
   Database atoms(atoms_path, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI);
   Database spool(spool_path, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);

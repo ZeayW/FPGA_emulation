@@ -264,7 +264,7 @@ set(EMUFLOW_INSTALL_ROOT "${CMAKE_BINARY_DIR}/install")
 set(EMUFLOW_INSTALL_BINDIR "${EMUFLOW_INSTALL_ROOT}/${CMAKE_INSTALL_BINDIR}")
 file(MAKE_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
 
-find_package(SQLite3 REQUIRED)
+find_package(SQLite3 3.22 REQUIRED)
 add_executable(emuflow_xilinx_bookshelf_exporter
   "${CMAKE_SOURCE_DIR}/src/native/xilinx_bookshelf_exporter.cpp")
 target_compile_features(emuflow_xilinx_bookshelf_exporter PRIVATE cxx_std_17)

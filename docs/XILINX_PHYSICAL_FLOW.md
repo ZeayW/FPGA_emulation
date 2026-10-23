@@ -38,7 +38,8 @@ numeric net order with drivers first. Constants remain in primitive pin
 signatures but do not become net endpoints; single-endpoint nets are omitted.
 Only primitive pin signatures and aggregate counts return to Python, which
 renders the small library and atomically publishes the net file. The exporter
-uses the SQLite3 development library at build time. Materialized JSON callers
+opens its frozen input relations with explicit immutable read-only URIs and
+uses the SQLite 3.22+ development library at build time. Materialized JSON callers
 retain the reference exporter for explicit compatibility and differential tests.
 This removes one graph-sized Python traversal; mapped lowering, physical macro
 preparation, and timing-query preparation are separate stages.

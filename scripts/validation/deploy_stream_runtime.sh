@@ -116,7 +116,13 @@ do
 done
 target="$runtime_dir/bin/emuflow_xilinx_bookshelf_exporter"
 rm -f "$target"
+sqlite_flags=()
+if test -n "${SQLITE3_PREFIX:-}"; then
+  sqlite_flags=("-I$SQLITE3_PREFIX/include" "-L$SQLITE3_PREFIX/lib"
+    "-Wl,-rpath,$SQLITE3_PREFIX/lib")
+fi
 "$selected_cxx" -std=c++17 -O3 -static-libstdc++ -static-libgcc \
+  "${sqlite_flags[@]}" \
   "$source_dir/src/native/xilinx_bookshelf_exporter.cpp" -lsqlite3 -o "$target"
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"

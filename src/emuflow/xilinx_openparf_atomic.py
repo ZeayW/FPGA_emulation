@@ -3467,7 +3467,8 @@ def _render_indexed_bookshelf(
         output = root / "design.nets"
         report = root / "summary.tsv"
         result = subprocess.run(
-            [executable, str(Path(database).resolve()), str(atoms.path.resolve()),
+            [executable, Path(database).resolve().as_uri() + "?mode=ro&immutable=1",
+             atoms.path.resolve().as_uri() + "?mode=ro&immutable=1",
              str(output), str(report), str(root / "endpoints.sqlite")],
             capture_output=True, text=True, check=False,
         )

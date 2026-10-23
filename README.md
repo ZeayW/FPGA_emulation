@@ -110,7 +110,7 @@ The root CMake project builds EmuFlow's native kernels and selected in-tree
 engines. Python packaging alone does not build a complete flow.
 
 Required tools include CMake 3.20+, GNU Make, a C++17 compiler, Python 3.9+,
-Boost, and the SQLite3 development library. The complete build also needs the
+Boost, and the SQLite 3.22+ development library. The complete build also needs the
 development dependencies for OpenROAD, OpenSTA, OpenPARF, and VPR: Bison, Flex,
 Tcl, SWIG, Eigen3, zlib,
 spdlog, LEMON, OR-Tools, OpenMP, and the appropriate Python/PyTorch packages.
