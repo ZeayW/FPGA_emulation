@@ -38,6 +38,8 @@ Indexed OpenPARF Bookshelf export streams typed pins through C++ without
 reconstructing the cell and pin population in Python.
 Physical macro derivation is shared within one immutable mapped reader;
 independent artifact readers still derive and validate their own contracts.
+The native SLL weight update evaluates overflowing exponential steps against
+its existing bounds without changing the placement objective.
 When driving the reusable stage commands directly, pass
 `experiment-stage cut-timing-run --prepared-timing-boundary` (and the same flag
 plus the expected `--clock-period` values to `cut-timing-validate`) to consume a
