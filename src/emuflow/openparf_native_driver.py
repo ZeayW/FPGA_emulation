@@ -342,8 +342,11 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
                 engine.params.emuflow_relative_hpwl_improvement
             ),
             "sll_weighting": {
-                "provider": "leaps-fixed-adam-step-v1",
-                "step_size": float(engine.params.wlw_step_rate),
+                "provider": "leaps-fixed-adam-step-v2",
+                "step_size": float(engine.params.wlw_psi_step_size),
+                "delta_sll_ema_weight": float(
+                    engine.params.wlw_delta_sll_ema_weight
+                ),
                 "accepted_range": [0.0, 1000.0],
             },
         },
@@ -384,13 +387,21 @@ def validate_openparf_native_metrics(
         sll_weighting.get("step_size")
         if isinstance(sll_weighting, dict) else None
     )
+    ema_weight = (
+        sll_weighting.get("delta_sll_ema_weight")
+        if isinstance(sll_weighting, dict) else None
+    )
     if (
         not isinstance(sll_weighting, dict)
-        or sll_weighting.get("provider") != "leaps-fixed-adam-step-v1"
+        or sll_weighting.get("provider") != "leaps-fixed-adam-step-v2"
         or isinstance(step_size, bool)
         or not isinstance(step_size, (int, float))
         or not math.isfinite(float(step_size))
         or float(step_size) <= 0.0
+        or isinstance(ema_weight, bool)
+        or not isinstance(ema_weight, (int, float))
+        or not math.isfinite(float(ema_weight))
+        or not 0.0 < float(ema_weight) <= 1.0
         or sll_weighting.get("accepted_range") != [0.0, 1000.0]
     ):
         raise RuntimeError("OpenPARF native SLL weighting policy is invalid")

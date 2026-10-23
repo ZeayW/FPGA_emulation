@@ -135,7 +135,8 @@ _MAX_PIN_AREA_ADJUSTMENT_RATE = 1.6
 _HIGH_FANOUT_WEIGHT_THRESHOLD = 64
 _HIGH_FANOUT_WEIGHT_EXPONENT = 0.5
 _HIGH_FANOUT_WEIGHT_MAXIMUM = 4.0
-_SLL_ADAM_STEP_SIZE = 1.002
+_SLL_ADAM_STEP_SIZE = 0.002
+_SLL_DELTA_EMA_WEIGHT = 0.9
 _POST_ADJUSTMENT_ITERATION_RESERVE = 384
 _LOGIC_FILLER_LIMIT = 65_536
 _CLOCK_REGION_NAME = re.compile(r"^X([0-9]+)Y([0-9]+)$")
@@ -4662,7 +4663,8 @@ def export_xilinx_openparf_atomic(
         ),
         # LEAPS Equation (23) applies this as a fixed Adam step.  It must not
         # be exponentiated by the absolute SLL-count delta.
-        "wlw_step_rate": _SLL_ADAM_STEP_SIZE,
+        "wlw_psi_step_size": _SLL_ADAM_STEP_SIZE,
+        "wlw_delta_sll_ema_weight": _SLL_DELTA_EMA_WEIGHT,
         "result_dir": str((output_dir / "results").resolve()),
     }
     if has_carry8:
@@ -5150,8 +5152,9 @@ def export_xilinx_openparf_atomic(
             "maximum_pin_adjustment_rate": _MAX_PIN_AREA_ADJUSTMENT_RATE,
             "resource_area_adjustment": False,
             "sll_weighting": {
-                "provider": "leaps-fixed-adam-step-v1",
+                "provider": "leaps-fixed-adam-step-v2",
                 "step_size": _SLL_ADAM_STEP_SIZE,
+                "delta_sll_ema_weight": _SLL_DELTA_EMA_WEIGHT,
                 "accepted_range": [0.0, 1000.0],
             },
             "convergence": {

@@ -138,8 +138,9 @@ class ArchitectureDBTest(unittest.TestCase):
                         "final_legal_hpwl": 11.0,
                         "policy": {
                             "sll_weighting": {
-                                "provider": "leaps-fixed-adam-step-v1",
-                                "step_size": 1.002,
+                                "provider": "leaps-fixed-adam-step-v2",
+                                "step_size": 0.002,
+                                "delta_sll_ema_weight": 0.9,
                                 "accepted_range": [0.0, 1000.0],
                             }
                         },

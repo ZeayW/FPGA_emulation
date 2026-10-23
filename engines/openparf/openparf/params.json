@@ -450,8 +450,12 @@
     "description": "Defines the initial reset value for the psi parameter",
     "default": 5.0
   },
-  "wlw_step_rate": {
-    "description": "Fixed Adam step size for adjusting psi at each epoch",
-    "default": 1.002
+  "wlw_psi_step_size": {
+    "description": "Fixed LEAPS Adam step size t_psi for adjusting psi at each epoch",
+    "default": 0.002
+  },
+  "wlw_delta_sll_ema_weight": {
+    "description": "LEAPS EMA weight rho applied to the current SLL-count delta",
+    "default": 0.9
   }
 }

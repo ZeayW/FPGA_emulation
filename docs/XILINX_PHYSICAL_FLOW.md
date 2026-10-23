@@ -52,11 +52,13 @@ reader, a different mapped file/top, or a mutable JSON input derives its own
 facts; no persistent analysis artifact or cross-run cache is introduced.
 
 The native SLL multiplier keeps OpenPARF's `[0,1000)` acceptance policy and
-uses the fixed Adam step from LEAPS Equation (23). The absolute SLL-count
-change feeds the EMA and Adam moments; applying it again as an exponential
-factor makes the update depend exponentially on design size. Oversize positive
-updates are rejected and negative updates clamp at zero without disabling SLL
-optimization or relaxing placement checks.
+uses the fixed `t_psi=0.002` Adam step from LEAPS Equation (23). This is the
+incremental component of the former `1.002` exponential growth rate, rather
+than that rate itself. The current SLL-count delta receives the paper's
+`rho=0.9` EMA weight before entering the Adam moments. Applying the absolute
+delta again as an exponential factor makes the update depend exponentially on
+design size. Oversize positive updates are rejected and negative updates clamp
+at zero without disabling SLL optimization or relaxing placement checks.
 
 OpenPARF applies a bounded square-root weight to large nets in its analytical
 placement objective. This guides placement without changing connectivity.

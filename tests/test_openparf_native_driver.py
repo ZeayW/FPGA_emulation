@@ -26,8 +26,9 @@ def _metric(iteration, hpwl, overflow=(0.05, 0.04, 0.9)):
 def _policy():
     return {
         "sll_weighting": {
-            "provider": "leaps-fixed-adam-step-v1",
-            "step_size": 1.002,
+            "provider": "leaps-fixed-adam-step-v2",
+            "step_size": 0.002,
+            "delta_sll_ema_weight": 0.9,
             "accepted_range": [0.0, 1000.0],
         }
     }
@@ -47,6 +48,8 @@ def _engine(*, patience=2, minimum=3):
             emuflow_min_feasible_iterations=minimum,
             emuflow_convergence_patience=patience,
             emuflow_post_adjustment_iteration_reserve=30,
+            wlw_psi_step_size=0.002,
+            wlw_delta_sll_ema_weight=0.9,
         ),
         data_cls=SimpleNamespace(
             pos=[torch.tensor([[1.0, 2.0]], dtype=torch.float64)],

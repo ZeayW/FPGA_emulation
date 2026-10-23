@@ -38,7 +38,8 @@ Indexed OpenPARF Bookshelf export streams typed pins through C++ without
 reconstructing the cell and pin population in Python.
 Physical macro derivation is shared within one immutable mapped reader;
 independent artifact readers still derive and validate their own contracts.
-The native SLL weight update follows LEAPS' fixed-step Adam equation. Absolute
+The native SLL weight update follows LEAPS' fixed-step Adam equation with
+`t_psi=0.002` and the paper's current-delta EMA weight `rho=0.9`. Absolute
 SLL-count changes feed the EMA and moments once; they are not exponentiated a
 second time, so the update remains stable as the design grows.
 When driving the reusable stage commands directly, pass

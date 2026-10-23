@@ -735,7 +735,8 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["emuflow_high_fanout_weight_threshold"], 64)
         self.assertEqual(config["emuflow_high_fanout_weight_exponent"], 0.5)
         self.assertEqual(config["emuflow_high_fanout_weight_maximum"], 4.0)
-        self.assertEqual(config["wlw_step_rate"], 1.002)
+        self.assertEqual(config["wlw_psi_step_size"], 0.002)
+        self.assertEqual(config["wlw_delta_sll_ema_weight"], 0.9)
         self.assertEqual(config["gp_adjust_area"], 1)
         self.assertEqual(config["gp_adjust_area_types"], ["LUT", "FF"])
         self.assertEqual(config["gp_max_adjust_area_iters"], 6)
@@ -757,8 +758,9 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "maximum_pin_adjustment_rate": 1.6,
             "resource_area_adjustment": False,
             "sll_weighting": {
-                "provider": "leaps-fixed-adam-step-v1",
-                "step_size": 1.002,
+                "provider": "leaps-fixed-adam-step-v2",
+                "step_size": 0.002,
+                "delta_sll_ema_weight": 0.9,
                 "accepted_range": [0.0, 1000.0],
             },
             "convergence": {
@@ -2678,8 +2680,9 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                         "final_legal_hpwl": 11.0,
                         "policy": {
                             "sll_weighting": {
-                                "provider": "leaps-fixed-adam-step-v1",
-                                "step_size": 1.002,
+                                "provider": "leaps-fixed-adam-step-v2",
+                                "step_size": 0.002,
+                                "delta_sll_ema_weight": 0.9,
                                 "accepted_range": [0.0, 1000.0],
                             }
                         },

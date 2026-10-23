@@ -155,7 +155,7 @@ class Placer(nn.Module):
         self.timing_optimization_counter = 0
 
         # Psi update method for super long line minimization
-        self.delta_sll_ema_alpha = 0.4
+        self.delta_sll_ema_alpha = self.params.wlw_delta_sll_ema_weight
         self.delta_sll_ema = 0.0
 
         self.cur_metric_record = None
@@ -2685,7 +2685,7 @@ class Placer(nn.Module):
 
                 # Adjust the 'psi' parameter based on the Adam optimizer's moment estimates
                 self.data_cls.multiplier.psi = bounded_sll_psi(
-                    self.data_cls.multiplier.psi, self.params.wlw_step_rate,
+                    self.data_cls.multiplier.psi, self.params.wlw_psi_step_size,
                     delta_sll.item(), m_hat, v_hat,
                     self.data_cls.multiplier.psi_epsilon,
                 )
