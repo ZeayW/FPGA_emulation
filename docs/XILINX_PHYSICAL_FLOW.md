@@ -72,6 +72,14 @@ requires about four times the sampling rows of the former full-bin bound.
 Exact legalization and an independent site/BEL validator remain responsible
 for physical legality.
 
+Global-placement overflow is an analytical quality signal, not a site/BEL
+legality rule. The normal pass target is `0.10`. When the optimizer reaches a
+stable candidate between `0.10` and `0.25`, the representative diagnostic path
+restores the lowest-HPWL bounded checkpoint and runs DirectLG. Its certificate
+records mean and maximum legalization displacement, post-legalization HPWL,
+and exact legality. A diagnostic handoff does not authorize routing by itself;
+the placement and initial congestion evidence must be reviewed first.
+
 The conservative UltraScale+ model qualifies eight independent 6LUT BELs and
 sixteen FF BELs per slice. DirectLG retains sixteen LUT z positions to encode
 the 5LUT/6LUT pairs, with paired LUT use disabled. That encoding is not physical

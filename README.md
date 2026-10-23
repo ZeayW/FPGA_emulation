@@ -85,6 +85,10 @@ parsed native density area before solving. Logic filler sampling preserves its
 exact total area and limits each LUT/FF sample to half a density bin so the
 density field retains enough spatial resolution before exact legalization.
 The native certificate records the effective count, geometry, and span.
+The `0.10` global-placement overflow target remains the normal routability
+criterion. A representative placement may also restore a bounded `0.25`
+checkpoint for diagnostic DirectLG; that path records legalization displacement
+and still requires exact site/BEL validation before any routing release.
 The final route still requires zero
 overused nodes and complete source-to-sink connectivity.
 

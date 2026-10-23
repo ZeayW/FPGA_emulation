@@ -127,6 +127,8 @@ _TARGET_DENSITY = 0.75
 _QUALIFIED_LUTS_PER_SLICE = 8
 _CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
 _GLOBAL_PLACEMENT_STOP_OVERFLOW = 0.10
+_DIAGNOSTIC_HANDOFF_OVERFLOW = 0.25
+_DIAGNOSTIC_HANDOFF_PATIENCE = 64
 _ROUTABILITY_ADJUSTMENT_OVERFLOW_THRESHOLD = 0.15
 _ROUTABILITY_ADJUSTMENT_ITERATIONS = 6
 _ROUTE_AREA_ADJUSTMENT_EXPONENT = 2.0
@@ -4576,6 +4578,16 @@ def export_xilinx_openparf_atomic(
         "emuflow_min_feasible_iterations": 96,
         "emuflow_convergence_patience": 64,
         "emuflow_relative_hpwl_improvement": 1.0e-4,
+        # Overflow 0.10 is a routability target rather than a physical
+        # legality theorem.  Preserve a bounded 0.25 candidate so DirectLG
+        # can provide exact displacement and legality evidence on one
+        # representative FPGA without weakening the normal pass criterion.
+        "emuflow_diagnostic_handoff_overflow": (
+            _DIAGNOSTIC_HANDOFF_OVERFLOW
+        ),
+        "emuflow_diagnostic_handoff_patience": (
+            _DIAGNOSTIC_HANDOFF_PATIENCE
+        ),
         # Area inflation resets the nonlinear optimizer.  Do not begin a late
         # RUDY/pin adjustment unless the bounded run can still provide a full
         # settling interval plus the stable feasible window.
@@ -5140,11 +5152,17 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-stable-feasible-v6",
+            "provider": "openparf-rudy-pin-stable-feasible-v7",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW
             ),
+            "diagnostic_legalization_handoff": {
+                "maximum_logic_overflow": _DIAGNOSTIC_HANDOFF_OVERFLOW,
+                "hpwl_patience": _DIAGNOSTIC_HANDOFF_PATIENCE,
+                "requires_exact_legalization_evidence": True,
+                "authorizes_routing_release": False,
+            },
             "adjustment_overflow_threshold": (
                 _ROUTABILITY_ADJUSTMENT_OVERFLOW_THRESHOLD
             ),

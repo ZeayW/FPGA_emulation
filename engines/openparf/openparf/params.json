@@ -61,6 +61,14 @@
     "description": "stopping criteria, consider stop when the overflow reaches to a ratio",
     "default": 0.2
   },
+  "emuflow_diagnostic_handoff_overflow": {
+    "description": "Maximum logic overflow allowed for an explicitly diagnostic legalization handoff",
+    "default": 0.25
+  },
+  "emuflow_diagnostic_handoff_patience": {
+    "description": "Iterations without diagnostic-candidate HPWL improvement before restoring that candidate for legalization",
+    "default": 64
+  },
   "dtype": {
     "description": "data type, float32 | float64",
     "default": "float32"
