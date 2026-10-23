@@ -324,7 +324,10 @@ count. Group unions and fixed ownership preserve the reference behavior.
 Python borrows read-only memory-mapped columns, including the UTF-8 name pool;
 it does not rebuild the primary arrays or rerun the union/resource loops.
 Borrowed columns retain their mapping and phase-owned scratch until the last
-consumer releases them. The final cluster/assignment schemas remain unchanged,
+consumer releases them. That owner releases views and closes the mapping before
+removing its directory, including exception cycles; no independent weak-reference
+scratch finalizer may unlink a still-mapped file. The final cluster/assignment
+schemas remain unchanged,
 and candidate eligibility plus remaining final semantic/index publication still
 need native ownership. The public reference constructor remains independently
 available for differential validation; native production has no failure fallback.

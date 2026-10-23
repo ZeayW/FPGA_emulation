@@ -124,7 +124,8 @@ def test_cyclic_exception_lifetime_releases_views_before_mapping(source):
                 return root
         root=fail()
         gc.collect()
-    assert not root.exists()
+    assert not root.exists(), ([(type(e).__name__,str(e)) for e in errors],
+                               [p.name for p in root.iterdir()] if root.exists() else [])
     assert not errors
 
 
@@ -148,3 +149,13 @@ def test_large_fanout_primary_union_matches_reference(tmp_path,monkeypatch):
         actual=build_clusters(ir,fixture.constraints,_native_compact_clusters=True)
     assert list(actual['clusters'])==list(expected['clusters'])
     assert len(actual['clusters'])==1
+
+
+def test_source_setup_failure_retires_unmapped_scratch(source,tmp_path):
+    ir,constraints=source
+    scratch=tmp_path/'setup-scratch'; scratch.mkdir()
+    with patch('emuflow.phase3_clusters_native.tempfile.mkdtemp',return_value=str(scratch)), \
+         patch('emuflow.phase3_clusters_native.native_file_generation',side_effect=FileNotFoundError('missing source')):
+        with pytest.raises(FileNotFoundError,match='missing source'):
+            build_native_clusters(ir,constraints,set())
+    assert not scratch.exists()

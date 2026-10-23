@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import struct
+import shutil
 import sys
 import tempfile
 import zlib
@@ -18,6 +19,19 @@ import zlib
 from .errors import ValidationError
 from .native_tools import native_file_generation, resolve_native_executable
 from .tool_runtime import NativeToolProcess
+
+
+class _ClusterScratch:
+    # A separate TemporaryDirectory weakref finalizer can run before the
+    # mapping owner's __del__ in a traceback cycle. On NFS that unlinks the
+    # still-open file and races .nfs removal. The mapping owner alone orders
+    # view release, unmap and directory removal; setup failures clean explicitly.
+    def __init__(self):
+        self.name = tempfile.mkdtemp(prefix='phase3-primary-clusters-')
+
+    def cleanup(self):
+        if Path(self.name).exists():
+            shutil.rmtree(self.name)
 
 
 class _ColumnOwner:
@@ -145,11 +159,11 @@ def build_native_clusters(ir, constraints, eligible):
     if sys.byteorder != 'little':
         raise ValidationError('native primary clusters require little-endian storage')
     cells, nets = len(ir.value['instances']), len(ir.value['nets'])
-    scratch = tempfile.TemporaryDirectory(prefix='phase3-primary-clusters-')
+    scratch = _ClusterScratch()
     root = Path(scratch.name)
-    source = Path(ir.path)
-    generation = native_file_generation(source)
     try:
+        source = Path(ir.path)
+        generation = native_file_generation(source)
         connection = open_emuir_sqlite_read_only(source)
         try:
             def source_seq(identity):
@@ -194,10 +208,10 @@ def build_native_clusters(ir, constraints, eligible):
                 or operation.get('stage')!='phase3.build-clusters' or operation.get('status')!='pass'
                 or not isinstance(operation.get('metrics'),dict)):
             raise ValidationError('native primary cluster operation report disagrees')
-        result = _load_columns(output,scratch,cells,fixed,groups)
-        result.native_metrics = operation['metrics']
         request.unlink()
         report.unlink()
+        result = _load_columns(output,scratch,cells,fixed,groups)
+        result.native_metrics = operation['metrics']
         return result
     except BaseException:
         scratch.cleanup()
