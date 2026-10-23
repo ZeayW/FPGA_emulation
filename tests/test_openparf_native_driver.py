@@ -28,6 +28,8 @@ def _policy():
     return {
         "diagnostic_handoff_overflow": 0.25,
         "diagnostic_handoff_patience": 64,
+        "routability_adjustment_required": True,
+        "routability_adjustment_overflow_threshold": 0.25,
         "sll_weighting": {
             "provider": "leaps-fixed-adam-step-v2",
             "step_size": 0.002,
@@ -58,6 +60,7 @@ def _engine(*, patience=2, minimum=3, diagnostic_patience=64):
             gp_adjust_area=True,
             gp_max_logic_filler_bin_span=0.5,
             gp_max_adjust_area_iters=6,
+            gp_adjust_area_overflow_threshold=0.25,
             stop_overflow=0.1,
             emuflow_diagnostic_handoff_overflow=0.25,
             emuflow_diagnostic_handoff_patience=diagnostic_patience,
@@ -268,7 +271,7 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             "FF": 0.20,
         })
 
-    def test_diagnostic_handoff_ignores_overflow_only_progress(self):
+    def test_diagnostic_handoff_waits_for_routability_adjustment(self):
         engine = _engine(
             patience=100,
             minimum=100,
@@ -282,23 +285,30 @@ class OpenparfNativeDriverTest(unittest.TestCase):
         self.assertFalse(stable_native_stop_condition(
             engine, [_metric(21, [3, 3], overflow=(0.23, 0.19, 0.9))]
         ))
-        self.assertTrue(stable_native_stop_condition(
+        self.assertFalse(stable_native_stop_condition(
             engine, [_metric(22, [4, 4], overflow=(0.22, 0.18, 0.9))]
         ))
-        self.assertEqual(
-            engine._emuflow_stable_convergence["stop_reason"],
-            "diagnostic-handoff-patience",
+        self.assertIsNone(
+            engine._emuflow_stable_convergence[
+                "first_diagnostic_iteration"
+            ]
         )
-        self.assertTrue(torch.equal(
-            engine.data_cls.pos[0],
-            torch.tensor([[1.0, 2.0]], dtype=torch.float64),
-        ))
+
+    def test_rejects_diagnostic_threshold_before_routability_trigger(self):
+        engine = _engine()
+        engine.params.gp_adjust_area_overflow_threshold = 0.15
+        with self.assertRaisesRegex(RuntimeError, "handoff policy"):
+            stable_native_stop_condition(
+                engine,
+                [_metric(20, [2, 2], overflow=(0.24, 0.20, 0.9))],
+            )
 
     def test_validates_compact_native_certificate(self):
         value = {
             "schema": OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
             "status": "pass",
             "stop_reason": "feasible-hpwl-patience",
+            "area_adjustments": 1,
             "iterations": 42,
             "restored_best_feasible": True,
             "best_feasible_hpwl": 10.0,
@@ -315,6 +325,7 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             "schema": OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
             "status": "pass",
             "stop_reason": "maximum-iterations-feasible",
+            "area_adjustments": 1,
             "iterations": 100,
             "restored_best_feasible": True,
             "best_feasible_hpwl": 10.0,
@@ -352,6 +363,7 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             "schema": OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
             "status": "diagnostic",
             "stop_reason": "diagnostic-handoff-patience",
+            "area_adjustments": 1,
             "iterations": 700,
             "restored_best_feasible": False,
             "restored_best_diagnostic": True,
@@ -383,6 +395,7 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             "schema": OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
             "status": "diagnostic",
             "stop_reason": "diagnostic-handoff-patience",
+            "area_adjustments": 1,
             "iterations": 100,
             "restored_best_feasible": True,
             "restored_best_diagnostic": True,

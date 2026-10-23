@@ -129,7 +129,12 @@ _CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
 _GLOBAL_PLACEMENT_STOP_OVERFLOW = 0.10
 _DIAGNOSTIC_HANDOFF_OVERFLOW = 0.25
 _DIAGNOSTIC_HANDOFF_PATIENCE = 64
-_ROUTABILITY_ADJUSTMENT_OVERFLOW_THRESHOLD = 0.15
+# A diagnostic candidate must first see the same RUDY/pin-density feedback
+# that the diagnostic handoff is intended to qualify.  Keeping this at 0.15
+# while permitting a 0.25 handoff allowed placement to stop before the first
+# routability adjustment; the resulting legal NVDLA placement occupied only
+# two SLRs and plateaued with 84k overused routing nodes.
+_ROUTABILITY_ADJUSTMENT_OVERFLOW_THRESHOLD = _DIAGNOSTIC_HANDOFF_OVERFLOW
 _ROUTABILITY_ADJUSTMENT_ITERATIONS = 6
 _ROUTE_AREA_ADJUSTMENT_EXPONENT = 2.0
 _MAX_ROUTE_AREA_ADJUSTMENT_RATE = 2.0
@@ -5152,7 +5157,7 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-stable-feasible-v7",
+            "provider": "openparf-rudy-pin-prehandoff-stable-feasible-v8",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW
@@ -5160,6 +5165,7 @@ def export_xilinx_openparf_atomic(
             "diagnostic_legalization_handoff": {
                 "maximum_logic_overflow": _DIAGNOSTIC_HANDOFF_OVERFLOW,
                 "hpwl_patience": _DIAGNOSTIC_HANDOFF_PATIENCE,
+                "requires_routability_adjustment": True,
                 "requires_exact_legalization_evidence": True,
                 "authorizes_routing_release": False,
             },

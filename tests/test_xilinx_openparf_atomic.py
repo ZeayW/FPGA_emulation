@@ -742,7 +742,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area"], 1)
         self.assertEqual(config["gp_adjust_area_types"], ["LUT", "FF"])
         self.assertEqual(config["gp_max_adjust_area_iters"], 6)
-        self.assertEqual(config["gp_adjust_area_overflow_threshold"], 0.15)
+        self.assertEqual(config["gp_adjust_area_overflow_threshold"], 0.25)
         self.assertEqual(config["gp_adjust_route_area"], 1)
         self.assertEqual(config["gp_adjust_area_route_opt_adjust_exponent"], 2.0)
         self.assertEqual(config["gp_adjust_area_max_route_opt_adjust_rate"], 2.0)
@@ -750,16 +750,17 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-stable-feasible-v7",
+            "provider": "openparf-rudy-pin-prehandoff-stable-feasible-v8",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": 0.10,
             "diagnostic_legalization_handoff": {
                 "maximum_logic_overflow": 0.25,
                 "hpwl_patience": 64,
+                "requires_routability_adjustment": True,
                 "requires_exact_legalization_evidence": True,
                 "authorizes_routing_release": False,
             },
-            "adjustment_overflow_threshold": 0.15,
+            "adjustment_overflow_threshold": 0.25,
             "maximum_iterations": 6,
             "route_adjustment_exponent": 2.0,
             "maximum_route_adjustment_rate": 2.0,

@@ -300,14 +300,38 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
     diagnostic_patience = int(
         getattr(engine.params, "emuflow_diagnostic_handoff_patience", 64)
     )
+    adjustment_threshold = float(
+        getattr(engine.params, "gp_adjust_area_overflow_threshold", 0.0)
+    )
     if (
         not math.isfinite(diagnostic_limit)
         or not float(engine.params.stop_overflow) < diagnostic_limit < 1.0
         or diagnostic_patience < 0
+        or (
+            bool(getattr(engine.params, "gp_adjust_area", False))
+            and (
+                not math.isfinite(adjustment_threshold)
+                or adjustment_threshold + 1.0e-12 < diagnostic_limit
+            )
+        )
     ):
         raise RuntimeError("OpenPARF diagnostic handoff policy is invalid")
     maximum_logic_overflow = max(state["terminal_logic_overflow"].values())
-    if maximum_logic_overflow <= diagnostic_limit:
+    completed_adjustments = int(getattr(engine, "num_gp_adjust_area", 0))
+    last_adjustment_iteration = int(
+        getattr(engine, "last_area_inflation_iter", -1) or -1
+    )
+    diagnostic_adjustment_ready = (
+        not bool(getattr(engine.params, "gp_adjust_area", False))
+        or (
+            completed_adjustments > 0
+            and iteration > last_adjustment_iteration
+        )
+    )
+    if (
+        maximum_logic_overflow <= diagnostic_limit
+        and diagnostic_adjustment_ready
+    ):
         state["diagnostic_samples"] += 1
         if state["first_diagnostic_iteration"] is None:
             state["first_diagnostic_iteration"] = iteration
@@ -482,6 +506,12 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
             ),
             "diagnostic_handoff_patience": int(
                 engine.params.emuflow_diagnostic_handoff_patience
+            ),
+            "routability_adjustment_required": bool(
+                engine.params.gp_adjust_area
+            ),
+            "routability_adjustment_overflow_threshold": float(
+                engine.params.gp_adjust_area_overflow_threshold
             ),
             "sll_weighting": {
                 "provider": "leaps-fixed-adam-step-v2",
@@ -660,6 +690,10 @@ def validate_openparf_native_metrics(
     if value.get("status") == "diagnostic":
         threshold = policy.get("diagnostic_handoff_overflow")
         patience = policy.get("diagnostic_handoff_patience")
+        adjustment_required = policy.get("routability_adjustment_required")
+        adjustment_threshold = policy.get(
+            "routability_adjustment_overflow_threshold"
+        )
         overflow = value.get("best_diagnostic_logic_overflow")
         displacement = value.get("diagnostic_legalization_displacement")
         if (
@@ -670,6 +704,14 @@ def validate_openparf_native_metrics(
             or isinstance(patience, bool)
             or not isinstance(patience, int)
             or patience < 0
+            or adjustment_required is not True
+            or isinstance(adjustment_threshold, bool)
+            or not isinstance(adjustment_threshold, (int, float))
+            or not math.isfinite(float(adjustment_threshold))
+            or float(adjustment_threshold) + 1.0e-12 < float(threshold)
+            or isinstance(value.get("area_adjustments"), bool)
+            or not isinstance(value.get("area_adjustments"), int)
+            or value["area_adjustments"] <= 0
             or not isinstance(overflow, dict)
             or not overflow
             or any(
