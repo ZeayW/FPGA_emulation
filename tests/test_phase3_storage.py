@@ -1,3 +1,4 @@
+from contextlib import closing
 import hashlib
 import json
 import sqlite3
@@ -108,7 +109,7 @@ class Phase3StorageTest(unittest.TestCase):
             store = root / stored["artifact"]
             self.assertTrue(store.is_file())
             self.assertLess(selector_path.stat().st_size, 1024)
-            with sqlite3.connect(store) as connection:
+            with closing(sqlite3.connect(store)) as connection, connection:
                 self.assertEqual(
                     connection.execute("PRAGMA application_id").fetchone()[0],
                     CLUSTERS_SQLITE_APPLICATION_ID,
@@ -137,7 +138,7 @@ class Phase3StorageTest(unittest.TestCase):
             selector_path = root / "clusters.json"
             selector = write_indexed_phase3_clusters(selector_path, clusters)
             store = root / selector["artifact"]
-            with sqlite3.connect(store) as connection:
+            with closing(sqlite3.connect(store)) as connection, connection:
                 connection.execute(
                     "UPDATE sections SET records=records+1 "
                     "WHERE section='cluster_ids'"
@@ -353,7 +354,7 @@ class Phase3StorageTest(unittest.TestCase):
                 pack_phase3_assignment(assignment, clusters),
                 compact=True,
             )
-            with sqlite3.connect(root / "assignment.sqlite") as connection:
+            with closing(sqlite3.connect(root / "assignment.sqlite")) as connection, connection:
                 connection.executescript(
                     """
                     CREATE TABLE metadata(
@@ -430,7 +431,7 @@ class Phase3StorageTest(unittest.TestCase):
                 "data": "invalid-on-purpose",
             }
             write_json(root / "assignment.json", packed, compact=True)
-            with sqlite3.connect(root / "assignment.sqlite") as connection:
+            with closing(sqlite3.connect(root / "assignment.sqlite")) as connection, connection:
                 connection.executescript(
                     """
                     CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);

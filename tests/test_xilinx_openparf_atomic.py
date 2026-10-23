@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import fcntl
 import os
@@ -958,7 +959,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 load_xilinx_openparf_atomic_sites(name_map_path)
 
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            with sqlite3.connect(output / "site-map.sqlite3") as database:
+            with closing(sqlite3.connect(output / "site-map.sqlite3")) as database, database:
                 database.execute(
                     "UPDATE metadata SET value = 'wrong' WHERE key = 'schema'"
                 )
@@ -1622,7 +1623,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             old_store = output / certificate["cluster_storage"]["file"]
             mutated = output / "mutated.sqlite"
             shutil.copy2(old_store, mutated)
-            with sqlite3.connect(mutated) as database:
+            with closing(sqlite3.connect(mutated)) as database, database:
                 database.execute("CREATE TABLE injected(value TEXT)")
             digest = atomic_adapter._sha256(mutated)
             new_store = output / f"placement-certificate.{digest}.sqlite"
@@ -1691,7 +1692,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 original = root / value["cluster_storage"]["file"]
                 mutated = root / "mutated.sqlite"
                 shutil.copy2(original, mutated)
-                with sqlite3.connect(mutated) as database:
+                with closing(sqlite3.connect(mutated)) as database, database:
                     database.executescript(statement)
                 digest = atomic_adapter._sha256(mutated)
                 store = root / f"certificate.{digest}.sqlite"
@@ -1737,7 +1738,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             descriptor["assignments"] = 2
             header = dict(value)
             header.pop("cluster_storage")
-            with sqlite3.connect(mutated) as database:
+            with closing(sqlite3.connect(mutated)) as database, database:
                 database.execute(
                     "INSERT INTO assignments VALUES (?,?,?,?,?,?,?,?,?)",
                     (7, 0, "orphan", "LUT6", "B6LUT", "SLICE_X0Y1",
@@ -1791,7 +1792,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
 
             layout = root / "layout.sqlite"
             shutil.copy2(original, layout)
-            with sqlite3.connect(layout) as database:
+            with closing(sqlite3.connect(layout)) as database, database:
                 database.execute("PRAGMA page_size=4096")
                 database.execute("VACUUM")
             layout_sha = atomic_adapter._sha256(layout)
@@ -1819,7 +1820,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
 
             tampered = root / "tampered.sqlite"
             shutil.copy2(original, tampered)
-            with sqlite3.connect(tampered) as database:
+            with closing(sqlite3.connect(tampered)) as database, database:
                 database.execute(
                     "UPDATE assignments SET cell_type='LUT5' WHERE instance='u0'"
                 )
@@ -1862,7 +1863,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             current_store = root / certificate["cluster_storage"]["file"]
             legacy_store = root / "certificate.sqlite3"
             shutil.copy2(current_store, legacy_store)
-            with sqlite3.connect(legacy_store) as database:
+            with closing(sqlite3.connect(legacy_store)) as database, database:
                 database.execute("PRAGMA application_id = 0")
                 database.execute("PRAGMA user_version = 0")
                 database.execute(
@@ -1920,7 +1921,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             )
             persisted = json.loads(certificate_path.read_text(encoding="utf-8"))
             database_path = output / persisted["cluster_storage"]["file"]
-            with sqlite3.connect(database_path) as database:
+            with closing(sqlite3.connect(database_path)) as database, database:
                 encoded = database.execute(
                     "SELECT bram_tile_group FROM assignments "
                     "WHERE bram_tile_group IS NOT NULL"

@@ -1,5 +1,6 @@
 """Read-only, bounded binding of completed indexed frontend/timing boundaries."""
 
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 from typing import Mapping
@@ -52,7 +53,7 @@ def _published_timing_report(timing, database, weights, clock_periods):
             raise ValidationError("prepared published timing payload is invalid or missing")
         payloads.append((timing / name, descriptor["records"]))
     try:
-        with sqlite3.connect(f"file:{payloads[0][0]}?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{payloads[0][0]}?mode=ro", uri=True)) as connection, connection:
             if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
                 raise ValidationError("prepared timing SQLite version mismatch")
             rows = list(connection.execute(
@@ -63,7 +64,7 @@ def _published_timing_report(timing, database, weights, clock_periods):
             raise ValidationError("prepared Phase 2 clock constraints mismatch")
         if sum(row[2] for row in rows) != payloads[0][1] or database.get("summary", {}).get("paths") != payloads[0][1]:
             raise ValidationError("prepared timing path publication count mismatch")
-        with sqlite3.connect(f"file:{payloads[1][0]}?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{payloads[1][0]}?mode=ro", uri=True)) as connection, connection:
             if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
                 raise ValidationError("prepared weight SQLite version mismatch")
             count = connection.execute("SELECT COUNT(*) FROM net_weights").fetchone()[0]

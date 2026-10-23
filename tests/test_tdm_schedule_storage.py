@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import hashlib
 import shutil
@@ -188,7 +189,7 @@ def _typed_multihop_schedule() -> dict:
 def _reseal_typed_store(path, mutate) -> dict:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     store = path.with_name(manifest["artifact"])
-    with sqlite3.connect(store) as connection:
+    with closing(sqlite3.connect(store)) as connection, connection:
         mutate(connection)
     digest = hashlib.sha256(store.read_bytes()).hexdigest()
     resealed = path.with_name(f"schedule.{digest}.sqlite")
@@ -204,7 +205,7 @@ def _reseal_typed_store(path, mutate) -> dict:
 def _downgrade_v4_store_to_v3(path, schedule) -> dict:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     store = path.with_name(manifest["artifact"])
-    with sqlite3.connect(store) as connection:
+    with closing(sqlite3.connect(store)) as connection, connection:
         for section in ("routes", "demand_completions"):
             for seq, record in enumerate(schedule[section]):
                 identity = record.get("id", record.get("demand"))
@@ -270,7 +271,7 @@ def test_v4_exact_relations_live_once_in_producer_owned_typed_tables(tmp_path):
         f"schedule.{manifest['store_sha256']}.sqlite"
     )
     store = tmp_path / manifest["artifact"]
-    with sqlite3.connect(store) as connection:
+    with closing(sqlite3.connect(store)) as connection, connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == (
             FULLY_TYPED_TDM_SCHEDULE_USER_VERSION
         )
@@ -406,7 +407,7 @@ def test_v4_consumer_cursor_wraps_damaged_typed_table_as_validation_error(
     path = tmp_path / "schedule.json"
     write_tdm_schedule_storage(path, _typed_exact_schedule(2))
     with open_tdm_schedule_view(path) as view:
-        with sqlite3.connect(view.store_path) as connection:
+        with closing(sqlite3.connect(view.store_path)) as connection, connection:
             connection.execute("DROP TABLE schedule_entries")
         with pytest.raises(ValidationError, match="typed relation is unreadable"):
             list(view.iter_hop_identity_records())
@@ -609,7 +610,7 @@ def test_v3_typed_entry_mutation_breaks_logical_seal_validation(tmp_path):
     path = tmp_path / "schedule.json"
     manifest = write_tdm_schedule_storage(path, expected)
     store = tmp_path / manifest["artifact"]
-    with sqlite3.connect(store) as connection:
+    with closing(sqlite3.connect(store)) as connection, connection:
         connection.execute(
             "UPDATE schedule_entries SET slot=slot+1 WHERE seq=1"
         )
@@ -850,7 +851,7 @@ def test_v3_consumes_native_typed_cursor_in_one_pass(tmp_path):
     assert manifest["logical_pretty_sha256"] == pretty_tdm_schedule_sha256(
         expected
     )
-    with sqlite3.connect(tmp_path / manifest["artifact"]) as connection:
+    with closing(sqlite3.connect(tmp_path / manifest["artifact"])) as connection, connection:
         assert connection.execute(
             "SELECT count(*) FROM schedule_entries"
         ).fetchone()[0] == 10_000

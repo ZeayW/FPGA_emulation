@@ -8,6 +8,7 @@ materializes the historical logical document.
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -1890,7 +1891,7 @@ def _publish_native_exact_store(
         )
         if completed.returncode:
             raise ValidationError("native ScheduleStore publication failed: " + completed.stderr.strip())
-        with sqlite3.connect(f"file:{temporary.resolve()}?mode=ro&immutable=1", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{temporary.resolve()}?mode=ro&immutable=1", uri=True)) as connection, connection:
             row = connection.execute("SELECT value FROM metadata WHERE key='native_publication_summary'").fetchone()
         if row is None:
             raise ValidationError("native ScheduleStore publication summary is missing")
@@ -1939,7 +1940,7 @@ def _publish_native_exact_generation(
         _run_native_exact_schedule([
             *producer.command, str(producer.route_store), str(board), str(request), str(temporary),
         ])
-        with sqlite3.connect(f"file:{temporary.resolve()}?mode=ro&immutable=1", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{temporary.resolve()}?mode=ro&immutable=1", uri=True)) as connection, connection:
             row = connection.execute("SELECT value FROM metadata WHERE key='native_publication_summary'").fetchone()
         if row is None:
             raise ValidationError("native ScheduleStore generation summary is missing")

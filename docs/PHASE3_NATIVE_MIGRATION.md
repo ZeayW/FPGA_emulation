@@ -30,6 +30,13 @@ The linked operations use a versioned schema registry, `ArtifactRef`,
 store/view adapters for the remaining public phase artifacts and external
 engines. An integer identity is meaningful only with its owning artifact;
 equal integers in different stores are not interchangeable.
+Python SQLite adapter scopes close their connection explicitly as well as
+commit or roll back their transaction. The SQLite connection context manager
+alone does not close the handle. Prepared timing readers, native ScheduleStore
+summary readers and physical certificate/site adapters release their handles
+before publication or phase retirement, including on validation errors. Tests
+retain connection objects beyond those scopes to verify actual close behavior;
+resource release cannot depend on garbage collection or filesystem unlink rules.
 Python adapters construct immutable input URIs through `sqlite_artifacts` and
 explicitly enable URI handling on connections that attach published stores.
 This preserves read-only inputs independently of SQLite's build-time URI

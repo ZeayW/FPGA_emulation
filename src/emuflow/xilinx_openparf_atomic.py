@@ -12,6 +12,7 @@ before producing a compact EmuFlow placement certificate.
 
 from __future__ import annotations
 
+from contextlib import closing
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Mapping as MappingABC
 import fcntl
@@ -943,9 +944,9 @@ def _valid_unreferenced_certificate_store(
     ):
         return False
     try:
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             immutable_sqlite_uri(candidate), uri=True
-        ) as database:
+        )) as database, database:
             if (
                 int(database.execute("PRAGMA application_id").fetchone()[0])
                 != OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID
@@ -1045,10 +1046,10 @@ class _AtomicPlacementCertificateBuilder:
                 previous_header = dict(previous)
                 previous_header.pop("cluster_storage")
                 try:
-                    with sqlite3.connect(
+                    with closing(sqlite3.connect(
                         immutable_sqlite_uri(self.previous_store),
                         uri=True,
-                    ) as previous_database:
+                    )) as previous_database, previous_database:
                         _validate_placement_database_contract(
                             previous_database,
                             descriptor=previous_descriptor,
@@ -1541,7 +1542,7 @@ def _write_site_database(
     # database in memory, create indexes after the bulk inserts, then emit its
     # pages once through SQLite's backup API.  The final bytes retain the same
     # read-only schema and remain under the required /research run directory.
-    with sqlite3.connect(":memory:") as database:
+    with closing(sqlite3.connect(":memory:")) as database, database:
         database.executescript("""
             PRAGMA page_size = 65536;
             PRAGMA journal_mode = OFF;
@@ -1626,7 +1627,7 @@ def _write_site_database(
                 ON physical_sites (dense_x, dense_y, resource, slot);
         """)
         database.commit()
-        with sqlite3.connect(path) as destination:
+        with closing(sqlite3.connect(path)) as destination, destination:
             destination.executescript("""
                 PRAGMA journal_mode = OFF;
                 PRAGMA synchronous = OFF;
@@ -1717,7 +1718,7 @@ def load_xilinx_openparf_sites(
     }
     resource_filter = {str(resource) for resource in resources or []}
     uri = immutable_sqlite_uri(database_path)
-    with sqlite3.connect(uri, uri=True) as database:
+    with closing(sqlite3.connect(uri, uri=True)) as database, database:
         metadata = dict(database.execute("SELECT key, value FROM metadata"))
         if (
             metadata.get("schema") != XILINX_OPENPARF_SITE_DATABASE_SCHEMA

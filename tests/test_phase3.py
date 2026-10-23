@@ -1,3 +1,4 @@
+from contextlib import closing
 import copy
 import hashlib
 import json
@@ -169,7 +170,7 @@ class Phase3Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             ir_path = Path(temporary_directory) / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            with sqlite3.connect(ir_path) as connection:
+            with closing(sqlite3.connect(ir_path)) as connection, connection:
                 unique_payloads = connection.execute(
                     "SELECT COUNT(DISTINCT resources_seq) FROM cell_records"
                 ).fetchone()[0]
@@ -214,7 +215,7 @@ class Phase3Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             ir_path = Path(temporary_directory) / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            with sqlite3.connect(ir_path) as connection:
+            with closing(sqlite3.connect(ir_path)) as connection, connection:
                 endpoint = connection.execute(
                     """SELECT net_seq,role,ordinal FROM endpoint_records
                         WHERE instance_seq IS NOT NULL LIMIT 1"""
@@ -240,7 +241,7 @@ class Phase3Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             ir_path = Path(temporary_directory) / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            with sqlite3.connect(ir_path) as connection:
+            with closing(sqlite3.connect(ir_path)) as connection, connection:
                 missing_seq = connection.execute(
                     "SELECT coalesce(max(seq), -1) + 1 FROM payloads"
                 ).fetchone()[0]
@@ -261,7 +262,7 @@ class Phase3Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             ir_path = Path(temporary_directory) / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            with sqlite3.connect(ir_path) as connection:
+            with closing(sqlite3.connect(ir_path)) as connection, connection:
                 resources_seq = connection.execute(
                     "SELECT resources_seq FROM cell_records WHERE seq=0"
                 ).fetchone()[0]
@@ -327,7 +328,7 @@ class Phase3Test(unittest.TestCase):
                     output / "assignment.sqlite",
                 )
             self.assertEqual(checked, report["validation"])
-            with sqlite3.connect(output / "assignment.sqlite") as connection:
+            with closing(sqlite3.connect(output / "assignment.sqlite")) as connection, connection:
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
                     4,
@@ -360,7 +361,7 @@ class Phase3Test(unittest.TestCase):
                     output / "phase3_report.json", output / "assignment.sqlite")
             (output / "phase3_report.json").write_text(json.dumps(report))
 
-            with sqlite3.connect(output / "assignment.sqlite") as connection:
+            with closing(sqlite3.connect(output / "assignment.sqlite")) as connection, connection:
                 connection.execute("DELETE FROM cut_sinks")
             with self.assertRaisesRegex(ValidationError, "cut relation"):
                 validate_phase3_indexed(
@@ -503,7 +504,7 @@ class Phase3Test(unittest.TestCase):
             )
             binary_path = output / "assignment.exact.bin"
             self.assertTrue(binary_path.is_file())
-            with sqlite3.connect(output / "assignment.sqlite") as connection:
+            with closing(sqlite3.connect(output / "assignment.sqlite")) as connection, connection:
                 self.assertEqual(
                     connection.execute(
                         "SELECT count(*) FROM sqlite_master "

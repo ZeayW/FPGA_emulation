@@ -1,4 +1,5 @@
 """Completed indexed boundaries stay read-only and skip synthesis/timing."""
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -163,7 +164,7 @@ def test_native_published_phase2_checks_clocks_and_counts_without_standalone_rep
         manifest = read_json(timing / name)
         payload = timing / next(iter(manifest["payloads"].values()))["path"]
         payload.unlink()
-        with sqlite3.connect(payload) as connection:
+        with closing(sqlite3.connect(payload)) as connection, connection:
             connection.executescript("PRAGMA user_version=1; " + sql)
         manifest["design"] = "counter"
         manifest["summary"] = {"paths" if table == "paths" else "weighted_nets": 1}
