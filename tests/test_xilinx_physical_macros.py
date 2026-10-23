@@ -30,7 +30,7 @@ class ImmutableMacroDerivationTests(unittest.TestCase):
                     "port_directions": {"I0": "input", "O": "output"},
                 }}, "netnames": {"a": {"bits": [2]}, "y": {"bits": [3]}},
             }}}))
-            ir = root / "ir.sqlite"
+            ir = root / "source.emuir.sqlite"
             mapped_path = root / "mapped.sqlite"
             import_yosys_json(source).save(ir)
             emit_xilinx_mapped_index(ir, mapped_path)
