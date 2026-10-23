@@ -187,6 +187,10 @@ On hosts whose system C library is older than the versioned Yosys build,
 bind root, and runtime library paths listed at the top of that script, plus the
 active experiment's `TMPDIR`. This isolates the synthesis runtime from host
 Vivado and keeps writable container work under that scratch directory.
+For the same host ABI issue with OpenSTA, set `EMUFLOW_OPENSTA_CONTAINER_BINARY`
+and pass `scripts/opensta/container_runtime.sh` to `--global-sta-executable`.
+It shares the container configuration and selects OpenSTA independently of
+Yosys, so both launchers can be used in one compile invocation.
 
 Supply the exact paths from the source run, including `--logic-path-database`
 when required by its timing contract. `--fpga fpgaN` selects a representative
