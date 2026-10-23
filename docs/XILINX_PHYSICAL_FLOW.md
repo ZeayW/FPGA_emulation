@@ -166,6 +166,9 @@ remains only for explicit legacy inputs. This integration is undergoing
 real-device qualification; unit tests alone do not establish routed or global
 STA success.
 
+Native timing bindings include FF clock-enable and reset/set controls, both
+LUT6_2 outputs, and the qualified RAMB18 physical write-enable aliases.
+
 The provider uses the Phase 6 sealed differential adapter and XDC through a
 physical wrapper. Post-route checks require exact P/N package pins,
 IOSTANDARD, IBUFDS/OBUFDS ownership (including Vivado's native DIFFINBUF/IBUFCTRL

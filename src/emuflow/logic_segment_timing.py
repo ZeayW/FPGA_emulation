@@ -71,6 +71,8 @@ _LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER = (
     "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
 )
 _FF_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
+_VIVADO_FF_CONTROLS = {"FDRE": {"CE", "R"}, "FDSE": {"CE", "S"},
+                       "FDCE": {"CE", "CLR"}, "FDPE": {"CE", "PRE"}}
 _STATE_RESOURCES = {"ff", "bram", "bram18k", "uram288"}
 
 
@@ -398,6 +400,8 @@ def _vivado_object(
         }
     if pins is None:
         pins = _instance_pin_inventory(ir)
+    endpoint = _normalize_xilinx_logical_endpoint(endpoint, pins, instances)
+    port, bit = endpoint["port"], endpoint["bit"]
     if instance_id not in instances or (port, bit) not in pins[instance_id]:
         raise ValidationError(
             f"physical logic endpoint {instance_id}.{port}[{bit}] is absent"
@@ -431,7 +435,7 @@ def _vivado_object(
                 f"unsupported Vivado LUT pin {instance_id}.{port}[{bit}]"
             )
     elif cell_type in _FF_TYPES or cell_type.startswith("$_DFF_"):
-        if port not in {"C", "D", "Q"} or bit != 0:
+        if (port not in {"C", "D", "Q"} and port not in _VIVADO_FF_CONTROLS.get(cell_type, ())) or bit != 0:
             raise ValidationError(
                 f"unsupported Vivado FF pin {instance_id}.{port}[{bit}]"
             )

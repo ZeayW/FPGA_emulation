@@ -38,6 +38,20 @@ def fixture(root):
 
 
 class IndexedVivadoTests(unittest.TestCase):
+    def test_native_sequential_controls_and_bram_physical_aliases(self):
+        from emuflow.logic_segment_timing import _vivado_object
+
+        ir = SimpleNamespace(value={})
+        for kind, control in (("FDRE", "R"), ("FDSE", "S"), ("FDCE", "CLR"), ("FDPE", "PRE")):
+            instances = {"ff": {"type": kind}}
+            pins = {"ff": {("CE", 0), (control, 0)}}
+            for port in ("CE", control):
+                self.assertEqual(_vivado_object(ir, {"instance": "ff", "port": port, "bit": 0}, pins, instances),
+                                 ("pin", f"ff/{port}"))
+        self.assertEqual(_vivado_object(ir, {"instance": "bram", "port": "WEA", "bit": 2},
+                         {"bram": {("WEA", 0), ("WEA", 1)}}, {"bram": {"type": "RAMB18E2"}}),
+                         ("pin", "bram/WEA[0]"))
+
     def test_indexed_boundary_import_preserves_board_scope_and_exact_coverage(self):
         from emuflow.boundary_identity_storage import write_boundary_identity_storage
         from emuflow.boundary_timing_storage import read_boundary_timing_storage

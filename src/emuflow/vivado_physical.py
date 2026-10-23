@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 from collections import deque
@@ -28,6 +29,14 @@ from .resource_budget import validate_device_resource_usage
 from .vivado_physical_top import write_vivado_physical_top
 
 _ROOT = Path(__file__).resolve().parents[2]
+
+
+def _vivado_script(name: str) -> Path:
+    for directory in (_ROOT / "scripts/vivado", Path(sys.prefix) / "share/emuflow/scripts/vivado"):
+        path = directory / name
+        if path.is_file():
+            return path
+    raise EmuFlowError(f"installed Vivado Tcl script is missing: {name}")
 
 
 def execute_vivado(executable: str, script: Path, arguments: list[str], output: Path, name: str) -> dict[str, Any]:
@@ -174,7 +183,7 @@ def run_indexed_vivado_partition(
     threads = int(os.environ.get("EMUFLOW_VIVADO_THREADS", "2"))
     if threads < 1:
         raise ValidationError("Vivado thread count must be positive")
-    implementation = execute_vivado(executable, _ROOT / "scripts/vivado/implement_indexed_partition.tcl",
+    implementation = execute_vivado(executable, _vivado_script("implement_indexed_partition.tcl"),
         [part, str(mapped_verilog_path.resolve()), top, str(xdc), str(output_dir), str(expected), prefix,
          adapter, wrapper, io_xdc, io_query, place_directive, route_directive, str(dut_count), str(threads)],
         output_dir, "vivado-implementation.log")
@@ -204,7 +213,7 @@ def run_indexed_vivado_partition(
         query = output_dir / "boundary-query.tsv"
         query_report = write_vivado_boundary_timing_query(ir_path, boundary_identity_path, query)
         measured = output_dir / "boundary-timing.tsv"
-        export = execute_vivado(executable, _ROOT / "scripts/vivado/export_boundary_timing.tcl",
+        export = execute_vivado(executable, _vivado_script("export_boundary_timing.tcl"),
                                 [str(output_dir / "routed.dcp"), str(query), str(measured), *timing_arguments], output_dir, "boundary-export.log")
         imported = import_indexed_vivado_boundary(measured, boundary_identity_path, output_dir / "boundary-timing.json",
             measurement_scope="board-integrated-interface" if virtual_io_contract is not None else "partition-boundary")
@@ -218,7 +227,7 @@ def run_indexed_vivado_partition(
         if identity is None:
             continue
         measured = output_dir / f"{kind}.tsv"
-        export = execute_vivado(executable, _ROOT / "scripts/vivado/export_logic_segment_timing.tcl",
+        export = execute_vivado(executable, _vivado_script("export_logic_segment_timing.tcl"),
                                 [str(output_dir / "routed.dcp"), str(query), str(measured), *timing_arguments], output_dir, f"{kind}-export.log")
         imported = importer(measured, identity, output_dir / f"{kind}.json")
         stages[kind] = {"status": "pass", "export": export, "import": imported}

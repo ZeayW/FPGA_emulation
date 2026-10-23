@@ -32,6 +32,7 @@ emuflow = ["data/rapidwright/*.json", "data/platforms/*.json", "data/io/*.json"]
 
 [tool.setuptools.data-files]
 "share/emuflow/platforms" = ["platforms/virtual/*.wires.csv"]
+"share/emuflow/scripts/vivado" = ["scripts/vivado/*.tcl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

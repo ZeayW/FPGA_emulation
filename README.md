@@ -8,13 +8,12 @@ routing, TDM assignment, physical implementation, and global timing analysis.
 The default research route uses RapidWright device resources, native OpenPARF
 placement, and RWRoute routing for supported Xilinx FPGAs. VTR/VPR remains an
 alternative academic backend, and Vivado is an optional proprietary backend.
-The indexed Vivado adapter consumes current Phase 6 contracts; its real-device
-qualification is in progress. This OOC path retains abstract external clock
-sources and does not establish board clock/skew signoff. Fixed-pad timing queries validate their physical
-start/end extents before publication and query physical delay independently
-of clock slack. A versioned container launcher can supply
-the Yosys runtime on older HPC hosts; see the [user guide](docs/USER_GUIDE.md#physical-implementation).
-See [Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider).
+The indexed Vivado adapter consumes current Phase 6 SQLite contracts, fixed
+LVDS I/O, and native sequential control pins. Real-device qualification is in
+progress. Its OOC implementation retains abstract external clock sources and
+does not establish board clock/skew signoff. See the
+[Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider) and
+[user guide](docs/USER_GUIDE.md#physical-implementation).
 The virtual BoardDB is a declared academic platform model rather than evidence
 of a manufactured board or hardware signoff. See the
 [hardware platform model](docs/HARDWARE_PLATFORM.md),

@@ -176,6 +176,10 @@ emuflow multi-fpga physical --split RUN/flow/split --platform PLATFORM.json \
   --routes ROUTES.json --path-database PATHS.json
 ```
 
+CMake and Python package installations include the Vivado Tcl adapters; the
+indexed provider resolves the installed data directory when outside a source
+checkout.
+
 On hosts whose system C library is older than the versioned Yosys build,
 `scripts/yosys/container_runtime.sh` is an optional `--yosys` launcher. Set its
 `EMUFLOW_YOSYS_CONTAINER_*` variables to the executable, immutable image, binary,
