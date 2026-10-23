@@ -73,23 +73,24 @@ Exact legalization and an independent site/BEL validator remain responsible
 for physical legality.
 
 Global-placement overflow is an analytical quality signal, not a site/BEL
-legality rule. The normal pass target is `0.10`. When the optimizer reaches a
-stable candidate between `0.10` and `0.25`, the representative diagnostic path
-restores the lowest-HPWL bounded checkpoint and runs DirectLG. Its certificate
-records mean and maximum legalization displacement, post-legalization HPWL,
+legality rule. The normal pass target is `0.10`. The representative diagnostic
+path reaches the `0.25` RUDY/pin-area trigger, then records eight metrics after
+the inflation event and restores the candidate with the smallest inflated LUT
+or FF overflow, breaking ties by HPWL. The fixed window prevents global
+placement from withholding DirectLG and RWRoute while it repeatedly optimizes
+an inflated proxy. Its certificate records the adjustment iteration, sampled
+window, mean and maximum legalization displacement, post-legalization HPWL,
 and exact legality. A diagnostic handoff does not authorize routing by itself;
-the placement and initial congestion evidence must be reviewed first.
-The diagnostic patience window is measured from the last improvement to the
-best bounded HPWL. A smaller analytical overflow alone does not reset it,
-because the density multiplier can otherwise keep reducing overflow while
-wirelength and SLL cost diverge.
-The RUDY/pin-area trigger uses the same `0.25` bound as the diagnostic handoff.
-A diagnostic window cannot begin until at least one routability adjustment has
-completed, and the first post-adjustment metric must be newer than the
-inflation event. Any later inflation invalidates the saved candidate and starts
-a fresh post-adjustment window. This prevents a low-HPWL placement concentrated
-in a small part of the device from reaching routing without congestion
-feedback.
+the exact validator and negotiated router remain authoritative.
+
+Area adjustment changes the analytical cell areas and resets the nonlinear
+optimizer. Its new overflow values therefore are not comparable to the
+pre-adjustment `0.25` trigger as a physical legality test. Waiting for the
+inflated metric to fall below `0.25` again caused long global-placement loops
+and could favor wirelength or density proxies that did not improve routing.
+Any later inflation resets the saved window. The handoff always contains a
+metric newer than the last inflation event, so congestion feedback is present
+without treating its perturbed overflow as a downstream gate.
 
 The conservative UltraScale+ model qualifies eight independent 6LUT BELs and
 sixteen FF BELs per slice. DirectLG retains sixteen LUT z positions to encode

@@ -248,6 +248,41 @@ def _restore_best_diagnostic(
     state["restored_best_diagnostic"] = True
 
 
+def _record_post_adjustment_candidate(
+    engine: Any,
+    state: MutableMapping[str, Any],
+    metric: Any,
+    *,
+    hpwl: float,
+    maximum_logic_overflow: float,
+) -> None:
+    """Keep the least-disruptive sample after routability inflation.
+
+    OpenPARF recomputes overflow with inflated pseudo areas and resets its
+    optimizer after an area adjustment.  Requiring that perturbed metric to
+    return to the pre-inflation handoff threshold can spend hundreds of
+    iterations optimizing a proxy while delaying the exact legalizer and
+    router that actually decide whether the placement is usable.  A short
+    post-adjustment window is sufficient to expose the congestion gradient;
+    within that window prefer the smallest inflated logic overflow, then HPWL.
+    """
+
+    state["post_adjustment_samples"] += 1
+    candidate_key = (maximum_logic_overflow, hpwl)
+    best_key = state.get("best_post_adjustment_key")
+    if best_key is None or candidate_key < tuple(best_key):
+        state["best_post_adjustment_key"] = list(candidate_key)
+        state["best_diagnostic_max_overflow"] = maximum_logic_overflow
+        state["best_diagnostic_hpwl"] = hpwl
+        state["best_diagnostic_iteration"] = _iteration(metric)
+        state["best_diagnostic_logic_overflow"] = dict(
+            state["terminal_logic_overflow"]
+        )
+        engine._emuflow_best_diagnostic_position = (
+            engine.data_cls.pos[0].data.clone()
+        )
+
+
 def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
     """Require stable feasible progress and restore the best feasible iterate."""
 
@@ -276,6 +311,8 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
             "best_diagnostic_max_overflow": None,
             "last_diagnostic_hpwl_improvement_iteration": None,
             "diagnostic_samples": 0,
+            "post_adjustment_samples": 0,
+            "best_post_adjustment_key": None,
             "restored_best_diagnostic": False,
             "stop_reason": None,
         }
@@ -328,6 +365,25 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
             and iteration > last_adjustment_iteration
         )
     )
+    feedback_samples = int(
+        getattr(engine.params, "emuflow_post_adjustment_feedback_samples", 0)
+    )
+    if feedback_samples <= 0:
+        raise RuntimeError(
+            "OpenPARF post-adjustment feedback window must be positive"
+        )
+    if diagnostic_adjustment_ready and completed_adjustments > 0:
+        _record_post_adjustment_candidate(
+            engine,
+            state,
+            current,
+            hpwl=hpwl,
+            maximum_logic_overflow=maximum_logic_overflow,
+        )
+        if state["post_adjustment_samples"] >= feedback_samples:
+            _restore_best_diagnostic(engine, state)
+            state["stop_reason"] = "routability-feedback-handoff"
+            return True
     if (
         maximum_logic_overflow <= diagnostic_limit
         and diagnostic_adjustment_ready
@@ -449,6 +505,7 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
     elif stop_reason in {
         "diagnostic-handoff-patience",
         "maximum-iterations-diagnostic",
+        "routability-feedback-handoff",
     }:
         status = "diagnostic"
     else:
@@ -486,6 +543,12 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
             "best_diagnostic_max_overflow"
         ),
         "diagnostic_samples": int(state.get("diagnostic_samples", 0)),
+        "post_adjustment_samples": int(
+            state.get("post_adjustment_samples", 0)
+        ),
+        "last_area_adjustment_iteration": int(
+            getattr(engine, "last_area_inflation_iter", -1) or -1
+        ),
         "restored_best_diagnostic": bool(
             state.get("restored_best_diagnostic", False)
         ),
@@ -506,6 +569,9 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
             ),
             "diagnostic_handoff_patience": int(
                 engine.params.emuflow_diagnostic_handoff_patience
+            ),
+            "post_adjustment_feedback_samples": int(
+                engine.params.emuflow_post_adjustment_feedback_samples
             ),
             "routability_adjustment_required": bool(
                 engine.params.gp_adjust_area
@@ -656,6 +722,7 @@ def validate_openparf_native_metrics(
         and stop_reason in {
             "diagnostic-handoff-patience",
             "maximum-iterations-diagnostic",
+            "routability-feedback-handoff",
         }
         and value.get("restored_best_diagnostic") is True
     )
@@ -668,6 +735,7 @@ def validate_openparf_native_metrics(
         "diagnostic-handoff-patience",
         "maximum-iterations-diagnostic",
         "maximum-iterations-infeasible",
+        "routability-feedback-handoff",
     }:
         raise RuntimeError("OpenPARF native placement did not converge")
     if stop_reason in {
@@ -696,6 +764,11 @@ def validate_openparf_native_metrics(
         )
         overflow = value.get("best_diagnostic_logic_overflow")
         displacement = value.get("diagnostic_legalization_displacement")
+        feedback_samples = policy.get("post_adjustment_feedback_samples")
+        feedback_handoff = stop_reason == "routability-feedback-handoff"
+        observed_feedback_samples = value.get("post_adjustment_samples")
+        best_iteration = value.get("best_diagnostic_iteration")
+        adjustment_iteration = value.get("last_area_adjustment_iteration")
         if (
             isinstance(threshold, bool)
             or not isinstance(threshold, (int, float))
@@ -718,8 +791,27 @@ def validate_openparf_native_metrics(
                 isinstance(number, bool)
                 or not isinstance(number, (int, float))
                 or not math.isfinite(float(number))
-                or float(number) > float(threshold) + 1.0e-9
+                or (
+                    not feedback_handoff
+                    and float(number) > float(threshold) + 1.0e-9
+                )
                 for number in overflow.values()
+            )
+            or isinstance(feedback_samples, bool)
+            or not isinstance(feedback_samples, int)
+            or feedback_samples <= 0
+            or (
+                feedback_handoff
+                and (
+                    isinstance(observed_feedback_samples, bool)
+                    or not isinstance(observed_feedback_samples, int)
+                    or observed_feedback_samples < feedback_samples
+                    or isinstance(best_iteration, bool)
+                    or not isinstance(best_iteration, int)
+                    or isinstance(adjustment_iteration, bool)
+                    or not isinstance(adjustment_iteration, int)
+                    or best_iteration <= adjustment_iteration
+                )
             )
             or not isinstance(displacement, dict)
             or isinstance(displacement.get("instances"), bool)
@@ -762,7 +854,10 @@ def main() -> int:
     stable_window = int(params.emuflow_min_feasible_iterations) + int(
         params.emuflow_convergence_patience
     )
-    if post_adjustment_reserve < stable_window:
+    feedback_window = int(params.emuflow_post_adjustment_feedback_samples)
+    if feedback_window <= 0 or post_adjustment_reserve < max(
+        stable_window, feedback_window
+    ):
         raise RuntimeError(
             "OpenPARF post-adjustment reserve must cover the stable window"
         )

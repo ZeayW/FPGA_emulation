@@ -145,6 +145,7 @@ _HIGH_FANOUT_WEIGHT_MAXIMUM = 4.0
 _SLL_ADAM_STEP_SIZE = 0.002
 _SLL_DELTA_EMA_WEIGHT = 0.9
 _POST_ADJUSTMENT_ITERATION_RESERVE = 384
+_POST_ADJUSTMENT_FEEDBACK_SAMPLES = 8
 _LOGIC_FILLER_LIMIT = 65_536
 _CLOCK_REGION_NAME = re.compile(r"^X([0-9]+)Y([0-9]+)$")
 _MAX_CLOCKS_PER_REGION = 24
@@ -4599,6 +4600,9 @@ def export_xilinx_openparf_atomic(
         "emuflow_post_adjustment_iteration_reserve": (
             _POST_ADJUSTMENT_ITERATION_RESERVE
         ),
+        "emuflow_post_adjustment_feedback_samples": (
+            _POST_ADJUSTMENT_FEEDBACK_SAMPLES
+        ),
         # The atomic/native path must use the same fanout-aware analytical
         # objective as the continuous guidance path.  Without these weights,
         # a reset or enable net with tens of thousands of sinks contributes
@@ -5157,7 +5161,7 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-prehandoff-stable-feasible-v8",
+            "provider": "openparf-rudy-pin-feedback-handoff-v9",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW
@@ -5166,6 +5170,9 @@ def export_xilinx_openparf_atomic(
                 "maximum_logic_overflow": _DIAGNOSTIC_HANDOFF_OVERFLOW,
                 "hpwl_patience": _DIAGNOSTIC_HANDOFF_PATIENCE,
                 "requires_routability_adjustment": True,
+                "post_adjustment_feedback_samples": (
+                    _POST_ADJUSTMENT_FEEDBACK_SAMPLES
+                ),
                 "requires_exact_legalization_evidence": True,
                 "authorizes_routing_release": False,
             },

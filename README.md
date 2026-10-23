@@ -85,16 +85,15 @@ parsed native density area before solving. Logic filler sampling preserves its
 exact total area and limits each LUT/FF sample to half a density bin so the
 density field retains enough spatial resolution before exact legalization.
 The native certificate records the effective count, geometry, and span.
-The `0.10` global-placement overflow target remains the normal routability
-criterion. A representative placement may also restore a bounded `0.25`
-checkpoint for diagnostic DirectLG. Once bounded, overflow-only progress does
-not extend the HPWL patience window; the solver restores the lowest-HPWL
-checkpoint instead of allowing density multipliers to destroy wirelength. The
-RUDY/pin-density trigger is aligned with the diagnostic threshold, and a
-diagnostic checkpoint is eligible only after at least one routability-area
-adjustment. A later inflation resets the candidate and its patience window. The
-diagnostic path records legalization displacement and still requires exact
-site/BEL validation before any routing release.
+The `0.10` global-placement overflow target remains the normal analytical
+criterion. A representative placement triggers RUDY/pin feedback at `0.25`,
+samples eight post-adjustment iterates, and restores the sample with the lowest
+inflated logic overflow (breaking ties by HPWL) for DirectLG. OpenPARF computes
+post-adjustment overflow from deliberately inflated pseudo areas, so waiting
+for that metric to return to `0.25` would delay the exact legalizer and router
+without proving physical legality or routability. The diagnostic path records
+the feedback window and legalization displacement and still requires exact
+site/BEL validation plus real negotiated-routing convergence before release.
 The final route still requires zero
 overused nodes and complete source-to-sink connectivity.
 

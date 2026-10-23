@@ -28,6 +28,7 @@ def _policy():
     return {
         "diagnostic_handoff_overflow": 0.25,
         "diagnostic_handoff_patience": 64,
+        "post_adjustment_feedback_samples": 8,
         "routability_adjustment_required": True,
         "routability_adjustment_overflow_threshold": 0.25,
         "sll_weighting": {
@@ -64,6 +65,7 @@ def _engine(*, patience=2, minimum=3, diagnostic_patience=64):
             stop_overflow=0.1,
             emuflow_diagnostic_handoff_overflow=0.25,
             emuflow_diagnostic_handoff_patience=diagnostic_patience,
+            emuflow_post_adjustment_feedback_samples=8,
             logic_area_type_names=["LUT", "FF"],
             io_legalization_flag=False,
             emuflow_relative_hpwl_improvement=0.0,
@@ -247,6 +249,9 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             minimum=100,
             diagnostic_patience=2,
         )
+        engine.num_gp_adjust_area = 0
+        engine.gp_adjust_area = False
+        engine.params.gp_adjust_area = False
         engine.data_cls.pos[0].data.fill_(7.0)
         self.assertFalse(stable_native_stop_condition(
             engine, [_metric(20, [2, 2], overflow=(0.24, 0.20, 0.9))]
@@ -302,6 +307,31 @@ class OpenparfNativeDriverTest(unittest.TestCase):
                 engine,
                 [_metric(20, [2, 2], overflow=(0.24, 0.20, 0.9))],
             )
+
+    def test_post_adjustment_window_restores_lowest_inflated_overflow(self):
+        engine = _engine(patience=100, minimum=100)
+        engine.params.emuflow_post_adjustment_feedback_samples = 3
+        engine.data_cls.pos[0].data.fill_(7.0)
+        self.assertFalse(stable_native_stop_condition(
+            engine, [_metric(11, [2, 2], overflow=(0.35, 0.20, 0.9))]
+        ))
+        engine.data_cls.pos[0].data.fill_(9.0)
+        self.assertFalse(stable_native_stop_condition(
+            engine, [_metric(12, [1, 1], overflow=(0.50, 0.25, 0.9))]
+        ))
+        engine.data_cls.pos[0].data.fill_(11.0)
+        self.assertTrue(stable_native_stop_condition(
+            engine, [_metric(13, [1, 1], overflow=(0.60, 0.30, 0.9))]
+        ))
+        self.assertTrue(torch.equal(
+            engine.data_cls.pos[0],
+            torch.full((1, 2), 7.0, dtype=torch.float64),
+        ))
+        state = engine._emuflow_stable_convergence
+        self.assertEqual(state["stop_reason"], "routability-feedback-handoff")
+        self.assertEqual(state["post_adjustment_samples"], 3)
+        self.assertEqual(state["best_diagnostic_iteration"], 11)
+        self.assertAlmostEqual(state["best_diagnostic_max_overflow"], 0.35)
 
     def test_validates_compact_native_certificate(self):
         value = {
@@ -416,6 +446,39 @@ class OpenparfNativeDriverTest(unittest.TestCase):
                 validate_openparf_native_metrics(
                     path, allow_detailed_legalization_handoff=True
                 )
+
+    def test_accepts_post_adjustment_feedback_legalization_evidence(self):
+        value = {
+            "schema": OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
+            "status": "diagnostic",
+            "stop_reason": "routability-feedback-handoff",
+            "area_adjustments": 1,
+            "iterations": 18,
+            "restored_best_feasible": False,
+            "restored_best_diagnostic": True,
+            "best_feasible_hpwl": None,
+            "best_diagnostic_iteration": 11,
+            "last_area_adjustment_iteration": 10,
+            "post_adjustment_samples": 8,
+            "best_diagnostic_hpwl": 10.0,
+            "best_diagnostic_logic_overflow": {"LUT": 0.35, "FF": 0.20},
+            "final_legal_hpwl": 11.0,
+            "diagnostic_legalization_displacement": {
+                "instances": 10,
+                "mean": 1.5,
+                "maximum": 7.0,
+            },
+            "policy": _policy(),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "metrics.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            self.assertEqual(
+                validate_openparf_native_metrics(
+                    path, allow_detailed_legalization_handoff=True
+                ),
+                value,
+            )
 
 
 if __name__ == "__main__":

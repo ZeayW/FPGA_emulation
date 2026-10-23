@@ -733,6 +733,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         )
         self.assertEqual(config["emuflow_diagnostic_handoff_overflow"], 0.25)
         self.assertEqual(config["emuflow_diagnostic_handoff_patience"], 64)
+        self.assertEqual(config["emuflow_post_adjustment_feedback_samples"], 8)
         self.assertEqual(config["stop_overflow"], 0.10)
         self.assertEqual(config["emuflow_high_fanout_weight_threshold"], 64)
         self.assertEqual(config["emuflow_high_fanout_weight_exponent"], 0.5)
@@ -750,13 +751,14 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-prehandoff-stable-feasible-v8",
+            "provider": "openparf-rudy-pin-feedback-handoff-v9",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": 0.10,
             "diagnostic_legalization_handoff": {
                 "maximum_logic_overflow": 0.25,
                 "hpwl_patience": 64,
                 "requires_routability_adjustment": True,
+                "post_adjustment_feedback_samples": 8,
                 "requires_exact_legalization_evidence": True,
                 "authorizes_routing_release": False,
             },
