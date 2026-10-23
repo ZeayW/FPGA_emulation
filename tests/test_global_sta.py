@@ -216,6 +216,16 @@ def test_indexed_check_builder_is_exact_compact_and_sealed(tmp_path):
     assert compact == rows
     assert len(compact._paths) == 20000
     assert compact._events == ["shared-tx", "capture"]
+    assert not isinstance(compact._paths, list)
+    assert not isinstance(compact._events, list)
+    assert compact.packed_identity_bytes == (
+        sum(len(value.encode("utf-8")) for value in compact._paths)
+        + (len(compact._paths) + 1) * 8
+        + sum(len(value.encode("utf-8")) for value in compact._events)
+        + (len(compact._events) + 1) * 8
+    )
+    assert builder._paths == []
+    assert builder._events == []
     # 4-byte path ID, 1-byte role, 4-byte event ID, two 8-byte scalars,
     # one 8-byte arc end offset, three 8-byte arcs, one 8-byte numerical hash,
     # and one 4-byte representative ID per check; plus the initial arc offset
@@ -303,8 +313,17 @@ def test_indexed_path_metadata_is_sorted_compact_mapping():
         "physical_logic_segments_cone_bound": False,
     }
     assert metadata["path-z"]["interconnect_delay_model"] == "linear-ratio-v1"
-    assert metadata.typed_payload_bytes == 44
-    assert len(metadata._strings) == 4
+    # Path, representative, clock, and model identities share one packed pool.
+    # The fixed-width payload includes the path-to-string identity column.
+    assert metadata.typed_payload_bytes == 52
+    assert len(metadata._strings) == 5
+    assert metadata.packed_identity_bytes == (
+        sum(len(value.encode("utf-8")) for value in metadata._strings)
+        + (len(metadata._strings) + 1) * 8
+    )
+    assert not isinstance(metadata._paths, list)
+    assert not isinstance(metadata._strings, list)
+    assert not builder._database_path.exists()
     assert metadata.path_id_set_sha256() == path_id_set_sha256(
         ["path-z", "path-a"]
     )

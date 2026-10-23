@@ -13,8 +13,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
+import sqlite3
 import subprocess
+import tempfile
 from array import array
 from bisect import bisect_left
 from collections.abc import Mapping, Sequence
@@ -114,6 +117,91 @@ _UINT32_MAX = (1 << 32) - 1
 _UINT64_MASK = (1 << 64) - 1
 
 
+class _PackedUtf8Strings(Sequence[str]):
+    """One UTF-8 payload plus fixed-width offsets for a string identity set."""
+
+    def __init__(self, payload: bytearray, offsets: array):
+        if (
+            offsets.typecode != "Q"
+            or not offsets
+            or offsets[0] != 0
+            or offsets[-1] != len(payload)
+            or any(
+                offsets[index - 1] > offsets[index]
+                for index in range(1, len(offsets))
+            )
+        ):
+            raise ValidationError("global STA packed string pool is malformed")
+        self._payload = payload
+        self._offsets = offsets
+
+    def __len__(self) -> int:
+        return len(self._offsets) - 1
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return self._payload[
+            self._offsets[index] : self._offsets[index + 1]
+        ].decode("utf-8")
+
+    def __iter__(self):
+        for index in range(len(self)):
+            yield self[index]
+
+    def __eq__(self, other):
+        if not isinstance(other, Sequence) or len(self) != len(other):
+            return False
+        return all(left == right for left, right in zip(self, other))
+
+    @property
+    def packed_bytes(self) -> int:
+        return len(self._payload) + len(self._offsets) * self._offsets.itemsize
+
+
+def _pack_utf8_strings_releasing(values: list[str]) -> _PackedUtf8Strings:
+    """Pack owned strings while releasing each Python object immediately."""
+
+    payload = bytearray()
+    offsets = array("Q", [0])
+    for index, value in enumerate(values):
+        payload.extend(value.encode("utf-8"))
+        offsets.append(len(payload))
+        values[index] = ""
+    values.clear()
+    return _PackedUtf8Strings(payload, offsets)
+
+
+class _PackedStringSelection(Sequence[str]):
+    """A fixed-width ordered projection over a shared packed string pool."""
+
+    def __init__(self, strings: _PackedUtf8Strings, indices: array):
+        if indices.typecode != "I" or any(index >= len(strings) for index in indices):
+            raise ValidationError("global STA packed string selection is malformed")
+        self._strings = strings
+        self._indices = indices
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return self._strings[self._indices[index]]
+
+    def __iter__(self):
+        for index in self._indices:
+            yield self._strings[index]
+
+
 class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
     """Sorted, fixed-width metadata for every original timing path.
 
@@ -126,16 +214,19 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
 
     def __init__(
         self,
-        paths: list[str],
-        strings: list[str],
+        strings: _PackedUtf8Strings,
+        path_indices: array,
         representative_indices: array,
         scopes: array,
         clock_indices: array,
         target_periods: array,
         cone_bounds: array,
         model_indices: array,
+        *,
+        validated: bool = False,
     ):
-        count = len(paths)
+        paths = _PackedStringSelection(strings, path_indices)
+        count = len(path_indices)
         if (
             len(representative_indices) != count
             or len(scopes) != count
@@ -143,12 +234,21 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
             or len(target_periods) != count
             or len(cone_bounds) != count
             or len(model_indices) != count
-            or any(not path for path in paths)
-            or any(paths[index - 1] >= paths[index] for index in range(1, count))
+            or (
+                not validated
+                and (
+                    any(not path for path in paths)
+                    or any(
+                        paths[index - 1] >= paths[index]
+                        for index in range(1, count)
+                    )
+                )
+            )
         ):
             raise ValidationError("global STA indexed path metadata is malformed")
         self._paths = paths
         self._strings = strings
+        self._path_indices = path_indices
         self._representative_indices = representative_indices
         self._scopes = scopes
         self._clock_indices = clock_indices
@@ -217,11 +317,12 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
 
     @property
     def typed_payload_bytes(self) -> int:
-        """Bytes in fixed-width columns, excluding shared string objects."""
+        """Bytes in fixed-width columns, excluding the shared UTF-8 pool."""
 
         return sum(
             values.itemsize * len(values)
             for values in (
+                self._path_indices,
                 self._representative_indices,
                 self._scopes,
                 self._clock_indices,
@@ -231,15 +332,27 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
             )
         )
 
+    @property
+    def packed_identity_bytes(self) -> int:
+        """Bytes retained for all unique identities and their offsets."""
+
+        return self._strings.packed_bytes
+
     def path_id_set_sha256(self) -> str:
         """Hash the already sorted unique path IDs without another copy/sort."""
 
-        encoded = json.dumps(
-            self._paths,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
+        digest = hashlib.sha256()
+        digest.update(b"[")
+        for index, path in enumerate(self._paths):
+            if index:
+                digest.update(b",")
+            digest.update(
+                json.dumps(
+                    path, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
+            )
+        digest.update(b"]")
+        return digest.hexdigest()
 
 
 class _IndexedSystemTimingPaths(Sequence[Mapping[str, object]]):
@@ -357,35 +470,67 @@ class _SystemTimingPathBuilder:
 
 
 class _PathMetadataBuilder:
-    """Append path metadata, then seal it into sorted indexed columns."""
+    """Spool path metadata, then seal sorted packed identity columns.
+
+    Global STA can cover millions of original paths. Keeping path strings, an
+    interning dictionary, a second string list, and the final sort order in
+    Python made all of those populations overlap at ``finish()``. This owner
+    writes bounded batches to a private typed SQLite relation. SQLite owns the
+    external sort and duplicate detection; the sealed view retains one shared
+    UTF-8 pool plus fixed-width columns only.
+    """
+
+    _BATCH_ROWS = 4096
 
     def __init__(self):
         self._finished = False
-        self._paths: list[str] = []
-        self._strings: list[str] = []
-        self._string_indices: dict[str, int] = {}
-        self._representative_indices = array("I")
-        self._scopes = array("B")
-        self._clock_indices = array("I")
-        self._target_periods = array("d")
-        self._cone_bounds = array("B")
-        self._model_indices = array("I")
+        descriptor, name = tempfile.mkstemp(
+            prefix="emuflow-global-sta-paths-", suffix=".sqlite3"
+        )
+        os.close(descriptor)
+        self._database_path = Path(name)
+        self._connection: sqlite3.Connection | None = sqlite3.connect(name)
+        self._connection.executescript(
+            """
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=FILE;
+            PRAGMA cache_size=-8192;
+            CREATE TABLE path_metadata (
+                path TEXT NOT NULL,
+                representative_path TEXT NOT NULL,
+                path_scope INTEGER NOT NULL CHECK(path_scope IN (0, 1)),
+                clock_domain TEXT,
+                target_period_ns REAL NOT NULL,
+                cone_bound INTEGER NOT NULL CHECK(cone_bound IN (0, 1)),
+                interconnect_delay_model TEXT
+            );
+            """
+        )
+        self._pending: list[tuple[object, ...]] = []
 
-    def _intern(self, value: str | None) -> int:
-        if value is None:
-            return _UINT32_MAX
-        if not isinstance(value, str) or not value:
-            raise ValidationError("global STA path metadata string is invalid")
-        index = self._string_indices.get(value)
-        if index is None:
-            index = len(self._strings)
-            if index >= _UINT32_MAX:
-                raise ValidationError(
-                    "global STA path metadata string population is too large"
-                )
-            self._string_indices[value] = index
-            self._strings.append(value)
-        return index
+    def _flush(self) -> None:
+        if not self._pending:
+            return
+        assert self._connection is not None
+        self._connection.executemany(
+            "INSERT INTO path_metadata VALUES (?, ?, ?, ?, ?, ?, ?)",
+            self._pending,
+        )
+        self._pending.clear()
+
+    def _close(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            connection.close()
+        self._database_path.unlink(missing_ok=True)
+
+    def __del__(self):
+        try:
+            self._close()
+        except BaseException:
+            pass
 
     def append(
         self,
@@ -409,6 +554,9 @@ class _PathMetadataBuilder:
             raise ValidationError(
                 "global STA path metadata representative is invalid"
             )
+        for value in (clock_domain, interconnect_delay_model):
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ValidationError("global STA path metadata string is invalid")
         if path_scope not in {"cross-fpga", "same-fpga-local"}:
             raise ValidationError("global STA path metadata scope is invalid")
         if (
@@ -419,40 +567,119 @@ class _PathMetadataBuilder:
             or not isinstance(physical_logic_segments_cone_bound, bool)
         ):
             raise ValidationError("global STA path metadata values are invalid")
-        self._paths.append(path)
-        self._representative_indices.append(self._intern(representative_path))
-        self._scopes.append(path_scope == "same-fpga-local")
-        self._clock_indices.append(self._intern(clock_domain))
-        self._target_periods.append(float(target_period_ns))
-        self._cone_bounds.append(physical_logic_segments_cone_bound)
-        self._model_indices.append(self._intern(interconnect_delay_model))
+        self._pending.append(
+            (
+                path,
+                representative_path,
+                path_scope == "same-fpga-local",
+                clock_domain,
+                float(target_period_ns),
+                physical_logic_segments_cone_bound,
+                interconnect_delay_model,
+            )
+        )
+        if len(self._pending) >= self._BATCH_ROWS:
+            self._flush()
 
     def finish(self) -> _IndexedPathMetadata:
         if self._finished:
             raise ValidationError("global STA path metadata builder is sealed")
         self._finished = True
-        order = sorted(range(len(self._paths)), key=self._paths.__getitem__)
-        paths = [self._paths[index] for index in order]
-        if any(paths[index - 1] == paths[index] for index in range(1, len(paths))):
-            raise ValidationError("global STA local/crossing path overlap")
+        try:
+            self._flush()
+            assert self._connection is not None
+            connection = self._connection
+            connection.executescript(
+                """
+                CREATE TABLE string_identity (
+                    identity INTEGER PRIMARY KEY,
+                    value TEXT NOT NULL UNIQUE
+                );
+                INSERT INTO string_identity(value)
+                    SELECT value FROM (
+                        SELECT path AS value FROM path_metadata
+                        UNION
+                        SELECT representative_path AS value FROM path_metadata
+                        UNION
+                        SELECT clock_domain AS value FROM path_metadata
+                            WHERE clock_domain IS NOT NULL
+                        UNION
+                        SELECT interconnect_delay_model AS value
+                            FROM path_metadata
+                            WHERE interconnect_delay_model IS NOT NULL
+                    ) ORDER BY value;
+                """
+            )
+            (identity_count,) = connection.execute(
+                "SELECT COUNT(*) FROM string_identity"
+            ).fetchone()
+            if identity_count >= _UINT32_MAX:
+                raise ValidationError(
+                    "global STA path metadata string population is too large"
+                )
 
-        def reordered(values: array) -> array:
-            return array(values.typecode, (values[index] for index in order))
+            string_payload = bytearray()
+            string_offsets = array("Q", [0])
+            for (value,) in connection.execute(
+                "SELECT value FROM string_identity ORDER BY identity"
+            ):
+                string_payload.extend(value.encode("utf-8"))
+                string_offsets.append(len(string_payload))
+            strings = _PackedUtf8Strings(string_payload, string_offsets)
 
-        result = _IndexedPathMetadata(
-            paths,
-            self._strings,
-            reordered(self._representative_indices),
-            reordered(self._scopes),
-            reordered(self._clock_indices),
-            reordered(self._target_periods),
-            reordered(self._cone_bounds),
-            reordered(self._model_indices),
-        )
-        self._paths = []
-        self._strings = []
-        self._string_indices = {}
-        return result
+            path_indices = array("I")
+            representative_indices = array("I")
+            scopes = array("B")
+            clock_indices = array("I")
+            target_periods = array("d")
+            cone_bounds = array("B")
+            model_indices = array("I")
+            previous_path_identity = None
+            query = """
+                SELECT path_string.identity - 1,
+                       representative_string.identity - 1, p.path_scope,
+                       clock_string.identity - 1, p.target_period_ns,
+                       p.cone_bound, model_string.identity - 1
+                  FROM path_metadata AS p
+                  JOIN string_identity AS path_string
+                    ON path_string.value = p.path
+                  JOIN string_identity AS representative_string
+                    ON representative_string.value = p.representative_path
+             LEFT JOIN string_identity AS clock_string
+                    ON clock_string.value = p.clock_domain
+             LEFT JOIN string_identity AS model_string
+                    ON model_string.value = p.interconnect_delay_model
+              ORDER BY p.path
+            """
+            for row in connection.execute(query):
+                if previous_path_identity == row[0]:
+                    raise ValidationError("global STA local/crossing path overlap")
+                previous_path_identity = row[0]
+                path_indices.append(row[0])
+                representative_indices.append(row[1])
+                scopes.append(row[2])
+                clock_indices.append(
+                    _UINT32_MAX if row[3] is None else row[3]
+                )
+                target_periods.append(row[4])
+                cone_bounds.append(row[5])
+                model_indices.append(
+                    _UINT32_MAX if row[6] is None else row[6]
+                )
+            return _IndexedPathMetadata(
+                strings,
+                path_indices,
+                representative_indices,
+                scopes,
+                clock_indices,
+                target_periods,
+                cone_bounds,
+                model_indices,
+                validated=True,
+            )
+        finally:
+            self._pending.clear()
+            self._close()
 
 
 def _event_check_values_hash(
@@ -502,8 +729,8 @@ class _IndexedEventChecks(Sequence[EventCheck]):
 
     def __init__(
         self,
-        paths: list[str],
-        events: list[str],
+        paths: Sequence[str],
+        events: Sequence[str],
         path_indices: array,
         roles: array,
         event_indices: array,
@@ -682,6 +909,16 @@ class _IndexedEventChecks(Sequence[EventCheck]):
                 ),
             )
         )
+
+    @property
+    def packed_identity_bytes(self) -> int | None:
+        """Bytes in packed path/event pools, if owned by this typed view."""
+
+        if not isinstance(self._paths, _PackedUtf8Strings) or not isinstance(
+            self._events, _PackedUtf8Strings
+        ):
+            return None
+        return self._paths.packed_bytes + self._events.packed_bytes
 
 
 class _EventCheckBuilder:
@@ -873,9 +1110,16 @@ class _EventCheckBuilder:
             raise ValidationError("global STA indexed check builder is sealed")
         self._finish_bundle()
         self._finished = True
+        # Dense-ID dictionaries are required only while appending. Drop their
+        # hash tables before allocating the packed payload, then release each
+        # Python string as soon as its UTF-8 bytes have been copied.
+        self._path_ids = {}
+        self._event_ids = {}
+        paths = _pack_utf8_strings_releasing(self._paths)
+        events = _pack_utf8_strings_releasing(self._events)
         result = _IndexedEventChecks(
-            self._paths,
-            self._events,
+            paths,
+            events,
             self._path_indices,
             self._roles,
             self._event_indices,
@@ -888,10 +1132,6 @@ class _EventCheckBuilder:
             self._representative_indices,
             validated=True,
         )
-        # These dictionaries are required only while assigning dense IDs.
-        # The sealed view retains the ordered string pools alone.
-        self._path_ids = {}
-        self._event_ids = {}
         self._representative_bundles = {}
         return result
 

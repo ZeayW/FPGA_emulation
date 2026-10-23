@@ -1347,13 +1347,16 @@ event/check construction stores interned strings, fixed-width columns and
 representative indices in `_IndexedEventChecks`; it validates target/runtime
 coverage and TX/commit semantics while appending instead of retaining an
 `EventCheck` object and arc tuple per check or scanning the complete set again
-for compression. Original-path metadata uses sorted path IDs, interned strings
-and fixed-width columns instead of one nested dictionary per path; stitching
-materializes metadata only for the current bundle, and the final numerical
-result remains in five fixed-width columns over that same identity. The already
-sorted IDs also feed the source
-seal without another path list and sort. Hashes only select collision candidates
-and full values are compared before sharing an identity. Canonical
+for compression. Original-path metadata now enters a lifecycle-scoped typed
+SQLite owner in bounded batches. That owner performs the path sort, duplicate
+rejection and identity join; sealing retains one shared packed UTF-8 pool plus
+fixed-width columns instead of Python path/string lists, an interning
+dictionary and a second sort-order list. Stitching materializes metadata only
+for the current bundle, and the final numerical result remains in five
+fixed-width columns over that same identity. The already sorted IDs also feed
+the source seal incrementally without another path list, JSON payload or sort.
+Hashes only select collision candidates and full values are compared before
+sharing an identity. Canonical
 report stitching consumes one contiguous path bundle at a time, retaining
 only the active identities and target/runtime rows; the expanded TSV writer
 returns final path records in the same pass instead of rereading the file.
@@ -1372,10 +1375,18 @@ from 73,624,528 to 5,205,354 bytes and traced peak from 73,624,712 to
 peak RSS was 83,722,240 versus 188,334,080 bytes. A separate 200,000-path
 metadata fixture reduced retained traced
 allocation from 56,886,856 to 7,908,412 bytes (-86.1%) and peak allocation from
-56,887,132 to 37,454,410 bytes (-34.2%). On 100,000 final timing paths, the
-fixed-width result view used a 4,000,000-byte payload, 4,112,523 bytes traced
-peak and 150,814,720 bytes process peak RSS, versus 69,804,657 bytes traced
-peak and 263,176,192 bytes RSS for the prior Python dictionary rows. The typed
+56,887,132 to 37,454,410 bytes (-34.2%). The subsequent file-backed identity
+owner was compared directly with its predecessor on 500,000 shuffled paths:
+logical count, first record and path-set SHA-256 were identical; peak RSS fell
+from 161,103,872 to 77,594,624 bytes, while build time changed from 0.852 to
+2.185 seconds. Its main private database file reached 69,087,232 bytes and was
+deleted at seal; transient SQLite sort scratch was not separately captured.
+The retained fixed-width columns and shared identity pool use 13,000,000 and
+16,333,631 bytes. This is isolated adapter evidence and the extra sort I/O
+still requires NVDLA Phase 7C qualification. On 100,000 final timing paths,
+the fixed-width result view used a 4,000,000-byte payload, 4,112,523 bytes
+traced peak and 150,814,720 bytes process peak RSS, versus 69,804,657 bytes
+traced peak and 263,176,192 bytes RSS for the prior Python dictionary rows. The typed
 build took 1.31 versus 0.56 seconds. Phase 7C now publishes those paths in a
 content-addressed SQLite owner and leaves a 603-byte selector in
 `qor_report.json`; a 100,000-path fixture used 8,983,131 total bytes versus
@@ -1426,9 +1437,15 @@ time changed from 2.371 to 3.445 seconds; the final timing store had the same
 logical SHA-256 and byte count. These are adapter measurements, not NVDLA
 qualification. A separate 100,000-path typed read and full-seal validation used
 32,653,312 bytes peak RSS versus 251,887,616 bytes for legacy JSON and occupied
-24 MiB versus 30 MiB, while wall time changed from 0.73 to 0.90 seconds. Unique
-event/check identity tables remain W6 migration work; formal NVDLA Phase 7C
-wall/RSS/I/O and complete original-path coverage are still pending.
+24 MiB versus 30 MiB, while wall time changed from 0.73 to 0.90 seconds.
+Sealed event/check views now replace their Python path/event string lists with
+packed UTF-8 pools. On 100,000 paths and 500,000 checks, retained traced
+allocation fell from 49,923,478 to 35,510,216 bytes and process peak RSS from
+195,641,344 to 184,991,744 bytes; build time changed from 2.896 to 3.138
+seconds with identical first/last logical rows and fixed-width payload. The
+append-time interning dictionaries and representative-bundle table remain W6
+migration work; formal NVDLA Phase 7C wall/RSS/I/O and complete original-path
+coverage are still pending.
 
 ### Selected research references
 
