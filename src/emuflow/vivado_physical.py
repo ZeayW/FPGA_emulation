@@ -240,6 +240,11 @@ def run_indexed_vivado_partition(
         artifacts[name] = {"path": str(path), "sha256": file_sha256(path), "bytes": path.stat().st_size}
     result = {"schema": PHYSICAL_PARTITION_RESULT_SCHEMA, "status": "pass",
         "identity": {"backend": "vivado", "fpga": fpga, "part": part},
+        "analysis_scope": {"implementation_mode": "out-of-context",
+            "data_path_delay": "routed-vendor-device",
+            "external_clock_sources": "abstract-unbound",
+            "absolute_clock_insertion_and_skew": "not-qualified",
+            "board_signoff": False},
         "cell_accounting": {"original_cells": original_cells, "transport_cells": transport_cells,
             "routed_cells": expected, **{name: _integer(metrics, name) for name in ("physical_cells", "infrastructure_cells", "optimization_cells")}},
         "closure": {name: _integer(metrics, name) for name in ("unrouted_nets", "drc_violations", "drc_warnings")},

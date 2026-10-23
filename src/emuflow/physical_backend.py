@@ -416,6 +416,7 @@ def physical_summary_item(result: Mapping[str, Any]) -> Dict[str, Any]:
             ),
         },
         "clocks": clocks,
+        **({"analysis_scope": dict(result["analysis_scope"])} if "analysis_scope" in result else {}),
         **(
             {"critical_path_ns": timing["critical_path_ns"]}
             if "critical_path_ns" in timing
