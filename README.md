@@ -90,6 +90,8 @@ criterion. A representative placement may also restore a bounded `0.25`
 checkpoint for diagnostic DirectLG. Once bounded, overflow-only progress does
 not extend the HPWL patience window; the solver restores the lowest-HPWL
 checkpoint instead of allowing density multipliers to destroy wirelength. The
+window does not require an area-inflation event; a later inflation resets the
+candidate and its patience window. The
 diagnostic path records legalization displacement and still requires exact
 site/BEL validation before any routing release.
 The final route still requires zero

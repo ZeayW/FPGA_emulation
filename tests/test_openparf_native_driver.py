@@ -274,6 +274,8 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             minimum=100,
             diagnostic_patience=2,
         )
+        engine.num_gp_adjust_area = 0
+        engine.gp_adjust_area = True
         self.assertFalse(stable_native_stop_condition(
             engine, [_metric(20, [2, 2], overflow=(0.24, 0.20, 0.9))]
         ))

@@ -291,8 +291,6 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
         _restore_best_feasible(engine, state)
         state["stop_reason"] = "empty-active-subspace"
         return True
-    if not _area_adjustment_is_finished(engine) and not at_iteration_limit:
-        return False
     hpwl = _weighted_hpwl(engine, current)
     if not math.isfinite(hpwl) or hpwl < 0.0:
         raise RuntimeError("OpenPARF produced an invalid weighted HPWL")
@@ -358,6 +356,8 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
             return True
         return False
 
+    if not _area_adjustment_is_finished(engine) and not at_iteration_limit:
+        return False
     state["feasible_samples"] += 1
     state["consecutive_feasible_samples"] += 1
     if state["first_feasible_iteration"] is None:

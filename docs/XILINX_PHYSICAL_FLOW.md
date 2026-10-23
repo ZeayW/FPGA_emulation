@@ -83,6 +83,9 @@ The diagnostic patience window is measured from the last improvement to the
 best bounded HPWL. A smaller analytical overflow alone does not reset it,
 because the density multiplier can otherwise keep reducing overflow while
 wirelength and SLL cost diverge.
+The window may begin before the first RUDY or pin-area inflation. If an
+inflation occurs later, its adjustment marker invalidates the saved candidate
+and starts a fresh post-adjustment window.
 
 The conservative UltraScale+ model qualifies eight independent 6LUT BELs and
 sixteen FF BELs per slice. DirectLG retains sixteen LUT z positions to encode
