@@ -95,6 +95,7 @@ if test -n "${SQLITE3_PREFIX:-}"; then
     "-Wl,-rpath,$SQLITE3_PREFIX/lib")
 fi
 for tool in \
+  hop_partition_refiner \
   tlr_router \
   patron_refiner \
   static_exact_analyzer \
@@ -166,6 +167,7 @@ rm -rf "$object_dir"
 # load its linked dependencies in the deployment environment. The run launcher
 # must repeat these probes inside its actual execution environment.
 "$unified" check-runtime >/dev/null
+"$runtime_dir/bin/emuflow_hop_partition_refiner" --help >/dev/null
 "$target" --help >/dev/null
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"
