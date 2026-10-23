@@ -161,7 +161,9 @@ mapped SQLite index into RTL, then runs Vivado synthesis, optimization,
 placement, physical optimization, and routing in out-of-context (OOC) mode.
 Fixed data pads are implemented, while external clock sources remain abstract;
 absolute clock insertion/skew and board signoff are not qualified. This scope
-is retained in each physical result and its summary projection. The retired whole-EmuIR adapter
+is retained in each physical result and its summary projection. The common
+physical-result schema accepts the native resource dimensions, resource-budget
+evidence, and explicit OOC analysis scope. The retired whole-EmuIR adapter
 remains only for explicit legacy inputs. This integration is undergoing
 real-device qualification; unit tests alone do not establish routed or global
 STA success.

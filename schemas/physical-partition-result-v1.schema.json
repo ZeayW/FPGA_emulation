@@ -20,7 +20,7 @@
       "type": "object",
       "required": ["backend", "fpga", "part"],
       "properties": {
-        "backend": {"enum": ["open", "vivado"]},
+        "backend": {"enum": ["open", "rapidwright", "vivado"]},
         "fpga": {"type": "string", "minLength": 1},
         "part": {"type": "string", "minLength": 1}
       },
@@ -55,7 +55,27 @@
         "vtr_ram_bits": {"type": "integer", "minimum": 0},
         "dsp48_cells": {"type": "integer", "minimum": 0},
         "ramb18_cells": {"type": "integer", "minimum": 0},
-        "ramb36_cells": {"type": "integer", "minimum": 0}
+        "ramb36_cells": {"type": "integer", "minimum": 0},
+        "lut": {"type": "integer", "minimum": 0},
+        "ff": {"type": "integer", "minimum": 0},
+        "bram18k": {"type": "integer", "minimum": 0},
+        "dsp48": {"type": "integer", "minimum": 0},
+        "carry8": {"type": "integer", "minimum": 0},
+        "uram288": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "resource_usage": {"type": "object", "additionalProperties": {"type": "object"}},
+    "implementation_status": {"enum": ["implemented", "inactive"]},
+    "analysis_scope": {
+      "type": "object",
+      "required": ["implementation_mode", "data_path_delay", "external_clock_sources", "absolute_clock_insertion_and_skew", "board_signoff"],
+      "properties": {
+        "implementation_mode": {"const": "out-of-context"},
+        "data_path_delay": {"const": "routed-vendor-device"},
+        "external_clock_sources": {"const": "abstract-unbound"},
+        "absolute_clock_insertion_and_skew": {"const": "not-qualified"},
+        "board_signoff": {"const": false}
       },
       "additionalProperties": false
     },

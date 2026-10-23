@@ -38,6 +38,31 @@ def fixture(root):
 
 
 class IndexedVivadoTests(unittest.TestCase):
+    def test_public_schema_accepts_native_resources_and_preserves_scope(self):
+        try:
+            import jsonschema
+        except ImportError:
+            self.skipTest("jsonschema is not installed")
+        from tests.test_physical_backend import PhysicalBackendContractTest
+
+        result = PhysicalBackendContractTest()._result()
+        result["identity"]["backend"] = "vivado"
+        result["hard_resources"] = dict(lut=10, ff=90, bram18k=0, dsp48=0, carry8=0, uram288=0)
+        result["resource_usage"] = {"physical": {"status": "pass"}}
+        result["analysis_scope"] = {"implementation_mode": "out-of-context",
+            "data_path_delay": "routed-vendor-device", "external_clock_sources": "abstract-unbound",
+            "absolute_clock_insertion_and_skew": "not-qualified", "board_signoff": False}
+        schema = Path(__file__).resolve().parents[1] / "schemas/physical-partition-result-v1.schema.json"
+        validator = jsonschema.Draft202012Validator(json.loads(schema.read_text()))
+        validator.validate(result)
+        result["analysis_scope"]["board_signoff"] = True
+        with self.assertRaises(jsonschema.ValidationError):
+            validator.validate(result)
+        result["analysis_scope"]["board_signoff"] = False
+        result["hard_resources"]["ff"] = -1
+        with self.assertRaises(jsonschema.ValidationError):
+            validator.validate(result)
+
     def test_native_sequential_controls_and_bram_physical_aliases(self):
         from emuflow.logic_segment_timing import _vivado_object
 
@@ -56,7 +81,18 @@ class IndexedVivadoTests(unittest.TestCase):
         from emuflow.boundary_identity_storage import write_boundary_identity_storage
         from emuflow.boundary_timing_storage import read_boundary_timing_storage
         from emuflow.vivado_physical_timing import import_indexed_vivado_boundary
-        from tests.test_boundary_identity_storage import _header, _record
+        def _header():
+            return {"schema": "emuflow.boundary-identity/v1", "status": "pass",
+                    "design": "dut", "platform": "board", "fpga": "fpga0", "provider": "test"}
+
+        def _record(identity, kind, lane):
+            return {"id": identity, "kind": kind, "schedule_entry": f"s{lane}",
+                "demand": f"d{lane}", "logical_net": f"n{lane}", "link": "link", "peer": "fpga1",
+                "lane": lane, "logical_lane": lane, "internal_signal": f"signal{lane}",
+                "source_class": "dut-net" if kind == "tx" else "captured-shadow",
+                "merged_ir": {"external_port": kind, "external_port_bit": lane,
+                    "external_net": f"wire{lane}", "logical_net": f"n{lane}",
+                    "boundary_register_instances": [] if kind == "tx" else ["shadow"]}}
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
