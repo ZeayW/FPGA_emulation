@@ -77,6 +77,7 @@ proc emuflow_resolve_object {kind name prefix} {
 }
 
 open_checkpoint $input_dcp
+emuflow_use_data_path_constraints
 set input [open $query_path r]
 gets $input header
 set legacy_header "endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex"

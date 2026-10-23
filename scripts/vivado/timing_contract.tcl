@@ -1,4 +1,17 @@
 # Shared exact physical boundary resolution for indexed Phase6 timing.
+proc emuflow_use_data_path_constraints {} {
+  # These fresh checkpoint readers export physical DELAY, never closure slack.
+  # Equal datapath-only requirements prevent a short-period clock domain from
+  # winning a cone query merely through worse slack instead of longer delay.
+  # Nothing is written back to the routed checkpoint or implementation reports.
+  set clocks [get_clocks -quiet]
+  foreach launch $clocks {
+    foreach capture $clocks {
+      set_max_delay -reset_path -datapath_only -from $launch -to $capture 1000000
+    }
+  }
+}
+
 proc emuflow_load_fixed_io_map {path} {
   set result [dict create]
   if {$path eq ""} {return $result}

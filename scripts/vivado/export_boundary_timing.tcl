@@ -40,6 +40,7 @@ proc emuflow_hex_encode {value} {
 }
 
 open_checkpoint $input_dcp
+emuflow_use_data_path_constraints
 set input [open $query_path r]
 if {[gets $input header] < 0 || $header ne "endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex"} {
   error "invalid boundary timing query header"

@@ -181,7 +181,11 @@ cross-FPGA logic and interface queries retain the Phase 6 identities. Fixed
 logical transport ports resolve to the declared physical P pad. Query extents
 are checked against actual timing endpoints; a sequential Q launch may start
 at the same primitive's clock to include clock-to-Q, while an unrelated prefix
-or any suffix beyond the requested endpoint is rejected. The
+or any suffix beyond the requested endpoint is rejected. Fresh timing-export
+sessions apply equal datapath-only requirements across clock pairs so a cone
+query ranks physical delay rather than nominal clock slack. This measurement
+constraint is never written to the routed checkpoint or used for implementation
+WNS/TNS or global event deadlines. The
 indexed provider does not use the legacy sampled Vivado TimingPathDB as terminal
 evidence. Per-FPGA vendor WNS/TNS describe vendor endpoint constraints; global
 original-path WNS/TNS still require the separate complete OpenSTA composition.
