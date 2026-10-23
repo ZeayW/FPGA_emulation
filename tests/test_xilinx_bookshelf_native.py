@@ -1,5 +1,6 @@
 import json
 import os
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -34,7 +35,7 @@ def fixture(root):
     # Carry CO[7] and DSP P[0] must not share a driven net.
     cells["b_dsp"]["connections"]["P"][0] = 31
     path = root / "mapped.sqlite"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.executescript("""
           CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);
           CREATE TABLE cells(id TEXT PRIMARY KEY,seq INTEGER UNIQUE,type TEXT,record_json TEXT);
@@ -126,7 +127,7 @@ class NativeBookshelfTests(unittest.TestCase):
                 root = Path(temporary)
                 _cells, path, atoms = fixture(root)
                 try:
-                    with sqlite3.connect(path) as db:
+                    with closing(sqlite3.connect(path)) as db, db:
                         db.execute(mutation)
                     output = root / "design.nets"
                     output.write_text("previous publication\n")
@@ -246,7 +247,7 @@ class NativeBookshelfTests(unittest.TestCase):
             root = Path(temporary)
             _cells, mapped, atoms = fixture(root)
             self.addCleanup(atoms.close)
-            with sqlite3.connect(mapped) as db:
+            with closing(sqlite3.connect(mapped)) as db, db:
                 db.execute("PRAGMA user_version=99")
             result = subprocess.run([str(emuflow_native()), "phase7", "export-bookshelf",
                                      str(mapped), str(atoms.path), str(root / "nets"),
