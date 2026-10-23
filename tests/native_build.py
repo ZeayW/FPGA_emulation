@@ -242,6 +242,7 @@ def tdm_exact_scheduler() -> Path:
             "-std=c++17",
             "-O2",
             str(ROOT / "src/native/tdm_exact_scheduler.cpp"),
+            str(ROOT / "src/native/emuflow_core/schedule_model.cpp"),
             str(ROOT / "src/native/emuflow_core/artifact_io.cpp"),
             "-I",
             str(ROOT / "src/native"),
@@ -261,6 +262,7 @@ _NATIVE_STAGE_SOURCES = (
     "emuflow_core/artifact_io.cpp", "emuflow_core/sqlite.cpp",
     "emuflow_core/stage_runtime.cpp", "emuflow_core/emuir_view.cpp",
     "emuflow_core/schedule_store.cpp", "emuflow_core/route_view.cpp",
+    "emuflow_core/schedule_model.cpp", "emuflow_core/schedule_ingress.cpp",
 )
 
 

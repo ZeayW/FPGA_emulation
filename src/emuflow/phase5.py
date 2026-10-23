@@ -589,8 +589,9 @@ def run_phase5(
         raise ValueError(f"unsupported Phase 5 provider {provider!r}")
     if schedule is None:
         schedule = build_tdm_schedule(routes, platform, ratio_plan)
-        validation = validate_tdm_schedule(
-            routes, platform, schedule, ratio_plan
+        validation = (
+            None if getattr(schedule["entries"], "native_store_publication_source", None)
+            is not None else validate_tdm_schedule(routes, platform, schedule, ratio_plan)
         )
         timing_validation = (
             reconstruct_tdm_schedule_timing(
@@ -627,7 +628,7 @@ def _finish_phase5_generation(
     routes: Mapping[str, Any],
     semantic_contract: Optional[Mapping[str, Any]],
     schedule: Mapping[str, Any],
-    validation: Mapping[str, Any],
+    validation: Optional[Mapping[str, Any]],
     timing_validation: Optional[Mapping[str, Any]],
     candidate_selection: Optional[Mapping[str, Any]],
     ratio_plan: Optional[Mapping[str, Any]],
@@ -641,6 +642,8 @@ def _finish_phase5_generation(
 ) -> Dict[str, Any]:
     """Build every Phase 5 artifact in staging and commit the report last."""
 
+    native_production = getattr(schedule["entries"], "native_store_publication_source", None) is not None
+    emit_compatibility_exports = not managed_storage and not native_production
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=".phase5-generation-", dir=output_dir
@@ -655,6 +658,15 @@ def _finish_phase5_generation(
             time.monotonic() - schedule_storage_started
         )
         persisted_schedule = read_tdm_schedule(staged_schedule_path)
+        if validation is None:
+            if not exact_mode or ratio_plan is not None or getattr(
+                schedule["entries"], "native_store_publication_source", None
+            ) is None:
+                raise ValidationError("Phase 5 validation is missing")
+            # Independently reconstruct from typed cursor/join relations before
+            # committing the report; never inflate a private native result into
+            # the generic validator's full hop dictionaries.
+            validation = validate_tdm_schedule(routes, platform, persisted_schedule)
         cross_layer_timing = build_cross_layer_timing_contract(
             persisted_routes, persisted_schedule, semantic_contract
         )
@@ -670,7 +682,7 @@ def _finish_phase5_generation(
         manifest = None
         feedback = None
         feedback_validation = None
-        if not managed_storage:
+        if emit_compatibility_exports:
             simulation = simulate_tdm_schedule(
                 routes,
                 schedule,
@@ -728,7 +740,7 @@ def _finish_phase5_generation(
                 "report": "phase5_report.json",
             },
         }
-        if not managed_storage:
+        if emit_compatibility_exports:
             report.update(
                 {
                     "simulation": simulation,
@@ -789,7 +801,7 @@ def _finish_phase5_generation(
             cross_layer_timing,
             compact=True,
         )
-        if not managed_storage:
+        if emit_compatibility_exports:
             assert manifest is not None and feedback is not None
             write_schedule_tsv(staging / "schedule.tsv", schedule)
             write_json(
@@ -815,7 +827,7 @@ def _finish_phase5_generation(
         generation_member_paths = [schedule_storage["artifact"]]
         if ratio_plan is not None:
             generation_member_paths.append("ratio_plan.json")
-        if not managed_storage:
+        if emit_compatibility_exports:
             generation_member_paths.extend(
                 (
                     "schedule.tsv",

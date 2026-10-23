@@ -914,6 +914,45 @@ class SystemRouteSequence(list):
         finally:
             connection.close()
 
+    def iter_native_exact_metadata(self) -> Iterator[tuple[dict[str, Any], int, list[int]]]:
+        """Compatibility metadata only; native ingress owns all tree edges."""
+        connection = _connect(self.store_path)
+        try:
+            rows = connection.execute(
+                "SELECT seq,demand_id,net_id,source_fpga,dependency_level,"
+                "combinational_dependency_depth,row_number() OVER "
+                "(ORDER BY demand_id,seq)-1 AS demand_rank FROM routes ORDER BY net_id,seq"
+            )
+            sinks = iter(connection.execute(
+                "SELECT r.seq,s.sink_fpga FROM route_sinks s JOIN routes r ON r.seq=s.route_seq "
+                "ORDER BY r.net_id,r.seq,s.seq"
+            ))
+            predecessors = iter(connection.execute(
+                "WITH ranked AS (SELECT seq,net_id,row_number() OVER (ORDER BY net_id,seq)-1 AS rank FROM routes) "
+                "SELECT r.seq,p.predecessor_net,parent.rank FROM route_predecessors p "
+                "JOIN routes r ON r.seq=p.route_seq LEFT JOIN ranked parent ON parent.net_id=p.predecessor_net "
+                "ORDER BY r.net_id,r.seq,p.seq"
+            ))
+            sink, predecessor = next(sinks,None), next(predecessors,None)
+            observed = 0
+            for row in rows:
+                route_sinks, names, ranks = [], [], []
+                while sink is not None and sink[0] == row[0]:
+                    route_sinks.append(str(sink[1])); sink = next(sinks,None)
+                while predecessor is not None and predecessor[0] == row[0]:
+                    if predecessor[2] is None:
+                        raise ValidationError("system route has an unknown predecessor net")
+                    names.append(str(predecessor[1])); ranks.append(int(predecessor[2]))
+                    predecessor = next(predecessors,None)
+                observed += 1
+                yield ({"id":str(row[1]),"net":str(row[2]),"source":str(row[3]),"sinks":route_sinks,
+                        "predecessor_cut_nets":names,"dependency_level":int(row[4]),
+                        "combinational_dependency_depth":int(row[5])},int(row[6]),ranks)
+            if observed != self._count or sink is not None or predecessor is not None:
+                raise ValidationError("system-route metadata coverage disagrees")
+        finally:
+            connection.close()
+
     def iter_native_exact_records(
         self,
     ) -> Iterator[tuple[dict[str, Any], int, list[int]]]:

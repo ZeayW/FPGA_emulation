@@ -34,6 +34,18 @@ only a CMake compatibility alias; the executable and native library tests link
 the core directly. This does not yet cover every standalone adapter or supply
 the missing complete native compiler.
 
+`phase5 schedule-from-store ROUTE_STORE REQUEST OUTPUT` builds the shared
+integer schedule model directly from v3 RouteStore records and a bounded
+board/configuration request, then calls the same in-process scheduler as the
+existing numeric-input command. Tree traversal/order, predecessor ranks,
+capacity budgets, fixed lane/ratio groups and affine-delay cycle rounding are
+native-owned. The checked numeric model reader/writer is shared with the
+standalone scheduler; the retained numeric input is a temporary publication
+binding, not a second authoritative route store. The board request retains
+the source file generation and carries no per-route or per-hop population.
+Model and output publication reject aliases and invalid/stale inputs, and a
+failed calculation does not replace previous result/model files.
+
 The native exact schedule publisher consumes the scheduler's binary input and
 result, the existing Phase 4 RouteStore, and bounded board/header/domain
 configuration. It writes the existing v4 ScheduleStore route, hop, completion and child
@@ -57,9 +69,25 @@ RouteStore file generations captured by the producer; stale references are
 rejected before reading their records and rechecked before atomic publication.
 The Python layer still commits the compact manifest and report. Phase 5 reports
 identify the store implementation separately from the schedule algorithm.
-Ingress identity construction, some scheduling validation and the remaining
-phase orchestration are still Python-owned; this publisher does not complete
-W7 or establish whole-stage performance gains.
+For this production path, independent schedule validation runs against the
+staged typed store before report commit. It does not rebuild the reference
+validator's complete route/hop dictionaries. Domain summaries reuse bounded
+counts gathered during result import. Compact output and indexed validation
+apply without a managed-storage flag; legacy TSV/transport JSON/testbench/
+feedback exports and reference simulation are not implicit native-production
+outputs. Small reference and explicit compatibility paths retain their export
+behavior; qualification tools may request those functions explicitly.
+
+Compact Python route/certificate metadata, some scheduling validation/result
+import, timing adapters and the remaining phase orchestration are unfinished.
+This delivery does not complete W7 or establish whole-stage performance gains.
+Deployment probes load the unified entry and physical bridge before publishing
+runtime provenance; launchers must repeat them in the actual execution
+environment before expensive computation.
+`emuflow-native check-runtime` exercises SQLite version and JSON features without
+creating graph artifacts or an on-disk database. Its optional `--report` uses
+the common operation-result contract. External EDA engines retain their own
+qualification requirements.
 
 SQLite owns relations requiring joins, uniqueness or bounded lookup. Large
 ordered populations may use typed binary sections or ordered record streams;
@@ -155,7 +183,7 @@ there is no silent implementation or provider fallback.
 | Phase 1–2 | Native synthesis/STA engines; compact indexed inputs | Consolidate import, identities and timing adapters under the shared artifact API |
 | Phase 3 | Compact clustering/pressure views; native search and semantic/capture production; native exact-binary writer | Migrate cluster/pressure production owners and remaining assignment publication; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
-| Phase 5 | Native exact scheduler and direct v4 ScheduleStore publisher; cursor validation | Complete native ingress, validation and non-exact interfaces |
+| Phase 5 | Native exact model construction, scheduler and direct v4 ScheduleStore publisher; staged cursor validation | Complete native certificate/result import, validation and non-exact interfaces |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
 | Global STA | Typed segments/results and bounded identity/stitching views | Native check/input construction, result import and ordered complete-path stitching |

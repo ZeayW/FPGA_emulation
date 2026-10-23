@@ -80,6 +80,9 @@ StageResult RunStage(const std::string& stage,
                      const std::function<std::vector<ArtifactRef>()>& bind,
                      const std::function<void(const std::vector<ArtifactRef>&)>& body,
                      const std::function<std::vector<ArtifactRef>()>& outputs = {});
+// Dependency/feature probe for the actual execution environment; no graph or
+// on-disk database is created.
+StageResult CheckNativeRuntime();
 std::string StageResultJson(const StageResult& result);
 void PublishStageResult(const std::string& path, const StageResult& result);
 

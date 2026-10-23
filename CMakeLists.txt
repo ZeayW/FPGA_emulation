@@ -289,6 +289,8 @@ add_library(
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/emuir_view.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/schedule_store.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/route_view.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/schedule_model.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/schedule_ingress.cpp"
 )
 target_compile_features(emuflow_core PUBLIC cxx_std_17)
 target_compile_options(emuflow_core PRIVATE -O3)
@@ -346,6 +348,7 @@ target_compile_features(emuflow_native PRIVATE cxx_std_17)
 target_compile_options(emuflow_native PRIVATE -O3)
 target_link_libraries(emuflow_native PRIVATE emuflow_core)
 if(BUILD_TESTING)
+  add_test(NAME emuflow_native_runtime COMMAND emuflow_native check-runtime)
   add_test(
     NAME emuflow_native_cli
     COMMAND "$<TARGET_FILE:emuflow_native>" --help

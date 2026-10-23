@@ -7,7 +7,7 @@ enum class Stage {
   kInvalid,
   kAnalyzeExact, kFinalizeExact, kResolveCaptures, kHashSemantics,
   kWriteExactSections, kRefinePatron, kRoute, kSchedule,
-  kAssignBanks, kGroupSignals, kRefinePositions, kRudy, kPublishSchedule
+  kAssignBanks, kGroupSignals, kRefinePositions, kRudy, kPublishSchedule, kScheduleFromStore
 };
 struct StageRequest {
   Stage stage = Stage::kInvalid;

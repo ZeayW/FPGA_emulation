@@ -110,6 +110,7 @@ do
     "${sqlite_flags[@]}" -I"$source_dir/src/native" \
     "$source_dir/src/native/$tool.cpp" \
     "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
+    "$source_dir/src/native/emuflow_core/schedule_model.cpp" \
     "$source_dir/src/native/emuflow_core/sqlite.cpp" \
     "$source_dir/src/native/emuflow_core/stage_runtime.cpp" \
     "$source_dir/src/native/emuflow_core/emuir_view.cpp" \
@@ -130,6 +131,8 @@ rm -f "$unified"
   "$source_dir/src/native/emuflow_core/native_pipeline.cpp" \
   "$source_dir/src/native/emuflow_core/schedule_store.cpp" \
   "$source_dir/src/native/emuflow_core/route_view.cpp" \
+  "$source_dir/src/native/emuflow_core/schedule_model.cpp" \
+  "$source_dir/src/native/emuflow_core/schedule_ingress.cpp" \
   "$source_dir/src/native/patron_refiner.cpp" \
   "$source_dir/src/native/static_exact_analyzer.cpp" \
   "$source_dir/src/native/tlr_router.cpp" \
@@ -148,6 +151,11 @@ rm -f "$target"
 "$selected_cxx" -std=c++17 -O3 -static-libstdc++ -static-libgcc \
   "${sqlite_flags[@]}" \
   "$source_dir/src/native/xilinx_bookshelf_exporter.cpp" -lsqlite3 -o "$target"
+# Do not publish a runtime whose unified core or physical bridge cannot even
+# load its linked dependencies in the deployment environment. The run launcher
+# must repeat these probes inside its actual execution environment.
+"$unified" check-runtime >/dev/null
+"$target" --help >/dev/null
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"
 printf '%s\n' "$source_dir/src" > "$runtime_dir/PYTHON_SOURCE_PATH"

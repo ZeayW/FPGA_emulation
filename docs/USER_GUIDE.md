@@ -22,6 +22,13 @@ of the flow artifact seal. Other flow artifacts still reject symlinks.
 
 ## Complete build
 
+Run `emuflow-native check-runtime` in the environment that will execute the flow
+before launching expensive work. The probe checks native core loading, SQLite
+3.22+ and JSON features and creates no design data. Use
+`emuflow-native --report runtime-check.json check-runtime` for a compact result.
+External synthesis, placement, routing and timing engines require their
+separate dependency and device-data checks.
+
 Build from the repository root:
 
 ```bash
@@ -190,6 +197,17 @@ bank/electrical constraints, clock/reset interfaces, transport hardware, and a
 board support package. A virtual platform does not supply those facts.
 
 ## Output interpretation
+
+Large indexed Static Exact Phase 5 runs publish a typed `schedule.*.sqlite`
+store, a compact `schedule.json` selector, cross-layer timing and the final
+report. Independent indexed validation completes before the report is committed.
+This compact production behavior does not require a managed-storage flag.
+Native production does not implicitly emit the reference `schedule.tsv`,
+`transport_manifest.json`, testbench or feedback JSON, or run reference signal
+simulation. Those are explicit qualification/export functions; small reference
+and legacy comparison paths retain their compatibility outputs. The report's
+store implementation identifier distinguishes these paths from the algorithm
+provider.
 
 - Intermediate cut, congestion, TDM, pin-distance, and placement objectives
   are diagnostics.

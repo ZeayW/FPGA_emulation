@@ -8,6 +8,19 @@ from tests.native_build import emuflow_native, native_pipeline_api_test
 
 
 class NativeStageRuntimeTest(unittest.TestCase):
+    def test_runtime_probe_checks_sqlite_without_creating_data_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report = Path(temporary) / "probe.json"
+            result = subprocess.run([str(emuflow_native()), "--report", str(report), "check-runtime"],
+                                    capture_output=True, text=True, cwd=temporary)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            status = json.loads(report.read_text())
+            self.assertEqual(status["stage"], "native.runtime-check")
+            self.assertEqual(status["status"], "pass")
+            self.assertEqual(status["inputs"], [])
+            self.assertEqual(status["outputs"], [])
+            self.assertEqual(sorted(p.name for p in Path(temporary).iterdir()), ["probe.json"])
+
     def test_cpp_pipeline_retains_producer_artifact_generations(self):
         result = subprocess.run([str(native_pipeline_api_test())], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -33,6 +46,7 @@ class NativeStageRuntimeTest(unittest.TestCase):
                 ["phase3", "refine-patron", "--typed-input", missing],
                 ["phase4", "route", "--typed-output", missing],
                 ["phase5", "schedule", missing],
+                ["phase5", "schedule-from-store", missing, missing],
                 ["phase5", "publish-schedule", missing, missing, missing, missing],
                 ["phase6", "assign-banks", "--typed-input", missing],
                 ["phase6", "group-signals", "--typed-input", missing],

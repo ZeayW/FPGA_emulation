@@ -9,6 +9,7 @@ using emuflow::native::Stage;
 using emuflow::native::StageRequest;
 constexpr const char* kUsage =
     "usage: emuflow-native [--report RESULT_JSON] PHASE OPERATION ...\n"
+    "  check-runtime\n"
     "  phase3 analyze INPUT OUTPUT\n"
     "  phase3 analyze --indexed-input EMUIR INPUT OUTPUT\n"
     "  phase3 finalize-semantics TOPOLOGY METADATA OUTPUT\n"
@@ -19,6 +20,7 @@ constexpr const char* kUsage =
         "(--typed-input|--legacy-text) INPUT OUTPUT\n"
     "  phase4 route --typed-output INPUT OUTPUT\n"
     "  phase5 schedule INPUT OUTPUT\n"
+    "  phase5 schedule-from-store ROUTE_STORE REQUEST OUTPUT\n"
     "  phase5 publish-schedule INPUT RESULT ROUTE_STORE REQUEST OUTPUT\n"
     "  phase6 assign-banks (--typed-input|--legacy-text) INPUT OUTPUT\n"
     "  phase6 group-signals --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
@@ -27,9 +29,7 @@ constexpr const char* kUsage =
     "  phase6 refine-groups --legacy-text INPUT OUTPUT\n"
     "  phase6 rudy INPUT OUTPUT\n";
 
-int Execute(StageRequest request, const std::string& report) {
-  request.report_path = report;
-  auto result = emuflow::native::ExecuteStage(request);
+int Finish(emuflow::core::StageResult result, const std::string& report) {
   // Invalid requests may name a report which aliases an input/output. Never
   // overwrite that artifact merely to report rejection of the alias itself.
   if (!report.empty() && result.error != emuflow::core::ErrorCode::kInvalidRequest) {
@@ -43,10 +43,17 @@ int Execute(StageRequest request, const std::string& report) {
   return result.error == emuflow::core::ErrorCode::kInvalidRequest ? 2 : 1;
 }
 
+int Execute(StageRequest request, const std::string& report) {
+  request.report_path = report;
+  return Finish(emuflow::native::ExecuteStage(request),report);
+}
+
 int Dispatch(int argc, char** argv, const std::string& report) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << kUsage; return 0;
   }
+  if (argc == 2 && std::string(argv[1]) == "check-runtime")
+    return Finish(emuflow::core::CheckNativeRuntime(),report);
   const std::string phase = argc > 1 ? argv[1] : "";
   const std::string operation = argc > 2 ? argv[2] : "";
   auto run = [&](Stage stage, std::vector<std::string> inputs,
@@ -96,6 +103,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if (phase == "phase4" && operation == "route" && argc == 6 && std::string(argv[3]) == "--typed-output")
     return run(Stage::kRoute, {argv[4]}, argv[5]);
+  if (phase == "phase5" && operation == "schedule-from-store" && argc == 6)
+    return run(Stage::kScheduleFromStore, {argv[3],argv[4]}, argv[5]);
   if (phase == "phase5" && operation == "publish-schedule" && argc == 8)
     return run(Stage::kPublishSchedule, {argv[3], argv[4], argv[5], argv[6]}, argv[7]);
   if (phase == "phase5" && operation == "schedule" && argc == 5)
@@ -126,7 +135,7 @@ int main(int argc, char** argv) {
   try {
     std::string report;
     if (argc > 1 && std::string(argv[1]) == "--report") {
-      if (argc < 5 || std::string(argv[2]).empty() || std::string(argv[2]) == "-") {
+      if (argc < 4 || std::string(argv[2]).empty() || std::string(argv[2]) == "-") {
         std::cerr << kUsage; return 2;
       }
       report = argv[2]; argc -= 2; argv += 2;

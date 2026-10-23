@@ -57,8 +57,11 @@ API, registered artifact envelopes, file-generation checks, and a structured
 `--report` error/metrics contract. Phase 3 analysis consumes the shared compact
 EmuIR view with artifact-scoped record IDs and ordered connectivity traversal.
 PATRON search is linked into this entry too.
-Large indexed Static Exact schedules publish their typed ScheduleStore and
-logical hashes in the shared native core; Python publishes the compact manifest.
+Large indexed Static Exact schedules construct their integer model and fixed
+wire groups in the shared native core, which also publishes the ScheduleStore
+and logical hashes. Independent indexed validation precedes report publication.
+These production outputs stay compact without requiring a managed-storage flag;
+Python still publishes the compact manifest.
 The complete native `compile` entry and remaining shared-store integration are
 unfinished; Python still owns orchestration and portions of the production data
 plane.
@@ -141,6 +144,8 @@ ctest --preset release
 Build products are installed under `build/native/install/`.
 For dependency-prefix configuration and partial development builds, see the
 [user guide](docs/USER_GUIDE.md).
+Before an expensive run, execute `emuflow-native check-runtime` in the selected
+execution environment to verify core library loading and SQLite/JSON support.
 
 ## Quick start
 

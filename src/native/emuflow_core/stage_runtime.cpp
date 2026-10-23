@@ -26,6 +26,7 @@ constexpr RegisteredSchema schemas[] = {
     {"exact-captures-v1", ArtifactEncoding::kBinary, 0x31434553464d5545ULL, 1},
     {"exact-hash-request-v1", ArtifactEncoding::kBinary, 0x31484553464d5545ULL, 1},
     {"exact-section-request-v1", ArtifactEncoding::kBinary, 0x31574553464d5545ULL, 1},
+    {"exact-schedule-board-request-v1", ArtifactEncoding::kBinary, 0x3142534d44544545ULL, 1},
     {"exact-schedule-input-v1", ArtifactEncoding::kBinary, 0x3149534d44544545ULL, 1},
     {"patron-input-v1", ArtifactEncoding::kBinary, 0x314e525441504d45ULL, 1},
     {"chimew-bank-input-v1", ArtifactEncoding::kBinary, 0x0033434248434d45ULL, 1},
@@ -234,6 +235,18 @@ StageResult RunStage(const std::string& stage,
     result.message += " [truncated]";
   }
   return result;
+}
+StageResult CheckNativeRuntime() {
+  return RunStage("native.runtime-check", [] { return std::vector<ArtifactRef>{}; }, [](const auto&) {
+    SqliteDatabase database(":memory:",SqliteDatabase::Mode::kReadOnly);
+    auto probe = database.Prepare("SELECT sqlite_version(),json_extract('{\"probe\":true}','$.probe'),json_valid('{\"probe\":true}')");
+    if (!probe.Step() || probe.Integer(1) != 1 || probe.Integer(2) != 1)
+      throw StageError(ErrorCode::kExecutionFailed,"native SQLite JSON feature probe failed");
+    std::istringstream version(probe.Text(0));
+    int major = 0, minor = 0; char dot = 0;
+    if (!(version >> major >> dot >> minor) || dot != '.' || major < 3 || (major == 3 && minor < 22))
+      throw StageError(ErrorCode::kExecutionFailed,"native runtime requires SQLite 3.22 or newer");
+  });
 }
 std::string StageResultJson(const StageResult& result) {
   std::ostringstream out; out << std::setprecision(17);
