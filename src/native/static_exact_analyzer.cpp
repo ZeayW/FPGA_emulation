@@ -24,6 +24,7 @@
 #include "emuflow_core/hash.hpp"
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/sqlite.hpp"
+#include "emuflow_core/emuir_view.hpp"
 
 namespace {
 
@@ -409,93 +410,27 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path,
   net_sink_offsets.push_back(0);
   std::uint64_t observed_endpoints = 0;
   if (indexed) {
-    emuflow::core::SqliteDatabase database(
-        indexed_path, emuflow::core::SqliteDatabase::Mode::kReadOnly);
-    auto application = database.Prepare("PRAGMA application_id");
-    auto version = database.Prepare("PRAGMA user_version");
-    if (!application.Step() || application.Integer(0) != 0x454D5549 ||
-        !version.Step() || version.Integer(0) != 2) {
-      throw std::runtime_error("native compact EmuIR envelope is invalid");
-    }
-    auto storage = database.Prepare(
-        "SELECT value FROM metadata WHERE key='storage_schema'");
-    auto counts = database.Prepare(
-        "SELECT json_extract(value,'$.cell_records'),"
-        "json_extract(value,'$.net_records'),"
-        "json_extract(value,'$.endpoint_records') "
-        "FROM metadata WHERE key='record_counts_json'");
-    if (!storage.Step() || storage.Text(0) != "emuflow.emuir-sqlite/v2" ||
-        !counts.Step() || counts.Integer(0) != instance_count ||
-        counts.Integer(1) != net_count || counts.Integer(2) < endpoint_count) {
+    emuflow::core::EmuirView source(emuflow::core::ArtifactRef::Bind(
+        indexed_path, "emuir-compact-v2"));
+    if (source.counts().cells != instance_count || source.counts().nets != net_count ||
+        source.counts().endpoints < endpoint_count) {
       throw std::runtime_error("native compact EmuIR identity/counts disagree");
     }
-    const auto expected_total_endpoints = counts.Integer(2);
-    auto cells = database.Prepare(
-        "SELECT c.seq,json_type(p.value),"
-        "coalesce(json_extract(p.value,'$.ff'),0)!=0 OR "
-        "coalesce(json_extract(p.value,'$.bram'),0)!=0 OR "
-        "coalesce(json_extract(p.value,'$.bram18k'),0)!=0 OR "
-        "coalesce(json_extract(p.value,'$.uram288'),0)!=0 "
-        "FROM cell_records c JOIN payloads p ON p.seq=c.resources_seq "
-        "ORDER BY c.seq");
-    std::uint64_t observed_cells = 0;
-    while (cells.Step()) {
-      if (observed_cells >= instance_count ||
-          cells.Integer(0) != static_cast<std::int64_t>(observed_cells) ||
-          cells.Text(1) != "object") {
-        throw std::runtime_error("native compact EmuIR cell sequence is invalid");
+    source.VisitCellStates([&](emuflow::core::EmuirCellId cell, bool stateful) {
+      instance_states[cell.sequence()] = stateful;
+    });
+    source.VisitConnectivity([&](const emuflow::core::EmuirEndpoint& endpoint) {
+      const auto sink = endpoint.role == emuflow::core::EndpointRole::kSink;
+      auto& values = sink ? net_sinks : net_drivers;
+      if (values.size() >= std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error("native compact EmuIR endpoint count is invalid");
       }
-      instance_states[observed_cells++] = cells.Integer(2) != 0;
-    }
-    if (observed_cells != instance_count) {
-      throw std::runtime_error("native compact EmuIR cell count disagrees");
-    }
-    auto nets = database.Prepare("SELECT seq FROM net_records ORDER BY seq");
-    auto endpoints = database.Prepare(
-        "SELECT net_seq,role,ordinal,coalesce(instance_seq,-1),"
-        "typeof(net_seq)='integer' AND typeof(role)='integer' AND "
-        "typeof(ordinal)='integer' AND (instance_seq IS NULL OR "
-        "(typeof(instance_seq)='integer' AND instance_seq>=0)) "
-        "FROM endpoint_records ORDER BY net_seq,role,ordinal");
-    bool have_endpoint = endpoints.Step();
-    std::uint64_t observed_nets = 0;
-    std::int64_t total_endpoints = 0;
-    while (nets.Step()) {
-      if (observed_nets >= net_count ||
-          nets.Integer(0) != static_cast<std::int64_t>(observed_nets)) {
-        throw std::runtime_error("native compact EmuIR net sequence is invalid");
-      }
-      std::int64_t previous_role = -1, previous_ordinal = -1;
-      while (have_endpoint && endpoints.Integer(0) ==
-                                  static_cast<std::int64_t>(observed_nets)) {
-        const auto role = endpoints.Integer(1);
-        const auto ordinal = endpoints.Integer(2);
-        const auto owner = endpoints.Integer(3);
-        if (!endpoints.Integer(4) || (role != 0 && role != 1) || ordinal < 0 ||
-            role < previous_role ||
-            (role == previous_role && ordinal <= previous_ordinal) ||
-            owner < -1 || owner >= static_cast<std::int64_t>(instance_count)) {
-          throw std::runtime_error("native compact EmuIR endpoint is invalid");
-        }
-        auto& values = role == 0 ? net_drivers : net_sinks;
-        if (values.size() >= std::numeric_limits<std::uint32_t>::max()) {
-          throw std::runtime_error("native compact EmuIR endpoint count is invalid");
-        }
-        values.push_back(static_cast<std::int32_t>(owner));
-        observed_endpoints += role == 1;
-        ++total_endpoints;
-        previous_role = role;
-        previous_ordinal = ordinal;
-        have_endpoint = endpoints.Step();
-      }
+      values.push_back(endpoint.cell ? static_cast<std::int32_t>(endpoint.cell->sequence()) : -1);
+      observed_endpoints += sink;
+    }, [&](emuflow::core::EmuirNetId) {
       net_driver_offsets.push_back(static_cast<std::uint32_t>(net_drivers.size()));
       net_sink_offsets.push_back(static_cast<std::uint32_t>(net_sinks.size()));
-      ++observed_nets;
-    }
-    if (have_endpoint || observed_nets != net_count ||
-        total_endpoints != expected_total_endpoints) {
-      throw std::runtime_error("native compact EmuIR endpoint/net coverage disagrees");
-    }
+    });
   } else {
     for (std::uint32_t index = 0; index < net_count; ++index) {
       const auto drivers = reader.Read<std::uint32_t>();

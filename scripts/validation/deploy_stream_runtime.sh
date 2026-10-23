@@ -111,6 +111,8 @@ do
     "$source_dir/src/native/$tool.cpp" \
     "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
     "$source_dir/src/native/emuflow_core/sqlite.cpp" \
+    "$source_dir/src/native/emuflow_core/stage_runtime.cpp" \
+    "$source_dir/src/native/emuflow_core/emuir_view.cpp" \
     -lsqlite3 -o "$target"
 done
 
@@ -137,6 +139,7 @@ rm -f "$unified"
   "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
   "$source_dir/src/native/emuflow_core/sqlite.cpp" \
   "$source_dir/src/native/emuflow_core/stage_runtime.cpp" \
+  "$source_dir/src/native/emuflow_core/emuir_view.cpp" \
   -lsqlite3 -o "$unified"
 target="$runtime_dir/bin/emuflow_xilinx_bookshelf_exporter"
 rm -f "$target"

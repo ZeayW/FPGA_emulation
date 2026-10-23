@@ -207,6 +207,8 @@ def static_exact_analyzer() -> Path:
             "-std=c++17",
             "-O2",
             str(ROOT / "src/native/static_exact_analyzer.cpp"),
+            str(ROOT / "src/native/emuflow_core/emuir_view.cpp"),
+            str(ROOT / "src/native/emuflow_core/stage_runtime.cpp"),
             str(ROOT / "src/native/emuflow_core/artifact_io.cpp"),
             str(ROOT / "src/native/emuflow_core/sqlite.cpp"),
             "-lsqlite3",
@@ -257,7 +259,7 @@ _NATIVE_STAGE_SOURCES = (
     "chimew_bank_channel_assigner.cpp", "chimew_rudy.cpp",
     "chimew_signal_grouper.cpp", "chimew_position_refiner.cpp",
     "emuflow_core/artifact_io.cpp", "emuflow_core/sqlite.cpp",
-    "emuflow_core/stage_runtime.cpp",
+    "emuflow_core/stage_runtime.cpp", "emuflow_core/emuir_view.cpp",
 )
 
 

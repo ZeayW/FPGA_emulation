@@ -54,7 +54,9 @@ transport store; Phase 7 reads those contracts lazily. See the
 [Phase 3 native migration](docs/PHASE3_NATIVE_MIGRATION.md) for the storage
 and migration contracts. Native operations now share a typed C++ request/result
 API, registered artifact envelopes, file-generation checks, and a structured
-`--report` error/metrics contract. PATRON search is linked into this entry too.
+`--report` error/metrics contract. Phase 3 analysis consumes the shared compact
+EmuIR view with artifact-scoped record IDs and ordered connectivity traversal.
+PATRON search is linked into this entry too.
 The complete native `compile` entry and remaining shared-store integration are
 unfinished; Python still owns orchestration and portions of the production data
 plane.

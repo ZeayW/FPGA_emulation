@@ -44,6 +44,17 @@ semantics. They do not run SQLite `quick_check` or `integrity_check`. Strong
 hashing belongs to publication/import and explicit terminal verification,
 not repeated routine reads of already validated immutable artifacts.
 
+`emuflow_core/emuir_view.hpp` supplies the compact EmuIR v2 read-only view used
+by the production Phase 3 analyzer. Its cell-state and connectivity visitors
+consume ordered records and check sequence, ownership and declared coverage in
+that same scan. Construction reads bounded metadata; it does not preload or
+recount the graph. Sparse endpoint ordinals, top-level endpoints and empty nets
+retain their existing meaning. Algorithms explicitly extract local integer
+sequences for their own arrays; public cell/net IDs retain the source artifact
+namespace. A lookup using an ID from another artifact is rejected even when its
+local sequence matches. This does not yet migrate legacy v1 readers, capture
+identity joins, mapped physical stores or the other remaining phase views.
+
 ### Native operation API
 
 `emuflow_core/native_pipeline.hpp` defines the typed in-process operation
