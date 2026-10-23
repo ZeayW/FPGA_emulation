@@ -23,6 +23,7 @@ from typing import (
     Tuple,
 )
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ImportError
 from .emuir_storage import write_emuir_sqlite
 from .io import read_json
@@ -962,7 +963,7 @@ def import_yosys_json_indexed(
     staging_path.unlink(missing_ok=True)
     connection: Optional[sqlite3.Connection] = None
     try:
-        connection = sqlite3.connect(staging_path)
+        connection = sqlite3.connect(staging_path, uri=True)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
@@ -1059,7 +1060,7 @@ def import_yosys_json_indexed(
                 )
             connection.execute(
                 "ATTACH DATABASE ? AS mapped_source",
-                (str(_source_index_path.resolve()),),
+                (immutable_sqlite_uri(_source_index_path),),
             )
             index_metadata = dict(
                 connection.execute(

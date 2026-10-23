@@ -570,7 +570,8 @@ class Phase4Test(unittest.TestCase):
         assignment = _assignment(platform, [("n0", "a", ["b"])])
         constraints = normalize_route_constraints(None, platform)
         with tempfile.TemporaryDirectory() as temporary_directory:
-            runtime = Path(temporary_directory)
+            runtime = Path(temporary_directory) / "发布 ?#%"
+            runtime.mkdir()
             binary = runtime / "bin" / "emuflow-native"
             binary.parent.mkdir()
             binary.symlink_to(emuflow_native())
@@ -582,7 +583,7 @@ class Phase4Test(unittest.TestCase):
                     "os.environ",
                     {"EMUFLOW_NATIVE_ROOT": str(runtime)},
                     clear=False,
-                ):
+                ), mock.patch("tempfile.tempdir", str(runtime)):
                     routes = route_system_native(
                         assignment,
                         platform,

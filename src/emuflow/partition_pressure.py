@@ -27,6 +27,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ValidationError
 from .emuir_storage import open_emuir_sqlite_read_only
 from .ir import EMUIR_SCHEMA, VALID_CUT_CLASSES, EmuIR
@@ -1949,7 +1950,7 @@ def _append_indexed_pressure_paths(
     """
 
     alias = "pressure_timing"
-    uri = f"file:{payload_path.resolve()}?mode=ro&immutable=1"
+    uri = immutable_sqlite_uri(payload_path)
     try:
         connection.execute(f"ATTACH DATABASE ? AS {alias}", (uri,))
         version = connection.execute(

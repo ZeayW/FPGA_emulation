@@ -11,6 +11,7 @@ from collections.abc import Iterator, Mapping as MappingABC
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .emuir_compact import compact_metadata, is_compact_emuir
 from .emuir_storage import _RowsForOwner, _decode, open_emuir_sqlite_read_only
 from .equivalence import _lut_definition
@@ -201,7 +202,7 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
     def __init__(self, path: Path):
         self.path = path
         self.connection = sqlite3.connect(
-            f"file:{path.resolve()}?mode=ro&immutable=1",
+            immutable_sqlite_uri(path),
             uri=True,
             check_same_thread=False,
         )
@@ -389,7 +390,7 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
                 "legacy Xilinx mapped index has no typed pin relation"
             )
         connection = sqlite3.connect(
-            f"file:{self.path.resolve()}?mode=ro&immutable=1", uri=True
+            immutable_sqlite_uri(self.path), uri=True
         )
         connection.row_factory = sqlite3.Row
         try:
@@ -401,7 +402,7 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
             connection.execute(
                 "ATTACH DATABASE ? AS physical",
                 (
-                    f"file:{handoff_path.resolve()}?mode=ro&immutable=1",
+                    immutable_sqlite_uri(handoff_path),
                 ),
             )
             if handoff_key not in self._validated_physical_paths:
@@ -900,7 +901,7 @@ def is_xilinx_mapped_index(path: Path) -> bool:
 
     try:
         connection = sqlite3.connect(
-            f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+            immutable_sqlite_uri(path), uri=True
         )
     except sqlite3.Error:
         return False
@@ -1032,7 +1033,7 @@ def _emit_native_xilinx_mapped_index_sql(
     source.
     """
 
-    source_uri = f"file:{ir_path.resolve()}?mode=ro&immutable=1"
+    source_uri = immutable_sqlite_uri(ir_path)
     index.execute("ATTACH DATABASE ? AS source_emuir", (source_uri,))
     try:
         invalid_payload = index.execute(

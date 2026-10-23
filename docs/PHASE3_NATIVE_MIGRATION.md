@@ -30,6 +30,10 @@ The linked operations use a versioned schema registry, `ArtifactRef`,
 store/view adapters for the remaining public phase artifacts and external
 engines. An integer identity is meaningful only with its owning artifact;
 equal integers in different stores are not interchangeable.
+Python adapters construct immutable input URIs through `sqlite_artifacts` and
+explicitly enable URI handling on connections that attach published stores.
+This preserves read-only inputs independently of SQLite's build-time URI
+default and protects path characters such as `?`, `#` and `%` from URI parsing.
 These operation implementations and their supporting contracts are compiled
 into one `libemuflow_core` target. The former `emuflow_native_stages` target is
 only a CMake compatibility alias; the executable and native library tests link

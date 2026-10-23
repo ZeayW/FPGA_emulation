@@ -27,6 +27,7 @@ import tempfile
 import threading
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
 from .io import file_sha256, read_json, write_json
@@ -943,7 +944,7 @@ def _valid_unreferenced_certificate_store(
         return False
     try:
         with sqlite3.connect(
-            f"file:{candidate.resolve()}?mode=ro&immutable=1", uri=True
+            immutable_sqlite_uri(candidate), uri=True
         ) as database:
             if (
                 int(database.execute("PRAGMA application_id").fetchone()[0])
@@ -1045,7 +1046,7 @@ class _AtomicPlacementCertificateBuilder:
                 previous_header.pop("cluster_storage")
                 try:
                     with sqlite3.connect(
-                        f"file:{self.previous_store}?mode=ro&immutable=1",
+                        immutable_sqlite_uri(self.previous_store),
                         uri=True,
                     ) as previous_database:
                         _validate_placement_database_contract(
@@ -1439,7 +1440,7 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
             assert isinstance(descriptor, Mapping)
             self.descriptor = descriptor
             database = sqlite3.connect(
-                f"file:{database_path}?mode=ro&immutable=1", uri=True
+                immutable_sqlite_uri(database_path), uri=True
             )
             self.database = database
             header = dict(selector)
@@ -1715,7 +1716,7 @@ def load_xilinx_openparf_sites(
         (int(coordinate[0]), int(coordinate[1])) for coordinate in coordinates or []
     }
     resource_filter = {str(resource) for resource in resources or []}
-    uri = f"file:{database_path.resolve()}?mode=ro&immutable=1"
+    uri = immutable_sqlite_uri(database_path)
     with sqlite3.connect(uri, uri=True) as database:
         metadata = dict(database.execute("SELECT key, value FROM metadata"))
         if (
@@ -2844,7 +2845,7 @@ class _IndexedAtomSequence(Sequence[Mapping[str, str]]):
         if self._count is None or self._closed:
             raise ValidationError("OpenPARF atom index is not readable")
         connection = sqlite3.connect(
-            f"file:{self.path.resolve()}?mode=ro&immutable=1", uri=True
+            immutable_sqlite_uri(self.path), uri=True
         )
         connection.row_factory = sqlite3.Row
         return connection

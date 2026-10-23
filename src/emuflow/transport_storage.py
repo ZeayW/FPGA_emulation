@@ -18,6 +18,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ValidationError
 from .io import file_sha256, write_json
 from .netlist import (
@@ -272,7 +273,7 @@ def _validate_manifest(
 
 def _connect(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(
-        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+        immutable_sqlite_uri(path), uri=True
     )
     connection.row_factory = sqlite3.Row
     return connection
@@ -1534,7 +1535,7 @@ def write_transport_storage(
         )
         connection.execute(
             "ATTACH DATABASE ? AS assignment",
-            (f"file:{assignment_index_path.resolve()}?mode=ro&immutable=1",),
+            (immutable_sqlite_uri(assignment_index_path),),
         )
 
         typed_records = getattr(schedule, "iter_transport_records", None)

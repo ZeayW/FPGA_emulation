@@ -13,6 +13,7 @@ from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_PROVIDER,
     CHIMEW_BANK_CHANNEL_REPORT_SCHEMA,
@@ -414,7 +415,7 @@ def _open_chimew_build_index(
 ) -> tuple[sqlite3.Connection, int]:
     """Expose schedule entries through a bounded file-backed relation."""
 
-    connection = sqlite3.connect("")
+    connection = sqlite3.connect("", uri=True)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA temp_store=FILE")
     try:
@@ -422,7 +423,7 @@ def _open_chimew_build_index(
         if isinstance(store_path, Path):
             connection.execute(
                 "ATTACH DATABASE ? AS schedule_store",
-                (f"file:{store_path.resolve()}?mode=ro&immutable=1",),
+                (immutable_sqlite_uri(store_path),),
             )
             schedule_count = _install_indexed_schedule_entry_relation(connection)
         else:
@@ -626,22 +627,20 @@ def _open_indexed_chimew_validation(
 ) -> tuple[sqlite3.Connection, int]:
     """Open sealed schedule/plan relations and validate exact coverage."""
 
-    connection = sqlite3.connect("")
+    connection = sqlite3.connect("", uri=True)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA temp_store=FILE")
     try:
         connection.execute(
             "ATTACH DATABASE ? AS schedule_store",
             (
-                f"file:{schedule.store_path.resolve()}"
-                "?mode=ro&immutable=1",
+                immutable_sqlite_uri(schedule.store_path),
             ),
         )
         connection.execute(
             "ATTACH DATABASE ? AS pin_store",
             (
-                f"file:{pin_plan.store_path.resolve()}"
-                "?mode=ro&immutable=1",
+                immutable_sqlite_uri(pin_plan.store_path),
             ),
         )
         schedule_count = _install_indexed_schedule_entry_relation(connection)
@@ -702,8 +701,7 @@ def _open_indexed_chimew_validation(
             connection.execute(
                 "ATTACH DATABASE ? AS binding_store",
                 (
-                    f"file:{binding.store_path.resolve()}"
-                    "?mode=ro&immutable=1",
+                    immutable_sqlite_uri(binding.store_path),
                 ),
             )
             connection.execute(

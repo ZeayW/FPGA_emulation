@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .native_tools import resolve_native_stage_command
@@ -1200,7 +1201,7 @@ class _ProjectedSystemRouteSequence(list):
         path = self._native_result_path
         if path is None or not path.is_file():
             raise ValidationError("native route result lease is unavailable")
-        uri = f"file:{path.resolve()}?mode=ro&immutable=1"
+        uri = immutable_sqlite_uri(path)
         connection.execute(
             "ATTACH DATABASE ? AS native_route_result", (uri,)
         )
@@ -2170,7 +2171,7 @@ def _parse_native_output_sqlite(
     }
     try:
         connection = sqlite3.connect(
-            f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+            immutable_sqlite_uri(path), uri=True
         )
         connection.row_factory = sqlite3.Row
         try:

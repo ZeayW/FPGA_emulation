@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import EmuFlowError, ValidationError
 from .native_tools import resolve_native_executable
 from .platform import Platform
@@ -660,22 +661,20 @@ def _open_indexed_pin_plan_validation(
 ) -> tuple[sqlite3.Connection, int]:
     """Build a file-backed validation index without Python hop maps."""
 
-    connection = sqlite3.connect("")
+    connection = sqlite3.connect("", uri=True)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA temp_store=FILE")
     try:
         connection.execute(
             "ATTACH DATABASE ? AS schedule_store",
             (
-                f"file:{schedule.store_path.resolve()}"
-                "?mode=ro&immutable=1",
+                immutable_sqlite_uri(schedule.store_path),
             ),
         )
         connection.execute(
             "ATTACH DATABASE ? AS pin_store",
             (
-                f"file:{plan.store_path.resolve()}"
-                "?mode=ro&immutable=1",
+                immutable_sqlite_uri(plan.store_path),
             ),
         )
         schedule_count = _install_indexed_schedule_entry_relation(connection)

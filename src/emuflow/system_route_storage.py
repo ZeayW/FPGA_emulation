@@ -21,6 +21,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ValidationError
 from .io import file_sha256, write_json
 from .routing import SYSTEM_ROUTES_SCHEMA
@@ -205,7 +206,7 @@ def _previous_route_artifact(path: Path) -> Path | None:
 
 def _connect(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(
-        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+        immutable_sqlite_uri(path), uri=True
     )
     connection.row_factory = sqlite3.Row
     return connection
@@ -1766,7 +1767,7 @@ def write_system_route_storage(
             "refinement_batch_paths",
         )
     }
-    connection = sqlite3.connect(temporary)
+    connection = sqlite3.connect(temporary, uri=True)
     try:
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
@@ -2049,7 +2050,7 @@ def write_system_route_storage(
                 raise ValidationError(
                     "published master-selection seal coverage disagrees"
                 )
-            connection = sqlite3.connect(temporary)
+            connection = sqlite3.connect(temporary, uri=True)
         else:
             logical_sha256 = _pretty_sha256(routes)
         sections = {

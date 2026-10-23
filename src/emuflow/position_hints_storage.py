@@ -11,6 +11,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ValidationError
 from .io import file_sha256, read_json, write_json
 
@@ -42,7 +43,7 @@ def _logical_sha256(
 
 def _connect(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(
-        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+        immutable_sqlite_uri(path), uri=True
     )
     connection.row_factory = sqlite3.Row
     return connection
@@ -252,7 +253,7 @@ class PositionHintsView(Mapping[str, Any]):
         connection.execute(
             "ATTACH DATABASE ? AS position_store",
             (
-                f"file:{self.store_path.resolve()}?mode=ro&immutable=1",
+                immutable_sqlite_uri(self.store_path),
             ),
         )
         mismatch = connection.execute(

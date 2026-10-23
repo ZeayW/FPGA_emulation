@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .emuir_compact import DDL
 from .emuir_storage import (
     EMUIR_COMPACT_STORAGE_SCHEMA,
@@ -25,7 +26,7 @@ from .errors import ValidationError
 
 
 def _sqlite_uri(path: Path) -> str:
-    return f"file:{path.resolve()}?mode=ro&immutable=1"
+    return immutable_sqlite_uri(path)
 
 
 def write_placement_emuir_from_split(

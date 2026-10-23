@@ -17,6 +17,7 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Any, Iterable, Mapping, Optional
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ValidationError
 from .phase3_assignment_index import (
     ASSIGNMENT_INDEX_SCHEMA,
@@ -153,7 +154,7 @@ def _json(value: Any) -> str:
 
 
 def _sqlite_uri(path: Path) -> str:
-    return f"file:{path.resolve()}?mode=ro&immutable=1"
+    return immutable_sqlite_uri(path)
 
 
 def _binary_artifact_path(
@@ -1014,7 +1015,7 @@ def write_split_netlists_sqlite(
 
 def open_split_netlists_sqlite(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(
-        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+        immutable_sqlite_uri(path), uri=True
     )
     connection.row_factory = sqlite3.Row
     if (

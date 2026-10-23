@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .boundary_timing import BOUNDARY_IDENTITY_SCHEMA
 from .equivalence import _lut_definition
 from .errors import ValidationError
@@ -2076,7 +2077,7 @@ def _indexed_logic_measurement_import(
         prefix=".logic-measurements.", dir=output_path.parent
     ) as temporary:
         spool_path = Path(temporary) / "measurements.sqlite"
-        connection = sqlite3.connect(spool_path)
+        connection = sqlite3.connect(spool_path, uri=True)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
@@ -2088,7 +2089,8 @@ def _indexed_logic_measurement_import(
             "actual_start_object TEXT,actual_end_object TEXT)"
         )
         connection.execute(
-            "ATTACH DATABASE ? AS identity", (str(identity.store_path),)
+            "ATTACH DATABASE ? AS identity",
+            (immutable_sqlite_uri(identity.store_path),),
         )
         inserted = 0
         try:

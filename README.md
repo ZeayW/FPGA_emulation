@@ -30,8 +30,8 @@ hashes its original bytes without copying the database.
 Phases 3–7 exchange compact selector manifests and content-addressed SQLite
 sidecars for assignments, routes, schedules, transport, and physical handoffs.
 Production readers stream typed indexed relations; whole-graph materialization is
-an explicit compatibility operation. Phase 7 explicitly enables immutable
-SQLite input URIs across supported runtimes. A continued run uses the current
+an explicit compatibility operation. SQLite handoffs explicitly enable read-only
+input URIs and encode filesystem paths across supported runtimes. A continued run uses the current
 BoardDB and does not inherit an older interconnect configuration from the saved input.
 Mapped physical pin indexes are built in bulk before their atomic publication.
 Indexed OpenPARF Bookshelf export streams typed pins through the shared native

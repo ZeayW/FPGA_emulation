@@ -17,6 +17,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .combinational_cut import semantic_contract_sha256
 from .errors import ValidationError
 from .ir import EmuIR
@@ -988,7 +989,7 @@ def migrate_phase3_assignment_index(
         )
         connection.execute(
             "ATTACH DATABASE ? AS src",
-            (f"file:{ir_path.resolve()}?mode=ro&immutable=1",),
+            (immutable_sqlite_uri(ir_path),),
         )
         if connection.execute("PRAGMA src.user_version").fetchone()[0] != 2:
             raise ValidationError(
@@ -1162,7 +1163,7 @@ def migrate_phase3_assignment_index(
 
 def open_phase3_assignment_index(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(
-        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+        immutable_sqlite_uri(path), uri=True
     )
     connection.row_factory = sqlite3.Row
     application_id = connection.execute("PRAGMA application_id").fetchone()[0]
@@ -1655,7 +1656,7 @@ def phase3_exact_relation_counts(path: Path) -> dict[str, int]:
     """Return storage-level relation counts for qualification evidence."""
 
     connection = sqlite3.connect(
-        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+        immutable_sqlite_uri(path), uri=True
     )
     try:
         cut_sinks = int(
@@ -1936,7 +1937,7 @@ def validate_phase3_assignment_index_against_emuir(
     try:
         connection.execute(
             "ATTACH DATABASE ? AS src",
-            (f"file:{ir_path.resolve()}?mode=ro&immutable=1",),
+            (immutable_sqlite_uri(ir_path),),
         )
         if connection.execute("PRAGMA src.user_version").fetchone()[0] != 2:
             raise ValidationError(

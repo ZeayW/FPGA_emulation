@@ -4,6 +4,14 @@ Validation establishes a specific claim on a declared input population.
 A structural check, functional fixture, optimizer objective, and physical
 timing result answer different questions.
 
+SQLite handoff tests must exercise URI parsing with the process-wide URI
+default disabled, as well as filenames containing Unicode, `?`, `#` and `%`.
+Inputs attached by a writable staging connection must remain read-only, and a
+missing input must fail without creating another database. The native route
+publication regression runs the real producer and SQL publisher in an isolated
+process configured without the URI default; it also rejects Python route-tree
+materialization during publication.
+
 ## Functional and structural gates
 
 - Preserve circuit connectivity, primitive parameters, clock/reset semantics,
