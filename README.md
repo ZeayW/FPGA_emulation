@@ -133,27 +133,13 @@ Missing RapidWright inputs do not trigger an automatic VTR fallback.
 Phase 4 defaults to `synergistic-author-route-v1`, with author pressure costs
 and hard-connection ordering. The previous router remains available through
 `--route-provider timing-aware-global-candidate-v1`. Both feed the same Phase 5
-interface; the paired NV_nvdla check uses deterministic dependency scheduling
-without academic optimizer executables. Faster routing does not establish better timing. See the
+interface; faster routing does not establish better timing. See the
 [provider contracts and alternatives](docs/ALGORITHMS.md#phase-4-system-level-multicast-routing).
 
 Use `--stop-after phase3` or `--stop-after phase5` for an explicit intermediate
-boundary, and `--sta-require-complete` to reject truncated path exports.
-An explicit `--frame-slots` applies to partition pressure and routing alike.
-Audited prefix continuation can reuse unchanged frontend/STA inputs and sealed
-successful native partition results while retaining Phase3 validation and the
-same architecture timing model for independent qualification; see the
-[user guide](docs/USER_GUIDE.md).
-Independent prefix qualification checks original representative-path membership
-and all-cut structural coverage separately; see [paired validation](docs/USER_GUIDE.md#paired-phase-4-validation).
-These produce a scoped stage report, not a full-flow or physical pass. Phase 5
-distinguishes exact original-member timing from legacy compressed diagnostics. Optional
-`--synthesis-profile-passes` records live Xilinx synthesis progress. PATRON writes
-rate-limited native progress and evaluation-reuse/early-rejection counters to
-`partition/patron/refiner.log`. An explicit native sweep-prefix budget provides a
-non-converged research variant; see the [user guide](docs/USER_GUIDE.md). Physical SRAM
-enable/retention semantics, BRAM mapping and independent timing checks are described in
-[paired routing validation](docs/USER_GUIDE.md#paired-phase-4-validation).
+boundary; these reports do not establish physical timing closure. See
+[paired validation and continuation](docs/USER_GUIDE.md#paired-phase-4-validation)
+for input identity checks, timing scope and diagnostic options.
 
 Other CLI defaults are TritonPart initial partitioning followed by
 timing-driven PATRON post-processing, `sequential-only` cuts, baseline Phase 6,
@@ -192,9 +178,7 @@ workloads with platform configurations; the
 [contest matrix](benchmarks/contest_validation_matrix.json) separately covers
 communication-algorithm inputs.
 
-See [benchmark usage](docs/RTL_BENCHMARKS.md) and the scoped
-[author-router comparison report](docs/PHASE4_AUTHOR_ROUTER_RESULTS.md).
-Raw logs, experiment histories,
+See [benchmark usage](docs/RTL_BENCHMARKS.md). Raw logs, experiment histories,
 machine-specific paths, and temporary results are not project documentation.
 
 ## Repository layout

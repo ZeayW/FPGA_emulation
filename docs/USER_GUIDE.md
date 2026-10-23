@@ -67,7 +67,7 @@ clocks and the fixed 1024-slot frame. An explicit `--frame-slots` overrides the
 route-constraints file for both Phase 3 partition pressure and Phase 4 routing;
 other route constraints are preserved. The paired seal checks the retained
 PATRON native input header as well as the requested configuration. Inspect its
-`--help` for tool/input paths. After an audited Phase 3 frame-propagation repair,
+`--help` for tool/input paths. For compatible completed frontend and STA inputs,
 `--reuse-prefix <stopped-prefix> --reuse-producer-commit <original-full-sha>`
 can bind its completed Phase 1 and original STA publications read-only. The
 runner checks unchanged RTL, tools, timing constraints and producer code,
@@ -105,7 +105,8 @@ partition into a formal complete-search result.
 
 `scripts/phase4_nvdla_compare.py --contract ... --common-run ... --platform ...
 --output ...` runs the explicit old and author routers against this same prefix
-and identical Phase 5 settings; its `--help` lists the required native tools.
+and identical deterministic dependency Phase 5 settings, without academic
+optimizer bindings; its `--help` lists the required native tools.
 Reports distinguish projected inter-FPGA Phase 5 timing from whole-design
 physical timing. Phase 5 includes per-clock WNS/TNS and path counts, preserving
 original clock identities and counting each original path after output-copy
@@ -128,6 +129,11 @@ The contest comparison tool separately reuses a baseline only when its Python
 producer/evaluator, runtime, native tools, settings, inputs and sealed outputs
 match. Legacy summaries without these seals require a fresh control run;
 reusable imported inputs do not establish reusable metrics.
+
+Optional `--synthesis-profile-passes` reports live Xilinx synthesis progress.
+PATRON writes rate-limited progress and evaluation counters to
+`partition/patron/refiner.log`. An explicit `--frame-slots` applies to both
+partition pressure and routing. Native search budgets are documented below.
 
 ## Input configuration
 
