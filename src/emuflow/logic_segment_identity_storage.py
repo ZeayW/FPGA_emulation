@@ -8,6 +8,7 @@ writers publish the selector last while holding the exclusive lease.
 
 from __future__ import annotations
 
+from contextlib import closing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 import fcntl
 from functools import lru_cache
@@ -402,7 +403,7 @@ class _SegmentSequence(Sequence[Mapping[str, Any]]):
         if owner is None:
             raise ValidationError("logic segment identity view is closed")
         owner._ensure_open()
-        with _connect(owner.store_path) as connection:
+        with closing(_connect(owner.store_path)) as connection, connection:
             for row in connection.execute("SELECT * FROM segments ORDER BY seq"):
                 yield segment_from_row(row)
 
@@ -417,7 +418,7 @@ class _SegmentSequence(Sequence[Mapping[str, Any]]):
         if owner is None:
             raise ValidationError("logic segment identity view is closed")
         owner._ensure_open()
-        with _connect(owner.store_path) as connection:
+        with closing(_connect(owner.store_path)) as connection, connection:
             row = connection.execute(
                 "SELECT * FROM segments WHERE seq=?", (index,)
             ).fetchone()
@@ -439,7 +440,7 @@ class _UnsupportedSequence(Sequence[Mapping[str, Any]]):
         if owner is None:
             raise ValidationError("logic segment identity view is closed")
         owner._ensure_open()
-        with _connect(owner.store_path) as connection:
+        with closing(_connect(owner.store_path)) as connection, connection:
             for row in connection.execute(
                 "SELECT path,reason FROM unsupported_members ORDER BY seq"
             ):
@@ -456,7 +457,7 @@ class _UnsupportedSequence(Sequence[Mapping[str, Any]]):
         if owner is None:
             raise ValidationError("logic segment identity view is closed")
         owner._ensure_open()
-        with _connect(owner.store_path) as connection:
+        with closing(_connect(owner.store_path)) as connection, connection:
             row = connection.execute(
                 "SELECT path,reason FROM unsupported_members WHERE seq=?", (index,)
             ).fetchone()
@@ -608,7 +609,7 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
         segment_digest = hashlib.sha256()
         unsupported_digest = hashlib.sha256()
         try:
-            with _connect(self.store_path) as connection:
+            with closing(_connect(self.store_path)) as connection, connection:
                 _exact_sqlite_envelope(connection)
                 metadata_rows = list(connection.execute(
                     "SELECT key,value FROM metadata ORDER BY key"
@@ -691,7 +692,7 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
     def canonical_segments(self) -> Iterator[Mapping[str, Any]]:
         """Yield the timing-store join order without materializing an index."""
         self._ensure_open()
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             for row in connection.execute(
                 "SELECT * FROM segments "
                 "ORDER BY system_path,member_path,cut_index,segment_id"

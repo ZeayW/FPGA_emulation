@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 import fcntl
 from functools import lru_cache
@@ -400,7 +401,7 @@ class _TimingSequence(Sequence[Mapping[str, Any]]):
         return self._count
 
     def __iter__(self) -> Iterator[Mapping[str, Any]]:
-        with _connect(self._view().store_path) as connection:
+        with closing(_connect(self._view().store_path)) as connection, connection:
             yield from _iter_records(connection)
 
     def __getitem__(self, index: int | slice) -> Any:
@@ -412,7 +413,7 @@ class _TimingSequence(Sequence[Mapping[str, Any]]):
             index += self._count
         if index < 0 or index >= self._count:
             raise IndexError(index)
-        with _connect(self._view().store_path) as connection:
+        with closing(_connect(self._view().store_path)) as connection, connection:
             row = connection.execute(
                 "SELECT * FROM timings ORDER BY id LIMIT 1 OFFSET ?", (index,)
             ).fetchone()
@@ -484,7 +485,7 @@ class LocalPathTimingView(Mapping[str, Any]):
     def _validate_store(self) -> None:
         digest = hashlib.sha256()
         try:
-            with _connect(self.store_path) as connection:
+            with closing(_connect(self.store_path)) as connection, connection:
                 _exact_sqlite_envelope(connection)
                 metadata_rows = list(connection.execute(
                     "SELECT key,value FROM metadata ORDER BY key"

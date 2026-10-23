@@ -9,6 +9,7 @@ export remains explicit for external tools which still require the old JSON.
 
 from __future__ import annotations
 
+from contextlib import closing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 import fcntl
 import hashlib
@@ -334,7 +335,7 @@ class _AtomSequence(Sequence[Mapping[str, str]]):
 
     def __iter__(self) -> Iterator[Mapping[str, str]]:
         self._ensure_open()
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             for row in connection.execute(
                 "SELECT openparf,instance,cell_type,source_cluster,resource "
                 "FROM atoms ORDER BY seq"
@@ -349,7 +350,7 @@ class _AtomSequence(Sequence[Mapping[str, str]]):
             index += self.count
         if not 0 <= index < self.count:
             raise IndexError(index)
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             row = connection.execute(
                 "SELECT openparf,instance,cell_type,source_cluster,resource "
                 "FROM atoms WHERE seq=?", (index,),
@@ -376,7 +377,7 @@ class _CascadeSequence(Sequence[Mapping[str, Any]]):
 
     def __iter__(self) -> Iterator[Mapping[str, Any]]:
         self._ensure_open()
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             for row in connection.execute(
                 "SELECT record_json FROM carry_cascades ORDER BY seq"
             ):
@@ -390,7 +391,7 @@ class _CascadeSequence(Sequence[Mapping[str, Any]]):
             index += self.count
         if not 0 <= index < self.count:
             raise IndexError(index)
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             row = connection.execute(
                 "SELECT record_json FROM carry_cascades WHERE seq=?", (index,),
             ).fetchone()
@@ -488,7 +489,7 @@ class XilinxOpenparfAtomicNameMapView(Mapping[str, Any]):
         atom_digest = hashlib.sha256()
         cascade_digest = hashlib.sha256()
         try:
-            with _connect(self.store_path) as connection:
+            with closing(_connect(self.store_path)) as connection, connection:
                 application_id = int(connection.execute(
                     "PRAGMA application_id"
                 ).fetchone()[0])

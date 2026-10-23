@@ -9,6 +9,7 @@ after the commit is durable.
 
 from __future__ import annotations
 
+from contextlib import closing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 import fcntl
 from functools import lru_cache
@@ -540,7 +541,7 @@ class _StoreSequence(Sequence[Mapping[str, Any]]):
 
     def __iter__(self) -> Iterator[Mapping[str, Any]]:
         view = self._view()
-        with _connect(view.store_path) as connection:
+        with closing(_connect(view.store_path)) as connection, connection:
             if self.table == "segments":
                 for row in connection.execute("SELECT * FROM segments ORDER BY seq"):
                     yield _segment_from_row(row)
@@ -570,7 +571,7 @@ class _StoreSequence(Sequence[Mapping[str, Any]]):
         if index < 0 or index >= self.count:
             raise IndexError(index)
         view = self._view()
-        with _connect(view.store_path) as connection:
+        with closing(_connect(view.store_path)) as connection, connection:
             if self.table == "segments":
                 row = connection.execute(
                     "SELECT * FROM segments WHERE seq=?", (index,)
@@ -702,7 +703,7 @@ class LogicSegmentTimingView(Mapping[str, Any]):
         unsupported_digest = hashlib.sha256()
         unmeasured_digest = hashlib.sha256()
         try:
-            with _connect(self.store_path) as connection:
+            with closing(_connect(self.store_path)) as connection, connection:
                 _exact_sqlite_envelope(connection)
                 metadata_rows = list(connection.execute(
                     "SELECT key,value FROM metadata ORDER BY key"
@@ -812,7 +813,7 @@ class LogicSegmentTimingView(Mapping[str, Any]):
     def validate_timing(self) -> dict[str, Any]:
         self._ensure_open()
         counts = self.selector["counts"]
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             maximum = connection.execute(
                 "SELECT COALESCE(MAX(delay_ns),0.0) FROM segments"
             ).fetchone()[0]
@@ -826,7 +827,7 @@ class LogicSegmentTimingView(Mapping[str, Any]):
 
     def iter_segment_ids(self) -> Iterator[str]:
         self._ensure_open()
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             for row in connection.execute(
                 "SELECT segment_id FROM segments ORDER BY segment_id"
             ):
@@ -834,7 +835,7 @@ class LogicSegmentTimingView(Mapping[str, Any]):
 
     def iter_ordered_segments(self) -> Iterator[Mapping[str, Any]]:
         self._ensure_open()
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             for row in connection.execute(
                 "SELECT * FROM segments "
                 "ORDER BY system_path,member_path,cut_index,segment_id"

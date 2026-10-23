@@ -8,6 +8,7 @@ live; writers publish the selector last while holding the exclusive lease.
 
 from __future__ import annotations
 
+from contextlib import closing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 import fcntl
 from functools import lru_cache
@@ -392,7 +393,7 @@ class _EndpointSequence(Sequence[Mapping[str, Any]]):
         if owner is None:
             raise ValidationError("boundary identity view is closed")
         owner._ensure_open()
-        with _connect(owner.store_path) as connection:
+        with closing(_connect(owner.store_path)) as connection, connection:
             yield from _iter_records(connection)
 
     def __getitem__(self, index: int | slice) -> Any:
@@ -406,7 +407,7 @@ class _EndpointSequence(Sequence[Mapping[str, Any]]):
         if owner is None:
             raise ValidationError("boundary identity view is closed")
         owner._ensure_open()
-        with _connect(owner.store_path) as connection:
+        with closing(_connect(owner.store_path)) as connection, connection:
             row = connection.execute(
                 "SELECT * FROM endpoints ORDER BY id LIMIT 1 OFFSET ?", (index,)
             ).fetchone()
@@ -478,7 +479,7 @@ class BoundaryIdentityView(Mapping[str, Any]):
     def _validate_store(self) -> None:
         digest = hashlib.sha256()
         try:
-            with _connect(self.store_path) as connection:
+            with closing(_connect(self.store_path)) as connection, connection:
                 _exact_sqlite_envelope(connection)
                 metadata_rows = list(connection.execute(
                     "SELECT key,value FROM metadata ORDER BY key"

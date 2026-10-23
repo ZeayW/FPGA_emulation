@@ -37,6 +37,12 @@ summary readers and physical certificate/site adapters release their handles
 before publication or phase retirement, including on validation errors. Tests
 retain connection objects beyond those scopes to verify actual close behavior;
 resource release cannot depend on garbage collection or filesystem unlink rules.
+The same rule covers SQLite connection factories behind lazy physical name maps,
+atom lookups, boundary identity/timing, logic-segment identity/timing and local
+path timing. Exhausted or explicitly closed iterators release their connection;
+live iterators retain it until their consumer closes or finishes them. A reader
+lease remains explicitly owned by its view and must close before that view's
+publication is retired.
 Python adapters construct immutable input URIs through `sqlite_artifacts` and
 explicitly enable URI handling on connections that attach published stores.
 This preserves read-only inputs independently of SQLite's build-time URI

@@ -55,6 +55,13 @@ from tests.openparf_runtime_fixture import (
 )
 
 
+def _fixture_name_map(path):
+    # Unit fixtures deliberately retain their small reference records after
+    # the temporary publication disappears. Never retain its lazy reader lease.
+    with read_xilinx_openparf_atomic_name_map(path) as view:
+        return view.materialize()
+
+
 def _cell(cell_type, connections):
     outputs = {"O", "Q", "P", "DOADO", "DOUT_A"}
     return {
@@ -603,7 +610,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 mapped, packed, architecture, output
             )
             config = json.loads((output / "openparf.json").read_text())
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1092,7 +1099,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 mapped, packed, architecture, output
             )
             config = json.loads((output / "openparf.json").read_text())
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             hard_atoms = [
                 atom for atom in names["atoms"]
                 if atom["resource"] in {"DSP48E2", "RAMB36E2", "URAM288"}
@@ -1166,7 +1173,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             architecture.write_text(json.dumps(value), encoding="utf-8")
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1223,7 +1230,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             export_xilinx_openparf_atomic(
                 mapped, packed, architecture, output
             )
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -2160,7 +2167,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             mapped, packed, architecture = _fixture(root, mixed=True)
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -2285,7 +2292,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 if window[0]["anchor"] == lo_window["anchor"]
                 and window[0]["z"] != lo_window["z"]
             )
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -2443,7 +2450,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 [member["z"] for member in group["window_template"]["members"]],
                 [1, 3, 0],
             )
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             openparf = {atom["instance"]: atom["openparf"] for atom in names["atoms"]}
             sites = load_xilinx_openparf_atomic_sites(output / "name_map.json")
             slice_sites = [site for site in sites if "LUT" in site["resources"]]
@@ -2574,7 +2581,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                         f"{instance} {macro_site_entry['dense_x']} "
                         f"{macro_site_entry['dense_y']} {entry['z']}"
                     )
-                names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+                names = _fixture_name_map(output / "name_map.json")
                 ff = next(atom for atom in names["atoms"] if atom["instance"] == "ff")
                 macro_site = macro_site_entry["site"]
                 ff_site = next(site for site in sites.values()
@@ -2965,7 +2972,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 [site["site"] for site in chain["windows"][0]],
                 ["DSP48E2_X0Y0", "DSP48E2_X1Y0"],
             )
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )

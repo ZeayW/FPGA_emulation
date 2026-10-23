@@ -65,3 +65,23 @@ def test_site_writer_releases_in_memory_and_backup_connections(tmp_path, retaine
             assert reader.execute('SELECT count(*) FROM sites').fetchone()[0] == 1
     assert len(connections) == (1 if duplicate_site else 2)
     assert_closed(connections)
+
+
+def test_lazy_name_map_readers_close_after_lookup_exhaustion_and_early_stop(tmp_path, retained_connections):
+    from emuflow.xilinx_openparf_name_map_storage import read_xilinx_openparf_atomic_name_map
+    from tests import test_xilinx_openparf_name_map_storage as fixture
+    _original, connections = retained_connections
+    path = tmp_path/'name_map.json'
+    with fixture._write(path):
+        pass
+    with read_xilinx_openparf_atomic_name_map(path) as view:
+        assert view['atoms'][0]['openparf'] == 'a0'
+        assert len(list(view['atoms'])) == 2
+        assert_closed(connections)
+        iterator = iter(view['atoms'])
+        assert next(iterator)['openparf'] == 'a0'
+        # A live stream still owns its cursor. Early close, rather than GC,
+        # must release it before the publication can be retired.
+        assert connections[-1].execute('SELECT 1').fetchone()[0] == 1
+        iterator.close()
+        assert_closed(connections)

@@ -2866,7 +2866,7 @@ class _IndexedAtomSequence(Sequence[Mapping[str, str]]):
         return self._count
 
     def __iter__(self) -> Iterator[Mapping[str, str]]:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             for row in connection.execute(
                 "SELECT instance,cell_type,source_cluster,resource "
                 "FROM atoms ORDER BY seq"
@@ -2881,7 +2881,7 @@ class _IndexedAtomSequence(Sequence[Mapping[str, str]]):
             index += count
         if not 0 <= index < count:
             raise IndexError(index)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT instance,cell_type,source_cluster,resource "
                 "FROM atoms WHERE seq=?", (index + 1,),
@@ -2891,7 +2891,7 @@ class _IndexedAtomSequence(Sequence[Mapping[str, str]]):
         return self._record(row)
 
     def ordinal_for_instance(self, instance: str) -> int:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT seq FROM atoms WHERE instance=?", (instance,)
             ).fetchone()
