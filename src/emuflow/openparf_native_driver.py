@@ -65,6 +65,39 @@ def _logic_overflow(engine: Any, metric: Any) -> dict[str, float]:
     return result
 
 
+def validate_native_logic_site_area(engine: Any) -> dict[str, Any]:
+    """Check the native density domain using already constructed tensors."""
+
+    expected = getattr(engine.params, "emuflow_expected_logic_site_area", None)
+    names = tuple(engine.params.logic_area_type_names)
+    if not isinstance(expected, dict) or not names or set(expected) != set(names):
+        raise RuntimeError("OpenPARF expected logic site area is missing or invalid")
+    actual = {}
+    for name in names:
+        value = expected[name]
+        if (
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value <= 0
+        ):
+            raise RuntimeError("OpenPARF expected logic site area is invalid")
+        index = int(engine.placedb.getAreaTypeIndexFromName(name))
+        if index < 0 or index >= len(engine.data_cls.initial_density_maps):
+            raise RuntimeError(f"OpenPARF logic area type {name!r} is unavailable")
+        density = engine.data_cls.initial_density_maps[index]
+        if density is None:
+            raise RuntimeError(f"OpenPARF logic area type {name!r} is unavailable")
+        area = _number(engine.data_cls.total_area) - _number(density.sum())
+        if not math.isfinite(area) or not math.isclose(
+            area, float(value), rel_tol=1.0e-9, abs_tol=1.0e-6
+        ):
+            raise RuntimeError(
+                f"OpenPARF {name} site area mismatch: native={area}, "
+                f"qualified={value}; check Bookshelf gaps and site bounds"
+            )
+        actual[name] = area
+    return {"status": "pass", "expected": dict(expected), "actual": actual}
+
+
 def _active_overflow_is_feasible(engine: Any, metric: Any) -> bool:
     """Qualify routability-bearing logic density before exact legalization.
 
@@ -313,6 +346,9 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
     weighting = getattr(engine, "_emuflow_high_fanout_weighting", None)
     if weighting is not None:
         value["high_fanout_net_weighting"] = weighting
+    geometry = getattr(engine, "_emuflow_logic_site_area", None)
+    if geometry is not None:
+        value["logic_site_area_validation"] = geometry
     cutoff = getattr(engine, "_emuflow_area_adjustment_cutoff", None)
     if cutoff is not None:
         value["area_adjustment_cutoff"] = cutoff
@@ -420,6 +456,7 @@ def main() -> int:
         engine: Any, loaded_params: Any, placedb: Any
     ) -> None:
         original_init(engine, loaded_params, placedb)
+        engine._emuflow_logic_site_area = validate_native_logic_site_area(engine)
         apply_high_fanout_net_weights(engine)
 
     def call_and_capture(engine: Any) -> Any:

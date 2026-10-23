@@ -10,6 +10,7 @@ from emuflow.openparf_native_driver import (
     OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
     bounded_native_area_adjustment_condition,
     stable_native_stop_condition,
+    validate_native_logic_site_area,
     validate_openparf_native_metrics,
 )
 
@@ -52,6 +53,26 @@ def _engine(*, patience=2, minimum=3):
 
 
 class OpenparfNativeDriverTest(unittest.TestCase):
+    def test_native_density_domain_matches_qualified_site_area(self):
+        engine = _engine()
+        engine.params.emuflow_expected_logic_site_area = {"LUT": 2, "FF": 3}
+        engine.data_cls.total_area = 4
+        engine.data_cls.initial_density_maps = [
+            torch.tensor([0.0, 0.0, 0.5, 1.5], dtype=torch.float64),
+            torch.tensor([0.0, 0.0, 0.25, 0.75], dtype=torch.float64),
+        ]
+        result = validate_native_logic_site_area(engine)
+        self.assertEqual(result["actual"], {"LUT": 2.0, "FF": 3.0})
+        # A missing blocked row becomes extra native placeable area. The
+        # driver must reject it before placement rather than fill the gap.
+        engine.data_cls.initial_density_maps[0].zero_()
+        with self.assertRaisesRegex(RuntimeError, "LUT site area mismatch"):
+            validate_native_logic_site_area(engine)
+
+    def test_native_density_domain_requires_exported_contract(self):
+        with self.assertRaisesRegex(RuntimeError, "missing or invalid"):
+            validate_native_logic_site_area(_engine())
+
     def test_declines_area_adjustment_without_post_reset_budget(self):
         engine = _engine()
         metric = _metric(80, [2, 2])

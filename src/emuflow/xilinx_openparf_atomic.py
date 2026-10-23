@@ -3873,7 +3873,7 @@ def _render_site_geometry(
         lines.append(f"SITE {signature_names[signature]}")
         lines.extend(f"  {resource} {count}" for resource, count in signature)
         lines.extend(["END SITE", ""])
-    site_prefix = "\n".join([*lines, "RESOURCES"]) + "\n"
+    site_prefix = "\n".join(lines) + "\n"
     lines = ["END RESOURCES", "", f"SITEMAP {len(x_axis)} {len(y_axis)}"]
     site_map = []
     # Bookshelf requires site records in increasing dense coordinate order;
@@ -3887,10 +3887,6 @@ def _render_site_geometry(
     ):
         resources = group["resources"]
         dense = (x_index[coordinate[0]], y_index[coordinate[1]])
-        signature = tuple(sorted(
-            resources.items(), key=lambda item: _resource_sort_key(item[0])
-        ))
-        lines.append(f"{dense[0]} {dense[1]} {signature_names[signature]}")
         physical_sites = {
             resource: list(names)
             for resource, names in sorted(
@@ -3909,8 +3905,9 @@ def _render_site_geometry(
             "physical_sites": physical_sites,
             "physical_region": group["physical_region"],
         })
-    # OpenPARF's Bookshelf reader derives a site's bounding box from the next
-    # entry in the same column (or the top of the SITEMAP for the final entry).
+    # OpenPARF extends each entry to the next entry in its column. Terminate
+    # each logic site after one row: physical gaps and derated sites are not
+    # extra placement area. Hard-resource spans retain their native height.
     # Legalizer position tensors use the center of that box, while the emitted
     # .pl file is written back using its lower-left dense coordinate.  Preserve
     # both coordinate systems explicitly so typed hard blocks do not confuse
@@ -3918,6 +3915,7 @@ def _render_site_geometry(
     sites_by_x: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     for item in site_map:
         sites_by_x[item["dense_x"]].append(item)
+    blocked_rows = False
     for column in sites_by_x.values():
         column.sort(key=lambda item: item["dense_y"])
         for index, item in enumerate(column):
@@ -3927,7 +3925,26 @@ def _render_site_geometry(
                 else len(y_axis)
             )
             item["placement_x"] = item["dense_x"] + 0.5
-            item["placement_y"] = (item["dense_y"] + next_y) * 0.5
+            logic_site = any(
+                item["resources"].get(resource, 0) for resource in ("LUT", "FF")
+            )
+            upper_y = item["dense_y"] + 1 if logic_site else next_y
+            item["placement_y"] = (item["dense_y"] + upper_y) * 0.5
+            signature = tuple(sorted(
+                item["resources"].items(),
+                key=lambda entry: _resource_sort_key(entry[0]),
+            ))
+            lines.append(
+                f"{item['dense_x']} {item['dense_y']} {signature_names[signature]}"
+            )
+            if upper_y < next_y:
+                blocked_rows = True
+                lines.append(
+                    f"{item['dense_x']} {upper_y} EMUFLOW_UNAVAILABLE"
+                )
+    if blocked_rows:
+        site_prefix += "SITE EMUFLOW_UNAVAILABLE\nEND SITE\n\n"
+    site_prefix += "RESOURCES\n"
     lines.append("END SITEMAP")
     present_regions = [
         item["physical_region"] for item in site_map
@@ -4574,6 +4591,10 @@ def export_xilinx_openparf_atomic(
         "global_place_flag": 1, "legalize_flag": 1,
         "detailed_place_flag": 1, "generic_cluster_placement_flag": 0,
         "logic_area_type_names": ["LUT", "FF"],
+        "emuflow_expected_logic_site_area": {
+            resource: density_contract[resource]["placeable_area"]
+            for resource in ("LUT", "FF") if resource in density_contract
+        },
         "plot_flag": 0,
         "plot_target_at_names": sorted(demand, key=_resource_sort_key),
         "io_at_names": [], "num_threads": 8,

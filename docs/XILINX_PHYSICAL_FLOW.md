@@ -71,6 +71,15 @@ The `resource_unit_capacity` manifest field records these density units; the
 Bookshelf site grammar retains sixteen LUT slots for native BEL numbering.
 This leaves the configured target density and final site/BEL checks intact.
 
+Bookshelf's column grammar stretches each site to the next entry. The exporter
+therefore inserts zero-resource entries after a logic site when physical gaps
+or reserved rows follow it. LUT/FF sites occupy one native grid row; hard-block
+spans keep their qualified heights. These unavailable entries are not physical
+sites and never appear in the atom-to-site database. The driver compares the
+already constructed native density tensors with the exported LUT/FF site-area
+totals before optimization. Missing or mismatched area contracts fail closed;
+regenerate native inputs when continuing from an older configuration.
+
 The OpenPARF coordinate importer joins solver rows to the authenticated atomic
 name-map sidecar through an explicitly URI-enabled SQLite connection. The
 sidecar is attached read-only and immutable; the join independently checks atom

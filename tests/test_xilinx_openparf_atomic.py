@@ -367,7 +367,42 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 "END SITEMAP", 1
             )[0].strip().splitlines()
         ]
-        self.assertEqual(rows, [(0, 0), (0, 3), (1, 0), (1, 3)])
+        self.assertEqual(rows, [(0, 0), (0, 1), (0, 3), (1, 0), (1, 1), (1, 3)])
+        self.assertIn("SITE EMUFLOW_UNAVAILABLE\nEND SITE", _prefix)
+        self.assertEqual(
+            [item["placement_y"] for item in coordinates["sites"]],
+            [0.5, 3.5, 0.5, 3.5],
+        )
+
+    def test_logic_gaps_do_not_stretch_sites_or_change_hardblock_spans(self):
+        sites = [
+            ({"name": "SLICE_X0Y0", "type": "SLICEL", "x": 0, "y": 0},
+             {"LUT": 16, "FF": 16}),
+            ({"name": "SLICE_X0Y3", "type": "SLICEL", "x": 0, "y": 3},
+             {"LUT": 16, "FF": 16}),
+            ({"name": "DSP48E2_X1Y0", "type": "DSP48E2", "x": 1, "y": 0},
+             {"DSP48E2": 1}),
+            ({"name": "DSP48E2_X1Y5", "type": "DSP48E2", "x": 1, "y": 5},
+             {"DSP48E2": 1}),
+        ]
+        _prefix, suffix, coordinates = atomic_adapter._render_site_geometry(sites)
+        rows = [line.split() for line in suffix.split("SITEMAP 2 6\n", 1)[1]
+                .split("END SITEMAP", 1)[0].strip().splitlines()]
+        # Apply the native reader's next-entry bounding-box rule to the
+        # exported grammar, including the trailing unavailable interval.
+        logic_area = 0
+        for index, (x, y, site_type) in enumerate(rows):
+            if x != "0" or site_type == "EMUFLOW_UNAVAILABLE":
+                continue
+            upper = int(rows[index + 1][1]) if (
+                index + 1 < len(rows) and rows[index + 1][0] == x
+            ) else 6
+            logic_area += upper - int(y)
+        self.assertEqual(logic_area, 2)
+        self.assertIn(["0", "4", "EMUFLOW_UNAVAILABLE"], rows)
+        hard_sites = [item for item in coordinates["sites"]
+                      if "DSP48E2" in item["resources"]]
+        self.assertEqual([item["placement_y"] for item in hard_sites], [2.5, 5.5])
 
     def test_slr_seams_cover_both_dense_y_orientations(self):
         sites = []
