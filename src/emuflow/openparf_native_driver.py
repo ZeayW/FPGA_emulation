@@ -341,6 +341,11 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
             "relative_hpwl_improvement": float(
                 engine.params.emuflow_relative_hpwl_improvement
             ),
+            "sll_weighting": {
+                "provider": "leaps-fixed-adam-step-v1",
+                "step_size": float(engine.params.wlw_step_rate),
+                "accepted_range": [0.0, 1000.0],
+            },
         },
     }
     weighting = getattr(engine, "_emuflow_high_fanout_weighting", None)
@@ -371,6 +376,24 @@ def validate_openparf_native_metrics(
         or value.get("schema") != OPENPARF_NATIVE_CONVERGENCE_SCHEMA
     ):
         raise RuntimeError("OpenPARF native convergence certificate is invalid")
+    policy = value.get("policy")
+    sll_weighting = (
+        policy.get("sll_weighting") if isinstance(policy, dict) else None
+    )
+    step_size = (
+        sll_weighting.get("step_size")
+        if isinstance(sll_weighting, dict) else None
+    )
+    if (
+        not isinstance(sll_weighting, dict)
+        or sll_weighting.get("provider") != "leaps-fixed-adam-step-v1"
+        or isinstance(step_size, bool)
+        or not isinstance(step_size, (int, float))
+        or not math.isfinite(float(step_size))
+        or float(step_size) <= 0.0
+        or sll_weighting.get("accepted_range") != [0.0, 1000.0]
+    ):
+        raise RuntimeError("OpenPARF native SLL weighting policy is invalid")
     stop_reason = value.get("stop_reason")
     globally_feasible = value.get("status") == "pass" and stop_reason in {
         "feasible-hpwl-patience",

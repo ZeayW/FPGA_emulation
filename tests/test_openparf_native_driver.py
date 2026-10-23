@@ -23,6 +23,16 @@ def _metric(iteration, hpwl, overflow=(0.05, 0.04, 0.9)):
     )
 
 
+def _policy():
+    return {
+        "sll_weighting": {
+            "provider": "leaps-fixed-adam-step-v1",
+            "step_size": 1.002,
+            "accepted_range": [0.0, 1000.0],
+        }
+    }
+
+
 def _engine(*, patience=2, minimum=3):
     return SimpleNamespace(
         params=SimpleNamespace(
@@ -193,6 +203,7 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             "restored_best_feasible": True,
             "best_feasible_hpwl": 10.0,
             "final_legal_hpwl": 11.0,
+            "policy": _policy(),
         }
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "metrics.json"
@@ -208,6 +219,7 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             "restored_best_feasible": True,
             "best_feasible_hpwl": 10.0,
             "final_legal_hpwl": 11.0,
+            "policy": _policy(),
         }
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "metrics.json"
@@ -223,6 +235,7 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             "restored_best_feasible": False,
             "best_feasible_hpwl": None,
             "final_legal_hpwl": 11.0,
+            "policy": _policy(),
         }
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "metrics.json"
@@ -245,6 +258,7 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             "restored_best_feasible": True,
             "best_feasible_hpwl": None,
             "final_legal_hpwl": 11.0,
+            "policy": _policy(),
         }
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "metrics.json"

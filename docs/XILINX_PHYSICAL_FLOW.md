@@ -51,11 +51,12 @@ change later validation. Closing the reader releases this derived state. A new
 reader, a different mapped file/top, or a mutable JSON input derives its own
 facts; no persistent analysis artifact or cross-run cache is introduced.
 
-The native SLL multiplier keeps OpenPARF's `[0,1000)` acceptance policy. When
-the exponential step exceeds floating-point range, a log-domain comparison
-implements the same positive-update rejection or negative-update clamp without
-materializing the overflowing power. Normal finite updates keep the original
-arithmetic; this does not disable SLL optimization or relax placement checks.
+The native SLL multiplier keeps OpenPARF's `[0,1000)` acceptance policy and
+uses the fixed Adam step from LEAPS Equation (23). The absolute SLL-count
+change feeds the EMA and Adam moments; applying it again as an exponential
+factor makes the update depend exponentially on design size. Oversize positive
+updates are rejected and negative updates clamp at zero without disabling SLL
+optimization or relaxing placement checks.
 
 OpenPARF applies a bounded square-root weight to large nets in its analytical
 placement objective. This guides placement without changing connectivity.

@@ -79,7 +79,7 @@ OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION = 3
 _PLACEMENT_CERTIFICATE_STORE_SUFFIX = ".sqlite"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = (
-    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v7"
+    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v8"
 )
 XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-site-database/v1"
@@ -135,6 +135,7 @@ _MAX_PIN_AREA_ADJUSTMENT_RATE = 1.6
 _HIGH_FANOUT_WEIGHT_THRESHOLD = 64
 _HIGH_FANOUT_WEIGHT_EXPONENT = 0.5
 _HIGH_FANOUT_WEIGHT_MAXIMUM = 4.0
+_SLL_ADAM_STEP_SIZE = 1.002
 _POST_ADJUSTMENT_ITERATION_RESERVE = 384
 _LOGIC_FILLER_LIMIT = 65_536
 _CLOCK_REGION_NAME = re.compile(r"^X([0-9]+)Y([0-9]+)$")
@@ -4659,6 +4660,9 @@ def export_xilinx_openparf_atomic(
             coordinate_system["super_logic_regions"] is not None
             and len(coordinate_system["super_logic_regions"]["regions"]) > 1
         ),
+        # LEAPS Equation (23) applies this as a fixed Adam step.  It must not
+        # be exponentiated by the absolute SLL-count delta.
+        "wlw_step_rate": _SLL_ADAM_STEP_SIZE,
         "result_dir": str((output_dir / "results").resolve()),
     }
     if has_carry8:
@@ -5145,6 +5149,11 @@ def export_xilinx_openparf_atomic(
             "maximum_route_adjustment_rate": _MAX_ROUTE_AREA_ADJUSTMENT_RATE,
             "maximum_pin_adjustment_rate": _MAX_PIN_AREA_ADJUSTMENT_RATE,
             "resource_area_adjustment": False,
+            "sll_weighting": {
+                "provider": "leaps-fixed-adam-step-v1",
+                "step_size": _SLL_ADAM_STEP_SIZE,
+                "accepted_range": [0.0, 1000.0],
+            },
             "convergence": {
                 "provider": "best-feasible-hpwl-patience-v1",
                 "minimum_feasible_iterations": 96,

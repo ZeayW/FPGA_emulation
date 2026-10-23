@@ -451,7 +451,7 @@
     "default": 5.0
   },
   "wlw_step_rate": {
-    "description": "Step rate for adjusting psi value at each epoch",
+    "description": "Fixed Adam step size for adjusting psi at each epoch",
     "default": 1.002
   }
 }

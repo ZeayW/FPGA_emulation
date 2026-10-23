@@ -136,6 +136,13 @@ class ArchitectureDBTest(unittest.TestCase):
                         "restored_best_feasible": True,
                         "best_feasible_hpwl": 10.0,
                         "final_legal_hpwl": 11.0,
+                        "policy": {
+                            "sll_weighting": {
+                                "provider": "leaps-fixed-adam-step-v1",
+                                "step_size": 1.002,
+                                "accepted_range": [0.0, 1000.0],
+                            }
+                        },
                     }),
                     encoding="utf-8",
                 )

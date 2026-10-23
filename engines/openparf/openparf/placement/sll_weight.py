@@ -1,15 +1,18 @@
-"""Evaluate the existing bounded SLL multiplier update without power overflow."""
+"""Evaluate the bounded SLL multiplier update with a fixed Adam step."""
 
 import math
 
 
 def bounded_sll_psi(psi, step_rate, delta_sll, m_hat, v_hat, epsilon):
-    """Preserve the native [0,1000) acceptance rule, including huge SLL deltas.
+    """Apply the LEAPS fixed-step Adam update inside the native bounds.
 
-    Ordinary updates retain the original arithmetic. If the power itself
-    overflows, compare the signed update in log space against the existing
-    bounds before evaluating it. Rejecting an oversize positive candidate or
-    clamping a negative one to zero does not require representing that power.
+    LEAPS Equation (23) uses ``t_psi`` as a fixed step size.  The previous
+    implementation instead evaluated ``step_rate ** abs(delta_sll)``.  Since
+    ``delta_sll`` is an absolute count, that made the update depend
+    exponentially on design size and destabilized large placements.  The EMA
+    and Adam moments already carry the magnitude and direction of the SLL
+    change, so ``delta_sll`` is validated here but is not applied a second
+    time.  Preserve OpenPARF's existing ``[0, 1000)`` acceptance policy.
     """
 
     psi, step_rate, delta_sll, m_hat, v_hat, epsilon = map(
@@ -22,14 +25,7 @@ def bounded_sll_psi(psi, step_rate, delta_sll, m_hat, v_hat, epsilon):
     ):
         raise FloatingPointError("invalid native SLL multiplier state")
     denominator = math.sqrt(v_hat) + epsilon
-    try:
-        candidate = psi + math.pow(step_rate, abs(delta_sll)) * m_hat / denominator
-    except OverflowError:
-        if m_hat == 0:
-            return psi
-        magnitude = abs(delta_sll) * math.log(step_rate) + math.log(abs(m_hat)) - math.log(denominator)
-        remaining = 1000 - psi if m_hat > 0 else psi
-        if remaining <= 0 or magnitude >= math.log(remaining):
-            return psi if m_hat > 0 else 0.0
-        candidate = psi + math.copysign(math.exp(magnitude), m_hat)
+    candidate = psi + step_rate * m_hat / denominator
+    if not math.isfinite(candidate):
+        return psi if m_hat > 0 else 0.0
     return max(0.0, candidate) if candidate < 1000 else psi
