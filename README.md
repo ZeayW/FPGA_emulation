@@ -33,6 +33,7 @@ Production readers stream typed indexed relations; whole-graph materialization i
 an explicit compatibility operation. Phase 7 explicitly enables immutable
 SQLite input URIs across supported runtimes. A continued run uses the current
 BoardDB and does not inherit an older interconnect configuration from the saved input.
+Mapped physical pin indexes are built in bulk before their atomic publication.
 When driving the reusable stage commands directly, pass
 `experiment-stage cut-timing-run --prepared-timing-boundary` (and the same flag
 plus the expected `--clock-period` values to `cut-timing-validate`) to consume a

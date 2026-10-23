@@ -26,6 +26,11 @@ to deterministic balanced LUT1 buffer trees before native OpenPARF placement.
 Clock and reset networks keep their dedicated handling. The added LUTs remain
 subject to the same per-FPGA resource limits as all other cells.
 
+The mapped SQLite exporter retains primary-key and pin constraints during
+insertion, then bulk-builds the auxiliary pin indexes before atomic publication.
+No consumer can observe a partially indexed netlist. This avoids per-pin random
+updates to the net-order index during large physical input generation.
+
 OpenPARF applies a bounded square-root weight to large nets in its analytical
 placement objective. This guides placement without changing connectivity.
 Exact legalization and an independent site/BEL validator remain responsible
