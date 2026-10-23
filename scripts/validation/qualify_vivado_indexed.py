@@ -21,6 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--vivado", required=True)
+    parser.add_argument("--place-directive", default="Quick", help="smoke placement directive; production remains Default")
     args = parser.parse_args()
     root = args.out.resolve()
     root.mkdir(parents=True, exist_ok=False)
@@ -93,7 +94,8 @@ def main():
     report = run_indexed_vivado_partition(fpga="fpga0", part="xcvu19p-fsva3824-2-e", ir_path=ir,
         mapped_verilog_path=mapped, mapped_report=mapped_report, runtime=runtime,
         original_cells=6, transport_cells=0, output_dir=root / "physical", executable=args.vivado,
-        virtual_io_contract=contract, local_identity_path=identity, local_query_path=query)
+        virtual_io_contract=contract, local_identity_path=identity, local_query_path=query,
+        place_directive=args.place_directive)
     write_json(root / "qualification.json", {"status": "pass", "scope": "synthetic-indexed-physical-only",
         "tool": report["tool"], "result": report["result"], "fixed_io": report["virtual_io_implementation"],
         "local_timing": report["local_path_timing"]["import"]})

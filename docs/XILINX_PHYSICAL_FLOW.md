@@ -188,5 +188,7 @@ implementation license. `EMUFLOW_VIVADO_THREADS` controls the recorded thread
 limit (default 2). All generated files, checkpoints, and temporary tool files
 belong to the selected output directory and experiment scratch lifecycle.
 `scripts/validation/qualify_vivado_indexed.py` exercises a small three-clock,
-four-differential-pair implementation on XCVU19P. Its result explicitly covers
+four-differential-pair implementation on XCVU19P. Its default `Quick` placement
+directive is specific to this smoke test; the production provider remains
+`Default`. Its result explicitly covers
 synthetic physical/provider qualification only.

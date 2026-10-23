@@ -9,7 +9,8 @@ The default research route uses RapidWright device resources, native OpenPARF
 placement, and RWRoute routing for supported Xilinx FPGAs. VTR/VPR remains an
 alternative academic backend, and Vivado is an optional proprietary backend.
 The indexed Vivado adapter consumes current Phase 6 contracts; its real-device
-qualification is in progress. See [Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider).
+qualification is in progress. Fixed-pad timing queries validate their physical
+start/end extents before publication. See [Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider).
 The virtual BoardDB is a declared academic platform model rather than evidence
 of a manufactured board or hardware signoff. See the
 [hardware platform model](docs/HARDWARE_PLATFORM.md),
