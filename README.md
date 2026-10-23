@@ -58,6 +58,15 @@ on Linux, parent-process I/O counters. Search, imported-solution, and replay
 runs must be compared as distinct execution modes. Assignment-index
 publication further separates exact-binary emission, primary and replica copy
 rows, cut-sink rows, commit, and independent index validation.
+The [remaining migration gates](docs/native-migration-status.md) distinguish
+implemented adapters from complete stage delivery. An older NVDLA prepared-input
+continuation at `dcd158d9` measured Phase 3 at 21,771.872 seconds and 21,940,640 KiB
+sampled process-tree peak RSS. Native PATRON execution, candidate assignment
+construction and exact-binary publication accounted for about 82% of that time;
+primary-copy insertion accounted for 0.25%. These measurements set priorities,
+but do not establish performance of the newer implementation or Phase 1–7
+qualification. Native `compile`, complete shared-core ownership, and final
+NVDLA physical/global timing acceptance remain unfinished.
 Production PATRON input now streams a versioned little-endian typed protocol
 directly to the native parser over standard input. Its fixed-width header,
 canonical record tags, exact counts, CRC-32 trailer and EOF check reject mixed,
