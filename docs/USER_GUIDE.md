@@ -78,6 +78,22 @@ before launching expensive work. The probe checks native core loading, SQLite
 External synthesis, placement, routing and timing engines require their
 separate dependency and device-data checks.
 
+Normal compact Phase 3 runs use `phase3 build-clusters EMUIR REQUEST OUTPUT`
+inside the shared core. Packed eligibility bits and integer group membership
+bind to the EmuIR generation. The native producer performs connectivity union,
+lexical cell/cluster ordering, CSR membership and resource reduction. Downstream
+Python providers borrow sealed read-only columns; the mapping and its temporary
+file live until the last borrower releases them. Final v1 cluster records,
+group/fixed constraints and resource totals retain their reference semantics.
+`cluster_implementation_id` reports `native-primary-clusters-v1`;
+`native_cluster_metrics` retains common native wall/CPU/I/O measurements and the
+process-lifetime RSS high-water snapshot. It is separate from sampled whole-phase
+process-tree RSS. The ordinary
+Python `build_clusters` API keeps its reference default for comparison. Retained
+diagnostics and explicit PATRON comparison executables also keep that producer; a selected
+production native failure stops the phase. Candidate eligibility construction
+and remaining semantic/publication work are not claimed as native here.
+
 Compact indexed PATRON v14 runs normally select the shared native pressure-model
 producer. `algorithm_validation.model_implementation_id` identifies
 `native-store-model-v1`; its input-transport counters describe the primary packed

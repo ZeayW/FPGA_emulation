@@ -300,7 +300,7 @@ there is no silent implementation or provider fallback.
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
 | Phase 1–2 | Native synthesis/STA engines; compact indexed inputs | Consolidate import, identities and timing adapters under the shared artifact API |
-| Phase 3 | Compact clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate primary clustering and remaining assignment publication/reference modes; qualify complete stage costs |
+| Phase 3 | Shared-core primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate candidate eligibility and remaining assignment publication/reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | One native exact model/solver/certificate/store producer; independent staged cursor validation | Native independent validation, timing adapters and non-exact interfaces |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
@@ -310,6 +310,24 @@ there is no silent implementation or provider fallback.
 Native computation does not eliminate algorithmic search cost. Compare search,
 imported-solution and frozen-output replay as separate execution modes. Porting
 an adapter must not change the algorithm budget or weaken independent legality.
+
+## Primary cluster production
+
+Compact production clustering is a shared-core operation behind
+`phase3 build-clusters`. It consumes the authoritative compact EmuIR and a
+same-generation packed eligibility/group request. C++ owns union-find,
+canonical lexical membership, integer CSR columns and resource sums. An illegal
+high-fanout net is unioned as its endpoints arrive, without retaining a net
+membership set. Resource payload caching has a fixed bound independent of cell
+count. Group unions and fixed ownership preserve the reference behavior.
+
+Python borrows read-only memory-mapped columns, including the UTF-8 name pool;
+it does not rebuild the primary arrays or rerun the union/resource loops.
+Borrowed columns retain their mapping and phase-owned scratch until the last
+consumer releases them. The final cluster/assignment schemas remain unchanged,
+and candidate eligibility plus remaining final semantic/index publication still
+need native ownership. The public reference constructor remains independently
+available for differential validation; native production has no failure fallback.
 
 ## Phase 3 contracts
 

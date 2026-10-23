@@ -537,6 +537,7 @@ def run_phase3(
             ),
             static_exact_candidate_policy=static_exact_candidate_policy,
             _stream_eligible_policy_names=True,
+            _native_compact_clusters=(not retain_diagnostics and patron_refiner is None),
         )
     else:
         clusters = phase3_runtime_call(
@@ -558,6 +559,7 @@ def run_phase3(
         clusters=len(clusters["clusters"]),
         active_fpgas=len(constraints["active_fpgas"]),
     )
+    cluster_implementation = getattr(clusters["clusters"], "implementation_id", None)
     packed_cluster_payload_bytes = getattr(
         clusters["clusters"], "packed_payload_bytes", None
     )
@@ -1214,6 +1216,9 @@ def run_phase3(
             "runtime_breakdown": "phase3-runtime.json",
         },
     }
+    if cluster_implementation is not None:
+        report["cluster_implementation_id"] = cluster_implementation
+        report["native_cluster_metrics"] = clusters["clusters"].native_metrics
     if cut_mode != CUT_MODE_SEQUENTIAL_ONLY:
         report["cut_mode"] = cut_mode
         report["static_exact_candidate_policy"] = (

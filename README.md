@@ -58,6 +58,10 @@ API, registered artifact envelopes, file-generation checks, and a structured
 `--report` error/metrics contract. Phase 3 analysis consumes the shared compact
 EmuIR view with artifact-scoped record IDs and ordered connectivity traversal.
 PATRON search is linked into this entry too.
+Compact production clustering uses the shared core for connectivity union,
+canonical membership and resource reduction, with read-only columns borrowed by
+Python consumers. Structural candidate eligibility and final publication still
+have Python work; this is not complete Phase 3 native ownership.
 Compact indexed PATRON v14 production builds its pressure model directly in
 the shared core from EmuIR, TimingPathDB and packed primary cluster columns;
 Python carries bounded configuration and counts rather than a second pressure graph.

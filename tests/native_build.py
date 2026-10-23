@@ -260,6 +260,7 @@ _NATIVE_STAGE_SOURCES = (
     "emuflow_core/compile.cpp",
     "emuflow_core/bookshelf.cpp",
     "emuflow_core/patron_ingress.cpp",
+    "emuflow_core/partition_clusters.cpp",
 )
 
 

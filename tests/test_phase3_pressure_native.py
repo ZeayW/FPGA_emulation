@@ -18,13 +18,16 @@ from emuflow.partition_pressure import (build_partition_pressure_model, run_part
     _write_patron_native_input, _NativeBinaryPipeWriter)
 from emuflow.phase3_pressure_native import NativePressureModel
 from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
-from tests.native_build import emuflow_native, patron_ingress_oracle, hop_partition_refiner
+from tests.native_build import emuflow_native, patron_ingress_oracle, hop_partition_refiner, patron_refiner
 from tests import test_partition_pressure as reference_fixture
 
 
 @pytest.fixture(params=['normal','reordered','duplicate-sinks','sparse','balanced'])
 def inputs(tmp_path, monkeypatch,request):
-    monkeypatch.setenv("EMUFLOW_NATIVE_ROOT",str(emuflow_native().parent.parent))
+    native=tmp_path/"native"; (native/"bin").mkdir(parents=True)
+    for name,binary in (("emuflow-native",emuflow_native()),("emuflow_patron_refiner",patron_refiner())):
+        (native/"bin"/name).symlink_to(binary)
+    monkeypatch.setenv("EMUFLOW_NATIVE_ROOT",str(native))
     fixture=reference_fixture.PartitionPressureTest(); fixture.setUp()
     if request.param=='reordered':
         fixture.ir.value['instances'].reverse()
@@ -133,6 +136,8 @@ def test_phase3_production_selects_native_model_and_keeps_independent_validation
                          tritonpart_solution=solution,route_constraints_path=routes,timing_database_path=timing,
                          hop_refiner=str(hop_partition_refiner()))
     assert report['status']=='pass'
+    assert report['cluster_implementation_id']=='native-primary-clusters-v1'
+    assert report['native_cluster_metrics']['wall_seconds']>0
     assert report['algorithm_validation']['native_input_transport']=='native-store-model-v1'
     assert report['algorithm_validation']['model']['nets']==2
     assert report['algorithm_validation']['native_model_metrics']['model_build']['wall_seconds']>0

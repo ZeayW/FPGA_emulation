@@ -244,6 +244,10 @@ def test_actual_shared_phase_adapters_complete_existing_nonphysical_contract_fix
     root = Path(__file__).resolve().parents[1]
     monkeypatch.setattr("emuflow.native_compile.resolve_native_executable", lambda _: str(emuflow_native()))
     output = tmp_path / "flow"
+    native_root = tmp_path / "native"
+    (native_root / "bin").mkdir(parents=True)
+    (native_root / "bin/emuflow-native").symlink_to(emuflow_native())
+    monkeypatch.setenv("EMUFLOW_NATIVE_ROOT", str(native_root))
     # Real launcher environments may contain intentionally empty values. The
     # timing adapter forwards its environment through the binary tool protocol.
     monkeypatch.setenv("EMUFLOW_COMPILE_EMPTY_ENV", "")

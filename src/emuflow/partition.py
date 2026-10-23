@@ -136,7 +136,7 @@ class _CompactClusterRecords(list):
     def _name(self, ordinal: int) -> str:
         begin = self._name_offsets[ordinal]
         end = self._name_offsets[ordinal + 1]
-        return self._name_bytes[begin:end].decode("utf-8")
+        return bytes(self._name_bytes[begin:end]).decode("utf-8")
 
     def _record(self, index: int) -> Dict[str, Any]:
         if index < 0:
@@ -1836,7 +1836,10 @@ def build_clusters(
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     *,
     _stream_eligible_policy_names: bool = False,
+    _native_compact_clusters: bool = False,
 ) -> Dict[str, Any]:
+    if not isinstance(_native_compact_clusters, bool):
+        raise ValidationError("native compact clusters flag is invalid")
     if not isinstance(_stream_eligible_policy_names, bool):
         raise ValidationError("stream eligible policy names flag is invalid")
     if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
@@ -1871,11 +1874,13 @@ def build_clusters(
         released_combinational_nets = candidate_index["eligible_ids"]
     compact_ir_path = _compact_partition_ir_path(ir)
     if compact_ir_path is not None:
-        clusters = _build_clusters_from_compact_ir(
-            ir,
-            constraints,
-            released_combinational_nets,
-        )
+        if _native_compact_clusters:
+            from .phase3_clusters_native import build_native_clusters
+            clusters = build_native_clusters(ir, constraints, released_combinational_nets)
+        else:
+            clusters = _build_clusters_from_compact_ir(
+                ir, constraints, released_combinational_nets,
+            )
         instance_count = len(ir.value["instances"])
         result = {
             "schema": CLUSTERS_SCHEMA,

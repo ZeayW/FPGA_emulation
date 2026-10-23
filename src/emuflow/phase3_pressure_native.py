@@ -40,9 +40,15 @@ class _Writer:
         self.crc = 0
 
     def bytes(self, value):
-        view = memoryview(value).cast("B")
-        self.stream.write(view)
-        self.crc = zlib.crc32(view, self.crc)
+        chunks = getattr(value, "iter_bytes", None)
+        if chunks is not None:
+            for block in chunks():
+                self.stream.write(block)
+                self.crc = zlib.crc32(block, self.crc)
+            return
+        with memoryview(value).cast("B") as view:
+            self.stream.write(view)
+            self.crc = zlib.crc32(view, self.crc)
 
     def put(self, layout, *values):
         self.bytes(struct.pack("<" + layout, *values))
