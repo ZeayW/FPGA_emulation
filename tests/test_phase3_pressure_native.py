@@ -152,6 +152,26 @@ def test_offline_primary_handoff_tool_compares_complete_models_and_retires_paylo
     assert summary['arms']['direct']['emitted_columns_bytes']<summary['arms']['snapshot']['emitted_columns_bytes']
     assert not (output/'tmp').exists()
     assert list(output.iterdir())==[output/'qualification.json']
+    fake=tmp_path/'fixture-openroad'
+    fake.write_text('#!'+sys.executable+'\n'+'''import re,sys
+from pathlib import Path
+tcl=Path(sys.argv[-1]).read_text()
+graph=Path(re.search(r'-hypergraph_file \\{(.*?)\\}',tcl).group(1))
+parts=int(re.search(r'-num_parts (\\d+)',tcl).group(1))
+with graph.open() as stream: count=int(stream.readline().split()[1])
+Path(str(graph)+'.part.'+str(parts)).write_text('\\n'.join(str(i%parts) for i in range(count))+'\\n')
+''')
+    fake.chmod(0o755)
+    initialized=tmp_path/'tritonpart-qualification'
+    result=subprocess.run([sys.executable,str(script),'--ir',str(args[0].path),'--platform',str(platform),
+        '--timing-database',str(timing),'--oracle',str(patron_ingress_oracle()),'--out',str(initialized),
+        '--expected-design',args[0].value['design']['name'],'--initialization','tritonpart','--openroad',str(fake)],
+        capture_output=True,text=True)
+    assert result.returncode==0,result.stdout+result.stderr
+    summary=read_json(initialized/'qualification.json')
+    assert summary['initial_ownership']=='normal-generalized-tritonpart-seed0-initializer'
+    assert summary['arms']['direct']['signature']==summary['arms']['snapshot']['signature']
+    assert not (initialized/'tmp').exists()
     failure=tmp_path/'wrong-design'
     rejected=subprocess.run([sys.executable,str(script),'--ir',str(args[0].path),'--platform',str(platform),
         '--timing-database',str(timing),'--oracle',str(patron_ingress_oracle()),'--out',str(failure),

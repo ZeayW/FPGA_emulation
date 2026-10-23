@@ -71,10 +71,12 @@ timers include model fingerprinting; they are not production search timings.
 Source hashes are computed once outside the model intervals. The parent waits
 for worker/reader exit before removing all circuit scratch, including on failure.
 
-Initial ownership is a declared round-robin diagnostic vector with fixed owners
-preserved. Both readers enforce the actual capacity/balance contract; infeasible
-inputs fail without relaxation. There is no partition search or algorithm-
-selected-cut claim. This diagnostic cannot qualify Static Exact, whole-Phase-3
+Initial ownership defaults to a declared round-robin diagnostic vector with fixed
+owners preserved. `--initialization tritonpart` runs the normal generalized
+TritonPart initializer at seed 0; optional `--openroad` selects an explicit matching
+engine. Both readers enforce the actual capacity/balance contract; infeasible
+inputs fail without relaxation or automatic initializer fallback. The model
+comparison performs no PATRON search or algorithm-selected-cut qualification. This diagnostic cannot qualify Static Exact, whole-Phase-3
 speedup, a provider comparison or complete Phase 1–7/7C physical/global timing.
 
 ## Timing acceptance

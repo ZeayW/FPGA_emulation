@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Offline model-boundary differential; no partition search or feature claim.
 
-The round-robin initial ownership is a diagnostic vector, never an algorithm-
-selected assignment or evidence of Static Exact cuts. Both model readers still
+Round-robin or normal TritonPart initial ownership feeds a representation-only
+diagnostic, never Static Exact feature qualification. Both model readers still
 enforce the declared capacity/balance/fixed constraints; failures never relax them.
 """
 from __future__ import annotations
@@ -65,9 +65,17 @@ def worker(path):
     if model.implementation_id!='native-primary-store-model-v2':
         raise ValidationError('diagnostic did not select direct primary ownership')
     parts=[fpga.id for fpga in model.partition_fpgas]
-    indices=array('I',(i%len(parts) for i in range(len(model.clusters))))
-    for cluster,fpga in model.clusters._fixed_by_cluster.items(): indices[cluster]=parts.index(fpga)
-    initial={'cluster_assignment':_PackedClusterAssignment(parts,indices)}
+    if request['initialization']=='tritonpart':
+        from emuflow.tritonpart import run_tritonpart
+        initial=run_tritonpart(ir,platform,clusters,constraints,Path(request['scratch'])/'initializer',
+            seed=0,executable=request['openroad'],timeout_seconds=21600,
+            persist_input_manifest=False,defer_semantic_contract=True,_defer_derived_records=True)
+        initial_mode='normal-generalized-tritonpart-seed0-initializer'
+    else:
+        indices=array('I',(i%len(parts) for i in range(len(model.clusters))))
+        for cluster,fpga in model.clusters._fixed_by_cluster.items(): indices[cluster]=parts.index(fpga)
+        initial={'cluster_assignment':_PackedClusterAssignment(parts,indices)}
+        initial_mode='diagnostic-round-robin-with-declared-fixed-owners'
     results={}
     primary=model.primary_artifact
     native=resolve_native_executable('emuflow-native')
@@ -100,7 +108,7 @@ def worker(path):
         raise ValidationError('direct primary model differs from v1 snapshot')
     result={'status':'pass','arms':results,'arm_order':['snapshot','direct'],'instances':len(ir.value['instances']),
             'primary_artifact_bytes':primary.stat().st_size,
-            'initial_ownership':'diagnostic-round-robin-with-declared-fixed-owners',
+            'initial_ownership':initial_mode,
             'scope':'Complete model-field differential only; no search, algorithm-selected cuts, whole-Phase3 performance or full-flow/physical qualification.'}
     write_json(Path(request['result']),result,compact=True)
 
@@ -112,6 +120,8 @@ def main(argv=None):
         parser.add_argument('--'+name,type=Path)
     parser.add_argument('--expected-design')
     parser.add_argument('--source-commit',help='require matching versioned native/Python installation')
+    parser.add_argument('--initialization',choices=('round-robin','tritonpart'),default='round-robin')
+    parser.add_argument('--openroad',help='explicit normal initializer executable for tritonpart mode')
     parser.add_argument('--minimum-instances',type=int,default=1)
     args=parser.parse_args(argv)
     for sig in (signal.SIGINT,signal.SIGTERM): signal.signal(sig,cancel)
@@ -131,6 +141,7 @@ def main(argv=None):
         if metadata.value['design']['name']!=args.expected_design or len(metadata.value['instances'])<args.minimum_instances:
             raise ValidationError('primary handoff workload design/scale disagrees')
         native=Path(resolve_native_executable('emuflow-native')).resolve()
+        openroad=resolve_native_executable('openroad',args.openroad) if args.initialization=='tritonpart' else None
         install=native.parent.parent
         if args.source_commit:
             if ((install/'SOURCE_COMMIT').read_text().strip()!=args.source_commit or
@@ -139,12 +150,14 @@ def main(argv=None):
         timing=read_json(args.timing_database)
         sources=[args.ir,args.timing_database,sta_path_database_payload_path(args.timing_database,timing),args.platform,args.oracle,native,Path(__file__)]
         sources.extend(p for p in (args.constraints,args.route_constraints) if p is not None)
+        if openroad is not None:sources.append(Path(openroad))
         identities=[{'path':str(p.resolve()),'generation':list(native_file_generation(p)),
                      'sha256':digest(p)} for p in sources]
         request={'schema':'emuflow.primary-handoff-worker/v1','ir':str(args.ir.resolve()),
             'ir_generation':list(native_file_generation(args.ir)),
             'timing':str(args.timing_database.resolve()),'platform':str(args.platform.resolve()),
             'oracle':str(args.oracle.resolve()),'constraints':str(args.constraints.resolve()) if args.constraints else None,
+            'initialization':args.initialization,'openroad':openroad,
             'routes':str(args.route_constraints.resolve()) if args.route_constraints else None,
             'expected_design':args.expected_design,'minimum_instances':args.minimum_instances,
             'scratch':str(scratch),'result':str(scratch/'result.json')}
