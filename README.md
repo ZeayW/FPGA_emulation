@@ -1438,14 +1438,30 @@ logical SHA-256 and byte count. These are adapter measurements, not NVDLA
 qualification. A separate 100,000-path typed read and full-seal validation used
 32,653,312 bytes peak RSS versus 251,887,616 bytes for legacy JSON and occupied
 24 MiB versus 30 MiB, while wall time changed from 0.73 to 0.90 seconds.
-Sealed event/check views now replace their Python path/event string lists with
-packed UTF-8 pools. On 100,000 paths and 500,000 checks, retained traced
-allocation fell from 49,923,478 to 35,510,216 bytes and process peak RSS from
-195,641,344 to 184,991,744 bytes; build time changed from 2.896 to 3.138
-seconds with identical first/last logical rows and fixed-width payload. The
-append-time interning dictionaries and representative-bundle table remain W6
-migration work; formal NVDLA Phase 7C wall/RSS/I/O and complete original-path
-coverage are still pending.
+Event/check construction now writes path and event identities directly into
+packed UTF-8 pools. Path uniqueness and the global exact representative-bundle
+index live in one lifecycle-scoped SQLite relation; Python retains an 8,192
+entry event LRU, 4,096 bundle-hash entries and at most eight collision
+candidates per hash. Cache eviction cannot change compression: a miss queries
+the typed index and compares every role, launch, required time and arc before
+reusing a representative. Every 4,096 index mutations are committed with the
+non-durable temporary-store policy so SQLite pages cannot accumulate in one
+unbounded native transaction. On 100,000 paths and 500,000 checks, the complete
+logical SHA-256, five representative checks and 26,500,028-byte fixed-width
+payload were unchanged. Peak RSS fell from 195,870,720 to 102,416,384 bytes and
+traced peak allocation from 74,038,394 to 37,262,201 bytes; retained traced
+allocation was 35,510,016 versus 35,366,024 bytes. Build time changed from
+3.098 to 4.148 seconds and the main temporary database reached 2,146,304 bytes
+before deletion. In a separate worst-case fixture with 100,000 distinct
+numerical bundles, all 200,000 checks remained representatives while peak RSS
+fell from 137,510,912 to 57,982,976 bytes and traced peak from 45,234,150 to
+15,837,261 bytes. Build time changed from 1.342 to 2.765 seconds and the main
+temporary database reached 6,275,072 bytes. These are isolated adapter results;
+the typed check/arc columns and packed identity bytes necessarily remain linear,
+the live duplicate set remains proportional to only the current path bundle,
+and the legacy interleaved fallback still materializes graph-sized Python
+state. Formal NVDLA Phase 7C wall/RSS/I/O and complete original-path coverage
+are still pending.
 
 ### Selected research references
 

@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 from array import array
 from bisect import bisect_left
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -161,19 +162,6 @@ class _PackedUtf8Strings(Sequence[str]):
     @property
     def packed_bytes(self) -> int:
         return len(self._payload) + len(self._offsets) * self._offsets.itemsize
-
-
-def _pack_utf8_strings_releasing(values: list[str]) -> _PackedUtf8Strings:
-    """Pack owned strings while releasing each Python object immediately."""
-
-    payload = bytearray()
-    offsets = array("Q", [0])
-    for index, value in enumerate(values):
-        payload.extend(value.encode("utf-8"))
-        offsets.append(len(payload))
-        values[index] = ""
-    values.clear()
-    return _PackedUtf8Strings(payload, offsets)
 
 
 class _PackedStringSelection(Sequence[str]):
@@ -922,14 +910,20 @@ class _IndexedEventChecks(Sequence[EventCheck]):
 
 
 class _EventCheckBuilder:
-    """Append-only builder which releases its string dictionaries at seal."""
+    """Append checks with bounded Python identity and compression state."""
+
+    _EVENT_CACHE_SIZE = 8192
+    _BUNDLE_CACHE_SIZE = 4096
+    _BUNDLE_CANDIDATE_CACHE_SIZE = 8
+    _INDEX_COMMIT_ROWS = 4096
 
     def __init__(self):
         self._finished = False
-        self._paths: list[str] = []
-        self._events: list[str] = []
-        self._path_ids: dict[str, int] = {}
-        self._event_ids: dict[str, int] = {}
+        self._path_payload = bytearray()
+        self._path_offsets = array("Q", [0])
+        self._event_payload = bytearray()
+        self._event_offsets = array("Q", [0])
+        self._event_cache: OrderedDict[str, int] = OrderedDict()
         self._path_indices = array("I")
         self._roles = array("B")
         self._event_indices = array("I")
@@ -940,12 +934,122 @@ class _EventCheckBuilder:
         self._numerical_hashes = array("Q")
         self._original_to_representative = array("I")
         self._representative_indices = array("I")
-        self._representative_bundles: dict[int, _RepresentativeBundle] = {}
+        self._bundle_cache: OrderedDict[
+            tuple[bytes, int], tuple[int, ...]
+        ] = OrderedDict()
         self._current_path_index: int | None = None
+        self._current_path: str | None = None
         self._current_bundle_start = 0
-        self._current_identities: set[tuple[int, int]] = set()
+        self._current_identities: set[tuple[int, str]] = set()
         self._target_chain: tuple[float, tuple[float, ...]] | None = None
         self._runtime_chain: tuple[float, tuple[float, ...]] | None = None
+        descriptor, name = tempfile.mkstemp(
+            prefix="emuflow-global-sta-checks-", suffix=".sqlite3"
+        )
+        os.close(descriptor)
+        self._database_path = Path(name)
+        self._connection: sqlite3.Connection | None = sqlite3.connect(name)
+        self._connection.executescript(
+            """
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=FILE;
+            PRAGMA cache_size=-8192;
+            CREATE TABLE seen_path (
+                path TEXT PRIMARY KEY
+            ) WITHOUT ROWID;
+            CREATE TABLE representative_bundle (
+                bundle_hash BLOB NOT NULL,
+                check_count INTEGER NOT NULL,
+                representative_start INTEGER NOT NULL,
+                PRIMARY KEY(bundle_hash, representative_start)
+            ) WITHOUT ROWID;
+            CREATE INDEX representative_bundle_lookup
+                ON representative_bundle(bundle_hash, check_count);
+            """
+        )
+        self._pending_index_rows = 0
+
+    def _close(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            connection.close()
+        self._database_path.unlink(missing_ok=True)
+
+    def _index_mutated(self) -> None:
+        self._pending_index_rows += 1
+        if self._pending_index_rows >= self._INDEX_COMMIT_ROWS:
+            assert self._connection is not None
+            self._connection.commit()
+            self._pending_index_rows = 0
+
+    def __del__(self):
+        try:
+            self._close()
+        except BaseException:
+            pass
+
+    @staticmethod
+    def _append_packed(value: str, payload: bytearray, offsets: array) -> int:
+        identity = len(offsets) - 1
+        if identity >= _UINT32_MAX:
+            raise ValidationError(
+                "global STA indexed identity population is too large"
+            )
+        payload.extend(value.encode("utf-8"))
+        offsets.append(len(payload))
+        return identity
+
+    def _intern_event(self, event: str) -> int:
+        identity = self._event_cache.get(event)
+        if identity is None:
+            identity = self._append_packed(
+                event, self._event_payload, self._event_offsets
+            )
+            self._event_cache[event] = identity
+            if len(self._event_cache) > self._EVENT_CACHE_SIZE:
+                self._event_cache.popitem(last=False)
+        else:
+            self._event_cache.move_to_end(event)
+        return identity
+
+    def _rows_numerically_equal(
+        self, left: int, right: int
+    ) -> bool:
+        if (
+            self._roles[left] != self._roles[right]
+            or self._launches[left] != self._launches[right]
+            or self._required[left] != self._required[right]
+        ):
+            return False
+        left_begin = self._arc_offsets[left]
+        left_end = self._arc_offsets[left + 1]
+        right_begin = self._arc_offsets[right]
+        right_end = self._arc_offsets[right + 1]
+        return (
+            left_end - left_begin == right_end - right_begin
+            and all(
+                self._arcs[left_begin + offset]
+                == self._arcs[right_begin + offset]
+                for offset in range(left_end - left_begin)
+            )
+        )
+
+    def _bundles_numerically_equal(
+        self, representative_start: int, begin: int, count: int
+    ) -> bool:
+        if representative_start + count > len(self._representative_indices):
+            raise ValidationError(
+                "global STA representative bundle index is malformed"
+            )
+        return all(
+            self._rows_numerically_equal(
+                self._representative_indices[representative_start + offset],
+                begin + offset,
+            )
+            for offset in range(count)
+        )
 
     def _finish_bundle(self) -> None:
         if self._current_path_index is None:
@@ -964,69 +1068,57 @@ class _EventCheckBuilder:
                 (bundle_hash * 1_000_003) ^ self._numerical_hashes[index]
             ) & _UINT64_MASK
 
-        def numerical_key(index: int) -> tuple:
-            arc_begin = self._arc_offsets[index]
-            arc_end = self._arc_offsets[index + 1]
-            return (
-                self._roles[index],
-                self._launches[index],
-                tuple(self._arcs[arc_begin:arc_end]),
-                self._required[index],
-            )
-
         start = None
-        current_key = None
-        candidate = self._representative_bundles.get(bundle_hash)
-        while candidate is not None:
-            if candidate.count != end - begin:
-                candidate = candidate.collision
-                continue
-            if candidate.numerical_key is None:
-                representative_key = tuple(
-                    numerical_key(
-                        self._representative_indices[
-                            candidate.start + offset
-                        ]
-                    )
-                    for offset in range(candidate.count)
-                )
-                candidate.numerical_key = representative_key
-            else:
-                representative_key = candidate.numerical_key
-            if current_key is None:
-                current_key = tuple(
-                    numerical_key(index) for index in range(begin, end)
-                )
-            if current_key == representative_key:
-                start = candidate.start
+        check_count = end - begin
+        hash_bytes = bundle_hash.to_bytes(8, "little")
+        cache_key = (hash_bytes, check_count)
+        candidates = self._bundle_cache.get(cache_key, ())
+        for candidate_start in candidates:
+            if self._bundles_numerically_equal(
+                candidate_start, begin, check_count
+            ):
+                start = candidate_start
                 break
-            candidate = candidate.collision
+        if start is None:
+            assert self._connection is not None
+            for (candidate_start,) in self._connection.execute(
+                    """
+                    SELECT representative_start
+                      FROM representative_bundle
+                     WHERE bundle_hash=? AND check_count=?
+                  ORDER BY representative_start
+                    """,
+                    (sqlite3.Binary(hash_bytes), check_count),
+                ):
+                if candidate_start in candidates:
+                    continue
+                if self._bundles_numerically_equal(
+                    candidate_start, begin, check_count
+                ):
+                    start = candidate_start
+                    break
         if start is None:
             start = len(self._representative_indices)
-            if start + end - begin >= _UINT32_MAX:
+            if start + check_count >= _UINT32_MAX:
                 raise ValidationError(
                     "global STA representative population exceeds indexed storage"
                 )
             self._representative_indices.extend(range(begin, end))
-            self._representative_bundles[bundle_hash] = _RepresentativeBundle(
-                start,
-                end - begin,
-                current_key,
-                self._representative_bundles.get(bundle_hash),
+            assert self._connection is not None
+            self._connection.execute(
+                "INSERT INTO representative_bundle VALUES (?, ?, ?)",
+                (sqlite3.Binary(hash_bytes), check_count, start),
             )
+            self._index_mutated()
+        updated = (start, *(value for value in candidates if value != start))[
+            : self._BUNDLE_CANDIDATE_CACHE_SIZE
+        ]
+        self._bundle_cache[cache_key] = updated
+        self._bundle_cache.move_to_end(cache_key)
+        if len(self._bundle_cache) > self._BUNDLE_CACHE_SIZE:
+            self._bundle_cache.popitem(last=False)
         for offset, index in enumerate(range(begin, end)):
             self._original_to_representative[index] = start + offset
-
-    @staticmethod
-    def _intern(value: str, values: list[str], ids: dict[str, int]) -> int:
-        identity = ids.get(value)
-        if identity is None:
-            identity = len(values)
-            if identity >= _UINT32_MAX:
-                raise ValidationError("global STA indexed identity population is too large")
-            ids[value] = identity
-            values.append(value)
-        return identity
 
     def append(self, row: EventCheck) -> None:
         self.append_values(
@@ -1049,7 +1141,12 @@ class _EventCheckBuilder:
     ) -> None:
         if self._finished:
             raise ValidationError("global STA indexed check builder is sealed")
-        if not path or not event:
+        if (
+            not isinstance(path, str)
+            or not path
+            or not isinstance(event, str)
+            or not event
+        ):
             raise ValidationError("global STA has duplicate/empty check identity")
         if role not in _EVENT_CHECK_ROLE_INDEX:
             raise ValidationError("global STA has an unsupported check role")
@@ -1060,24 +1157,31 @@ class _EventCheckBuilder:
             raise ValidationError(
                 "global STA launch/arc delay must be nonnegative"
             )
-        path_index = self._intern(path, self._paths, self._path_ids)
-        event_index = self._intern(event, self._events, self._event_ids)
         role_index = _EVENT_CHECK_ROLE_INDEX[role]
-        if path_index != self._current_path_index:
+        if path != self._current_path:
             self._finish_bundle()
-            # Dense IDs are assigned on first sight. Any non-latest ID here is
-            # a reappearing path bundle, which the production builder rejects;
-            # public list callers retain the legacy interleaved fallback.
-            if path_index != len(self._paths) - 1:
+            assert self._connection is not None
+            try:
+                self._connection.execute(
+                    "INSERT INTO seen_path VALUES (?)", (path,)
+                )
+                self._index_mutated()
+            except sqlite3.IntegrityError as error:
                 raise ValidationError(
                     "global STA indexed checks are not path-contiguous"
-                )
+                ) from error
+            path_index = self._append_packed(
+                path, self._path_payload, self._path_offsets
+            )
             self._current_path_index = path_index
+            self._current_path = path
             self._current_identities = set()
             self._target_chain = None
             self._runtime_chain = None
             self._current_bundle_start = len(self._roles)
-        identity = (role_index, event_index)
+        assert self._current_path_index is not None
+        event_index = self._intern_event(event)
+        identity = (role_index, event)
         if identity in self._current_identities:
             raise ValidationError("global STA has duplicate/empty check identity")
         self._current_identities.add(identity)
@@ -1093,7 +1197,7 @@ class _EventCheckBuilder:
                     "global STA must observe each original path once"
                 )
             self._runtime_chain = (launch_ns, arcs_ns)
-        self._path_indices.append(path_index)
+        self._path_indices.append(self._current_path_index)
         self._roles.append(role_index)
         self._event_indices.append(event_index)
         self._launches.append(launch_ns)
@@ -1108,32 +1212,35 @@ class _EventCheckBuilder:
     def finish(self) -> _IndexedEventChecks:
         if self._finished:
             raise ValidationError("global STA indexed check builder is sealed")
-        self._finish_bundle()
-        self._finished = True
-        # Dense-ID dictionaries are required only while appending. Drop their
-        # hash tables before allocating the packed payload, then release each
-        # Python string as soon as its UTF-8 bytes have been copied.
-        self._path_ids = {}
-        self._event_ids = {}
-        paths = _pack_utf8_strings_releasing(self._paths)
-        events = _pack_utf8_strings_releasing(self._events)
-        result = _IndexedEventChecks(
-            paths,
-            events,
-            self._path_indices,
-            self._roles,
-            self._event_indices,
-            self._launches,
-            self._required,
-            self._arc_offsets,
-            self._arcs,
-            self._numerical_hashes,
-            self._original_to_representative,
-            self._representative_indices,
-            validated=True,
-        )
-        self._representative_bundles = {}
-        return result
+        try:
+            self._finish_bundle()
+            self._finished = True
+            paths = _PackedUtf8Strings(
+                self._path_payload, self._path_offsets
+            )
+            events = _PackedUtf8Strings(
+                self._event_payload, self._event_offsets
+            )
+            result = _IndexedEventChecks(
+                paths,
+                events,
+                self._path_indices,
+                self._roles,
+                self._event_indices,
+                self._launches,
+                self._required,
+                self._arc_offsets,
+                self._arcs,
+                self._numerical_hashes,
+                self._original_to_representative,
+                self._representative_indices,
+                validated=True,
+            )
+            self._event_cache.clear()
+            self._bundle_cache.clear()
+            return result
+        finally:
+            self._close()
 
 
 class _IndexedCheckSelection(Sequence[EventCheck]):
@@ -1251,7 +1358,7 @@ def _validate_indexed_checks(rows: _IndexedEventChecks) -> None:
             target = None
             runtime = None
         role = rows._roles[index]
-        identity = (role, rows._event_indices[index])
+        identity = (role, rows._events[rows._event_indices[index]])
         if identity in current_identities:
             raise ValidationError("global STA has duplicate/empty check identity")
         current_identities.add(identity)

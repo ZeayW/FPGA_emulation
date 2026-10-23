@@ -224,8 +224,9 @@ def test_indexed_check_builder_is_exact_compact_and_sealed(tmp_path):
         + sum(len(value.encode("utf-8")) for value in compact._events)
         + (len(compact._events) + 1) * 8
     )
-    assert builder._paths == []
-    assert builder._events == []
+    assert not builder._event_cache
+    assert not builder._bundle_cache
+    assert not builder._database_path.exists()
     # 4-byte path ID, 1-byte role, 4-byte event ID, two 8-byte scalars,
     # one 8-byte arc end offset, three 8-byte arcs, one 8-byte numerical hash,
     # and one 4-byte representative ID per check; plus the initial arc offset
@@ -436,17 +437,80 @@ def test_exact_compression_does_not_trust_bundle_hash(monkeypatch):
 
     rows = [
         EventCheck(path, role, f"{path}-{role}", 0, (delay,), deadline)
-        for path, delay in (("p", 1.0), ("q", 2.0))
+        for path, delay in (("p", 1.0), ("q", 2.0), ("r", 1.0))
         for role, deadline in (("target", 4.0), ("runtime", 40.0))
     ]
     monkeypatch.setattr(sta, "_event_check_values_hash", lambda *args: 0)
     builder = _EventCheckBuilder()
+    builder._BUNDLE_CANDIDATE_CACHE_SIZE = 1
     for row in rows:
         builder.append(row)
     compact = validate_checks(builder.finish())
     representatives, mapping = _compress_path_equivalent_checks(compact)
+    assert representatives == rows[:4]
+    assert list(mapping) == [0, 1, 2, 3, 0, 1]
+
+
+def test_indexed_check_builder_reloads_evicted_bundle_exactly():
+    builder = _EventCheckBuilder()
+    builder._BUNDLE_CACHE_SIZE = 1
+    rows = []
+    for path, delay in (("p", 1.0), ("q", 2.0), ("r", 1.0)):
+        for role, deadline in (("target", 4.0), ("runtime", 40.0)):
+            row = EventCheck(path, role, f"{path}-{role}", 0, (delay,), deadline)
+            rows.append(row)
+            builder.append(row)
+    compact = builder.finish()
+    representatives, mapping = _compress_path_equivalent_checks(compact)
+    assert representatives == rows[:4]
+    assert list(mapping) == [0, 1, 2, 3, 0, 1]
+
+
+def test_indexed_check_builder_bounds_live_identity_caches():
+    builder = _EventCheckBuilder()
+    builder._EVENT_CACHE_SIZE = 2
+    builder._BUNDLE_CACHE_SIZE = 3
+    rows = []
+    for index in range(20):
+        for role, deadline in (("target", 40.0), ("runtime", 400.0)):
+            row = EventCheck(
+                f"path-{index}",
+                role,
+                f"event-{index}-{role}",
+                0.0,
+                (float(index + 1),),
+                deadline,
+            )
+            rows.append(row)
+            builder.append(row)
+        assert len(builder._event_cache) <= 2
+        assert len(builder._bundle_cache) <= 3
+    compact = builder.finish()
+    assert compact == rows
+    assert not builder._event_cache
+    assert not builder._bundle_cache
+    assert not hasattr(builder, "_path_ids")
+    assert not hasattr(builder, "_event_ids")
+
+
+def test_indexed_check_bundle_cache_keys_hash_and_count(monkeypatch):
+    import emuflow.global_sta as sta
+
+    monkeypatch.setattr(sta, "_event_check_values_hash", lambda *args: 0)
+    builder = _EventCheckBuilder()
+    rows = [
+        EventCheck("p", "target", "p-target", 0, (1,), 4),
+        EventCheck("p", "runtime", "p-runtime", 0, (1,), 40),
+        EventCheck("q", "tx", "q-tx", 0, (2,), 3),
+        EventCheck("q", "target", "q-target", 0, (2,), 4),
+        EventCheck("q", "runtime", "q-runtime", 0, (2,), 40),
+    ]
+    for row in rows:
+        builder.append(row)
+    compact = builder.finish()
+    representatives, mapping = _compress_path_equivalent_checks(compact)
     assert representatives == rows
-    assert list(mapping) == [0, 1, 2, 3]
+    assert list(mapping) == list(range(len(rows)))
 
 
 def test_exact_compression_scales_for_repeated_path_classes():
