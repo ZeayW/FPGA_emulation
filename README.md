@@ -65,8 +65,9 @@ Structural candidate eligibility also runs in the shared core, without a
 SQLite arc staging table or Python graph. Final semantic/index publication still
 has Python work; this is not complete Phase 3 native ownership.
 Compact indexed PATRON v14 production builds its pressure model directly in
-the shared core from EmuIR, TimingPathDB and packed primary cluster columns;
-Python carries bounded configuration and counts rather than a second pressure graph.
+the shared core from EmuIR, TimingPathDB and the original native primary store;
+it avoids a second membership/resource snapshot and transposed resource matrix.
+Python carries configuration and packed initial ownership, not a pressure graph.
 Versioned native runtimes also build the Phase 3 topology hop refiner from the
 same source revision.
 Current indexed Static Exact Phase 5 runs use one shared-core call for model

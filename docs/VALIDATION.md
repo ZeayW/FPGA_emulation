@@ -54,6 +54,29 @@ Phase 1–7/7C qualification. The declared real workload, naturally selected cut
 physical gates and original-path timing coverage still need their normal terminal
 acceptance; fixtures and this producer comparison do not replace them.
 
+## Primary-store handoff differential
+
+`PYTHONPATH=src python scripts/validation/qualify_primary_store_handoff.py --ir INPUT.sqlite --timing-database TIMING.json --platform BOARD.json --oracle MODEL_ORACLE --out OUTPUT --expected-design TOP`
+compares the v1 snapshot reader with direct primary ownership. `MODEL_ORACLE` is
+the test-only `native_patron_ingress_test` linked against the matching shared
+core. Optional `--constraints`, `--route-constraints`, `--minimum-instances` and
+`--source-commit` freeze the admission and versioned runtime.
+
+The worker builds native primary columns once and runs each model reader in its
+own supervised process. Complete field signatures include every cluster weight,
+owner, fixed constraint, resource bound, route, capacity domain, net member and
+timing path. Reports distinguish emitted request bytes from the referenced
+primary size and retain native engine wall/CPU/maximum-process RSS scopes. These
+timers include model fingerprinting; they are not production search timings.
+Source hashes are computed once outside the model intervals. The parent waits
+for worker/reader exit before removing all circuit scratch, including on failure.
+
+Initial ownership is a declared round-robin diagnostic vector with fixed owners
+preserved. Both readers enforce the actual capacity/balance contract; infeasible
+inputs fail without relaxation. There is no partition search or algorithm-
+selected-cut claim. This diagnostic cannot qualify Static Exact, whole-Phase-3
+speedup, a provider comparison or complete Phase 1–7/7C physical/global timing.
+
 ## Timing acceptance
 
 A complete physical flow requires explicit clock periods, routed logic and

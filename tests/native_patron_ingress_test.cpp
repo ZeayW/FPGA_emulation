@@ -4,6 +4,7 @@
 #include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/hash.hpp"
 #include <iostream>
+#include <iomanip>
 #include <type_traits>
 
 namespace {
@@ -55,16 +56,28 @@ int main(int argc,char** argv) {
         throw std::runtime_error("canonical PATRON million-cluster lexical boundary changed");
       return 0;
     }
-    if (argc!=6) return 2;
+    const bool emit=argc>1 && std::string(argv[1])=="--signature";
+    const int first=emit?2:1, count=argc-first-(emit?0:1);
+    if (count!=4 && count!=5) return 2;
+    const bool primary=count==5;
     using emuflow::core::ArtifactRef;
     std::vector<ArtifactRef> refs{
-      ArtifactRef::Bind(argv[1],"emuir-compact-v2"), ArtifactRef::Bind(argv[2],"timing-path-store-v1"),
-      ArtifactRef::Bind(argv[3],"patron-cluster-columns-v1"), ArtifactRef::Bind(argv[4],"patron-board-request-v1")};
+      ArtifactRef::Bind(argv[first],"emuir-compact-v2"), ArtifactRef::Bind(argv[first+1],"timing-path-store-v1"),
+      ArtifactRef::Bind(argv[first+2],primary?"partition-cluster-columns-v2":"patron-cluster-columns-v1")};
+    if (primary) refs.push_back(ArtifactRef::Bind(argv[first+3],"patron-initial-columns-v1"));
+    refs.push_back(ArtifactRef::Bind(argv[first+count-1],primary?"patron-board-request-v2":"patron-board-request-v1"));
     emuflow::core::PatronBuildContext context;
     auto actual=emuflow::core::BuildPatronModel(refs,context);
-    auto expected=emuflow::native::ReadTypedPatronModel(argv[5]);
-    if (Signature(actual)!=Signature(expected)) throw std::runtime_error("native/Python model record signatures disagree");
-    std::cout<<"NATIVE_MODEL_RECORD_PARITY_PASS\n";
+    const auto signature=Signature(actual);
+    if (emit) {
+      std::cout<<"MODEL_SIGNATURE ";
+      for (auto byte:signature) std::cout<<std::hex<<std::setw(2)<<std::setfill('0')<<static_cast<unsigned>(byte);
+      std::cout<<std::dec<<' '<<actual.clusters<<' '<<actual.nets<<' '<<actual.paths<<' '<<actual.dimensions<<' '<<actual.domains<<'\n';
+    } else {
+      auto expected=emuflow::native::ReadTypedPatronModel(argv[argc-1]);
+      if (signature!=Signature(expected)) throw std::runtime_error("native/Python model record signatures disagree");
+      std::cout<<"NATIVE_MODEL_RECORD_PARITY_PASS\n";
+    }
     return 0;
   } catch (const std::exception& error) { std::cerr<<error.what()<<'\n'; return 1; }
 }

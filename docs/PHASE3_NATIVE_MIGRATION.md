@@ -40,14 +40,16 @@ only a CMake compatibility alias; the executable and native library tests link
 the core directly. This does not yet cover every standalone adapter or complete
 the native production data plane.
 
-`phase3 refine-patron-from-store EMUIR TIMING CLUSTERS REQUEST OUTPUT` builds
-the PATRON v14 model and invokes the existing solver in one shared-core process.
-Compact indexed production with canonical packed clusters selects this producer.
-The Python adapter carries board-sized configuration, source generations and bulk
-primary cluster columns; it does not create pressure-net/path/name populations,
-derive a second dimension/model representation or stream per-record solver input.
-The original packed clustering and initial ownership are still Python-owned;
-this migration does not claim complete native Phase 3 construction/publication.
+`phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT`
+builds the PATRON v14 model and invokes the existing solver in one shared-core
+process. Normal compact native clustering selects this direct owner. The shared
+`PrimaryClusterView` reads source-scoped ownership and resource columns without
+copying them into another membership/resource artifact or transposed C++ matrix.
+The Python adapter carries board-sized configuration and packed initial ownership
+plus fixed constraints. It does not create pressure-net/path/name populations,
+derive a second model or stream per-record solver input. The explicit
+`refine-patron-from-store` v1 snapshot boundary remains for compatibility and
+independent qualification. Final semantic/index publication still has Python work.
 
 The shared model is move-only, and both its typed compatibility reader and direct
 store producer call the same search implementation. The producer checks primary
@@ -71,9 +73,11 @@ selection before final semantic/index publication.
 Small/inline and explicitly selected legacy tools, retained diagnostic traces,
 physical-feedback algorithms and explicit legacy input copies keep the reference
 model path. A selected native producer never retries through that path. Its
-`native_input_transport` is `native-store-model-v1`; input bytes count the bulk
-cluster-column snapshot plus bounded request, and input records count those two
-private artifacts rather than pressure vertices/hops. They are phase-owned scratch,
+`native_input_transport` is `native-primary-store-model-v2` for direct primary
+ownership, and `native-store-model-v1` for the explicit v1 snapshot path. Input
+bytes count the emitted packed initial/fixed ownership and bounded request on
+the direct path, or the full cluster snapshot and request on v1. Input records
+count those two emitted private artifacts rather than pressure vertices/hops. They are phase-owned scratch,
 not checkpoints. Full NVDLA runtime/RSS/disk and terminal Phase 7/7C qualification
 remain required before declaring the migration complete.
 
@@ -339,8 +343,9 @@ by integer offsets. Python borrows that view without rebuilding graph arrays or
 a name pool. Compact production clustering and the large native exact analyzer
 select this operation. Explicit characterization/reference APIs keep their own
 independent implementation; a selected native failure never falls back.
-The existing name-facing policy export and primary-to-pressure packed snapshot
-remain conversion boundaries to retire during final publication work.
+The name-facing policy export remains a conversion boundary to retire during
+final publication work. Normal native primary-to-pressure handoff reuses the
+primary artifact; v1 snapshots are explicit compatibility/qualification inputs.
 
 ## Primary cluster production
 
@@ -351,6 +356,12 @@ canonical lexical membership, integer CSR columns and resource sums. An illegal
 high-fanout net is unioned as its endpoints arrive, without retaining a net
 membership set. Resource payload caching has a fixed bound independent of cell
 count. Group unions and fixed ownership preserve the reference behavior.
+
+The private v2 primary envelope binds the source generation and carries sealed
+resource totals, with header and full-column CRCs. Shared native readers validate
+source/count/membership/resource coverage and retire completed projection pages
+before constructing the next model population. Python uses the header totals for
+TritonPart dimension/totals queries without scanning resource columns.
 
 Python borrows read-only memory-mapped columns, including the UTF-8 name pool;
 it does not rebuild the primary arrays or rerun the union/resource loops.

@@ -24,17 +24,17 @@ from .tool_runtime import NativeToolProcess
 from .native_columns import _ClusterScratch, _ColumnOwner, _MappedColumn, _MappedNames
 
 
-def _load_columns(output, scratch, expected_cells, fixed, groups):
+def _load_columns(output, scratch, expected_cells, fixed, groups, generation):
     from .partition import _CompactClusterRecords
     with output.open('rb') as stream:
         data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
     owner = _ColumnOwner(data,scratch)
     try:
-        if len(data) < 40:
+        if len(data) < 204:
             raise ValidationError('native cluster columns are truncated')
         magic, version, cells, clusters, names = struct.unpack_from('<QIQQQ', data)
-        expected = 36 + 8*(cells+1) + 4*(clusters+1) + 8*cells + 48*clusters + names + 4
-        if (magic != 0x314C4350464D5545 or version != 1 or cells != expected_cells
+        expected = 200 + 8*(cells+1) + 4*(clusters+1) + 8*cells + 48*clusters + names + 4
+        if (magic != 0x314C4350464D5545 or version != 2 or cells != expected_cells
                 or clusters > cells or len(data) != expected):
             raise ValidationError('native cluster columns have invalid dimensions')
         crc = 0
@@ -42,7 +42,12 @@ def _load_columns(output, scratch, expected_cells, fixed, groups):
             crc = zlib.crc32(data[offset:min(offset+1024*1024,len(data)-4)], crc)
         if crc != struct.unpack_from('<I', data, len(data)-4)[0]:
             raise ValidationError('native cluster columns checksum disagrees')
-        offset = 36
+        if struct.unpack_from('<3Q4q', data, 36) != generation:
+            raise ValidationError('native cluster source generation disagrees')
+        totals = struct.unpack_from('<13Q', data, 92)
+        if zlib.crc32(data[:196]) != struct.unpack_from('<I', data, 196)[0] or totals[0] != cells:
+            raise ValidationError('native cluster header totals/checksum disagree')
+        offset = 200
         def column(code, count):
             nonlocal offset
             width = struct.calcsize(code)
@@ -72,6 +77,7 @@ def _load_columns(output, scratch, expected_cells, fixed, groups):
             source_cluster_indices=owners, fixed_by_cluster=fixed_by_cluster,
             groups_by_cluster={key:sorted(value) for key,value in groups_by_cluster.items()})
         result.implementation_id = 'native-primary-clusters-v1'
+        result.native_resource_totals = totals
         return result
     except BaseException:
         owner.close()
@@ -139,8 +145,11 @@ def build_native_clusters(ir, constraints, eligible):
             raise ValidationError('native primary cluster operation report disagrees')
         request.unlink()
         report.unlink()
-        result = _load_columns(output,scratch,cells,fixed,groups)
+        result = _load_columns(output,scratch,cells,fixed,groups,generation)
         result.native_metrics = operation['metrics']
+        result.native_artifact = output
+        result.native_generation = native_file_generation(output)
+        result.native_source_generation = generation
         return result
     except BaseException:
         scratch.cleanup()

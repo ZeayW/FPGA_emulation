@@ -105,9 +105,13 @@ work is not claimed as native here.
 
 Compact indexed PATRON v14 runs normally select the shared native pressure-model
 producer. `algorithm_validation.model_implementation_id` identifies
-`native-store-model-v1`; its input-transport counters describe the primary packed
-cluster columns and bounded request, not a serialized pressure graph. The native
-entry `phase3 refine-patron-from-store EMUIR TIMING CLUSTERS REQUEST OUTPUT`
+`native-primary-store-model-v2` when consuming native primary columns directly.
+Its input-transport counters describe packed initial/fixed ownership and the
+bounded request; the primary membership/resource columns are referenced. The
+private v2 primary store carries its EmuIR generation and resource totals, so
+TritonPart summary queries do not scan the columns. Explicit v1 snapshot input
+retains `native-store-model-v1`. The native entry
+`phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT`
 also writes `OUTPUT.order` (sealed integer identity mapping) and
 `OUTPUT.summary.json` (bounded model counts). These are invocation-owned intermediates.
 Diagnostic/explicit comparison modes retain their named reference input path;

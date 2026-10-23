@@ -2,6 +2,7 @@
 from contextlib import closing
 import json
 import sqlite3
+import shutil
 import struct
 import subprocess
 import zlib
@@ -17,6 +18,7 @@ from emuflow.partition_ir import load_partition_ir
 from emuflow.partition_pressure import (build_partition_pressure_model, run_partition_pressure_native,
     _write_patron_native_input, _NativeBinaryPipeWriter)
 from emuflow.phase3_pressure_native import NativePressureModel
+from emuflow.native_tools import native_file_generation
 from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
 from tests.native_build import emuflow_native, patron_ingress_oracle, hop_partition_refiner, patron_refiner
 from tests import test_partition_pressure as reference_fixture
@@ -64,6 +66,116 @@ def run(args,model,initial,max_moves=0):
     return run_partition_pressure_native(*args[:4],args[5],model,initial,algorithm_version=14,
         max_moves=max_moves,retain_trace_seals=False,stream_semantic_records=True,output_validation='caller',
         _release_model_before_assignment=True,_defer_candidate_derived_records=True)
+
+
+@pytest.mark.parametrize('max_moves',[0,2])
+def test_primary_owner_direct_model_matches_every_record_and_search(inputs,tmp_path,max_moves):
+    args,initial,timing=inputs
+    ir,platform,_clusters,constraints,manifest,routes=args
+    clusters=build_clusters(ir,constraints,cut_mode=CUT_MODE_STATIC_EXACT,_native_compact_clusters=True)
+    direct_args=(ir,platform,clusters,constraints,manifest,routes)
+    reference=build_partition_pressure_model(*direct_args,independent_validation=False,timing_database_path=timing)
+    expected=tmp_path/'expected.bin'
+    _write_patron_native_input(None,platform,clusters,constraints,routes,reference,initial,max_moves,14,
+                              _writer=_NativeBinaryPipeWriter(expected.open('wb')))
+    expected_assignment,expected_trace=run(direct_args,reference,initial,max_moves)
+    model=build_partition_pressure_model(*direct_args,independent_validation=False,timing_database_path=timing,native_store_model=True)
+    assert model.implementation_id=='native-primary-store-model-v2'
+    protected=(clusters['clusters']._member_offsets,clusters['clusters'].source_cluster_indices,
+               *clusters['clusters']._resource_columns)
+    original=__import__('emuflow.phase3_pressure_native',fromlist=['_Writer'])._Writer.bytes
+    def bounded_write(writer,value):
+        assert all(value is not column for column in protected),'duplicated primary column'
+        return original(writer,value)
+    with patch('emuflow.phase3_pressure_native._Writer.bytes',bounded_write):
+        columns,board=model.write_requests(tmp_path,initial,max_moves)
+        assert columns.stat().st_size==40+4*len(clusters['clusters'])+8*len(clusters['clusters']._fixed_by_cluster)
+        result=subprocess.run([str(patron_ingress_oracle()),str(ir.path),str(model.timing_path),
+            str(model.primary_artifact),str(columns),str(board),str(expected)],capture_output=True,text=True)
+        assert result.returncode==0,result.stderr
+        actual,trace=run(direct_args,model,initial,max_moves)
+    assert dict(actual['cluster_assignment'])==dict(expected_assignment['cluster_assignment'])
+    assert trace['initial_metrics']==expected_trace['initial_metrics']
+    assert trace['final_metrics']==expected_trace['final_metrics']
+    assert trace['native_input_transport']=='native-primary-store-model-v2'
+    assert trace['change_count']==expected_trace['change_count']
+
+
+@pytest.mark.parametrize('corruption',['checksum','membership','owner','source','version','truncated','totals','source-counts'])
+def test_primary_owner_rejects_corruption_before_publication(inputs,tmp_path,corruption):
+    args,initial,timing=inputs
+    clusters=build_clusters(args[0],args[3],cut_mode=CUT_MODE_STATIC_EXACT,_native_compact_clusters=True)
+    direct_args=(*args[:2],clusters,*args[3:])
+    model=build_partition_pressure_model(*direct_args,independent_validation=False,
+                                       timing_database_path=timing,native_store_model=True)
+    copy=tmp_path/'untrusted-primary.bin'
+    shutil.copyfile(model.primary_artifact,copy)
+    data=bytearray(copy.read_bytes())
+    cells,count=struct.unpack_from('<QQ',data,12)
+    offsets=200+8*(cells+1)
+    if corruption=='checksum': data[-1]^=1
+    elif corruption=='truncated': del data[-1]
+    else:
+        if corruption=='membership': struct.pack_into('<I',data,offsets+4,0)
+        elif corruption=='owner': struct.pack_into('<I',data,offsets+4*(count+1)+4*cells,count)
+        elif corruption=='source': data[44]^=1
+        elif corruption=='version': struct.pack_into('<I',data,8,1)
+        elif corruption=='totals': struct.pack_into('<Q',data,100,999)
+        elif corruption=='source-counts': struct.pack_into('<Q',data,12,2**32-1)
+        struct.pack_into('<I',data,196,zlib.crc32(data[:196]))
+        struct.pack_into('<I',data,len(data)-4,zlib.crc32(data[:-4]))
+    copy.write_bytes(data)
+    model.primary_artifact=copy
+    model.primary_generation=native_file_generation(copy)
+    columns,board=model.write_requests(tmp_path,initial,0)
+    output=tmp_path/'result.bin'; output.write_bytes(b'keep-published-result')
+    result=subprocess.run([str(emuflow_native()),'phase3','refine-patron-from-primary',str(args[0].path),
+        str(model.timing_path),str(copy),str(columns),str(board),str(output)],capture_output=True,text=True)
+    assert result.returncode!=0
+    assert output.read_bytes()==b'keep-published-result'
+    assert not Path(str(output)+'.summary.json').exists()
+
+
+def test_offline_primary_handoff_tool_compares_complete_models_and_retires_payloads(inputs,tmp_path):
+    args,_initial,timing=inputs
+    platform=tmp_path/'platform.json'; write_json(platform,args[1].to_dict())
+    output=tmp_path/'qualification'
+    script=Path(__file__).resolve().parents[1]/'scripts/validation/qualify_primary_store_handoff.py'
+    import sys
+    result=subprocess.run([sys.executable,str(script),'--ir',str(args[0].path),'--platform',str(platform),
+        '--timing-database',str(timing),'--oracle',str(patron_ingress_oracle()),'--out',str(output),
+        '--expected-design',args[0].value['design']['name']],capture_output=True,text=True)
+    assert result.returncode==0,result.stdout+result.stderr
+    summary=read_json(output/'qualification.json')
+    assert summary['status']=='pass'
+    assert summary['arms']['direct']['signature']==summary['arms']['snapshot']['signature']
+    assert summary['arms']['direct']['emitted_columns_bytes']<summary['arms']['snapshot']['emitted_columns_bytes']
+    assert not (output/'tmp').exists()
+    assert list(output.iterdir())==[output/'qualification.json']
+    failure=tmp_path/'wrong-design'
+    rejected=subprocess.run([sys.executable,str(script),'--ir',str(args[0].path),'--platform',str(platform),
+        '--timing-database',str(timing),'--oracle',str(patron_ingress_oracle()),'--out',str(failure),
+        '--expected-design','another-design'],capture_output=True,text=True)
+    assert rejected.returncode!=0
+    assert not (failure/'tmp').exists()
+    assert not (failure/'qualification.json').exists()
+    assert read_json(failure/'failure.json')['status']=='fail'
+
+
+def test_selected_primary_owner_does_not_fall_back_when_reference_is_lost(inputs,tmp_path):
+    from emuflow.errors import ValidationError
+    args,initial,timing=inputs
+    clusters=build_clusters(args[0],args[3],cut_mode=CUT_MODE_STATIC_EXACT,_native_compact_clusters=True)
+    direct_args=(*args[:2],clusters,*args[3:])
+    model=build_partition_pressure_model(*direct_args,independent_validation=False,
+                                       timing_database_path=timing,native_store_model=True)
+    model.primary_artifact=None
+    with pytest.raises(ValidationError,match='selected direct primary ownership is unavailable'):
+        run(direct_args,model,initial)
+    clusters['clusters'].native_artifact=None
+    with pytest.raises(ValidationError,match='native primary artifact reference is unavailable'):
+        build_partition_pressure_model(*direct_args,independent_validation=False,
+                                       timing_database_path=timing,native_store_model=True)
 
 
 @pytest.mark.parametrize('max_moves',[0,2])
@@ -140,7 +252,7 @@ def test_phase3_production_selects_native_model_and_keeps_independent_validation
     assert report['native_cluster_metrics']['wall_seconds']>0
     assert report['candidate_implementation_id']=='native-candidate-ids-v1'
     assert report['native_candidate_metrics']['wall_seconds']>0
-    assert report['algorithm_validation']['native_input_transport']=='native-store-model-v1'
+    assert report['algorithm_validation']['native_input_transport']=='native-primary-store-model-v2'
     assert report['algorithm_validation']['model']['nets']==2
     assert report['algorithm_validation']['native_model_metrics']['model_build']['wall_seconds']>0
 

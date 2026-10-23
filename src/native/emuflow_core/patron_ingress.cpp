@@ -1,4 +1,5 @@
 #include "emuflow_core/patron_ingress.hpp"
+#include "emuflow_core/primary_cluster_view.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/emuir_view.hpp"
 #include "emuflow_core/hash.hpp"
@@ -99,12 +100,13 @@ std::vector<std::uint32_t> CanonicalPatronClusterOrder(std::uint32_t count) {
 }
 
 patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBuildContext& context) {
-  Check(inputs.size()==4,"PATRON store input coverage is invalid");
+  const bool primary=inputs.size()==5;
+  Check(primary || inputs.size()==4,"PATRON store input coverage is invalid");
   for (const auto& input:inputs) input.RequireUnchanged();
-  Reader request(inputs[3].path());
+  Reader request(inputs.back().path());
   Check(request.input.size()<=1024*1024 && request.get<std::uint64_t>()==0x3151455254415045ULL &&
-        request.get<std::uint32_t>()==1,"unsupported PATRON board request");
-  for (unsigned i=0;i<3;++i)
+        request.get<std::uint32_t>()==(primary?2U:1U),"unsupported PATRON board request");
+  for (unsigned i=0;i<inputs.size()-1;++i)
     if (!(Generation(request)==inputs[i].generation()))
       throw StageError(ErrorCode::kMixedGeneration,"PATRON source generation changed");
   const auto parts=Catalog(request), initial_parts=Catalog(request);
@@ -165,26 +167,41 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
     }
   }
   request.finish();
-  Reader columns(inputs[2].path());
-  Check(columns.get<std::uint64_t>()==0x314c4f4354415045ULL && columns.get<std::uint32_t>()==1,"unsupported PATRON cluster columns");
-  const auto clusters=columns.get<std::uint64_t>(), cells=columns.get<std::uint64_t>();
   EmuirView ir(inputs[0]);
+  Reader columns(inputs[primary?3:2].path());
+  std::unique_ptr<PrimaryClusterView> primary_view;
+  std::uint64_t clusters,cells;
+  if (primary) {
+    primary_view=std::make_unique<PrimaryClusterView>(inputs[2],inputs[0]);
+    Check(columns.get<std::uint64_t>()==0x315450494e415045ULL && columns.get<std::uint32_t>()==1,"unsupported PATRON initial columns");
+    clusters=columns.get<std::uint64_t>(); cells=columns.get<std::uint64_t>();
+    Check(clusters==primary_view->clusters() && cells==primary_view->cells(),"PATRON primary dimensions disagree");
+  } else {
+    Check(columns.get<std::uint64_t>()==0x314c4f4354415045ULL && columns.get<std::uint32_t>()==1,"unsupported PATRON cluster columns");
+    clusters=columns.get<std::uint64_t>(); cells=columns.get<std::uint64_t>();
+  }
   Check(clusters && clusters<=INT32_MAX && cells==ir.counts().cells && clusters<=cells && ir.counts().nets<=INT32_MAX,
         "PATRON source dimensions disagree");
   model.clusters=clusters; model.flow_max_clusters=clusters;
   Check(model.flow_corridor_distance<=model.clusters,"PATRON corridor exceeds cluster count");
-  auto offsets=columns.vector<std::uint32_t>(clusters+1), owner=columns.vector<std::uint32_t>(cells);
-  Check(offsets.front()==0 && offsets.back()==cells && std::is_sorted(offsets.begin(),offsets.end()),"invalid PATRON membership offsets");
-  std::vector<std::uint32_t> observed(clusters);
-  for (auto cluster:owner) { Check(cluster<clusters,"invalid PATRON member owner"); ++observed[cluster]; }
-  std::vector<std::array<std::uint32_t,13>> weights(clusters);
+  std::vector<std::uint32_t> offsets,owner,observed;
+  std::vector<std::array<std::uint32_t,13>> weights;
   std::array<std::uint64_t,13> totals{};
+  if (primary) totals=primary_view->totals();
+  else {
+  offsets=columns.vector<std::uint32_t>(clusters+1); owner=columns.vector<std::uint32_t>(cells);
+  Check(offsets.front()==0 && offsets.back()==cells && std::is_sorted(offsets.begin(),offsets.end()),"invalid PATRON membership offsets");
+  observed.resize(clusters);
+  for (auto cluster:owner) { Check(cluster<clusters,"invalid PATRON member owner"); ++observed[cluster]; }
+  weights.resize(clusters);
+
   for (std::size_t c=0;c<clusters;++c) {
     Check(observed[c] && observed[c]==offsets[c+1]-offsets[c],"PATRON cluster member count disagrees");
     weights[c][0]=observed[c]; totals[0]+=observed[c];
   }
   for (unsigned field=1;field<13;++field) for (std::size_t c=0;c<clusters;++c) {
     const auto value=columns.get<std::uint32_t>(); weights[c][field]=value; totals[field]+=value;
+  }
   }
   auto initial=columns.vector<std::uint32_t>(clusters); std::vector<int> fixed(clusters,-1);
   const auto fixes=columns.get<std::uint64_t>(); Check(fixes<=clusters,"invalid PATRON fixed count");
@@ -212,7 +229,7 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
     Check(fixed[artifact]<0 || fixed[artifact]==part,"PATRON initial fixed owner disagrees");
     model.cluster[c]={part,fixed[artifact]};
     for (std::size_t d=0;d<dimensions.size();++d) {
-      const auto weight=weights[artifact][dimensions[d]]; model.cluster_weights[c*dimensions.size()+d]=weight; loads[part][d]+=weight;
+      const auto weight=primary ? primary_view->Weight(artifact,dimensions[d]) : weights[artifact][dimensions[d]]; model.cluster_weights[c*dimensions.size()+d]=weight; loads[part][d]+=weight;
     }
   }
   model.hard_capacity.assign(model.parts,std::vector<double>(dimensions.size())); model.balance_capacity=model.hard_capacity;
@@ -231,6 +248,8 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
       model.hard_capacity[part][d]=hard; model.balance_capacity[part][d]=allowed;
     }
   }
+  if (primary_view) primary_view->ReleasePages();
+  const auto owner_of=[&](std::uint64_t cell) { return primary ? primary_view->Owner(cell) : owner.at(cell); };
   weights.clear(); weights.shrink_to_fit(); initial.clear(); initial.shrink_to_fit(); observed.clear(); offsets.clear(); fixed.clear();
   SqliteDatabase source(inputs[0].path(),SqliteDatabase::Mode::kImmutableReadOnly);
   auto schema=source.Prepare("SELECT value FROM metadata WHERE key='logical_schema'");
@@ -247,7 +266,7 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
   ir.VisitConnectivity([&](const EmuirEndpoint& endpoint) {
     Check(has_meta && metadata.Integer(0)==static_cast<std::int64_t>(endpoint.net.sequence()),"PATRON net metadata disagrees");
     if (selected() && endpoint.cell) {
-      const auto cluster=native[owner[endpoint.cell->sequence()]];
+      const auto cluster=native[owner_of(endpoint.cell->sequence())];
       if (endpoint.role==EndpointRole::kSink && sink_begin==std::numeric_limits<std::size_t>::max())
         sink_begin=model.net_members.size();
       model.net_members.push_back(cluster);
@@ -297,7 +316,7 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
     if (endpoints) {
       const auto l=paths.TypedInteger(4), r=paths.TypedInteger(5);
       Check(l>=0 && r>=0 && static_cast<std::uint64_t>(l)<cells && static_cast<std::uint64_t>(r)<cells,"PATRON path endpoint is invalid");
-      path.start_cluster=native[owner[l]]; path.end_cluster=native[owner[r]];
+      path.start_cluster=native[owner_of(l)]; path.end_cluster=native[owner_of(r)];
     }
     const auto begin=model.path_nets.size(); std::uint64_t net_position=0;
     while (have_net && path_nets.TypedInteger(0)==static_cast<std::int64_t>(ordinal)) {
@@ -329,7 +348,7 @@ void RefinePatronFromStore(const std::vector<ArtifactRef>& inputs, const std::st
   for (const auto& input:inputs) input.RequireUnchanged();
   SealOrder(staged.path+".order",context.native_to_artifact);
   auto summary=JsonRecord(std::map<std::string,JsonRecord>{{"schema","emuflow.patron-native-model/v1"},
-      {"implementation_id","native-store-model-v1"},{"clusters",model.clusters},{"nets",model.nets},
+      {"implementation_id",inputs.size()==5 ? "native-primary-store-model-v2" : "native-store-model-v1"},{"clusters",model.clusters},{"nets",model.nets},
       {"paths",model.paths},{"dimensions",model.dimensions},{"capacity_domains",model.domains}}).Encode();
   summary.pop_back();
   summary+=",\"model_build\":"+StageResultJson(build)+",\"search\":"+StageResultJson(search)+"}";

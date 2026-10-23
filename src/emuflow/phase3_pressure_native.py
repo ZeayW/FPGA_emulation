@@ -1,8 +1,8 @@
-"""Bounded control and bulk primary cluster columns for native pressure modeling.
+"""Native pressure modeling from source-bound, shared primary ownership.
 
-This adapter never constructs pressure-net/path/name populations. The existing
-packed cluster authority remains Python-owned until the clustering migration;
-its integer columns cross once, without expanded per-instance dictionaries.
+Production references the native primary store and sends packed initial/fixed
+ownership plus bounded board configuration. Explicit reference columns retain
+the v1 snapshot comparison boundary; failures never switch between them.
 """
 from __future__ import annotations
 
@@ -123,6 +123,15 @@ class NativePressureModel(dict):
             raise ValidationError("partition pressure timing design mismatch")
         normalization = _validate_database_normalization(timing.get("normalization"))
         self.ir = ir
+        self.primary_artifact = getattr(clusters["clusters"], "native_artifact", None)
+        if (getattr(clusters["clusters"], "implementation_id", None)=='native-primary-clusters-v1'
+                and self.primary_artifact is None):
+            raise ValidationError('native primary artifact reference is unavailable')
+        if self.primary_artifact is not None:
+            self.implementation_id = "native-primary-store-model-v2"
+            self.primary_generation = clusters["clusters"].native_generation
+            if clusters["clusters"].native_source_generation != native_file_generation(ir.path):
+                raise ValidationError("native primary cluster source generation changed")
         self.platform = platform
         self.clusters = clusters["clusters"]
         self.constraints = constraints
@@ -162,9 +171,12 @@ class NativePressureModel(dict):
             raise ValidationError("native PATRON initial ownership coverage disagrees")
         writer = _Writer(path)
         try:
-            writer.put("QIQQ", 0x314C4F4354415045, 1, len(self.clusters), len(self.clusters.source_cluster_indices))
-            for values in (self.clusters._member_offsets, self.clusters.source_cluster_indices,
-                           *self.clusters._resource_columns, current.part_indices):
+            writer.put("QIQQ", 0x315450494E415045 if self.primary_artifact is not None else 0x314C4F4354415045,
+                       1, len(self.clusters), len(self.clusters.source_cluster_indices))
+            values_to_write = ((current.part_indices,) if self.primary_artifact is not None else
+                               (self.clusters._member_offsets, self.clusters.source_cluster_indices,
+                                *self.clusters._resource_columns, current.part_indices))
+            for values in values_to_write:
                 if values.itemsize != 4:
                     raise ValidationError("native PATRON cluster column width is invalid")
                 writer.bytes(values)
@@ -188,8 +200,11 @@ class NativePressureModel(dict):
         links = {link.id: link for link in self.platform.links}
         writer = _Writer(board)
         try:
-            writer.put("QI", 0x3151455254415045, 1)
-            for generation in (*self.generations, native_file_generation(columns)):
+            writer.put("QI", 0x3151455254415045, 2 if self.primary_artifact is not None else 1)
+            if self.primary_artifact is not None and native_file_generation(self.primary_artifact) != self.primary_generation:
+                raise ValidationError("native primary column generation changed")
+            generations = (*self.generations, *((self.primary_generation,) if self.primary_artifact is not None else ()), native_file_generation(columns))
+            for generation in generations:
                 writer.put("3Q4q", *generation)
             writer.catalog(parts)
             writer.catalog(initial_parts)
@@ -237,10 +252,15 @@ class NativePressureModel(dict):
         return columns, board
 
     def execute(self, root, output, initial, max_moves, timeout_seconds, environment):
+        if self.implementation_id=='native-primary-store-model-v2' and self.primary_artifact is None:
+            raise ValidationError('selected direct primary ownership is unavailable')
         columns, board = self.write_requests(root, initial, max_moves)
         executable = resolve_native_executable("emuflow-native")
-        command = [executable, "phase3", "refine-patron-from-store", str(self.ir.path),
-                   str(self.timing_path), str(columns), str(board), str(output)]
+        command = [executable, "phase3", "refine-patron-from-primary" if self.primary_artifact is not None else "refine-patron-from-store",
+                   str(self.ir.path), str(self.timing_path)]
+        if self.primary_artifact is not None:
+            command.append(str(self.primary_artifact))
+        command.extend((str(columns), str(board), str(output)))
         with NativeToolProcess(executable, command, environment=environment, timeout_ms=timeout_seconds * 1000,
                                scratch_parent=root) as process:
             completed = process.finish()
@@ -268,7 +288,8 @@ class NativePressureModel(dict):
                     or not isinstance(operation.get("metrics"), dict)):
                 raise ValidationError("native PATRON substage metrics are invalid")
             metrics[key] = operation["metrics"]
-        self.native_input = {"transport": "native-store-model-v1", "bytes": columns.stat().st_size + board.stat().st_size,
-                             "records": 2, "model": self.native_counts, "metrics": metrics}
+        self.native_input = {"transport": self.implementation_id, "bytes": columns.stat().st_size + board.stat().st_size,
+                             "records": 2, "model": self.native_counts, "metrics": metrics,
+                             "shared_primary_bytes": self.primary_artifact.stat().st_size if self.primary_artifact is not None else 0}
         order = _NativeClusterOrder(str(output) + ".order", len(self.clusters))
         return {"parts": [fpga.id for fpga in self.partition_fpgas], "clusters": order, "input": self.native_input}

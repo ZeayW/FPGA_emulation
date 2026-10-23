@@ -93,6 +93,7 @@ class _CompactVertexWeights(list):
         field_index = {
             field: index for index, field in enumerate(RESOURCE_FIELDS)
         }
+        self.resource_indices = tuple(field_index[field] for field in resource_fields)
         self.columns = tuple(
             clusters._resource_columns[field_index[field]]
             for field in resource_fields
@@ -123,6 +124,9 @@ class _CompactVertexWeights(list):
         return self._row(index)
 
     def totals(self) -> List[int]:
+        metadata = getattr(self.clusters, "native_resource_totals", None)
+        if metadata is not None:
+            return [metadata[0], *(metadata[index+1] for index in self.resource_indices)]
         return [
             len(self.clusters.source_cluster_indices),
             *(sum(column) for column in self.columns),
@@ -254,6 +258,9 @@ def _active_resource_fields(
     clusters: Sequence[Mapping[str, Any]],
 ) -> List[str]:
     fields = []
+    metadata = getattr(clusters, "native_resource_totals", None)
+    if metadata is not None:
+        return [field for index, field in enumerate(RESOURCE_FIELDS) if metadata[index+1]]
     compact_columns = (
         clusters._resource_columns
         if isinstance(clusters, _CompactClusterRecords)

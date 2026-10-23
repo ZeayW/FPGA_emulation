@@ -878,7 +878,7 @@ def run_phase3(
             ),
         )
         if native_store_model:
-            if patron_trace.get("model_implementation_id") != "native-store-model-v1":
+            if patron_trace.get("model_implementation_id") != model.implementation_id:
                 raise ValidationError("PATRON native model implementation disagrees")
             patron_model_counts = patron_trace["model_counts"]
             phase3_runtime_observe(pressure_clusters=patron_model_counts["clusters"],
@@ -963,7 +963,7 @@ def run_phase3(
                 or not isinstance(change_count, int)
                 or change_count < 0
                 or native_input_transport
-                not in {"typed-binary-pipe", "atomic-text-file", "native-store-model-v1"}
+                not in {"typed-binary-pipe", "atomic-text-file", "native-store-model-v1", "native-primary-store-model-v2"}
                 or isinstance(native_input_bytes, bool)
                 or not isinstance(native_input_bytes, int)
                 or native_input_bytes <= 0
@@ -1007,7 +1007,7 @@ def run_phase3(
                 "native_output_bytes": native_output_bytes,
             }
             if native_store_model:
-                patron_validation["model_implementation_id"] = "native-store-model-v1"
+                patron_validation["model_implementation_id"] = patron_trace["model_implementation_id"]
                 patron_validation["native_model_metrics"] = patron_trace["native_model_metrics"]
         if patron_physical_feedback_validation is not None:
             patron_validation["physical_feedback"] = (

@@ -288,6 +288,7 @@ _NATIVE_STAGE_SOURCES = (
     "emuflow_core/bookshelf.cpp",
     "emuflow_core/patron_ingress.cpp",
     "emuflow_core/partition_clusters.cpp",
+    "emuflow_core/primary_cluster_view.cpp",
     "emuflow_core/candidate_ids.cpp",
     "emuflow_core/resource_view.cpp",
 )

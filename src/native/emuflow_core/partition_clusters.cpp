@@ -106,6 +106,7 @@ void BuildPartitionClusters(const std::vector<ArtifactRef>& inputs,const std::st
   std::vector<std::uint64_t> name_offsets{0}; std::string names;
   std::array<std::vector<std::uint32_t>,12> resources;
   ResourceView resource_view(source);
+  std::array<std::uint64_t,13> totals{}; totals[0]=count;
   auto cells=source.Prepare("SELECT seq,id,resources_seq FROM cell_records ORDER BY id");
   observed=0;
   while (cells.Step()) {
@@ -125,6 +126,7 @@ void BuildPartitionClusters(const std::vector<ArtifactRef>& inputs,const std::st
       const auto total=static_cast<std::uint64_t>(resources[field][cluster])+record.amounts[field];
       Check(total<UINT64_C(4294967296),"primary cluster resource exceeds uint32");
       resources[field][cluster]=total;
+      totals[field+1]+=record.amounts[field];
     }
   }
   Check(observed==count,"incomplete primary cluster resource sequence");
@@ -138,8 +140,12 @@ void BuildPartitionClusters(const std::vector<ArtifactRef>& inputs,const std::st
   };
   auto scalar=[&](auto value) { put(&value,sizeof value); };
   auto column=[&](const auto& values) { put(values.data(),values.size()*sizeof(values[0])); };
-  scalar(UINT64_C(0x314c4350464d5545)); scalar(std::uint32_t{1}); scalar(std::uint64_t{count});
+  scalar(UINT64_C(0x314c4350464d5545)); scalar(std::uint32_t{2}); scalar(std::uint64_t{count});
   scalar(std::uint64_t{member_counts.size()}); scalar(std::uint64_t{names.size()});
+  scalar(generation.device); scalar(generation.inode); scalar(generation.bytes);
+  scalar(generation.modified_seconds); scalar(generation.modified_nanoseconds);
+  scalar(generation.changed_seconds); scalar(generation.changed_nanoseconds);
+  column(totals); const auto header_crc=crc; scalar(header_crc);
   column(name_offsets); column(offsets); column(members); column(source_owner);
   for (const auto& values:resources) column(values);
   put(names.data(),names.size()); writer.Write(crc);
