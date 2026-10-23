@@ -176,7 +176,8 @@ emuflow multi-fpga physical --split RUN/flow/split --platform PLATFORM.json \
   --routes ROUTES.json --path-database PATHS.json
 ```
 
-CMake and Python package installations include the Vivado Tcl adapters; the
+CMake and Python package installations include the Vivado Tcl adapters, native
+primitive contracts, and fixed virtual-board wiring tables; the
 indexed provider resolves the installed data directory when outside a source
 checkout.
 

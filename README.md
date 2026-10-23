@@ -251,7 +251,8 @@ the same logical EmuIR semantics without rewriting the SQLite database.
   board support package, clock/reset configuration, and transport interface.
 - RapidWright device/API dependencies have their own licensing conditions.
   Vivado is proprietary and is not bundled. The alternative VTR backend does
-  not require Vivado.
+  not require Vivado. Native installations include the primitive contracts,
+  fixed wiring tables, and Tcl adapters required by the indexed Vivado route.
 - WNS/TNS are scoped to the declared source TimingPathDB population.
   Original-path TNS sums negative slack per original path, not once per
   unique register endpoint. Per-FPGA metrics are separate diagnostics.

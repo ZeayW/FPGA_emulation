@@ -381,6 +381,8 @@ file(
   "${CMAKE_SOURCE_DIR}/resources/architectures/*"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/platforms/*.json"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/io/*.json"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/rapidwright/*.json"
+  "${CMAKE_SOURCE_DIR}/platforms/virtual/*.wires.csv"
   "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
   "${CMAKE_SOURCE_DIR}/scripts/yosys/*"
   "${CMAKE_SOURCE_DIR}/scripts/vivado/*.tcl"
@@ -438,6 +440,14 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/src/emuflow/data/io"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/io"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/src/emuflow/data/rapidwright"
+    "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/rapidwright"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/platforms/virtual"
+    "${EMUFLOW_INSTALL_ROOT}/platforms/virtual"
   COMMAND
     "${CMAKE_COMMAND}" -E copy
     "${CMAKE_BINARY_DIR}/emuflow"
