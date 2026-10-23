@@ -1,4 +1,5 @@
 import json
+import hashlib
 import sqlite3
 import tempfile
 import unittest
@@ -18,6 +19,188 @@ from emuflow.yosys import import_yosys_json
 
 
 class XilinxMappedNetlistTests(unittest.TestCase):
+    @staticmethod
+    def _fixture() -> dict:
+        return {
+            "creator": "fixture",
+            "modules": {"top": {
+                "attributes": {"top": "1"},
+                "ports": {
+                    "clk": {"direction": "input", "bits": [2]},
+                    "a": {"direction": "input", "bits": [3]},
+                    "y": {"direction": "output", "bits": [5]},
+                },
+                "cells": {
+                    "lut": {
+                        "type": "LUT1", "parameters": {"INIT": "10"},
+                        "attributes": {"keep": "1"},
+                        "port_directions": {"I0": "input", "O": "output"},
+                        "connections": {"I0": [3], "O": [4]},
+                    },
+                    "ff": {
+                        "type": "FDRE", "parameters": {"INIT": "0"},
+                        "attributes": {},
+                        "port_directions": {
+                            "C": "input", "CE": "input", "D": "input",
+                            "R": "input", "Q": "output",
+                        },
+                        "connections": {
+                            "C": [2], "CE": ["1"], "D": [4],
+                            "R": ["0"], "Q": [5],
+                        },
+                    },
+                },
+                "netnames": {
+                    "clk": {"bits": [2]}, "a": {"bits": [3]},
+                    "comb": {"bits": [4]}, "y": {"bits": [5]},
+                },
+            }},
+        }
+
+    @staticmethod
+    def _table_rows(path: Path, table: str) -> list[tuple]:
+        connection = sqlite3.connect(path)
+        try:
+            columns = [
+                row[1] for row in connection.execute(f"PRAGMA table_info({table})")
+            ]
+            order = ",".join(columns)
+            return list(connection.execute(f"SELECT * FROM {table} ORDER BY {order}"))
+        finally:
+            connection.close()
+
+    def test_native_production_index_matches_python_reference_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.json"
+            ir_path = root / "source.emuir.sqlite"
+            native_index = root / "native.sqlite"
+            reference_index = root / "reference.sqlite"
+            reference_json = root / "reference.json"
+            source.write_text(json.dumps(self._fixture()), encoding="utf-8")
+            import_yosys_json(source, clocks=("clk",)).save(ir_path)
+            source_hash = hashlib.sha256(ir_path.read_bytes()).hexdigest()
+            source_mtime = ir_path.stat().st_mtime_ns
+
+            native_report = emit_xilinx_mapped_index(ir_path, native_index)
+            reference_report = emit_xilinx_mapped_json(
+                ir_path, reference_json, index_path=reference_index
+            )
+
+            self.assertEqual(
+                native_report["index_builder"], "sqlite-native-primitive-v1"
+            )
+            self.assertEqual(
+                reference_report["index_builder"], "python-lowering-v2"
+            )
+            for table in ("metadata", "cells", "cell_pins", "netnames"):
+                self.assertEqual(
+                    self._table_rows(native_index, table),
+                    self._table_rows(reference_index, table),
+                )
+            self.assertEqual(
+                hashlib.sha256(ir_path.read_bytes()).hexdigest(), source_hash
+            )
+            self.assertEqual(ir_path.stat().st_mtime_ns, source_mtime)
+
+    def test_generic_lut_keeps_python_lowering_fallback(self) -> None:
+        mapped = self._fixture()
+        lut = mapped["modules"]["top"]["cells"]["lut"]
+        lut["type"] = "$lut"
+        lut["parameters"] = {"WIDTH": "1", "LUT": "10"}
+        lut["port_directions"] = {"A": "input", "Y": "output"}
+        lut["connections"] = {"A": [3], "Y": [4]}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.json"
+            ir_path = root / "source.emuir.sqlite"
+            index = root / "mapped.sqlite"
+            source.write_text(json.dumps(mapped), encoding="utf-8")
+            import_yosys_json(source, clocks=("clk",)).save(ir_path)
+            report = emit_xilinx_mapped_index(ir_path, index)
+            with open_xilinx_mapped_index(index) as indexed:
+                self.assertEqual(
+                    indexed.cell_type_and_parameters("lut"),
+                    ("LUT1", {"INIT": "10"}),
+                )
+        self.assertEqual(report["index_builder"], "python-lowering-v2")
+
+    def test_native_projection_rejects_one_pin_on_two_nets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.json"
+            ir_path = root / "source.emuir.sqlite"
+            index = root / "mapped.sqlite"
+            source.write_text(json.dumps(self._fixture()), encoding="utf-8")
+            import_yosys_json(source, clocks=("clk",)).save(ir_path)
+            connection = sqlite3.connect(ir_path)
+            try:
+                cell_seq = connection.execute(
+                    "SELECT seq FROM cell_records WHERE id='lut'"
+                ).fetchone()[0]
+                port_seq = connection.execute(
+                    "SELECT seq FROM pin_names WHERE name='I0'"
+                ).fetchone()[0]
+                extras_seq = connection.execute(
+                    "SELECT min(seq) FROM payloads"
+                ).fetchone()[0]
+                ordinal = connection.execute(
+                    "SELECT coalesce(max(ordinal),-1)+1 FROM endpoint_records "
+                    "WHERE net_seq=0 AND role=1"
+                ).fetchone()[0]
+                connection.execute(
+                    "INSERT INTO endpoint_records VALUES (?,?,?,?,?,?,?)",
+                    (0, 1, ordinal, cell_seq, port_seq, 0, extras_seq),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            with self.assertRaisesRegex(
+                ValidationError, "multiple nets"
+            ):
+                emit_xilinx_mapped_index(ir_path, index)
+            self.assertFalse(index.exists())
+
+    def test_native_projection_applies_direction_to_the_complete_port(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.json"
+            ir_path = root / "source.emuir.sqlite"
+            index = root / "mapped.sqlite"
+            source.write_text(json.dumps(self._fixture()), encoding="utf-8")
+            import_yosys_json(source, clocks=("clk",)).save(ir_path)
+            connection = sqlite3.connect(ir_path)
+            try:
+                cell_seq = connection.execute(
+                    "SELECT seq FROM cell_records WHERE id='lut'"
+                ).fetchone()[0]
+                input_port = connection.execute(
+                    "SELECT seq FROM pin_names WHERE name='I0'"
+                ).fetchone()[0]
+                output_port = connection.execute(
+                    "SELECT seq FROM pin_names WHERE name='O'"
+                ).fetchone()[0]
+                connection.execute(
+                    "UPDATE endpoint_records SET port_seq=?,bit=1 "
+                    "WHERE instance_seq=? AND port_seq=?",
+                    (input_port, cell_seq, output_port),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            emit_xilinx_mapped_index(ir_path, index)
+            with open_xilinx_mapped_index(index) as indexed:
+                self.assertEqual(
+                    list(indexed.iter_pins_by_net()),
+                    [
+                        (2, "ff", "C", 0, 1, "input"),
+                        (3, "lut", "I0", 0, 2, "inout"),
+                        (4, "ff", "D", 0, 1, "input"),
+                        (4, "lut", "I0", 1, 2, "inout"),
+                        (5, "ff", "Q", 0, 1, "output"),
+                    ],
+                )
+
     def test_physical_route_pin_ordinals_stream_without_name_index(self) -> None:
         mapped = {
             "creator": "fixture",

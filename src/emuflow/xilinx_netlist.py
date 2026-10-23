@@ -1012,6 +1012,321 @@ def _write_object_entries(
     return count
 
 
+def _emit_native_xilinx_mapped_index_sql(
+    index: sqlite3.Connection,
+    ir_path: Path,
+    contracts: Mapping[str, Mapping[str, Any]],
+) -> Tuple[int, int, Counter[str], Counter[str]]:
+    """Project native primitive rows into the mapped index in SQLite.
+
+    Compact EmuIR already owns canonical cell payloads and integer endpoint
+    identities.  When every cell type is already a supported Xilinx primitive,
+    decoding every row into Python only to serialize it back into another
+    SQLite file duplicates the largest Phase 7 mapping loop.  This projection
+    preserves the v2 mapped-index rows while SQLite performs ownership,
+    conflict, contiguity and coverage checks over the attached read-only
+    source.
+    """
+
+    source_uri = f"file:{ir_path.resolve()}?mode=ro&immutable=1"
+    index.execute("ATTACH DATABASE ? AS source_emuir", (source_uri,))
+    try:
+        invalid_payload = index.execute(
+            """
+            SELECT c.id
+              FROM source_emuir.cell_records AS c
+         LEFT JOIN source_emuir.payloads AS p ON p.seq=c.parameters_seq
+         LEFT JOIN source_emuir.payloads AS a ON a.seq=c.attributes_seq
+              JOIN source_emuir.payloads AS k ON k.seq=c.constants_seq
+             WHERE (p.value IS NOT NULL AND (
+                       json_valid(p.value)=0 OR json_type(p.value)!='object'))
+                OR (a.value IS NOT NULL AND (
+                       json_valid(a.value)=0 OR json_type(a.value)!='object'))
+                OR json_valid(k.value)=0 OR json_type(k.value)!='array'
+             LIMIT 1
+            """
+        ).fetchone()
+        if invalid_payload is not None:
+            raise ValidationError(
+                f"Xilinx mapped cell {invalid_payload[0]!r} has invalid payloads"
+            )
+        orphan_endpoint = index.execute(
+            """
+            SELECT e.net_seq,e.instance_seq
+              FROM source_emuir.endpoint_records AS e
+         LEFT JOIN source_emuir.net_records AS n ON n.seq=e.net_seq
+         LEFT JOIN source_emuir.cell_records AS c ON c.seq=e.instance_seq
+         LEFT JOIN source_emuir.pin_names AS p ON p.seq=e.port_seq
+             WHERE n.seq IS NULL
+                OR e.role NOT IN (0,1)
+                OR e.bit < 0
+                OR p.seq IS NULL
+                OR (e.instance_seq IS NOT NULL AND c.seq IS NULL)
+             LIMIT 1
+            """
+        ).fetchone()
+        if orphan_endpoint is not None:
+            raise ValidationError("compact EmuIR endpoint relation is invalid")
+        invalid_constant = index.execute(
+            """
+            SELECT c.id
+              FROM source_emuir.cell_records AS c
+              JOIN source_emuir.payloads AS k ON k.seq=c.constants_seq,
+                   json_each(k.value) AS item
+             WHERE json_type(item.value)!='object'
+                OR json_type(item.value,'$.port')!='text'
+                OR json_extract(item.value,'$.port')=''
+                OR json_type(item.value,'$.bit')!='integer'
+                OR json_extract(item.value,'$.bit') < 0
+                OR json_type(item.value,'$.value')!='text'
+             LIMIT 1
+            """
+        ).fetchone()
+        if invalid_constant is not None:
+            raise ValidationError(
+                f"Xilinx mapped cell {invalid_constant[0]!r} has invalid constants"
+            )
+
+        endpoint_conflict = index.execute(
+            """
+            SELECT c.id,p.name,e.bit
+              FROM source_emuir.endpoint_records AS e
+              JOIN source_emuir.cell_records AS c ON c.seq=e.instance_seq
+              JOIN source_emuir.pin_names AS p ON p.seq=e.port_seq
+             WHERE e.instance_seq IS NOT NULL
+             GROUP BY e.instance_seq,e.port_seq,e.bit
+            HAVING min(e.net_seq) != max(e.net_seq)
+             LIMIT 1
+            """
+        ).fetchone()
+        if endpoint_conflict is not None:
+            raise ValidationError(
+                f"Xilinx mapped cell {endpoint_conflict[0]!r}."
+                f"{endpoint_conflict[1]}[{endpoint_conflict[2]}] "
+                "has multiple nets"
+            )
+        constant_conflict = index.execute(
+            """
+            SELECT c.id,json_extract(item.value,'$.port'),
+                   json_extract(item.value,'$.bit')
+              FROM source_emuir.cell_records AS c
+              JOIN source_emuir.payloads AS k ON k.seq=c.constants_seq,
+                   json_each(k.value) AS item
+             GROUP BY c.seq,json_extract(item.value,'$.port'),
+                      json_extract(item.value,'$.bit')
+            HAVING min(json_extract(item.value,'$.value')) !=
+                   max(json_extract(item.value,'$.value'))
+             LIMIT 1
+            """
+        ).fetchone()
+        if constant_conflict is not None:
+            raise ValidationError(
+                f"Xilinx mapped cell {constant_conflict[0]!r}."
+                f"{constant_conflict[1]}[{constant_conflict[2]}] "
+                "has conflicting constants"
+            )
+        mixed_conflict = index.execute(
+            """
+            SELECT c.id,json_extract(item.value,'$.port'),
+                   json_extract(item.value,'$.bit')
+              FROM source_emuir.cell_records AS c
+              JOIN source_emuir.payloads AS k ON k.seq=c.constants_seq,
+                   json_each(k.value) AS item
+              JOIN source_emuir.pin_names AS p
+                ON p.name=json_extract(item.value,'$.port')
+              JOIN source_emuir.endpoint_records AS e
+                ON e.instance_seq=c.seq AND e.port_seq=p.seq
+               AND e.bit=json_extract(item.value,'$.bit')
+             LIMIT 1
+            """
+        ).fetchone()
+        if mixed_conflict is not None:
+            raise ValidationError(
+                f"Xilinx mapped cell {mixed_conflict[0]!r}."
+                f"{mixed_conflict[1]}[{mixed_conflict[2]}] "
+                "has conflicting constant and net"
+            )
+
+        index.execute(
+            """
+            INSERT INTO cells(id,seq,type,record_json)
+            SELECT c.id,c.seq,c.type,
+                   '{"attributes":' || coalesce(a.value,'{}') ||
+                   ',"hide_name":0,"parameters":' || coalesce(p.value,'{}') ||
+                   ',"type":' || json_quote(c.type) || '}'
+              FROM source_emuir.cell_records AS c
+         LEFT JOIN source_emuir.payloads AS p ON p.seq=c.parameters_seq
+         LEFT JOIN source_emuir.payloads AS a ON a.seq=c.attributes_seq
+             ORDER BY c.seq
+            """
+        )
+        index.execute(
+            """
+            WITH pin_values AS (
+              SELECT e.instance_seq AS cell_seq,c.id AS cell_id,
+                     e.port_seq,p.name AS port,e.bit AS port_bit,
+                     CASE WHEN min(e.role) != max(e.role) THEN 2
+                          ELSE 1 - min(e.role) END AS bit_direction,
+                     min(e.net_seq) + 2 AS net_bit
+                FROM source_emuir.endpoint_records AS e
+                JOIN source_emuir.cell_records AS c ON c.seq=e.instance_seq
+                JOIN source_emuir.pin_names AS p ON p.seq=e.port_seq
+               WHERE e.instance_seq IS NOT NULL
+               GROUP BY e.instance_seq,e.port_seq,e.bit
+            ), pins AS (
+              SELECT cell_seq,cell_id,port,port_bit,
+                     max(port_bit) OVER (
+                       PARTITION BY cell_seq,port_seq
+                     ) + 1 AS port_width,
+                     CASE
+                       WHEN min(bit_direction) OVER (
+                              PARTITION BY cell_seq,port_seq
+                            ) != max(bit_direction) OVER (
+                              PARTITION BY cell_seq,port_seq
+                            )
+                         OR max(bit_direction) OVER (
+                              PARTITION BY cell_seq,port_seq
+                            ) = 2
+                       THEN 2 ELSE bit_direction END AS direction,
+                     net_bit
+                FROM pin_values
+            )
+            INSERT INTO cell_pins(
+              cell_seq,cell_id,port,port_bit,port_width,direction,
+              value_kind,net_bit,constant)
+            SELECT cell_seq,cell_id,port,port_bit,port_width,direction,
+                   0,net_bit,NULL
+              FROM pins ORDER BY cell_seq,port,port_bit
+            """
+        )
+        index.executescript(
+            """
+            CREATE TEMP TABLE native_constant_ports(
+              cell_seq INTEGER NOT NULL,port TEXT NOT NULL,
+              PRIMARY KEY(cell_seq,port)
+            ) WITHOUT ROWID;
+            INSERT INTO native_constant_ports
+            SELECT DISTINCT c.seq,json_extract(item.value,'$.port')
+              FROM source_emuir.cell_records AS c
+              JOIN source_emuir.payloads AS k ON k.seq=c.constants_seq,
+                   json_each(k.value) AS item;
+            """
+        )
+        index.execute(
+            """
+            WITH constant_values AS (
+              SELECT c.seq AS cell_seq,c.id AS cell_id,
+                     json_extract(item.value,'$.port') AS port,
+                     json_extract(item.value,'$.bit') AS port_bit,
+                     min(json_extract(item.value,'$.value')) AS constant
+                FROM source_emuir.cell_records AS c
+                JOIN source_emuir.payloads AS k ON k.seq=c.constants_seq,
+                     json_each(k.value) AS item
+               GROUP BY c.seq,port,port_bit
+            ), pins AS (
+              SELECT cell_seq,cell_id,port,port_bit,
+                     max(port_bit) OVER (
+                       PARTITION BY cell_seq,port
+                     ) + 1 AS port_width,constant
+                FROM constant_values
+            )
+            INSERT INTO cell_pins(
+              cell_seq,cell_id,port,port_bit,port_width,direction,
+              value_kind,net_bit,constant)
+            SELECT cell_seq,cell_id,port,port_bit,port_width,0,
+                   1,NULL,constant
+              FROM pins ORDER BY cell_seq,port,port_bit
+            """
+        )
+        index.execute(
+            """
+            UPDATE cell_pins AS pin
+               SET port_width=(
+                     SELECT max(peer.port_bit) + 1 FROM cell_pins AS peer
+                      WHERE peer.cell_seq=pin.cell_seq AND peer.port=pin.port
+                   ),
+                   direction=(
+                     SELECT CASE WHEN min(peer.direction) != max(peer.direction)
+                                      OR max(peer.direction) = 2
+                                 THEN 2 ELSE min(peer.direction) END
+                       FROM cell_pins AS peer
+                      WHERE peer.cell_seq=pin.cell_seq AND peer.port=pin.port
+                   )
+             WHERE (pin.cell_seq,pin.port) IN (
+                     SELECT cell_seq,port FROM native_constant_ports
+                   )
+            """
+        )
+        noncontiguous = index.execute(
+            """
+            SELECT cell_id,port
+              FROM cell_pins
+             GROUP BY cell_seq,cell_id,port
+            HAVING min(port_bit) != 0 OR count(*) != max(port_bit) + 1
+             LIMIT 1
+            """
+        ).fetchone()
+        if noncontiguous is not None:
+            raise ValidationError(
+                f"Xilinx mapped cell {noncontiguous[0]!r}."
+                f"{noncontiguous[1]} is not contiguous"
+            )
+        index.execute(
+            """
+            INSERT INTO netnames(id,seq,record_json)
+            SELECT id,seq,'{"attributes":{},"bits":[' || (seq + 2) ||
+                          '],"hide_name":0}'
+              FROM source_emuir.net_records ORDER BY seq
+            """
+        )
+        cell_count = int(index.execute(
+            "SELECT count(*) FROM cells"
+        ).fetchone()[0])
+        net_count = int(index.execute(
+            "SELECT count(*) FROM netnames"
+        ).fetchone()[0])
+        source_cell_count = int(index.execute(
+            "SELECT count(*) FROM source_emuir.cell_records"
+        ).fetchone()[0])
+        source_net_count = int(index.execute(
+            "SELECT count(*) FROM source_emuir.net_records"
+        ).fetchone()[0])
+        if cell_count != source_cell_count or net_count != source_net_count:
+            raise ValidationError("Xilinx mapped index coverage is incomplete")
+
+        inventory = Counter(
+            {
+                str(row[0]): int(row[1])
+                for row in index.execute(
+                    "SELECT type,count(*) FROM cells GROUP BY type ORDER BY type"
+                )
+            }
+        )
+        unknown = sorted(set(inventory) - set(contracts))
+        if unknown:
+            raise ValidationError(
+                f"unsupported Xilinx primitive {unknown[0]!r}"
+            )
+        hard_blocks = Counter(
+            {
+                cell_type: count
+                for cell_type, count in inventory.items()
+                if contracts[cell_type]["hard_block"]
+            }
+        )
+        index.execute("DROP TABLE native_constant_ports")
+        index.commit()
+        return cell_count, net_count, inventory, hard_blocks
+    except BaseException:
+        index.rollback()
+        raise
+    finally:
+        try:
+            index.execute("DETACH DATABASE source_emuir")
+        except sqlite3.Error:
+            pass
+
+
 def _emit_compact_xilinx_mapped_artifacts(
     ir_path: Path,
     output_path: Optional[Path],
@@ -1025,7 +1340,7 @@ def _emit_compact_xilinx_mapped_artifacts(
     graph-sized serialization and I/O without adding information.
     """
 
-    source = open_emuir_sqlite_read_only(ir_path)
+    source: Optional[sqlite3.Connection] = open_emuir_sqlite_read_only(ir_path)
     output_temp = (
         output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
         if output_path is not None else None
@@ -1102,7 +1417,7 @@ def _emit_compact_xilinx_mapped_artifacts(
         if output_path is not None:
             output_path.parent.mkdir(parents=True, exist_ok=True)
         index_path.parent.mkdir(parents=True, exist_ok=True)
-        index = sqlite3.connect(index_temp)
+        index = sqlite3.connect(index_temp, uri=True)
         index.executescript(
             """
             PRAGMA journal_mode=OFF;
@@ -1151,6 +1466,15 @@ def _emit_compact_xilinx_mapped_artifacts(
             ),
         )
 
+        native_sql_projection = (
+            output_temp is None
+            and not any(
+                row[0] not in native_xilinx_cells
+                for row in source.execute(
+                    "SELECT DISTINCT type FROM cell_records"
+                )
+            )
+        )
         endpoint_rows = _RowsForOwner(
             source.execute(
                 """
@@ -1301,7 +1625,21 @@ def _emit_compact_xilinx_mapped_artifacts(
                 )
                 yield str(row["id"]), value
 
-        if output_temp is None:
+        if native_sql_projection:
+            # The set projection attaches the same immutable source to the
+            # destination connection.  Release the metadata reader first so
+            # the process does not retain two independent SQLite page caches.
+            source.close()
+            source = None
+            (
+                cell_count,
+                emitted_net_count,
+                inventory,
+                hard_blocks,
+            ) = _emit_native_xilinx_mapped_index_sql(
+                index, ir_path, contracts
+            )
+        elif output_temp is None:
             cell_count = sum(1 for _name, _value in cells())
             emitted_net_count = sum(1 for _name, _value in netnames())
         else:
@@ -1378,10 +1716,16 @@ def _emit_compact_xilinx_mapped_artifacts(
             "output_sha256": output_sha256,
             "index": str(index_path),
             "index_sha256": file_sha256(index_path),
+            "index_builder": (
+                "sqlite-native-primitive-v1"
+                if native_sql_projection
+                else "python-lowering-v2"
+            ),
             "audit": audit,
         }
     finally:
-        source.close()
+        if source is not None:
+            source.close()
         if index is not None:
             index.close()
         if output_temp is not None:

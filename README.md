@@ -973,7 +973,18 @@ Its report separates binding, cell/I/O
 emission, endpoint indexing, clock checks, net emission, and atomic commit.
 Mapped-index v2 stores each typed cell pin once outside `record_json`; legacy
 cell mappings are reconstructed lazily. Production RWRoute groups this ordered
-pin relation by net. LUT2 clock-gate candidates, their relevant endpoints, and
+pin relation by net. Its production builder now attaches compact EmuIR
+read-only and projects already-native Xilinx cells, pins and nets into the
+mapped index with ordered SQL scans. It validates payload types, ownership,
+pin-value conflicts, port contiguity and complete source coverage before
+publication. Generic LUT/DFF lowering and explicit JSON export retain the
+Python reference path, and the report records which builder ran. On an
+isolated 100,000-LUT1 chain, the production index build fell from 2.06 to
+0.75 seconds; maximum RSS changed from 71,778,304 to 73,580,544 bytes. Both
+paths produced the same 36,859,904-byte database and identical ordered logical
+rows; SQLite page layout and file SHA-256 are not treated as semantic identity.
+This is adapter evidence, not NVDLA qualification. LUT2 clock-gate candidates,
+their relevant endpoints, and
 closed-chain pruning now stay in temporary SQLite relations joined directly to
 the mapped index and physical handoff; Python retains only the final qualified
 gate identity/ordinal table. The complete routed-pin cursor is therefore read
