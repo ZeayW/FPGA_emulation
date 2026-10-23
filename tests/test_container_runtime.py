@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -8,6 +9,19 @@ import unittest
 
 
 class ContainerRuntimeTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("cmake"), "requires CMake")
+    def test_tcl_header_guard_handles_upstream_preprocessor_spacing(self):
+        helper = Path(__file__).resolve().parents[1] / "engines/opensta/cmake/FindTCL.cmake"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            header, script = root / "tcl.h", root / "probe.cmake"
+            script.write_text(f'set(TCL_HEADER "{header}")\nset(TCL_LIBRARY "{root}/libtcl.so")\ninclude("{helper}")\n')
+            for minor, expected in ((5, False), (6, True), (7, True)):
+                with self.subTest(minor=minor):
+                    header.write_text(f"#   define TCL_MAJOR_VERSION   8\n#define TCL_MINOR_VERSION   {minor}\n")
+                    run = subprocess.run([shutil.which("cmake"), "-P", str(script)], text=True, capture_output=True)
+                    self.assertEqual(run.returncode == 0, expected, run.stdout + run.stderr)
+
     def test_clean_environment_retains_sta_artifact_bindings_and_exact_arguments(self):
         root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as directory:
