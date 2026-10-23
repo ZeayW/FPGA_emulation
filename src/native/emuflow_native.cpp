@@ -6,6 +6,7 @@
 
 #include "emuflow_core/native_pipeline.hpp"
 #include "emuflow_core/tool_runtime.hpp"
+#include "emuflow_core/compile.hpp"
 
 namespace {
 using emuflow::native::Stage;
@@ -13,6 +14,7 @@ using emuflow::native::StageRequest;
 constexpr const char* kUsage =
     "usage: emuflow-native [--report RESULT_JSON] PHASE OPERATION ...\n"
     "  check-runtime\n"
+    "  compile REQUEST_JSON\n"
     "  run-tool REQUEST RESULT_JSON\n"
     "  phase3 analyze INPUT OUTPUT\n"
     "  phase3 analyze --indexed-input EMUIR INPUT OUTPUT\n"
@@ -101,6 +103,13 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     return Finish(emuflow::core::CheckNativeRuntime(),report);
   if (argc == 4 && std::string(argv[1]) == "run-tool" && report.empty())
     return RunTool(argv[2],argv[3]);
+  if (argc == 3 && std::string(argv[1]) == "compile" && report.empty()) {
+    ToolSignals signals;
+    const auto configuration = emuflow::core::ArtifactRef::Bind(argv[2],"native-compile-request-v1");
+    const auto result = emuflow::core::Compile(configuration,&tool_cancelled);
+    emuflow::core::PublishCompileResult(result);
+    return Finish(result.operation,"");
+  }
   const std::string phase = argc > 1 ? argv[1] : "";
   const std::string operation = argc > 2 ? argv[2] : "";
   auto run = [&](Stage stage, std::vector<std::string> inputs,

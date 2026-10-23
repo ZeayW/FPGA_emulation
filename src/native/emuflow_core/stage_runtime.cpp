@@ -16,6 +16,10 @@
 namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
+    {"native-compile-request-v1", ArtifactEncoding::kText, 0, 1},
+    {"native-compile-adapter-v1", ArtifactEncoding::kText, 0, 1},
+    {"native-compile-state-v1", ArtifactEncoding::kText, 0, 1},
+    {"multi-fpga-flow-report-v2", ArtifactEncoding::kText, 0, 2},
     {"external-tool-request-v1", ArtifactEncoding::kBinary, 0x31514552544c4645ULL, 1},
     {"external-tool-executable-v1", ArtifactEncoding::kText, 0, 1},
     {"emuir-compact-v2", ArtifactEncoding::kSqlite, 0x454d5549, 2},

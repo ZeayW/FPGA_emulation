@@ -134,6 +134,7 @@ rm -f "$unified"
   "$source_dir/src/native/emuflow_core/schedule_model.cpp" \
   "$source_dir/src/native/emuflow_core/schedule_ingress.cpp" \
   "$source_dir/src/native/emuflow_core/tool_runtime.cpp" \
+  "$source_dir/src/native/emuflow_core/compile.cpp" \
   "$source_dir/src/native/patron_refiner.cpp" \
   "$source_dir/src/native/static_exact_analyzer.cpp" \
   "$source_dir/src/native/tlr_router.cpp" \

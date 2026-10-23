@@ -292,6 +292,7 @@ add_library(
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/schedule_model.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/schedule_ingress.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/tool_runtime.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/compile.cpp"
 )
 target_compile_features(emuflow_core PUBLIC cxx_std_17)
 target_compile_options(emuflow_core PRIVATE -O3)

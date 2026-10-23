@@ -66,9 +66,13 @@ Python still publishes the compact manifest.
 The shared core also supervises external tools with process-group cancellation,
 resource limits and bounded diagnostics. Installed Yosys streaming and OpenSTA
 extraction use that lifecycle through small requests.
-The complete native `compile` entry and remaining shared-store integration are
-unfinished; Python still owns orchestration and portions of the production data
-plane.
+An opt-in `multi-fpga compile --compile-implementation native-control-v1` uses
+the C++ one-shot `emuflow-native compile` controller with isolated shared Python
+phase adapters. The default remains `python-control-v1`; provider and algorithm
+defaults are unchanged. This is transitional orchestration, not completed native
+data-plane migration or large-design qualification. Supported modes, remaining
+integration and result contracts are described in the
+[user guide](docs/USER_GUIDE.md#native-compile-control).
 
 ## Flow
 

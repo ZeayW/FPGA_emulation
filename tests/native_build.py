@@ -264,6 +264,7 @@ _NATIVE_STAGE_SOURCES = (
     "emuflow_core/schedule_store.cpp", "emuflow_core/route_view.cpp",
     "emuflow_core/schedule_model.cpp", "emuflow_core/schedule_ingress.cpp",
     "emuflow_core/tool_runtime.cpp",
+    "emuflow_core/compile.cpp",
 )
 
 

@@ -33,6 +33,14 @@ RTL + constraints + mapping profile
 One owner supplies each large population; reports summarize it rather than
 embedding duplicate netlists, maps, or timing-path trees.
 
+The optional native one-shot controller executes this dependency sequence with
+isolated shared phase adapters. It exchanges bounded configuration, artifact paths
+and report projections; each phase releases its working state before the next
+process starts. The transitional Python data planes remain explicit. See
+[native compile control](USER_GUIDE.md#native-compile-control) for implementation
+selection and unsupported modes, and the [migration contract](PHASE3_NATIVE_MIGRATION.md)
+for the remaining native ownership requirements.
+
 ## Logical model
 
 EmuIR retains directed endpoints, hierarchy, cell types and parameters,

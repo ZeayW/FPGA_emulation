@@ -20,6 +20,48 @@ accepts the EmuIR symlink only when it resolves to the input declared in the
 passing Phase 1 continuation report, and hashes those original bytes as part
 of the flow artifact seal. Other flow artifacts still reject symlinks.
 
+## Native compile control
+
+Add `--compile-implementation native-control-v1` to the normal
+`emuflow multi-fpga compile` invocation to select the C++ one-shot controller.
+The CLI still resolves benchmark/BoardDB inputs, then sends bounded configuration
+to `emuflow-native compile REQUEST_JSON`. The controller chooses the phase order;
+it never calls the Python compile function. Individual shared phase bodies run
+in isolated Python adapters while their remaining data planes are migrated.
+The default remains `python-control-v1`, with the same provider, algorithm,
+seed and physical-policy defaults in both modes.
+
+The native controller supports the ordinary baseline split path, optional physical
+implementation and global timing. Cross-stage feedback, frame-length search,
+Chimew comparison and serial-BSP continuation currently reject before synthesis;
+they remain available through the Python controller. No rejected or failed native
+run retries through Python or changes providers. This entry does not establish
+large-design qualification or completion of the C++ data-plane migration.
+
+The [request envelope](../schemas/native-compile-request-v1.schema.json) contains
+the interpreter invocation, Python source directory, invocation working directory
+and current `run_multi_fpga_flow` keyword options. Direct requests require absolute
+paths for all Path-valued options; the CLI bridge resolves them. Relative executable
+strings retain their original invocation-directory meaning. Options bind to the
+current API signature; unknown options reject. Use the exact deployed source and
+tool revisions for reproducible runs. File-generation checks detect local changes;
+they do not replace portable source and tool hashes in terminal evidence.
+
+Outputs require an empty directory. Phase failure stops the sequence immediately.
+Cancellation unwinds adapters and reaps nested native tool owners before removing
+control scratch. Control state carries configuration, artifact paths and projected
+stage summaries; canonical phase stores and reports remain their owners. The
+ephemeral state is neither a checkpoint nor a restart interface.
+
+`multi-fpga-flow-report.json` remains the usual flow result. The separate
+[native-compile-result.json](../schemas/native-compile-result-v1.schema.json)
+retains requested and resolved configuration, common operation status and stage
+wall/CPU/RSS metrics. Its `native_data_plane_complete` is explicitly false.
+`wait4` maximum-process high-water RSS is distinct from sampled process-tree RSS
+in `stage-metrics/`; neither should be relabelled as the other. Retain the compact
+controller result alongside normal terminal validation evidence, and apply the
+same experiment cleanup and full Phase 7/7C acceptance requirements.
+
 ## Complete build
 
 Run `emuflow-native check-runtime` in the environment that will execute the flow

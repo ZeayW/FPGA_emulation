@@ -9,8 +9,10 @@ separate engines. OpenPARF may retain its required thin Python/PyTorch host.
 A native command that only invokes the Python compiler is not this target.
 
 The current native executable links real Phase 3, 4, 5 and 6 kernels through a
-shared typed operation API, including PATRON search. Complete orchestration and the
-remaining production data-plane ownership are unfinished. W0 shared-core
+shared typed operation API, including PATRON search. An opt-in native controller
+now owns the ordinary one-shot phase sequence through isolated shared Python
+adapters. Advanced orchestration and remaining native data-plane ownership are
+unfinished. W0 shared-core
 consolidation and W7 native compilation are the priority architectural delivery;
 stage adapters must converge on those interfaces rather than add independent
 parsers, identity maps, error formats and publication implementations.
@@ -31,8 +33,8 @@ equal integers in different stores are not interchangeable.
 These operation implementations and their supporting contracts are compiled
 into one `libemuflow_core` target. The former `emuflow_native_stages` target is
 only a CMake compatibility alias; the executable and native library tests link
-the core directly. This does not yet cover every standalone adapter or supply
-the missing complete native compiler.
+the core directly. This does not yet cover every standalone adapter or complete
+the native production data plane.
 
 `phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT`
 owns the complete large indexed exact producer. It builds the integer model
@@ -87,7 +89,7 @@ request those functions explicitly.
 
 The independent Python validator still has compact route-scale working data;
 non-exact providers, explicit compatibility result import, timing adapters and
-the remaining phase orchestration are unfinished. This delivery does not
+advanced phase orchestration are unfinished. This delivery does not
 complete W7 or establish whole-stage performance gains.
 Deployment probes load the unified entry and physical bridge before publishing
 runtime provenance; launchers must repeat them in the actual execution
@@ -170,6 +172,32 @@ the complete Phase 3 assignment has been published.
 
 ## Native production entry (W7)
 
+`core::Compile` and `emuflow-native compile REQUEST_JSON` execute the fixed
+preflight → frontend → timing → partition → route-policy → route → TDM → split →
+physical → signoff → finalize sequence. The opt-in CLI bridge is
+`multi-fpga compile --compile-implementation native-control-v1`. The native owner
+does not call the Python compiler. Each transitional Python adapter invokes one
+shared phase body and exits, releasing its working population before the next
+phase starts. The existing Python controller uses the same phase bodies and
+retains advanced modes. Current defaults resolve from its unchanged API signature;
+both requested and effective configuration are recorded in the separate native
+result. See [supported modes and contracts](USER_GUIDE.md#native-compile-control).
+
+The controller binds the request, adapter and interpreter through `ArtifactRef`,
+checks phase order, run identity and request generation, and claims an empty
+output directory. It validates the terminal flow-report envelope before atomic
+controller-result publication. Stage failure or cancellation never advances or
+retries the sequence. Previous control state is removed after the next adapter
+consumes it; no checkpoint DAG is created. Canonical phase artifacts retain their
+normal validation and publication contracts. Controller validation is not a new
+electrical/timing oracle or a replacement for terminal flow validation.
+
+This is a native orchestration milestone, not completed W7. Python phase data
+planes and several direct engine adapters remain; cross-stage/frame search,
+Chimew comparison and serial BSP are not supported by native control yet.
+The controller reports `native_data_plane_complete:false`. Full native data-plane
+ownership and real-design Phase 7/7C qualification remain required for completion.
+
 `core::RunExternalTool` owns actual engine execution: explicit executable/argv,
 working directory, inherited or replaced environment, optional wall/CPU/address
 space/file-size limits, a separate process group, deadline/cancellation escalation
@@ -196,7 +224,7 @@ select this runtime from the tool's unified sibling or configured native install
 The bounded provider-output helper uses the same owner. Explicit comparison tools
 without a unified installation retain the Python launcher. Once a native runtime
 is selected, failure never retries the engine through Python. Other direct
-subprocess adapters and complete compile orchestration are still unfinished.
+subprocess adapters and advanced compile orchestration are still unfinished.
 
 The complete entry must resolve effective configuration, execute dependencies,
 manage external tools and resource limits, collect stage metrics, and publish

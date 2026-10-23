@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmuFlow one-shot native compile result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "implementation_id", "phase_implementation", "native_data_plane_complete", "operation", "output_directory", "request_configuration", "effective_configuration", "stages"],
+  "properties": {
+    "schema": {"const": "emuflow.native-compile-result/v1"},
+    "implementation_id": {"const": "native-orchestration-v1"},
+    "phase_implementation": {"const": "isolated-shared-python-adapters-v1"},
+    "native_data_plane_complete": {"const": false},
+    "operation": {"$ref": "native-stage-result-v1.schema.json"},
+    "output_directory": {"type": "string"},
+    "request_configuration": {"oneOf": [{"$ref": "native-compile-request-v1.schema.json"}, {"type": "null"}]},
+    "effective_configuration": {"type": ["object", "null"]},
+    "stages": {
+      "type": "array",
+      "maxItems": 11,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "status", "wall_seconds", "user_cpu_seconds", "system_cpu_seconds", "maximum_process_rss_kib", "cpu_scope", "rss_scope"],
+        "properties": {
+          "stage": {"enum": ["preflight", "frontend", "timing", "partition", "route-policy", "route", "tdm", "split", "physical", "signoff", "finalize"]},
+          "status": {"enum": ["pass", "fail"]},
+          "wall_seconds": {"type": "number", "minimum": 0},
+          "user_cpu_seconds": {"type": "number", "minimum": 0},
+          "system_cpu_seconds": {"type": "number", "minimum": 0},
+          "maximum_process_rss_kib": {"type": "integer", "minimum": 0},
+          "cpu_scope": {"const": "wait4-child-and-reaped-descendants"},
+          "rss_scope": {"const": "wait4-maximum-process-high-water"}
+        }
+      }
+    }
+  }
+}
