@@ -13,6 +13,7 @@ import heapq
 import itertools
 import json
 import math
+import mmap
 import os
 import sqlite3
 import struct
@@ -85,6 +86,8 @@ PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V11 = (
 PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14 = (
     "emuflow.partition-pressure-trace/v14"
 )
+_PATRON_TYPED_OUTPUT_MAGIC = 0x3154554F54415045
+_PATRON_TYPED_OUTPUT_VERSION = 1
 
 PATRON_FLOW_REFINEMENT_ALGORITHM_V1 = (
     "flowcutter-bidirectional-piercing-v1"
@@ -3888,7 +3891,214 @@ def _metrics_from_objective(
     return result
 
 
-def _parse_patron_native_output(
+def _parse_patron_typed_output(
+    path: Path,
+    indexes: Mapping[str, Any],
+    *,
+    packed_assignment: bool = False,
+) -> Tuple[
+    Mapping[str, str],
+    List[Dict[str, Any]],
+    List[Dict[str, Any]],
+    Dict[str, Any],
+    Dict[str, Any],
+    str,
+    Dict[str, Any],
+]:
+    """Read the summary-only fixed-width PATRON result without text rows."""
+
+    clusters = indexes.get("clusters")
+    parts = indexes.get("parts")
+    if (
+        not isinstance(clusters, Sequence)
+        or isinstance(clusters, (str, bytes))
+        or not isinstance(parts, Sequence)
+        or isinstance(parts, (str, bytes))
+    ):
+        raise ValidationError("native PATRON typed output indexes are invalid")
+    stream = path.open("rb")
+    try:
+        try:
+            data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+        except (OSError, ValueError) as error:
+            raise ValidationError(
+                "native PATRON typed output is unreadable"
+            ) from error
+        try:
+            offset = 0
+
+            def take(format_string: str) -> Tuple[Any, ...]:
+                nonlocal offset
+                size = struct.calcsize(format_string)
+                if offset + size > len(data):
+                    raise ValidationError(
+                        "native PATRON typed output is truncated"
+                    )
+                values = struct.unpack_from(format_string, data, offset)
+                offset += size
+                return values
+
+            magic, version, output_version, mode_size = take("<QIII")
+            if (
+                magic != _PATRON_TYPED_OUTPUT_MAGIC
+                or version != _PATRON_TYPED_OUTPUT_VERSION
+                or output_version not in {6, 7, 8, 9, 10, 11, 14}
+                or mode_size > 256
+                or offset + mode_size > len(data)
+            ):
+                raise ValidationError(
+                    "native PATRON typed output header is invalid"
+                )
+            try:
+                mode = bytes(data[offset : offset + mode_size]).decode("ascii")
+            except UnicodeDecodeError as error:
+                raise ValidationError(
+                    "native PATRON typed output mode is invalid"
+                ) from error
+            offset += mode_size
+            expected_modes = (
+                {
+                    "endpoint-exact-global-best-v6",
+                    "endpoint-exact-critical-ejection-v6",
+                }
+                if output_version == 6
+                else {f"endpoint-exact-critical-flow-v{output_version}"}
+            )
+            if mode not in expected_modes:
+                raise ValidationError(
+                    "native PATRON typed output mode is invalid"
+                )
+            initial_values = list(take("<8d"))
+            final_values = list(take("<8d"))
+            capacity = take("<4q")
+            path_max = take("<4q")
+            move_count, batch_count, change_count, detail = take("<3QI")
+            cluster_count = take("<Q")[0]
+            if (
+                detail != 0
+                or cluster_count != len(clusters)
+                or any(value < 0 for value in capacity)
+                or any(value < 0 for value in path_max)
+                or len(data) - offset != 4 * cluster_count + 4
+            ):
+                raise ValidationError(
+                    "native PATRON typed output summary is invalid"
+                )
+            sentinel = 2**32 - 1
+            packed_parts = (
+                array("I", [sentinel]) * cluster_count
+                if packed_assignment
+                else None
+            )
+            assignment: Dict[str, str] = {}
+            for native_cluster in range(cluster_count):
+                part = take("<I")[0]
+                if part >= len(parts):
+                    raise ValidationError(
+                        "native PATRON typed output assignment is invalid"
+                    )
+                cluster_id = clusters[native_cluster]
+                part_id = parts[part]
+                if not isinstance(cluster_id, str) or not isinstance(
+                    part_id, str
+                ):
+                    raise ValidationError(
+                        "native PATRON typed output identity is invalid"
+                    )
+                if packed_parts is None:
+                    if cluster_id in assignment:
+                        raise ValidationError(
+                            "native PATRON typed output assignment repeats"
+                        )
+                    assignment[cluster_id] = part_id
+                else:
+                    if (
+                        not cluster_id.startswith("c")
+                        or not cluster_id[1:].isdigit()
+                    ):
+                        raise ValidationError(
+                            "native PATRON cluster identity is not canonical"
+                        )
+                    cluster_ordinal = int(cluster_id[1:])
+                    if (
+                        cluster_ordinal >= len(packed_parts)
+                        or _PackedClusterAssignment.identity(cluster_ordinal)
+                        != cluster_id
+                        or packed_parts[cluster_ordinal] != sentinel
+                    ):
+                        raise ValidationError(
+                            "native PATRON typed output assignment repeats"
+                        )
+                    packed_parts[cluster_ordinal] = part
+            if len(data) - offset != 4:
+                raise ValidationError(
+                    "native PATRON typed output has trailing bytes"
+                )
+            expected_crc32 = struct.unpack_from("<I", data, offset)[0]
+            checksum = 0
+            for start in range(0, offset, 1024 * 1024):
+                checksum = zlib.crc32(
+                    data[start : min(start + 1024 * 1024, offset)],
+                    checksum,
+                )
+            if checksum != expected_crc32:
+                raise ValidationError(
+                    "native PATRON typed output checksum disagrees"
+                )
+            offset += 4
+            final_assignment: Mapping[str, str] = (
+                assignment
+                if packed_parts is None
+                else _PackedClusterAssignment(parts, packed_parts)
+            )
+            initial_metrics = _metrics_from_objective(
+                initial_values,
+                path_transition_objective=output_version == 14,
+            )
+            final_metrics = _metrics_from_objective(
+                final_values,
+                path_transition_objective=output_version == 14,
+            )
+            initial_metrics.update(
+                {
+                    "transport_capacity_violations": capacity[0],
+                    "transport_capacity_excess_bits": capacity[1],
+                    "maximum_path_hops": path_max[0],
+                    "maximum_path_tdm_ratio_sum": path_max[1],
+                }
+            )
+            final_metrics.update(
+                {
+                    "transport_capacity_violations": capacity[2],
+                    "transport_capacity_excess_bits": capacity[3],
+                    "maximum_path_hops": path_max[2],
+                    "maximum_path_tdm_ratio_sum": path_max[3],
+                }
+            )
+            return (
+                final_assignment,
+                [],
+                [],
+                initial_metrics,
+                final_metrics,
+                mode,
+                {
+                    "moves": move_count,
+                    "batches": batch_count,
+                    "changes": change_count,
+                    "detail_retained": False,
+                    "output_bytes": path.stat().st_size,
+                    "output_transport": "typed-binary-file",
+                    "output_crc32": checksum,
+                },
+            )
+        finally:
+            data.close()
+    finally:
+        stream.close()
+
+
+def _parse_patron_native_output_text(
     path: Path,
     indexes: Mapping[str, Any],
     *,
@@ -4282,6 +4492,7 @@ def _parse_patron_native_output(
             }
         )
     summary["output_bytes"] = path.stat().st_size
+    summary["output_transport"] = "text-record-stream"
     return (
         final_assignment,
         moves,
@@ -4290,6 +4501,34 @@ def _parse_patron_native_output(
         final_metrics,
         mode,
         summary,
+    )
+
+
+def _parse_patron_native_output(
+    path: Path,
+    indexes: Mapping[str, Any],
+    *,
+    packed_assignment: bool = False,
+) -> Tuple[
+    Mapping[str, str],
+    List[Dict[str, Any]],
+    List[Dict[str, Any]],
+    Dict[str, Any],
+    Dict[str, Any],
+    str,
+    Dict[str, Any],
+]:
+    try:
+        with path.open("rb") as stream:
+            prefix = stream.read(8)
+    except OSError as error:
+        raise ValidationError("native PATRON output is unreadable") from error
+    if prefix.startswith(b"EMUFLOW_"):
+        return _parse_patron_native_output_text(
+            path, indexes, packed_assignment=packed_assignment
+        )
+    return _parse_patron_typed_output(
+        path, indexes, packed_assignment=packed_assignment
     )
 
 
@@ -4420,7 +4659,7 @@ def run_partition_pressure_native(
                 del environment[name]
         command = [resolved]
         if not retain_trace_seals:
-            command.append("--summary-output")
+            command.extend(("--summary-output", "--typed-output"))
         if native_input_copy:
             copy_path = Path(native_input_copy)
             copy_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4676,7 +4915,9 @@ def run_partition_pressure_native(
         "native_input_bytes": output_summary["input"]["bytes"],
         "native_input_records": output_summary["input"]["records"],
         "native_input_crc32": output_summary["input"].get("crc32"),
+        "native_output_transport": output_summary["output_transport"],
         "native_output_bytes": output_summary["output_bytes"],
+        "native_output_crc32": output_summary.get("output_crc32"),
         "trace_storage": (
             "retained"
             if output_summary["detail_retained"]

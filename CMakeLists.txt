@@ -735,6 +735,7 @@ if(EMUFLOW_BUILD_PATRON_REFINER)
   )
   target_compile_features(emuflow_patron_refiner PRIVATE cxx_std_17)
   target_compile_options(emuflow_patron_refiner PRIVATE -O3)
+  target_link_libraries(emuflow_patron_refiner PRIVATE emuflow_core)
   set_target_properties(
     emuflow_patron_refiner
     PROPERTIES

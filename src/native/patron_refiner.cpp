@@ -1,4 +1,5 @@
 #include "bank_allocation.hpp"
+#include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/hash.hpp"
 #include <algorithm>
 #include <array>
@@ -24,6 +25,8 @@
 namespace {
 
 constexpr double kQuantum = 1.0e-9;
+constexpr std::uint64_t kTypedOutputMagic = 0x3154554f54415045ULL;
+constexpr std::uint32_t kTypedOutputVersion = 1;
 
 struct Domain {
   int lanes = 0;
@@ -4404,6 +4407,68 @@ struct NativeBatch {
   Evaluation after;
 };
 
+void write_typed_output(const std::string& output_path,
+                        const std::string& mode,
+                        const Evaluation& initial,
+                        const Evaluation& final,
+                        const std::vector<NativeMove>& moves,
+                        const std::vector<int>& assignment,
+                        const std::vector<NativeBatch>& batches,
+                        int flow_output_version) {
+  require(initial.objective.size() == 8 && final.objective.size() == 8,
+          "PATRON typed output objective is incomplete");
+  require(initial.ranked.size() == 10 && final.ranked.size() == 10,
+          "PATRON typed output rank is incomplete");
+  require(mode.size() <= std::numeric_limits<std::uint32_t>::max(),
+          "PATRON typed output mode is too large");
+  const auto output_version = static_cast<std::uint32_t>(
+      flow_output_version == 0 ? 6 : flow_output_version);
+  std::uint64_t changes = 0;
+  for (const NativeBatch& batch : batches) {
+    changes += static_cast<std::uint64_t>(batch.changes.size());
+  }
+
+  emuflow::core::AtomicBinaryWriter output(output_path);
+  std::uint32_t checksum = 0;
+  const auto write = [&](const auto& value) {
+    output.Write(value);
+    emuflow::core::UpdateCrc32(
+        checksum, reinterpret_cast<const unsigned char*>(&value),
+        sizeof(value));
+  };
+  const auto write_bytes = [&](const void* values, std::size_t size) {
+    output.WriteBytes(values, size);
+    emuflow::core::UpdateCrc32(
+        checksum, static_cast<const unsigned char*>(values), size);
+  };
+  write(kTypedOutputMagic);
+  write(kTypedOutputVersion);
+  write(output_version);
+  write(static_cast<std::uint32_t>(mode.size()));
+  write_bytes(mode.data(), mode.size());
+  for (const double value : initial.objective) write(value);
+  for (const double value : final.objective) write(value);
+  write(static_cast<std::int64_t>(initial.capacity_violations));
+  write(static_cast<std::int64_t>(initial.capacity_excess_bits));
+  write(static_cast<std::int64_t>(final.capacity_violations));
+  write(static_cast<std::int64_t>(final.capacity_excess_bits));
+  write(static_cast<std::int64_t>(initial.ranked[0]));
+  write(static_cast<std::int64_t>(initial.ranked[1]));
+  write(static_cast<std::int64_t>(final.ranked[0]));
+  write(static_cast<std::int64_t>(final.ranked[1]));
+  write(static_cast<std::uint64_t>(moves.size()));
+  write(static_cast<std::uint64_t>(batches.size()));
+  write(changes);
+  write(std::uint32_t{0});
+  write(static_cast<std::uint64_t>(assignment.size()));
+  for (const int part : assignment) {
+    require(part >= 0, "PATRON typed output assignment is invalid");
+    write(static_cast<std::uint32_t>(part));
+  }
+  output.Write(checksum);
+  output.Commit();
+}
+
 void write_output(const std::string& output_path,
                   const std::string& mode,
                   const Evaluation& initial,
@@ -4412,7 +4477,15 @@ void write_output(const std::string& output_path,
                   const std::vector<int>& assignment,
                   const std::vector<NativeBatch>& batches = {},
                   int flow_output_version = 0,
-                  bool emit_trace = true) {
+                  bool emit_trace = true,
+                  bool typed_output = false) {
+  if (typed_output) {
+    require(!emit_trace,
+            "PATRON typed output supports summary-only publication");
+    write_typed_output(output_path, mode, initial, final, moves, assignment,
+                       batches, flow_output_version);
+    return;
+  }
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
   const char* header = "EMUFLOW_PATRON_OUTPUT_V6\n";
@@ -4487,7 +4560,8 @@ void write_output(const std::string& output_path,
 
 void run_exact(const Model& model,
                const std::string& output_path,
-               bool emit_trace) {
+               bool emit_trace,
+               bool typed_output) {
   std::vector<int> assignment(model.clusters);
   for (int cluster = 0; cluster < model.clusters; ++cluster) {
     assignment[cluster] = model.cluster[cluster].part;
@@ -4630,12 +4704,14 @@ void run_exact(const Model& model,
                assignment,
                {},
                0,
-               emit_trace);
+               emit_trace,
+               typed_output);
 }
 
 void run_scalable(const Model& model,
                   const std::string& output_path,
-                  bool emit_trace) {
+                  bool emit_trace,
+                  bool typed_output) {
   ProxyState state = build_proxy_state(model);
   const Evaluation initial = state.evaluation;
   const auto cluster_nets = build_cluster_nets(model);
@@ -5872,16 +5948,18 @@ void run_scalable(const Model& model,
                state.assignment,
                batches,
                model.flow_version,
-               emit_trace);
+               emit_trace,
+               typed_output);
 }
 
 void run(const Model& model,
          const std::string& output_path,
-         bool emit_trace) {
+         bool emit_trace,
+         bool typed_output) {
   if (model.clusters <= 256 && !model.flow_refinement) {
-    run_exact(model, output_path, emit_trace);
+    run_exact(model, output_path, emit_trace, typed_output);
   } else {
-    run_scalable(model, output_path, emit_trace);
+    run_scalable(model, output_path, emit_trace, typed_output);
   }
 }
 
@@ -5890,10 +5968,12 @@ void run(const Model& model,
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "usage: emuflow_patron_refiner [--summary-output] "
+                 "[--typed-output] "
                  "[--typed-input|--legacy-text] INPUT OUTPUT\n";
     return 0;
   }
   bool summary_output = false;
+  bool typed_output = false;
   bool typed_input = false;
   bool legacy_text = false;
   std::vector<std::string> positional;
@@ -5901,6 +5981,8 @@ int main(int argc, char** argv) {
     const std::string argument = argv[index];
     if (argument == "--summary-output") {
       summary_output = true;
+    } else if (argument == "--typed-output") {
+      typed_output = true;
     } else if (argument == "--typed-input") {
       typed_input = true;
     } else if (argument == "--legacy-text") {
@@ -5909,8 +5991,10 @@ int main(int argc, char** argv) {
       positional.push_back(argument);
     }
   }
-  if (positional.size() != 2 || (typed_input && legacy_text)) {
+  if (positional.size() != 2 || (typed_input && legacy_text) ||
+      (typed_output && !summary_output)) {
     std::cerr << "usage: emuflow_patron_refiner [--summary-output] "
+                 "[--typed-output] "
                  "[--typed-input|--legacy-text] INPUT OUTPUT\n";
     return 2;
   }
@@ -5919,7 +6003,7 @@ int main(int argc, char** argv) {
     // Production always selects --typed-input explicitly.
     Model model = typed_input ? read_typed_model(positional[0])
                               : read_text_model(positional[0]);
-    run(model, positional[1], !summary_output);
+    run(model, positional[1], !summary_output, typed_output);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "emuflow_patron_refiner: " << error.what() << '\n';

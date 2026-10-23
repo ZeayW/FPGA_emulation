@@ -5,9 +5,11 @@ import math
 import os
 import random
 import sqlite3
+import struct
 import subprocess
 import tempfile
 import unittest
+import zlib
 from array import array
 from collections.abc import Sequence
 from pathlib import Path
@@ -457,6 +459,9 @@ class PartitionPressureTest(unittest.TestCase):
         self.assertEqual(
             trace["native_input_transport"], "typed-binary-pipe"
         )
+        self.assertEqual(
+            trace["native_output_transport"], "typed-binary-file"
+        )
         self.assertGreater(trace["native_input_bytes"], 0)
         self.assertGreater(trace["native_input_records"], 0)
         self.assertIsInstance(trace["native_input_crc32"], int)
@@ -512,6 +517,9 @@ class PartitionPressureTest(unittest.TestCase):
         self.assertNotIn("cut_nets", final)
         self.assertNotIn("semantic_contract", final)
         self.assertEqual(trace["trace_storage"], "summary-only")
+        self.assertEqual(
+            trace["native_output_transport"], "typed-binary-file"
+        )
 
     def test_native_patron_explicit_input_copy_preserves_debug_protocol(
         self,
@@ -603,6 +611,104 @@ class PartitionPressureTest(unittest.TestCase):
                     self.assertNotEqual(completed.returncode, 0)
                     self.assertIn("PATRON typed input", completed.stderr)
                     self.assertFalse(output.exists())
+
+    def test_native_patron_typed_output_matches_text_and_rejects_corruption(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            typed_input = root / "patron.bin"
+            stream = typed_input.open("wb")
+            indexes = _write_patron_native_input(
+                None,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                self.route_constraints,
+                self.model,
+                self.initial,
+                0,
+                6,
+                _writer=_NativeBinaryPipeWriter(stream),
+            )
+            text_output = root / "patron.out"
+            typed_output = root / "patron-output.bin"
+            common = [
+                str(patron_refiner()),
+                "--summary-output",
+                "--typed-input",
+                str(typed_input),
+            ]
+            text_run = subprocess.run(
+                [*common, str(text_output)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            typed_run = subprocess.run(
+                [
+                    str(patron_refiner()),
+                    "--summary-output",
+                    "--typed-output",
+                    "--typed-input",
+                    str(typed_input),
+                    str(typed_output),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(text_run.returncode, 0, text_run.stderr)
+            self.assertEqual(typed_run.returncode, 0, typed_run.stderr)
+            text_result = _parse_patron_native_output(
+                text_output, indexes, packed_assignment=True
+            )
+            typed_result = _parse_patron_native_output(
+                typed_output, indexes, packed_assignment=True
+            )
+            self.assertEqual(
+                dict(typed_result[0].items()), dict(text_result[0].items())
+            )
+            self.assertEqual(typed_result[1:6], text_result[1:6])
+            self.assertEqual(
+                {
+                    key: typed_result[6][key]
+                    for key in ("moves", "batches", "changes", "detail_retained")
+                },
+                {
+                    key: text_result[6][key]
+                    for key in ("moves", "batches", "changes", "detail_retained")
+                },
+            )
+            self.assertEqual(
+                typed_result[6]["output_transport"], "typed-binary-file"
+            )
+            payload = typed_output.read_bytes()
+            invalid_part = bytearray(payload)
+            invalid_part[-8:-4] = struct.pack("<I", 2**32 - 1)
+            invalid_part[-4:] = struct.pack(
+                "<I", zlib.crc32(invalid_part[:-4])
+            )
+            invalid_checksum = bytearray(payload)
+            invalid_checksum[64] ^= 1
+            variants = {
+                "magic": bytes([payload[0] ^ 1]) + payload[1:],
+                "version": payload[:8] + struct.pack("<I", 99) + payload[12:],
+                "checksum": bytes(invalid_checksum),
+                "part": bytes(invalid_part),
+                "truncated": payload[:-1],
+                "trailing": payload + b"x",
+            }
+            for label, changed in variants.items():
+                with self.subTest(label=label):
+                    candidate = root / f"invalid-{label}.bin"
+                    candidate.write_bytes(changed)
+                    with self.assertRaisesRegex(
+                        ValidationError, "typed output"
+                    ):
+                        _parse_patron_native_output(
+                            candidate, indexes, packed_assignment=True
+                        )
 
     def test_compact_pressure_model_randomized_differential(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

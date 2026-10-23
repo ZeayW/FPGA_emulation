@@ -335,13 +335,22 @@ encode every conservative transition with the complete `(-1, -1)` endpoint
 sentinel; only exact transitions may carry two valid cluster ordinals, and they
 are validated before the packed record is mutated. This prevents top-level
 one-sided endpoint resolution from reaching the native protocol while keeping
-the native reader fail-closed. Native PATRON output is also parsed as an
-ordered record stream. In the production
-compact path, final `cN -> FPGA` ownership remains a four-byte part-index
-column through assignment construction, online validation and Phase 3 packing;
-it is not expanded into a million-entry Python dictionary after the native
-search. On 200,000 synthetic `ASSIGN` records, the materialized parser retained
-10,493,049 bytes and peaked at 15,757,674 traced bytes, while the packed parser
+the native reader fail-closed. Production summary-only PATRON output now uses a
+versioned little-endian binary result with fixed objective/capacity/path
+summaries, one uint32 part ordinal per cluster, a CRC-32 trailer, exact count
+checks and atomic publication through `libemuflow_core`. Python memory-maps and
+validates that result directly into the final packed ownership column; detailed
+diagnostic traces retain the checked text protocol. On 500,000 synthetic
+assignments, three isolated parses preserved the same 750,000 part-index
+checksum. The result shrank from 7,889,054 to 2,000,284 bytes and median parse
+time fell from 0.521 to 0.324 seconds. Median process peak RSS changed from
+59,228,160 to 62,275,584 bytes because the typed path also maps the result and
+checks its CRC. This is adapter evidence rather than NVDLA qualification. In
+the production compact path, final `cN -> FPGA` ownership remains a four-byte
+part-index column through assignment construction, online validation and Phase
+3 packing; it is not expanded into a million-entry Python dictionary after the
+native search. On 200,000 synthetic `ASSIGN` records, the materialized parser
+retained 10,493,049 bytes and peaked at 15,757,674 traced bytes, while the packed parser
 retained 804,115 bytes, peaked at 1,606,908 bytes and owned an 800,000-byte
 payload. The same compact production path now keeps only per-FPGA cluster
 counts and resource totals while constructing its transient partition summary;
