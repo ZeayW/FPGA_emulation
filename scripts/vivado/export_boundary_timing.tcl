@@ -1,15 +1,19 @@
 # Export one routed timing measurement for every EmuFlow TDM endpoint.
 
-if {$argc != 3 && $argc != 4} {
+if {$argc < 3 || $argc > 5} {
   error "usage: export_boundary_timing.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV ?HIERARCHY_PREFIX?"
 }
 set input_dcp [file normalize [lindex $argv 0]]
 set query_path [file normalize [lindex $argv 1]]
 set output_path [file normalize [lindex $argv 2]]
 set hierarchy_prefix ""
-if {$argc == 4} {
+if {$argc >= 4} {
   set hierarchy_prefix [string trimright [lindex $argv 3] "/"]
 }
+
+source [file join [file dirname [info script]] timing_contract.tcl]
+set fixed_io_map [dict create]
+if {$argc == 5} {set fixed_io_map [emuflow_load_fixed_io_map [lindex $argv 4]]}
 
 proc emuflow_hier_name {prefix name} {
   if {$prefix eq ""} {
@@ -59,7 +63,10 @@ while {[gets $input line] >= 0} {
   set logical_net [emuflow_hex_decode [lindex $fields 4]]
   set boundary_cell [emuflow_hex_decode [lindex $fields 5]]
   set port_bit [format {%s[%d]} $port $bit]
-  if {$hierarchy_prefix eq ""} {
+  if {[dict exists $fixed_io_map $port_bit]} {
+    set port_bit [dict get $fixed_io_map $port_bit]
+    set port_object [get_ports -quiet [list $port_bit]]
+  } elseif {$hierarchy_prefix eq ""} {
     set port_object [get_ports -quiet [list $port_bit]]
   } else {
     set port_bit [emuflow_hier_name $hierarchy_prefix $port_bit]

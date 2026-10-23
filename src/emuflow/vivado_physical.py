@@ -40,7 +40,7 @@ def execute_vivado(executable: str, script: Path, arguments: list[str], output: 
     with log_path.open("w", encoding="utf-8") as log:
         completed = subprocess.run(command, cwd=output, stdin=subprocess.DEVNULL,
                                    stdout=log, stderr=subprocess.STDOUT,
-                                   env={**os.environ, "TMPDIR": str(scratch)}, check=False)
+                                   env={**os.environ, "TMPDIR": str(scratch), "XILINX_LOCAL_USER_DATA": "no"}, check=False)
     tail: deque[str] = deque(maxlen=40)
     critical = 0
     with log_path.open(encoding="utf-8", errors="replace") as log:
@@ -159,6 +159,18 @@ def run_indexed_vivado_partition(
                 values = [entry["p"]["port"], entry["n"]["port"], entry["p"]["package_pin"], entry["n"]["package_pin"], entry["iostandard"]]
                 stream.write("\t".join([entry["direction"], *(value.encode("utf-8").hex() for value in values)]) + "\n")
         io_query = str(query_path)
+    io_timing_map = output_dir / "fixed-io-timing-map.tsv"
+    if virtual_io_contract is not None:
+        with io_timing_map.open("w", encoding="utf-8") as stream:
+            stream.write("logical_hex\tphysical_hex\n")
+            for entry in virtual_io_contract["entries"]:
+                logical = f"{entry['logical_port']}[{entry['logical_bit']}]"
+                names = [logical]
+                if entry["logical_port_width"] == 1:
+                    names.append(entry["logical_port"])
+                for name in names:
+                    stream.write(name.encode().hex() + "\t" + entry["p"]["port"].encode().hex() + "\n")
+    timing_arguments = [prefix] + ([str(io_timing_map)] if virtual_io_contract is not None else [])
     threads = int(os.environ.get("EMUFLOW_VIVADO_THREADS", "2"))
     if threads < 1:
         raise ValidationError("Vivado thread count must be positive")
@@ -193,8 +205,9 @@ def run_indexed_vivado_partition(
         query_report = write_vivado_boundary_timing_query(ir_path, boundary_identity_path, query)
         measured = output_dir / "boundary-timing.tsv"
         export = execute_vivado(executable, _ROOT / "scripts/vivado/export_boundary_timing.tcl",
-                                [str(output_dir / "routed.dcp"), str(query), str(measured), prefix], output_dir, "boundary-export.log")
-        imported = import_indexed_vivado_boundary(measured, boundary_identity_path, output_dir / "boundary-timing.json")
+                                [str(output_dir / "routed.dcp"), str(query), str(measured), *timing_arguments], output_dir, "boundary-export.log")
+        imported = import_indexed_vivado_boundary(measured, boundary_identity_path, output_dir / "boundary-timing.json",
+            measurement_scope="board-integrated-interface" if virtual_io_contract is not None else "partition-boundary")
         stages["boundary_timing"] = {"status": "pass", "query": query_report, "export": export, "import": imported}
     for kind, identity, query, importer in (
         ("logic_segment_timing", logic_identity_path, logic_query_path, import_vivado_logic_segment_timing),
@@ -206,7 +219,7 @@ def run_indexed_vivado_partition(
             continue
         measured = output_dir / f"{kind}.tsv"
         export = execute_vivado(executable, _ROOT / "scripts/vivado/export_logic_segment_timing.tcl",
-                                [str(output_dir / "routed.dcp"), str(query), str(measured), prefix], output_dir, f"{kind}-export.log")
+                                [str(output_dir / "routed.dcp"), str(query), str(measured), *timing_arguments], output_dir, f"{kind}-export.log")
         imported = importer(measured, identity, output_dir / f"{kind}.json")
         stages[kind] = {"status": "pass", "export": export, "import": imported}
     virtual_io = None

@@ -108,7 +108,7 @@ def import_vivado_local_timing(input_path: Path, identity_path: Path, output_pat
             connection.close()
 
 
-def import_indexed_vivado_boundary(input_path: Path, identity_path: Path, output_path: Path) -> dict[str, Any]:
+def import_indexed_vivado_boundary(input_path: Path, identity_path: Path, output_path: Path, *, measurement_scope: str = "partition-boundary") -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix=".vivado-boundary-", dir=output_path.parent) as temporary:
         connection = sqlite3.connect(Path(temporary) / "measurements.sqlite")
         identities = read_boundary_identity_storage(identity_path)
@@ -135,11 +135,11 @@ def import_indexed_vivado_boundary(input_path: Path, identity_path: Path, output
                     row = connection.execute("SELECT kind,delay,start,end FROM measurements WHERE id=?", (identity["id"],)).fetchone()
                     if row is None or row[0] != identity["kind"]:
                         raise ValidationError("Vivado boundary timing coverage disagrees")
-                    yield boundary_timing_record(identity, {"delay_ns": row[1], "start_object": row[2], "end_object": row[3]})
+                    yield boundary_timing_record(identity, {"delay_ns": row[1], "start_object": row[2], "end_object": row[3]}, measurement_scope=measurement_scope)
                     count += 1
                 if count != connection.execute("SELECT count(*) FROM measurements").fetchone()[0]:
                     raise ValidationError("Vivado boundary timing has unexpected endpoints")
-            header = boundary_timing_header(identities, provider="vivado-indexed-routed-boundary-v1", qualification="routed-vendor-device-boundary")
+            header = boundary_timing_header(identities, provider="vivado-indexed-routed-boundary-v1", qualification="routed-vendor-device-boundary", measurement_scope=measurement_scope)
             with write_boundary_timing_storage(output_path, header, records()) as view:
                 validation = validate_boundary_timing_database(view, identities)
             return {**validation, "output": str(output_path)}

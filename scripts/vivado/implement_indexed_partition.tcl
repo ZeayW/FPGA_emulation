@@ -100,7 +100,9 @@ if {[catch {
       set fields [split $row "\t"]
       if {[llength $fields] != 6} {error "invalid fixed I/O query"}
       lassign $fields direction p n p_pin n_pin standard
-      set expected_ref [expr {$direction eq "tx" ? "OBUFDS" : "IBUFDS"}]
+      # UltraScale+ expands IBUFDS into DIFFINBUF plus IBUFCTRL. The P/N
+      # package pads must still meet the same physical differential primitive.
+      set expected_ref [expr {$direction eq "tx" ? "REF_NAME == OBUFDS" : "REF_NAME == IBUFDS || REF_NAME == DIFFINBUF"}]
       set pair_cell ""
       foreach port_hex [list $p $n] pin_hex [list $p_pin $n_pin] {
         set name [emuflow_decode $port_hex]
@@ -110,7 +112,7 @@ if {[catch {
           error "fixed differential port constraint mismatch: $name"
         }
         set nets [get_nets -quiet -of_objects $port]
-        set cells [get_cells -quiet -of_objects [get_pins -quiet -leaf -of_objects $nets] -filter "REF_NAME == $expected_ref"]
+        set cells [get_cells -quiet -of_objects [get_pins -quiet -leaf -of_objects $nets] -filter $expected_ref]
         if {[llength $cells] != 1} {error "fixed pad $name lacks its differential primitive"}
         set cell_name [get_property NAME $cells]
         if {$pair_cell ne "" && $pair_cell ne $cell_name} {error "P/N pads use different primitives"}
@@ -129,7 +131,7 @@ if {[catch {
   set infrastructure 0
   foreach cell $physical {
     set ref [get_property REF_NAME $cell]
-    if {[string match BUFG* $ref] || [string match IBUF* $ref] || [string match OBUF* $ref]} {incr infrastructure}
+    if {[string match BUFG* $ref] || [string match IBUF* $ref] || [string match OBUF* $ref] || $ref eq "DIFFINBUF"} {incr infrastructure}
   }
   set optimization [expr {[llength $physical] - $expected - $infrastructure}]
   if {$optimization < 0} {error "mapped physical accounting is inconsistent"}

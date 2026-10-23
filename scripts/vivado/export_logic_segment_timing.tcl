@@ -10,12 +10,15 @@ set hierarchy_prefix ""
 if {$argc >= 4} {
   set hierarchy_prefix [string trimright [lindex $argv 3] "/"]
 }
+source [file join [file dirname [info script]] timing_contract.tcl]
 set allow_missing false
+set fixed_io_map [dict create]
 if {$argc == 5} {
-  if {[lindex $argv 4] ne "allow-missing"} {
-    error "invalid logic segment missing-path policy"
+  if {[lindex $argv 4] eq "allow-missing"} {
+    set allow_missing true
+  } else {
+    set fixed_io_map [emuflow_load_fixed_io_map [lindex $argv 4]]
   }
-  set allow_missing true
 }
 
 proc emuflow_hex_decode {value} {
@@ -25,6 +28,7 @@ proc emuflow_hex_encode {value} {
   return [binary encode hex [encoding convertto utf-8 $value]]
 }
 proc emuflow_resolve_object {kind name prefix} {
+  global fixed_io_map
   set physical_name $name
   if {$prefix ne ""} {
     set physical_name "$prefix/$name"
@@ -57,7 +61,9 @@ proc emuflow_resolve_object {kind name prefix} {
       }
     }
   } elseif {$kind eq "port"} {
-    set object [get_ports -quiet [list $name]]
+    set lookup $name
+    if {[dict exists $fixed_io_map $name]} {set lookup [dict get $fixed_io_map $name]}
+    set object [get_ports -quiet [list $lookup]]
     if {[llength $object] == 0 && $prefix ne ""} {
       set object [get_pins -quiet -hier [list $physical_name]]
     }
@@ -194,6 +200,7 @@ while {[gets $input line] >= 0} {
     }
     error "logic segment [emuflow_hex_decode $endpoint_hex] has no routed timing path"
   }
+  emuflow_validate_segment_extent [lindex $paths 0] $start_object $end_object $measurement
   set delay [get_property DATAPATH_DELAY [lindex $paths 0]]
   if {$delay eq ""} {
     error "logic segment [emuflow_hex_decode $endpoint_hex] has no datapath delay"

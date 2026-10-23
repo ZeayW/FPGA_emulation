@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -36,6 +38,36 @@ def fixture(root):
 
 
 class IndexedVivadoTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("tclsh"), "requires Tcl interpreter")
+    def test_timing_extent_rejects_enclosing_prefix_and_suffix(self):
+        helper = Path(__file__).resolve().parents[1] / "scripts/vivado/timing_contract.tcl"
+        script = r'''
+proc get_property {property object} {
+  global actual_start actual_end
+  if {$object eq "path"} {
+    if {$property eq "STARTPOINT_PIN"} {return $actual_start}
+    if {$property eq "ENDPOINT_PIN"} {return $actual_end}
+  }
+  if {$property eq "CLASS"} {return pin}
+  return $object
+}
+proc get_cells {args} {return launch}
+proc get_pins {args} {return launch/C}
+set actual_start launch/C
+set actual_end capture/D
+emuflow_validate_segment_extent path launch/Q capture/D endpoint-exact
+set actual_start foreign/C
+if {![catch {emuflow_validate_segment_extent path launch/Q capture/D endpoint-exact}]} {error "accepted prefix"}
+emuflow_validate_segment_extent path launch/Q capture/D cut-net-cone-upper-bound
+set actual_end suffix/D
+if {![catch {emuflow_validate_segment_extent path launch/Q capture/D cut-net-cone-upper-bound}]} {error "accepted suffix"}
+puts pass
+'''
+        completed = subprocess.run([shutil.which("tclsh")], input=f"source {{{helper}}}\n" + script,
+                                   text=True, capture_output=True, check=True)
+        self.assertEqual(completed.stderr, "")
+        self.assertIn("pass", completed.stdout)
+
     def test_native_dual_output_lut_preserves_output_pin_identity(self):
         from emuflow.logic_segment_timing import _vivado_object
 

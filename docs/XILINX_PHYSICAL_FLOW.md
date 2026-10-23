@@ -165,7 +165,8 @@ STA success.
 
 The provider uses the Phase 6 sealed differential adapter and XDC through a
 physical wrapper. Post-route checks require exact P/N package pins,
-IOSTANDARD, IBUFDS/OBUFDS ownership, complete mapped-cell identity/type coverage,
+IOSTANDARD, IBUFDS/OBUFDS ownership (including Vivado's native DIFFINBUF/IBUFCTRL
+decomposition), complete mapped-cell identity/type coverage,
 zero unrouted nets, and zero blocking DRC violations. Native mapped primitives
 are initially preserved with KEEP/DONT_TOUCH to retain source-bound timing
 identities. No placement LOC/BEL or implicit pblock is imposed. This identity
@@ -173,7 +174,11 @@ policy limits optimization across primitives and may affect timing quality.
 Whole-device resource budgets also apply to the final physical cell population.
 
 Same-FPGA timing queries cover the complete declared original-path population;
-cross-FPGA logic and interface queries retain the Phase 6 identities. The
+cross-FPGA logic and interface queries retain the Phase 6 identities. Fixed
+logical transport ports resolve to the declared physical P pad. Query extents
+are checked against actual timing endpoints; a sequential Q launch may start
+at the same primitive's clock to include clock-to-Q, while an unrelated prefix
+or any suffix beyond the requested endpoint is rejected. The
 indexed provider does not use the legacy sampled Vivado TimingPathDB as terminal
 evidence. Per-FPGA vendor WNS/TNS describe vendor endpoint constraints; global
 original-path WNS/TNS still require the separate complete OpenSTA composition.
