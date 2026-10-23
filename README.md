@@ -399,6 +399,18 @@ non-replicating RePart candidates now carry only partition facts through final
 hop refinement; the authoritative Static Exact contract is constructed once
 after the last assignment change. Explicit diagnostics retain intermediate
 contracts, and RePart replication retains its separate effective-cut evidence.
+For compact EmuIR, the native analyzer now opens `cell_records`, `net_records`
+and `endpoint_records` read-only through the shared SQLite core. Its explicit
+`--indexed-input EMUIR INPUT OUTPUT` mode uses input protocol v4: the request
+contains only the selected partition column and cut coordinates. Python no
+longer decodes every cell resource or scans and serializes all graph endpoints
+for this boundary. In-memory reference inputs retain protocol v3, and both
+modes return byte-identical v3 dependency/capture output in differential tests.
+Native import checks the storage envelope, record coverage, resource payloads
+and endpoint ownership before publishing. This completes graph import only:
+final semantic-record construction, contract hashing and assignment/index
+publication still have Python owners. Full NVDLA wall/RSS/I/O qualification
+remains pending.
 The C++ analyzer now bounds protocol-v3
 capture ordering to a 1,048,576-record run and a 64-way external merge instead
 of retaining and sorting the complete capture population. Runs deduplicate

@@ -147,6 +147,7 @@ class NativeToolsTest(unittest.TestCase):
             "chimew_signal_grouper.cpp",
             "chimew_position_refiner.cpp",
             "emuflow_core/artifact_io.cpp",
+            "emuflow_core/sqlite.cpp",
         ):
             self.assertIn(source, script)
 

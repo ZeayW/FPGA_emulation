@@ -21,14 +21,13 @@
 
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/native_stages.hpp"
+#include "emuflow_core/sqlite.hpp"
 
 namespace {
 
 constexpr std::uint64_t kInputMagic = 0x31584553464d5545ULL;
 constexpr std::uint64_t kOutputMagic = 0x315845534f4d5545ULL;
 constexpr std::uint32_t kVersion = 3;
-constexpr emuflow::core::ArtifactSchema kInputSchema{
-    kInputMagic, kVersion, "Static Exact analyzer input"};
 
 struct Capture {
   std::uint32_t cut = 0;
@@ -354,28 +353,37 @@ bool CutContainsSink(std::uint32_t cut, std::uint32_t part,
                             sink_parts.begin() + offsets[cut + 1], part);
 }
 
-void AnalyzeImpl(const std::string& input_path, const std::string& output_path) {
+void AnalyzeImpl(const std::string& input_path, const std::string& output_path,
+                 const std::string& indexed_path) {
   emuflow::core::BinaryReader reader(input_path);
-  emuflow::core::ReadAndValidateHeader(reader, kInputSchema);
+  const bool indexed = !indexed_path.empty();
+  const emuflow::core::ArtifactSchema schema{
+      kInputMagic, indexed ? 4U : kVersion, "Static Exact analyzer input"};
+  emuflow::core::ReadAndValidateHeader(reader, schema);
   const auto instance_count = reader.Read<std::uint32_t>();
   const auto net_count = reader.Read<std::uint32_t>();
   const auto cut_count = reader.Read<std::uint32_t>();
   const auto part_count = reader.Read<std::uint32_t>();
   const auto endpoint_count = reader.Read<std::uint32_t>();
   if (part_count == 0) throw std::runtime_error("native input has no parts");
-  RequireCount(instance_count, sizeof(std::uint8_t) + sizeof(std::uint32_t),
+  RequireCount(instance_count,
+               (indexed ? 0 : sizeof(std::uint8_t)) + sizeof(std::uint32_t),
                reader.remaining(), "native instance");
-  RequireCount(net_count, 2 * sizeof(std::uint32_t), reader.remaining(),
-               "native net");
+  if (!indexed) {
+    RequireCount(net_count, 2 * sizeof(std::uint32_t), reader.remaining(),
+                 "native net");
+  }
   RequireCount(cut_count, 3 * sizeof(std::uint32_t), reader.remaining(),
                "native cut");
-  RequireCount(endpoint_count, sizeof(std::int32_t), reader.remaining(),
-               "native endpoint");
+  if (!indexed) {
+    RequireCount(endpoint_count, sizeof(std::int32_t), reader.remaining(),
+                 "native endpoint");
+  }
 
   std::vector<std::uint8_t> instance_states(instance_count, 0);
   std::vector<std::uint32_t> instance_parts(instance_count, 0);
   for (std::uint32_t index = 0; index < instance_count; ++index) {
-    const auto state = reader.Read<std::uint8_t>();
+    const auto state = indexed ? 0 : reader.Read<std::uint8_t>();
     const auto part = reader.Read<std::uint32_t>();
     if (state > 1 || part >= part_count) {
       throw std::runtime_error("native instance record is invalid");
@@ -384,8 +392,10 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
     instance_parts[index] = part;
   }
 
-  RequireCount(net_count, 2 * sizeof(std::uint32_t), reader.remaining(),
-               "native net");
+  if (!indexed) {
+    RequireCount(net_count, 2 * sizeof(std::uint32_t), reader.remaining(),
+                 "native net");
+  }
   std::vector<std::uint32_t> net_driver_offsets;
   std::vector<std::int32_t> net_drivers;
   std::vector<std::uint32_t> net_sink_offsets;
@@ -396,40 +406,130 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
   net_driver_offsets.push_back(0);
   net_sink_offsets.push_back(0);
   std::uint64_t observed_endpoints = 0;
-  for (std::uint32_t index = 0; index < net_count; ++index) {
-    const auto drivers = reader.Read<std::uint32_t>();
-    RequireCount(drivers, sizeof(std::int32_t), reader.remaining(),
-                 "native net driver");
-    if (drivers > std::numeric_limits<std::uint32_t>::max() -
-                      net_drivers.size()) {
-      throw std::runtime_error("native net driver count is invalid");
+  if (indexed) {
+    emuflow::core::SqliteDatabase database(
+        indexed_path, emuflow::core::SqliteDatabase::Mode::kReadOnly);
+    auto application = database.Prepare("PRAGMA application_id");
+    auto version = database.Prepare("PRAGMA user_version");
+    if (!application.Step() || application.Integer(0) != 0x454D5549 ||
+        !version.Step() || version.Integer(0) != 2) {
+      throw std::runtime_error("native compact EmuIR envelope is invalid");
     }
-    for (std::uint32_t driver_index = 0; driver_index < drivers;
-         ++driver_index) {
-      const auto driver = reader.Read<std::int32_t>();
-      if (driver < -1 ||
-          (driver >= 0 && static_cast<std::uint32_t>(driver) >= instance_count)) {
-        throw std::runtime_error("native net driver is invalid");
+    auto storage = database.Prepare(
+        "SELECT value FROM metadata WHERE key='storage_schema'");
+    auto counts = database.Prepare(
+        "SELECT json_extract(value,'$.cell_records'),"
+        "json_extract(value,'$.net_records'),"
+        "json_extract(value,'$.endpoint_records') "
+        "FROM metadata WHERE key='record_counts_json'");
+    if (!storage.Step() || storage.Text(0) != "emuflow.emuir-sqlite/v2" ||
+        !counts.Step() || counts.Integer(0) != instance_count ||
+        counts.Integer(1) != net_count || counts.Integer(2) < endpoint_count) {
+      throw std::runtime_error("native compact EmuIR identity/counts disagree");
+    }
+    const auto expected_total_endpoints = counts.Integer(2);
+    auto cells = database.Prepare(
+        "SELECT c.seq,json_type(p.value),"
+        "coalesce(json_extract(p.value,'$.ff'),0)!=0 OR "
+        "coalesce(json_extract(p.value,'$.bram'),0)!=0 OR "
+        "coalesce(json_extract(p.value,'$.bram18k'),0)!=0 OR "
+        "coalesce(json_extract(p.value,'$.uram288'),0)!=0 "
+        "FROM cell_records c JOIN payloads p ON p.seq=c.resources_seq "
+        "ORDER BY c.seq");
+    std::uint64_t observed_cells = 0;
+    while (cells.Step()) {
+      if (observed_cells >= instance_count ||
+          cells.Integer(0) != static_cast<std::int64_t>(observed_cells) ||
+          cells.Text(1) != "object") {
+        throw std::runtime_error("native compact EmuIR cell sequence is invalid");
       }
-      net_drivers.push_back(driver);
+      instance_states[observed_cells++] = cells.Integer(2) != 0;
     }
-    net_driver_offsets.push_back(
-        static_cast<std::uint32_t>(net_drivers.size()));
-    const auto sinks = reader.Read<std::uint32_t>();
-    observed_endpoints += sinks;
-    if (observed_endpoints > endpoint_count ||
-        sinks > reader.remaining() / sizeof(std::int32_t)) {
-      throw std::runtime_error("native endpoint count is invalid");
+    if (observed_cells != instance_count) {
+      throw std::runtime_error("native compact EmuIR cell count disagrees");
     }
-    for (std::uint32_t sink_index = 0; sink_index < sinks; ++sink_index) {
-      const auto sink = reader.Read<std::int32_t>();
-      if (sink < -1 ||
-          (sink >= 0 && static_cast<std::uint32_t>(sink) >= instance_count)) {
-        throw std::runtime_error("native net sink is invalid");
+    auto nets = database.Prepare("SELECT seq FROM net_records ORDER BY seq");
+    auto endpoints = database.Prepare(
+        "SELECT net_seq,role,ordinal,coalesce(instance_seq,-1),"
+        "typeof(net_seq)='integer' AND typeof(role)='integer' AND "
+        "typeof(ordinal)='integer' AND (instance_seq IS NULL OR "
+        "(typeof(instance_seq)='integer' AND instance_seq>=0)) "
+        "FROM endpoint_records ORDER BY net_seq,role,ordinal");
+    bool have_endpoint = endpoints.Step();
+    std::uint64_t observed_nets = 0;
+    std::int64_t total_endpoints = 0;
+    while (nets.Step()) {
+      if (observed_nets >= net_count ||
+          nets.Integer(0) != static_cast<std::int64_t>(observed_nets)) {
+        throw std::runtime_error("native compact EmuIR net sequence is invalid");
       }
-      net_sinks.push_back(sink);
+      std::int64_t previous_role = -1, previous_ordinal = -1;
+      while (have_endpoint && endpoints.Integer(0) ==
+                                  static_cast<std::int64_t>(observed_nets)) {
+        const auto role = endpoints.Integer(1);
+        const auto ordinal = endpoints.Integer(2);
+        const auto owner = endpoints.Integer(3);
+        if (!endpoints.Integer(4) || (role != 0 && role != 1) || ordinal < 0 ||
+            role < previous_role ||
+            (role == previous_role && ordinal <= previous_ordinal) ||
+            owner < -1 || owner >= static_cast<std::int64_t>(instance_count)) {
+          throw std::runtime_error("native compact EmuIR endpoint is invalid");
+        }
+        auto& values = role == 0 ? net_drivers : net_sinks;
+        if (values.size() >= std::numeric_limits<std::uint32_t>::max()) {
+          throw std::runtime_error("native compact EmuIR endpoint count is invalid");
+        }
+        values.push_back(static_cast<std::int32_t>(owner));
+        observed_endpoints += role == 1;
+        ++total_endpoints;
+        previous_role = role;
+        previous_ordinal = ordinal;
+        have_endpoint = endpoints.Step();
+      }
+      net_driver_offsets.push_back(static_cast<std::uint32_t>(net_drivers.size()));
+      net_sink_offsets.push_back(static_cast<std::uint32_t>(net_sinks.size()));
+      ++observed_nets;
     }
-    net_sink_offsets.push_back(static_cast<std::uint32_t>(net_sinks.size()));
+    if (have_endpoint || observed_nets != net_count ||
+        total_endpoints != expected_total_endpoints) {
+      throw std::runtime_error("native compact EmuIR endpoint/net coverage disagrees");
+    }
+  } else {
+    for (std::uint32_t index = 0; index < net_count; ++index) {
+      const auto drivers = reader.Read<std::uint32_t>();
+      RequireCount(drivers, sizeof(std::int32_t), reader.remaining(),
+                   "native net driver");
+      if (drivers > std::numeric_limits<std::uint32_t>::max() -
+                        net_drivers.size()) {
+        throw std::runtime_error("native net driver count is invalid");
+      }
+      for (std::uint32_t driver_index = 0; driver_index < drivers;
+           ++driver_index) {
+        const auto driver = reader.Read<std::int32_t>();
+        if (driver < -1 ||
+            (driver >= 0 && static_cast<std::uint32_t>(driver) >= instance_count)) {
+          throw std::runtime_error("native net driver is invalid");
+        }
+        net_drivers.push_back(driver);
+      }
+      net_driver_offsets.push_back(
+          static_cast<std::uint32_t>(net_drivers.size()));
+      const auto sinks = reader.Read<std::uint32_t>();
+      observed_endpoints += sinks;
+      if (observed_endpoints > endpoint_count ||
+          sinks > reader.remaining() / sizeof(std::int32_t)) {
+        throw std::runtime_error("native endpoint count is invalid");
+      }
+      for (std::uint32_t sink_index = 0; sink_index < sinks; ++sink_index) {
+        const auto sink = reader.Read<std::int32_t>();
+        if (sink < -1 ||
+            (sink >= 0 && static_cast<std::uint32_t>(sink) >= instance_count)) {
+          throw std::runtime_error("native net sink is invalid");
+        }
+        net_sinks.push_back(sink);
+      }
+      net_sink_offsets.push_back(static_cast<std::uint32_t>(net_sinks.size()));
+    }
   }
   if (observed_endpoints != endpoint_count) {
     throw std::runtime_error("native endpoint count is invalid");
@@ -650,18 +750,28 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path) 
 }  // namespace
 
 void emuflow::native::AnalyzeStaticExact(const std::string& input_path,
-                                         const std::string& output_path) {
-  AnalyzeImpl(input_path, output_path);
+                                         const std::string& output_path,
+                                         const std::string& indexed_path) {
+  AnalyzeImpl(input_path, output_path, indexed_path);
 }
 
 #if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "usage: emuflow_static_exact_analyzer INPUT OUTPUT\n";
+    std::cout << "usage: emuflow_static_exact_analyzer [--indexed-input EMUIR] INPUT OUTPUT\n";
     return 0;
   }
+  if (argc == 5 && std::string(argv[1]) == "--indexed-input") {
+    try {
+      emuflow::native::AnalyzeStaticExact(argv[3], argv[4], argv[2]);
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << "emuflow_static_exact_analyzer: " << error.what() << '\n';
+      return 1;
+    }
+  }
   if (argc != 3) {
-    std::cerr << "usage: emuflow_static_exact_analyzer INPUT OUTPUT\n";
+    std::cerr << "usage: emuflow_static_exact_analyzer [--indexed-input EMUIR] INPUT OUTPUT\n";
     return 2;
   }
   try {

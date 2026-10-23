@@ -109,6 +109,7 @@ from emuflow.system_route_storage import (
     write_system_route_storage,
 )
 from tests.native_build import (
+    emuflow_native,
     static_exact_analyzer,
     tdm_exact_scheduler,
     tdm_ratio_optimizer,
@@ -1676,6 +1677,83 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             semantic_contract_sha256(actual),
             semantic_contract_sha256(expected),
         )
+
+    def test_native_indexed_import_matches_legacy_and_rejects_corruption(self):
+        # Exercise the native boundary itself; parent validation must not mask
+        # bad schema, coverage, endpoints, or an incomplete partition column.
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        instances, nets = self.ir.value["instances"], self.ir.value["nets"]
+        instance_ids = {item["id"]: index for index, item in enumerate(instances)}
+        net_ids = {item["id"]: index for index, item in enumerate(nets)}
+        parts = sorted(set(assignment["instance_assignment"].values()))
+        cuts = sorted(assignment["cut_nets"], key=lambda cut: cut["net"])
+        executable = static_exact_analyzer()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database = root / "design.sqlite"
+            write_compact_emuir(database, self.ir.to_dict())
+            legacy = bytearray(struct.pack(
+                "<Q6I", 0x31584553464D5545, 3, len(instances), len(nets),
+                len(cuts), len(parts), sum(len(net["sinks"]) for net in nets),
+            ))
+            indexed = bytearray(legacy)
+            struct.pack_into("<I", indexed, 8, 4)
+            for instance in instances:
+                part = parts.index(assignment["instance_assignment"][instance["id"]])
+                state = any(instance["resources"].get(key, 0)
+                            for key in ("ff", "bram", "bram18k", "uram288"))
+                legacy.extend(struct.pack("<BI", state, part))
+                indexed.extend(struct.pack("<I", part))
+            for net in nets:
+                for role in ("drivers", "sinks"):
+                    legacy.extend(struct.pack("<I", len(net[role])))
+                    for endpoint in net[role]:
+                        legacy.extend(struct.pack("<i", instance_ids.get(endpoint["instance"], -1)))
+            for cut in cuts:
+                sinks = sorted(set(cut["sink_fpgas"]))
+                row = struct.pack("<3I", net_ids[cut["net"]],
+                                  parts.index(cut["source_fpgas"][0]), len(sinks))
+                row += b"".join(struct.pack("<I", parts.index(sink)) for sink in sinks)
+                legacy.extend(row)
+                indexed.extend(row)
+            legacy_input, indexed_input = root / "legacy.in", root / "indexed.in"
+            legacy_input.write_bytes(legacy)
+            indexed_input.write_bytes(indexed)
+            legacy_output, indexed_output = root / "legacy.out", root / "indexed.out"
+            subprocess.run([str(executable), str(legacy_input), str(legacy_output)], check=True)
+            source_digest = hashlib.sha256(database.read_bytes()).hexdigest()
+            command = [str(executable), "--indexed-input", str(database),
+                       str(indexed_input), str(indexed_output)]
+            subprocess.run(command, check=True)
+            self.assertEqual(indexed_output.read_bytes(), legacy_output.read_bytes())
+            subprocess.run([str(emuflow_native()), "phase3", "analyze",
+                            "--indexed-input", str(database), str(indexed_input),
+                            str(indexed_output)], check=True)
+            self.assertEqual(indexed_output.read_bytes(), legacy_output.read_bytes())
+            self.assertEqual(hashlib.sha256(database.read_bytes()).hexdigest(), source_digest)
+            pristine = database.read_bytes()
+            for mutation in (
+                "PRAGMA user_version=99",
+                "UPDATE cell_records SET resources_seq=1000000 WHERE seq=0",
+                "UPDATE endpoint_records SET instance_seq=-1 WHERE net_seq=0",
+                "UPDATE endpoint_records SET net_seq=net_seq+1000000",
+                "UPDATE metadata SET value='{}' WHERE key='record_counts_json'",
+            ):
+                with self.subTest(mutation=mutation):
+                    database.write_bytes(pristine)
+                    with sqlite3.connect(database) as connection:
+                        connection.execute(mutation)
+                    indexed_output.write_bytes(b"previous-generation")
+                    result = subprocess.run(command, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(indexed_output.read_bytes(), b"previous-generation")
+            database.write_bytes(pristine)
+            for payload in (indexed[:32], indexed[:-1], indexed + b"trailing"):
+                with self.subTest(size=len(payload)):
+                    indexed_input.write_bytes(payload)
+                    result = subprocess.run(command, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(indexed_output.read_bytes(), b"previous-generation")
 
     def test_compact_native_path_rejects_forged_cut_ordinal(self):
         _, assignment = self._exact_artifacts(dependent_return=True)

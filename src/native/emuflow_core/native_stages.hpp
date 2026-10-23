@@ -5,7 +5,8 @@
 namespace emuflow::native {
 
 void AnalyzeStaticExact(const std::string& input_path,
-                        const std::string& output_path);
+                        const std::string& output_path,
+                        const std::string& indexed_path = "");
 void RouteTlr(const std::string& input_path,
               const std::string& output_path,
               bool typed_output = false);

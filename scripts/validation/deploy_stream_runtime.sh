@@ -97,19 +97,13 @@ for tool in \
 do
   target="$runtime_dir/bin/emuflow_$tool"
   rm -f "$target"
-  if test "$tool" = static_exact_analyzer || \
-      test "$tool" = tdm_exact_scheduler; then
-    "$selected_cxx" -std=c++17 -O3 -pthread \
-      -static-libstdc++ -static-libgcc \
-      -I"$source_dir/src/native" \
-      "$source_dir/src/native/$tool.cpp" \
-      "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
-      -o "$target"
-  else
-    "$selected_cxx" -std=c++17 -O3 -pthread \
-      -static-libstdc++ -static-libgcc \
-      "$source_dir/src/native/$tool.cpp" -o "$target"
-  fi
+  "$selected_cxx" -std=c++17 -O3 -pthread \
+    -static-libstdc++ -static-libgcc \
+    -I"$source_dir/src/native" \
+    "$source_dir/src/native/$tool.cpp" \
+    "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
+    "$source_dir/src/native/emuflow_core/sqlite.cpp" \
+    -lsqlite3 -o "$target"
 done
 
 # Production adapters prefer the unified sibling whenever it exists.  A thin
@@ -131,7 +125,8 @@ rm -f "$unified"
   "$source_dir/src/native/chimew_signal_grouper.cpp" \
   "$source_dir/src/native/chimew_position_refiner.cpp" \
   "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
-  -o "$unified"
+  "$source_dir/src/native/emuflow_core/sqlite.cpp" \
+  -lsqlite3 -o "$unified"
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"
 printf '%s\n' "$source_dir/src" > "$runtime_dir/PYTHON_SOURCE_PATH"

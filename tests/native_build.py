@@ -193,6 +193,8 @@ def static_exact_analyzer() -> Path:
             "-O2",
             str(ROOT / "src/native/static_exact_analyzer.cpp"),
             str(ROOT / "src/native/emuflow_core/artifact_io.cpp"),
+            str(ROOT / "src/native/emuflow_core/sqlite.cpp"),
+            "-lsqlite3",
             "-I",
             str(ROOT / "src/native"),
             "-o",

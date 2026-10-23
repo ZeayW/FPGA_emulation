@@ -2038,167 +2038,39 @@ def _validate_compact_native_cuts(
     return ordered_cuts if normalized is None else normalized
 
 
-def _write_compact_native_static_exact_graph(
+def _write_compact_native_static_exact_parts(
     path: Path,
     emit: Any,
     instance_assignment: Mapping[str, str],
     part_index: Mapping[str, int],
-) -> tuple[int, int, int]:
-    """Emit the native graph straight from compact integer EmuIR relations.
+    instance_count: int,
+) -> None:
+    """Pass only the selected partition column; C++ owns graph import."""
 
-    The returned counts are independently checked against the IR view before
-    the caller writes the protocol header.  Instance names are used only for
-    the authoritative assignment lookup; endpoints already carry stable cell
-    ordinals and never pass through a second ``name -> ordinal`` dictionary.
-    """
-
-    connection = open_emuir_sqlite_read_only(path)
-    try:
-        metadata_row = connection.execute(
-            "SELECT value FROM metadata WHERE key='record_counts_json'"
-        ).fetchone()
-        if metadata_row is None:
-            raise ValidationError("compact EmuIR record counts are missing")
-        try:
-            counts = json.loads(metadata_row[0])
-            instance_count = counts["cell_records"]
-            net_count = counts["net_records"]
-            endpoint_count = counts["endpoint_records"]
-        except (KeyError, TypeError, json.JSONDecodeError) as error:
-            raise ValidationError("compact EmuIR record counts are invalid") from error
-        sink_count = connection.execute(
-            "SELECT COUNT(*) FROM endpoint_records WHERE role=1"
-        ).fetchone()[0]
-        if (
-            any(
-                isinstance(value, bool)
-                or not isinstance(value, int)
-                or value < 0
-                or value >= 2**32
-                for value in (instance_count, net_count, sink_count)
-            )
-            or isinstance(endpoint_count, bool)
-            or not isinstance(endpoint_count, int)
-            or endpoint_count < 0
-            or endpoint_count < sink_count
-        ):
-            raise ValidationError("compact EmuIR record counts are invalid")
-
-        observed_instances = 0
-        part_for_source_seq = getattr(
-            instance_assignment, "part_for_source_seq", None
-        )
-        for row in connection.execute(
-            """SELECT c.seq,c.id,p.value AS resources_json
-                 FROM cell_records c JOIN payloads p ON p.seq=c.resources_seq
-                ORDER BY c.seq"""
-        ):
-            if row["seq"] != observed_instances:
-                raise ValidationError("compact EmuIR instance sequence is invalid")
-            target = (
-                part_for_source_seq(row["seq"])
-                if callable(part_for_source_seq)
-                else instance_assignment.get(row["id"])
-            )
+    part_for_source_seq = getattr(instance_assignment, "part_for_source_seq", None)
+    observed = 0
+    if callable(part_for_source_seq):
+        for seq in range(instance_count):
+            target = part_for_source_seq(seq)
             if target not in part_index:
-                raise ValidationError(
-                    "exact semantic contract assignment is incomplete"
-                )
-            try:
-                resources = json.loads(row["resources_json"])
-            except (TypeError, json.JSONDecodeError) as error:
-                raise ValidationError(
-                    "compact EmuIR instance resources are invalid"
-                ) from error
-            if not isinstance(resources, Mapping):
-                raise ValidationError(
-                    "compact EmuIR instance resources are invalid"
-                )
-            emit(
-                "<BI",
-                int(
-                    _instance_class({"resources": resources})
-                    == "architectural-state-or-memory"
-                ),
-                part_index[target],
-            )
-            observed_instances += 1
-        if (
-            observed_instances != instance_count
-            or len(instance_assignment) != instance_count
-        ):
-            raise ValidationError(
-                "exact semantic contract assignment is incomplete"
-            )
-
-        endpoint_rows = iter(
-            connection.execute(
-                """SELECT net_seq,role,ordinal,instance_seq
-                     FROM endpoint_records
-                    ORDER BY net_seq,role,ordinal"""
-            )
-        )
-        endpoint = next(endpoint_rows, None)
-        observed_nets = 0
-        observed_endpoints = 0
-        observed_sinks = 0
-        for row in connection.execute(
-            "SELECT seq FROM net_records ORDER BY seq"
-        ):
-            net_seq = row["seq"]
-            if net_seq != observed_nets:
-                raise ValidationError("compact EmuIR net sequence is invalid")
-            groups: list[list[int]] = [[], []]
-            endpoint_ordinals = [-1, -1]
-            while endpoint is not None and endpoint["net_seq"] == net_seq:
-                role = endpoint["role"]
-                ordinal = endpoint["ordinal"]
-                if (
-                    role not in {0, 1}
-                    or isinstance(ordinal, bool)
-                    or not isinstance(ordinal, int)
-                    or ordinal < 0
-                    or ordinal <= endpoint_ordinals[role]
-                ):
-                    raise ValidationError(
-                        "compact EmuIR endpoint sequence is invalid"
-                    )
-                endpoint_ordinals[role] = ordinal
-                owner = endpoint["instance_seq"]
-                if owner is None:
-                    groups[role].append(-1)
-                elif (
-                    isinstance(owner, bool)
-                    or not isinstance(owner, int)
-                    or owner < 0
-                    or owner >= instance_count
-                ):
-                    raise ValidationError(
-                        "compact EmuIR endpoint owner is invalid"
-                    )
-                else:
-                    groups[role].append(owner)
-                observed_endpoints += 1
-                observed_sinks += int(role == 1)
-                endpoint = next(endpoint_rows, None)
-            if endpoint is not None and endpoint["net_seq"] < net_seq:
-                raise ValidationError("compact EmuIR has orphaned endpoints")
-            for owners in groups:
-                emit("<I", len(owners))
-                for owner in owners:
-                    emit("<i", owner)
-            observed_nets += 1
-        if endpoint is not None:
-            raise ValidationError("compact EmuIR has orphaned endpoints")
-        if (
-            observed_nets != net_count
-            or observed_endpoints != endpoint_count
-            or observed_sinks != sink_count
-        ):
-            raise ValidationError("compact EmuIR record counts disagree")
-        return instance_count, net_count, sink_count
-    finally:
-        connection.close()
+                raise ValidationError("exact semantic contract assignment is incomplete")
+            emit("<I", part_index[target])
+            observed += 1
+    else:
+        connection = open_emuir_sqlite_read_only(path)
+        try:
+            for row in connection.execute("SELECT seq,id FROM cell_records ORDER BY seq"):
+                if row["seq"] != observed:
+                    raise ValidationError("compact EmuIR instance sequence is invalid")
+                target = instance_assignment.get(row["id"])
+                if target not in part_index:
+                    raise ValidationError("exact semantic contract assignment is incomplete")
+                emit("<I", part_index[target])
+                observed += 1
+        finally:
+            connection.close()
+    if observed != instance_count or len(instance_assignment) != instance_count:
+        raise ValidationError("exact semantic contract assignment is incomplete")
 
 
 def _compact_native_static_exact_counts(path: Path) -> tuple[int, int, int]:
@@ -2459,7 +2331,7 @@ def _analyze_static_exact_dependencies_native(
             emit(
                 "<Q6I",
                 _STATIC_EXACT_NATIVE_INPUT_MAGIC,
-                _STATIC_EXACT_NATIVE_PROTOCOL_VERSION,
+                4 if compact_ir_path is not None else _STATIC_EXACT_NATIVE_PROTOCOL_VERSION,
                 instance_count,
                 net_count,
                 len(ordered_cut_ids),
@@ -2467,14 +2339,10 @@ def _analyze_static_exact_dependencies_native(
                 sink_count,
             )
             if compact_ir_path is not None:
-                emitted_counts = _write_compact_native_static_exact_graph(
-                    compact_ir_path,
-                    emit,
-                    instance_assignment,
-                    part_index,
+                _write_compact_native_static_exact_parts(
+                    compact_ir_path, emit, instance_assignment, part_index,
+                    instance_count,
                 )
-                if emitted_counts != (instance_count, net_count, sink_count):
-                    raise ValidationError("compact EmuIR record counts disagree")
             else:
                 if instance_index is None:
                     raise ValidationError("native Static Exact input is incomplete")
@@ -2529,14 +2397,18 @@ def _analyze_static_exact_dependencies_native(
                     emit("<I", part_index[sink])
             if pending:
                 stream.write(pending)
-        # Protocol v3 contains only fixed-width integer graph coordinates. It
-        # preserves original instance/net order, resolves the cut subset while
-        # scanning those arrays, and returns only capture coordinates. Python
-        # binds C returned records back to authoritative EmuIR; native code
-        # never receives names, ports, or potentially unbounded Python bits.
+        # Compact v4 passes the source store plus the selected partition column
+        # and cut coordinates. Native code reads cell/net/endpoint relations
+        # directly; legacy v3 carries the graph for explicit in-memory inputs.
+        # Both return identical v3 capture coordinates, resolved independently
+        # against authoritative EmuIR below.
         del resolved_cut_ordinals
+        indexed_arguments = (
+            ["--indexed-input", str(compact_ir_path.resolve())]
+            if compact_ir_path is not None else []
+        )
         completed = subprocess.run(
-            [*native_command, str(native_input), str(native_output)],
+            [*native_command, *indexed_arguments, str(native_input), str(native_output)],
             capture_output=True,
             text=True,
             check=False,
