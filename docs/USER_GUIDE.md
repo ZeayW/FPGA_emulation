@@ -52,6 +52,13 @@ Cancellation unwinds adapters and reaps nested native tool owners before removin
 control scratch. Control state carries configuration, artifact paths and projected
 stage summaries; canonical phase stores and reports remain their owners. The
 ephemeral state is neither a checkpoint nor a restart interface.
+Each adapter receives its own `TMPDIR`, `TMP`, `TEMP` and `XDG_CACHE_HOME` below
+the controller's scratch directory. After adapter execution, group cleanup and
+state validation, the controller removes that phase's temporary workspace before
+starting the next phase. Absolute paths in control state that resolve into the
+workspace, including output symlinks to temporary files, reject the handoff.
+Publish required downstream artifacts in the flow directory; a temporary engine
+cache is not a phase publication.
 
 `multi-fpga-flow-report.json` remains the usual flow result. The separate
 [native-compile-result.json](../schemas/native-compile-result-v1.schema.json)

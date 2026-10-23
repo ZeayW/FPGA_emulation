@@ -73,6 +73,8 @@ defaults are unchanged. This is transitional orchestration, not completed native
 data-plane migration or large-design qualification. Supported modes, remaining
 integration and result contracts are described in the
 [user guide](docs/USER_GUIDE.md#native-compile-control).
+Each native-controlled phase releases its isolated temporary workspace after
+execution and handoff validation; published artifacts remain in the flow directory.
 
 ## Flow
 

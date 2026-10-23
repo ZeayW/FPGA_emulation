@@ -118,7 +118,7 @@ def test_cli_selects_native_control_without_calling_python_compiler():
     assert native.call_args.kwargs["partition_provider"] == "patron"
 
 
-def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False):
+def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, temporary_reference=None):
     """A process test double, with no RTL/physical or qualification claims."""
     source = tmp_path / "source/emuflow"
     source.mkdir(parents=True)
@@ -128,6 +128,12 @@ import argparse,json,os,pathlib,signal,time
 p=argparse.ArgumentParser()
 for name in ('stage','request','previous','output','run-id'):p.add_argument('--'+name)
 a=p.parse_args();request=pathlib.Path(a.request);v=json.loads(request.read_text());out=pathlib.Path(v['options']['output_dir']);out.mkdir(exist_ok=True)
+temporary=pathlib.Path(os.environ['TMPDIR'])
+assert os.environ['TMP']==os.environ['TEMP']==str(temporary)
+assert pathlib.Path(os.environ['XDG_CACHE_HOME']).parent==temporary
+(temporary/'unreleased-engine-cache').mkdir()
+(temporary/'unreleased-engine-cache'/'payload').write_bytes(b'stage-owned')
+with (out/'temporary-paths').open('a') as f:f.write(str(temporary)+'\\n')
 with (out/'calls').open('a') as f:f.write(a.stage+'\\n')
 if a.stage==FAIL:raise SystemExit(7)
 if WAITING and a.stage=='frontend':
@@ -135,10 +141,16 @@ if WAITING and a.stage=='frontend':
  time.sleep(60)
 st=request.stat();generation=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
 value={'schema':'emuflow.native-compile-state/v1','run_id':a.run_id,'stage':a.stage,'status':'pass','request_generation':generation,'state':['map',{}],'effective_options':v['options']}
+if TEMPORARY_REFERENCE and a.stage=='frontend':
+ path=temporary/'unreleased-engine-cache'/'payload'
+ if TEMPORARY_REFERENCE=='alias':
+  alias=out/'unpublished-input';alias.symlink_to(path);path=alias
+ value['state']=['map',{'next_input':['path',str(path)]}]
 if a.stage=='preflight' and CORRUPT:value[CORRUPT]='invalid'
 pathlib.Path(a.output).write_text(json.dumps(value))
 if a.stage=='finalize':(out/'multi-fpga-flow-report.json').write_text(json.dumps({'schema':'emuflow.multi-fpga-flow/v2','status':'pass'}))
-'''.replace("FAIL", repr(fail)).replace("CORRUPT", repr(corrupt)).replace("WAITING", repr(waiting)))
+'''.replace("FAIL", repr(fail)).replace("CORRUPT", repr(corrupt)).replace("WAITING", repr(waiting))
+       .replace("TEMPORARY_REFERENCE", repr(temporary_reference)))
     request = tmp_path / "request.json"
     request.write_text(json.dumps({"schema": "emuflow.native-compile/v1", "python_executable": sys.executable,
         "python_source": str(source.parent), "working_directory": str(tmp_path),
@@ -158,6 +170,34 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     assert report["request_configuration"] == json.loads(request.read_text())
     assert [step["stage"] for step in report["stages"]] == list(STAGES)
     assert all(step["maximum_process_rss_kib"] > 0 for step in report["stages"])
+    assert not list(tmp_path.glob(".emuflow-compile-*"))
+
+
+def test_native_controller_retires_each_phase_temporary_directory_before_next_phase(tmp_path):
+    request = fixture_request(tmp_path)
+    source = tmp_path / "source/emuflow/native_compile_adapter.py"
+    text = source.read_text().replace(
+        "temporary=pathlib.Path(os.environ['TMPDIR'])",
+        """previous=out/'temporary-paths'
+if previous.exists():
+ assert all(not pathlib.Path(p).exists() for p in previous.read_text().splitlines())
+temporary=pathlib.Path(os.environ['TMPDIR'])""")
+    source.write_text(text)
+    result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    roots = (tmp_path / "out/temporary-paths").read_text().splitlines()
+    assert len(set(roots)) == len(STAGES)
+    assert all(not Path(root).exists() for root in roots)
+
+
+@pytest.mark.parametrize("binding", ["path", "alias"])
+def test_native_controller_rejects_phase_temporary_input_even_through_output_alias(tmp_path, binding):
+    request = fixture_request(tmp_path, temporary_reference=binding)
+    result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "phase temporary path" in result.stderr
+    assert (tmp_path / "out/calls").read_text().splitlines() == ["preflight", "frontend"]
+    assert json.loads((tmp_path / "out/native-compile-result.json").read_text())["operation"]["status"] == "fail"
     assert not list(tmp_path.glob(".emuflow-compile-*"))
 
 

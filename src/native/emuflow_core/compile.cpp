@@ -76,6 +76,26 @@ class ControlJson {
     Require(value.Step() && value.Text(0) == "object","native compiler requires object field " + path);
     return value.Text(1);
   }
+  void RequirePublishedPaths(const fs::path& temporary) {
+    const auto root = fs::weakly_canonical(temporary);
+    const auto check = [&](const fs::path& path) {
+      const auto relative = path.lexically_relative(root);
+      Require(relative.empty() || *relative.begin() == "..",
+              "native compiler state references a phase temporary path");
+    };
+    auto paths = db_.Prepare("SELECT atom FROM json_tree(?1,'$.state') WHERE type='text'");
+    paths.BindText(1,data_);
+    while (paths.Step()) {
+      const fs::path path(paths.Text(0));
+      if (!path.is_absolute()) continue;
+      check(path.lexically_normal());
+      std::error_code error;
+      const auto canonical = fs::weakly_canonical(path,error);
+      // Control strings also include diagnostic text, not only file paths.
+      // Do not treat an unresolvable string as a filesystem lookup failure.
+      if (!error) check(canonical);
+    }
+  }
  private:
   SqliteDatabase db_;
   std::string data_;
@@ -144,12 +164,16 @@ CompileResult Compile(const ArtifactRef& configuration, const volatile std::sig_
       for (const auto& input : inputs) input.RequireUnchanged();
       Require(fs::canonical(python) == inputs[2].path(),"native compiler executable alias changed");
       const auto next = scratch.root / (std::string(stage) + ".json");
+      const auto temporary = scratch.root / "tmp" / stage;
+      fs::create_directory(temporary);
       ToolRequest tool;
       tool.argv = {python,"-m","emuflow.native_compile_adapter","--stage",stage,
                    "--request",configuration.path(),"--output",next.string(),"--run-id",run_id};
       if (!previous.empty()) { tool.argv.push_back("--previous"); tool.argv.push_back(previous.string()); }
       tool.working_directory = working_directory;
-      tool.environment = {{"PYTHONPATH",python_source},{"TMPDIR",(scratch.root / "tmp").string()}};
+      tool.environment = {{"PYTHONPATH",python_source},{"TMPDIR",temporary.string()},
+          {"TMP",temporary.string()},{"TEMP",temporary.string()},
+          {"XDG_CACHE_HOME",(temporary / "cache").string()}};
       tool.tail_bytes = 32768;
       // Adapters unwind nested stream/tool owners before leaving their group.
       tool.termination_grace_ms = 10000;
@@ -168,6 +192,7 @@ CompileResult Compile(const ArtifactRef& configuration, const volatile std::sig_
                 state.String("$.stage") == stage && state.String("$.run_id") == run_id &&
                 state.String("$.status") == "pass" && state.StateShape() && state.Generation(configuration.generation()),
                 "mixed or invalid native compiler phase result");
+        state.RequirePublishedPaths(temporary);
         state_ref.RequireUnchanged();
         if (std::string(stage) == "preflight") result.effective_configuration = state.Object("$.effective_options");
       } catch (const std::exception& error) {
@@ -175,6 +200,15 @@ CompileResult Compile(const ArtifactRef& configuration, const volatile std::sig_
         throw StageError(ErrorCode::kInvalidArtifact,"native compile " + std::string(stage) + ": " + error.what());
       }
       if (std::string(stage) == "preflight") ClaimOutput(output,result);
+      try {
+        // Adapter execution and native group cleanup have completed. No phase
+        // may carry a temporary graph/cache into the next process through state.
+        fs::remove_all(temporary);
+      } catch (const std::exception& error) {
+        result.steps.back().passed = false;
+        throw StageError(ErrorCode::kPublicationFailed,
+                         "cannot retire native phase temporary files: " + std::string(error.what()));
+      }
       if (!previous.empty()) fs::remove(previous);
       previous = next;
       std::cout << "COMPILE_STAGE_COMPLETE " << stage << " " << step.wall_seconds << "s\n" << std::flush;

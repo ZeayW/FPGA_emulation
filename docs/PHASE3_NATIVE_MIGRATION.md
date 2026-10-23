@@ -191,6 +191,10 @@ retries the sequence. Previous control state is removed after the next adapter
 consumes it; no checkpoint DAG is created. Canonical phase artifacts retain their
 normal validation and publication contracts. Controller validation is not a new
 electrical/timing oracle or a replacement for terminal flow validation.
+Phase temporary/cache roots are isolated and retired after successful execution
+and state validation, rather than accumulated until the complete flow exits.
+Control-state paths cannot refer into those roots through absolute paths or
+output symlinks; required downstream stores must be published outside them.
 
 This is a native orchestration milestone, not completed W7. Python phase data
 planes and several direct engine adapters remain; cross-stage/frame search,
