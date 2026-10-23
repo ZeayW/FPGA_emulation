@@ -7,6 +7,7 @@
 # Last Modified By  : Jing Mai <magic3007@pku.edu.cn>
 
 import logging
+import math
 import numpy as np
 import torch
 from .metric import array2str, array2d2str
