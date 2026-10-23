@@ -83,6 +83,16 @@ window, mean and maximum legalization displacement, post-legalization HPWL,
 and exact legality. A diagnostic handoff does not authorize routing by itself;
 the exact validator and negotiated router remain authoritative.
 
+The native atomic route chooses one density target from the largest exported
+resource utilization plus 2.5 percentage points of analytical headroom, bounded
+to `0.40..0.75`.  The lower bound prevents a partition whose whole-device LUT
+utilization is about 25% from collapsing into two central SLRs merely to reduce
+HPWL: two SLRs would be about 50% full and therefore legal under the former
+fixed `0.75` target, despite creating a severe local-routing bottleneck.  The
+upper bound preserves the established high-utilization behavior.  Exact
+legalization, detailed placement, and RWRoute remain the acceptance tests, and
+their HPWL and congestion results decide whether the wider placement helped.
+
 Area adjustment changes the analytical cell areas and resets the nonlinear
 optimizer. Its new overflow values therefore are not comparable to the
 pre-adjustment `0.25` trigger as a physical legality test. Waiting for the

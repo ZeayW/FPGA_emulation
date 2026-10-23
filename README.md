@@ -78,8 +78,10 @@ does not expand this platform ratio domain.
 
 The Xilinx Phase 7 path combines fanout-aware placement, RUDY/pin-density area
 adjustment, and a reserved post-adjustment convergence window before exact
-legalization and negotiated routing. Analytical LUT density uses the eight
-qualified LUT BELs per slice, independently of the native sixteen-slot encoding.
+legalization and negotiated routing. An utilization-adaptive `0.40..0.75`
+density target prevents low whole-device utilization from collapsing into the
+central SLRs. Analytical LUT density uses the eight qualified LUT BELs per
+slice, independently of the native sixteen-slot encoding.
 Empty and reserved rows retain zero placement capacity; the driver checks the
 parsed native density area before solving. Logic filler sampling preserves its
 exact total area and limits each LUT/FF sample to half a density bin so the

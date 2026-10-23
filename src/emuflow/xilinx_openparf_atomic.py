@@ -123,7 +123,9 @@ OPENPARF_FF_CONTROL_LEGALIZATION_SCHEMA = (
     "emuflow.openparf-ff-control-legalization/v1"
 )
 OPENPARF_RESULT_CHECKPOINT_SCHEMA = "emuflow.openparf-result-checkpoint/v1"
-_TARGET_DENSITY = 0.75
+_MIN_ROUTABILITY_TARGET_DENSITY = 0.40
+_MAX_ROUTABILITY_TARGET_DENSITY = 0.75
+_TARGET_DENSITY_HEADROOM = 0.025
 _QUALIFIED_LUTS_PER_SLICE = 8
 _CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
 _GLOBAL_PLACEMENT_STOP_OVERFLOW = 0.10
@@ -2725,7 +2727,7 @@ def _derate_clock_region_sites(
 def _validate_native_density_contract(
     sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
     atoms: Sequence[Mapping[str, str]],
-) -> Tuple[Dict[str, int], Dict[str, Dict[str, float]]]:
+) -> Tuple[Dict[str, int], Dict[str, Dict[str, float]], float]:
     """Normalize density to qualified BELs, independently of slot encoding."""
 
     demand = Counter(atom["resource"] for atom in atoms)
@@ -2747,7 +2749,7 @@ def _validate_native_density_contract(
         )
         for resource in demand
     }
-    result: Dict[str, Dict[str, float]] = {}
+    areas: Dict[str, Tuple[float, float, int]] = {}
     for resource in sorted(demand, key=_resource_sort_key):
         unit_capacity = per_site_capacity[resource]
         if unit_capacity <= 0:
@@ -2759,8 +2761,23 @@ def _validate_native_density_contract(
         )
         movable_area = demand[resource] / unit_capacity
         placeable_area = available_units / unit_capacity
-        target_area = _TARGET_DENSITY * placeable_area
         filler_units = available_units - demand[resource]
+        areas[resource] = (movable_area, placeable_area, filler_units)
+    maximum_utilization = max(
+        movable_area / placeable_area
+        for movable_area, placeable_area, _filler_units in areas.values()
+    )
+    target_density = max(
+        _MIN_ROUTABILITY_TARGET_DENSITY,
+        min(
+            _MAX_ROUTABILITY_TARGET_DENSITY,
+            maximum_utilization + _TARGET_DENSITY_HEADROOM,
+        ),
+    )
+    result: Dict[str, Dict[str, float]] = {}
+    for resource in sorted(demand, key=_resource_sort_key):
+        movable_area, placeable_area, filler_units = areas[resource]
+        target_area = target_density * placeable_area
         if not (
             math.isfinite(movable_area)
             and math.isfinite(placeable_area)
@@ -2770,7 +2787,8 @@ def _validate_native_density_contract(
             raise ValidationError(
                 "OpenPARF atomic placement density domain has no finite headroom "
                 f"for {resource}: demand={demand[resource]}, "
-                f"capacity={available_units}, target_density={_TARGET_DENSITY}"
+                f"capacity={int(placeable_area * per_site_capacity[resource])}, "
+                f"target_density={target_density}"
             )
         result[resource] = {
             "movable_area": movable_area,
@@ -2778,7 +2796,7 @@ def _validate_native_density_contract(
             "target_area": target_area,
             "filler_units": filler_units,
         }
-    return per_site_capacity, result
+    return per_site_capacity, result, target_density
 
 
 class _IndexedAtomSequence(Sequence[Mapping[str, str]]):
@@ -4469,8 +4487,8 @@ def export_xilinx_openparf_atomic(
     )
     sites = device_static["sites"]
     placement_region = device_static["placement_region"]
-    per_site_capacity, density_contract = _validate_native_density_contract(
-        sites, atoms
+    per_site_capacity, density_contract, target_density = (
+        _validate_native_density_contract(sites, atoms)
     )
     demand = Counter(atom["resource"] for atom in atoms)
     capacity = Counter()
@@ -4568,7 +4586,7 @@ def export_xilinx_openparf_atomic(
         "benchmark_name": "xilinx_atomic_mixed_resource",
         "benchmark_format": "bookshelf", "architecture_name": "ultrascale",
         "aux_input": str((output_dir / "design.aux").resolve()),
-        "gpu": 0, "dtype": "float64", "target_density": _TARGET_DENSITY,
+        "gpu": 0, "dtype": "float64", "target_density": target_density,
         # Match the upstream ISPD reference recipes. OpenPARF's generic
         # default stops global placement at overflow 0.20, but its native
         # routability adjustment is only eligible at overflow <= 0.15. If
@@ -5161,8 +5179,14 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-feedback-handoff-v9",
+            "provider": "openparf-rudy-pin-feedback-handoff-v10",
             "area_types": ["LUT", "FF"],
+            "target_density": {
+                "value": target_density,
+                "minimum": _MIN_ROUTABILITY_TARGET_DENSITY,
+                "maximum": _MAX_ROUTABILITY_TARGET_DENSITY,
+                "utilization_headroom": _TARGET_DENSITY_HEADROOM,
+            },
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW
             ),

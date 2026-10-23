@@ -302,17 +302,20 @@ def _add_mux_bels(architecture, primitives):
 class XilinxOpenparfAtomicTest(unittest.TestCase):
     def test_density_headroom_uses_only_qualified_lut_bels(self):
         # Sixteen z slots encode eight BLEs; paired LUTs are disabled. A
-        # seven-LUT region exceeds the 75% density target of the eight BELs,
+        # seven-LUT region exceeds the maximum 75% density target of eight BELs,
         # even though it would fit a fictitious sixteen-LUT density model.
         sites = [({"name": "SLICE_X0Y0"}, {"LUT": 16, "FF": 16})]
         with self.assertRaisesRegex(ValidationError, "headroom for LUT"):
             atomic_adapter._validate_native_density_contract(
                 sites, [{"resource": "LUT"}] * 7
             )
-        units, contract = atomic_adapter._validate_native_density_contract(
-            sites, [{"resource": "LUT"}] * 5 + [{"resource": "FF"}]
+        units, contract, target_density = (
+            atomic_adapter._validate_native_density_contract(
+                sites, [{"resource": "LUT"}] * 5 + [{"resource": "FF"}]
+            )
         )
         self.assertEqual(units, {"LUT": 8, "FF": 16})
+        self.assertEqual(target_density, 0.65)
         self.assertEqual(contract["LUT"]["movable_area"], 5 / 8)
         self.assertEqual(contract["LUT"]["filler_units"], 3)
         self.assertEqual(contract["FF"]["movable_area"], 1 / 16)
@@ -679,7 +682,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(manifest["density_contract"]["LUT"], {
             "movable_area": 8.0,
             "placeable_area": 16.0,
-            "target_area": 12.0,
+            "target_area": 8.4,
             "filler_units": 64,
         })
         self.assertEqual(manifest["net_export"], {
@@ -751,8 +754,14 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-feedback-handoff-v9",
+            "provider": "openparf-rudy-pin-feedback-handoff-v10",
             "area_types": ["LUT", "FF"],
+            "target_density": {
+                "value": 0.525,
+                "minimum": 0.40,
+                "maximum": 0.75,
+                "utilization_headroom": 0.025,
+            },
             "global_placement_stop_overflow": 0.10,
             "diagnostic_legalization_handoff": {
                 "maximum_logic_overflow": 0.25,
