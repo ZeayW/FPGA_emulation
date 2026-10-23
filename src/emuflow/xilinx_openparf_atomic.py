@@ -4604,14 +4604,16 @@ def export_xilinx_openparf_atomic(
         # Eight qualified LUT BELs and sixteen FF BELs share one slice.
         # Median-cell fillers would therefore materialize millions of
         # Python/Torch rows on XCVU19P.  Treat this as a preferred row limit,
-        # but never enlarge a logic filler beyond one analytical density bin;
-        # the runtime records and validates the effective sampling geometry.
+        # then raise the count as needed to keep each logic sample within half
+        # an analytical density bin.  The finer field sampling avoids a false
+        # overflow plateau while retaining far fewer rows than natural sizing.
         "gp_max_fillers_per_area_type": {
             resource: (
                 _LOGIC_FILLER_LIMIT if resource in {"LUT", "FF"} else 1
             )
             for resource in sorted(demand, key=_resource_sort_key)
         },
+        "gp_max_logic_filler_bin_span": 0.5,
         "gp_resource2area_types_map": resource_map,
         "resource_categories": resource_categories,
         "CLB_capacity": 16, "BLE_capacity": 2,
@@ -5138,7 +5140,7 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-stable-feasible-v5",
+            "provider": "openparf-rudy-pin-stable-feasible-v6",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW
@@ -5152,9 +5154,9 @@ def export_xilinx_openparf_atomic(
             "maximum_pin_adjustment_rate": _MAX_PIN_AREA_ADJUSTMENT_RATE,
             "resource_area_adjustment": False,
             "density_filler_sampling": {
-                "provider": "density-bin-bounded-fillers-v1",
+                "provider": "density-bin-bounded-fillers-v2",
                 "preferred_maximum_rows_per_area_type": _LOGIC_FILLER_LIMIT,
-                "maximum_bin_span": [1.0, 1.0],
+                "maximum_bin_span": [0.5, 0.5],
             },
             "sll_weighting": {
                 "provider": "leaps-fixed-adam-step-v2",

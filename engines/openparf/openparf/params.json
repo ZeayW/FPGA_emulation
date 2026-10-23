@@ -199,8 +199,12 @@
     "default": {}
   },
   "gp_max_fillers_per_area_type": {
-    "description": "Preferred positive per-area-type limit on analytical filler count; total area is preserved and logic fillers may exceed the limit to remain within one density bin",
+    "description": "Preferred positive per-area-type limit on analytical filler count; total area is preserved and logic fillers may exceed the limit to satisfy the configured density-grid span",
     "default": {}
+  },
+  "gp_max_logic_filler_bin_span": {
+    "description": "Maximum width and height of a logic filler as a fraction of one density bin; smaller samples improve the spatial resolution of the density force",
+    "default": 0.5
   },
   "gp_resource2area_types_map": {
     "description": "Map resource to area types",

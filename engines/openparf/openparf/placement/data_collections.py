@@ -235,6 +235,16 @@ class DataCollections(object):
                 placedb.getAreaTypeIndexFromName(name)
                 for name in params.logic_area_type_names
             }
+            logic_filler_bin_span = params.gp_max_logic_filler_bin_span
+            if (
+                isinstance(logic_filler_bin_span, bool)
+                or not isinstance(logic_filler_bin_span, (int, float))
+                or not math.isfinite(logic_filler_bin_span)
+                or not 0.0 < logic_filler_bin_span <= 1.0
+            ):
+                raise ValueError(
+                    "gp_max_logic_filler_bin_span must be finite and in (0, 1]"
+                )
             # inst_area_types = np.array(placedb.instAreaTypes().tolist(), dtype=np.uint8)
             for area_type in range(placedb.numAreaTypes()):
                 if total_movable_areas[area_type] > 0:
@@ -268,6 +278,7 @@ class DataCollections(object):
                         filler_caps.get(area_type),
                         (
                             self.bin_map_sizes[area_type]
+                            * logic_filler_bin_span
                             if area_type in logic_area_types
                             else None
                         ),

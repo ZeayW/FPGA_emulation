@@ -144,9 +144,9 @@ class ArchitectureDBTest(unittest.TestCase):
                                 "accepted_range": [0.0, 1000.0],
                             },
                             "density_filler_sampling": {
-                                "provider": "density-bin-bounded-fillers-v1",
+                                "provider": "density-bin-bounded-fillers-v2",
                                 "status": "pass",
-                                "maximum_bin_span": [1.0, 1.0],
+                                "maximum_bin_span": [0.5, 0.5],
                                 "resources": {
                                     "LUT": {
                                         "count": 4,

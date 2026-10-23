@@ -63,10 +63,12 @@ at zero without disabling SLL optimization or relaxing placement checks.
 OpenPARF applies a bounded square-root weight to large nets in its analytical
 placement objective. This guides placement without changing connectivity.
 The preferred logic-filler row limit may be exceeded when necessary to keep
-each LUT/FF filler within one density bin. Native startup validates the actual
-filler count, size, bin size, and span, and the convergence certificate records
-those values. Preserving total filler area alone is insufficient: oversized
-samples alias the density field and can prevent overflow convergence.
+each LUT/FF filler within half a density bin. Native startup validates the
+actual filler count, size, bin size, and span, and the convergence certificate
+records those values. Preserving total filler area alone is insufficient:
+coarse samples alias the density field and can leave overflow flat while the
+placement multipliers diverge. For square logic fillers, the half-bin bound
+requires about four times the sampling rows of the former full-bin bound.
 Exact legalization and an independent site/BEL validator remain responsible
 for physical legality.
 

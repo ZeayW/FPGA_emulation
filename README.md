@@ -82,7 +82,9 @@ legalization and negotiated routing. Analytical LUT density uses the eight
 qualified LUT BELs per slice, independently of the native sixteen-slot encoding.
 Empty and reserved rows retain zero placement capacity; the driver checks the
 parsed native density area before solving. Logic filler sampling preserves its
-exact total area and never spans more than one analytical density bin.
+exact total area and limits each LUT/FF sample to half a density bin so the
+density field retains enough spatial resolution before exact legalization.
+The native certificate records the effective count, geometry, and span.
 The final route still requires zero
 overused nodes and complete source-to-sink connectivity.
 

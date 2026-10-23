@@ -99,11 +99,14 @@ def validate_native_logic_site_area(engine: Any) -> dict[str, Any]:
 
 
 def validate_native_filler_geometry(engine: Any) -> dict[str, Any]:
-    """Require each logic filler sample to fit inside one density bin."""
+    """Require fine-grained logic filler sampling on the density grid."""
 
     names = tuple(getattr(engine.params, "logic_area_type_names", ()))
     if not names:
         raise RuntimeError("OpenPARF has no logic area types for filler validation")
+    maximum_span = float(engine.params.gp_max_logic_filler_bin_span)
+    if not math.isfinite(maximum_span) or not 0.0 < maximum_span <= 0.5:
+        raise RuntimeError("OpenPARF logic filler bin span is invalid")
     resources = {}
     for name in names:
         index = int(engine.placedb.getAreaTypeIndexFromName(name))
@@ -118,9 +121,9 @@ def validate_native_filler_geometry(engine: Any) -> dict[str, Any]:
         ):
             raise RuntimeError(f"OpenPARF {name} filler geometry is invalid")
         span = [size[axis] / bin_size[axis] for axis in range(2)]
-        if any(value > 1.0 + 1.0e-6 for value in span):
+        if any(value > maximum_span + 1.0e-6 for value in span):
             raise RuntimeError(
-                f"OpenPARF {name} filler exceeds one density bin: "
+                f"OpenPARF {name} filler exceeds the density sampling span: "
                 f"size={size}, bin={bin_size}"
             )
         resources[name] = {
@@ -130,9 +133,9 @@ def validate_native_filler_geometry(engine: Any) -> dict[str, Any]:
             "bin_span": span,
         }
     return {
-        "provider": "density-bin-bounded-fillers-v1",
+        "provider": "density-bin-bounded-fillers-v2",
         "status": "pass",
-        "maximum_bin_span": [1.0, 1.0],
+        "maximum_bin_span": [maximum_span, maximum_span],
         "resources": resources,
     }
 
@@ -452,9 +455,9 @@ def validate_openparf_native_metrics(
     if (
         not isinstance(filler_sampling, dict)
         or filler_sampling.get("provider")
-        != "density-bin-bounded-fillers-v1"
+        != "density-bin-bounded-fillers-v2"
         or filler_sampling.get("status") != "pass"
-        or filler_sampling.get("maximum_bin_span") != [1.0, 1.0]
+        or filler_sampling.get("maximum_bin_span") != [0.5, 0.5]
         or not isinstance(filler_sampling.get("resources"), dict)
         or not filler_sampling["resources"]
     ):
@@ -484,7 +487,7 @@ def validate_openparf_native_metrics(
                     or float(value) <= 0.0
                     for value in values
                 )
-                or float(span[axis]) > 1.0 + 1.0e-6
+                or float(span[axis]) > 0.5 + 1.0e-6
                 or not math.isclose(
                     float(span[axis]),
                     float(size[axis]) / float(bin_size[axis]),

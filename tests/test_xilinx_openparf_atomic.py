@@ -748,7 +748,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-stable-feasible-v5",
+            "provider": "openparf-rudy-pin-stable-feasible-v6",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": 0.10,
             "adjustment_overflow_threshold": 0.15,
@@ -758,9 +758,9 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "maximum_pin_adjustment_rate": 1.6,
             "resource_area_adjustment": False,
             "density_filler_sampling": {
-                "provider": "density-bin-bounded-fillers-v1",
+                "provider": "density-bin-bounded-fillers-v2",
                 "preferred_maximum_rows_per_area_type": 65536,
-                "maximum_bin_span": [1.0, 1.0],
+                "maximum_bin_span": [0.5, 0.5],
             },
             "sll_weighting": {
                 "provider": "leaps-fixed-adam-step-v2",
@@ -1378,6 +1378,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             config["gp_max_fillers_per_area_type"],
             {"FF": 65536, "LUT": 65536},
         )
+        self.assertEqual(config["gp_max_logic_filler_bin_span"], 0.5)
         self.assertIn("PIN C INPUT CLOCK", library)
         self.assertIn("PIN CE INPUT CTRL_CE", library)
         self.assertIn("PIN R INPUT CTRL_SR", library)
@@ -2167,6 +2168,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 "URAM288": 1,
             },
         )
+        self.assertEqual(config["gp_max_logic_filler_bin_span"], 0.5)
         self.assertIn("PIN A[0] INPUT", library)
         self.assertIn("PIN P[1] OUTPUT", library)
         defined, resource_models = _defined_and_resource_models(library, sites)
@@ -2691,9 +2693,9 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                                 "accepted_range": [0.0, 1000.0],
                             },
                             "density_filler_sampling": {
-                                "provider": "density-bin-bounded-fillers-v1",
+                                "provider": "density-bin-bounded-fillers-v2",
                                 "status": "pass",
-                                "maximum_bin_span": [1.0, 1.0],
+                                "maximum_bin_span": [0.5, 0.5],
                                 "resources": {
                                     "LUT": {
                                         "count": 4,

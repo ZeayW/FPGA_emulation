@@ -33,9 +33,9 @@ def _policy():
             "accepted_range": [0.0, 1000.0],
         },
         "density_filler_sampling": {
-            "provider": "density-bin-bounded-fillers-v1",
+            "provider": "density-bin-bounded-fillers-v2",
             "status": "pass",
-            "maximum_bin_span": [1.0, 1.0],
+            "maximum_bin_span": [0.5, 0.5],
             "resources": {
                 "LUT": {
                     "count": 4,
@@ -54,6 +54,7 @@ def _engine(*, patience=2, minimum=3):
             wirelength_weights=[1.0, 1.0],
             max_global_place_iters=100,
             gp_adjust_area=True,
+            gp_max_logic_filler_bin_span=0.5,
             gp_max_adjust_area_iters=6,
             stop_overflow=0.1,
             logic_area_type_names=["LUT", "FF"],
@@ -82,21 +83,24 @@ def _engine(*, patience=2, minimum=3):
 class OpenparfNativeDriverTest(unittest.TestCase):
     def test_native_filler_samples_fit_density_bins(self):
         engine = SimpleNamespace(
-            params=SimpleNamespace(logic_area_type_names=["LUT", "FF"]),
+            params=SimpleNamespace(
+                logic_area_type_names=["LUT", "FF"],
+                gp_max_logic_filler_bin_span=0.5,
+            ),
             placedb=SimpleNamespace(
                 getAreaTypeIndexFromName=lambda name: {"LUT": 0, "FF": 1}[name]
             ),
             data_cls=SimpleNamespace(
                 num_fillers=[370000, 478000],
-                filler_sizes=[[0.877, 0.877], [0.837, 0.837]],
+                filler_sizes=[[0.4385, 0.4385], [0.4185, 0.4185]],
                 bin_map_sizes=[[0.877, 1.215], [0.877, 1.215]],
             ),
         )
         result = validate_native_filler_geometry(engine)
         self.assertEqual(result["status"], "pass")
-        self.assertLessEqual(result["resources"]["LUT"]["bin_span"][0], 1.0)
+        self.assertLessEqual(result["resources"]["LUT"]["bin_span"][0], 0.5)
         engine.data_cls.filler_sizes[0][0] = 2.0
-        with self.assertRaisesRegex(RuntimeError, "exceeds one density bin"):
+        with self.assertRaisesRegex(RuntimeError, "exceeds the density sampling span"):
             validate_native_filler_geometry(engine)
 
     def test_native_density_domain_matches_qualified_site_area(self):
