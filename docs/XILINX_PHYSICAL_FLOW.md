@@ -168,6 +168,10 @@ remains only for explicit legacy inputs. This integration is undergoing
 real-device qualification; unit tests alone do not establish routed or global
 STA success.
 
+The exporter declares actual SQL net ordinals, including one-based or sparse
+keys. Disconnected input identities start beyond the maximum source ordinal,
+so they cannot alias a real net. Generated RTL disables implicit net creation.
+
 Native timing bindings include FF clock-enable and reset/set controls, both
 LUT6_2 outputs, and the qualified RAMB18 physical write-enable aliases.
 

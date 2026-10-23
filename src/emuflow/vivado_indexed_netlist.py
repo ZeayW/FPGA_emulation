@@ -41,6 +41,7 @@ def emit_indexed_vivado_verilog(
             def line(value: str) -> None:
                 stream.write(value + "\n")
 
+            line("`default_nettype none")
             line(f"module {_identifier(mapped.top)}(")
             line(",\n".join("  " + _identifier(name) for name in mapped.ports))
             line(");")
@@ -50,14 +51,15 @@ def emit_indexed_vivado_verilog(
                 if port["direction"] not in {"input", "output", "inout"}:
                     raise ValidationError("Vivado top port direction is invalid")
                 line(f"  {port['direction']} wire {dimension}{_identifier(name)};")
-            # Source net IDs are contiguous. Extra IDs represent disconnected
-            # input ports, which remain distinct rather than being tied off.
-            count = int(mapped_report["nets"])
-            for seq in range(count):
-                line(f"  wire __emuflow_net_{seq};")
+            # Preserve actual source ordinals, including one-based/sparse SQL
+            # keys. Extra IDs belong to disconnected input ports.
+            largest_net_bit = 1
+            for row in mapped.connection.execute("SELECT seq FROM netnames ORDER BY seq"):
+                largest_net_bit = int(row[0]) + 2
+                line(f"  wire __emuflow_net_{int(row[0])};")
             for name, port in mapped.ports.items():
                 for index, value in enumerate(port["bits"]):
-                    if isinstance(value, int) and value >= count + 2:
+                    if isinstance(value, int) and value > largest_net_bit:
                         line(f"  wire {bit(value)};")
                     target = _identifier(name)
                     if len(port["bits"]) != 1:
@@ -90,6 +92,7 @@ def emit_indexed_vivado_verilog(
                 line(",\n".join(connections))
                 line("  );")
             line("endmodule")
+            line("`default_nettype wire")
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, output_path)

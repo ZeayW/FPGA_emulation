@@ -8,10 +8,9 @@ routing, TDM assignment, physical implementation, and global timing analysis.
 The default research route uses RapidWright device resources, native OpenPARF
 placement, and RWRoute routing for supported Xilinx FPGAs. VTR/VPR remains an
 alternative academic backend, and Vivado is an optional proprietary backend.
-The indexed Vivado adapter consumes current Phase 6 SQLite contracts, fixed
-LVDS I/O, native sequential control pins, and the common physical-result
-contract. Real-device qualification is in
-progress. Its OOC implementation retains abstract external clock sources and
+The indexed Vivado adapter consumes current Phase 6 SQLite contracts with
+preserved net identities, fixed LVDS I/O, native sequential control pins, and
+the common physical-result contract. Real-device qualification is in progress. Its OOC implementation retains abstract external clock sources and
 does not establish board clock/skew signoff. See the
 [Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider) and
 [user guide](docs/USER_GUIDE.md#physical-implementation).

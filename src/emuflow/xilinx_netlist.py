@@ -680,9 +680,6 @@ def _emit_compact_xilinx_mapped_artifacts(
         contracts = library_contract["cells"]
         native_xilinx_cells = set(contracts)
 
-        net_count = int(
-            source.execute("SELECT count(*) FROM net_records").fetchone()[0]
-        )
         top_bits: Dict[Tuple[str, int], int] = {}
         for row in source.execute(
             """
@@ -702,7 +699,11 @@ def _emit_compact_xilinx_mapped_artifacts(
         ports: Dict[str, Any] = {}
         unconnected_output_bits = 0
         unconnected_input_bits = 0
-        next_dead_input_bit = net_count + 2
+        # SQL-materialized stores can use one-based or sparse primary keys.
+        # Fresh port identities must be beyond the maximum REAL net ordinal,
+        # rather than beyond its row count.
+        max_net_seq = source.execute("SELECT max(seq) FROM net_records").fetchone()[0]
+        next_dead_input_bit = (int(max_net_seq) + 3) if max_net_seq is not None else 2
         for port in ports_source:
             if not isinstance(port, dict):
                 raise ValidationError("compact EmuIR port is invalid")

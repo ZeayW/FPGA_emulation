@@ -1,5 +1,7 @@
 import json
 import shutil
+import sqlite3
+import re
 import subprocess
 import tempfile
 import unittest
@@ -38,6 +40,30 @@ def fixture(root):
 
 
 class IndexedVivadoTests(unittest.TestCase):
+    def test_one_based_and_sparse_net_ordinals_do_not_alias_unused_ports(self):
+        from emuflow.xilinx_netlist import open_xilinx_mapped_index
+
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                ir = fixture(root)
+                with sqlite3.connect(ir) as db:
+                    for table, column in (("net_records", "seq"), ("endpoint_records", "net_seq"), ("alias_records", "net_seq")):
+                        db.execute(f"UPDATE {table} SET {column}={column}+100")
+                        db.execute(f"UPDATE {table} SET {column}=" + (f"({column}-100)*10+10" if sparse else f"{column}-99"))
+                    ports = [json.loads(row[0]) for row in db.execute("SELECT record_json FROM port_records")]
+                    unused = {**next(p for p in ports if p["id"] == "d"), "id": "unused", "name": "unused"}
+                    db.execute("INSERT INTO port_records VALUES (?,?)", (len(ports), json.dumps(unused)))
+                    maximum = db.execute("SELECT max(seq) FROM net_records").fetchone()[0]
+                report = emit_vivado_mapped_verilog(ir, root / "dut.v")
+                with open_xilinx_mapped_index(Path(report["mapped_index"]["path"])) as mapped:
+                    self.assertGreater(mapped.ports["unused"]["bits"][0], maximum + 2)
+                text = (root / "dut.v").read_text()
+                declarations = set(re.findall(r"wire (__emuflow_net_\d+);", text))
+                references = set(re.findall(r"\b__emuflow_net_\d+\b", text))
+                self.assertEqual(declarations, references)
+                self.assertIn("`default_nettype none", text)
+
     def test_public_schema_accepts_native_resources_and_preserves_scope(self):
         try:
             import jsonschema
