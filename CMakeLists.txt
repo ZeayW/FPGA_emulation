@@ -297,6 +297,7 @@ add_library(
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/patron_ingress.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/partition_clusters.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/primary_cluster_view.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/partition_loads.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/candidate_ids.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/resource_view.cpp"
 )

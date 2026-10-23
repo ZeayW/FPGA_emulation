@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Offline model-boundary differential; no partition search or feature claim.
+"""Offline native model/load differentials; no PATRON or feature claim.
 
-Round-robin or normal TritonPart initial ownership feeds a representation-only
-diagnostic, never Static Exact feature qualification. Both model readers still
-enforce the declared capacity/balance/fixed constraints; failures never relax them.
+Model scope uses round-robin or normal TritonPart initial ownership and retains
+all model-reader constraints. Loads scope compares independent arithmetic on a
+declared diagnostic vector; it is never a legal candidate or solver input.
+Failures never relax constraints or switch implementations.
 """
 from __future__ import annotations
 from array import array
@@ -22,7 +23,7 @@ from emuflow.errors import ValidationError
 from emuflow.emuir_storage import is_emuir_sqlite
 from emuflow.io import read_json, write_json
 from emuflow.native_tools import native_file_generation, resolve_native_executable
-from emuflow.partition import (build_clusters, normalize_partition_constraints,
+from emuflow.partition import (active_partition_fpgas, build_clusters, normalize_partition_constraints,
                                _PackedClusterAssignment, CUT_MODE_STATIC_EXACT)
 from emuflow.partition_ir import load_partition_ir, CompactPartitionIR
 from emuflow.partition_pressure import build_partition_pressure_model
@@ -58,6 +59,39 @@ def worker(path):
     raw=read_json(Path(request['constraints'])) if request['constraints'] else None
     constraints=normalize_partition_constraints(raw,ir,platform)
     clusters=build_clusters(ir,constraints,cut_mode=CUT_MODE_STATIC_EXACT,_native_compact_clusters=True)
+    if request.get('scope', 'model') == 'loads':
+        # Arithmetic differential only: this vector is not a legal partition
+        # candidate and is never submitted to a solver or feature validator.
+        from emuflow.phase3_assignment_native import reduce_native_partition_loads
+        from emuflow.resources import RESOURCE_FIELDS
+        parts=tuple(sorted(fpga.id for fpga in active_partition_fpgas(platform,constraints)))
+        records=clusters['clusters']
+        assignment=_PackedClusterAssignment(parts,(i%len(parts) for i in range(len(records))))
+        dimensions=('cells',*RESOURCE_FIELDS)
+        started=time.monotonic()
+        totals=dict.fromkeys(dimensions,0)
+        loads={part:dict.fromkeys(dimensions,0) for part in parts}
+        counts=dict.fromkeys(parts,0)
+        for cluster in records:
+            part=assignment[cluster['id']]
+            counts[part]+=1
+            values=(len(cluster['instances']),*(cluster['resources'].get(field,0) for field in RESOURCE_FIELDS))
+            for field,value in zip(dimensions,values):
+                totals[field]+=value;loads[part][field]+=value
+        reference_seconds=time.monotonic()-started
+        metrics={}
+        started=time.monotonic()
+        actual=reduce_native_partition_loads(records,assignment,parts,metrics=metrics)
+        native_seconds=time.monotonic()-started
+        expected=(totals,loads,counts)
+        if actual!=expected:raise ValidationError('native primary load reduction differs from independent expanded records')
+        payload=json.dumps(expected,sort_keys=True,separators=(',',':')).encode()
+        write_json(Path(request['result']),{'status':'pass','scope':'Independent primary load arithmetic only; round-robin ownership is not a legal candidate, feature or whole-flow qualification.',
+            'instances':len(ir.value['instances']),'clusters':len(records),
+            'ordered_load_sha256':hashlib.sha256(payload).hexdigest(),
+            'reference_wall_seconds':reference_seconds,'native_wall_seconds':native_seconds,
+            'native_engine_metrics':metrics,'loads':loads,'cluster_counts':counts,'totals':totals},compact=True)
+        return
     timing=read_json(Path(request['timing']))
     routes=load_route_constraints(Path(request['routes']) if request['routes'] else None,platform,frame_slots=1024)
     model=build_partition_pressure_model(ir,platform,clusters,constraints,timing,routes,
@@ -118,6 +152,7 @@ def main(argv=None):
     parser.add_argument('--worker-request',type=Path,help=argparse.SUPPRESS)
     for name in ('ir','timing-database','platform','oracle','out','constraints','route-constraints'):
         parser.add_argument('--'+name,type=Path)
+    parser.add_argument('--scope',choices=('model','loads'),default='model',help='model boundary or independent raw load reduction')
     parser.add_argument('--expected-design')
     parser.add_argument('--source-commit',help='require matching versioned native/Python installation')
     parser.add_argument('--initialization',choices=('round-robin','tritonpart'),default='round-robin')
@@ -127,9 +162,12 @@ def main(argv=None):
     for sig in (signal.SIGINT,signal.SIGTERM): signal.signal(sig,cancel)
     if args.worker_request:
         worker(args.worker_request);return 0
-    for name in ('ir','timing_database','platform','oracle','out','expected_design'):
+    required=('ir','platform','out','expected_design')+ (('timing_database','oracle') if args.scope=='model' else ())
+    for name in required:
         if getattr(args,name) is None:parser.error('--'+name.replace('_','-')+' is required')
     if args.minimum_instances<1:parser.error('--minimum-instances must be positive')
+    if args.scope=='loads' and (args.initialization!='round-robin' or args.openroad is not None):
+        parser.error('loads scope accepts only diagnostic round-robin ownership')
     root=args.out.resolve()
     if root.exists() and any(root.iterdir()):raise ValidationError('diagnostic output must be empty')
     root.mkdir(parents=True,exist_ok=True)
@@ -141,22 +179,24 @@ def main(argv=None):
         if metadata.value['design']['name']!=args.expected_design or len(metadata.value['instances'])<args.minimum_instances:
             raise ValidationError('primary handoff workload design/scale disagrees')
         native=Path(resolve_native_executable('emuflow-native')).resolve()
-        openroad=resolve_native_executable('openroad',args.openroad) if args.initialization=='tritonpart' else None
+        openroad=resolve_native_executable('openroad',args.openroad) if args.scope=='model' and args.initialization=='tritonpart' else None
         install=native.parent.parent
         if args.source_commit:
             if ((install/'SOURCE_COMMIT').read_text().strip()!=args.source_commit or
                     Path((install/'PYTHON_SOURCE_PATH').read_text().strip()).resolve()!=Path(__file__).resolve().parents[2]/'src'):
                 raise ValidationError('versioned native/Python source identity disagrees')
-        timing=read_json(args.timing_database)
-        sources=[args.ir,args.timing_database,sta_path_database_payload_path(args.timing_database,timing),args.platform,args.oracle,native,Path(__file__)]
+        sources=[args.ir,args.platform,native,Path(__file__)]
+        if args.scope=='model':
+            timing=read_json(args.timing_database)
+            sources.extend([args.timing_database,sta_path_database_payload_path(args.timing_database,timing),args.oracle])
         sources.extend(p for p in (args.constraints,args.route_constraints) if p is not None)
         if openroad is not None:sources.append(Path(openroad))
         identities=[{'path':str(p.resolve()),'generation':list(native_file_generation(p)),
                      'sha256':digest(p)} for p in sources]
         request={'schema':'emuflow.primary-handoff-worker/v1','ir':str(args.ir.resolve()),
             'ir_generation':list(native_file_generation(args.ir)),
-            'timing':str(args.timing_database.resolve()),'platform':str(args.platform.resolve()),
-            'oracle':str(args.oracle.resolve()),'constraints':str(args.constraints.resolve()) if args.constraints else None,
+            'scope':args.scope,'timing':str(args.timing_database.resolve()) if args.timing_database else None,'platform':str(args.platform.resolve()),
+            'oracle':str(args.oracle.resolve()) if args.oracle else None,'constraints':str(args.constraints.resolve()) if args.constraints else None,
             'initialization':args.initialization,'openroad':openroad,
             'routes':str(args.route_constraints.resolve()) if args.route_constraints else None,
             'expected_design':args.expected_design,'minimum_instances':args.minimum_instances,

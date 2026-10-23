@@ -79,6 +79,22 @@ inputs fail without relaxation or automatic initializer fallback. The model
 comparison performs no PATRON search or algorithm-selected-cut qualification. This diagnostic cannot qualify Static Exact, whole-Phase-3
 speedup, a provider comparison or complete Phase 1–7/7C physical/global timing.
 
+The same tool supports `--scope loads --ir INPUT.sqlite --platform BOARD.json
+--out OUTPUT --expected-design TOP` without a timing database or model oracle.
+It builds the shared primary store once and compares complete per-partition
+cluster/cell/resource sums from independently expanded reference records with
+the native reduction. Both consume the same declared round-robin integer vector.
+This arithmetic vector is not a legal candidate or feature qualification and is
+never submitted to partition search; no capacity or balance policy is relaxed.
+The compact result includes the complete load identity, both reduction wall
+times and native subprocess metrics. Whole-worker RSS is a lifetime high-water
+value, not an incremental reference/native memory comparison. Parent-owned
+scratch is removed only after the supervised worker and native readers exit.
+Unit contracts also poison compact record expansion in assignment construction
+and final validation, compare full independent balance reports, and require
+coverage, catalog, version, checksum, generation, ownership and capacity failures
+to preserve any previously published output.
+
 ## Timing acceptance
 
 A complete physical flow requires explicit clock periods, routed logic and

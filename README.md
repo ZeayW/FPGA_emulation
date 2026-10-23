@@ -68,6 +68,8 @@ Compact indexed PATRON v14 production builds its pressure model directly in
 the shared core from EmuIR, TimingPathDB and the original native primary store;
 it avoids a second membership/resource snapshot and transposed resource matrix.
 Python carries configuration and packed initial ownership, not a pressure graph.
+Assignment summaries and independent capacity/balance validation also reduce
+the shared primary columns in C++, without decoding cluster member records.
 The [offline handoff differential](docs/VALIDATION.md#primary-store-handoff-differential)
 can use the normal TritonPart initializer while keeping capacity/balance bounds.
 Versioned native runtimes also build the Phase 3 topology hop refiner from the

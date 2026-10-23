@@ -70,6 +70,24 @@ the whole-phase memory measurement.
 Normal handoff still runs the independent assignment validator and candidate
 selection before final semantic/index publication.
 
+`phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT` independently reduces the
+primary resource columns under the final packed assignment. Construction of
+compact partition summaries, balance validation and final online validation use
+this common operation rather than expand every cluster's names, membership and
+resources. The request binds the source and primary generations and streams one
+integer part per canonical cluster; it does not carry solver resource totals.
+Only per-partition cluster/cell/resource counts return to Python, where the
+existing independent capacity, reservation and share equations remain unchanged.
+The final validator checks instance/cluster ownership agreement, fixed/group
+constraints and source-bound membership, and reuses its independently reduced
+loads for its balance equations. Unknown owners, missing coverage, source
+changes, malformed requests and checksums reject before atomic publication.
+Native consumer failure never retries through expanded reference records.
+Instance ownership borrows the existing member offsets and, when catalogs
+match, the packed part column; it does not rebuild cluster IDs or member counts.
+The public assignment and balance-report schemas are unchanged. Final semantic
+record construction and index publication still require further native ownership.
+
 Small/inline and explicitly selected legacy tools, retained diagnostic traces,
 physical-feedback algorithms and explicit legacy input copies keep the reference
 model path. A selected native producer never retries through that path. Its

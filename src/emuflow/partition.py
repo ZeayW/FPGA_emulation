@@ -617,33 +617,35 @@ class _CompactInstanceAssignment(Mapping[str, str]):
         cluster_assignment: Mapping[str, str],
     ) -> None:
         self.path = path
-        self.part_ids = tuple(sorted(set(cluster_assignment.values())))
-        part_index = {part: index for index, part in enumerate(self.part_ids)}
-        self._cluster_parts = array("I")
-        self._cluster_member_counts = array("I")
-        for index in range(len(clusters)):
-            cluster_id = f"c{index:06d}"
-            member_count = clusters.cluster_member_count(index)
-            if (
-                cluster_id not in cluster_assignment
-                or member_count >= 2**32
-            ):
-                raise ValidationError(
-                    "compact partition cluster ownership is invalid"
-                )
-            self._cluster_parts.append(
-                part_index[cluster_assignment[cluster_id]]
-            )
-            self._cluster_member_counts.append(member_count)
+        _validate_cluster_assignment_coverage(clusters, cluster_assignment)
+        self._cluster_member_offsets = clusters._member_offsets
+        if isinstance(cluster_assignment, _PackedClusterAssignment):
+            used = set(cluster_assignment.part_indices)
+            if any(index >= len(cluster_assignment.part_ids) for index in used):
+                raise ValidationError("compact partition cluster ownership is invalid")
+            self.part_ids = tuple(sorted(cluster_assignment.part_ids[index] for index in used))
+            if self.part_ids == cluster_assignment.part_ids:
+                self._cluster_parts = cluster_assignment.part_indices
+            else:
+                lookup = {part: index for index, part in enumerate(self.part_ids)}
+                translation = {index: lookup[cluster_assignment.part_ids[index]] for index in used}
+                self._cluster_parts = array("I", (translation[index] for index in cluster_assignment.part_indices))
+        else:
+            self.part_ids = tuple(sorted(set(cluster_assignment.values())))
+            part_index = {part: index for index, part in enumerate(self.part_ids)}
+            self._cluster_parts = array("I", (part_index[cluster_assignment[f"c{i:06d}"]] for i in range(len(clusters))))
         self._source_clusters = clusters.source_cluster_indices
-        if sum(self._cluster_member_counts) != len(self._source_clusters):
-            raise ValidationError(
-                "compact partition instance coverage is invalid"
-            )
-        if self._source_clusters and max(self._source_clusters) >= len(clusters):
-            raise ValidationError(
-                "compact partition source ownership is invalid"
-            )
+        if (self._cluster_member_offsets[0] != 0 or
+                self._cluster_member_offsets[-1] != len(self._source_clusters)):
+            raise ValidationError("compact partition instance coverage is invalid")
+        if (getattr(clusters, "implementation_id", None) != "native-primary-clusters-v1" and
+                any(not 0 < clusters.cluster_member_count(i) < 2**32 for i in range(len(clusters)))):
+            raise ValidationError("compact partition cluster ownership is invalid")
+        # The native primary owner already verified source coverage. Reference
+        # columns still require their independent ordinal bound check here.
+        if (getattr(clusters, "implementation_id", None) != "native-primary-clusters-v1" and
+                self._source_clusters and max(self._source_clusters) >= len(clusters)):
+            raise ValidationError("compact partition source ownership is invalid")
 
     def __len__(self) -> int:
         return len(self._source_clusters)
@@ -697,7 +699,7 @@ class _CompactInstanceAssignment(Mapping[str, str]):
         return self.part_ids[self._cluster_parts[cluster_index]]
 
     def cluster_member_count(self, cluster_index: int) -> int:
-        return self._cluster_member_counts[cluster_index]
+        return self._cluster_member_offsets[cluster_index + 1] - self._cluster_member_offsets[cluster_index]
 
     def iter_source_assignments(
         self, *, order_by_id: bool = False
@@ -2427,6 +2429,51 @@ def assign_clusters(
     )
 
 
+def _validate_cluster_assignment_coverage(clusters, assignment):
+    """Check identities without decoding compact membership/resource records."""
+    compact = isinstance(clusters, _CompactClusterRecords)
+    if len(assignment) == len(clusters):
+        if compact and isinstance(assignment, _PackedClusterAssignment):
+            return  # Canonical identities are intrinsic to this typed mapping.
+        identities = (f"c{i:06d}" for i in range(len(clusters))) if compact else (c["id"] for c in clusters)
+        if all(identity in assignment for identity in identities):
+            return
+    expected = ({f"c{i:06d}" for i in range(len(clusters))} if compact
+                else {cluster["id"] for cluster in clusters})
+    actual = set(assignment)
+    raise ValidationError("cluster assignment exact coverage failed; "
+                          f"missing={sorted(expected-actual)[:8]}, extra={sorted(actual-expected)[:8]}")
+
+
+def _cluster_assignment_summary(clusters, assignment, fpga_ids):
+    """Independent primary-column reduction; reference records remain explicit."""
+    _validate_cluster_assignment_coverage(clusters, assignment)
+    if getattr(clusters, "implementation_id", None) == "native-primary-clusters-v1":
+        from .phase3_assignment_native import reduce_native_partition_loads
+        return reduce_native_partition_loads(clusters, assignment, fpga_ids)
+    dimensions = ("cells", *RESOURCE_FIELDS)
+    totals = dict.fromkeys(dimensions, 0)
+    loads = {part: dict.fromkeys(dimensions, 0) for part in fpga_ids}
+    counts = dict.fromkeys(fpga_ids, 0)
+    for index in range(len(clusters)):
+        if isinstance(clusters, _CompactClusterRecords):
+            identity = f"c{index:06d}"
+            values = (clusters.cluster_member_count(index),
+                      *(column[index] for column in clusters._resource_columns))
+        else:
+            cluster = clusters[index]
+            identity = cluster["id"]
+            values = (len(cluster["instances"]), *(cluster["resources"].get(field, 0) for field in RESOURCE_FIELDS))
+        part = assignment[identity]
+        if part not in loads:
+            raise ValidationError(f"balance assignment references unknown FPGA {part!r}")
+        counts[part] += 1
+        for dimension, value in zip(dimensions, values):
+            totals[dimension] += value
+            loads[part][dimension] += value
+    return totals, loads, counts
+
+
 def build_partition_assignment(
     ir: EmuIR,
     platform: Platform,
@@ -2454,21 +2501,14 @@ def build_partition_assignment(
     cluster_records = clusters_artifact["clusters"]
     if not isinstance(cluster_records, list):
         raise ValidationError("partition clusters are incomplete")
-    if len(cluster_assignment) != len(cluster_records) or any(
-        cluster["id"] not in cluster_assignment for cluster in cluster_records
-    ):
-        expected = {cluster["id"] for cluster in cluster_records}
-        actual = set(cluster_assignment)
-        missing = sorted(expected - actual)
-        extra = sorted(actual - expected)
-        raise ValidationError(
-            "cluster assignment exact coverage failed; "
-            f"missing={missing[:8]}, extra={extra[:8]}"
-        )
+    _validate_cluster_assignment_coverage(cluster_records, cluster_assignment)
     fpga_ids = {
         fpga.id for fpga in active_partition_fpgas(platform, constraints)
     }
-    unknown_fpgas = sorted(set(cluster_assignment.values()) - fpga_ids)
+    assigned_fpgas = ({cluster_assignment.part_ids[index] for index in set(cluster_assignment.part_indices)}
+                      if isinstance(cluster_assignment, _PackedClusterAssignment)
+                      else set(cluster_assignment.values()))
+    unknown_fpgas = sorted(assigned_fpgas - fpga_ids)
     if unknown_fpgas:
         raise ValidationError(
             f"cluster assignment references unknown FPGAs {unknown_fpgas}"
@@ -2587,18 +2627,26 @@ def build_partition_assignment(
         }
         for fpga in platform.fpgas
     }
-    for cluster in cluster_records:
-        cluster_id = cluster["id"]
-        assigned_fpga = cluster_assignment[cluster_id]
-        state = partition_state[assigned_fpga]
-        if retain_partition_clusters:
-            state["clusters"].append(cluster_id)
-        state["cluster_count"] += 1
-        state["instance_count"] += len(cluster["instances"])
-        vector = ResourceVector.from_mapping(cluster["resources"])
-        for field in RESOURCE_FIELDS:
-            state["resources"][field] += getattr(vector, field)
-
+    if not retain_partition_clusters:
+        _totals, loads, counts = _cluster_assignment_summary(
+            cluster_records, cluster_assignment, tuple(partition_state)
+        )
+        for part, state in partition_state.items():
+            state["cluster_count"] = counts[part]
+            state["instance_count"] = loads[part]["cells"]
+            state["resources"] = {field: loads[part][field] for field in RESOURCE_FIELDS}
+    else:
+        for cluster in cluster_records:
+            cluster_id = cluster["id"]
+            assigned_fpga = cluster_assignment[cluster_id]
+            state = partition_state[assigned_fpga]
+            if retain_partition_clusters:
+                state["clusters"].append(cluster_id)
+            state["cluster_count"] += 1
+            state["instance_count"] += len(cluster["instances"])
+            vector = ResourceVector.from_mapping(cluster["resources"])
+            for field in RESOURCE_FIELDS:
+                state["resources"][field] += getattr(vector, field)
     reservations = constraints.get("resource_reservations_by_fpga", {})
     planning_capacity = planning_resource_capacities(
         platform.fpgas, reservations
@@ -2647,15 +2695,10 @@ def build_partition_assignment(
             )
         partition_records.append(record)
 
-    cluster_assignment_is_canonical = (
-        isinstance(cluster_assignment, (dict, _PackedClusterAssignment))
-        and all(
-            cluster_id == cluster["id"]
-            for cluster_id, cluster in zip(
-                cluster_assignment, cluster_records
-            )
-        )
-    )
+    cluster_assignment_is_canonical = isinstance(cluster_assignment, _PackedClusterAssignment) and isinstance(cluster_records, _CompactClusterRecords)
+    if not cluster_assignment_is_canonical and isinstance(cluster_assignment, (dict, _PackedClusterAssignment)):
+        identities = (f"c{i:06d}" for i in range(len(cluster_records))) if isinstance(cluster_records, _CompactClusterRecords) else (c["id"] for c in cluster_records)
+        cluster_assignment_is_canonical = all(left == right for left, right in zip(cluster_assignment, identities))
     stored_cluster_assignment = (
         cluster_assignment
         if cluster_assignment_is_canonical
@@ -2742,56 +2785,79 @@ def validate_partition_artifacts_online(
         for fpga_id in fpga_by_id
     }
     expected_cluster_assignment = {}
-    for index, cluster in enumerate(raw_clusters):
-        if not isinstance(cluster, dict):
-            raise ValidationError(f"clusters[{index}] is not an object")
-        cluster_id = cluster.get("id")
-        members = cluster.get("instances")
-        resources = cluster.get("resources")
-        if (
-            not isinstance(cluster_id, str)
-            or not cluster_id
-            or (
-                cluster_id != f"c{index:06d}"
-                if compact_assignment
-                else cluster_id in cluster_ids
-            )
-            or not isinstance(members, list)
-            or not members
-            or not all(isinstance(member, str) for member in members)
-            or not isinstance(resources, dict)
-        ):
-            raise ValidationError(f"clusters[{index}] is malformed")
-        if compact_assignment:
-            if raw_assignment.cluster_member_count(index) != len(members):
-                raise ValidationError(
-                    "online compact cluster membership disagrees"
-                )
-            part = raw_assignment.cluster_part(index)
+    native_compact = (compact_assignment and isinstance(raw_clusters, _CompactClusterRecords) and
+                      getattr(raw_clusters, "implementation_id", None) == "native-primary-clusters-v1")
+    if native_compact:
+        if (raw_assignment._source_clusters is not raw_clusters.source_cluster_indices or
+                raw_assignment._cluster_member_offsets is not raw_clusters._member_offsets or
+                len(raw_assignment._cluster_parts) != len(raw_clusters) or
+                raw_assignment.path.resolve() != Path(raw_clusters.native_source_path).resolve()):
+            raise ValidationError("online compact cluster membership disagrees")
+        _validate_cluster_assignment_coverage(raw_clusters, cluster_assignment)
+        if isinstance(cluster_assignment, _PackedClusterAssignment):
+            if raw_assignment.part_ids == cluster_assignment.part_ids:
+                same_parts = raw_assignment._cluster_parts == cluster_assignment.part_indices
+            else:
+                same_parts = all(raw_assignment.cluster_part(i) == cluster_assignment.part_for_index(i)
+                                 for i in range(len(raw_clusters)))
         else:
-            duplicate_members = instance_ids & set(members)
-            if duplicate_members:
-                raise ValidationError(
-                    "online clusters contain duplicate instances"
+            same_parts = all(raw_assignment.cluster_part(i) == cluster_assignment.get(f"c{i:06d}")
+                             for i in range(len(raw_clusters)))
+        if not same_parts:
+            raise ValidationError("online cluster assignment disagrees with instances")
+        _totals, loads, native_counts = _cluster_assignment_summary(raw_clusters, cluster_assignment, tuple(fpga_by_id))
+        for part in fpga_by_id:
+            resource_totals[part] = {field: loads[part][field] for field in RESOURCE_FIELDS}
+    else:
+        for index, cluster in enumerate(raw_clusters):
+            if not isinstance(cluster, dict):
+                raise ValidationError(f"clusters[{index}] is not an object")
+            cluster_id = cluster.get("id")
+            members = cluster.get("instances")
+            resources = cluster.get("resources")
+            if (
+                not isinstance(cluster_id, str)
+                or not cluster_id
+                or (
+                    cluster_id != f"c{index:06d}"
+                    if compact_assignment
+                    else cluster_id in cluster_ids
                 )
-            cluster_ids.add(cluster_id)
-            instance_ids.update(members)
-            assigned_parts = {raw_assignment.get(member) for member in members}
-            if len(assigned_parts) != 1:
-                raise ValidationError("online assignment splits a cluster")
-            part = next(iter(assigned_parts))
-        if part not in fpga_by_id:
-            raise ValidationError("online assignment references an unknown FPGA")
-        if cluster_assignment.get(cluster_id) != part:
-            raise ValidationError(
-                "online cluster assignment disagrees with instances"
-            )
-        if not compact_assignment:
-            expected_cluster_assignment[cluster_id] = part
-        vector = ResourceVector.from_mapping(resources)
-        for field in RESOURCE_FIELDS:
-            resource_totals[part][field] += getattr(vector, field)
-
+                or not isinstance(members, list)
+                or not members
+                or not all(isinstance(member, str) for member in members)
+                or not isinstance(resources, dict)
+            ):
+                raise ValidationError(f"clusters[{index}] is malformed")
+            if compact_assignment:
+                if raw_assignment.cluster_member_count(index) != len(members):
+                    raise ValidationError(
+                        "online compact cluster membership disagrees"
+                    )
+                part = raw_assignment.cluster_part(index)
+            else:
+                duplicate_members = instance_ids & set(members)
+                if duplicate_members:
+                    raise ValidationError(
+                        "online clusters contain duplicate instances"
+                    )
+                cluster_ids.add(cluster_id)
+                instance_ids.update(members)
+                assigned_parts = {raw_assignment.get(member) for member in members}
+                if len(assigned_parts) != 1:
+                    raise ValidationError("online assignment splits a cluster")
+                part = next(iter(assigned_parts))
+            if part not in fpga_by_id:
+                raise ValidationError("online assignment references an unknown FPGA")
+            if cluster_assignment.get(cluster_id) != part:
+                raise ValidationError(
+                    "online cluster assignment disagrees with instances"
+                )
+            if not compact_assignment:
+                expected_cluster_assignment[cluster_id] = part
+            vector = ResourceVector.from_mapping(resources)
+            for field in RESOURCE_FIELDS:
+                resource_totals[part][field] += getattr(vector, field)
     if compact_assignment:
         if (
             len(raw_assignment) != clusters_artifact.get("instances")
@@ -2836,25 +2902,33 @@ def validate_partition_artifacts_online(
             raise ValidationError(
                 "online assignment exceeds reserved planning capacity"
             )
-    used_fpgas = len(set(cluster_assignment.values()))
+    used_parts = ({part for part, count in native_counts.items() if count} if native_compact
+                  else set(cluster_assignment.values()))
+    used_fpgas = len(used_parts)
     if used_fpgas < constraints.get("min_used_fpgas", 1):
         raise ValidationError("online assignment uses too few FPGAs")
     active_fpgas = constraints.get("active_fpgas")
-    if active_fpgas is not None and not set(cluster_assignment.values()) <= set(
-        active_fpgas
-    ):
+    if active_fpgas is not None and not used_parts <= set(active_fpgas):
         raise ValidationError("online assignment uses an inactive FPGA")
 
-    balance = validate_cluster_assignment_balance(
-        platform,
-        raw_clusters,
-        cluster_assignment,
-        constraints["balance_tolerance"],
-        constraints.get("balance_tolerance_by_dimension", {}),
-        constraints.get("active_fpgas"),
-        constraints.get("balance_dimensions"),
-        constraints.get("resource_reservations_by_fpga", {}),
-    )
+    if native_compact:
+        # Reuse the just-validated primary reduction, never a producer's loads.
+        balance = _validate_balance_loads(
+            _balance_partition_fpgas(platform, constraints.get("active_fpgas")),
+            _totals, loads, {field: bool(_totals[field]) for field in RESOURCE_FIELDS},
+            constraints["balance_tolerance"], constraints.get("balance_tolerance_by_dimension", {}),
+            constraints.get("balance_dimensions"), constraints.get("resource_reservations_by_fpga", {}))
+    else:
+        balance = validate_cluster_assignment_balance(
+            platform,
+            raw_clusters,
+            cluster_assignment,
+            constraints["balance_tolerance"],
+            constraints.get("balance_tolerance_by_dimension", {}),
+            constraints.get("active_fpgas"),
+            constraints.get("balance_dimensions"),
+            constraints.get("resource_reservations_by_fpga", {}),
+        )
     result = {
         "status": "pass",
         "instances": len(raw_assignment),
@@ -3194,6 +3268,58 @@ def validate_cluster_assignment_balance(
     ] = None,
 ) -> Dict[str, Any]:
     """Check capacities and opt-in share limits; explicit None is legacy all-fields."""
+    partition_fpgas = _balance_partition_fpgas(platform, active_fpgas)
+    fpga_ids = [fpga.id for fpga in partition_fpgas]
+    if len(cluster_assignment) != len(clusters):
+        raise ValidationError("balance assignment cluster coverage changed")
+
+    if isinstance(clusters, _CompactClusterRecords):
+        totals_all, loads_all, _counts = _cluster_assignment_summary(clusters, cluster_assignment, fpga_ids)
+        resource_present = {field: bool(totals_all[field]) for field in RESOURCE_FIELDS}
+    else:
+        # Accumulate totals and assigned loads while each cluster record is live.
+        # The former implementation retained a nested ``weights`` dictionary for
+        # every cluster, then walked that graph a second time through the
+        # assignment.  NVDLA has more than a million clusters, so this independent
+        # validator duplicated the optimizer's largest string-keyed structure
+        # after TritonPart had already finished.  All balance equations are sums;
+        # no per-cluster weight is needed after its owning partition has been
+        # checked.
+        all_dimensions = ("cells", *RESOURCE_FIELDS)
+        totals_all = {dimension: 0 for dimension in all_dimensions}
+        loads_all = {
+            fpga_id: {dimension: 0 for dimension in all_dimensions}
+            for fpga_id in fpga_ids
+        }
+        resource_present = {field: False for field in RESOURCE_FIELDS}
+        missing = object()
+        for cluster in clusters:
+            cluster_id = cluster["id"]
+            fpga_id = cluster_assignment.get(cluster_id, missing)
+            if fpga_id is missing:
+                raise ValidationError(
+                    "balance assignment cluster coverage changed"
+                )
+            if fpga_id not in loads_all:
+                raise ValidationError(
+                    f"balance assignment references unknown FPGA {fpga_id!r}"
+                )
+            cells = len(cluster["instances"])
+            totals_all["cells"] += cells
+            loads_all[fpga_id]["cells"] += cells
+            resources = cluster["resources"]
+            for field in RESOURCE_FIELDS:
+                value = resources.get(field, 0)
+                resource_present[field] = resource_present[field] or bool(value)
+                totals_all[field] += value
+                loads_all[fpga_id][field] += value
+
+    return _validate_balance_loads(partition_fpgas, totals_all, loads_all, resource_present,
+                                  requested_tolerance, requested_tolerance_by_dimension,
+                                  requested_balance_dimensions, resource_reservations_by_fpga)
+
+
+def _balance_partition_fpgas(platform, active_fpgas):
     active_set = (
         set(active_fpgas)
         if active_fpgas is not None
@@ -3204,47 +3330,14 @@ def validate_cluster_assignment_balance(
     ]
     if len(partition_fpgas) != len(active_set) or not partition_fpgas:
         raise ValidationError("balance active FPGA set is invalid")
+    return partition_fpgas
+
+
+def _validate_balance_loads(partition_fpgas, totals_all, loads_all, resource_present,
+                            requested_tolerance, requested_tolerance_by_dimension,
+                            requested_balance_dimensions, resource_reservations_by_fpga):
+    """Apply independent capacity/share equations to primary-derived facts."""
     fpga_ids = [fpga.id for fpga in partition_fpgas]
-    if len(cluster_assignment) != len(clusters):
-        raise ValidationError("balance assignment cluster coverage changed")
-
-    # Accumulate totals and assigned loads while each cluster record is live.
-    # The former implementation retained a nested ``weights`` dictionary for
-    # every cluster, then walked that graph a second time through the
-    # assignment.  NVDLA has more than a million clusters, so this independent
-    # validator duplicated the optimizer's largest string-keyed structure
-    # after TritonPart had already finished.  All balance equations are sums;
-    # no per-cluster weight is needed after its owning partition has been
-    # checked.
-    all_dimensions = ("cells", *RESOURCE_FIELDS)
-    totals_all = {dimension: 0 for dimension in all_dimensions}
-    loads_all = {
-        fpga_id: {dimension: 0 for dimension in all_dimensions}
-        for fpga_id in fpga_ids
-    }
-    resource_present = {field: False for field in RESOURCE_FIELDS}
-    missing = object()
-    for cluster in clusters:
-        cluster_id = cluster["id"]
-        fpga_id = cluster_assignment.get(cluster_id, missing)
-        if fpga_id is missing:
-            raise ValidationError(
-                "balance assignment cluster coverage changed"
-            )
-        if fpga_id not in loads_all:
-            raise ValidationError(
-                f"balance assignment references unknown FPGA {fpga_id!r}"
-            )
-        cells = len(cluster["instances"])
-        totals_all["cells"] += cells
-        loads_all[fpga_id]["cells"] += cells
-        resources = cluster["resources"]
-        for field in RESOURCE_FIELDS:
-            value = resources.get(field, 0)
-            resource_present[field] = resource_present[field] or bool(value)
-            totals_all[field] += value
-            loads_all[fpga_id][field] += value
-
     dimensions = ["cells"]
     dimensions.extend(
         field

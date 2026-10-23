@@ -38,6 +38,7 @@ class NativeStageRuntimeTest(unittest.TestCase):
             output, report = root / "previous-result", root / "status.json"
             cases = [
                 ["phase3", "analyze", missing],
+                ["phase3", "reduce-loads", missing, missing, missing],
                 ["phase3", "analyze", "--indexed-input", missing, missing],
                 ["phase3", "finalize-semantics", missing, missing],
                 ["phase3", "resolve-captures", missing, missing, missing, missing],

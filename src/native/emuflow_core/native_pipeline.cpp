@@ -5,6 +5,7 @@
 #include "emuflow_core/bookshelf.hpp"
 #include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/partition_clusters.hpp"
+#include "emuflow_core/partition_loads.hpp"
 #include "emuflow_core/candidate_ids.hpp"
 #include "emuflow_core/sqlite.hpp"
 
@@ -15,6 +16,7 @@ namespace emuflow::native {
 const char* StageName(Stage stage) {
   switch (stage) {
     case Stage::kInvalid: return "native.request";
+    case Stage::kReducePartitionLoads: return "phase3.reduce-loads";
     case Stage::kAnalyzeExact: return "phase3.analyze";
     case Stage::kFinalizeExact: return "phase3.finalize-semantics";
     case Stage::kResolveCaptures: return "phase3.resolve-captures";
@@ -42,6 +44,7 @@ namespace {
 std::vector<std::string> InputSchemas(const StageRequest& request) {
   switch (request.stage) {
     case Stage::kInvalid: break;
+    case Stage::kReducePartitionLoads: return {"emuir-compact-v2","partition-cluster-columns-v2","partition-load-request-v1"};
     case Stage::kAnalyzeExact:
       return request.indexed_input
           ? std::vector<std::string>{"emuir-compact-v2", "exact-indexed-request-v4"}
@@ -172,6 +175,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     const auto path = [&](std::size_t i) -> const std::string& { return inputs.at(i).path(); };
     const auto& output = request.output_path;
     switch (request.stage) {
+      case Stage::kReducePartitionLoads: core::ReducePartitionLoads(inputs,output); break;
       case Stage::kAnalyzeExact:
         if (request.indexed_input) AnalyzeStaticExact(path(1), output, path(0));
         else AnalyzeStaticExact(path(0), output);
@@ -206,6 +210,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
   }, [&]() {
     const char* schema = nullptr;
     switch (request.stage) {
+      case Stage::kReducePartitionLoads: schema = "partition-load-summary-v1"; break;
       case Stage::kAnalyzeExact: schema = "exact-topology-v3"; break;
       case Stage::kFinalizeExact: schema = "exact-nodes-v2"; break;
       case Stage::kResolveCaptures: schema = "exact-captures-v1"; break;

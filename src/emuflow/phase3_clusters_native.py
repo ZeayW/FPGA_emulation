@@ -147,6 +147,7 @@ def build_native_clusters(ir, constraints, eligible):
         report.unlink()
         result = _load_columns(output,scratch,cells,fixed,groups,generation)
         result.native_metrics = operation['metrics']
+        result.native_source_path = source
         result.native_artifact = output
         result.native_generation = native_file_generation(output)
         result.native_source_generation = generation

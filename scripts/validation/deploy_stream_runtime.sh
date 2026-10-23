@@ -136,6 +136,7 @@ core_sources=(
   emuflow_core/compile.cpp emuflow_core/bookshelf.cpp
   emuflow_core/patron_ingress.cpp
   emuflow_core/partition_clusters.cpp emuflow_core/primary_cluster_view.cpp
+  emuflow_core/partition_loads.cpp
   emuflow_core/candidate_ids.cpp emuflow_core/resource_view.cpp
   patron_refiner.cpp static_exact_analyzer.cpp tlr_router.cpp
   tdm_exact_scheduler.cpp chimew_bank_channel_assigner.cpp chimew_rudy.cpp
