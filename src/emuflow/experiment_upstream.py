@@ -49,6 +49,7 @@ from .phase5 import (
     validate_phase5_generation,
 )
 from .platform import Platform
+from .prepared_inputs import validate_prepared_timing_boundary
 from .phase3_storage import (
     CLUSTERS_SQLITE_APPLICATION_ID,
     CLUSTERS_SQLITE_FORMAT,
@@ -70,6 +71,7 @@ from .system_route_storage import (
     SYSTEM_ROUTE_STORE_PREFIX,
     SYSTEM_ROUTE_STORE_SUFFIX,
     SYSTEM_ROUTE_USER_VERSION,
+    read_system_routes,
     system_route_store_path,
 )
 from .sta import (
@@ -108,6 +110,7 @@ from .tdm_schedule_storage import (
     TYPED_ROUTE_RELATION_SCHEMA,
     TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
     TYPED_TDM_SCHEDULE_USER_VERSION,
+    read_tdm_schedule,
     tdm_schedule_store_path,
 )
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
@@ -1009,10 +1012,17 @@ def run_cut_timing_checkpoint(
     opensta: Optional[str] = None,
     max_paths: int = 200000,
     managed_dag_node: bool = False,
+    prepared_timing_boundary: bool = False,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")
     assignment_path = _require(partition_root, "assignment.json")
-    if not managed_dag_node:
+    if prepared_timing_boundary:
+        if managed_dag_node:
+            raise ValidationError(
+                "prepared timing boundaries cannot use managed DAG validation"
+            )
+        validate_prepared_timing_boundary(frontend_root, timing_root, clocks)
+    elif not managed_dag_node:
         validate_timing_checkpoint(frontend_root, timing_root)
     assignment = read_phase3_cut_timing_view(
         assignment_path,
@@ -1071,6 +1081,11 @@ def run_cut_timing_checkpoint(
         "cut_segment_qualification_summary": qualification["summary"],
         "complete_path_database_sha256": database_sha256,
         "projection": projection,
+        "timing_input_mode": (
+            "prepared-indexed-boundary"
+            if prepared_timing_boundary
+            else "experiment-checkpoint"
+        ),
     }
     if managed_dag_node:
         report["validation_mode"] = MANAGED_DAG_VALIDATION_MODE
@@ -1104,11 +1119,11 @@ def validate_cut_timing_checkpoint(
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
     managed_dag_node: bool = False,
+    prepared_timing_boundary: bool = False,
+    clocks: Mapping[str, float] | None = None,
 ) -> Dict[str, Any]:
     ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")
     complete_database = _require(timing_root, "path-database.json")
-    if not managed_dag_node:
-        validate_timing_checkpoint(frontend_root, timing_root)
     assignment_path = _require(partition_root, "assignment.json")
     report = read_json(_require(root, "experiment-cut-timing-report.json"))
     if report.get("schema") != EXPERIMENT_CUT_TIMING_SCHEMA or report.get("status") != "pass":
@@ -1118,6 +1133,25 @@ def validate_cut_timing_checkpoint(
             raise ValidationError("cut-timing managed-validation contract is invalid")
     elif report.get("validation_mode") is not None:
         raise ValidationError("cut-timing checkpoint requires managed validation")
+    expected_input_mode = (
+        "prepared-indexed-boundary"
+        if prepared_timing_boundary
+        else "experiment-checkpoint"
+    )
+    if report.get("timing_input_mode", "experiment-checkpoint") != expected_input_mode:
+        raise ValidationError("cut-timing input mode disagrees")
+    if prepared_timing_boundary:
+        if managed_dag_node:
+            raise ValidationError(
+                "prepared timing boundaries cannot use managed DAG validation"
+            )
+        if clocks is None or report.get("clocks") != dict(clocks):
+            raise ValidationError(
+                "prepared cut-timing validation requires matching clocks"
+            )
+        validate_prepared_timing_boundary(frontend_root, timing_root, clocks)
+    elif not managed_dag_node:
+        validate_timing_checkpoint(frontend_root, timing_root)
     qualification_path = _require(root, "cut-segment-qualification.json")
     projected = _require(root, "cut-timing-paths.json")
     if not managed_dag_node:
@@ -1432,8 +1466,13 @@ def validate_tdm_checkpoint(
         managed_root_sealed=managed_dag_node,
     )
     phase5 = read_json(phase5_report)
-    route_document = read_json(routes)
-    schedule_document = read_json(schedule)
+    # Keep the typed route and schedule relations lazy.  ``read_json`` expands
+    # their multi-gigabyte SQLite sidecars into ordinary Python containers,
+    # which both defeats the production storage contract and changes the
+    # optimized cross-layer reconstruction path used when Phase 5 generated
+    # its sealed contract.
+    route_document = read_system_routes(routes)
+    schedule_document = read_tdm_schedule(schedule)
     actual_provider = schedule_document.get("provider")
     exact_mode = route_document.get("semantic_contract_schema") is not None
     if exact_mode != is_sampled_virtual_wire_schedule(schedule_document):
@@ -1470,7 +1509,8 @@ def validate_tdm_checkpoint(
             if (
                 configuration.get("ratio_quantum")
                 != constraints["tdm_ratio_quantum"]
-                or configuration.get("max_ratio") != constraints["frame_slots"]
+                or configuration.get("max_ratio")
+                != constraints["tdm_max_ratio"]
             ):
                 raise ValidationError(
                     "TDM ratio constraints contract disagrees"

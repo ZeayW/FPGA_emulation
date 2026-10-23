@@ -29,7 +29,7 @@ from tests.test_phase5 import _platform_value, _link
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def platform_and_routes(forward=1, reverse=0, *, chain=False, minimum=1):
+def platform_and_routes(forward=1, reverse=0, *, chain=False, minimum=8):
     links = [_link('ab', 'a', 'b', lanes=360, latency=2)]
     if chain:
         links.append(_link('bc', 'b', 'c', lanes=360, latency=2))
@@ -37,7 +37,9 @@ def platform_and_routes(forward=1, reverse=0, *, chain=False, minimum=1):
         link.update(capacity_sharing='shared_bidirectional', bank_count=18,
                     wires_per_bank=20,
                     tdm_delay_model={'model':'linear-ratio-v1','intercept_ns':30.0,
-                                     'ratio_coefficient_ns':0.5})
+                                     'ratio_coefficient_ns':0.5,
+                                     'min_ratio':8,'max_ratio':64,
+                                     'ratio_quantum':8})
     platform = Platform.from_dict(_platform_value('bank_ratio', ['a','b','c'] if chain else ['a','b'], links))
     records = []
     for i in range(forward + reverse):
@@ -122,6 +124,9 @@ class BankRatioModelTest(unittest.TestCase):
         self.assertEqual(tdm_hop_latency_cycles(platform.links[1],16),10)
         self.assertEqual(reconstruct_tdm_schedule_timing_paths(routes,platform,schedule),paths)
         corrupt=copy.deepcopy(schedule);corrupt['entries'][0]['tdm_ratio']=0
+        with self.assertRaisesRegex(ValidationError,'tdm_ratio'):
+            validate_tdm_schedule(routes,platform,corrupt)
+        corrupt=copy.deepcopy(schedule);corrupt['entries'][0]['tdm_ratio']=264
         with self.assertRaisesRegex(ValidationError,'tdm_ratio'):
             validate_tdm_schedule(routes,platform,corrupt)
 

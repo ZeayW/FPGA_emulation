@@ -217,20 +217,15 @@ void TritonPart::SetFineTuneParams(
 // placement information is specified in placement file The format is that each
 // line cooresponds to a group fixed vertices, community and placement
 // attributes both follows the hMETIS format
-void TritonPart::PartitionHypergraph(unsigned int num_parts_arg,
-                                     float balance_constraint_arg,
-                                     const std::vector<float>& base_balance_arg,
-                                     const std::vector<float>& scale_factor_arg,
-                                     unsigned int seed_arg,
-                                     int vertex_dimension_arg,
-                                     int hyperedge_dimension_arg,
-                                     int placement_dimension_arg,
-                                     const char* hypergraph_file_arg,
-                                     const char* fixed_file_arg,
-                                     const char* community_file_arg,
-                                     const char* group_file_arg,
-                                     const char* placement_file_arg)
-{
+void TritonPart::PartitionHypergraph(
+    unsigned int num_parts_arg, float balance_constraint_arg,
+    const std::vector<float> &base_balance_arg,
+    const std::vector<float> &scale_factor_arg, unsigned int seed_arg,
+    int vertex_dimension_arg, int hyperedge_dimension_arg,
+    int placement_dimension_arg, const char *hypergraph_file_arg,
+    const char *fixed_file_arg, const char *community_file_arg,
+    const char *group_file_arg, const char *placement_file_arg,
+    const char *resource_bounds_file_arg) {
   logger_->info(PAR, 2, "Partitioning hypergraph.");
 
   // Parameters
@@ -280,6 +275,37 @@ void TritonPart::PartitionHypergraph(unsigned int num_parts_arg,
   ReadHypergraph(
       hypergraph_file, fixed_file, community_file, group_file, placement_file);
 
+  // Optional absolute bounds represent capacity-only resources and reservations
+  // without weakening every dimension through a single scalar UBfactor.
+  resource_upper_bounds_.clear();
+  resource_lower_bounds_.clear();
+  if (std::string(resource_bounds_file_arg).size() != 0) {
+    std::ifstream bounds(resource_bounds_file_arg);
+    int parts = 0, dimensions = 0;
+    if (!(bounds >> parts >> dimensions) || parts != num_parts_ ||
+        dimensions != vertex_dimensions_) {
+      logger_->error(PAR, 1001, "Invalid resource bounds file dimensions.");
+    }
+    resource_lower_bounds_.assign(parts, std::vector<float>(dimensions));
+    resource_upper_bounds_.assign(parts, std::vector<float>(dimensions));
+    for (int part = 0; part < parts; ++part) {
+      for (int dim = 0; dim < dimensions; ++dim) {
+        float lower, upper;
+        if (!(bounds >> lower >> upper) || !std::isfinite(lower) ||
+            !std::isfinite(upper) || lower < 0 || upper < lower) {
+          logger_->error(PAR, 1002,
+                         "Invalid resource bounds for part {} dimension {}.",
+                         part, dim);
+        }
+        resource_lower_bounds_[part][dim] = lower;
+        resource_upper_bounds_[part][dim] = upper;
+      }
+    }
+    std::string extra;
+    if (bounds >> extra) {
+      logger_->error(PAR, 1003, "Unexpected data in resource bounds file.");
+    }
+  }
   // call the multilevel partitioner to partition hypergraph_
   // but the evaluation is the original_hypergraph_
   MultiLevelPartition();
@@ -1895,12 +1921,24 @@ void TritonPart::MultiLevelPartition()
       = original_hypergraph_->GetLowerVertexBalance(
           num_parts_, ub_factor_, base_balance_);
 
+  if (!resource_upper_bounds_.empty()) {
+    upper_block_balance = resource_upper_bounds_;
+    lower_block_balance = resource_lower_bounds_;
+  }
   // Step 1 : create all the coarsening, partitionig and refinement class
   // TODO:  This may need to modify as lower_block_balance
-  const std::vector<float> thr_cluster_weight
-      = DivideFactor(original_hypergraph_->GetTotalVertexWeights(),
-                     min_num_vertices_each_part_ * num_parts_);
+  std::vector<float> thr_cluster_weight =
+      DivideFactor(original_hypergraph_->GetTotalVertexWeights(),
+                   min_num_vertices_each_part_ * num_parts_);
 
+  // A contraction must fit at least the largest device in every dimension.
+  for (int dim = 0; dim < vertex_dimensions_; ++dim) {
+    float maximum = 0;
+    for (const auto &upper : upper_block_balance) {
+      maximum = std::max(maximum, upper[dim]);
+    }
+    thr_cluster_weight[dim] = std::min(thr_cluster_weight[dim], maximum);
+  }
   // create the coarsener cluster
   auto tritonpart_coarsener
       = std::make_shared<Coarsener>(num_parts_,
@@ -2027,13 +2065,13 @@ void TritonPart::MultiLevelPartition()
 
   // evaluate on the original hypergraph
   // tritonpart_evaluator->CutEvaluator(original_hypergraph_, solution_, true);
-  tritonpart_evaluator->ConstraintAndCutEvaluator(original_hypergraph_,
-                                                  solution_,
-                                                  ub_factor_,
-                                                  base_balance_,
-                                                  group_attr_,
-                                                  true);
-
+  if (!tritonpart_evaluator->ConstraintAndCutEvaluator(
+          original_hypergraph_, solution_, ub_factor_, base_balance_,
+          group_attr_, true, upper_block_balance, lower_block_balance)) {
+    logger_->error(
+        PAR, 1004,
+        "No legal partition: refusing to write an invalid solution.");
+  }
   // generate the timing report
   if (timing_aware_flag_ == true) {
     logger_->report("Display Timing Path Cuts Statistics");

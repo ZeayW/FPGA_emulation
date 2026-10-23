@@ -372,7 +372,8 @@ void Coarsener::VertexMatching(
                   ? vertex_weights_c[vertex_cluster_id_vec[nbr_v]]
                   : hgraph->GetVertexWeights(nbr_v);
         // This line needs to be updated
-        if (hgraph->GetVertexWeights(v) + nbr_v_weight > thr_cluster_weight_) {
+        if (!ResourceWithin(hgraph->GetVertexWeights(v) + nbr_v_weight,
+                            thr_cluster_weight_)) {
           continue;  // cannot satisfy the vertex weight constraint
         }
         score_map[nbr_v] = he_score;

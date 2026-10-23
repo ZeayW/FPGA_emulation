@@ -8,8 +8,11 @@ from emuflow.default_platform import DEFAULT_PLATFORM_PATH
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
-from emuflow.multi_fpga_flow import run_multi_fpga_flow
-from emuflow.prepared_inputs import bind_prepared_inputs
+from emuflow.multi_fpga_flow import _checked_flow_member, run_multi_fpga_flow
+from emuflow.prepared_inputs import (
+    bind_prepared_inputs,
+    validate_prepared_timing_boundary,
+)
 from emuflow.platform import Platform
 from emuflow.yosys import import_yosys_json
 
@@ -77,12 +80,57 @@ def test_rebinds_legacy_platform_snapshot_without_parsing_obsolete_links(
     assert read_json(tmp_path / "out/front/platform.normalized.json") == (
         Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
     )
+def test_terminal_validation_accepts_only_the_declared_prepared_emuir(tmp_path, boundaries):
+    root = tmp_path / "flow"
+    front = root / "frontend/phase1"
+    bind_prepared_inputs(*boundaries, front, root / "timing",
+                         DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
+    emuir = Path("frontend/phase1/design.emuir.sqlite")
+    assert _checked_flow_member(root, emuir, "EmuIR") == root / emuir
+    report = read_json(front / "phase1_report.json")
+    report["continuation"]["source"] = str(tmp_path / "other.sqlite")
+    write_json(front / "phase1_report.json", report)
+    with pytest.raises(ValidationError, match="missing"):
+        _checked_flow_member(root, emuir, "EmuIR")
+    board = front / "platform.normalized.json"
+    board.unlink()
+    board.symlink_to(boundaries[0] / "platform.normalized.json")
+    with pytest.raises(ValidationError, match="missing"):
+        _checked_flow_member(root, board, "platform")
 
 
 def test_rejects_changed_clock_contract(tmp_path, boundaries):
     with pytest.raises(ValidationError, match="clock constraints mismatch"):
         bind_prepared_inputs(*boundaries, tmp_path / "out/front", tmp_path / "out/timing",
                              DEFAULT_PLATFORM_PATH, {"clk": 20.0}, PROFILE)
+
+
+def test_saved_link_schema_is_not_a_current_routing_input(tmp_path, boundaries):
+    front, timing = boundaries
+    board = read_json(front / "platform.normalized.json")
+    # Historical normalized boards predate the explicit TDM ratio domain.
+    for link in board["links"]:
+        link["tdm_delay_model"] = {"model": "linear-ratio-v1",
+                                   "intercept_ns": 30.0,
+                                   "ratio_coefficient_ns": 0.5}
+    write_json(front / "platform.normalized.json", board)
+    with pytest.raises(ValidationError, match="unexpected or missing fields"):
+        Platform.load(front / "platform.normalized.json")
+    bind_prepared_inputs(front, timing, tmp_path / "out/front", tmp_path / "out/timing",
+                         DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
+    assert read_json(tmp_path / "out/front/platform.normalized.json") == Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
+    assert read_json(front / "platform.normalized.json") == board
+
+
+@pytest.mark.parametrize("part", [None, "", "xcvu9p-flga2104-2-e"])
+def test_saved_device_identity_still_enforced(tmp_path, boundaries, part):
+    front, timing = boundaries
+    board = read_json(front / "platform.normalized.json")
+    board["fpgas"][0]["part"] = part
+    write_json(front / "platform.normalized.json", board)
+    with pytest.raises(ValidationError, match="device identity|device part differs"):
+        bind_prepared_inputs(front, timing, tmp_path / "out/front", tmp_path / "out/timing",
+                             DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
 
 
 def test_full_flow_continuation_reaches_phase3_without_synthesis_or_sta(tmp_path, boundaries):
@@ -120,6 +168,14 @@ def test_native_published_phase2_checks_clocks_and_counts_without_standalone_rep
         manifest["design"] = "counter"
         manifest["summary"] = {"paths" if table == "paths" else "weighted_nets": 1}
         write_json(timing / name, manifest)
+    checked = validate_prepared_timing_boundary(
+        front, timing, {"clk": 10.0}
+    )
+    assert checked["publication_validation"] == (
+        "sqlite-version-clocks-row-counts-v1"
+    )
+    with pytest.raises(ValidationError, match="clock constraints mismatch"):
+        validate_prepared_timing_boundary(front, timing, {"clk": 20.0})
     with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("graph replay")):
         bind_prepared_inputs(front, timing, tmp_path / "valid/front", tmp_path / "valid/timing",
                              DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)

@@ -13,7 +13,12 @@ from emuflow.default_platform import (
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.phase3 import run_phase3
+from emuflow.tritonpart import run_tritonpart
+from emuflow.cross_stage import run_cross_stage_optimization
+from emuflow.experiment_partition import run_partition_checkpoint
 from emuflow.platform import Platform
+from emuflow.routing import normalize_route_constraints
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,9 +44,46 @@ class DefaultPlatformTest(unittest.TestCase):
                     self.assertEqual(link.data_lanes_per_direction, 360)
                     self.assertEqual((link.cable_count, link.hp_banks_per_cable), (6, 3))
                     self.assertEqual(link.fabric_clock_mhz, 250.0)
-                    self.assertEqual(link.latency_cycles, 8)
+                    self.assertEqual(link.latency_cycles, 9)
+                    self.assertEqual(
+                        (
+                            link.tdm_delay_model.min_ratio,
+                            link.tdm_delay_model.max_ratio,
+                            link.tdm_delay_model.ratio_quantum,
+                        ),
+                        (8, 256, 8),
+                    )
                     self.assertEqual(link.tdm_delay_model.delay_ns(8), 34.0)
                     self.assertEqual(link.tdm_delay_model.delay_ns(16), 38.0)
+                    for unsupported in (1, 7, 12, 264):
+                        with self.assertRaises(ValidationError):
+                            link.tdm_delay_model.delay_ns(unsupported)
+                constraints = normalize_route_constraints(
+                    {
+                        "schema": "emuflow.system-route-constraints/v1",
+                        "frame_slots": 1024,
+                    },
+                    platform,
+                )
+                self.assertEqual(
+                    (
+                        constraints["tdm_min_ratio"],
+                        constraints["tdm_max_ratio"],
+                        constraints["tdm_ratio_quantum"],
+                    ),
+                    (8, 256, 8),
+                )
+                with self.assertRaisesRegex(
+                    ValidationError, "supported subset"
+                ):
+                    normalize_route_constraints(
+                        {
+                            "schema": "emuflow.system-route-constraints/v1",
+                            "frame_slots": 1024,
+                            "tdm_max_ratio": 1024,
+                        },
+                        platform,
+                    )
                 for fpga in platform.fpgas:
                     self.assertEqual((fpga.hp_io_bank_count, fpga.hd_io_bank_count), (38, 4))
                     used = sum(link.bank_count for link in platform.links if fpga.id in link.endpoints)
@@ -73,6 +115,19 @@ class DefaultPlatformTest(unittest.TestCase):
             "--clock", "clk", "--clock-period", "clk=10", "--out", "unused",
         ])
         self.assertEqual(args.platform, DEFAULT_PLATFORM_PATH)
+        self.assertTrue(args.partition_repair_min_used_fpgas)
+        disabled = parser.parse_args([
+            "multi-fpga", "compile", "design.v", "--top", "top",
+            "--clock", "clk", "--clock-period", "clk=10", "--out", "unused",
+            "--no-partition-repair-min-used-fpgas",
+        ])
+        self.assertFalse(disabled.partition_repair_min_used_fpgas)
+        for function, prefix in ((run_multi_fpga_flow, "partition_"),
+                                 (run_phase3, "tritonpart_"),
+                                 (run_tritonpart, ""), (run_partition_checkpoint, ""),
+                                 (run_cross_stage_optimization, "partition_")):
+            for suffix in ("repair_min_used_fpgas",):
+                self.assertIs(inspect.signature(function).parameters[prefix + suffix].default, True)
         self.assertEqual(
             inspect.signature(run_multi_fpga_flow).parameters["platform_path"].default,
             DEFAULT_PLATFORM_PATH,

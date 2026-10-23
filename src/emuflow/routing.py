@@ -386,6 +386,30 @@ def normalize_route_constraints(
             f"{unknown_shared}"
         )
 
+    ratio_domains = {
+        (
+            link.tdm_delay_model.min_ratio,
+            link.tdm_delay_model.max_ratio,
+            link.tdm_delay_model.ratio_quantum,
+        )
+        for link in platform.links
+        if link.tdm_delay_model is not None
+    }
+    if len(ratio_domains) > 1:
+        raise ValidationError(
+            "route constraints require one common BoardDB TDM ratio domain"
+        )
+    if ratio_domains:
+        platform_min_ratio, platform_max_ratio, platform_ratio_quantum = next(
+            iter(ratio_domains)
+        )
+    else:
+        platform_min_ratio, platform_max_ratio, platform_ratio_quantum = (
+            1,
+            raw_frame_slots,
+            8,
+        )
+
     optimization_values = {}
     for key, default, integer in (
         ("reroute_rounds", 8, True),
@@ -393,8 +417,9 @@ def normalize_route_constraints(
         ("lambda_timing", 4.0, False),
         ("lambda_history", 1.0, False),
         ("lambda_tdm", 0.1, False),
-        ("tdm_ratio_quantum", 8, True),
-        ("tdm_min_ratio", 1, True),
+        ("tdm_ratio_quantum", platform_ratio_quantum, True),
+        ("tdm_min_ratio", platform_min_ratio, True),
+        ("tdm_max_ratio", min(raw_frame_slots, platform_max_ratio), True),
     ):
         value = raw.get(key, default)
         valid = (
@@ -413,19 +438,37 @@ def normalize_route_constraints(
             "route constraints.tdm_ratio_quantum: expected a positive integer"
         )
     minimum_ratio = optimization_values["tdm_min_ratio"]
+    maximum_ratio = optimization_values["tdm_max_ratio"]
     ratio_quantum = optimization_values["tdm_ratio_quantum"]
     if minimum_ratio <= 0:
         raise ValidationError(
             "route constraints.tdm_min_ratio: expected a positive integer"
         )
-    if minimum_ratio != 1 and minimum_ratio % ratio_quantum:
+    if minimum_ratio % ratio_quantum and not (
+        not ratio_domains and minimum_ratio == 1
+    ):
         raise ValidationError(
-            "route constraints.tdm_min_ratio: expected 1 or a multiple of "
+            "route constraints.tdm_min_ratio: expected 1 for a fixed-delay "
+            "platform or a multiple of tdm_ratio_quantum"
+        )
+    if ratio_domains and maximum_ratio % ratio_quantum:
+        raise ValidationError(
+            "route constraints.tdm_max_ratio: expected a multiple of "
             "tdm_ratio_quantum"
         )
-    if minimum_ratio > raw_frame_slots:
+    if minimum_ratio > maximum_ratio or maximum_ratio > raw_frame_slots:
         raise ValidationError(
-            "route constraints.tdm_min_ratio: cannot exceed frame_slots"
+            "route constraints TDM ratio bounds must satisfy "
+            "min_ratio <= max_ratio <= frame_slots"
+        )
+    if ratio_domains and (
+        minimum_ratio < platform_min_ratio
+        or maximum_ratio > platform_max_ratio
+        or ratio_quantum != platform_ratio_quantum
+    ):
+        raise ValidationError(
+            "route constraints TDM ratio domain must be a supported subset "
+            "of the BoardDB delay-model domain"
         )
     tree_edge_sum_tdm = raw.get("tree_edge_sum_tdm", False)
     if not isinstance(tree_edge_sum_tdm, bool):
@@ -448,11 +491,16 @@ def normalize_route_constraints(
             raise ValidationError("a shared-bank FPGA interconnect cannot be an SLL link")
         if link.tdm_delay_model is None:
             continue
-        declared_base = link.tdm_delay_model.delay_ns(1)
+        declared_reference = link.tdm_delay_model.delay_ns(
+            link.tdm_delay_model.min_ratio
+        )
         overrides = ([link_delays[link.id]] if link.id in link_delays else [])
         overrides += [delay for by_sink in directed_delays.get(link.id, {}).values()
                       for delay in by_sink.values()]
-        if any(not math.isclose(v, declared_base, abs_tol=1e-9) for v in overrides):
+        if any(
+            not math.isclose(v, declared_reference, abs_tol=1e-9)
+            for v in overrides
+        ):
             raise ValidationError(
                 f"link {link.id}: fixed delay override conflicts with its TDM ratio model; "
                 "remove the stale override and use the BoardDB model")
@@ -487,10 +535,13 @@ def route_link_delay_ns(
     sink: str,
     constraints: Mapping[str, Any],
 ) -> float:
-    """Return single-hop delay at R=1 for a ratio model, else propagation delay."""
+    """Return the affine R=1 reference, or the fixed propagation delay."""
     link = next(link for link in platform.links if link.id == link_id)
     if link.tdm_delay_model is not None:
-        return link.tdm_delay_model.delay_ns(1)
+        return (
+            link.tdm_delay_model.intercept_ns
+            + link.tdm_delay_model.ratio_coefficient_ns
+        )
     directed = constraints.get("directed_link_delay_ns", {})
     override = directed.get(link_id, {}).get(source, {}).get(sink)
     if override is not None:
@@ -521,6 +572,9 @@ def route_hop_delay_ns(
     if (isinstance(ratio, bool) or not isinstance(ratio, (int, float))
             or not math.isfinite(ratio) or ratio < 1):
         raise ValidationError("net TDM ratio: expected finite value >= 1")
+    link = next(link for link in platform.links if link.id == link_id)
+    if link.tdm_delay_model is not None:
+        return link.tdm_delay_model.delay_ns(ratio)
     base, slope = route_link_delay_coefficients_ns(
         platform, link_id, source, sink, constraints)
     return base + slope * (ratio - 1)
@@ -560,9 +614,11 @@ def estimate_tdm_ratio(
     if raw == 1:
         return 1
     quantum = int(constraints["tdm_ratio_quantum"])
-    return min(
-        int(constraints["frame_slots"]),
-        ((raw + quantum - 1) // quantum) * quantum,
+    quantized = ((raw + quantum - 1) // quantum) * quantum
+    return (
+        quantized
+        if minimum > 1
+        else min(int(constraints["tdm_max_ratio"]), quantized)
     )
 
 
@@ -596,15 +652,19 @@ def maximum_schedulable_tdm_ratio(
         if ratio_quantum is None
         else ratio_quantum
     )
-    maximum = (
-        (usable_slots // quantum) * quantum
-        if usable_slots >= quantum
-        else 1
-    )
     minimum = int(
         constraints.get("tdm_min_ratio", 1)
         if minimum_ratio is None
         else minimum_ratio
+    )
+    discrete_maximum = (
+        (usable_slots // quantum) * quantum
+        if usable_slots >= quantum
+        else (1 if minimum == 1 else 0)
+    )
+    maximum = min(
+        int(constraints["tdm_max_ratio"]),
+        discrete_maximum,
     )
     if maximum < minimum:
         raise ValidationError(
@@ -676,7 +736,11 @@ def build_directed_graph(
                 usable_slots = (
                     1
                     if link.id in constraints["sll_links"]
-                    else constraints["frame_slots"]
+                    else (
+                        constraints["tdm_max_ratio"]
+                        if link.tdm_delay_model is not None
+                        else constraints["frame_slots"]
+                    )
                 )
                 if (
                     reserve_arrival_and_commit
@@ -997,7 +1061,11 @@ def validate_system_routes(
         if link.bank_count is None or link.id in constraints["unavailable_links"]:
             continue
         left, right = link.endpoints
-        per_bank = link.wires_per_bank * constraints["frame_slots"]
+        per_bank = link.wires_per_bank * (
+            constraints["tdm_max_ratio"]
+            if link.tdm_delay_model is not None
+            else constraints["frame_slots"]
+        )
         banks_needed = sum(
             (usage[f"{link.id}:{source}->{sink}"] + per_bank - 1) // per_bank
             for source, sink in ((left, right), (right, left))

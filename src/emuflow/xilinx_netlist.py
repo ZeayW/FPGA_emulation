@@ -236,6 +236,9 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
         }
         self.modules: Mapping[str, Any] = {self.top: self.module}
         self._validated_physical_paths: set[Tuple[Path, int, int]] = set()
+        # A private, detached structural result for this immutable reader only.
+        # It is never serialized or shared with another reader/experiment.
+        self._derived_physical_macro_contract: Optional[Dict[str, Any]] = None
 
     def __getitem__(self, key: str) -> Any:
         if key == "creator":
@@ -872,6 +875,7 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
             connection.close()
 
     def close(self) -> None:
+        self._derived_physical_macro_contract = None
         connection = getattr(self, "connection", None)
         if connection is not None:
             connection.close()
@@ -1423,6 +1427,7 @@ def _emit_compact_xilinx_mapped_artifacts(
             PRAGMA journal_mode=OFF;
             PRAGMA synchronous=OFF;
             PRAGMA temp_store=FILE;
+            PRAGMA cache_size=-131072;
             CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)
               WITHOUT ROWID;
             CREATE TABLE cells(
@@ -1445,11 +1450,6 @@ def _emit_compact_xilinx_mapped_artifacts(
                 OR (value_kind=1 AND net_bit IS NULL AND constant IS NOT NULL)
               )
             ) WITHOUT ROWID;
-            CREATE INDEX cell_pins_by_seq
-              ON cell_pins(cell_seq,port,port_bit);
-            CREATE INDEX cell_pins_by_net
-              ON cell_pins(net_bit,direction,cell_id,port,port_bit)
-              WHERE value_kind=0;
             CREATE TABLE netnames(
               id TEXT PRIMARY KEY,seq INTEGER NOT NULL UNIQUE,
               record_json TEXT NOT NULL
@@ -1658,6 +1658,17 @@ def _emit_compact_xilinx_mapped_artifacts(
                 emitted_net_count = _write_object_entries(stream, netnames())
                 stream.write("}}}\n")
                 stream.flush()
+        # No consumer reads this unpublished database during construction.
+        # Build auxiliary pin orders in bulk rather than updating a random
+        # net-order B-tree for every pin on the shared physical-flow filesystem.
+        # Primary/unique keys and pin checks remain enforced while inserting.
+        index.executescript("""
+            CREATE INDEX cell_pins_by_seq
+              ON cell_pins(cell_seq,port,port_bit);
+            CREATE INDEX cell_pins_by_net
+              ON cell_pins(net_bit,direction,cell_id,port,port_bit)
+              WHERE value_kind=0;
+        """)
         index.commit()
         index.close()
         index = None

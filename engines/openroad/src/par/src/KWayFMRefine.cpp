@@ -101,8 +101,10 @@ float KWayFMRefine::Pass(
   // Otherwise we should only accept better solutions
   float best_gain = 0.0;
   for (int block_id = 0; block_id < num_parts_; block_id++) {
-    if (upper_block_balance[block_id] < block_balance[block_id]
-        || block_balance[block_id] < lower_block_balance[block_id]) {
+    if (!ResourceWithin(block_balance[block_id],
+                        upper_block_balance[block_id]) ||
+        !ResourceWithin(lower_block_balance[block_id],
+                        block_balance[block_id])) {
       best_gain = -std::numeric_limits<float>::max();
       break;
     }
@@ -151,7 +153,11 @@ float KWayFMRefine::Pass(
       t.join();  // wait for all threads to finish
     }
     threads.clear();
-    if (total_delta_gain >= best_gain) {
+    // Only a feasible prefix may become the rollback target. In particular,
+    // the first improving move from an infeasible initialization can still
+    // leave another partition (or resource dimension) outside its bounds.
+    if (ResourceBalanced(block_balance, lower_block_balance, upper_block_balance)
+        && total_delta_gain >= best_gain) {
       best_gain = total_delta_gain;
       best_vertex_id = vertex;
     }

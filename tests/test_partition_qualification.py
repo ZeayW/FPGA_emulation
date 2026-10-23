@@ -136,7 +136,6 @@ class PartitionQualificationTest(unittest.TestCase):
             "partition_provider": "mfspart",
             "partition_seed": 0,
             "partition_seed_attempts": 1,
-            "partition_repair_balance": False,
         }
         path = root / "config.json"
         path.write_text(json.dumps(config), encoding="utf-8")
@@ -168,7 +167,6 @@ class PartitionQualificationTest(unittest.TestCase):
             )
             self.assertEqual(partition["dependencies"], ["frontend", "timing"])
             self.assertEqual(partition["configuration"]["provider"], "mfspart")
-            self.assertFalse(partition["configuration"]["repair_balance"])
             self.assertNotIn("--openroad", partition["command"])
             for option, tool in (
                 ("--mfspart-coarsener", "tool.mfspart_coarsener"),
@@ -219,13 +217,6 @@ class PartitionQualificationTest(unittest.TestCase):
                     config_path, REPOSITORY, root / "attempts.json"
                 )
 
-            config["partition_seed_attempts"] = 1
-            config["partition_repair_balance"] = True
-            config_path.write_text(json.dumps(config), encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "forbids"):
-                compile_partition_qualification_spec(
-                    config_path, REPOSITORY, root / "repair.json"
-                )
 
     def test_source_commit_and_direct_symlink_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

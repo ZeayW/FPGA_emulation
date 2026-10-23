@@ -1949,6 +1949,60 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 result = subprocess.run(command, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(output.read_bytes(), b"previous-generation")
+    def test_compact_native_path_accepts_sparse_endpoint_ordinals(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        expected = assignment["semantic_contract"]
+        ordinal_by_net = {
+            net["id"]: index for index, net in enumerate(self.ir.value["nets"])
+        }
+        ordinals = [
+            ordinal_by_net[cut["net"]] for cut in assignment["cut_nets"]
+        ]
+        executable = static_exact_analyzer()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "design.emuir.sqlite"
+            write_compact_emuir(path, self.ir.to_dict())
+            connection = sqlite3.connect(path)
+            try:
+                # Retain endpoint order while reproducing a filtered compact
+                # artifact whose stored sink ordinals have gaps and a nonzero
+                # first value. Logical EmuIR iteration makes these positions
+                # dense, so the native bridge must do the same.
+                connection.execute(
+                    "UPDATE endpoint_records SET ordinal=ordinal+1000 "
+                    "WHERE role=1"
+                )
+                connection.execute(
+                    "UPDATE endpoint_records SET ordinal=(ordinal-1000)*4+1 "
+                    "WHERE role=1"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            compact_ir = load_partition_ir(path)
+            with patch.dict(
+                os.environ,
+                {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
+            ), patch(
+                "emuflow.combinational_cut.STATIC_EXACT_NATIVE_MIN_INSTANCES",
+                0,
+            ):
+                actual = build_static_exact_semantic_contract(
+                    compact_ir,
+                    self.platform.to_dict(),
+                    assignment["instance_assignment"],
+                    assignment["cut_nets"],
+                    max_dependency_depth=expected[
+                        "max_cross_fpga_dependency_depth"
+                    ],
+                    cut_net_ordinals=ordinals,
+                )
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(
+            semantic_contract_sha256(actual),
+            semantic_contract_sha256(expected),
+        )
 
     def test_compact_native_path_rejects_forged_cut_ordinal(self):
         _, assignment = self._exact_artifacts(dependent_return=True)

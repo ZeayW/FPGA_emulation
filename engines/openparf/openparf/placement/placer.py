@@ -41,6 +41,7 @@ from .data_collections import DataCollections
 from .op_collections import OpCollections
 from .nesterov import NesterovAcceleratedGradientOptimizer
 from .numerical import masked_l2_normalize, safe_l2_step_size
+from .sll_weight import bounded_sll_psi
 from .metric import OptIter, EvalMetric, array2str, iarray2str
 from .place_model import PlaceModel, FenceRegionPlaceModel
 from .draw_place import (
@@ -2683,10 +2684,11 @@ class Placer(nn.Module):
                 v_hat = self.data_cls.multiplier.psi_v / (1 - self.data_cls.multiplier.psi_beta2)
 
                 # Adjust the 'psi' parameter based on the Adam optimizer's moment estimates
-                new_psi = self.data_cls.multiplier.psi + math.pow(self.params.wlw_step_rate, abs(delta_sll.item())) * m_hat / (np.sqrt(v_hat) + self.data_cls.multiplier.psi_epsilon)
-                
-                if new_psi < 1e3:
-                    self.data_cls.multiplier.psi = max(0, new_psi)
+                self.data_cls.multiplier.psi = bounded_sll_psi(
+                    self.data_cls.multiplier.psi, self.params.wlw_step_rate,
+                    delta_sll.item(), m_hat, v_hat,
+                    self.data_cls.multiplier.psi_epsilon,
+                )
 
     def initialize_learning_rate(self, model, optimizer, lr, sll_flag=False):
         """

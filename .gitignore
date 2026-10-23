@@ -11,3 +11,6 @@ dist/
 tmp/
 third_party/rtl/
 /AGENTS.md
+/engines/openroad/include/ord/Version.hh
+/engines/openroad/messages.txt
+/engines/openroad/src/*/messages.txt

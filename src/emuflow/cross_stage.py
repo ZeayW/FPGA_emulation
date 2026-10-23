@@ -1108,8 +1108,7 @@ def run_cross_stage_optimization(
     partition_seed_attempts: int = 1,
     partition_num_initial_solutions: int = 50,
     partition_num_best_initial_solutions: int = 10,
-    partition_repair_min_used_fpgas: bool = False,
-    partition_repair_balance: bool = False,
+    partition_repair_min_used_fpgas: bool = True,
     router: Optional[str] = None,
     route_provider: Optional[str] = None,
     route_candidate_workers: int = 1,
@@ -1160,9 +1159,7 @@ def run_cross_stage_optimization(
         raise ValidationError(
             "cross-stage TritonPart search effort is invalid"
         )
-    if not isinstance(partition_repair_min_used_fpgas, bool) or not isinstance(
-        partition_repair_balance, bool
-    ):
+    if not isinstance(partition_repair_min_used_fpgas, bool):
         raise ValidationError(
             "cross-stage partition repair flags must be booleans"
         )
@@ -1517,9 +1514,6 @@ def run_cross_stage_optimization(
                     tritonpart_repair_min_used_fpgas=(
                         partition_repair_min_used_fpgas
                     ),
-                    tritonpart_repair_balance=(
-                        partition_repair_balance
-                    ),
                     repart=repart,
                     repart_timeout_seconds=partition_timeout_seconds,
                     route_constraints_path=(
@@ -1693,7 +1687,6 @@ def run_cross_stage_optimization(
             "partition_repair_min_used_fpgas": (
                 partition_repair_min_used_fpgas
             ),
-            "partition_repair_balance": partition_repair_balance,
             "patron_max_moves": patron_max_moves,
             "patron_algorithm_version": patron_algorithm_version,
             "seed_candidate": seed_candidate_phase3_root is not None,
@@ -1912,7 +1905,6 @@ def validate_cross_stage_report(
         )
     for name in (
         "partition_repair_min_used_fpgas",
-        "partition_repair_balance",
     ):
         if not isinstance(configuration.get(name), bool):
             raise ValidationError(

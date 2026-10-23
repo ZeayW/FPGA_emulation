@@ -16,6 +16,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/../.." && pwd)"
 patch_file="$repo_root/patches/openparf/sparse-greedy-first.patch"
 solver="$source_dir/openparf/ops/direct_lg/src/dl_solver.cpp"
+solver_backup="$solver.emuflow-backup.$$"
 alternate_parent="$(dirname -- "$alternate_install")"
 alternate_name="$(basename -- "$alternate_install")"
 staging="$alternate_parent/.${alternate_name}.tmp.$$"
@@ -33,14 +34,19 @@ if ! grep -q \
 fi
 
 restore_source() {
-  patch --silent --reverse --directory "$source_dir" -p1 < "$patch_file" ||
-    true
+  if [[ -f "$solver_backup" ]]; then
+    cp -p -- "$solver_backup" "$solver"
+    rm -f -- "$solver_backup"
+  fi
+  rm -f -- "$solver.rej"
 }
 cleanup_staging() {
   rm -rf -- "$staging"
 }
 trap 'restore_source; cleanup_staging' EXIT
 
+patch --silent --dry-run --directory "$source_dir" -p1 < "$patch_file"
+cp -p -- "$solver" "$solver_backup"
 patch --silent --directory "$source_dir" -p1 < "$patch_file"
 rm -rf -- "$staging"
 cp -a -- "$official_install" "$staging"
@@ -51,6 +57,9 @@ rm -rf -- "$alternate_install"
 mv -- "$staging" "$alternate_install"
 
 restore_source
+grep -q \
+  'if (!ripupLegalizeInst(inst, _param.nbrDistEnd) && !greedyLegalizeInst(inst))' \
+  "$solver"
 trap - EXIT
 
 echo "EMUFLOW_OPENPARF_SPARSE_LEGALIZER status=pass install=$alternate_install"

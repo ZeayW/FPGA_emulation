@@ -681,13 +681,6 @@ def compile_canonical_experiment_spec(
             "canonical experiment tritonpart_solution requires "
             "partition_seed_attempts=1"
         )
-    partition_repair_balance = config.get(
-        "partition_repair_balance", False
-    )
-    if not isinstance(partition_repair_balance, bool):
-        raise ValidationError(
-            "canonical experiment partition_repair_balance must be boolean"
-        )
     mfspart_post_refinement = config.get("mfspart_post_refinement", False)
     if not isinstance(mfspart_post_refinement, bool):
         raise ValidationError(
@@ -1061,13 +1054,15 @@ def compile_canonical_experiment_spec(
         partition_validator.extend(
             ("--tritonpart-solution", str(tritonpart_solution))
         )
-    if partition_repair_balance:
-        partition_command.insert(-2, "--repair-balance")
-    partition_validator.append(
-        "--repair-balance"
-        if partition_repair_balance
-        else "--no-repair-balance"
+    partition_repair_min_used = config.get("partition_repair_min_used_fpgas", True)
+    if not isinstance(partition_repair_min_used, bool):
+        raise ValidationError("canonical experiment partition_repair_min_used_fpgas must be boolean")
+    minimum_used_flag = (
+        "--repair-min-used-fpgas" if partition_repair_min_used
+        else "--no-repair-min-used-fpgas"
     )
+    partition_command.insert(-2, minimum_used_flag)
+    partition_validator.append(minimum_used_flag)
     partition_inputs = [
         "platform",
         "route_constraints",
@@ -1123,7 +1118,7 @@ def compile_canonical_experiment_spec(
                     "purpose": "shared-patron-initial-assignment",
                     "seed": partition_seed,
                     "seed_attempts": partition_seed_attempts,
-                    "repair_balance": partition_repair_balance,
+                    "repair_min_used_fpgas": partition_repair_min_used,
                     "mfspart_post_refinement": False,
                     "route_constraints": contract["route_constraints"],
                     "partition_constraints_sha256": base_inputs.get(
@@ -1283,7 +1278,7 @@ def compile_canonical_experiment_spec(
             ),
             "seed": partition_seed,
             "seed_attempts": partition_seed_attempts,
-            "repair_balance": partition_repair_balance,
+            "repair_min_used_fpgas": partition_repair_min_used,
             "mfspart_post_refinement": mfspart_post_refinement,
             "mfspart_post_refinement_early_stop": (
                 mfspart_post_refinement_early_stop
@@ -1358,7 +1353,7 @@ def compile_canonical_experiment_spec(
     ]
     tdm_command.extend((
         "--ratio-quantum", str(contract["route_constraints"]["tdm_ratio_quantum"]),
-        "--max-ratio", str(contract["route_constraints"]["frame_slots"]),
+        "--max-ratio", str(contract["route_constraints"]["tdm_max_ratio"]),
         "--ratio-optimizer", str(tools["ratio_optimizer"]),
         "--timing-dag-optimizer", str(tools["timing_dag_optimizer"]),
         "--slot-optimizer", str(tools["slot_optimizer"]),
@@ -1376,7 +1371,7 @@ def compile_canonical_experiment_spec(
         [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--partition", "{dependency:partition}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", tdm_provider, "--managed-dag-node"],
         tdm_artifacts,
         inputs=tuple(tdm_inputs),
-        configuration={"provider": tdm_provider, "simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": contract["route_constraints"]["tdm_ratio_quantum"], "max_ratio": contract["route_constraints"]["frame_slots"], "post_refinement_iterations": 200, "slot_refinement_iterations": 200, "cut_mode": cut_mode},
+        configuration={"provider": tdm_provider, "simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": contract["route_constraints"]["tdm_ratio_quantum"], "max_ratio": contract["route_constraints"]["tdm_max_ratio"], "post_refinement_iterations": 200, "slot_refinement_iterations": 200, "cut_mode": cut_mode},
         peak_gib=12, retained_gib=3,
     )
     shared_dependencies = ["frontend", "timing", "partition", "cut-timing", "route", "tdm"]

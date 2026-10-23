@@ -40,6 +40,7 @@ sta::define_cmd_args "triton_part_hypergraph" {
   -hypergraph_file hypergraph_file \
   -num_parts num_parts \
   -balance_constraint balance_constraint \
+  [-resource_bounds_file resource_bounds_file] \
   [-base_balance base_balance] \
   [-scale_factor scale_factor] \
   [-seed seed] \
@@ -74,7 +75,8 @@ sta::define_cmd_args "triton_part_hypergraph" {
   }
 proc triton_part_hypergraph { args } {
   sta::parse_key_args "triton_part_hypergraph" args \
-    keys {-num_parts \
+    keys {-resource_bounds_file \
+          -num_parts \
           -balance_constraint \
           -base_balance \
           -scale_factor \
@@ -114,6 +116,10 @@ proc triton_part_hypergraph { args } {
     utl::error PAR 0924 "Missing mandatory argument -hypergraph_file."
   }
   set hypergraph_file $keys(-hypergraph_file)
+  set resource_bounds_file ""
+  if { [info exists keys(-resource_bounds_file)] } {
+    set resource_bounds_file $keys(-resource_bounds_file)
+  }
   set num_parts 2
   set balance_constraint 1.0
   set base_balance { 1.0 }
@@ -313,7 +319,8 @@ proc triton_part_hypergraph { args } {
     $max_num_vcycle \
     $num_coarsen_solutions \
     $num_vertices_threshold_ilp \
-    $global_net_threshold
+    $global_net_threshold \
+    $resource_bounds_file
 }
 
 sta::define_cmd_args "evaluate_hypergraph_solution" {

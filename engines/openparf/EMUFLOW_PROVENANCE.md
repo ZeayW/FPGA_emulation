@@ -21,6 +21,11 @@ source-visible PyTorch API compatibility change: deterministic mode uses
 `torch.use_deterministic_algorithms` when available and retains the legacy
 fallback for older PyTorch releases.
 
+The SLL multiplier update retains its native `[0,1000)` acceptance rule and
+uses a log-domain comparison when the exponential step would overflow.
+Oversize positive updates remain rejected and negative updates still clamp to
+zero; finite ordinary updates retain the original arithmetic.
+
 EmuFlow also adds a source-visible generic packed-cluster mode. It makes the
 logic area-type names architecture-configurable and uses OpenPARF's existing
 single-site min-cost-flow legalizer for VTR-defined clusters instead of

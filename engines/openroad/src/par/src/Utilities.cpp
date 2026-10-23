@@ -270,15 +270,7 @@ bool operator==(const std::vector<float>& a, const std::vector<float>& b)
 
 bool operator<=(const Matrix<float>& a, const Matrix<float>& b)
 {
-  const int num_dim
-      = std::min(static_cast<int>(a.size()), static_cast<int>(b.size()));
-  for (int dim = 0; dim < num_dim; dim++) {
-    if ((a[dim] < b[dim]) || (a[dim] == b[dim])) {
-      continue;
-    }
-    return false;
-  }
-  return true;
+  return ResourceWithin(a, b);
 }
 
 // Basic functions for a vector
@@ -333,7 +325,7 @@ bool ILPPartitionInst(
   const int num_vertices = static_cast<int>(vertex_weights.size());
   const int num_hyperedges = static_cast<int>(hyperedge_weights.size());
 
-  if (num_vertices <= 0 || num_hyperedges <= 0 || num_parts <= 1
+  if (num_vertices <= 0 || num_parts <= 1
       || vertex_weight_dimension <= 0) {
     return false;  // no need to call ILP-based partitioning
   }
@@ -350,11 +342,6 @@ bool ILPPartitionInst(
                           upper_block_balance,
                           lower_block_balance);
 #endif
-
-  // reset variable
-  solution.clear();
-  solution.resize(num_vertices);
-  std::fill(solution.begin(), solution.end(), -1);
 
   // Google OR-Tools Implementation
   std::unique_ptr<MPSolver> solver(MPSolver::CreateSolver("SCIP"));
@@ -422,6 +409,62 @@ bool ILPPartitionInst(
       }
     }
   }
+  auto legal_assignment = [&](const std::vector<int>& value) {
+    if (static_cast<int>(value.size()) != num_vertices) {
+      return false;
+    }
+    Matrix<float> balance(num_parts,
+                          std::vector<float>(vertex_weight_dimension, 0));
+    for (int v = 0; v < num_vertices; ++v) {
+      if (value[v] < 0 || value[v] >= num_parts) {
+        return false;
+      }
+      Accumulate(balance[value[v]], vertex_weights[v]);
+    }
+    for (const auto& [vertex, part] : fixed_vertices) {
+      if (value[vertex] != part) {
+        return false;
+      }
+    }
+    return ResourceBalanced(balance, lower_block_balance, upper_block_balance);
+  };
+  auto read_solution = [&]() {
+    std::vector<int> value(num_vertices, -1);
+    for (int v = 0; v < num_vertices; ++v) {
+      for (int part = 0; part < num_parts; ++part) {
+        if (x[part][v]->solution_value() > 0.5) {
+          value[v] = part;
+          break;
+        }
+      }
+    }
+    return value;
+  };
+  auto feasible_status = [](MPSolver::ResultStatus status) {
+    return status == MPSolver::OPTIMAL || status == MPSolver::FEASIBLE;
+  };
+
+  // Establish resource feasibility before optimizing cut. With a zero
+  // objective, the y variables can all be zero, allowing presolve to discard
+  // their hyperedge constraints. This avoids asking a large cut model to
+  // discover its first balanced assignment while also proving cut bounds.
+  std::vector<int> incumbent = solution;
+  if (!legal_assignment(incumbent)) {
+    solver->set_time_limit(10000);
+    const auto status = solver->Solve();
+    if (!feasible_status(status)) {
+      return false;
+    }
+    incumbent = read_solution();
+    if (!legal_assignment(incumbent)) {
+      return false;
+    }
+  }
+  if (num_hyperedges == 0) {
+    solution = std::move(incumbent);
+    return true;
+  }
+
   // Maximize the number of hyperedges fully within one block
   // -> minimize the cutsize
   // add a penalty term to ensure the solution is unique
@@ -443,25 +486,60 @@ bool ILPPartitionInst(
   }
   obj_expr->SetMaximization();
 
+  std::vector<std::pair<const MPVariable*, double>> hint;
+  for (int v = 0; v < num_vertices; ++v) {
+    for (int part = 0; part < num_parts; ++part) {
+      hint.emplace_back(x[part][v], incumbent[v] == part ? 1.0 : 0.0);
+    }
+  }
+  for (int e = 0; e < num_hyperedges; ++e) {
+    const auto& edge = hyperedges[e];
+    int part = edge.empty() ? -1 : incumbent[edge.front()];
+    for (const int vertex : edge) {
+      if (incumbent[vertex] != part) {
+        part = -1;
+        break;
+      }
+    }
+    for (int block = 0; block < num_parts; ++block) {
+      hint.emplace_back(y[block][e], block == part ? 1.0 : 0.0);
+    }
+  }
+  solver->SetHint(hint);
+  solver->set_time_limit(30000);
+
   // Solve the ILP Problem
   const MPSolver::ResultStatus result_status = solver->Solve();
 
-  // Check that the problem has an optimal solution.
-  if (result_status == MPSolver::OPTIMAL) {
-    // update the solution
-    // all the fixed vertices has been encoded into fixed vertices constraints
-    // so we do not handle fixed vertices here
-    for (int v = 0; v < num_vertices; v++) {
-      for (int i = 0; i < num_parts; i++) {
-        if (x[i][v]->solution_value() == 1.0) {
-          solution[v] = i;
-          break;
+  // A budget expiring during cut optimization must not discard the legal
+  // incumbent established above. The caller still independently validates it.
+  if (feasible_status(result_status)) {
+    auto candidate = read_solution();
+    if (legal_assignment(candidate)) {
+      auto cut_cost = [&](const std::vector<int>& value) {
+        double cost = 0;
+        for (int e = 0; e < num_hyperedges; ++e) {
+          const auto& edge = hyperedges[e];
+          if (edge.empty()) {
+            continue;
+          }
+          const int part = value[edge.front()];
+          for (const int vertex : edge) {
+            if (value[vertex] != part) {
+              cost += hyperedge_weights[e];
+              break;
+            }
+          }
         }
+        return cost;
+      };
+      if (cut_cost(candidate) <= cut_cost(incumbent)) {
+        incumbent = std::move(candidate);
       }
     }
-    return true;
   }
-  return false;
+  solution = std::move(incumbent);
+  return true;
 }
 
 // Call CPLEX to solve the ILP Based Partitioning

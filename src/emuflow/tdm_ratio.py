@@ -1191,7 +1191,11 @@ def _round_barrier_legalize(
 def _schedule_safe_max_ratio(model: Mapping[str, Any], platform: Platform, quantum: int) -> int:
     links = {link.id: link for link in platform.links}
     frame = model["constraints"]["frame_slots"]
-    allowed = [1] + list(range(quantum, frame + 1, quantum))
+    minimum = int(model["constraints"].get("tdm_min_ratio", 1))
+    configured_maximum = int(
+        model["constraints"].get("tdm_max_ratio", frame)
+    )
+    allowed = list(range(minimum, configured_maximum + 1, quantum))
     new_model = any(links[hop["link"]].tdm_delay_model is not None for hop in model["hops"])
     if not new_model:
         usable = min(frame - links[hop["link"]].latency_cycles for hop in model["hops"])
@@ -1267,6 +1271,10 @@ def build_tdm_ratio_plan(
         )
     if min_ratio > max_ratio:
         raise ValidationError("TDM ratio min_ratio cannot exceed max_ratio")
+    if max_ratio > int(model["constraints"].get("tdm_max_ratio", max_ratio)):
+        raise ValidationError(
+            "TDM ratio max_ratio exceeds the route/BoardDB ratio domain"
+        )
     if (
         isinstance(convergence, bool)
         or not isinstance(convergence, (int, float))
@@ -1524,6 +1532,10 @@ def validate_tdm_ratio_plan(
     if min_ratio != int(model["constraints"].get("tdm_min_ratio", 1)):
         raise ValidationError(
             "ratio plan.configuration min_ratio differs from routes"
+        )
+    if max_ratio > int(model["constraints"].get("tdm_max_ratio", max_ratio)):
+        raise ValidationError(
+            "ratio plan.configuration max_ratio exceeds routes"
         )
     allowed_ratios = (
         ({1} if min_ratio == 1 else set())

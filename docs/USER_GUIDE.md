@@ -1,5 +1,25 @@
 # User guide
 
+## Continue from completed indexed inputs
+
+Use `multi-fpga compile --prepared-frontend PHASE1_DIRECTORY
+--prepared-timing PHASE2_DIRECTORY` with the original mapping profile and an
+explicit `--clock-period NAME=NS` for every original clock. The saved Phase 1
+must contain the indexed design, passing primitive audit, and normalized
+BoardDB. Phase 2 must contain the indexed path and net-weight manifests and
+their SQLite payloads. The continuation validates design, mapping, device,
+clock periods, publication counts, and SQLite versions without rerunning
+synthesis or pre-partition STA.
+
+The saved BoardDB is read only for its device part identity. Its historical
+interconnect fields are not interpreted or migrated. The explicitly selected
+current BoardDB is validated in full and supplies all Phase 3–7 capacities,
+topology, and link models. Missing or changed saved device identities still
+reject the continuation. Input databases remain read-only. Terminal validation
+accepts the EmuIR symlink only when it resolves to the input declared in the
+passing Phase 1 continuation report, and hashes those original bytes as part
+of the flow artifact seal. Other flow artifacts still reject symlinks.
+
 ## Complete build
 
 Build from the repository root:
@@ -53,14 +73,32 @@ models.
 ```bash
 emuflow multi-fpga compile examples/rtl/counter.v \
   --top counter --clock clk --clock-period clk=10 \
-  --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
   --out build/counter-flow
 emuflow multi-fpga validate --flow build/counter-flow
 ```
 
-This is board-independent generation through Phase 6. A successful
-`multi-fpga-flow-report.json` without physical results does not establish
-routed timing closure.
+This command intentionally exercises the current defaults: the bundled
+four-XCVU19P research BoardDB and `xilinx-ultrascaleplus-open-v1` mapping. It
+runs through Phase 6 and emits the fixed virtual-board inventory, scheduled
+pin binding, per-FPGA XDC and differential-I/O adapters, and transport RTL.
+The small counter is a smoke input; it is not a representative multi-FPGA QoR
+workload. A successful `multi-fpga-flow-report.json` without physical results
+does not establish routed timing closure.
+
+Select another BoardDB with `--platform`. The alternative VTR flow must be
+requested consistently rather than mixed with the Xilinx default:
+
+```bash
+emuflow arch fetch-default-vtr \
+  --output build/architectures/vtr-flagship.xml
+
+emuflow multi-fpga compile examples/rtl/counter.v \
+  --top counter --clock clk --clock-period clk=10 \
+  --mapping-profile vtr-hard-blocks \
+  --physical-backend open \
+  --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
+  --out build/counter-vtr-flow
+```
 
 Mapping profiles are explicit:
 
@@ -79,6 +117,9 @@ platform.
 The CLI defaults to timing-driven PATRON partitioning with a TritonPart
 initializer, sequential-only cut semantics, and baseline Phase 6.
 Select alternatives explicitly:
+Use the bundled OpenROAD build: Phase 3 requires its `-resource_bounds_file`
+interface to enforce independent resource limits inside TritonPart. Illegal
+provider output fails validation instead of being repaired after partitioning.
 
 ```bash
 emuflow multi-fpga compile --help

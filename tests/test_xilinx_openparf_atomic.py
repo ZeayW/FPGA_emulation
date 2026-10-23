@@ -300,6 +300,24 @@ def _add_mux_bels(architecture, primitives):
 
 
 class XilinxOpenparfAtomicTest(unittest.TestCase):
+    def test_density_headroom_uses_only_qualified_lut_bels(self):
+        # Sixteen z slots encode eight BLEs; paired LUTs are disabled. A
+        # seven-LUT region exceeds the 75% density target of the eight BELs,
+        # even though it would fit a fictitious sixteen-LUT density model.
+        sites = [({"name": "SLICE_X0Y0"}, {"LUT": 16, "FF": 16})]
+        with self.assertRaisesRegex(ValidationError, "headroom for LUT"):
+            atomic_adapter._validate_native_density_contract(
+                sites, [{"resource": "LUT"}] * 7
+            )
+        units, contract = atomic_adapter._validate_native_density_contract(
+            sites, [{"resource": "LUT"}] * 5 + [{"resource": "FF"}]
+        )
+        self.assertEqual(units, {"LUT": 8, "FF": 16})
+        self.assertEqual(contract["LUT"]["movable_area"], 5 / 8)
+        self.assertEqual(contract["LUT"]["filler_units"], 3)
+        self.assertEqual(contract["FF"]["movable_area"], 1 / 16)
+        self.assertEqual(sites[0][1]["LUT"], 16)
+
     def test_clock_region_site_headroom_is_reserved_before_placement(self):
         sites = []
         for x in range(2):
@@ -614,7 +632,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(manifest["atoms"], 128)
         self.assertEqual(manifest["resources"], {"FF": 64, "LUT": 64})
         self.assertEqual(
-            manifest["resource_unit_capacity"], {"LUT": 16, "FF": 16}
+            manifest["resource_unit_capacity"], {"LUT": 8, "FF": 16}
         )
         self.assertEqual(manifest["placement_region"], {
             "logic_sites": 16,
@@ -624,10 +642,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "available_logic_sites": 16,
         })
         self.assertEqual(manifest["density_contract"]["LUT"], {
-            "movable_area": 4.0,
+            "movable_area": 8.0,
             "placeable_area": 16.0,
             "target_area": 12.0,
-            "filler_units": 192,
+            "filler_units": 64,
         })
         self.assertEqual(manifest["net_export"], {
             "emitted": 129, "dropped_single_endpoint": 0,
@@ -675,7 +693,13 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["emuflow_min_feasible_iterations"], 96)
         self.assertEqual(config["emuflow_convergence_patience"], 64)
         self.assertEqual(config["emuflow_relative_hpwl_improvement"], 1.0e-4)
+        self.assertEqual(
+            config["emuflow_post_adjustment_iteration_reserve"], 384
+        )
         self.assertEqual(config["stop_overflow"], 0.10)
+        self.assertEqual(config["emuflow_high_fanout_weight_threshold"], 64)
+        self.assertEqual(config["emuflow_high_fanout_weight_exponent"], 0.5)
+        self.assertEqual(config["emuflow_high_fanout_weight_maximum"], 4.0)
         self.assertEqual(config["gp_adjust_area"], 1)
         self.assertEqual(config["gp_adjust_area_types"], ["LUT", "FF"])
         self.assertEqual(config["gp_max_adjust_area_iters"], 6)
@@ -687,7 +711,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-stable-feasible-v3",
+            "provider": "openparf-rudy-pin-stable-feasible-v4",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": 0.10,
             "adjustment_overflow_threshold": 0.15,
@@ -702,6 +726,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 "patience": 64,
                 "relative_hpwl_improvement": 1.0e-4,
                 "maximum_iterations_is_failure": True,
+                "post_adjustment_iteration_reserve": 384,
             },
         })
         self.assertNotIn("fallback", config)
@@ -1082,7 +1107,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "RAMB36E2": 1, "URAM288": 1,
         })
         self.assertEqual(manifest["resource_unit_capacity"], {
-            "LUT": 16, "FF": 16, "DSP48E2": 1,
+            "LUT": 8, "FF": 16, "DSP48E2": 1,
             "RAMB36E2": 1, "URAM288": 1,
         })
         self.assertEqual(manifest["net_export"], {
@@ -1295,7 +1320,8 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["detailed_place_flag"], 1)
         self.assertEqual(config["resource_categories"], {"FF": "FF", "LUT": "LUTL"})
         self.assertEqual(list(config["gp_model2area_types_map"]), ["LUT6", "FDRE"])
-        self.assertEqual(config["gp_model2area_types_map"]["LUT6"]["LUT"], [0.25, 0.25])
+        lut_dimensions = config["gp_model2area_types_map"]["LUT6"]["LUT"]
+        self.assertAlmostEqual(lut_dimensions[0] * lut_dimensions[1], 1 / 8)
         self.assertEqual(config["gp_model2area_types_map"]["FDRE"]["FF"], [0.25, 0.25])
         self.assertEqual(config["CLB_capacity"], 16)
         self.assertEqual(config["BLE_capacity"], 2)
@@ -2691,6 +2717,38 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             self.assertEqual(certificate["status"], "pass")
             self.assertEqual(certificate["summary"]["atoms"], 2)
             self.assertFalse(list(output.glob(".openparf-placement-*.sqlite3")))
+
+    def test_typed_placement_join_explicitly_enables_file_uri_attachment(self):
+        real_connect = sqlite3.connect
+        attached = []
+
+        class ExplicitUriConnection(sqlite3.Connection):
+            def execute(self, sql, parameters=()):
+                if sql.startswith("ATTACH DATABASE") and parameters[0].startswith("file:"):
+                    if not self.uri_enabled:
+                        raise sqlite3.OperationalError("URI attachment was not enabled")
+                    attached.append(parameters[0])
+                return super().execute(sql, parameters)
+
+        def connect(*args, **kwargs):
+            kwargs["factory"] = ExplicitUriConnection
+            connection = real_connect(*args, **kwargs)
+            connection.uri_enabled = kwargs.get("uri", False)
+            return connection
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = _fixture(root)
+            output = root / "output"
+            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
+            placement = output / "placed.pl"
+            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
+            with mock.patch.object(atomic_adapter.sqlite3, "connect", side_effect=connect):
+                certificate = validate_xilinx_openparf_atomic_placement(
+                    placement, output / "name_map.json", mapped, architecture)
+            self.assertEqual(certificate["status"], "pass")
+            self.assertTrue(attached)
+            self.assertTrue(all(uri.endswith("?mode=ro&immutable=1") for uri in attached))
 
     def test_validator_releases_system_index_and_name_map_lease_on_failure(self):
         with tempfile.TemporaryDirectory() as temporary:

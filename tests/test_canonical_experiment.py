@@ -147,7 +147,6 @@ class CanonicalExperimentTest(unittest.TestCase):
             "clocks": ["clk"],
             "clock_periods": {"clk": 10.0},
             "partition_seed_attempts": 6,
-            "partition_repair_balance": True,
             "physical_workers": 8,
         }
         path = root / "config.json"
@@ -249,16 +248,12 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertEqual(
                 nodes["partition"]["configuration"]["seed_attempts"], 6
             )
-            self.assertTrue(
-                nodes["partition"]["configuration"]["repair_balance"]
-            )
             self.assertEqual(
                 nodes["partition"]["command"][
                     nodes["partition"]["command"].index("--seed-attempts") + 1
                 ],
                 "6",
             )
-            self.assertIn("--repair-balance", nodes["partition"]["command"])
             self.assertIn(
                 "--managed-dag-node", nodes["partition"]["command"]
             )
@@ -271,7 +266,6 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
                 "6",
             )
-            self.assertIn("--repair-balance", nodes["partition"]["validator"])
             self.assertIn("--constraints", nodes["route"]["command"])
             self.assertEqual(
                 nodes["route"]["configuration"]["provider"],
@@ -1254,26 +1248,28 @@ class CanonicalExperimentTest(unittest.TestCase):
                     config_path, REPOSITORY, root / "ab.json"
                 )
 
-    def test_partition_balance_repair_must_be_boolean(self) -> None:
+
+    def test_partition_repairs_default_on_in_experiment_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_path = self._config(root)
             config = json.loads(config_path.read_text())
-            config["partition_repair_balance"] = "true"
-            config_path.write_text(json.dumps(config), encoding="utf-8")
-            with self.assertRaisesRegex(
-                ValidationError, "partition_repair_balance"
-            ):
-                compile_canonical_experiment_spec(
-                    config_path, REPOSITORY, root / "spec.json"
-                )
+            config.pop("partition_repair_min_used_fpgas", None)
+            config_path.write_text(json.dumps(config))
+            output = root / "spec.json"
+            compile_canonical_experiment_spec(config_path, REPOSITORY, output)
+            partition = next(item for item in json.loads(output.read_text())["nodes"]
+                             if item["id"] == "partition")
+            for key in ("command", "validator"):
+                self.assertIn("--repair-min-used-fpgas", partition[key])
+            self.assertTrue(partition["configuration"]["repair_min_used_fpgas"])
 
     def test_disabled_partition_repair_is_explicitly_validated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_path = self._config(root)
             config = json.loads(config_path.read_text())
-            config["partition_repair_balance"] = False
+            config["partition_repair_min_used_fpgas"] = False
             config_path.write_text(json.dumps(config), encoding="utf-8")
             output = root / "spec.json"
             compile_canonical_experiment_spec(
@@ -1284,8 +1280,9 @@ class CanonicalExperimentTest(unittest.TestCase):
                 for item in json.loads(output.read_text())["nodes"]
                 if item["id"] == "partition"
             )
-            self.assertNotIn("--repair-balance", partition["command"])
-            self.assertIn("--no-repair-balance", partition["validator"])
+            self.assertIn("--no-repair-min-used-fpgas", partition["command"])
+            self.assertIn("--no-repair-min-used-fpgas", partition["validator"])
+            self.assertFalse(partition["configuration"]["repair_min_used_fpgas"])
 
     def test_static_exact_ab_compiler_shares_only_frontend_and_timing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

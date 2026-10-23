@@ -15,6 +15,7 @@ from .partition import (
     build_clusters,
     build_partition_assignment,
     load_partition_constraints,
+    summarize_balance_observation,
     validate_partition_artifacts,
     validate_partition_artifacts_online,
 )
@@ -30,7 +31,7 @@ from .partition_physical_feedback import (
     validate_partition_physical_feedback,
 )
 from .platform import Platform
-from .partition_limits import strict_balance_limits
+from .partition_limits import planning_resource_capacities, strict_balance_limits
 from .resource_budget import validate_device_resource_usage
 from .resources import RESOURCE_FIELDS
 from .repart import run_repart
@@ -377,9 +378,7 @@ def run_phase3(
     tritonpart_seed_attempts: int = 1,
     tritonpart_num_initial_solutions: int = 50,
     tritonpart_num_best_initial_solutions: int = 10,
-    tritonpart_repair_min_used_fpgas: bool = False,
-    tritonpart_repair_balance: bool = False,
-    tritonpart_balance_legalizer: Optional[str] = None,
+    tritonpart_repair_min_used_fpgas: bool = True,
     tritonpart_run_unweighted_baseline: bool = False,
     repart: Optional[str] = None,
     repart_solution: Optional[Path] = None,
@@ -626,8 +625,6 @@ def run_phase3(
                 tritonpart_num_best_initial_solutions
             ),
             repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
-            repair_balance=tritonpart_repair_balance,
-            balance_legalizer=tritonpart_balance_legalizer,
             run_unweighted_baseline=tritonpart_run_unweighted_baseline,
             defer_semantic_contract=not retain_diagnostics,
             persist_input_manifest=retain_diagnostics,
@@ -714,8 +711,6 @@ def run_phase3(
                     tritonpart_num_best_initial_solutions
                 ),
                 repair_min_used_fpgas=tritonpart_repair_min_used_fpgas,
-                repair_balance=tritonpart_repair_balance,
-                balance_legalizer=tritonpart_balance_legalizer,
                 run_unweighted_baseline=(
                     tritonpart_run_unweighted_baseline
                 ),
@@ -1565,6 +1560,7 @@ def validate_phase3_indexed(
         tolerance,
         overrides,
         strict_dimensions,
+        constraints.get("resource_reservations_by_fpga", {}),
     )
     expected_modes = {
         field: ("balance" if field in strict_dimensions else "capacity")
@@ -1581,17 +1577,48 @@ def validate_phase3_indexed(
                     "is forbidden"
                 )
     percentages = {field: overrides.get(field, tolerance) * 100.0 for field in fields}
+    planning_capacity = planning_resource_capacities(
+        fpgas, constraints.get("resource_reservations_by_fpga", {})
+    )
     expected_capacity_limits = {
         fpga.id: {
             field: (
                 totals[field]
                 if field == "cells"
-                else fpga.effective_capacity[field]
+                else planning_capacity[fpga.id][field]
             )
             for field in fields
         }
         for fpga in fpgas
     }
+    reservation_evidence_disagrees = bool(
+        constraints.get("resource_reservations_by_fpga")
+        and (
+            validation.get("physical_capacity_limits")
+            != {
+                fpga.id: {
+                    field: (
+                        totals[field]
+                        if field == "cells"
+                        else fpga.effective_capacity[field]
+                    )
+                    for field in fields
+                }
+                for fpga in fpgas
+            }
+            or validation.get("resource_reservations_by_fpga")
+            != {
+                fpga.id: dict(
+                    sorted(
+                        constraints.get(
+                            "resource_reservations_by_fpga", {}
+                        ).get(fpga.id, {}).items()
+                    )
+                )
+                for fpga in fpgas
+            }
+        )
+    )
     if (validation.get("balance_auto_relaxed") is not False
         or validation.get("requested_balance_percent") != tolerance * 100.0
         or validation.get("effective_balance_percent") != max(percentages.values())
@@ -1603,11 +1630,17 @@ def validate_phase3_indexed(
         or validation.get("enforced_balance_percent_by_dimension")
             != {field: percentages[field] for field in strict_dimensions}
         or validation.get("capacity_limits") != expected_capacity_limits
+        or reservation_evidence_disagrees
         or validation.get("strict_balance_violations") != 0
         or validation.get("capacity_violations") != 0
         or validation.get("balance_loads") != loads
         or validation.get("balance_allowed_loads") != bounds):
         raise ValidationError("indexed Phase 3 strict balance evidence disagrees with sealed constraints")
+    # Older sealed reports predate this diagnostic field; when present it must
+    # agree with the independently reconstructed indexed loads.
+    if ("balance_observation" in validation and validation["balance_observation"]
+        != summarize_balance_observation(loads, strict_dimensions)):
+        raise ValidationError("indexed Phase 3 balance observation disagrees with loads")
     if proof["semantic_contract_sha256"] is not None:
         if validation.get("cut_mode") != CUT_MODE_STATIC_EXACT:
             raise ValidationError(

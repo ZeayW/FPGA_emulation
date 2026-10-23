@@ -179,15 +179,15 @@ class ExperimentStagesTest(unittest.TestCase):
     def test_python38_boolean_optional_action_supports_both_spelling(self) -> None:
         parser = argparse.ArgumentParser()
         parser.add_argument(
-            "--repair-balance",
+            "--repair-min-used-fpgas",
             action=_Python38BooleanOptionalAction,
             default=None,
         )
-        self.assertTrue(parser.parse_args(["--repair-balance"]).repair_balance)
+        self.assertTrue(parser.parse_args(["--repair-min-used-fpgas"]).repair_min_used_fpgas)
         self.assertFalse(
-            parser.parse_args(["--no-repair-balance"]).repair_balance
+            parser.parse_args(["--no-repair-min-used-fpgas"]).repair_min_used_fpgas
         )
-        self.assertIsNone(parser.parse_args([]).repair_balance)
+        self.assertIsNone(parser.parse_args([]).repair_min_used_fpgas)
 
     def test_phase7_qor_projection_is_compact_and_rejects_nonfinite(self) -> None:
         qor = {

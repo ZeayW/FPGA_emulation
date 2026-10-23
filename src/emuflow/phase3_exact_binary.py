@@ -1474,4 +1474,3 @@ def validate_phase3_exact_binary(
         "capture_requirements": capture_count,
         "dependency_edges": dependency_edges,
     }
-

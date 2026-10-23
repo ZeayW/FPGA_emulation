@@ -83,8 +83,17 @@ echo "RUNTIME_CXX=$selected_cxx"
 
 for binary in "$native_base"/bin/*; do
   test -e "$binary" || continue
+  # Retired provider binaries must not leak in through an older native base.
+  if test "$(basename "$binary")" = emuflow_tritonpart_balance_legalizer; then
+    continue
+  fi
   ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")"
 done
+sqlite_flags=()
+if test -n "${SQLITE3_PREFIX:-}"; then
+  sqlite_flags=("-I$SQLITE3_PREFIX/include" "-L$SQLITE3_PREFIX/lib"
+    "-Wl,-rpath,$SQLITE3_PREFIX/lib")
+fi
 for tool in \
   tlr_router \
   patron_refiner \
@@ -92,14 +101,13 @@ for tool in \
   tdm_exact_scheduler \
   tdm_ratio_optimizer \
   tdm_slot_optimizer \
-  tdm_timing_dag_optimizer \
-  tritonpart_balance_legalizer
+  tdm_timing_dag_optimizer
 do
   target="$runtime_dir/bin/emuflow_$tool"
   rm -f "$target"
   "$selected_cxx" -std=c++17 -O3 -pthread \
     -static-libstdc++ -static-libgcc \
-    -I"$source_dir/src/native" \
+    "${sqlite_flags[@]}" -I"$source_dir/src/native" \
     "$source_dir/src/native/$tool.cpp" \
     "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
     "$source_dir/src/native/emuflow_core/sqlite.cpp" \
@@ -115,7 +123,7 @@ rm -f "$unified"
 "$selected_cxx" -std=c++17 -O3 -pthread \
   -static-libstdc++ -static-libgcc \
   -DEMUFLOW_NATIVE_STAGE_LIBRARY=1 \
-  -I"$source_dir/src/native" \
+  "${sqlite_flags[@]}" -I"$source_dir/src/native" \
   "$source_dir/src/native/emuflow_native.cpp" \
   "$source_dir/src/native/static_exact_analyzer.cpp" \
   "$source_dir/src/native/tlr_router.cpp" \
@@ -127,6 +135,11 @@ rm -f "$unified"
   "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
   "$source_dir/src/native/emuflow_core/sqlite.cpp" \
   -lsqlite3 -o "$unified"
+target="$runtime_dir/bin/emuflow_xilinx_bookshelf_exporter"
+rm -f "$target"
+"$selected_cxx" -std=c++17 -O3 -static-libstdc++ -static-libgcc \
+  "${sqlite_flags[@]}" \
+  "$source_dir/src/native/xilinx_bookshelf_exporter.cpp" -lsqlite3 -o "$target"
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"
 printf '%s\n' "$source_dir/src" > "$runtime_dir/PYTHON_SOURCE_PATH"

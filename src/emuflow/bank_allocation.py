@@ -92,12 +92,16 @@ def apply_bank_domain_ratios(
             capacity["wires_per_bank"],
             min_ratio=int(constraints.get("tdm_min_ratio", 1)),
             ratio_quantum=int(constraints["tdm_ratio_quantum"]),
+            max_ratio=int(constraints["tdm_max_ratio"]),
         )
         if allocation is None:
             # Both directions active with fewer than two banks.  Preserve an
             # over-budget prediction; downstream routing/slot validation owns
             # authoritative feasibility.
-            result[key] = result[opposite] = int(constraints["frame_slots"]) + 1
+            result[key] = result[opposite] = (
+                int(constraints["tdm_max_ratio"])
+                + int(constraints["tdm_ratio_quantum"])
+            )
         else:
             result[key] = allocation["forward_ratio"]
             result[opposite] = allocation["reverse_ratio"]

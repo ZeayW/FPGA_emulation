@@ -48,6 +48,7 @@ from .partition_physical_feedback import (
     PARTITION_PHYSICAL_FEEDBACK_SCHEMA,
     validate_partition_physical_feedback_seal,
 )
+from .partition_limits import planning_resource_capacities
 from .phase3_runtime import phase3_runtime_call
 from .resources import RESOURCE_FIELDS
 from .routing import (
@@ -2393,6 +2394,7 @@ def _reconstruct_partition_pressure_model(
             "max_scalable_ejections": MAX_SCALABLE_EJECTIONS,
             "max_route_hops": route_constraints.get("max_route_hops"),
             "frame_slots": route_constraints["frame_slots"],
+            "tdm_max_ratio": route_constraints["tdm_max_ratio"],
             "tdm_ratio_quantum": route_constraints["tdm_ratio_quantum"],
             "predicted_wait": "sum((domain_ratio-1)*ratio_delay_slope_ns)",
             "path_delay": (
@@ -2556,11 +2558,16 @@ def _predicted_route_delay(
     delay = 0.0
     for arc in route:
         domain = domain_by_arc[(arc["link"], arc["from"], arc["to"])]
-        ratio = domain_ratios[domain] if include_tdm_wait else 1
-        delay += route_hop_delay_ns(
-            platform, arc["link"], arc["from"], arc["to"],
-            route_constraints, ratio,
-        )
+        if include_tdm_wait:
+            delay += route_hop_delay_ns(
+                platform, arc["link"], arc["from"], arc["to"],
+                route_constraints, domain_ratios[domain],
+            )
+        else:
+            delay += route_link_delay_ns(
+                platform, arc["link"], arc["from"], arc["to"],
+                route_constraints,
+            )
         delay += physical_hop_guard_scale_ns
     return delay
 
@@ -3454,9 +3461,14 @@ def _write_patron_native_input(
         constraints["balance_tolerance"],
         constraints.get("balance_tolerance_by_dimension", {}),
         constraints.get("active_fpgas"),
-        constraints.get("balance_dimensions"),
+        constraints.get("balance_dimensions", ()),
+        constraints.get("resource_reservations_by_fpga", {}),
     )
     fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
+    planning_capacity = planning_resource_capacities(
+        [fpga_by_id[part] for part in parts],
+        constraints.get("resource_reservations_by_fpga", {}),
+    )
     domains = sorted(model["capacities"], key=lambda item: item["key"])
     domain_index = {
         domain["key"]: index for index, domain in enumerate(domains)
@@ -3517,7 +3529,7 @@ def _write_patron_native_input(
                 ),
                 integers=(
                     -1 if max_hops is None else max_hops,
-                    model["configuration"]["frame_slots"],
+                    model["configuration"]["tdm_max_ratio"],
                     model["configuration"]["tdm_ratio_quantum"],
                     constraints["min_used_fpgas"],
                     max_moves,
@@ -3550,7 +3562,7 @@ def _write_patron_native_input(
                     f"{len(dimensions)} {len(domains)} {len(nets)} "
                     f"{len(model['paths'])} "
                     f"{-1 if max_hops is None else max_hops} "
-                    f"{model['configuration']['frame_slots']} "
+                    f"{model['configuration']['tdm_max_ratio']} "
                     f"{model['configuration']['tdm_ratio_quantum']} "
                     f"{constraints['min_used_fpgas']} {max_moves} "
                     f"{model['normalization']['positive_slack_scale_ns']:.17g} "
@@ -3589,7 +3601,7 @@ def _write_patron_native_input(
                 hard.append(
                     float(total_cells)
                     if dimension == "cells"
-                    else float(fpga_by_id[part].effective_capacity[dimension])
+                    else float(planning_capacity[part][dimension])
                 )
                 allowed.append(
                     float(balance["balance_allowed_loads"][part][dimension])
@@ -3608,6 +3620,7 @@ def _write_patron_native_input(
             weights = [
                 cluster["cells"]
                 if dimension == "cells"
+
                 else cluster["resources"].get(dimension, 0)
                 for dimension in dimensions
             ]

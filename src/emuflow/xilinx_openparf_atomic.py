@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 import tempfile
 import threading
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
@@ -29,6 +30,8 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
 from .io import file_sha256, read_json, write_json
+from .native_tools import resolve_native_executable
+from .xilinx_netlist import _IndexedCells
 from .openparf import run_openparf, validate_openparf_runtime
 from .openparf_native_driver import (
     native_metrics_path,
@@ -76,7 +79,7 @@ OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION = 3
 _PLACEMENT_CERTIFICATE_STORE_SUFFIX = ".sqlite"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = (
-    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v5"
+    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v7"
 )
 XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-site-database/v1"
@@ -121,6 +124,7 @@ OPENPARF_FF_CONTROL_LEGALIZATION_SCHEMA = (
 )
 OPENPARF_RESULT_CHECKPOINT_SCHEMA = "emuflow.openparf-result-checkpoint/v1"
 _TARGET_DENSITY = 0.75
+_QUALIFIED_LUTS_PER_SLICE = 8
 _CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
 _GLOBAL_PLACEMENT_STOP_OVERFLOW = 0.10
 _ROUTABILITY_ADJUSTMENT_OVERFLOW_THRESHOLD = 0.15
@@ -128,6 +132,10 @@ _ROUTABILITY_ADJUSTMENT_ITERATIONS = 6
 _ROUTE_AREA_ADJUSTMENT_EXPONENT = 2.0
 _MAX_ROUTE_AREA_ADJUSTMENT_RATE = 2.0
 _MAX_PIN_AREA_ADJUSTMENT_RATE = 1.6
+_HIGH_FANOUT_WEIGHT_THRESHOLD = 64
+_HIGH_FANOUT_WEIGHT_EXPONENT = 0.5
+_HIGH_FANOUT_WEIGHT_MAXIMUM = 4.0
+_POST_ADJUSTMENT_ITERATION_RESERVE = 384
 _LOGIC_FILLER_LIMIT = 65_536
 _CLOCK_REGION_NAME = re.compile(r"^X([0-9]+)Y([0-9]+)$")
 _MAX_CLOCKS_PER_REGION = 24
@@ -164,7 +172,10 @@ class _IndexedAtomicPlacement:
         os.close(descriptor)
         self._path = Path(temporary)
         try:
-            database = sqlite3.connect(self._path)
+            # The authenticated atom sidecar is attached by a read-only file
+            # URI below. URI parsing must be enabled on the staging connection
+            # as well; some production SQLite builds disable it by default.
+            database = sqlite3.connect(self._path, uri=True)
             self._database = database
             database.execute("PRAGMA journal_mode=OFF")
             database.execute("PRAGMA synchronous=OFF")
@@ -2705,11 +2716,25 @@ def _validate_native_density_contract(
     sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
     atoms: Sequence[Mapping[str, str]],
 ) -> Tuple[Dict[str, int], Dict[str, Dict[str, float]]]:
-    """Prove every active area type has finite density and filler headroom."""
+    """Normalize density to qualified BELs, independently of slot encoding."""
 
     demand = Counter(atom["resource"] for atom in atoms)
+
+    def density_capacity(resources: Mapping[str, int], resource: str) -> int:
+        capacity = resources.get(resource, 0)
+        # DirectLG retains sixteen z positions for the 5LUT/6LUT BLE encoding,
+        # but allow_paired_luts=0 makes only eight positions usable.  Its slot
+        # namespace must not halve each LUT's analytical area or double the
+        # physical headroom assumed by global placement.
+        return (
+            min(capacity, _QUALIFIED_LUTS_PER_SLICE)
+            if resource == "LUT" else capacity
+        )
+
     per_site_capacity = {
-        resource: max(resources.get(resource, 0) for _site, resources in sites)
+        resource: max(
+            density_capacity(resources, resource) for _site, resources in sites
+        )
         for resource in demand
     }
     result: Dict[str, Dict[str, float]] = {}
@@ -2720,7 +2745,7 @@ def _validate_native_density_contract(
                 f"OpenPARF atomic placement has no {resource} model capacity"
             )
         available_units = sum(
-            resources.get(resource, 0) for _site, resources in sites
+            density_capacity(resources, resource) for _site, resources in sites
         )
         movable_area = demand[resource] / unit_capacity
         placeable_area = available_units / unit_capacity
@@ -3405,6 +3430,96 @@ def _render_nets(
     return "\n".join(lines) + "\n", emitted, dropped_single_endpoint
 
 
+def _bookshelf_library(
+    ports_by_type: Dict[str, Dict[str, str]],
+    platform_mux_types: Sequence[str],
+) -> str:
+    for cell_type in platform_mux_types:
+        ports_by_type.setdefault(cell_type, {}).update({
+            "I0": "input", "I1": "input", "S": "input", "O": "output",
+        })
+    library_blocks = []
+    for cell_type, ports in sorted(ports_by_type.items()):
+        lines = [f"CELL {cell_type}"]
+        for port, direction in sorted(ports.items()):
+            suffix = ""
+            if cell_type in FF_TYPES and port == _FF_CLOCK:
+                suffix = " CLOCK"
+            elif cell_type in FF_TYPES and port == _FF_ENABLE:
+                suffix = " CTRL_CE"
+            elif cell_type in FF_TYPES and port == _FF_SR[cell_type]:
+                suffix = " CTRL_SR"
+            elif cell_type == "CARRY8" and port in {"CI", "CO[7]"}:
+                suffix = " CAS"
+            lines.append(f"  PIN {port} {direction.upper()}{suffix}")
+        lines.append("END CELL")
+        library_blocks.append("\n".join(lines))
+    library = "\n\n".join(library_blocks) + "\n"
+    return library
+
+
+def _render_indexed_bookshelf(
+    cells: _IndexedCells,
+    atoms: _IndexedAtomSequence,
+    *,
+    platform_mux_types: Sequence[str],
+    nets_path: Optional[Path],
+) -> Tuple[str, Optional[str], int, int]:
+    """Keep typed pin traversal and net text emission entirely in C++."""
+
+    executable = resolve_native_executable("emuflow_xilinx_bookshelf_exporter")
+    database = next(
+        row[2] for row in cells.connection.execute("PRAGMA database_list")
+        if row[1] == "main"
+    )
+    parent = nets_path.parent if nets_path is not None else None
+    if parent is not None:
+        parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=".emuflow-bookshelf-", dir=parent
+    ) as temporary:
+        root = Path(temporary)
+        output = root / "design.nets"
+        report = root / "summary.tsv"
+        result = subprocess.run(
+            [executable, Path(database).resolve().as_uri() + "?mode=ro&immutable=1",
+             atoms.path.resolve().as_uri() + "?mode=ro&immutable=1",
+             str(output), str(report), str(root / "endpoints.sqlite")],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode:
+            raise ValidationError(
+                "native OpenPARF Bookshelf export failed: " + result.stderr.strip()
+            )
+        ports_by_type: Dict[str, Dict[str, str]] = defaultdict(dict)
+        try:
+            # The report contains primitive pin signatures and constant-size
+            # counters only; no cell/net/endpoint populations cross into Python.
+            with report.open(encoding="utf-8") as stream:
+                header = stream.readline().rstrip("\n").split("\t")
+                if len(header) != 4 or header[0] != "EMUFLOW_BOOKSHELF_V1":
+                    raise ValueError("invalid native Bookshelf report header")
+                count, emitted, dropped = map(int, header[1:])
+                if count != len(atoms) or min(emitted, dropped) < 0:
+                    raise ValueError("invalid native Bookshelf counts")
+                for line in stream:
+                    cell_type, port, direction = line.rstrip("\n").split("\t")
+                    if direction not in {"0", "1"}:
+                        raise ValueError("invalid native Bookshelf direction")
+                    ports_by_type[cell_type][port] = (
+                        "output" if direction == "1" else "input"
+                    )
+            library = _bookshelf_library(ports_by_type, platform_mux_types)
+        except (OSError, ValueError) as error:
+            raise ValidationError("native Bookshelf summary is invalid") from error
+        if nets_path is None:
+            return library, output.read_text(encoding="utf-8"), emitted, dropped
+        with output.open("rb") as stream:
+            os.fsync(stream.fileno())
+        os.replace(output, nets_path)
+        return library, None, emitted, dropped
+
+
 def _render_library_and_nets(
     cells: Mapping[str, Any],
     atoms: Sequence[Mapping[str, str]],
@@ -3422,6 +3537,15 @@ def _render_library_and_nets(
     callers and differential tests.
     """
 
+    if (
+        isinstance(cells, _IndexedCells)
+        and isinstance(atoms, _IndexedAtomSequence)
+        and isinstance(names, _OrdinalSafeNames)
+    ):
+        return _render_indexed_bookshelf(
+            cells, atoms, platform_mux_types=platform_mux_types,
+            nets_path=nets_path,
+        )
     ports_by_type: Dict[str, Dict[str, str]] = defaultdict(dict)
     atom_iterator = iter(enumerate(atoms))
     current = next(atom_iterator, None)
@@ -3509,27 +3633,7 @@ def _render_library_and_nets(
                 "OpenPARF endpoint relation cannot represent the mapped netlist"
             ) from error
 
-        for cell_type in platform_mux_types:
-            ports_by_type.setdefault(cell_type, {}).update({
-                "I0": "input", "I1": "input", "S": "input", "O": "output",
-            })
-        library_blocks = []
-        for cell_type, ports in sorted(ports_by_type.items()):
-            lines = [f"CELL {cell_type}"]
-            for port, direction in sorted(ports.items()):
-                suffix = ""
-                if cell_type in FF_TYPES and port == _FF_CLOCK:
-                    suffix = " CLOCK"
-                elif cell_type in FF_TYPES and port == _FF_ENABLE:
-                    suffix = " CTRL_CE"
-                elif cell_type in FF_TYPES and port == _FF_SR[cell_type]:
-                    suffix = " CTRL_SR"
-                elif cell_type == "CARRY8" and port in {"CI", "CO[7]"}:
-                    suffix = " CAS"
-                lines.append(f"  PIN {port} {direction.upper()}{suffix}")
-            lines.append("END CELL")
-            library_blocks.append("\n".join(lines))
-        library = "\n\n".join(library_blocks) + "\n"
+        library = _bookshelf_library(ports_by_type, platform_mux_types)
 
         materialized_path = (
             Path(temporary) / "design.nets"
@@ -4348,7 +4452,9 @@ def export_xilinx_openparf_atomic(
     # The native CLB model exposes 16 LUT resource units for two-LUT BLE
     # compatibility, but EmuFlow's conservative architecture policy permits
     # only eight independent 6LUT BELs.  The importer enforces even z slots.
-    capacity["LUT"] = 8 * sum("LUT" in resources for _site, resources in sites)
+    capacity["LUT"] = _QUALIFIED_LUTS_PER_SLICE * sum(
+        "LUT" in resources for _site, resources in sites
+    )
     for resource, count in demand.items():
         if count > capacity[resource]:
             raise ValidationError(
@@ -4451,6 +4557,20 @@ def export_xilinx_openparf_atomic(
         "emuflow_min_feasible_iterations": 96,
         "emuflow_convergence_patience": 64,
         "emuflow_relative_hpwl_improvement": 1.0e-4,
+        # Area inflation resets the nonlinear optimizer.  Do not begin a late
+        # RUDY/pin adjustment unless the bounded run can still provide a full
+        # settling interval plus the stable feasible window.
+        "emuflow_post_adjustment_iteration_reserve": (
+            _POST_ADJUSTMENT_ITERATION_RESERVE
+        ),
+        # The atomic/native path must use the same fanout-aware analytical
+        # objective as the continuous guidance path.  Without these weights,
+        # a reset or enable net with tens of thousands of sinks contributes
+        # one bounding box to HPWL even though detailed routing must build the
+        # complete distribution tree.
+        "emuflow_high_fanout_weight_threshold": _HIGH_FANOUT_WEIGHT_THRESHOLD,
+        "emuflow_high_fanout_weight_exponent": _HIGH_FANOUT_WEIGHT_EXPONENT,
+        "emuflow_high_fanout_weight_maximum": _HIGH_FANOUT_WEIGHT_MAXIMUM,
         "global_place_flag": 1, "legalize_flag": 1,
         "detailed_place_flag": 1, "generic_cluster_placement_flag": 0,
         "logic_area_type_names": ["LUT", "FF"],
@@ -4458,7 +4578,7 @@ def export_xilinx_openparf_atomic(
         "plot_target_at_names": sorted(demand, key=_resource_sort_key),
         "io_at_names": [], "num_threads": 8,
         "gp_model2area_types_map": model_map,
-        # Sixteen capacity-normalized LUT/FF slots share one physical slice.
+        # Eight qualified LUT BELs and sixteen FF BELs share one slice.
         # Median-cell fillers would therefore materialize roughly sixteen
         # Python/Torch rows per unused site (millions on XCVU19P).  Sixteen
         # samples per density bin are already finer than the analytical grid;
@@ -4991,7 +5111,7 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-stable-feasible-v3",
+            "provider": "openparf-rudy-pin-stable-feasible-v4",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW
@@ -5010,6 +5130,9 @@ def export_xilinx_openparf_atomic(
                 "patience": 64,
                 "relative_hpwl_improvement": 1.0e-4,
                 "maximum_iterations_is_failure": True,
+                "post_adjustment_iteration_reserve": (
+                    _POST_ADJUSTMENT_ITERATION_RESERVE
+                ),
             },
         },
         "runtime_validation": "unverified",

@@ -35,14 +35,17 @@
           "source"
         ],
         "properties": {
-          "reference_tdm_ratio": {"const": 1},
+          "reference_tdm_ratio": {"type": "integer", "minimum": 1},
           "tdm_delay_model": {
             "type": "object",
-            "required": ["model", "intercept_ns", "ratio_coefficient_ns"],
+            "required": ["model", "intercept_ns", "ratio_coefficient_ns", "min_ratio", "max_ratio", "ratio_quantum"],
             "properties": {
               "model": {"const": "linear-ratio-v1"},
               "intercept_ns": {"type": "number", "minimum": 0},
-              "ratio_coefficient_ns": {"type": "number", "minimum": 0}
+              "ratio_coefficient_ns": {"type": "number", "minimum": 0},
+              "min_ratio": {"type": "integer", "minimum": 1},
+              "max_ratio": {"type": "integer", "minimum": 1},
+              "ratio_quantum": {"type": "integer", "minimum": 1}
             },
             "additionalProperties": false
           },

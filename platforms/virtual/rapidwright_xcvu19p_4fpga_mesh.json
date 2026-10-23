@@ -83,11 +83,14 @@
       "bank_count": 18,
       "wires_per_bank": 20,
       "fabric_clock_mhz": 250.0,
-      "latency_cycles": 8,
+      "latency_cycles": 9,
       "tdm_delay_model": {
         "model": "linear-ratio-v1",
         "intercept_ns": 30.0,
-        "ratio_coefficient_ns": 0.5
+        "ratio_coefficient_ns": 0.5,
+        "min_ratio": 8,
+        "max_ratio": 256,
+        "ratio_quantum": 8
       },
       "cable_count": 6,
       "hp_banks_per_cable": 3
@@ -105,11 +108,14 @@
       "bank_count": 18,
       "wires_per_bank": 20,
       "fabric_clock_mhz": 250.0,
-      "latency_cycles": 8,
+      "latency_cycles": 9,
       "tdm_delay_model": {
         "model": "linear-ratio-v1",
         "intercept_ns": 30.0,
-        "ratio_coefficient_ns": 0.5
+        "ratio_coefficient_ns": 0.5,
+        "min_ratio": 8,
+        "max_ratio": 256,
+        "ratio_quantum": 8
       },
       "cable_count": 6,
       "hp_banks_per_cable": 3
@@ -127,11 +133,14 @@
       "bank_count": 18,
       "wires_per_bank": 20,
       "fabric_clock_mhz": 250.0,
-      "latency_cycles": 8,
+      "latency_cycles": 9,
       "tdm_delay_model": {
         "model": "linear-ratio-v1",
         "intercept_ns": 30.0,
-        "ratio_coefficient_ns": 0.5
+        "ratio_coefficient_ns": 0.5,
+        "min_ratio": 8,
+        "max_ratio": 256,
+        "ratio_quantum": 8
       },
       "cable_count": 6,
       "hp_banks_per_cable": 3
@@ -149,11 +158,14 @@
       "bank_count": 18,
       "wires_per_bank": 20,
       "fabric_clock_mhz": 250.0,
-      "latency_cycles": 8,
+      "latency_cycles": 9,
       "tdm_delay_model": {
         "model": "linear-ratio-v1",
         "intercept_ns": 30.0,
-        "ratio_coefficient_ns": 0.5
+        "ratio_coefficient_ns": 0.5,
+        "min_ratio": 8,
+        "max_ratio": 256,
+        "ratio_quantum": 8
       },
       "cable_count": 6,
       "hp_banks_per_cable": 3

@@ -17,6 +17,7 @@ from emuflow.logic_segment_timing import (
     _boundary_tx_port,
     _index_exact_logic_segments,
     _incoming_transported_cut_nets,
+    _normalize_xilinx_logical_endpoint,
     _route_timing_paths,
     _vivado_object,
     _vpr_atom_pin,
@@ -57,6 +58,31 @@ from emuflow.platform import Platform
 
 
 class LogicSegmentTimingTest(unittest.TestCase):
+    def test_xilinx_ramb18_physical_wea_alias_uses_logical_unisim_bit(self):
+        endpoint = {
+            "instance": "ram0", "port": "WEA", "bit": 2,
+            "object": "ram0/WEA__2",
+        }
+        instances = {"ram0": {"id": "ram0", "type": "RAMB18E2"}}
+        self.assertEqual(
+            _normalize_xilinx_logical_endpoint(
+                endpoint, {"ram0": {("WEA", 0), ("WEA", 1)}}, instances
+            )["bit"],
+            0,
+        )
+
+    def test_xilinx_ramb18_wea_alias_keeps_distinct_physical_bit(self):
+        endpoint = {"instance": "ram0", "port": "WEA", "bit": 2}
+        instances = {"ram0": {"id": "ram0", "type": "RAMB18E2"}}
+        self.assertEqual(
+            _normalize_xilinx_logical_endpoint(
+                endpoint,
+                {"ram0": {("WEA", 0), ("WEA", 2)}},
+                instances,
+            )["bit"],
+            2,
+        )
+
     def test_compact_local_path_preparation_never_loads_whole_graph(self):
         value = {
             "schema": "emuflow.emuir/v1",

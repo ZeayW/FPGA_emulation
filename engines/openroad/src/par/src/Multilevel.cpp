@@ -107,14 +107,26 @@ std::vector<int> MultilevelPartitioner::Partition(
   int best_solution_id = -1;
   for (int id = 0; id < num_coarsen_solutions_; id++) {
     coarsener_->IncreaseRandomSeed();
-    top_solutions.push_back(
-        SingleLevelPartition(hgraph, upper_block_balance, lower_block_balance));
-    const float cost
-        = evaluator_->CutEvaluator(hgraph, top_solutions.back(), false).cost;
-    if (cost <= best_cost) {
-      best_cost = cost;
-      best_solution_id = id;
+    auto candidate =
+        SingleLevelPartition(hgraph, upper_block_balance, lower_block_balance);
+    if (candidate.empty()) {
+      continue;
     }
+    const auto token = evaluator_->CutEvaluator(hgraph, candidate, false);
+    if (!ResourceBalanced(token.block_balance, lower_block_balance,
+                          upper_block_balance)) {
+      continue;
+    }
+    top_solutions.push_back(std::move(candidate));
+    if (token.cost <= best_cost) {
+      best_cost = token.cost;
+      best_solution_id = static_cast<int>(top_solutions.size()) - 1;
+    }
+  }
+  if (best_solution_id < 0) {
+    logger_->error(
+        PAR, 1005,
+        "No feasible initial partition found under resource bounds.");
   }
 
   debugPrint(logger_,
@@ -155,37 +167,29 @@ std::vector<int> MultilevelPartitioner::Partition(
 
 // Run single-level partitioning
 std::vector<int> MultilevelPartitioner::SingleLevelPartition(
-    const HGraphPtr& hgraph,
-    const Matrix<float>& upper_block_balance,
-    const Matrix<float>& lower_block_balance) const
-{
-  // Step 1: run coarsening
-  // Step 2: run initial partitioning
-  // Step 3: run refinement
-  // Step 4: cut-overlay clustering and ILP-based partitioning
+    const HGraphPtr &hgraph, const Matrix<float> &upper_block_balance,
+    const Matrix<float> &lower_block_balance) const {
 
-  // Step 1: run coarsening
   CoarseGraphPtrs hierarchy = coarsener_->LazyFirstChoice(hgraph);
 
-  // Step 2: run initial partitioning
-  HGraphPtr coarsest_hgraph = hierarchy.back();
-
-  // pick top num_best_initial_solutions_ solutions from
-  // num_initial_random_solutions_ solutions
-  // here we reserve GetNumVertices() for each top_solution
+  // Contraction can make a feasible fine graph infeasible. Retry initialization
+  // on a finer level rather than selecting an explicitly unbalanced candidate.
   Matrix<int> top_solutions;
-  for (int i = 0; i < num_best_initial_solutions_; i++) {
-    std::vector<int> solution{};
-    top_solutions.push_back(solution);
-    top_solutions.back().reserve(hgraph->GetNumVertices());  // reserve the size
-  }
-  int best_solution_id = -1;
-  InitialPartition(coarsest_hgraph,
-                   upper_block_balance,
-                   lower_block_balance,
-                   top_solutions,
-                   best_solution_id);
 
+  int best_solution_id = -1;
+  while (!hierarchy.empty()) {
+    top_solutions.assign(num_best_initial_solutions_, {});
+    InitialPartition(hierarchy.back(), upper_block_balance, lower_block_balance,
+                     top_solutions, best_solution_id);
+
+    if (!top_solutions.empty()) {
+      break;
+    }
+    hierarchy.pop_back();
+  }
+  if (top_solutions.empty()) {
+    return {};
+  }
   // Step 3: run refinement
   // Here we need to do rebugetting on the best solution
   RefinePartition(hierarchy,
@@ -218,8 +222,17 @@ void MultilevelPartitioner::VcycleRefinement(
   for (int num_cycles = 0; num_cycles < max_num_vcycle_; num_cycles++) {
     // use the initial solution as the community feature
     hgraph->SetCommunity(best_solution);
-    best_solution = SingleCycleRefinement(
-        hgraph, upper_block_balance, lower_block_balance);
+    auto candidate =
+        SingleCycleRefinement(hgraph, upper_block_balance, lower_block_balance);
+    const auto candidate_token =
+        evaluator_->CutEvaluator(hgraph, candidate, false);
+    const auto incumbent_token =
+        evaluator_->CutEvaluator(hgraph, best_solution, false);
+    if (ResourceBalanced(candidate_token.block_balance, lower_block_balance,
+                         upper_block_balance) &&
+        candidate_token.cost <= incumbent_token.cost) {
+      best_solution = std::move(candidate);
+    }
     candidate_solutions.push_back(best_solution);
     const float cost
         = evaluator_->CutEvaluator(hgraph, best_solution, false).cost;
@@ -321,9 +334,9 @@ void MultilevelPartitioner::InitialPartition(
         hgraph, upper_block_balance, lower_block_balance, solution);
     const auto token = evaluator_->CutEvaluator(hgraph, solution, false);
     initial_solutions_cost.push_back(token.cost);
-    // Here we only check the upper bound to make sure more possible solutions
-    initial_solutions_flag.push_back(token.block_balance
-                                     <= upper_block_balance);
+
+    initial_solutions_flag.push_back(ResourceBalanced(
+        token.block_balance, lower_block_balance, upper_block_balance));
     debugPrint(logger_,
                PAR,
                "initial_partitioning",
@@ -349,9 +362,9 @@ void MultilevelPartitioner::InitialPartition(
         hgraph, upper_block_balance, lower_block_balance, solution);
     const auto token = evaluator_->CutEvaluator(hgraph, solution, false);
     initial_solutions_cost.push_back(token.cost);
-    // Here we only check the upper bound to make sure more possible solutions
-    initial_solutions_flag.push_back(token.block_balance
-                                     <= upper_block_balance);
+
+    initial_solutions_flag.push_back(ResourceBalanced(
+        token.block_balance, lower_block_balance, upper_block_balance));
     debugPrint(logger_,
                PAR,
                "initial_partitioning",
@@ -377,8 +390,8 @@ void MultilevelPartitioner::InitialPartition(
   const auto vile_token
       = evaluator_->CutEvaluator(hgraph, vile_solution, false);
   initial_solutions_cost.push_back(vile_token.cost);
-  initial_solutions_flag.push_back(vile_token.block_balance
-                                   <= upper_block_balance);
+  initial_solutions_flag.push_back(ResourceBalanced(
+      vile_token.block_balance, lower_block_balance, upper_block_balance));
   debugPrint(logger_,
              PAR,
              "initial_partitioning",
@@ -408,8 +421,8 @@ void MultilevelPartitioner::InitialPartition(
     const auto ilp_token
         = evaluator_->CutEvaluator(hgraph, ilp_solution, false);
     initial_solutions_cost.push_back(ilp_token.cost);
-    initial_solutions_flag.push_back(ilp_token.block_balance
-                                     <= upper_block_balance);
+    initial_solutions_flag.push_back(ResourceBalanced(
+        ilp_token.block_balance, lower_block_balance, upper_block_balance));
     debugPrint(logger_,
                PAR,
                "initial_partitioning",
@@ -418,6 +431,43 @@ void MultilevelPartitioner::InitialPartition(
                initial_solutions_cost.back(),
                (bool) initial_solutions_flag.back());
   }
+  // A finer graph can become packable only after it exceeds the cut-ILP
+  // threshold. Keep resource feasibility available there without building
+  // a graph-sized cut MILP: the empty edge set creates only packing variables.
+  constexpr int max_resource_initialization_vertices = 10000;
+  if (hgraph->GetNumVertices() > num_vertices_threshold_ilp_
+      && hgraph->GetNumVertices() <= max_resource_initialization_vertices
+      && std::none_of(initial_solutions_flag.begin(),
+                      initial_solutions_flag.end(),
+                      [](bool legal) { return legal; })) {
+    std::map<int, int> fixed;
+    if (hgraph->HasFixedVertices()) {
+      for (int v = 0; v < hgraph->GetNumVertices(); ++v) {
+        if (hgraph->GetFixedAttr(v) >= 0) {
+          fixed[v] = hgraph->GetFixedAttr(v);
+        }
+      }
+    }
+    std::vector<int> resource_solution;
+    if (ILPPartitionInst(num_parts_, hgraph->GetVertexDimensions(),
+                         resource_solution, fixed, {}, {},
+                         hgraph->GetVertexWeights(), upper_block_balance,
+                         lower_block_balance)) {
+      k_way_fm_refiner_->SetMaxMove(hgraph->GetNumVertices());
+      k_way_fm_refiner_->Refine(hgraph, upper_block_balance,
+                               lower_block_balance, resource_solution);
+      k_way_fm_refiner_->RestoreDefaultParameters();
+      const auto token = evaluator_->CutEvaluator(hgraph, resource_solution, false);
+      initial_solutions.push_back(std::move(resource_solution));
+      initial_solutions_cost.push_back(token.cost);
+      initial_solutions_flag.push_back(ResourceBalanced(
+          token.block_balance, lower_block_balance, upper_block_balance));
+      debugPrint(logger_, PAR, "initial_partitioning", 1,
+                 "Resource ILP part cutcost = {}, balance_flag = {}",
+                 token.cost, static_cast<bool>(initial_solutions_flag.back()));
+    }
+  }
+
   // sort the solutions based on cost
   std::vector<int> solution_ids(initial_solutions_cost.size(), 0);
   std::iota(solution_ids.begin(), solution_ids.end(), 0);
@@ -430,32 +480,17 @@ void MultilevelPartitioner::InitialPartition(
   // while satisfying the balance constraint
   int num_chosen_best_init_solution = 0;
   float best_initial_cost = 0.0;
-  std::vector<bool> visited_solution_flag(solution_ids.size(), false);
+
   for (auto id : solution_ids) {
     if (initial_solutions_flag[id] == true) {
-      top_initial_solutions[num_chosen_best_init_solution]
-          = initial_solutions[id];
-      visited_solution_flag[id] = true;
+      top_initial_solutions[num_chosen_best_init_solution] =
+          initial_solutions[id];
       num_chosen_best_init_solution++;
       if (num_chosen_best_init_solution == 1) {
         best_initial_cost = initial_solutions_cost[id];
       }
       if (num_chosen_best_init_solution >= num_best_initial_solutions_) {
         break;
-      }
-    }
-  }
-
-  if (num_chosen_best_init_solution < num_best_initial_solutions_) {
-    for (auto id : solution_ids) {
-      if (visited_solution_flag[id] == false) {
-        top_initial_solutions[num_chosen_best_init_solution]
-            = initial_solutions[id];
-        visited_solution_flag[id] = true;
-        num_chosen_best_init_solution++;
-        if (num_chosen_best_init_solution >= num_best_initial_solutions_) {
-          break;
-        }
       }
     }
   }
@@ -471,7 +506,7 @@ void MultilevelPartitioner::InitialPartition(
              1,
              "Number of chosen best initial solutions = {}",
              num_chosen_best_init_solution);
-  best_solution_id = 0;  // the first one is the best one
+  best_solution_id = top_initial_solutions.empty() ? -1 : 0;
   debugPrint(logger_,
              PAR,
              "initial_partitioning",
@@ -567,7 +602,8 @@ void MultilevelPartitioner::CallRefiner(
     const Matrix<float>& lower_block_balance,
     std::vector<int>& solution) const
 {
-  if (num_parts_ > 1) {  // Pair-wise FM only used for multi-way partitioning
+  const auto incumbent = solution;
+  if (num_parts_ > 1) {
     k_way_pm_refiner_->Refine(
         hgraph, upper_block_balance, lower_block_balance, solution);
   }
@@ -575,6 +611,11 @@ void MultilevelPartitioner::CallRefiner(
       hgraph, upper_block_balance, lower_block_balance, solution);
   greedy_refiner_->Refine(
       hgraph, upper_block_balance, lower_block_balance, solution);
+  const auto token = evaluator_->CutEvaluator(hgraph, solution, false);
+  if (!ResourceBalanced(token.block_balance, lower_block_balance,
+                        upper_block_balance)) {
+    solution = incumbent;
+  }
 }
 
 // Perform cut-overlay clustering and ILP-based partitioning
@@ -684,10 +725,15 @@ std::vector<int> MultilevelPartitioner::CutOverlayILPPart(
     }
   }
 
-  debugPrint(logger_,
-             PAR,
-             "cut_overlay_clustering",
-             1,
+  const auto token = evaluator_->CutEvaluator(hgraph, optimal_solution, false);
+  const auto incumbent =
+      evaluator_->CutEvaluator(hgraph, top_solutions[best_solution_id], false);
+  if (!ResourceBalanced(token.block_balance, lower_block_balance,
+                        upper_block_balance) ||
+      token.cost > incumbent.cost) {
+    return top_solutions[best_solution_id];
+  }
+  debugPrint(logger_, PAR, "cut_overlay_clustering", 1,
              "Statistics of cut-overlay solution:");
   evaluator_->CutEvaluator(hgraph, optimal_solution, false);
   return optimal_solution;

@@ -1018,11 +1018,31 @@ void emuflow::native::ResolveStaticExactCaptures(
       "coalesce(json_extract(r.value,'$.ff'),0)!=0 OR "
       "coalesce(json_extract(r.value,'$.bram'),0)!=0 OR "
       "coalesce(json_extract(r.value,'$.bram18k'),0)!=0 OR "
-      "coalesce(json_extract(r.value,'$.uram288'),0)!=0 "
+      "coalesce(json_extract(r.value,'$.uram288'),0)!=0,"
+      "typeof(e.net_seq),typeof(e.ordinal) "
       "FROM endpoint_records e LEFT JOIN cell_records c ON c.seq=e.instance_seq "
       "JOIN pin_names p ON p.seq=e.port_seq LEFT JOIN payloads r ON r.seq=c.resources_seq "
       "WHERE e.role=1 ORDER BY e.net_seq,e.ordinal");
-  bool have_endpoint = endpoints.Step();
+  std::int64_t previous_net = -1, previous_stored_ordinal = -1;
+  std::uint64_t dense_ordinal = 0;
+  const auto advance_endpoint = [&]() {
+    if (!endpoints.Step()) return false;
+    const auto net = endpoints.Integer(0);
+    const auto ordinal = endpoints.Integer(1);
+    if (endpoints.Text(9) != "integer" || endpoints.Text(10) != "integer" ||
+        net < 0 || net >= nets || ordinal < 0 || net < previous_net ||
+        (net == previous_net && ordinal <= previous_stored_ordinal)) {
+      throw std::runtime_error("compact EmuIR endpoint sequence is invalid");
+    }
+    dense_ordinal = net == previous_net ? dense_ordinal + 1 : 0;
+    if (dense_ordinal > std::numeric_limits<std::uint32_t>::max()) {
+      throw std::runtime_error("compact EmuIR endpoint sequence is invalid");
+    }
+    previous_net = net;
+    previous_stored_ordinal = ordinal;
+    return true;
+  };
+  bool have_endpoint = advance_endpoint();
   std::array<std::uint32_t,4> previous{};
   bool have_previous = false;
   for (std::uint64_t i = 0; i < raw_count; ++i) {
@@ -1039,10 +1059,10 @@ void emuflow::native::ResolveStaticExactCaptures(
     }
     previous = key; have_previous = true;
     while (have_endpoint && (endpoints.Integer(0) < net ||
-        (endpoints.Integer(0) == net && endpoints.Integer(1) < sink))) {
-      have_endpoint = endpoints.Step();
+        (endpoints.Integer(0) == net && dense_ordinal < sink))) {
+      have_endpoint = advance_endpoint();
     }
-    if (!have_endpoint || endpoints.Integer(0) != net || endpoints.Integer(1) != sink ||
+    if (!have_endpoint || endpoints.Integer(0) != net || dense_ordinal != sink ||
         endpoints.Text(6) != "integer" || endpoints.Integer(5) < 0 || endpoints.Text(4).empty()) {
       throw std::runtime_error("native Static Exact capture endpoint is invalid");
     }

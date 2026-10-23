@@ -30,6 +30,7 @@ from emuflow.system_route_storage import read_system_routes
 from emuflow.tdm import build_tdm_schedule
 from emuflow.tdm_ratio import build_tdm_ratio_plan
 from emuflow.yosys import import_yosys_json
+from tests.native_build import tlr_router
 from tests.test_phase5 import _link, _platform_value, _routes
 
 
@@ -475,7 +476,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                     ],
                 },
             )
-            router = root / "emuflow_tlr_router"
+            router = tlr_router()
             ratio_optimizer = root / "emuflow_tdm_ratio_optimizer"
             timing_dag_optimizer = (
                 root / "emuflow_tdm_timing_dag_optimizer"
@@ -485,7 +486,6 @@ class CrossStageCandidateTest(unittest.TestCase):
             )
             slot_optimizer = root / "emuflow_tdm_slot_optimizer"
             for source, output in (
-                ("tlr_router.cpp", router),
                 ("tdm_ratio_optimizer.cpp", ratio_optimizer),
                 (
                     "tdm_timing_dag_optimizer.cpp",
@@ -569,14 +569,9 @@ class CrossStageCandidateTest(unittest.TestCase):
                     report["configuration"]["partition_seed_attempts"],
                     1,
                 )
-                self.assertFalse(
+                self.assertTrue(
                     report["configuration"][
                         "partition_repair_min_used_fpgas"
-                    ]
-                )
-                self.assertFalse(
-                    report["configuration"][
-                        "partition_repair_balance"
                     ]
                 )
                 self.assertEqual(len(report["candidates"]), 5)

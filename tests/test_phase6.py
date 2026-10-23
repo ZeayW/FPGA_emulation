@@ -522,6 +522,46 @@ class Phase6Test(unittest.TestCase):
         self.assertEqual(equivalence["mismatches"], 0)
         self.assertEqual(equivalence["cycles"], 12)
 
+    def test_split_manifest_carries_phase3_resource_reservation(self) -> None:
+        assignment = copy.deepcopy(self.assignment)
+        reservations = {
+            "fpga0": {"ff": 2, "lut": 3},
+            "fpga1": {"ff": 4, "lut": 5},
+        }
+        assignment["constraints"][
+            "resource_reservations_by_fpga"
+        ] = reservations
+        artifacts = build_split_artifacts(
+            self.ir, assignment, self.schedule, self.platform
+        )
+        self.assertEqual(
+            artifacts["manifest"]["resource_reservations_by_fpga"],
+            reservations,
+        )
+        validate_split_artifacts(
+            self.ir,
+            assignment,
+            self.schedule,
+            self.platform,
+            artifacts,
+            reconstruct=False,
+        )
+        broken = copy.deepcopy(artifacts)
+        broken["manifest"]["resource_reservations_by_fpga"]["fpga0"][
+            "lut"
+        ] += 1
+        with self.assertRaisesRegex(
+            ValidationError, "resource reservations disagree"
+        ):
+            validate_split_artifacts(
+                self.ir,
+                assignment,
+                self.schedule,
+                self.platform,
+                broken,
+                reconstruct=False,
+            )
+
     def test_sqlite_data_plane_matches_legacy_split_exactly(self) -> None:
         old = build_split_artifacts(
             self.ir, self.assignment, self.schedule, self.platform
@@ -1009,6 +1049,9 @@ class Phase6Test(unittest.TestCase):
             self.assertIn("y", values)
 
     def test_phase6_writes_and_independently_reloads_all_artifacts(self) -> None:
+        reservations = {"fpga0": {"ff": 2, "lut": 3},
+                        "fpga1": {"ff": 4, "lut": 5}}
+        self.assignment["constraints"]["resource_reservations_by_fpga"] = reservations
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             ir_path = root / "design.emuir.sqlite"
@@ -1058,6 +1101,16 @@ class Phase6Test(unittest.TestCase):
                 )
             self.assertEqual(reused, validation)
 
+            manifest = read_json(output / "manifest.json")
+            self.assertEqual(manifest["resource_reservations_by_fpga"], reservations)
+            for bad in ({}, {"fpga0": {"lut": 999}}):
+                write_json(output / "manifest.json", {
+                    **manifest, "resource_reservations_by_fpga": bad})
+                with self.assertRaisesRegex(ValidationError, "resource reservations disagree"):
+                    validate_phase6(ir_path, assignment_path, schedule_path,
+                                    PLATFORM_PATH, output / "manifest.json")
+            write_json(output / "manifest.json", manifest)
+
             legacy_control = build_streaming_split_metadata(
                 root / "assignment.sqlite",
                 self.schedule,
@@ -1065,6 +1118,7 @@ class Phase6Test(unittest.TestCase):
                 design=self.ir.value["design"],
                 clocks=self.ir.value["clocks"],
             )
+            self.assertEqual(legacy_control["manifest"]["resource_reservations_by_fpga"], reservations)
             raw_lane_manifest = json.loads(
                 (output / "lane_map.json").read_text(encoding="utf-8")
             )

@@ -343,7 +343,7 @@ struct Model {
   int nets = 0;
   int paths = 0;
   int max_hops = -1;
-  int frame_slots = 0;
+  int max_ratio = 0;
   int ratio_quantum = 1;
   int min_ratio = 1;
   int min_used_parts = 1;
@@ -752,7 +752,7 @@ int tdm_ratio(const Model& model, int load, const Domain& domain) {
   }
   raw = ((raw + model.ratio_quantum - 1) / model.ratio_quantum)
         * model.ratio_quantum;
-  return std::min(model.frame_slots, raw);
+  return model.min_ratio > 1 ? raw : std::min(model.max_ratio, raw);
 }
 
 std::vector<int> paired_domain_ratios(const Model& model, const std::vector<int>& loads) {
@@ -763,7 +763,7 @@ std::vector<int> paired_domain_ratios(const Model& model, const std::vector<int>
     const Domain& d = model.domain[i];
     if (d.banks == 0 || i >= d.opposite) continue;
     const auto ratios = shared_bank_ratios(loads[i], loads[d.opposite],
-        d.banks, d.wires, model.ratio_quantum, model.min_ratio, model.frame_slots + 1);
+        d.banks, d.wires, model.ratio_quantum, model.min_ratio, model.max_ratio + 1);
     result[i] = ratios.first; result[d.opposite] = ratios.second;
   }
   return result;
@@ -779,7 +779,7 @@ std::pair<int, long long> transport_capacity_pressure(
     const Domain& domain = model.domain[i];
     const long long capacity = domain.capacity_bits > 0
         ? domain.capacity_bits
-        : static_cast<long long>(domain.lanes) * model.frame_slots;
+        : static_cast<long long>(domain.lanes) * model.max_ratio;
     if (loads[i] > capacity) {
       ++violations;
       excess_bits += static_cast<long long>(loads[i]) - capacity;
@@ -789,7 +789,7 @@ std::pair<int, long long> transport_capacity_pressure(
     }
     const long long shared_capacity =
         static_cast<long long>(domain.banks) * domain.wires
-        * model.frame_slots;
+        * model.max_ratio;
     const long long shared_load =
         static_cast<long long>(loads[i]) + loads[domain.opposite];
     if (shared_load > shared_capacity) {
@@ -852,7 +852,7 @@ Model read_text_model(const std::string& path) {
   stream >> token;
   require(token == "PARAM", "missing PARAM");
   stream >> model.parts >> model.clusters >> model.dimensions >> model.domains
-      >> model.nets >> model.paths >> model.max_hops >> model.frame_slots
+      >> model.nets >> model.paths >> model.max_hops >> model.max_ratio
       >> model.ratio_quantum >> model.min_used_parts >> model.max_moves
       >> model.positive_scale >> model.negative_scale >> model.max_period
       >> model.boundary_fanout_penalty_scale_ns >> model.max_sweeps
@@ -862,7 +862,7 @@ Model read_text_model(const std::string& path) {
   require(stream.good() && model.parts > 0 && model.clusters > 0
               && model.dimensions > 0 && model.domains > 0
               && model.nets > 0 && model.paths > 0
-              && model.frame_slots > 0 && model.ratio_quantum > 0
+              && model.max_ratio > 0 && model.ratio_quantum > 0
               && model.min_used_parts > 0 && model.max_moves >= 0
               && model.max_sweeps > 0
               && model.ejection_critical_limit >= 0
@@ -1236,7 +1236,7 @@ Model read_typed_model(const std::string& path) {
   model.nets = typed_count(reader.u64("net count"), "net count", true);
   model.paths = typed_count(reader.u64("path count"), "path count", true);
   model.max_hops = reader.i32("maximum hops");
-  model.frame_slots = reader.i32("frame slots");
+  model.max_ratio = reader.i32("maximum TDM ratio");
   model.ratio_quantum = reader.i32("ratio quantum");
   model.min_used_parts = reader.i32("minimum used parts");
   model.max_moves = reader.i32("maximum moves");
@@ -1261,7 +1261,7 @@ Model read_typed_model(const std::string& path) {
   model.flow_max_frontier_paths =
       reader.i32("flow maximum frontier paths");
   model.flow_max_tail_moves = reader.i32("flow maximum tail moves");
-  require(model.max_hops >= -1 && model.frame_slots > 0 &&
+  require(model.max_hops >= -1 && model.max_ratio > 0 &&
               model.ratio_quantum > 0 && model.min_used_parts > 0 &&
               model.min_used_parts <= model.parts && model.max_moves >= 0 &&
               model.max_sweeps > 0 && model.ejection_critical_limit >= 0 &&
@@ -4753,9 +4753,36 @@ void run_scalable(const Model& model,
 
   std::vector<NativeMove> moves;
   std::vector<NativeBatch> batches;
-  for (int sweep = 0; sweep < model.max_sweeps; ++sweep) {
+  // A whole-design local sweep evaluates every movable cluster against every
+  // target partition. On the 2.6M-cluster NVDLA model, one sweep still takes
+  // hours because every candidate rebuilds and sorts its affected net/path
+  // sets. It also delays the bounded frontier-flow phase that owns v14's two
+  // primary objectives (maximum path hops, then maximum path TDM-ratio sum).
+  //
+  // Keep the historical multi-sweep behavior for qualification-sized models
+  // and older algorithms. For large v14 models, use the already-configured
+  // critical-cluster budget for the local seed sweep, then proceed to the
+  // ejection/comove and exact frontier-flow phases. The order is ranked by
+  // maximum path hops, maximum path ratio sum, and timing exposure, so this
+  // preserves the intended priority while bounding work. This is a search
+  // budget policy only: capacity checks and the lexicographic acceptance
+  // predicate are unchanged.
+  constexpr int large_v14_cluster_threshold = 500000;
+  const bool bounded_large_flow =
+      model.flow_version >= 8
+      && model.clusters >= large_v14_cluster_threshold;
+  const int local_sweep_limit =
+      bounded_large_flow ? 1 : model.max_sweeps;
+  const int local_cluster_limit =
+      bounded_large_flow
+      ? std::min(model.ejection_critical_limit, model.clusters)
+      : model.clusters;
+  for (int sweep = 0; sweep < local_sweep_limit; ++sweep) {
     const std::size_t sweep_start = moves.size();
-    for (int cluster : order) {
+    for (int order_index = 0;
+         order_index < local_cluster_limit;
+         ++order_index) {
+      const int cluster = order[order_index];
       if (static_cast<int>(moves.size()) >= model.max_moves) {
         break;
       }
@@ -5252,6 +5279,8 @@ void run_scalable(const Model& model,
         ProxyState refined = build_proxy_state(model, &flow_assignment);
         long long evaluated_tail_moves = 0;
         long long feasible_tail_moves = 0;
+        long long enumerated_tail_clusters = 0;
+        long long selected_tail_clusters = 0;
         int accepted_tail_moves = 0;
         for (int iteration = 0;
              model.flow_version >= 8
@@ -5307,7 +5336,33 @@ void run_scalable(const Model& model,
           bool found = false;
           ProxyDelta best;
           const auto evaluate_candidates = [&]() {
-            for (int cluster : candidate_clusters) {
+            enumerated_tail_clusters += candidate_clusters.size();
+            std::vector<int> evaluation_candidates;
+            if (bounded_large_flow) {
+              evaluation_candidates.reserve(
+                  std::min(model.flow_max_legal_candidates,
+                           static_cast<int>(candidate_clusters.size())));
+              // `order` is ranked by the two path objectives and timing
+              // exposure. Select from that order so high-fanout frontier nets
+              // cannot turn a bounded tail repair into another whole-design
+              // sweep.
+              for (int cluster : order) {
+                if (candidate_clusters.count(cluster) == 0
+                    || model.cluster[cluster].fixed >= 0) {
+                  continue;
+                }
+                evaluation_candidates.push_back(cluster);
+                if (static_cast<int>(evaluation_candidates.size())
+                    >= model.flow_max_legal_candidates) {
+                  break;
+                }
+              }
+            } else {
+              evaluation_candidates.assign(candidate_clusters.begin(),
+                                             candidate_clusters.end());
+            }
+            selected_tail_clusters += evaluation_candidates.size();
+            for (int cluster : evaluation_candidates) {
               if (model.cluster[cluster].fixed >= 0) {
                 continue;
               }
@@ -5371,6 +5426,8 @@ void run_scalable(const Model& model,
         }
         std::cerr << "PATRON_FLOW_TAIL_REPAIR evaluated="
                   << evaluated_tail_moves
+                  << " enumerated_clusters=" << enumerated_tail_clusters
+                  << " selected_clusters=" << selected_tail_clusters
                   << " feasible=" << feasible_tail_moves
                   << " accepted=" << accepted_tail_moves
                   << " rank=";

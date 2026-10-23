@@ -600,18 +600,26 @@ bool GoldenEvaluator::ConstraintAndCutEvaluator(
     float ub_factor,
     const std::vector<float>& base_balance,
     const std::vector<std::vector<int>>& group_attr,
-    bool print_flag) const
+    bool print_flag,
+    const Matrix<float>& upper_bounds,
+    const Matrix<float>& lower_bounds) const
 {
   auto solution_token = CutEvaluator(hgraph, solution, print_flag);
   // check block balance
   bool balance_satisfied_flag = true;
   const Matrix<float> upper_block_balance
-      = hgraph->GetUpperVertexBalance(num_parts_, ub_factor, base_balance);
+      = upper_bounds.empty()
+            ? hgraph->GetUpperVertexBalance(num_parts_, ub_factor, base_balance)
+            : upper_bounds;
   const Matrix<float> lower_block_balance
-      = hgraph->GetLowerVertexBalance(num_parts_, ub_factor, base_balance);
+      = lower_bounds.empty()
+            ? hgraph->GetLowerVertexBalance(num_parts_, ub_factor, base_balance)
+            : lower_bounds;
   for (int i = 0; i < num_parts_; i++) {
-    if (solution_token.block_balance[i] > upper_block_balance[i]
-        || solution_token.block_balance[i] < lower_block_balance[i]) {
+    if (!ResourceWithin(solution_token.block_balance[i],
+                        upper_block_balance[i]) ||
+        !ResourceWithin(lower_block_balance[i],
+                        solution_token.block_balance[i])) {
       balance_satisfied_flag = false;
       break;
     }

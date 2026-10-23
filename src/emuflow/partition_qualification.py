@@ -243,10 +243,6 @@ def compile_partition_qualification_spec(
         raise ValidationError(
             "MFSPart qualification requires exactly one deterministic seed attempt"
         )
-    if config.get("partition_repair_balance", False) is not False:
-        raise ValidationError(
-            "MFSPart qualification forbids post-provider balance repair"
-        )
 
     contract = _canonical_case_contract(
         repository_root,
@@ -517,7 +513,6 @@ def compile_partition_qualification_spec(
         str(partition_seed),
         "--seed-attempts",
         "1",
-        "--no-repair-balance",
         "--cut-mode",
         "sequential-only",
         "--max-cross-fpga-dependency-depth",
@@ -556,7 +551,6 @@ def compile_partition_qualification_spec(
             "qualification": "paper-serial-real-rtl-phase3",
             "seed": partition_seed,
             "seed_attempts": 1,
-            "repair_balance": False,
             "route_constraints": contract["route_constraints"],
             "cut_mode": "sequential-only",
             "max_cross_fpga_dependency_depth": 1,

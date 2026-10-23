@@ -2826,17 +2826,18 @@ def _iter_compact_native_capture_relation(
 ) -> Iterator[Tuple[str, str, str, str, Any, Any]]:
     """Resolve native captures with one ordered compact-EmuIR merge.
 
-    Protocol v3 coordinates already name the authoritative net and sink
-    ordinals.  Both the native stream and the source endpoint cursor use that
-    order, so Python advances one source cursor and keeps at most the current
-    endpoint row.  This avoids both a graph-sized coordinate container and
-    decoding a complete net once per capture (including every unrequested
-    sibling sink).
+    Protocol v3 coordinates name the authoritative net and the sink's dense
+    position in EmuIR iteration order. Compact storage ordinals preserve that
+    order but may contain gaps after endpoint filtering. Python therefore
+    derives the same dense position while advancing one source cursor and
+    keeps at most the current endpoint row. This avoids both a graph-sized
+    coordinate container and decoding a complete net once per capture
+    (including every unrequested sibling sink).
     """
 
     connection = open_emuir_sqlite_read_only(path)
     try:
-        endpoint_rows = iter(
+        stored_endpoint_rows = iter(
             connection.execute(
                 """SELECT e.net_seq,e.ordinal,e.instance_seq,
                           c.id AS instance_id,p.name AS port,e.bit,
@@ -2853,12 +2854,45 @@ def _iter_compact_native_capture_relation(
         part_for_source_seq = getattr(
             instance_assignment, "part_for_source_seq", None
         )
+        def dense_endpoint_rows() -> Iterator[Tuple[Any, int]]:
+            previous_net: int | None = None
+            previous_ordinal: int | None = None
+            dense_ordinal = 0
+            for endpoint in stored_endpoint_rows:
+                net_seq = endpoint["net_seq"]
+                ordinal = endpoint["ordinal"]
+                if (
+                    isinstance(net_seq, bool)
+                    or not isinstance(net_seq, int)
+                    or net_seq < 0
+                    or isinstance(ordinal, bool)
+                    or not isinstance(ordinal, int)
+                    or ordinal < 0
+                    or (previous_net is not None and net_seq < previous_net)
+                ):
+                    raise ValidationError(
+                        "compact EmuIR endpoint sequence is invalid"
+                    )
+                if net_seq != previous_net:
+                    dense_ordinal = 0
+                    previous_ordinal = None
+                else:
+                    dense_ordinal += 1
+                if previous_ordinal is not None and ordinal <= previous_ordinal:
+                    raise ValidationError(
+                        "compact EmuIR endpoint sequence is invalid"
+                    )
+                previous_net = net_seq
+                previous_ordinal = ordinal
+                yield endpoint, dense_ordinal
+
+        ordered_endpoint_rows = iter(dense_endpoint_rows())
 
         def capture_relation() -> Iterator[
             Tuple[str, str, str, str, Any, Any]
         ]:
             previous: Tuple[int, int, int, int] | None = None
-            endpoint = next(endpoint_rows, None)
+            endpoint_record = next(ordered_endpoint_rows, None)
             for (
                 cut_index,
                 part_index,
@@ -2891,14 +2925,15 @@ def _iter_compact_native_capture_relation(
                     raise ValidationError("native Static Exact capture is invalid")
                 previous = canonical
                 target = (net_index, sink_index)
-                while endpoint is not None and (
-                    endpoint["net_seq"], endpoint["ordinal"]
+                while endpoint_record is not None and (
+                    endpoint_record[0]["net_seq"], endpoint_record[1]
                 ) < target:
-                    endpoint = next(endpoint_rows, None)
-                if endpoint is None or (
-                    endpoint["net_seq"], endpoint["ordinal"]
+                    endpoint_record = next(ordered_endpoint_rows, None)
+                if endpoint_record is None or (
+                    endpoint_record[0]["net_seq"], endpoint_record[1]
                 ) != target:
                     raise ValidationError("native Static Exact capture is invalid")
+                endpoint = endpoint_record[0]
                 cut_net = ordered_cut_ids[cut_index]
                 fpga = part_ids[part_index]
                 raw_instance = endpoint["instance_id"]

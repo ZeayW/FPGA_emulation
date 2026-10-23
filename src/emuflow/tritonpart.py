@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import heapq
 import math
 import shutil
 import subprocess
@@ -35,7 +33,11 @@ from .partition import (
     transported_cut_classes_for_clusters,
     validate_cluster_assignment_balance,
 )
-from .partition_limits import strict_balance_limits, validate_indivisible_limits
+from .partition_limits import (
+    planning_resource_capacities,
+    strict_balance_limits,
+    validate_indivisible_limits,
+)
 from .phase3_runtime import phase3_runtime_call, phase3_runtime_observe
 from .platform import Platform
 from .resources import RESOURCE_FIELDS
@@ -49,6 +51,7 @@ TRITONPART_INPUT_SCHEMA = "emuflow.tritonpart-input/v1"
 PARTITION_NET_WEIGHTS_SCHEMA = "emuflow.partition-net-weights/v1"
 TRITONPART_PROVIDER = "tritonpart-openroad-hypergraph-v1"
 TRITONPART_OBJECTIVE_NET_CUT = "net-cut-v1"
+TRITONPART_INITIAL_ILP_VERTEX_THRESHOLD = 1000
 
 
 class _CompactClusterOrder(list):
@@ -249,7 +252,6 @@ def load_partition_net_weights(path: Optional[Path]) -> Dict[str, float]:
 
 def _active_resource_fields(
     clusters: Sequence[Mapping[str, Any]],
-    fpgas: Sequence[Any],
 ) -> List[str]:
     fields = []
     compact_columns = (
@@ -268,41 +270,8 @@ def _active_resource_fields(
         )
         if not present:
             continue
-        if not all(fpga.effective_capacity.get(field, 0) > 0 for fpga in fpgas):
-            continue
         fields.append(field)
     return fields
-
-
-def _capacity_base_balance(
-    fpgas: Sequence[Any],
-    resource_fields: Sequence[str],
-) -> List[float]:
-    num_parts = len(fpgas)
-    if not resource_fields:
-        return [1.0 / num_parts] * num_parts
-
-    reference: Optional[List[float]] = None
-    for field in resource_fields:
-        capacities = [
-            float(fpga.effective_capacity[field]) for fpga in fpgas
-        ]
-        total = sum(capacities)
-        shares = [capacity / total for capacity in capacities]
-        if reference is None:
-            reference = shares
-            continue
-        if any(
-            not math.isclose(left, right, rel_tol=1e-6, abs_tol=1e-9)
-            for left, right in zip(reference, shares)
-        ):
-            raise ValidationError(
-                "TritonPart hypergraph mode cannot represent resource-specific "
-                "heterogeneous FPGA capacity ratios; use homogeneous/proportionally "
-                "scaled FPGAs or the greedy provider"
-            )
-    assert reference is not None
-    return reference
 
 
 def _vertex_weights(
@@ -317,21 +286,30 @@ def _vertex_weights(
 
 def _tritonpart_ubfactor_percent_points(
     base_balance: Sequence[float],
-    effective_balance_percent: float,
+    fpga_order: Sequence[str],
+    totals: Mapping[str, int],
+    limits: Mapping[str, Mapping[str, int]],
 ) -> float:
-    """Translate EmuFlow's relative tolerance to TritonPart percentage points.
+    """Cover all exact upper-bound-feasible loads with TritonPart's scalar.
 
-    EmuFlow defines a 10% tolerance around a 25% target as an upper share of
-    27.5%. TritonPart instead adds ``UBfactor * 0.01`` directly to the target,
-    so the equivalent UBfactor is 2.5 percentage points, not 10.
-
-    A single TritonPart UBfactor is shared by all partitions. Using the largest
-    target share supplies the solver's scalar envelope; EmuFlow's strict
-    integer bounds and independent validator enforce every resource and FPGA
-    without relaxing the requested tolerance.
+    TritonPart uses target +/- UBfactor/100 in every weight dimension. Our
+    contract specifies only per-resource upper bounds, so its implicit lower
+    bound must not exclude legal assignments either. Infer a partition's lowest
+    feasible share from the other partitions' upper bounds. The exported scalar
+    is retained for scalar-only interfaces. Native partitioning and evaluation
+    use the independent absolute bounds, also checked after parsing.
     """
-
-    return max(base_balance) * effective_balance_percent
+    margin = 0.0
+    for field, total in totals.items():
+        if total <= 0:
+            continue
+        upper = [min(total, limits[fpga][field]) / total for fpga in fpga_order]
+        for index, target in enumerate(base_balance):
+            lower = max(0.0, 1.0 - sum(upper[:index]) - sum(upper[index + 1:]))
+            margin = max(margin, upper[index] - target, target - lower)
+    # Round outward for the decimal Tcl interface; never truncate below the
+    # feasible envelope through floating-point/formatting error.
+    return math.ceil(max(0.0, margin) * 100.0 * 1_000_000) / 1_000_000
 
 
 def _legal_hyperedges(
@@ -556,7 +534,7 @@ def export_tritonpart_inputs(
             "TritonPart needs at least one atomic cluster per FPGA"
         )
 
-    resource_fields = _active_resource_fields(clusters, partition_fpgas)
+    resource_fields = _active_resource_fields(clusters)
     dimensions = ["cells", *resource_fields]
     weights: Sequence[Sequence[int]] = (
         _CompactVertexWeights(compact_clusters, resource_fields)
@@ -565,7 +543,7 @@ def export_tritonpart_inputs(
             _vertex_weights(cluster, resource_fields) for cluster in clusters
         ]
     )
-    base_balance = _capacity_base_balance(partition_fpgas, resource_fields)
+    base_balance = [1.0 / len(partition_fpgas)] * len(partition_fpgas)
     fpga_ids = [fpga.id for fpga in partition_fpgas]
     tolerances = constraints.get("balance_tolerance_by_dimension", {})
     requested_balance = constraints["balance_tolerance"] * 100.0
@@ -573,7 +551,6 @@ def export_tritonpart_inputs(
         tolerances.get(field, constraints["balance_tolerance"]) * 100.0
         for field in dimensions
     )
-    tritonpart_ubfactor = _tritonpart_ubfactor_percent_points(base_balance, effective_balance)
     weight_totals = (
         weights.totals()
         if isinstance(weights, _CompactVertexWeights)
@@ -588,7 +565,11 @@ def export_tritonpart_inputs(
         totals,
         constraints["balance_tolerance"],
         tolerances,
-        constraints.get("balance_dimensions"),
+        constraints.get("balance_dimensions", ()),
+        constraints.get("resource_reservations_by_fpga", {}),
+    )
+    tritonpart_ubfactor = _tritonpart_ubfactor_percent_points(
+        base_balance, fpga_ids, totals, limits
     )
     if compact_clusters is not None:
         validate_indivisible_limits(
@@ -727,6 +708,15 @@ def export_tritonpart_inputs(
         ),
     )
 
+    bounds_path = output_dir / "partition.resource-bounds"
+    bounds_path.write_text(
+        f"{len(fpga_ids)} {len(dimensions)}\n"
+        + "".join(
+            " ".join(f"0 {limits[fpga][field]}" for field in dimensions) + "\n"
+            for fpga in fpga_ids
+        ), encoding="utf-8",
+    )
+
     def tcl_list(values: Sequence[Any]) -> str:
         return "{ " + " ".join(str(value) for value in values) + " }"
 
@@ -734,12 +724,14 @@ def export_tritonpart_inputs(
         "triton_part_hypergraph \\",
         f"  -hypergraph_file {{{hypergraph_path.resolve()}}} \\",
         f"  -fixed_file {{{fixed_path.resolve()}}} \\",
+        f"  -resource_bounds_file {{{bounds_path.resolve()}}} \\",
         f"  -num_parts {len(fpga_ids)} \\",
         f"  -balance_constraint {tritonpart_ubfactor:.9g} \\",
         f"  -base_balance {tcl_list([f'{value:.12g}' for value in base_balance])} \\",
         f"  -scale_factor {tcl_list([1.0] * len(fpga_ids))} \\",
         f"  -seed 0 \\",
         f"  -num_initial_solutions {num_initial_solutions} \\",
+        f"  -num_vertices_threshold_ilp {TRITONPART_INITIAL_ILP_VERTEX_THRESHOLD} \\",
         (
             "  -num_best_initial_solutions "
             f"{num_best_initial_solutions} \\"
@@ -775,11 +767,14 @@ def export_tritonpart_inputs(
         "requested_balance_percent": requested_balance,
         "effective_balance_percent": effective_balance,
         "tritonpart_ubfactor_percent_points": tritonpart_ubfactor,
+        "tritonpart_balance_envelope": "native-exact-bounds-v1",
+        "strict_balance_dimensions": sorted(constraints.get("balance_dimensions", ())),
         "balance_auto_relaxed": False,
         "balance_allowed_loads": limits,
         "search_effort": {
             "num_initial_solutions": num_initial_solutions,
             "num_best_initial_solutions": num_best_initial_solutions,
+            "num_vertices_threshold_ilp": TRITONPART_INITIAL_ILP_VERTEX_THRESHOLD,
         },
         "files": {
             "hypergraph": hypergraph_path.name,
@@ -789,6 +784,7 @@ def export_tritonpart_inputs(
                 else None
             ),
             "fixed": fixed_path.name,
+            "resource_bounds": bounds_path.name,
             "edge_classes": edge_classes_path.name,
             "tcl": tcl_path.name,
             "solution": solution_path.name,
@@ -861,9 +857,10 @@ def _repair_min_used_fpgas(
     }
     partition_fpgas = active_partition_fpgas(platform, constraints)
     fpga_ids = [fpga.id for fpga in partition_fpgas]
-    capacity = {
-        fpga.id: fpga.effective_capacity for fpga in partition_fpgas
-    }
+    capacity = planning_resource_capacities(
+        partition_fpgas,
+        constraints.get("resource_reservations_by_fpga", {}),
+    )
     loads = {
         fpga_id: {field: 0 for field in RESOURCE_FIELDS}
         for fpga_id in fpga_ids
@@ -973,1274 +970,6 @@ def _repair_min_used_fpgas(
     return assignment, moves
 
 
-def _repair_multi_resource_balance_reference(
-    cluster_assignment: Mapping[str, str],
-    clusters_artifact: Mapping[str, Any],
-    platform: Platform,
-    constraints: Mapping[str, Any],
-    tritonpart_input: Mapping[str, Any],
-) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    """Reference-oracle legalizer for bounded test fixtures only.
-
-    Production Phase 3 uses the compiled native balance legalizer and then
-    independently recomputes legality in Python. This historical algorithm is
-    retained only so small tests can check the native implementation's repair
-    semantics; it is never called by the production flow.
-    """
-
-    assignment = dict(cluster_assignment)
-    clusters = {
-        cluster["id"]: cluster for cluster in clusters_artifact["clusters"]
-    }
-    cluster_order = list(tritonpart_input["cluster_order"])
-    fpga_order = list(tritonpart_input["fpga_order"])
-    dimensions = list(tritonpart_input["vertex_dimensions"])
-    vertex_weights = list(tritonpart_input["vertex_weights"])
-    fpga_index = {
-        fpga_id: index for index, fpga_id in enumerate(fpga_order)
-    }
-    labels = [
-        fpga_index[assignment[cluster_id]] for cluster_id in cluster_order
-    ]
-    num_parts = len(fpga_order)
-    num_dimensions = len(dimensions)
-    totals = [
-        sum(weights[dimension] for weights in vertex_weights)
-        for dimension in range(num_dimensions)
-    ]
-
-    tolerance_overrides = constraints.get(
-        "balance_tolerance_by_dimension", {}
-    )
-    fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
-    limits = strict_balance_limits(
-        [fpga_by_id[fpga_id] for fpga_id in fpga_order],
-        dict(zip(dimensions, totals)),
-        constraints["balance_tolerance"],
-        tolerance_overrides,
-        constraints.get("balance_dimensions"),
-    )
-    allowed = [
-        [limits[fpga_id][field] for field in dimensions]
-        for fpga_id in fpga_order
-    ]
-    loads = [[0] * num_dimensions for _ in range(num_parts)]
-    for part, weights in zip(labels, vertex_weights):
-        for dimension, weight in enumerate(weights):
-            loads[part][dimension] += weight
-    initial_loads = [list(item) for item in loads]
-
-    edge_vertices = [
-        [vertex - 1 for vertex in edge["vertices"]]
-        for edge in tritonpart_input["hyperedges"]
-    ]
-    hyperedges = list(tritonpart_input["hyperedges"])
-    edge_weights = [float(edge["weight"]) for edge in hyperedges]
-    combinational_edges = [
-        edge.get("cut_class") == "combinational" for edge in hyperedges
-    ]
-    # Balance repair is a legality fallback, not a second partition optimizer.
-    # In Static Exact mode, creating a new combinational boundary changes the
-    # cross-layer timing contract and can dominate the ordinary hypergraph cut
-    # delta.  Give each such transition a data-derived lexicographic penalty:
-    # one extra combinational cut outweighs every ordinary edge-weight change
-    # that any repair sequence can make.  Sequential-only inputs contain no
-    # marked edge and therefore retain the exact historical objective.
-    combinational_cut_penalty = (
-        math.fsum(abs(weight) for weight in edge_weights) + 1.0
-        if any(combinational_edges)
-        else 0.0
-    )
-    repair_edge_weights = [
-        weight + (combinational_cut_penalty if combinational else 0.0)
-        for weight, combinational in zip(edge_weights, combinational_edges)
-    ]
-    incident_edges: List[List[int]] = [
-        [] for _ in range(len(cluster_order))
-    ]
-    for edge_index, vertices in enumerate(edge_vertices):
-        for vertex in vertices:
-            incident_edges[vertex].append(edge_index)
-    edge_part_counts: List[Dict[int, int]] = []
-    for vertices in edge_vertices:
-        counts: Dict[int, int] = defaultdict(int)
-        for vertex in vertices:
-            counts[labels[vertex]] += 1
-        edge_part_counts.append(dict(counts))
-    vertices_by_part: List[List[int]] = [[] for _ in range(num_parts)]
-    for vertex, part in enumerate(labels):
-        vertices_by_part[part].append(vertex)
-
-    def overload(part: int) -> List[int]:
-        return [
-            max(0, loads[part][dimension] - allowed[part][dimension])
-            for dimension in range(num_dimensions)
-        ]
-
-    def fits(vertex: int, part: int) -> bool:
-        return all(
-            loads[part][dimension] + vertex_weights[vertex][dimension]
-            <= allowed[part][dimension]
-            for dimension in range(num_dimensions)
-        )
-
-    def edge_cut_delta(
-        vertex: int,
-        source: int,
-        target: int,
-        weights: Sequence[float],
-    ) -> float:
-        delta = 0.0
-        for edge_index in incident_edges[vertex]:
-            counts = edge_part_counts[edge_index]
-            before_parts = len(counts)
-            after_parts = before_parts
-            if counts[source] == 1:
-                after_parts -= 1
-            if counts.get(target, 0) == 0:
-                after_parts += 1
-            delta += (
-                int(after_parts > 1) - int(before_parts > 1)
-            ) * weights[edge_index]
-        return delta
-
-    def cut_delta(vertex: int, source: int, target: int) -> float:
-        return edge_cut_delta(vertex, source, target, edge_weights)
-
-    def repair_delta(vertex: int, source: int, target: int) -> float:
-        return edge_cut_delta(vertex, source, target, repair_edge_weights)
-
-    def apply_edge_move(vertex: int, source: int, target: int) -> None:
-        for edge_index in incident_edges[vertex]:
-            counts = edge_part_counts[edge_index]
-            counts[source] -= 1
-            if counts[source] == 0:
-                del counts[source]
-            counts[target] = counts.get(target, 0) + 1
-
-    def cut_summary() -> Tuple[int, float, int]:
-        cut_edges = 0
-        cut_weight = 0.0
-        combinational_cut_edges = 0
-        for counts, weight, combinational in zip(
-            edge_part_counts, edge_weights, combinational_edges
-        ):
-            if len(counts) > 1:
-                cut_edges += 1
-                cut_weight += weight
-                combinational_cut_edges += int(combinational)
-        return cut_edges, cut_weight, combinational_cut_edges
-
-    (
-        initial_cut_edges,
-        initial_cut_weight,
-        initial_combinational_cut_edges,
-    ) = cut_summary()
-    move_counts: Dict[Tuple[int, int], int] = defaultdict(int)
-    moved_weights: Dict[Tuple[int, int], List[int]] = {}
-    move_digest = hashlib.sha256()
-    estimated_cut_delta = 0.0
-    repair_objective_delta = 0.0
-    move_total = 0
-    paired_move_sequences = 0
-    ejection_chain_sequences = 0
-    max_ejection_chain_moves = 0
-
-    def apply_move(vertex: int, source: int, target: int) -> float:
-        """Apply and audit one deterministic repair move."""
-
-        nonlocal estimated_cut_delta, repair_objective_delta, move_total
-        delta = cut_delta(vertex, source, target)
-        objective_delta = repair_delta(vertex, source, target)
-        apply_edge_move(vertex, source, target)
-        labels[vertex] = target
-        weights = vertex_weights[vertex]
-        for dimension, weight in enumerate(weights):
-            loads[source][dimension] -= weight
-            loads[target][dimension] += weight
-        vertices_by_part[target].append(vertex)
-        transition = (source, target)
-        move_counts[transition] += 1
-        if transition not in moved_weights:
-            moved_weights[transition] = [0] * num_dimensions
-        for dimension, weight in enumerate(weights):
-            moved_weights[transition][dimension] += weight
-        cluster_id = cluster_order[vertex]
-        assignment[cluster_id] = fpga_order[target]
-        move_digest.update(
-            (
-                f"{cluster_id}:{fpga_order[source]}"
-                f"->{fpga_order[target]}\n"
-            ).encode("utf-8")
-        )
-        estimated_cut_delta += delta
-        repair_objective_delta += objective_delta
-        move_total += 1
-        return delta
-
-    def overload_score(
-        part: int, projected: Optional[Sequence[int]] = None
-    ) -> float:
-        candidate_load = loads[part] if projected is None else projected
-        return sum(
-            max(0, candidate_load[dimension] - allowed[part][dimension])
-            / max(1, allowed[part][dimension])
-            for dimension in range(num_dimensions)
-        )
-
-    while True:
-        overloaded_parts = [
-            part for part in range(num_parts) if any(overload(part))
-        ]
-        if not overloaded_parts:
-            break
-        source = max(
-            overloaded_parts,
-            key=lambda part: max(
-                (
-                    loads[part][dimension] - allowed[part][dimension]
-                )
-                / max(1, allowed[part][dimension])
-                for dimension in range(num_dimensions)
-            ),
-        )
-        source_overload = overload(source)
-        ranked: List[Tuple[float, float, float, int]] = []
-        for vertex in vertices_by_part[source]:
-            if labels[vertex] != source:
-                continue
-            weights = vertex_weights[vertex]
-            cluster_id = cluster_order[vertex]
-            if clusters[cluster_id]["fixed_fpga"] is not None:
-                continue
-            relief = sum(
-                min(weights[dimension], source_overload[dimension])
-                / max(1, allowed[source][dimension])
-                for dimension in range(num_dimensions)
-            )
-            if relief <= 0.0:
-                continue
-            choices = []
-            for target in range(num_parts):
-                if target == source or not fits(vertex, target):
-                    continue
-                delta = repair_delta(vertex, source, target)
-                projected_peak = max(
-                    (
-                        loads[target][dimension] + weights[dimension]
-                    )
-                    / max(1, allowed[target][dimension])
-                    for dimension in range(num_dimensions)
-                )
-                choices.append((delta, projected_peak, target))
-            if choices:
-                best_delta, _, _ = min(choices)
-                ranked.append(
-                    (
-                        best_delta / relief,
-                        best_delta,
-                        -relief,
-                        vertex,
-                    )
-                )
-        ranked.sort()
-
-        moved_from_source = 0
-        for _, _, _, vertex in ranked:
-            source_overload = overload(source)
-            if not any(source_overload):
-                break
-            if labels[vertex] != source:
-                continue
-            weights = vertex_weights[vertex]
-            if not any(
-                weights[dimension] and source_overload[dimension]
-                for dimension in range(num_dimensions)
-            ):
-                continue
-            choices = []
-            for target in range(num_parts):
-                if target == source or not fits(vertex, target):
-                    continue
-                delta = repair_delta(vertex, source, target)
-                projected_peak = max(
-                    (
-                        loads[target][dimension] + weights[dimension]
-                    )
-                    / max(1, allowed[target][dimension])
-                    for dimension in range(num_dimensions)
-                )
-                choices.append((delta, projected_peak, target))
-            if not choices:
-                continue
-            _, _, best_target = min(choices)
-            apply_move(vertex, source, best_target)
-            moved_from_source += 1
-        if not moved_from_source:
-            # A legal multidimensional assignment may require an exchange:
-            # every destination can be full in a resource unrelated to the
-            # source overload even though moving one blocker away makes room.
-            # Search a deterministic two-move augmenting path
-            #   target -> destination, source -> target
-            # and commit both moves atomically from the repair perspective.
-            best_pair = None
-            before_source_score = overload_score(source)
-
-            # A naive exchange search is quadratic in the number of vertices:
-            # for every source vertex and target it scans every target vertex
-            # and every possible destination.  Real designs can have hundreds
-            # of thousands of clusters, even though the blocking resource is
-            # usually sparse (for example DSP or URAM).  Index blockers by
-            # resource weight and cache repeated deficit queries.  This keeps
-            # the search complete while restricting each query to vertices
-            # that can actually free the target's missing capacity.
-            blocker_indexes: Dict[
-                int, List[List[Tuple[int, int]]]
-            ] = {}
-            eligible_blocker_cache: Dict[
-                Tuple[int, Tuple[int, ...]], Tuple[int, ...]
-            ] = {}
-            destination_cache: Dict[
-                Tuple[int, int], Optional[Tuple[float, int]]
-            ] = {}
-
-            def blocker_index(target: int) -> List[List[Tuple[int, int]]]:
-                cached = blocker_indexes.get(target)
-                if cached is not None:
-                    return cached
-                indexes: List[List[Tuple[int, int]]] = [
-                    [] for _ in range(num_dimensions)
-                ]
-                for blocker in vertices_by_part[target]:
-                    if labels[blocker] != target:
-                        continue
-                    blocker_id = cluster_order[blocker]
-                    if clusters[blocker_id]["fixed_fpga"] is not None:
-                        continue
-                    for dimension, weight in enumerate(
-                        vertex_weights[blocker]
-                    ):
-                        indexes[dimension].append((weight, blocker))
-                for index in indexes:
-                    index.sort()
-                blocker_indexes[target] = indexes
-                return indexes
-
-            def eligible_blockers(
-                target: int, deficits: Sequence[int]
-            ) -> Tuple[int, ...]:
-                cache_key = (target, tuple(deficits))
-                cached = eligible_blocker_cache.get(cache_key)
-                if cached is not None:
-                    return cached
-                indexes = blocker_index(target)
-                pivots = []
-                for dimension, deficit in enumerate(deficits):
-                    if deficit <= 0:
-                        continue
-                    start = bisect_left(indexes[dimension], (deficit, -1))
-                    pivots.append(
-                        (len(indexes[dimension]) - start, dimension, start)
-                    )
-                if not pivots:
-                    eligible_blocker_cache[cache_key] = ()
-                    return ()
-                _, pivot_dimension, start = min(pivots)
-                candidates = []
-                for _, blocker in indexes[pivot_dimension][start:]:
-                    weights = vertex_weights[blocker]
-                    if all(
-                        weights[dimension] >= deficits[dimension]
-                        for dimension in range(num_dimensions)
-                    ):
-                        candidates.append(blocker)
-                result = tuple(candidates)
-                eligible_blocker_cache[cache_key] = result
-                return result
-
-            def best_non_source_destination(
-                blocker: int, target: int
-            ) -> Optional[Tuple[float, int]]:
-                cache_key = (blocker, target)
-                if cache_key in destination_cache:
-                    return destination_cache[cache_key]
-                choices = []
-                blocker_weights = vertex_weights[blocker]
-                for destination in range(num_parts):
-                    if destination in {source, target}:
-                        continue
-                    if not fits(blocker, destination):
-                        continue
-                    choices.append(
-                        (
-                            repair_delta(blocker, target, destination),
-                            destination,
-                        )
-                    )
-                result = min(choices) if choices else None
-                destination_cache[cache_key] = result
-                return result
-
-            source_candidates = []
-            for vertex in vertices_by_part[source]:
-                if labels[vertex] != source:
-                    continue
-                weights = vertex_weights[vertex]
-                cluster_id = cluster_order[vertex]
-                if clusters[cluster_id]["fixed_fpga"] is not None:
-                    continue
-                relief = sum(
-                    min(weights[dimension], source_overload[dimension])
-                    / max(1, allowed[source][dimension])
-                    for dimension in range(num_dimensions)
-                )
-                if relief <= 0.0:
-                    continue
-                source_without_vertex = [
-                    loads[source][dimension] - weights[dimension]
-                    for dimension in range(num_dimensions)
-                ]
-                source_candidates.append(
-                    (
-                        overload_score(source, source_without_vertex),
-                        cluster_id,
-                        vertex,
-                        relief,
-                    )
-                )
-
-            # The first tuple field is a lower bound on every exchange using
-            # this source vertex: sending a blocker back to the source can
-            # only increase its post-move overload.  Once it exceeds the best
-            # complete candidate, later vertices cannot win the deterministic
-            # ranking and need not be inspected.
-            source_candidates.sort()
-            for (
-                source_without_score,
-                cluster_id,
-                vertex,
-                relief,
-            ) in source_candidates:
-                if (
-                    best_pair is not None
-                    and source_without_score > best_pair[0]
-                ):
-                    break
-                weights = vertex_weights[vertex]
-                for target in range(num_parts):
-                    if target == source:
-                        continue
-                    source_delta = repair_delta(vertex, source, target)
-                    target_after_vertex = [
-                        loads[target][dimension] + weights[dimension]
-                        for dimension in range(num_dimensions)
-                    ]
-                    if all(
-                        target_after_vertex[dimension]
-                        <= allowed[target][dimension]
-                        for dimension in range(num_dimensions)
-                    ):
-                        continue
-                    deficits = [
-                        max(
-                            0,
-                            target_after_vertex[dimension]
-                            - allowed[target][dimension],
-                        )
-                        for dimension in range(num_dimensions)
-                    ]
-                    for blocker in eligible_blockers(target, deficits):
-                        blocker_id = cluster_order[blocker]
-                        blocker_weights = vertex_weights[blocker]
-                        non_source = best_non_source_destination(
-                            blocker, target
-                        )
-                        if non_source is not None:
-                            blocker_delta, destination = non_source
-                            pair_delta = blocker_delta + source_delta
-                            candidate = (
-                                source_without_score,
-                                pair_delta / relief,
-                                pair_delta,
-                                cluster_id,
-                                blocker_id,
-                                target,
-                                destination,
-                                vertex,
-                                blocker,
-                            )
-                            if best_pair is None or candidate < best_pair:
-                                best_pair = candidate
-
-                        destination_after = [
-                            loads[source][dimension]
-                            - weights[dimension]
-                            + blocker_weights[dimension]
-                            for dimension in range(num_dimensions)
-                        ]
-                        after_source_score = overload_score(
-                            source, destination_after
-                        )
-                        if after_source_score >= before_source_score:
-                            continue
-                        destination = source
-                        pair_delta = (
-                            repair_delta(blocker, target, destination)
-                            + source_delta
-                        )
-                        candidate = (
-                            after_source_score,
-                            pair_delta / relief,
-                            pair_delta,
-                            cluster_id,
-                            blocker_id,
-                            target,
-                            destination,
-                            vertex,
-                            blocker,
-                        )
-                        if best_pair is None or candidate < best_pair:
-                            best_pair = candidate
-            if best_pair is None:
-                # A two-move exchange is still insufficient when the target
-                # must evict several complementary resource vectors, or when
-                # its blocker itself needs room made in another partition.
-                # Search a bounded deterministic ejection chain over the
-                # complete set of structurally relevant blockers.  The root
-                # move is evaluated atomically: intermediate states may exceed
-                # a capacity, but the committed sequence must reduce the
-                # selected source overload without worsening another existing
-                # violation.
-                movable_by_part_dimension: List[List[List[int]]] = [
-                    [[] for _ in range(num_dimensions)]
-                    for _ in range(num_parts)
-                ]
-                for part in range(num_parts):
-                    for candidate_vertex in vertices_by_part[part]:
-                        if labels[candidate_vertex] != part:
-                            continue
-                        candidate_id = cluster_order[candidate_vertex]
-                        if clusters[candidate_id]["fixed_fpga"] is not None:
-                            continue
-                        for dimension, weight in enumerate(
-                            vertex_weights[candidate_vertex]
-                        ):
-                            if weight:
-                                movable_by_part_dimension[part][
-                                    dimension
-                                ].append(candidate_vertex)
-                for part_indexes in movable_by_part_dimension:
-                    for index in part_indexes:
-                        index.sort(key=lambda item: cluster_order[item])
-
-                def exact_sequence_delta(
-                    overrides: Mapping[int, int],
-                ) -> float:
-                    affected_edges = {
-                        edge_index
-                        for vertex in overrides
-                        for edge_index in incident_edges[vertex]
-                    }
-                    delta = 0.0
-                    for edge_index in affected_edges:
-                        before_cut = len(edge_part_counts[edge_index]) > 1
-                        after_parts = {
-                            overrides.get(vertex, labels[vertex])
-                            for vertex in edge_vertices[edge_index]
-                        }
-                        delta += (
-                            int(len(after_parts) > 1) - int(before_cut)
-                        ) * repair_edge_weights[edge_index]
-                    return delta
-
-                def violation_key(
-                    state_loads: Sequence[Sequence[int]],
-                    limits: Sequence[Sequence[int]],
-                ) -> Tuple[int, float, float, int]:
-                    violations = []
-                    absolute = 0
-                    for part in range(num_parts):
-                        for dimension in range(num_dimensions):
-                            excess = max(
-                                0,
-                                state_loads[part][dimension]
-                                - limits[part][dimension],
-                            )
-                            if not excess:
-                                continue
-                            normalized = excess / max(
-                                1, allowed[part][dimension]
-                            )
-                            violations.append(normalized)
-                            absolute += excess
-                    return (
-                        len(violations),
-                        sum(violations),
-                        max(violations, default=0.0),
-                        absolute,
-                    )
-
-                # This is a fallback for rare, nearly legal provider outputs.
-                # Its limits scale with the number of bins and resource
-                # dimensions, not with a benchmark identity.  Beam pruning is
-                # deterministic and prioritizes capacity progress before cut
-                # cost; the final assignment is always checked by the ordinary
-                # independent balance validator.
-                max_chain_moves = max(
-                    3, min(16, num_parts * 2 + num_dimensions)
-                )
-                beam_width = max(64, min(512, num_parts * 64))
-                transition_width = max(64, min(256, num_parts * 64))
-
-                def find_ejection_chain(
-                    root_vertex: int,
-                    root_target: int,
-                ) -> Optional[Tuple[Tuple[int, int, int], ...]]:
-                    root_weights = vertex_weights[root_vertex]
-                    limits = [
-                        [
-                            max(
-                                allowed[part][dimension],
-                                loads[part][dimension],
-                            )
-                            for dimension in range(num_dimensions)
-                        ]
-                        for part in range(num_parts)
-                    ]
-                    source_after = [
-                        loads[source][dimension] - root_weights[dimension]
-                        for dimension in range(num_dimensions)
-                    ]
-                    limits[source] = [
-                        max(
-                            allowed[source][dimension],
-                            source_after[dimension],
-                        )
-                        for dimension in range(num_dimensions)
-                    ]
-                    state_loads = [list(item) for item in loads]
-                    for dimension, weight in enumerate(root_weights):
-                        state_loads[source][dimension] -= weight
-                        state_loads[root_target][dimension] += weight
-                    root_move = (root_vertex, source, root_target)
-                    root_overrides = ((root_vertex, root_target),)
-                    root_state = (
-                        tuple(tuple(item) for item in state_loads),
-                        root_overrides,
-                        (root_vertex,),
-                        (root_move,),
-                        repair_delta(root_vertex, source, root_target),
-                    )
-                    if violation_key(state_loads, limits)[0] == 0:
-                        return (root_move,)
-                    beam = [root_state]
-                    for _ in range(1, max_chain_moves):
-                        next_states = []
-                        goals = []
-                        seen = set()
-                        for (
-                            frozen_loads,
-                            frozen_overrides,
-                            frozen_moved,
-                            sequence,
-                            approximate_delta,
-                        ) in beam:
-                            state_loads = [
-                                list(item) for item in frozen_loads
-                            ]
-                            overrides = dict(frozen_overrides)
-                            moved = set(frozen_moved)
-                            exceeded = []
-                            for part in range(num_parts):
-                                dimensions_exceeded = [
-                                    dimension
-                                    for dimension in range(num_dimensions)
-                                    if state_loads[part][dimension]
-                                    > limits[part][dimension]
-                                ]
-                                if not dimensions_exceeded:
-                                    continue
-                                part_excess = max(
-                                    (
-                                        state_loads[part][dimension]
-                                        - limits[part][dimension]
-                                    )
-                                    / max(1, allowed[part][dimension])
-                                    for dimension in dimensions_exceeded
-                                )
-                                exceeded.append(
-                                    (-part_excess, part, dimensions_exceeded)
-                                )
-                            if not exceeded:
-                                goals.append(
-                                    (
-                                        exact_sequence_delta(overrides),
-                                        sequence,
-                                    )
-                                )
-                                continue
-                            _, blocked_part, dimensions_exceeded = min(
-                                exceeded
-                            )
-                            pivot = min(
-                                dimensions_exceeded,
-                                key=lambda dimension: (
-                                    len(
-                                        movable_by_part_dimension[
-                                            blocked_part
-                                        ][dimension]
-                                    ),
-                                    dimension,
-                                ),
-                            )
-                            deficits = [
-                                max(
-                                    0,
-                                    state_loads[blocked_part][dimension]
-                                    - limits[blocked_part][dimension],
-                                )
-                                for dimension in range(num_dimensions)
-                            ]
-                            transitions = []
-                            for blocker in movable_by_part_dimension[
-                                blocked_part
-                            ][pivot]:
-                                if blocker in moved:
-                                    continue
-                                if (
-                                    overrides.get(blocker, labels[blocker])
-                                    != blocked_part
-                                ):
-                                    continue
-                                blocker_weights = vertex_weights[blocker]
-                                relief = sum(
-                                    min(
-                                        blocker_weights[dimension],
-                                        deficits[dimension],
-                                    )
-                                    / max(
-                                        1,
-                                        allowed[blocked_part][dimension],
-                                    )
-                                    for dimension in range(num_dimensions)
-                                )
-                                if relief <= 0.0:
-                                    continue
-                                for destination in range(num_parts):
-                                    if destination == blocked_part:
-                                        continue
-                                    candidate_loads = [
-                                        list(item) for item in state_loads
-                                    ]
-                                    for dimension, weight in enumerate(
-                                        blocker_weights
-                                    ):
-                                        candidate_loads[blocked_part][
-                                            dimension
-                                        ] -= weight
-                                        candidate_loads[destination][
-                                            dimension
-                                        ] += weight
-                                    move_delta = repair_delta(
-                                        blocker,
-                                        blocked_part,
-                                        destination,
-                                    )
-                                    move = (
-                                        blocker,
-                                        blocked_part,
-                                        destination,
-                                    )
-                                    transitions.append(
-                                        (
-                                            violation_key(
-                                                candidate_loads, limits
-                                            ),
-                                            move_delta / relief,
-                                            move_delta,
-                                            cluster_order[blocker],
-                                            destination,
-                                            candidate_loads,
-                                            move,
-                                        )
-                                    )
-                            for transition in heapq.nsmallest(
-                                transition_width, transitions
-                            ):
-                                (
-                                    key,
-                                    _,
-                                    move_delta,
-                                    _,
-                                    destination,
-                                    candidate_loads,
-                                    move,
-                                ) = transition
-                                blocker = move[0]
-                                candidate_overrides = dict(overrides)
-                                candidate_overrides[blocker] = destination
-                                candidate_sequence = sequence + (move,)
-                                candidate_moved = tuple(
-                                    sorted((*moved, blocker))
-                                )
-                                frozen_candidate_loads = tuple(
-                                    tuple(item) for item in candidate_loads
-                                )
-                                state_identity = (
-                                    frozen_candidate_loads,
-                                    tuple(
-                                        sorted(candidate_overrides.items())
-                                    ),
-                                )
-                                if state_identity in seen:
-                                    continue
-                                seen.add(state_identity)
-                                if key[0] == 0:
-                                    goals.append(
-                                        (
-                                            exact_sequence_delta(
-                                                candidate_overrides
-                                            ),
-                                            candidate_sequence,
-                                        )
-                                    )
-                                    continue
-                                next_states.append(
-                                    (
-                                        key,
-                                        approximate_delta + move_delta,
-                                        tuple(
-                                            (
-                                                cluster_order[move_vertex],
-                                                move_source,
-                                                move_target,
-                                            )
-                                            for (
-                                                move_vertex,
-                                                move_source,
-                                                move_target,
-                                            ) in candidate_sequence
-                                        ),
-                                        frozen_candidate_loads,
-                                        tuple(
-                                            sorted(
-                                                candidate_overrides.items()
-                                            )
-                                        ),
-                                        candidate_moved,
-                                        candidate_sequence,
-                                    )
-                                )
-                        if goals:
-                            return min(goals)[1]
-                        next_states.sort(key=lambda item: item[:3])
-                        beam = [
-                            (
-                                item[3],
-                                item[4],
-                                item[5],
-                                item[6],
-                                item[1],
-                            )
-                            for item in next_states[:beam_width]
-                        ]
-                        if not beam:
-                            break
-                    return None
-
-                best_chain = None
-                for (
-                    source_without_score,
-                    cluster_id,
-                    vertex,
-                    relief,
-                ) in source_candidates:
-                    for target in range(num_parts):
-                        if target == source:
-                            continue
-                        chain = find_ejection_chain(vertex, target)
-                        if chain is None:
-                            continue
-                        overrides = {
-                            moved_vertex: destination
-                            for moved_vertex, _, destination in chain
-                        }
-                        chain_delta = exact_sequence_delta(overrides)
-                        candidate = (
-                            len(chain),
-                            source_without_score,
-                            chain_delta / relief,
-                            chain_delta,
-                            cluster_id,
-                            tuple(
-                                (
-                                    cluster_order[moved_vertex],
-                                    move_source,
-                                    destination,
-                                )
-                                for (
-                                    moved_vertex,
-                                    move_source,
-                                    destination,
-                                ) in chain
-                            ),
-                            chain,
-                        )
-                        if best_chain is None or candidate < best_chain:
-                            best_chain = candidate
-                    if best_chain is not None and best_chain[0] == 3:
-                        # Direct and two-move solutions were already proven
-                        # absent, so three moves is globally minimal.
-                        break
-                if best_chain is None:
-                    raise ValidationError(
-                        "TritonPart balance repair found no legal direct, "
-                        "two-move, or bounded ejection-chain repair for "
-                        f"{fpga_order[source]!r}; overload={overload(source)}"
-                    )
-                chain = best_chain[-1]
-                for vertex, move_source, destination in chain:
-                    apply_move(vertex, move_source, destination)
-                ejection_chain_sequences += 1
-                max_ejection_chain_moves = max(
-                    max_ejection_chain_moves, len(chain)
-                )
-                continue
-            (
-                _,
-                _,
-                _,
-                _,
-                _,
-                target,
-                destination,
-                vertex,
-                blocker,
-            ) = best_pair
-            apply_move(blocker, target, destination)
-            apply_move(vertex, source, target)
-            paired_move_sequences += 1
-
-    (
-        final_cut_edges,
-        final_cut_weight,
-        final_combinational_cut_edges,
-    ) = cut_summary()
-    validate_cluster_assignment_balance(
-        platform,
-        clusters_artifact["clusters"],
-        assignment,
-        constraints["balance_tolerance"],
-        constraints.get("balance_tolerance_by_dimension", {}),
-        constraints.get("active_fpgas"),
-        constraints.get("balance_dimensions"),
-    )
-    return assignment, {
-        "moves": move_total,
-        "paired_move_sequences": paired_move_sequences,
-        "ejection_chain_sequences": ejection_chain_sequences,
-        "max_ejection_chain_moves": max_ejection_chain_moves,
-        "move_sha256": move_digest.hexdigest(),
-        "move_counts": {
-            f"{fpga_order[source]}->{fpga_order[target]}": count
-            for (source, target), count in sorted(move_counts.items())
-        },
-        "moved_weights": {
-            f"{fpga_order[source]}->{fpga_order[target]}": {
-                dimension: value
-                for dimension, value in zip(
-                    dimensions,
-                    moved_weights[(source, target)],
-                )
-            }
-            for source, target in sorted(moved_weights)
-        },
-        "dimensions": dimensions,
-        "initial_loads": {
-            fpga_order[part]: {
-                dimension: value
-                for dimension, value in zip(
-                    dimensions,
-                    initial_loads[part],
-                )
-            }
-            for part in range(num_parts)
-        },
-        "final_loads": {
-            fpga_order[part]: {
-                dimension: value
-                for dimension, value in zip(dimensions, loads[part])
-            }
-            for part in range(num_parts)
-        },
-        "allowed_loads": {
-            fpga_order[part]: {
-                dimension: value
-                for dimension, value in zip(dimensions, allowed[part])
-            }
-            for part in range(num_parts)
-        },
-        "initial_cut_hyperedges": initial_cut_edges,
-        "final_cut_hyperedges": final_cut_edges,
-        "initial_combinational_cut_hyperedges": (
-            initial_combinational_cut_edges
-        ),
-        "final_combinational_cut_hyperedges": (
-            final_combinational_cut_edges
-        ),
-        "initial_cut_weight": initial_cut_weight,
-        "final_cut_weight": final_cut_weight,
-        "estimated_cut_delta": estimated_cut_delta,
-        "repair_objective_delta": repair_objective_delta,
-        "combinational_cut_penalty": combinational_cut_penalty,
-    }
-
-
-def _parse_native_balance_report(
-    path: Path, tritonpart_input: Mapping[str, Any]
-) -> Dict[str, Any]:
-    if not path.is_file():
-        raise ValidationError("native TritonPart balance report is missing")
-    lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_TRITONPART_BALANCE_REPORT_V1":
-        raise ValidationError("invalid native TritonPart balance report header")
-    status = None
-    saw_end = False
-    saw_error = False
-    metrics: Dict[str, int] = {}
-    loads: Dict[str, Dict[str, Dict[str, int]]] = {
-        kind: {} for kind in ("initial", "final", "allowed")
-    }
-    fpga_order = tritonpart_input["fpga_order"]
-    dimensions = tritonpart_input["vertex_dimensions"]
-
-    def report_integer(token: str) -> int:
-        try:
-            return int(token)
-        except ValueError as error:
-            raise ValidationError(
-                "native TritonPart balance report contains a non-integer"
-            ) from error
-
-    for line_index, line in enumerate(lines[1:], start=1):
-        fields = line.split()
-        if fields == ["END"]:
-            if line_index != len(lines) - 1:
-                raise ValidationError(
-                    "native TritonPart balance report has trailing records"
-                )
-            saw_end = True
-            break
-        if len(fields) == 2 and fields[0] == "STATUS":
-            if status is not None:
-                raise ValidationError(
-                    "native TritonPart balance report repeats status"
-                )
-            status = fields[1].lower()
-        elif len(fields) == 3 and fields[0] == "METRIC":
-            if fields[1] in metrics:
-                raise ValidationError(
-                    "native TritonPart balance report repeats metric"
-                )
-            value = report_integer(fields[2])
-            if value < 0:
-                raise ValidationError(
-                    "native TritonPart balance metric is negative"
-                )
-            metrics[fields[1]] = value
-        elif fields and fields[0] in {"INITIAL", "FINAL", "ALLOWED"}:
-            if len(fields) != len(dimensions) + 2:
-                raise ValidationError("invalid native balance load record")
-            part = report_integer(fields[1])
-            if part < 0 or part >= len(fpga_order):
-                raise ValidationError("native balance part index is invalid")
-            kind = fields[0].lower()
-            fpga_id = fpga_order[part]
-            if fpga_id in loads[kind]:
-                raise ValidationError(
-                    "native TritonPart balance report repeats load record"
-                )
-            record = {
-                dimension: report_integer(value)
-                for dimension, value in zip(dimensions, fields[2:])
-            }
-            if any(value < 0 for value in record.values()):
-                raise ValidationError(
-                    "native TritonPart balance load is negative"
-                )
-            loads[kind][fpga_id] = record
-        elif fields and fields[0] == "ERROR":
-            saw_error = True
-        else:
-            raise ValidationError("invalid native TritonPart balance record")
-    if not saw_end or status != "pass" or saw_error or set(metrics) != {
-        "moves",
-        "direct_moves",
-        "paired_sequences",
-        "ejection_chain_sequences",
-        "replayed_chain_sequences",
-        "max_ejection_chain_moves",
-        "elapsed_milliseconds",
-    }:
-        raise ValidationError("native TritonPart balance report is incomplete")
-    expected_parts = set(fpga_order)
-    if any(set(records) != expected_parts for records in loads.values()):
-        raise ValidationError("native TritonPart balance loads are incomplete")
-    expected_allowed = tritonpart_input["balance_allowed_loads"]
-    if loads["allowed"] != expected_allowed:
-        raise ValidationError("native TritonPart balance limits changed")
-    for fpga in fpga_order:
-        for dimension in dimensions:
-            if loads["final"][fpga][dimension] > expected_allowed[fpga][dimension]:
-                raise ValidationError("native TritonPart balance result exceeds limit")
-    return {
-        **metrics,
-        "provider": "emuflow-native-tritonpart-balance-legalizer-v1",
-        "initial_loads": loads["initial"],
-        "final_loads": loads["final"],
-        "allowed_loads": loads["allowed"],
-    }
-
-
-def _native_balance_assignment_loads(
-    assignment: Mapping[str, str],
-    tritonpart_input: Mapping[str, Any],
-) -> Dict[str, Dict[str, int]]:
-    fpga_order = tritonpart_input["fpga_order"]
-    dimensions = tritonpart_input["vertex_dimensions"]
-    cluster_order = tritonpart_input["cluster_order"]
-    vertex_weights = tritonpart_input["vertex_weights"]
-    if (
-        len(cluster_order) != len(vertex_weights)
-        or len(assignment) != len(cluster_order)
-    ):
-        raise ValidationError(
-            "native TritonPart balance assignment coverage changed"
-        )
-    loads = {
-        fpga_id: {dimension: 0 for dimension in dimensions}
-        for fpga_id in fpga_order
-    }
-    for cluster_id, row in zip(
-        cluster_order,
-        vertex_weights,
-    ):
-        try:
-            fpga_id = assignment[cluster_id]
-        except KeyError as error:
-            raise ValidationError(
-                "native TritonPart balance assignment coverage changed"
-            ) from error
-        if fpga_id not in loads or len(row) != len(dimensions):
-            raise ValidationError(
-                "native TritonPart balance assignment dimensions changed"
-            )
-        for dimension, value in zip(dimensions, row):
-            loads[fpga_id][dimension] += int(value)
-    return loads
-
-
-def _run_native_balance_legalizer(
-    candidate: Mapping[str, str],
-    tritonpart_input: Mapping[str, Any],
-    output_dir: Path,
-    input_solution: Path,
-    output_solution: Path,
-    *,
-    executable: Optional[str],
-    timeout_seconds: int,
-    packed_assignment: bool = False,
-) -> Tuple[Mapping[str, str], Dict[str, Any]]:
-    limits_path = output_dir / "balance-limits.txt"
-    report_path = output_dir / "balance-repair-report.txt"
-    log_path = output_dir / "balance-repair.log"
-    fpga_order = tritonpart_input["fpga_order"]
-    dimensions = tritonpart_input["vertex_dimensions"]
-    allowed = tritonpart_input["balance_allowed_loads"]
-    limits_path.write_text(
-        "\n".join([
-            "EMUFLOW_TRITONPART_BALANCE_LIMITS_V1",
-            f"PARAM {len(fpga_order)} {len(dimensions)}",
-            *(
-                "CAP " + str(index) + " "
-                + " ".join(str(allowed[fpga][field]) for field in dimensions)
-                for index, fpga in enumerate(fpga_order)
-            ),
-            "END",
-            "",
-        ]),
-        encoding="utf-8",
-    )
-    resolved = resolve_native_executable(
-        "emuflow_tritonpart_balance_legalizer", executable
-    )
-    files = tritonpart_input["files"]
-    output_solution.unlink(missing_ok=True)
-    report_path.unlink(missing_ok=True)
-    command = [
-        resolved,
-        str((output_dir / files["hypergraph"]).resolve()),
-        str((output_dir / files["fixed"]).resolve()),
-        str((output_dir / files["edge_classes"]).resolve()),
-        str(limits_path.resolve()),
-        str(input_solution.resolve()),
-        str(output_solution.resolve()),
-        str(report_path.resolve()),
-    ]
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=output_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise ValidationError(
-            f"native TritonPart balance repair exceeded {timeout_seconds} seconds"
-        ) from error
-    log_path.write_text(completed.stdout, encoding="utf-8")
-    if completed.returncode != 0:
-        detail = completed.stdout[-2000:]
-        raise ValidationError(
-            "native TritonPart balance legalizer failed with exit code "
-            f"{completed.returncode}: {detail}"
-        )
-    result = parse_tritonpart_solution(
-        output_solution,
-        tritonpart_input,
-        packed_assignment=packed_assignment,
-    )
-    if len(result) != len(candidate) or any(
-        cluster_id not in result for cluster_id in candidate
-    ):
-        raise ValidationError(
-            "native TritonPart balance assignment coverage changed"
-        )
-    summary = _parse_native_balance_report(report_path, tritonpart_input)
-    if summary["initial_loads"] != _native_balance_assignment_loads(
-        candidate, tritonpart_input
-    ):
-        raise ValidationError(
-            "native TritonPart balance initial loads do not match assignment"
-        )
-    if summary["final_loads"] != _native_balance_assignment_loads(
-        result, tritonpart_input
-    ):
-        raise ValidationError(
-            "native TritonPart balance final loads do not match assignment"
-        )
-    summary.update({
-        "executable": resolved,
-        "solution": output_solution.name,
-        "report": report_path.name,
-        "log": log_path.name,
-    })
-    return result, summary
-
-
 def _stream_assignment_cut_summary(
     hyperedges: Iterable[Mapping[str, Any]],
     assignment: Mapping[str, str],
@@ -2288,9 +1017,7 @@ def run_tritonpart(
     seed_attempts: int = 1,
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
-    repair_min_used_fpgas: bool = False,
-    repair_balance: bool = False,
-    balance_legalizer: Optional[str] = None,
+    repair_min_used_fpgas: bool = True,
     persist_input_manifest: bool = True,
     run_unweighted_baseline: bool = False,
     defer_semantic_contract: bool = False,
@@ -2354,7 +1081,6 @@ def run_tritonpart(
     selected_log: Optional[Path] = None
     selected_solution_path: Optional[Path] = None
     selected_repair_moves: List[Dict[str, Any]] = []
-    selected_balance_repair: Optional[Dict[str, Any]] = None
     selected_timing_cut_summary: Optional[Dict[str, float | int]] = None
     selected_objective: Optional[Tuple[Any, ...]] = None
     selected_attempt_mode: Optional[str] = None
@@ -2492,114 +1218,55 @@ def run_tritonpart(
             )
             shutil.copyfile(provider_solution_path, attempt_solution)
         raw_used_fpgas = len(set(candidate.values()))
-        balance_repair = None
-        repaired_solution_path = None
-        if repair_balance:
-            repaired_tag = (
-                f"seed-{attempt_seed}"
-                if spec["mode"] == "timing_weighted"
-                else f"unweighted-baseline.seed-{attempt_seed}"
-            )
-            repaired_solution_path = output_dir / (
-                (
-                    f"partition.hgr.{repaired_tag}.repaired.part."
-                    f"{num_parts}"
-                )
-                if len(attempt_specs) > 1
-                else f"partition.hgr.repaired.part.{num_parts}"
-            )
-            try:
-                candidate, balance_repair = phase3_runtime_call(
-                    "tritonpart.balance_legalizer",
-                    _run_native_balance_legalizer,
-                    candidate,
-                    tritonpart_input,
-                    output_dir,
-                    provider_solution_path,
-                    repaired_solution_path,
-                    executable=balance_legalizer,
-                    timeout_seconds=timeout_seconds,
-                    packed_assignment=isinstance(
-                        candidate, _PackedClusterAssignment
-                    ),
-                )
-            except ValidationError as error:
-                attempts.append(
-                    {
-                        "mode": spec["mode"],
-                        "seed": attempt_seed,
-                        "raw_used_fpgas": raw_used_fpgas,
-                        "used_fpgas": raw_used_fpgas,
-                        "balance_repair": None,
-                        "repair_moves": [],
-                        "solution": (
-                            attempt_solution.name
-                            if attempt_solution is not None
-                            else solution_path.name
-                        ),
-                        "repaired_solution": None,
-                        "log": (
-                            log_path.name if log_path is not None else None
-                        ),
-                        "accepted": False,
-                        "rejection": "balance_repair",
-                        "error": str(error),
-                    }
-                )
-                continue
-        repair_moves: List[Dict[str, Any]] = []
-        if (
-            repair_min_used_fpgas
-            and raw_used_fpgas < constraints["min_used_fpgas"]
-        ):
-            candidate, repair_moves = _repair_min_used_fpgas(
-                candidate,
-                clusters_artifact,
-                platform,
-                constraints,
-                tritonpart_input["hyperedges"],
-            )
-        used_fpgas = len(set(candidate.values()))
         attempt: Dict[str, Any] = {
             "mode": spec["mode"],
             "seed": attempt_seed,
             "raw_used_fpgas": raw_used_fpgas,
-            "used_fpgas": used_fpgas,
-            "balance_repair": balance_repair,
-            "repair_moves": repair_moves,
+            "used_fpgas": raw_used_fpgas,
+            "repair_moves": [],
             "solution": (
                 attempt_solution.name
                 if attempt_solution is not None
                 else solution_path.name
             ),
-            "repaired_solution": (
-                repaired_solution_path.name
-                if repaired_solution_path is not None
-                else None
-            ),
             "log": log_path.name if log_path is not None else None,
         }
-        if used_fpgas < constraints["min_used_fpgas"]:
-            attempt["accepted"] = False
-            attempt["rejection"] = "min_used_fpgas"
-            attempts.append(attempt)
-            continue
-        try:
-            attempt["balance_validation"] = (
-                validate_cluster_assignment_balance(
-                    platform,
-                    clusters_artifact["clusters"],
-                    candidate,
-                    constraints["balance_tolerance"],
-                    constraints.get("balance_tolerance_by_dimension", {}),
-                    constraints.get("active_fpgas"),
-                    constraints.get("balance_dimensions"),
-                )
+
+        def validate_candidate(value: Mapping[str, str]) -> Dict[str, Any]:
+            return validate_cluster_assignment_balance(
+                platform,
+                clusters_artifact["clusters"],
+                value,
+                constraints["balance_tolerance"],
+                constraints.get("balance_tolerance_by_dimension", {}),
+                constraints.get("active_fpgas"),
+                constraints.get("balance_dimensions", ()),
+                constraints.get("resource_reservations_by_fpga", {}),
             )
+
+        # Occupancy repair is not allowed to rescue an illegal resource load.
+        # Validate the untouched native assignment before any postprocessing.
+        repair_moves: List[Dict[str, Any]] = []
+        try:
+            attempt["balance_validation"] = validate_candidate(candidate)
+            if repair_min_used_fpgas and raw_used_fpgas < constraints["min_used_fpgas"]:
+                candidate, repair_moves = _repair_min_used_fpgas(
+                    candidate, clusters_artifact, platform, constraints,
+                    tritonpart_input["hyperedges"],
+                )
+                attempt["balance_validation"] = validate_candidate(candidate)
         except ValidationError as error:
             attempt["accepted"] = False
             attempt["rejection"] = "multi_resource_balance"
             attempt["error"] = str(error)
+            attempts.append(attempt)
+            continue
+        used_fpgas = len(set(candidate.values()))
+        attempt["used_fpgas"] = used_fpgas
+        attempt["repair_moves"] = repair_moves
+        if used_fpgas < constraints["min_used_fpgas"]:
+            attempt["accepted"] = False
+            attempt["rejection"] = "min_used_fpgas"
             attempts.append(attempt)
             continue
 
@@ -2622,16 +1289,11 @@ def run_tritonpart(
             selected_attempt_mode = spec["mode"]
             selected_log = log_path
             selected_solution_path = (
-                repaired_solution_path
-                if repaired_solution_path is not None
-                else (
-                    attempt_solution
-                    if attempt_solution is not None
-                    else provider_solution_path
-                )
+                attempt_solution
+                if attempt_solution is not None
+                else provider_solution_path
             )
             selected_repair_moves = repair_moves
-            selected_balance_repair = balance_repair
             selected_timing_cut_summary = {
                 "timed_cut_hyperedges": cut_summary["timed_cut_hyperedges"],
                 "timed_cut_weight": cut_summary["timed_cut_weight"],
@@ -2682,10 +1344,7 @@ def run_tritonpart(
             "enabled": repair_min_used_fpgas,
             "moves": selected_repair_moves,
         },
-        "balance_repair": {
-            "enabled": repair_balance,
-            "summary": selected_balance_repair,
-        },
+        "resource_constraints": "native-exact-bounds-v1",
         "artifacts": (
             {
                 **tritonpart_input["files"],

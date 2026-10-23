@@ -150,7 +150,7 @@ struct Input {
   double lambda_tdm = 0.1;
   int ratio_quantum = 8;
   int min_ratio = 1;
-  int frame_slots = 1;
+  int max_ratio = 1;
   double slack_positive_scale = 1.0;
   double slack_negative_scale = 1.0;
   double max_clock_period_ns = 1.0;
@@ -217,7 +217,7 @@ Input read_input(const std::string& path) {
           model.max_iterations >>
           model.reroute_rounds >> model.lambda_load >>
           model.lambda_timing >> model.lambda_history >>
-          model.lambda_tdm >> model.ratio_quantum >> model.frame_slots >>
+          model.lambda_tdm >> model.ratio_quantum >> model.max_ratio >>
           model.slack_positive_scale >> model.slack_negative_scale >>
           model.max_clock_period_ns;
       if (input_v4 || input_v5 || input_v6 || input_v7) {
@@ -351,8 +351,8 @@ class Router {
           model_.min_ratio <= 0 ||
           (model_.min_ratio != 1 &&
            model_.min_ratio % model_.ratio_quantum != 0) ||
-          model_.min_ratio > model_.frame_slots ||
-          model_.frame_slots <= 0 || model_.lambda_tdm < 0.0) {
+          model_.min_ratio > model_.max_ratio ||
+          model_.max_ratio <= 0 || model_.lambda_tdm < 0.0) {
         throw std::runtime_error("invalid arc");
       }
       if (arc.banks > 0) {
@@ -1776,7 +1776,7 @@ CREATE TABLE metrics(
           usage_[first] + (first == domain ? additional_width : 0),
           usage_[second] + (second == domain ? additional_width : 0),
           arc.banks, arc.wires, model_.ratio_quantum, model_.min_ratio,
-          model_.frame_slots + 1);
+          model_.max_ratio + 1);
       return domain == first ? ratios.first : ratios.second;
     }
     const long long signals = usage_[domain] + additional_width;
@@ -1793,8 +1793,10 @@ CREATE TABLE metrics(
     const long long quantized =
         ((raw + model_.ratio_quantum - 1) / model_.ratio_quantum) *
         model_.ratio_quantum;
-    return static_cast<int>(std::min(
-        static_cast<long long>(model_.frame_slots), quantized));
+    return static_cast<int>(
+        model_.min_ratio > 1
+            ? quantized
+            : std::min(static_cast<long long>(model_.max_ratio), quantized));
   }
 
   int estimated_max_tdm_ratio() const {
@@ -2710,7 +2712,7 @@ CREATE TABLE metrics(
       if (arc.banks == 0) continue;
       const int other = model_.arcs[arc.opposite_arc].capacity_domain;
       if (arc.capacity_domain >= other) continue;
-      const long long bank_capacity = static_cast<long long>(arc.wires) * model_.frame_slots;
+      const long long bank_capacity = static_cast<long long>(arc.wires) * model_.max_ratio;
       const auto needed = [&](int domain) {
         return (usage_[domain] + bank_capacity - 1) / bank_capacity;
       };

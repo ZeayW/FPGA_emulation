@@ -340,6 +340,26 @@ def _schedule_incoming_rows(
     ]
 
 
+def read_split_resource_reservations(assignment_index_path: Path) -> dict[str, Any]:
+    """Read the bounded resource seal without loading assignment ownership."""
+    connection = open_phase3_assignment_index(assignment_index_path)
+    try:
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key='constraints'"
+        ).fetchone()
+    finally:
+        connection.close()
+    constraints = json.loads(row[0]) if row is not None else {}
+    if not isinstance(constraints, dict):
+        raise ValidationError("Phase 3 resource constraints are malformed")
+    reservations = constraints.get("resource_reservations_by_fpga", {})
+    if not isinstance(reservations, dict) or any(
+        not isinstance(value, dict) for value in reservations.values()
+    ):
+        raise ValidationError("Phase 3 resource reservations are malformed")
+    return reservations
+
+
 def build_streaming_split_metadata(
     assignment_index_path: Path,
     schedule: Mapping[str, Any],
@@ -648,6 +668,10 @@ def build_streaming_split_metadata(
         } for fpga in fpga_ids],
         "lane_map": "lane_map.json",
         "runtime_controller_rtl": "virtual_runtime_controller.sv",
+        **({"resource_reservations_by_fpga": assignment_metadata["constraints"][
+            "resource_reservations_by_fpga"]}
+           if assignment_metadata.get("constraints", {}).get(
+               "resource_reservations_by_fpga") else {}),
         **({
             "cut_mode": "static-exact-combinational",
             "qualification": "exact-boundary-materialization-pass",

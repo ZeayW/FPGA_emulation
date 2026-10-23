@@ -1782,6 +1782,34 @@ class PartitionPressureTest(unittest.TestCase):
             trace["final_metrics"]["transport_capacity_excess_bits"], 1
         )
 
+    def test_patron_native_hard_capacity_consumes_sealed_reservation(self) -> None:
+        constraints = {
+            **self.constraints,
+            "resource_reservations_by_fpga": {"a": {"lut": 7}},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            native_input = Path(temporary) / "patron-reserved.in"
+            _write_patron_native_input(
+                native_input,
+                self.platform,
+                self.clusters,
+                constraints,
+                self.route_constraints,
+                self.model,
+                self.initial,
+                0,
+                9,
+            )
+            cap_lines = [
+                line.split()
+                for line in native_input.read_text(encoding="utf-8").splitlines()
+                if line.startswith("CAP ")
+            ]
+        self.assertEqual(cap_lines[0][0:2], ["CAP", "0"])
+        # Tokens 2/3 are cells; tokens 4/5 are LUT hard/allowed.
+        self.assertEqual(float(cap_lines[0][4]), 93.0)
+        self.assertEqual(float(cap_lines[1][4]), 100.0)
+
     def test_v9_native_input_and_bundle_remain_valid(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             native_input = Path(temporary) / "patron-v9.in"
@@ -1951,6 +1979,7 @@ class PartitionPressureTest(unittest.TestCase):
             {
                 "schema": "emuflow.partition-constraints/v1",
                 "min_used_fpgas": 4,
+                "balance_dimensions": ["cells", "lut", "ff"],
                 "balance_tolerance": 0.5,
             },
             ir,
@@ -3584,6 +3613,7 @@ class PartitionPressureTest(unittest.TestCase):
                     {"instance": "u00002", "fpga": "b"},
                 ],
                 "min_used_fpgas": 2,
+                "balance_dimensions": ["cells", "lut", "ff"],
                 "balance_tolerance": 0.01,
             },
             ir,
@@ -3729,6 +3759,7 @@ class PartitionPressureTest(unittest.TestCase):
             {
                 "schema": "emuflow.partition-constraints/v1",
                 "min_used_fpgas": 2,
+                "balance_dimensions": ["cells", "lut", "ff"],
                 "balance_tolerance": 0.0,
             },
             ir,
