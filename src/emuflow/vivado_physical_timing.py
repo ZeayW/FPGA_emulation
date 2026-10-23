@@ -111,8 +111,9 @@ def import_vivado_local_timing(input_path: Path, identity_path: Path, output_pat
 def import_indexed_vivado_boundary(input_path: Path, identity_path: Path, output_path: Path, *, measurement_scope: str = "partition-boundary") -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix=".vivado-boundary-", dir=output_path.parent) as temporary:
         connection = sqlite3.connect(Path(temporary) / "measurements.sqlite")
-        identities = read_boundary_identity_storage(identity_path)
+        identities = None
         try:
+            identities = read_boundary_identity_storage(identity_path)
             connection.execute("CREATE TABLE measurements(id TEXT PRIMARY KEY,kind TEXT,delay REAL,start TEXT,end TEXT)")
             with input_path.open(encoding="utf-8") as stream:
                 if next(stream, "").rstrip("\n") != "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex":

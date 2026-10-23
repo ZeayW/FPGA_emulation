@@ -38,6 +38,36 @@ def fixture(root):
 
 
 class IndexedVivadoTests(unittest.TestCase):
+    def test_indexed_boundary_import_preserves_board_scope_and_exact_coverage(self):
+        from emuflow.boundary_identity_storage import write_boundary_identity_storage
+        from emuflow.boundary_timing_storage import read_boundary_timing_storage
+        from emuflow.vivado_physical_timing import import_indexed_vivado_boundary
+        from tests.test_boundary_identity_storage import _header, _record
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            identity = root / "identity.json"
+            with write_boundary_identity_storage(identity, _header(), [_record("tx", "tx", 0), _record("rx", "rx", 1)]):
+                pass
+            measured = root / "measured.tsv"
+            header = "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex\n"
+            h = lambda text: text.encode().hex()
+            rows = ["\t".join((h(kind), kind, "1.25", h("start"), h("end"))) + "\n" for kind in ("tx", "rx")]
+            measured.write_text(header + "".join(rows))
+            output = root / "timing.json"
+            report = import_indexed_vivado_boundary(measured, identity, output, measurement_scope="board-integrated-interface")
+            self.assertEqual(report["endpoints"], 2)
+            with read_boundary_timing_storage(output) as view:
+                self.assertEqual(view["measurement_scope"], "board-integrated-interface")
+                self.assertEqual(view["endpoints"][0]["measurement"],
+                                 "interface-startpoint-through-rx-boundary-to-shadow-capture")
+            for bad in (rows[:1], rows + rows[:1], [rows[0].replace("1.25", "nan"), rows[1]],
+                        [rows[0].replace(h("tx"), h("foreign"), 1), rows[1]]):
+                measured.write_text(header + "".join(bad))
+                with self.assertRaises(ValidationError):
+                    import_indexed_vivado_boundary(measured, identity, root / "bad.json")
+                self.assertFalse((root / "bad.json").exists())
+
     @unittest.skipUnless(shutil.which("tclsh"), "requires Tcl interpreter")
     def test_timing_extent_rejects_enclosing_prefix_and_suffix(self):
         helper = Path(__file__).resolve().parents[1] / "scripts/vivado/timing_contract.tcl"
