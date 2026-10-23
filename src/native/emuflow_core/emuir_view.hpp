@@ -12,6 +12,7 @@ namespace emuflow::core {
 class EmuirView;
 struct EmuirCellTag {};
 struct EmuirNetTag {};
+struct EmuirPinTag {};
 
 // A public record identity includes its artifact namespace. Algorithms can
 // explicitly extract the local sequence for their own compact integer arrays.
@@ -27,6 +28,7 @@ template <typename Tag> class EmuirId {
 };
 using EmuirCellId = EmuirId<EmuirCellTag>;
 using EmuirNetId = EmuirId<EmuirNetTag>;
+using EmuirPinId = EmuirId<EmuirPinTag>;
 enum class EndpointRole { kDriver, kSink };
 struct EmuirCounts { std::uint64_t cells, nets, endpoints; };
 struct EmuirEndpoint {
@@ -34,6 +36,7 @@ struct EmuirEndpoint {
   EndpointRole role;
   std::uint64_t ordinal;
   std::optional<EmuirCellId> cell;
+  std::optional<EmuirPinId> pin;  // Present when pin validation was requested.
 };
 
 // Read-only compact EmuIR v2 owner. Construction reads bounded metadata only;

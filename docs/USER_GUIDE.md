@@ -78,6 +78,15 @@ before launching expensive work. The probe checks native core loading, SQLite
 External synthesis, placement, routing and timing engines require their
 separate dependency and device-data checks.
 
+Compact production candidate analysis uses the shared operation
+`phase3 build-candidate-ids EMUIR POLICY OUTPUT`. A bounded policy request binds
+the source generation; `OUTPUT` contains sealed membership bits, a streamed UTF-8
+name pool and integer offsets. Python borrows those columns and sends no graph
+or cell-class arrays to the operation. `candidate_implementation_id` reports
+`native-candidate-ids-v1`; `native_candidate_metrics` uses the same native metric
+scopes as clustering below. Large compact native semantic analysis uses this
+producer too; explicit reference and full characterization APIs stay available.
+
 Normal compact Phase 3 runs use `phase3 build-clusters EMUIR REQUEST OUTPUT`
 inside the shared core. Packed eligibility bits and integer group membership
 bind to the EmuIR generation. The native producer performs connectivity union,
@@ -91,8 +100,8 @@ process-lifetime RSS high-water snapshot. It is separate from sampled whole-phas
 process-tree RSS. The ordinary
 Python `build_clusters` API keeps its reference default for comparison. Retained
 diagnostics and explicit PATRON comparison executables also keep that producer; a selected
-production native failure stops the phase. Candidate eligibility construction
-and remaining semantic/publication work are not claimed as native here.
+production native failure stops the phase. Remaining policy/semantic publication
+work is not claimed as native here.
 
 Compact indexed PATRON v14 runs normally select the shared native pressure-model
 producer. `algorithm_validation.model_implementation_id` identifies

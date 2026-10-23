@@ -300,7 +300,7 @@ there is no silent implementation or provider fallback.
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
 | Phase 1–2 | Native synthesis/STA engines; compact indexed inputs | Consolidate import, identities and timing adapters under the shared artifact API |
-| Phase 3 | Shared-core primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate candidate eligibility and remaining assignment publication/reference modes; qualify complete stage costs |
+| Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | One native exact model/solver/certificate/store producer; independent staged cursor validation | Native independent validation, timing adapters and non-exact interfaces |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
@@ -310,6 +310,30 @@ there is no silent implementation or provider fallback.
 Native computation does not eliminate algorithmic search cost. Compare search,
 imported-solution and frozen-output replay as separate execution modes. Porting
 an adapter must not change the algorithm budget or weaken independent legality.
+
+## Structural candidate production
+
+`phase3 build-candidate-ids EMUIR POLICY OUTPUT` owns candidate resource/pin
+classification, adjacency construction and iterative SCC analysis inside the
+shared core. The policy is bounded and binds the EmuIR generation; cells, nets
+and pins use the shared artifact-scoped identity view. A common bounded resource
+decoder is used by candidate analysis and primary clustering.
+
+The integer graph has forward CSR only. Parallel logical arcs preserve SCC
+membership, so the producer needs neither a temporary SQLite arc table nor a
+sort/deduplication pass. Net identity on each arc lets cycle rejection project
+back to candidates without another endpoint scan. Architectural state remains
+outside that graph. Soft drivers, complete driver multiplicity, cyclic sinks,
+hard/opaque resources, safe sequential input ports and top-level pins keep the
+reference rules; readiness, slot feasibility and downstream timing remain absent.
+
+A single lexical cursor streams eligible names into the sealed output, followed
+by integer offsets. Python borrows that view without rebuilding graph arrays or
+a name pool. Compact production clustering and the large native exact analyzer
+select this operation. Explicit characterization/reference APIs keep their own
+independent implementation; a selected native failure never falls back.
+The existing name-facing policy export and primary-to-pressure packed snapshot
+remain conversion boundaries to retire during final publication work.
 
 ## Primary cluster production
 
@@ -327,9 +351,8 @@ Borrowed columns retain their mapping and phase-owned scratch until the last
 consumer releases them. That owner releases views and closes the mapping before
 removing its directory, including exception cycles; no independent weak-reference
 scratch finalizer may unlink a still-mapped file. The final cluster/assignment
-schemas remain unchanged,
-and candidate eligibility plus remaining final semantic/index publication still
-need native ownership. The public reference constructor remains independently
+schemas remain unchanged; final policy/semantic/index publication still needs
+native ownership. The public reference constructor remains independently
 available for differential validation; native production has no failure fallback.
 
 ## Phase 3 contracts

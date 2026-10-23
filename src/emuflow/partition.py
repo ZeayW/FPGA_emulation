@@ -1847,6 +1847,7 @@ def build_clusters(
             "partition cut mode must be 'sequential-only' or "
             "'static-exact-combinational'"
         )
+    compact_ir_path = _compact_partition_ir_path(ir)
     released_combinational_nets: AbstractSet[str] = set()
     candidate_index = None
     if cut_mode == CUT_MODE_STATIC_EXACT:
@@ -1865,6 +1866,7 @@ def build_clusters(
             ir,
             include_dependency_levels=False,
             include_source_identity=False,
+            _native_candidate_ids=(_native_compact_clusters and compact_ir_path is not None),
         )
         # Candidate depth is not intrinsic to a net.  A net deep in the
         # potential-cut DAG can still be the only transported boundary in its
@@ -1872,7 +1874,6 @@ def build_clusters(
         # structurally legal candidate and reconstruct actual depth only after
         # the provider supplies an assignment.
         released_combinational_nets = candidate_index["eligible_ids"]
-    compact_ir_path = _compact_partition_ir_path(ir)
     if compact_ir_path is not None:
         if _native_compact_clusters:
             from .phase3_clusters_native import build_native_clusters
@@ -1881,6 +1882,10 @@ def build_clusters(
             clusters = _build_clusters_from_compact_ir(
                 ir, constraints, released_combinational_nets,
             )
+        candidate_implementation = getattr(released_combinational_nets, "implementation_id", None)
+        if candidate_implementation is not None:
+            clusters.candidate_implementation_id = candidate_implementation
+            clusters.candidate_native_metrics = released_combinational_nets.native_metrics
         instance_count = len(ir.value["instances"])
         result = {
             "schema": CLUSTERS_SCHEMA,

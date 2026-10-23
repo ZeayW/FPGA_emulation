@@ -22,6 +22,30 @@ A zero-combinational-cut flow is a compatibility test, not Static Exact
 feature evidence. Real-design qualification must use naturally selected cuts,
 not assignments forced to make a feature appear exercised.
 
+## Native producer differential
+
+The offline command
+`PYTHONPATH=src python scripts/validation/qualify_phase3_native_producers.py --ir INPUT.sqlite --platform BOARD.json --out OUTPUT --expected-design TOP`
+compares the reference and native candidate/primary-cluster producers on the
+same immutable compact input. Optional `--constraints`, `--minimum-instances`
+and `--source-commit` freeze explicit constraints, a scale floor and versioned
+runtime identity. It does not rerun synthesis or partition search.
+
+Each arm executes in its own supervised process with separate temporary storage.
+The tool hashes the input once before both arms and compares all ordered bitmap,
+name, offset, member, source-owner, resource and fixed/group columns. Hashing is
+outside the measured producer intervals. Results retain arm order, sampled
+process-tree RSS, wall time, parent CPU and separately scoped native operation
+metrics. A native process RSS high-water value is not combined tree RSS.
+Only compact identities and measurements remain after worker exit and scratch
+retirement. Failure cannot publish a passing certificate.
+
+This is a representation-boundary diagnostic, not Static Exact feature evidence,
+a whole-Phase-3 performance result, an algorithm/provider comparison or complete
+Phase 1–7/7C qualification. The declared real workload, naturally selected cuts,
+physical gates and original-path timing coverage still need their normal terminal
+acceptance; fixtures and this producer comparison do not replace them.
+
 ## Timing acceptance
 
 A complete physical flow requires explicit clock periods, routed logic and

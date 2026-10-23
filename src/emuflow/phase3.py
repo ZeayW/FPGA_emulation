@@ -1219,6 +1219,10 @@ def run_phase3(
     if cluster_implementation is not None:
         report["cluster_implementation_id"] = cluster_implementation
         report["native_cluster_metrics"] = clusters["clusters"].native_metrics
+    candidate_implementation = getattr(clusters["clusters"], "candidate_implementation_id", None)
+    if candidate_implementation is not None:
+        report["candidate_implementation_id"] = candidate_implementation
+        report["native_candidate_metrics"] = clusters["clusters"].candidate_native_metrics
     if cut_mode != CUT_MODE_SEQUENTIAL_ONLY:
         report["cut_mode"] = cut_mode
         report["static_exact_candidate_policy"] = (

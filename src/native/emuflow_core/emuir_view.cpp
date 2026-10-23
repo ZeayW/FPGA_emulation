@@ -91,7 +91,7 @@ void EmuirView::VisitConnectivity(
       "typeof(e.net_seq)='integer' AND typeof(e.role)='integer' AND "
       "typeof(e.ordinal)='integer' AND (e.instance_seq IS NULL OR "
       "(typeof(e.instance_seq)='integer' AND e.instance_seq>=0)) ") +
-      (validate_pins ? ",p.name,e.bit,typeof(e.bit)='integer' FROM endpoint_records e "
+      (validate_pins ? ",p.name,e.bit,typeof(e.bit)='integer',e.port_seq FROM endpoint_records e "
                       "LEFT JOIN pin_names p ON p.seq=e.port_seq " : "FROM endpoint_records e ") +
       "ORDER BY e.net_seq,e.role,e.ordinal");
   bool have_endpoint = endpoints.Step();
@@ -113,8 +113,13 @@ void EmuirView::VisitConnectivity(
         Invalid("native compact EmuIR endpoint pin is invalid");
       std::optional<EmuirCellId> cell;
       if (owner >= 0) cell = EmuirCellId(artifact_, static_cast<std::uint64_t>(owner));
+      std::optional<EmuirPinId> pin;
+      if (validate_pins) {
+        if (endpoints.TypedInteger(8)<1) Invalid("native compact EmuIR pin identity is invalid");
+        pin=EmuirPinId(artifact_,static_cast<std::uint64_t>(endpoints.TypedInteger(8)));
+      }
       endpoint({net, role == 0 ? EndpointRole::kDriver : EndpointRole::kSink,
-                static_cast<std::uint64_t>(ordinal), std::move(cell)});
+                static_cast<std::uint64_t>(ordinal), std::move(cell), std::move(pin)});
       ++observed_endpoints;
       previous_role = role; previous_ordinal = ordinal;
       have_endpoint = endpoints.Step();

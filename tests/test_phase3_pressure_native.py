@@ -138,6 +138,8 @@ def test_phase3_production_selects_native_model_and_keeps_independent_validation
     assert report['status']=='pass'
     assert report['cluster_implementation_id']=='native-primary-clusters-v1'
     assert report['native_cluster_metrics']['wall_seconds']>0
+    assert report['candidate_implementation_id']=='native-candidate-ids-v1'
+    assert report['native_candidate_metrics']['wall_seconds']>0
     assert report['algorithm_validation']['native_input_transport']=='native-store-model-v1'
     assert report['algorithm_validation']['model']['nets']==2
     assert report['algorithm_validation']['native_model_metrics']['model_build']['wall_seconds']>0

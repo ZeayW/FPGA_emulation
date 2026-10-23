@@ -3,6 +3,7 @@
 #include "emuflow_core/emuir_view.hpp"
 #include "emuflow_core/hash.hpp"
 #include "emuflow_core/sqlite.hpp"
+#include "emuflow_core/resource_view.hpp"
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -15,8 +16,6 @@ void Check(bool condition, const char* message) {
   if (!condition) throw StageError(ErrorCode::kInvalidArtifact,message);
 }
 constexpr std::uint32_t missing=UINT32_MAX;
-constexpr std::array<const char*,12> fields={
-  "lut","ff","bram","dsp","carry","bram18k","uram288","dsp48","carry8","io","clock","other"};
 struct UnionFind {
   std::vector<std::uint32_t> parent;
   std::vector<unsigned char> rank;
@@ -106,12 +105,7 @@ void BuildPartitionClusters(const std::vector<ArtifactRef>& inputs,const std::st
   std::vector<std::uint32_t> root_to_cluster(count,missing),source_owner(count),lexical_owner(count),member_counts;
   std::vector<std::uint64_t> name_offsets{0}; std::string names;
   std::array<std::vector<std::uint32_t>,12> resources;
-  // Bound the resource-payload cache independently of design size. Repeated
-  // interned resources avoid JSON parsing without a second graph-sized map.
-  std::int64_t cached_payload=-1; std::array<std::uint32_t,12> amounts{};
-  std::map<std::int64_t,std::array<std::uint32_t,12>> resource_cache;
-  auto payload=source.Prepare("SELECT value,json_type(value) FROM payloads WHERE seq=?");
-  auto resource=source.Prepare("SELECT key,value,type FROM json_each(?)");
+  ResourceView resource_view(source);
   auto cells=source.Prepare("SELECT seq,id,resources_seq FROM cell_records ORDER BY id");
   observed=0;
   while (cells.Step()) {
@@ -125,29 +119,10 @@ void BuildPartitionClusters(const std::vector<ArtifactRef>& inputs,const std::st
     }
     lexical_owner[observed++]=cluster; source_owner[seq]=cluster; ++member_counts[cluster];
     names+=name; name_offsets.push_back(names.size());
-    const auto resource_seq=cells.TypedInteger(2); Check(resource_seq>=0,"invalid primary cluster resource reference");
-    const auto cached=resource_cache.find(resource_seq);
-    if (cached!=resource_cache.end()) { amounts=cached->second; cached_payload=resource_seq; }
-    if (resource_seq!=cached_payload) {
-      payload.BindInteger(1,resource_seq);
-      Check(payload.Step() && payload.Text(1)=="object","missing or invalid primary cluster resources");
-      const auto json=payload.TypedText(0); payload.Reset();
-      resource.BindText(1,json); amounts.fill(0); std::array<bool,12> seen{};
-      while (resource.Step()) {
-        const auto key=resource.TypedText(0),type=resource.Text(2);
-        const auto field=std::find_if(fields.begin(),fields.end(),[&](auto name) { return key==name; });
-        Check(field!=fields.end(),"unknown primary cluster resource");
-        const auto index=field-fields.begin(); const auto amount=resource.Integer(1);
-        Check(!seen[index] && type=="integer" && amount>=0 && static_cast<std::uint64_t>(amount)<=UINT32_MAX,
-              "invalid primary cluster resource amount");
-        seen[index]=true; amounts[index]=amount;
-      }
-      resource.Reset(); cached_payload=resource_seq;
-      if (resource_cache.size()==4096) resource_cache.clear();
-      resource_cache.emplace(resource_seq,amounts);
-    }
-    for (std::size_t field=0;field<fields.size();++field) {
-      const auto total=static_cast<std::uint64_t>(resources[field][cluster])+amounts[field];
+    const auto& record=resource_view.Get(cells.TypedInteger(2));
+    Check(!record.exceeds_uint32,"primary cluster resource exceeds uint32");
+    for (std::size_t field=0;field<kResourceFields.size();++field) {
+      const auto total=static_cast<std::uint64_t>(resources[field][cluster])+record.amounts[field];
       Check(total<UINT64_C(4294967296),"primary cluster resource exceeds uint32");
       resources[field][cluster]=total;
     }

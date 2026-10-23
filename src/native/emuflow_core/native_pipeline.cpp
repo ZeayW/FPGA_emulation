@@ -5,6 +5,7 @@
 #include "emuflow_core/bookshelf.hpp"
 #include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/partition_clusters.hpp"
+#include "emuflow_core/candidate_ids.hpp"
 #include "emuflow_core/sqlite.hpp"
 
 #include <filesystem>
@@ -32,6 +33,7 @@ const char* StageName(Stage stage) {
     case Stage::kExportBookshelf: return "phase7.export-bookshelf";
     case Stage::kRefinePatronFromStore: return "phase3.refine-patron-from-store";
     case Stage::kBuildPartitionClusters: return "phase3.build-clusters";
+    case Stage::kBuildCandidateIds: return "phase3.build-candidate-ids";
   }
   return "unknown-native-stage";
 }
@@ -61,6 +63,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kRefinePositions: return {request.typed_input ? "chimew-refine-input-v1" : "chimew-refine-legacy-text"};
     case Stage::kRudy: return {"chimew-rudy-input-v1"};
     case Stage::kExportBookshelf: return {"xilinx-mapped-index-v2", "openparf-atom-index-private-v1"};
+    case Stage::kBuildCandidateIds: return {"emuir-compact-v2","candidate-policy-request-v1"};
     case Stage::kBuildPartitionClusters: return {"emuir-compact-v2","partition-cluster-request-v1"};
     case Stage::kRefinePatronFromStore:
       return {"emuir-compact-v2","timing-path-store-v1","patron-cluster-columns-v1","patron-board-request-v1"};
@@ -189,6 +192,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
         break;
       case Stage::kRefinePatronFromStore: core::RefinePatronFromStore(inputs,output); break;
       case Stage::kBuildPartitionClusters: core::BuildPartitionClusters(inputs,output); break;
+      case Stage::kBuildCandidateIds: core::BuildCandidateIds(inputs,output); break;
       default: throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
     }
     if (output == "-") {
@@ -216,6 +220,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kExportBookshelf: schema = "openparf-bookshelf-nets-v1"; break;
       case Stage::kRefinePatronFromStore: schema = "patron-output-v1"; break;
       case Stage::kBuildPartitionClusters: schema = "partition-cluster-columns-v1"; break;
+      case Stage::kBuildCandidateIds: schema = "candidate-id-columns-v1"; break;
       default: throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
     }
     std::vector<core::ArtifactRef> refs{core::ArtifactRef::Bind(request.output_path, schema, request.output_path == "-")};

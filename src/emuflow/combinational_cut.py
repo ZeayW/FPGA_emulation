@@ -1228,6 +1228,7 @@ def _build_combinational_cut_candidate_index(
     *,
     include_dependency_levels: bool,
     include_source_identity: bool,
+    _native_candidate_ids: bool = False,
 ) -> Dict[str, Any]:
     """Build the compact candidate index used by Phase 3 hot paths.
 
@@ -1241,17 +1242,21 @@ def _build_combinational_cut_candidate_index(
     """
 
     compact_path = _compact_partition_ir_path(ir)
+    if not isinstance(_native_candidate_ids, bool):
+        raise ValidationError("native candidate producer flag is invalid")
+    if _native_candidate_ids and (compact_path is None or include_dependency_levels or include_source_identity):
+        raise ValidationError("native candidate producer requires compact structural-only input")
     if (
         compact_path is not None
         and not include_dependency_levels
         and not include_source_identity
     ):
-        return {
-            "eligible_ids": _compact_combinational_cut_candidate_ids(
-                ir, compact_path
-            ),
-            "dependency_levels": {},
-        }
+        if _native_candidate_ids:
+            from .phase3_candidates_native import build_native_candidate_ids
+            eligible_ids = build_native_candidate_ids(ir)
+        else:
+            eligible_ids = _compact_combinational_cut_candidate_ids(ir, compact_path)
+        return {"eligible_ids": eligible_ids, "dependency_levels": {}}
 
     instances = {item["id"]: item for item in ir.value["instances"]}
     classes = {
@@ -2157,6 +2162,7 @@ def _analyze_static_exact_dependencies_native(
         ir,
         include_dependency_levels=False,
         include_source_identity=False,
+        _native_candidate_ids=_compact_partition_ir_path(ir) is not None,
     )
     eligible = candidate_index["eligible_ids"]
     del candidate_index

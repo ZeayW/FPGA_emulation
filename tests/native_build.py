@@ -212,6 +212,11 @@ def static_exact_analyzer() -> Path:
         ],
         check=True,
     )
+    # Compact native semantic analysis now also owns candidate production in
+    # the unified core. Model the installed sibling dependency in this fixture.
+    unified = executable.parent / "emuflow-native"
+    if not unified.exists():
+        unified.symlink_to(emuflow_native())
     return executable
 
 
@@ -261,6 +266,8 @@ _NATIVE_STAGE_SOURCES = (
     "emuflow_core/bookshelf.cpp",
     "emuflow_core/patron_ingress.cpp",
     "emuflow_core/partition_clusters.cpp",
+    "emuflow_core/candidate_ids.cpp",
+    "emuflow_core/resource_view.cpp",
 )
 
 
