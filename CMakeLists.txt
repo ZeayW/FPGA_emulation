@@ -385,6 +385,8 @@ file(
   "${CMAKE_SOURCE_DIR}/platforms/virtual/*.wires.csv"
   "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
   "${CMAKE_SOURCE_DIR}/scripts/yosys/*"
+  "${CMAKE_SOURCE_DIR}/scripts/openroad/*"
+  "${CMAKE_SOURCE_DIR}/scripts/patron/*"
   "${CMAKE_SOURCE_DIR}/scripts/vivado/*.tcl"
 )
 set(

@@ -22,7 +22,7 @@ proc emuflow_resource_inventory {expected} {
     if {[string match LUT* $ref]} {
       set site [emuflow_placed_sites $cell]
       set bel [get_property BEL $cell]
-      if {![regexp {^([A-H])[56]LUT$} $bel -> letter]} {error "unknown LUT BEL $bel: $cell"}
+      if {![regexp {^(?:SLICE[LM]\.)?([A-H])[56]LUT$} $bel -> letter]} {error "unknown LUT BEL $bel: $cell"}
       # O5/O6 halves, including separately packed source LUTs, share capacity.
       dict set occupied lut "$site/$letter" 1
     } elseif {[string match FD* $ref]} {

@@ -14,7 +14,8 @@ The indexed Vivado adapter consumes current Phase 6 SQLite contracts with
 preserved net identities, fixed LVDS I/O, native sequential control pins, and
 the common physical-result contract. Real-device qualification is in progress. Its OOC implementation retains abstract external clock sources and
 does not establish board clock/skew signoff. Used undriven source nets are
-rejected before mapping or vendor implementation. See the
+rejected before mapping or vendor implementation. Physical capacity accounting
+handles native macro expansion and shared LUT halves. See the
 [Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider) and
 [user guide](docs/USER_GUIDE.md#physical-implementation).
 The virtual BoardDB is a declared academic platform model rather than evidence

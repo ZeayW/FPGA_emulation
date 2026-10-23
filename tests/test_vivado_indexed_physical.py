@@ -55,11 +55,11 @@ foreach c $cells r $refs l $levels {
 }
 dict set sites lut5 slice0
 dict set sites lut6 slice0
-dict set props lut5 BEL A5LUT
+dict set props lut5 BEL SLICEM.A5LUT
 dict set sites packed5 slice0
 dict set sites packed6 slice0
 dict set props packed5 BEL B5LUT
-dict set props packed6 BEL B6LUT
+dict set props packed6 BEL SLICEL.B6LUT
 dict set sites dsp_alu dsp0
 dict set sites dsp_mul dsp0
 proc get_cells {args} {global cells; return $cells}
