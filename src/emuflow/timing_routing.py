@@ -1169,12 +1169,191 @@ class _ProjectedSystemRouteSequence(list):
         native_routes: _PackedNativeRouteSequence,
         arc_keys: Sequence[ArcKey],
         latency_cycles: array,
+        native_result_path: Optional[Path] = None,
+        native_result_owner: Any = None,
     ) -> None:
         super().__init__()
         self._demands = demands
         self._native_routes = native_routes
         self._arc_keys = arc_keys
         self._latency_cycles = latency_cycles
+        self._native_result_path = native_result_path
+        self._native_result_owner = native_result_owner
+
+    @property
+    def has_native_route_relations(self) -> bool:
+        return (
+            self._native_result_path is not None
+            and self._native_result_path.is_file()
+        )
+
+    def publish_native_route_relations(
+        self, connection: sqlite3.Connection
+    ) -> None:
+        """Copy checked native delay/arc relations into RouteStore by SQL.
+
+        The private result is held by this sequence until publication.  Route
+        identities and assignment-owned dependency metadata still come from
+        the public demand contract; only router-owned facts are transferred.
+        """
+
+        path = self._native_result_path
+        if path is None or not path.is_file():
+            raise ValidationError("native route result lease is unavailable")
+        uri = f"file:{path.resolve()}?mode=ro&immutable=1"
+        connection.execute(
+            "ATTACH DATABASE ? AS native_route_result", (uri,)
+        )
+        connection.execute("PRAGMA native_route_result.cache_size=-1024")
+        if (
+            connection.execute(
+                "PRAGMA native_route_result.application_id"
+            ).fetchone()[0]
+            != _NATIVE_ROUTE_RESULT_APPLICATION_ID
+            or connection.execute(
+                "PRAGMA native_route_result.user_version"
+            ).fetchone()[0]
+            != _NATIVE_ROUTE_RESULT_USER_VERSION
+        ):
+            raise ValidationError("native route result envelope changed")
+        expected_tables = {
+            "direction_locks",
+            "routes",
+            "route_arcs",
+            "candidate_bundles",
+            "selections",
+            "timing_paths",
+            "metrics",
+        }
+        objects = {
+            (str(row[0]), str(row[1]))
+            for row in connection.execute(
+                "SELECT type,name FROM native_route_result.sqlite_master "
+                "WHERE name NOT LIKE 'sqlite_%'"
+            )
+        }
+        if objects != {("table", table) for table in expected_tables}:
+            raise ValidationError("native route result schema changed")
+        count, minimum, maximum = connection.execute(
+            "SELECT count(*),min(demand_index),max(demand_index) "
+            "FROM native_route_result.routes"
+        ).fetchone()
+        if (
+            count != len(self)
+            or minimum != (0 if len(self) else None)
+            or maximum != (len(self) - 1 if len(self) else None)
+        ):
+            raise ValidationError("native route result coverage changed")
+        if (
+            connection.execute("SELECT count(*) FROM routes").fetchone()[0]
+            or connection.execute("SELECT count(*) FROM route_edges").fetchone()[0]
+        ):
+            raise ValidationError("RouteStore native relations were already populated")
+        metadata_count = connection.execute(
+            "SELECT count(*) FROM native_route_metadata"
+        ).fetchone()[0]
+        if metadata_count != len(self):
+            raise ValidationError("native route metadata coverage changed")
+        connection.execute(
+            "CREATE TEMP TABLE native_route_arc_catalog("
+            "arc_index INTEGER PRIMARY KEY,link_id TEXT NOT NULL,"
+            "source_fpga TEXT NOT NULL,sink_fpga TEXT NOT NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO native_route_arc_catalog VALUES(?,?,?,?)",
+            (
+                (index, key[0], key[1], key[2])
+                for index, key in enumerate(self._arc_keys)
+            ),
+        )
+        malformed = connection.execute(
+            "SELECT a.demand_index FROM native_route_result.route_arcs a "
+            "LEFT JOIN native_route_result.routes r "
+            "ON r.demand_index=a.demand_index "
+            "LEFT JOIN native_route_arc_catalog c "
+            "ON c.arc_index=a.arc_index "
+            "WHERE r.demand_index IS NULL OR c.arc_index IS NULL "
+            "UNION ALL SELECT demand_index "
+            "FROM native_route_result.route_arcs GROUP BY demand_index "
+            "HAVING min(seq)!=0 OR max(seq)!=count(*)-1 LIMIT 1"
+        ).fetchone()
+        if malformed is not None:
+            raise ValidationError("native route arc relation changed")
+        connection.execute(
+            "INSERT INTO routes("
+            "seq,demand_id,net_id,source_fpga,width_bits,transport_round,"
+            "cut_class,dependency_level,combinational_dependency_depth,"
+            "max_latency_cycles,predicted_max_delay_ns) "
+            "SELECT m.seq,m.demand_id,m.net_id,m.source_fpga,m.width_bits,"
+            "m.transport_round,m.cut_class,m.dependency_level,"
+            "m.combinational_dependency_depth,m.max_latency_cycles,"
+            "n.max_delay_ns FROM native_route_metadata m "
+            "JOIN native_route_result.routes n ON n.demand_index=m.seq "
+            "ORDER BY m.seq"
+        )
+        selection_requests = connection.execute(
+            "SELECT 1 FROM temp.sqlite_master "
+            "WHERE type='table' AND name='native_route_selection_requests'"
+        ).fetchone()
+        if selection_requests is not None:
+            selection_count = connection.execute(
+                "SELECT count(*) FROM native_route_selection_requests"
+            ).fetchone()[0]
+            malformed_selection = connection.execute(
+                "SELECT q.seq FROM native_route_selection_requests q "
+                "LEFT JOIN native_route_result.selections s "
+                "ON s.demand_index=q.seq "
+                "WHERE s.demand_index IS NULL OR s.generator NOT BETWEEN 0 AND 5 "
+                "LIMIT 1"
+            ).fetchone()
+            if selection_count != len(self) or malformed_selection is not None:
+                raise ValidationError("native master-selection coverage changed")
+            connection.execute(
+                "INSERT INTO route_master_selections(seq,demand_id,generator) "
+                "SELECT q.seq,q.demand_id,CASE s.generator "
+                "WHEN 0 THEN 'shortest-path-tree' "
+                "WHEN 1 THEN 'delay-demand-balanced' "
+                "WHEN 2 THEN 'nearest-terminal-steiner' "
+                "WHEN 3 THEN 'directed-metric-closure' "
+                "WHEN 4 THEN 'shallow-light-tree' "
+                "WHEN 5 THEN 'adaptive-hop-tree' END "
+                "FROM native_route_selection_requests q "
+                "JOIN native_route_result.selections s "
+                "ON s.demand_index=q.seq ORDER BY q.seq"
+            )
+        connection.execute(
+            "INSERT INTO route_edges(route_seq,seq,link_id,source_fpga,sink_fpga) "
+            "SELECT a.demand_index,a.seq,c.link_id,c.source_fpga,c.sink_fpga "
+            "FROM native_route_result.route_arcs a "
+            "JOIN native_route_arc_catalog c USING(arc_index) "
+            "ORDER BY a.demand_index,a.seq"
+        )
+        expected_edges = connection.execute(
+            "SELECT count(*) FROM native_route_result.route_arcs"
+        ).fetchone()[0]
+        observed_edges = connection.execute(
+            "SELECT count(*) FROM route_edges"
+        ).fetchone()[0]
+        missing_delay = connection.execute(
+            "SELECT seq FROM routes WHERE predicted_max_delay_ns IS NULL LIMIT 1"
+        ).fetchone()
+        if observed_edges != expected_edges or missing_delay is not None:
+            raise ValidationError("native RouteStore publication is incomplete")
+
+    def release_native_route_relations(self) -> None:
+        owner = self._native_result_owner
+        self._native_result_owner = None
+        self._native_result_path = None
+        if owner is not None:
+            owner.cleanup()
+
+    def iter_route_storage_metadata(
+        self,
+    ) -> Iterator[tuple[Mapping[str, Any], int]]:
+        """Yield assignment-owned route fields without rebuilding edge trees."""
+
+        for index, demand in enumerate(self._demands):
+            yield demand, int(self._latency_cycles[index])
 
     def __len__(self) -> int:
         return len(self._demands)
@@ -2529,47 +2708,49 @@ def route_system_native(
         executable,
     )
     typed_native_output = command[-2:] == ["phase4", "route"]
-    with tempfile.TemporaryDirectory(prefix="emuflow-tlr-") as temporary:
-        root = Path(temporary)
-        native_input = root / "router.in"
-        native_output = root / (
-            "router-result.sqlite" if typed_native_output else "router.out"
+    native_result_owner = tempfile.TemporaryDirectory(prefix="emuflow-tlr-")
+    root = Path(native_result_owner.name)
+    native_input = root / "router.in"
+    native_output = root / (
+        "router-result.sqlite" if typed_native_output else "router.out"
+    )
+    _write_native_input(
+        native_input,
+        len(nodes),
+        model,
+        constraints,
+        provider,
+        feedback_prices,
+        candidate_workers,
+    )
+    completed = subprocess.run(
+        [
+            *command,
+            *(["--typed-output"] if typed_native_output else []),
+            str(native_input),
+            str(native_output),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise EmuFlowError(
+            f"in-tree TLR router failed with exit code "
+            f"{completed.returncode}: {detail}"
         )
-        _write_native_input(
-            native_input,
-            len(nodes),
-            model,
-            constraints,
-            provider,
-            feedback_prices,
-            candidate_workers,
-        )
-        completed = subprocess.run(
-            [
-                *command,
-                *(["--typed-output"] if typed_native_output else []),
-                str(native_input),
-                str(native_output),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip()
-            raise EmuFlowError(
-                f"in-tree TLR router failed with exit code "
-                f"{completed.returncode}: {detail}"
-            )
-        native = _parse_native_output(
-            native_output,
-            model,
-            compact_candidates=(
-                provider == GLOBAL_CANDIDATE_PROVIDER
-                and candidate_pool_path is None
-            ),
-            max_route_hops=constraints.get("max_route_hops"),
-        )
+    native = _parse_native_output(
+        native_output,
+        model,
+        compact_candidates=(
+            provider == GLOBAL_CANDIDATE_PROVIDER
+            and candidate_pool_path is None
+        ),
+        max_route_hops=constraints.get("max_route_hops"),
+    )
+    if not typed_native_output:
+        native_result_owner.cleanup()
     for name in ("master_rounds", "master_switches", "master_exact"):
         native["metrics"].setdefault(name, 0)
 
@@ -2622,6 +2803,8 @@ def route_system_native(
         native_routes,
         model["arc_keys"],
         route_latency_cycles,
+        native_output if typed_native_output else None,
+        native_result_owner if typed_native_output else None,
     )
 
     utilization = []

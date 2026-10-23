@@ -587,8 +587,37 @@ class Phase4Test(unittest.TestCase):
                         assignment,
                         platform,
                         constraints,
+                        materialize_result=False,
                     )
                 typed_parser.assert_called_once()
+            route_records = routes["routes"]
+            self.assertTrue(route_records.has_native_route_relations)
+            original_publisher = getattr(
+                timing_routing._ProjectedSystemRouteSequence,
+                "publish_native_route_relations",
+            )
+            with mock.patch.object(
+                timing_routing._ProjectedSystemRouteSequence,
+                "publish_native_route_relations",
+                autospec=True,
+                side_effect=original_publisher,
+            ) as publisher:
+                with mock.patch.object(
+                    timing_routing._ProjectedSystemRouteSequence,
+                    "_record",
+                    side_effect=AssertionError(
+                        "RouteStore publication rebuilt a Python route tree"
+                    ),
+                ) as projected_record:
+                    manifest = write_system_route_storage(
+                        runtime / "routes.json", routes
+                    )
+            publisher.assert_called_once()
+            projected_record.assert_not_called()
+            self.assertEqual(manifest["user_version"], SYSTEM_ROUTE_USER_VERSION)
+            self.assertEqual(read_json(runtime / "routes.json"), routes)
+            route_records.release_native_route_relations()
+            self.assertFalse(route_records.has_native_route_relations)
         self.assertEqual(
             validate_native_system_routes(
                 assignment, platform, routes
@@ -650,6 +679,60 @@ class Phase4Test(unittest.TestCase):
                 EmuFlowError, "invalid typed output schema"
             ):
                 timing_routing._parse_native_output(native_output, model)
+
+    def test_phase4_unified_route_publishes_native_relations(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "native-publication",
+                ["a", "b"],
+                [_link("ab", "a", "b")],
+            )
+        )
+        assignment = _assignment(platform, [("n0", "a", ["b"])])
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            runtime = root / "runtime"
+            binary = runtime / "bin" / "emuflow-native"
+            binary.parent.mkdir(parents=True)
+            binary.symlink_to(emuflow_native())
+            assignment_path = root / "assignment.json"
+            platform_path = root / "platform.json"
+            assignment_path.write_text(
+                json.dumps(assignment), encoding="utf-8"
+            )
+            platform_path.write_text(
+                json.dumps(platform.to_dict()), encoding="utf-8"
+            )
+            original_release = getattr(
+                timing_routing._ProjectedSystemRouteSequence,
+                "release_native_route_relations",
+            )
+            with mock.patch.object(
+                timing_routing._ProjectedSystemRouteSequence,
+                "release_native_route_relations",
+                autospec=True,
+                side_effect=original_release,
+            ) as release:
+                with mock.patch.dict(
+                    "os.environ",
+                    {"EMUFLOW_NATIVE_ROOT": str(runtime)},
+                    clear=False,
+                ):
+                    report = run_phase4(
+                        assignment_path,
+                        platform_path,
+                        root / "phase4",
+                    )
+            release.assert_called_once()
+            self.assertEqual(
+                report["route_storage"]["dataflow"],
+                "native-sql-route-arc-delay-selection-publication-v1",
+            )
+            routes = read_json(root / "phase4/routes.json")
+            self.assertEqual(
+                routes["routes"][0]["tree_edges"],
+                [{"link": "ab", "from": "a", "to": "b"}],
+            )
 
     def test_native_router_seals_transport_round_capacity(self) -> None:
         platform = Platform.from_dict(
@@ -1535,6 +1618,10 @@ class Phase4Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             executable = tlr_router()
+            runtime = root / "runtime"
+            binary = runtime / "bin" / "emuflow-native"
+            binary.parent.mkdir(parents=True)
+            binary.symlink_to(emuflow_native())
             assignment_path = root / "assignment.json"
             platform_path = root / "platform.json"
             timing_path = root / "timing.json"
@@ -1551,15 +1638,23 @@ class Phase4Test(unittest.TestCase):
             constraints_path.write_text(
                 json.dumps(constraints_value), encoding="utf-8"
             )
-            report = run_phase4(
-                assignment_path=assignment_path,
-                platform_path=platform_path,
-                output_dir=root / "phase4",
-                constraints_path=constraints_path,
-                timing_paths_path=timing_path,
-                router=str(executable),
-            )
+            with mock.patch.dict(
+                "os.environ",
+                {"EMUFLOW_NATIVE_ROOT": str(runtime)},
+                clear=False,
+            ):
+                report = run_phase4(
+                    assignment_path=assignment_path,
+                    platform_path=platform_path,
+                    output_dir=root / "phase4",
+                    constraints_path=constraints_path,
+                    timing_paths_path=timing_path,
+                )
             self.assertEqual(report["status"], "pass")
+            self.assertEqual(
+                report["route_storage"]["dataflow"],
+                "native-sql-route-arc-delay-selection-publication-v1",
+            )
             self.assertEqual(report["validation"]["timing_paths_original"], 3)
             self.assertEqual(report["validation"]["timing_paths_compressed"], 2)
             selector = json.loads(

@@ -303,6 +303,33 @@ class _JsonRecordSequence(list):
         return not self == other
 
 
+class _DigestingRecordSequence(list):
+    """Update one ordered-record seal while another encoder consumes rows."""
+
+    def __init__(
+        self,
+        source: Sequence[Mapping[str, Any]],
+        digest: Any,
+    ) -> None:
+        super().__init__()
+        self._source = source
+        self._digest = digest
+        self.records = 0
+
+    def __len__(self) -> int:
+        return len(self._source)
+
+    def __iter__(self) -> Iterator[Mapping[str, Any]]:
+        if self.records:
+            raise ValidationError("route seal cursor was consumed twice")
+        for record in self._source:
+            payload = _canonical(record)
+            self._digest.update(payload.encode("utf-8"))
+            self._digest.update(b"\n")
+            self.records += 1
+            yield record
+
+
 class _MasterSelectionSequence(list):
     """Lazy master-candidate selections stored outside the route header."""
 
@@ -1623,6 +1650,13 @@ def write_system_route_storage(
         raise ValidationError("system routes demands must be an array")
     if not isinstance(raw_routes, Sequence) or isinstance(raw_routes, (str, bytes)):
         raise ValidationError("system routes routes must be an array")
+    native_route_publisher = getattr(
+        raw_routes, "publish_native_route_relations", None
+    )
+    direct_native_routes = bool(
+        callable(native_route_publisher)
+        and getattr(raw_routes, "has_native_route_relations", False)
+    )
     header = dict(routes)
     del header["demands"]
     del header["routes"]
@@ -1670,6 +1704,9 @@ def write_system_route_storage(
         header["timing"] = {
             key: value for key, value in timing.items() if key != "paths"
         }
+    direct_native_selections = bool(
+        direct_native_routes and len(raw_master_selections)
+    )
 
     # Normalize macOS /var -> /private/var aliases before any generation
     # comparison.  Mixing resolved previous paths with unresolved new paths can
@@ -1695,19 +1732,50 @@ def write_system_route_storage(
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
         connection.execute("PRAGMA temp_store=FILE")
+        if direct_native_routes:
+            connection.execute("PRAGMA cache_size=-2048")
+            connection.execute("PRAGMA temp.cache_size=-2048")
         connection.executescript(_DDL)
         connection.execute(f"PRAGMA application_id={SYSTEM_ROUTE_APPLICATION_ID}")
         connection.execute(f"PRAGMA user_version={SYSTEM_ROUTE_USER_VERSION}")
+        if direct_native_routes:
+            connection.execute(
+                "CREATE TEMP TABLE native_route_metadata("
+                "seq INTEGER PRIMARY KEY,demand_id TEXT NOT NULL UNIQUE,"
+                "net_id TEXT NOT NULL UNIQUE,source_fpga TEXT NOT NULL,"
+                "width_bits INTEGER NOT NULL,transport_round INTEGER,"
+                "cut_class TEXT,dependency_level INTEGER,"
+                "combinational_dependency_depth INTEGER,"
+                "max_latency_cycles INTEGER)"
+            )
+            if direct_native_selections:
+                connection.execute(
+                    "CREATE TEMP TABLE native_route_selection_requests("
+                    "seq INTEGER PRIMARY KEY,demand_id TEXT NOT NULL UNIQUE)"
+                )
         if len(raw_demands) != len(raw_routes):
             raise ValidationError("system-route demand/route coverage disagrees")
-        for seq, route in enumerate(raw_routes):
+        route_metadata_cursor = getattr(
+            raw_routes, "iter_route_storage_metadata", None
+        )
+        if direct_native_routes:
+            if not callable(route_metadata_cursor):
+                raise ValidationError("native route metadata cursor is missing")
+            route_records = (
+                ({**demand, "max_latency_cycles": latency}, True)
+                for demand, latency in route_metadata_cursor()
+            )
+        else:
+            route_records = ((route, False) for route in raw_routes)
+        written_routes = 0
+        for seq, (route, metadata_only) in enumerate(route_records):
             if not isinstance(route, Mapping):
                 raise ValidationError("system route is not an object")
             route_id = route.get("id")
             net = route.get("net")
             source = route.get("source")
             sinks = route.get("sinks")
-            edges = route.get("tree_edges")
+            edges = [] if metadata_only else route.get("tree_edges")
             predecessors = route.get("predecessor_cut_nets", [])
             if (
                 not isinstance(route_id, str)
@@ -1726,20 +1794,37 @@ def write_system_route_storage(
                 )
             ):
                 raise ValidationError("system route typed fields are malformed")
-            payload = _canonical(route)
-            relation_digests["routes"].update(payload.encode("utf-8"))
-            relation_digests["routes"].update(b"\n")
-            scalar_values = _typed_route_scalar_values(route)
-            connection.execute(
-                "INSERT INTO routes VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    seq,
-                    route_id,
-                    net,
-                    source,
-                    *scalar_values,
-                ),
-            )
+            if not metadata_only:
+                payload = _canonical(route)
+                relation_digests["routes"].update(payload.encode("utf-8"))
+                relation_digests["routes"].update(b"\n")
+            scalar_values = list(_typed_route_scalar_values(route))
+            if direct_native_routes:
+                if scalar_values[-1] is not None:
+                    raise ValidationError(
+                        "native route metadata duplicated router-owned delay"
+                    )
+                connection.execute(
+                    "INSERT INTO native_route_metadata VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        seq,
+                        route_id,
+                        net,
+                        source,
+                        *scalar_values[:-1],
+                    ),
+                )
+            else:
+                connection.execute(
+                    "INSERT INTO routes VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        seq,
+                        route_id,
+                        net,
+                        source,
+                        *scalar_values,
+                    ),
+                )
             demand = raw_demands[seq]
             if not isinstance(demand, Mapping) or demand != _demand_from_route(route):
                 raise ValidationError(
@@ -1752,17 +1837,23 @@ def write_system_route_storage(
                 "INSERT INTO demands VALUES(?,?,?)",
                 (seq, demand["id"], seq),
             )
+            if direct_native_selections:
+                connection.execute(
+                    "INSERT INTO native_route_selection_requests VALUES(?,?)",
+                    (seq, demand["id"]),
+                )
             connection.executemany(
                 "INSERT INTO route_sinks VALUES(?,?,?)",
                 ((seq, index, sink) for index, sink in enumerate(sinks)),
             )
-            connection.executemany(
-                "INSERT INTO route_edges VALUES(?,?,?,?,?)",
-                (
-                    (seq, index, edge["link"], edge["from"], edge["to"])
-                    for index, edge in enumerate(edges)
-                ),
-            )
+            if not direct_native_routes:
+                connection.executemany(
+                    "INSERT INTO route_edges VALUES(?,?,?,?,?)",
+                    (
+                        (seq, index, edge["link"], edge["from"], edge["to"])
+                        for index, edge in enumerate(edges)
+                    ),
+                )
             connection.executemany(
                 "INSERT INTO route_predecessors VALUES(?,?,?)",
                 (
@@ -1770,6 +1861,9 @@ def write_system_route_storage(
                     for index, predecessor in enumerate(predecessors)
                 ),
             )
+            written_routes += 1
+        if written_routes != len(raw_routes):
+            raise ValidationError("system-route route cursor coverage disagrees")
         for seq, timing_path in enumerate(raw_timing_paths):
             if not isinstance(timing_path, Mapping):
                 raise ValidationError("system-route timing path is malformed")
@@ -1783,14 +1877,17 @@ def write_system_route_storage(
                 "INSERT INTO timing_paths VALUES(?,?,?)",
                 (seq, identity, payload),
             )
-        for seq, selection in enumerate(raw_master_selections):
+        selection_records = (
+            () if direct_native_selections else raw_master_selections
+        )
+        for seq, selection in enumerate(selection_records):
             if (
                 not isinstance(selection, Mapping)
                 or set(selection) != {"demand", "generator"}
                 or not isinstance(selection.get("demand"), str)
                 or not isinstance(selection.get("generator"), str)
                 or seq >= len(raw_routes)
-                or raw_routes[seq].get("id") != selection["demand"]
+                or raw_demands[seq].get("id") != selection["demand"]
             ):
                 raise ValidationError(
                     "system-route master selection is malformed or unordered"
@@ -1861,6 +1958,61 @@ def write_system_route_storage(
                 raise ValidationError(
                     "system-route refinement batch summary disagrees"
                 )
+        if direct_native_routes:
+            # The relation copy is now the authority.  Seal and hash that
+            # published view instead of walking the Python route projection a
+            # second time; this also makes any SQL mapping error observable in
+            # the logical identity.
+            assert callable(native_route_publisher)
+            native_route_publisher(connection)
+            connection.commit()
+            connection.close()
+            sealed_routes = _DigestingRecordSequence(
+                SystemRouteSequence(
+                    temporary,
+                    len(raw_routes),
+                    SYSTEM_ROUTE_USER_VERSION,
+                ),
+                relation_digests["routes"],
+            )
+            logical_routes = dict(routes)
+            logical_routes["routes"] = sealed_routes
+            sealed_selections = None
+            if direct_native_selections:
+                sealed_selections = _DigestingRecordSequence(
+                    _MasterSelectionSequence(
+                        temporary, len(raw_master_selections)
+                    ),
+                    relation_digests["master_selections"],
+                )
+                joint_value = logical_routes.get("joint_optimization")
+                if not isinstance(joint_value, Mapping):
+                    raise ValidationError(
+                        "native master selections lack optimization header"
+                    )
+                joint_value = dict(joint_value)
+                candidate_value = joint_value.get("candidate_generation")
+                if not isinstance(candidate_value, Mapping):
+                    raise ValidationError(
+                        "native master selections lack candidate header"
+                    )
+                candidate_value = dict(candidate_value)
+                candidate_value["master_selection"] = sealed_selections
+                joint_value["candidate_generation"] = candidate_value
+                logical_routes["joint_optimization"] = joint_value
+            logical_sha256 = _pretty_sha256(logical_routes)
+            if sealed_routes.records != len(raw_routes):
+                raise ValidationError("published route seal coverage disagrees")
+            if (
+                sealed_selections is not None
+                and sealed_selections.records != len(raw_master_selections)
+            ):
+                raise ValidationError(
+                    "published master-selection seal coverage disagrees"
+                )
+            connection = sqlite3.connect(temporary)
+        else:
+            logical_sha256 = _pretty_sha256(routes)
         sections = {
             "demands": {
                 "records": len(raw_demands),
@@ -1888,7 +2040,6 @@ def write_system_route_storage(
                 ].hexdigest(),
             },
         }
-        logical_sha256 = _pretty_sha256(routes)
         connection.executemany(
             "INSERT INTO metadata VALUES(?,?)",
             (

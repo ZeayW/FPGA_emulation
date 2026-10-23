@@ -485,9 +485,21 @@ qualification. On an isolated 100,000-route scalar-relation comparison, v3
 used 12,832,768 bytes versus 21,127,168 bytes for the v2 JSON-bearing relation
 (-39.26%); insertion plus both identity indexes took 0.152 versus 0.155
 seconds. This measures only the route scalar relation, not a full NVDLA stage.
-Python still projects the independently checked result into the final
-RouteStore; direct native RouteStore relation publication remains migration
-work. The
+The production unified path now leases the checked native SQLite result through
+RouteStore publication. The writer stages only assignment-owned route identity,
+dependency and latency metadata, attaches the native result read-only, and
+inserts final route rows, arcs and master selections with set operations. The
+logical and ordered-record seals are generated from the final lazy RouteStore
+view, so publication never invokes the Python projected-route record builder.
+The private native result is released on both successful and failed Phase 4
+publication. On 100,000 one-edge routes, three isolated runs preserved the same
+logical SHA-256 and identical 24,461,312-byte stores; median publication time
+changed from 3.187 to 3.027 seconds. Median process peak RSS changed from
+49,512,448 to 58,179,584 bytes because the direct path keeps bounded SQLite
+page caches for the source, staging relation and final seal reader. This is
+adapter evidence rather than NVDLA qualification. Final timing-path records and
+refinement-batch membership still originate in the Python adapter, and C++ does
+not yet own the RouteStore selector/metadata publication lifecycle. The
 independent Phase 4 timing validator now retains one `net -> rank` identity
 index plus fixed-width route-delay, TDM-delay and route-signature columns. It
 releases those columns before the second common timing reconstruction, which

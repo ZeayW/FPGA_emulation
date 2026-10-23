@@ -317,15 +317,28 @@ def run_phase4(
                 output_dir / "physical_feedback.normalized.json",
                 read_json(physical_feedback_path),
             )
-    route_storage = write_system_route_storage(
-        output_dir / "routes.json", routes
+    route_records = routes.get("routes")
+    direct_native_route_relations = bool(
+        getattr(route_records, "has_native_route_relations", False)
     )
+    try:
+        route_storage = write_system_route_storage(
+            output_dir / "routes.json", routes
+        )
+    finally:
+        release_native_routes = getattr(
+            route_records, "release_native_route_relations", None
+        )
+        if callable(release_native_routes):
+            release_native_routes()
     report["artifacts"]["route_store"] = route_storage["artifact"]
     report["route_storage"] = {
         "schema": route_storage["schema"],
         "user_version": route_storage["user_version"],
         "dataflow": (
-            "typed-sqlite-route-scalar-timing-selection-batch-relations-v3"
+            "native-sql-route-arc-delay-selection-publication-v1"
+            if direct_native_route_relations
+            else "typed-sqlite-route-scalar-timing-selection-batch-relations-v3"
         ),
         "bytes": route_storage["store_bytes"],
         "logical_sha256": route_storage["logical_sha256"],
