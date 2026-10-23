@@ -102,6 +102,18 @@ int main() {
       reader.RequireEnd();
     }
     {
+      emuflow::core::BinaryReader reader(target.string());
+      reader.Seek(8);
+      if (reader.Read<std::uint32_t>() != 9) throw std::runtime_error("indexed read disagrees");
+      reader.Seek(0);
+      if (reader.Read<std::uint32_t>() != 42) throw std::runtime_error("reader rewind disagrees");
+      reader.Seek(reader.size());
+      reader.RequireEnd();
+      bool rejected = false;
+      try { reader.Seek(reader.size() + 1); } catch (const std::runtime_error&) { rejected = true; }
+      if (!rejected) throw std::runtime_error("out-of-bounds seek was accepted");
+    }
+    {
       emuflow::core::AtomicBinaryWriter writer(target.string());
       writer.Write<std::uint64_t>(0x1234);
       writer.Write<std::uint32_t>(7);

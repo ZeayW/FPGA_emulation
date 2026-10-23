@@ -423,9 +423,25 @@ removes that spool after validation. The independent validator scans the
 requested source endpoints, checks each returned fact and uses one coverage bit
 per canonical capture, without constructing another capture population.
 In-memory reference inputs retain the explicit Python normalizer and the
-unchanged 8192-bit logical capture contract. Canonical contract hashing,
-exact-binary section publication and assignment/index publication still have
-Python owners. Full NVDLA wall/RSS/I/O qualification remains pending.
+unchanged 8192-bit logical capture contract. Private node format v2 additionally
+owns launch semantics and integer predecessor coordinates, independently checked
+against the finalized topology. The compact production path now calls
+`emuflow-native phase3 hash-semantics NODES CAPTURES HEADER OUTPUT` and
+`emuflow-native phase3 write-exact-sections NODES CAPTURES REQUEST OUTPUT`.
+C++ computes the complete canonical SHA-256, including the graph relations,
+Unicode escaping and bounded big-integer capture bits, and emits nets,
+node-source lists, per-FPGA segments and captures directly. Python formats only
+bounded header fields, verifies generation identity/counts and seals the small
+final manifest. The native writer precomputes section extents, fills one private
+final artifact through disjoint buffered views, and hashes each section as its
+bytes are written. It creates no duplicate section spool files, and Python
+neither recopies nor rehashes the large sections. The final manifest/preamble
+update retains the final payload fsync and atomic replacement. Native dependency
+coordinates are checked against a packed net identity pool before section publication. Reference contracts retain their
+Python hasher/writer; native corruption fails without fallback. Differential
+tests preserve canonical digests and final exact-binary v1/v2 bytes. Phase 3
+cluster/pressure construction and assignment/index publication still have
+Python owners, and full NVDLA wall/RSS/I/O qualification remains pending.
 The C++ analyzer now bounds protocol-v3
 capture ordering to a 1,048,576-record run and a 64-way external merge instead
 of retaining and sorting the complete capture population. Runs deduplicate

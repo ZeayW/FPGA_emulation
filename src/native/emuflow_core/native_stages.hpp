@@ -15,6 +15,14 @@ void ResolveStaticExactCaptures(const std::string& source_path,
                                const std::string& topology_path,
                                const std::string& parts_path,
                                const std::string& output_path);
+void HashStaticExactSemantics(const std::string& nodes_path,
+                              const std::string& captures_path,
+                              const std::string& request_path,
+                              const std::string& output_path);
+void WriteStaticExactSections(const std::string& nodes_path,
+                              const std::string& captures_path,
+                              const std::string& request_path,
+                              const std::string& output_path);
 void RouteTlr(const std::string& input_path,
               const std::string& output_path,
               bool typed_output = false);

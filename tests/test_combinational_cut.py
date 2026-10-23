@@ -1878,6 +1878,19 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(indexed_output.read_bytes(), b"previous-generation")
 
+    def test_native_semantic_producer_rejects_old_private_record_version(self):
+        from emuflow.combinational_cut import _build_native_semantic_cut_nodes
+
+        topology = _NativeStaticExactAnalysisRecords(0)
+        topology.native_topology_path = Path("unused-topology")
+        def old_producer(command, **kwargs):
+            Path(command[-1]).write_bytes(struct.pack("<QIIQQ", 0x314E4553464D5545, 1, 0, 0, 0))
+            return subprocess.CompletedProcess(command, 0, "", "")
+        with patch("emuflow.combinational_cut.resolve_native_stage_command", return_value=["native"]), patch(
+            "emuflow.combinational_cut.subprocess.run", side_effect=old_producer
+        ), self.assertRaisesRegex(ValidationError, "record format v2"):
+            _build_native_semantic_cut_nodes([], topology, build_static_exact_capture_stream([]))
+
     def test_native_semantic_finalizer_matches_records_and_rejects_bad_input(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

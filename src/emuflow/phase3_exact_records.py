@@ -16,6 +16,8 @@ import json
 import mmap
 from pathlib import Path
 import struct
+import subprocess
+import tempfile
 from array import array
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from json.encoder import encode_basestring_ascii
@@ -261,6 +263,29 @@ class StaticExactDirectBinarySource:
         self.logic_segments = logic_segments
         self.launch_count = sum(flag != 0 for flag in self.launch_flags)
         self.dependency_count = dependency_count
+        paths = (getattr(cut_nodes, "native_semantic_artifact_path", None),
+                 getattr(captures, "native_capture_artifact_path", None))
+        self._native_record_refs = tuple(_native_record_identity(path) for path in paths) if all(path is not None for path in paths) else None
+
+    def native_record_paths(self):
+        paths = (getattr(self.cut_nodes, "native_semantic_artifact_path", None),
+                 getattr(self.captures, "native_capture_artifact_path", None))
+        if self._native_record_refs is None:
+            if all(path is not None for path in paths):
+                raise ValidationError("native semantic generation is mixed")
+            return None
+        if any(path is None for path in paths) or tuple(_native_record_identity(path) for path in paths) != self._native_record_refs:
+            raise ValidationError("native semantic generation is mixed")
+        return tuple(reference[0] for reference in self._native_record_refs)
+
+
+def _native_record_identity(path):
+    try:
+        path = Path(path).resolve()
+        metadata = path.stat()
+        return path, metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
+    except OSError as error:
+        raise ValidationError("native semantic generation is unavailable") from error
 
 
 def build_static_exact_cut_node_stream(
@@ -362,21 +387,30 @@ def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSe
             raise ValidationError("native semantic node header is truncated")
         magic, version, count, size = struct.unpack_from("<QIIQ", data)
         start = 24 + 8 * (count + 1)
-        if magic != 0x314E4553464D5545 or version != 1 or start + size != len(data):
+        if magic != 0x314E4553464D5545 or version not in (1, 2) or start + size != len(data):
             raise ValidationError("native semantic node envelope is invalid")
         offsets = memoryview(data)[24:start].cast("Q")
         if offsets[0] != 0 or offsets[-1] != size or any(
             offsets[index] >= offsets[index + 1] for index in range(count)
         ):
             raise ValidationError("native semantic node offsets are invalid")
-        result = _decode_cut_node_stream(memoryview(data)[start:], offsets[:-1])
+        result = _decode_cut_node_stream(memoryview(data)[start:], offsets[:-1], with_flags=version == 2)
+        result.native_semantic_version = version
+        if version == 2:
+            result.native_launch_flag = lambda index: data[start + offsets[index + 1] - 1]
+            raw_decoder = result._binary_decoder
+            def dependency_indices(index):
+                predecessor_count = len(raw_decoder(index)[6])
+                end = start + offsets[index + 1] - 1
+                return struct.unpack_from(f"<{predecessor_count}I", data, end - 4 * predecessor_count)
+            result.native_dependency_indices = dependency_indices
         result.native_semantic_artifact_path = path
         return result
     except (OSError, ValueError, struct.error) as error:
         raise ValidationError("native semantic node artifact is invalid") from error
 
 
-def _decode_cut_node_stream(encoded, offsets) -> StaticExactCutNodeSequence:
+def _decode_cut_node_stream(encoded, offsets, *, with_flags=False) -> StaticExactCutNodeSequence:
     count = len(offsets)
 
     def decode_fields(index: int, *, raw: bool) -> tuple[Any, ...]:
@@ -428,6 +462,22 @@ def _decode_cut_node_stream(encoded, offsets) -> StaticExactCutNodeSequence:
         predecessors = read_strings(predecessor_count)
         source_segments = read_strings(source_count)
         capture_segments = read_strings(capture_count)
+        if with_flags:
+            if offset + 4 * predecessor_count + 1 != end:
+                raise ValidationError("native semantic coordinates are truncated")
+            previous = -1
+            for _ in range(predecessor_count):
+                ordinal = _STRING_LENGTH.unpack_from(view, offset)[0]
+                if ordinal >= count or ordinal <= previous:
+                    raise ValidationError("native semantic predecessor coordinate is invalid")
+                previous = ordinal
+                offset += 4
+            flag = view[offset]
+            offset += 1
+            if flag not in (0, 1, 2) or source_count != predecessor_count + int(flag != 0) or (
+                flag == 2 and predecessor_count != 0
+            ) or (flag == 0 and predecessor_count == 0):
+                raise ValidationError("native semantic launch flag disagrees")
         if offset != end:
             raise ValidationError("Static Exact cut-node stream has trailing data")
         return (
@@ -1209,6 +1259,54 @@ def _emit_direct_logic_segments(
     writer.write("]")
 
 
+def _native_semantic_contract_sha256(value, source, keys, special_keys, paths) -> str:
+    from .native_tools import resolve_native_stage_command
+
+    tags = {"capture_requirements": 1, "cut_nodes": 2, "dependency_edges": 3, "logic_segments": 4}
+    class HeaderText(_CanonicalDigestWriter):
+        def __init__(self):
+            self.parts = []
+        def write(self, text):
+            self.parts.append(text)
+    with tempfile.TemporaryDirectory(prefix="emuflow-exact-hash-") as temporary:
+        root = Path(temporary)
+        request, output = root / "header.bin", root / "digest.txt"
+        with request.open("wb") as stream:
+            stream.write(struct.pack("<QII", 0x31484553464D5545, 1, len(keys)))
+            def write_string(text):
+                raw = text.encode("utf-8")
+                if not raw or len(raw) >= 2**32:
+                    raise ValidationError("native canonical header field is invalid")
+                stream.write(struct.pack("<I", len(raw)))
+                stream.write(raw)
+            for key in keys:
+                write_string(key)
+                stream.write(struct.pack("<B", tags.get(key, 0)))
+                if key not in special_keys:
+                    # Header fields are bounded. Preserve the exact Python
+                    # formatting contract while C++ walks the large relations.
+                    formatted = HeaderText()
+                    formatted.value(value[key], 1)
+                    write_string("".join(formatted.parts))
+        command = resolve_native_stage_command(
+            "emuflow_static_exact_analyzer", "phase3", "hash-semantics"
+        )
+        if len(command) == 1:
+            command = [*command, "--hash-semantics"]
+        completed = subprocess.run(
+            [*command, str(paths[0]), str(paths[1]), str(request), str(output)],
+            capture_output=True, text=True, check=False,
+        )
+        if completed.returncode:
+            raise ValidationError("native canonical hashing failed: " + completed.stderr.strip())
+        digest = output.read_text(encoding="ascii")
+        if len(digest) != 65 or digest[-1] != "\n" or any(
+            character not in "0123456789abcdef" for character in digest[:-1]
+        ):
+            raise ValidationError("native canonical digest is invalid")
+        return digest[:-1]
+
+
 def direct_static_exact_semantic_contract_sha256(
     value: Mapping[str, Any],
 ) -> str | None:
@@ -1257,6 +1355,9 @@ def direct_static_exact_semantic_contract_sha256(
             continue
         for chunk in standard_encoder.iterencode(value[key]):
             chunk.encode("utf-8")
+    native_paths = source.native_record_paths()
+    if native_paths is not None:
+        return _native_semantic_contract_sha256(value, source, keys, special_keys, native_paths)
     writer.write("{")
     for index, key in enumerate(keys):
         writer.write(("," if index else "") + "\n  ")

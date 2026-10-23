@@ -21,6 +21,7 @@
 #endif
 
 #include "emuflow_core/artifact_io.hpp"
+#include "emuflow_core/hash.hpp"
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/sqlite.hpp"
 
@@ -874,17 +875,17 @@ void emuflow::native::FinalizeStaticExact(
     }
   };
   visit([&](auto i, const auto& cut, auto launch, auto edge, auto capture) {
-    std::uint64_t bytes = string_size(cut.net) + string_size(cut.kind) + string_size(cut.source) + 24;
+    std::uint64_t bytes = string_size(cut.net) + string_size(cut.kind) + string_size(cut.source) + 25;
     for (const auto& sink : cut.sinks) bytes += string_size(sink);
     if (flags[i]) bytes += string_size(segment(launch));
     for (auto j = offsets[i]; j < offsets[i + 1]; ++j) {
-      bytes += string_size(cuts[dependencies[j]].net) + string_size(segment(edge++));
+      bytes += 4 + string_size(cuts[dependencies[j]].net) + string_size(segment(edge++));
     }
     for (std::uint32_t j = 0; j < cut.captures; ++j) bytes += string_size(segment(capture++));
     positions.push_back(positions.back() + bytes);
   });
   emuflow::core::AtomicBinaryWriter output(output_path);
-  output.Write(nodes_magic); output.Write(std::uint32_t{1}); output.Write(count);
+  output.Write(nodes_magic); output.Write(std::uint32_t{2}); output.Write(count);
   output.Write(positions.back());
   for (const auto position : positions) output.Write(position);
   auto write_string = [&](const std::string& value) {
@@ -905,6 +906,8 @@ void emuflow::native::FinalizeStaticExact(
     for (std::uint32_t j = 0; j < cut.captures; ++j) capture_ids[j] = capture + j;
     std::sort(capture_ids.begin(), capture_ids.end(), [&](auto left, auto right) { return segment(left) < segment(right); });
     for (const auto number : capture_ids) write_string(segment(number));
+    for (auto j = offsets[i]; j < offsets[i + 1]; ++j) output.Write(dependencies[j]);
+    output.Write(flags[i]);
   });
   output.Commit();
 }
@@ -1109,13 +1112,492 @@ void emuflow::native::ResolveStaticExactCaptures(
   output.Commit();
 }
 
+namespace {
+
+std::string ExactIdentity(const char* prefix, std::uint64_t number) {
+  const auto digits = std::to_string(number);
+  return std::string(prefix) + std::string(digits.size() < 6 ? 6 - digits.size() : 0, '0') + digits;
+}
+
+// Match Python's ensure_ascii=True encoding, including surrogate pairs and
+// canonical short control escapes, while rejecting malformed UTF-8 input.
+std::string ExactQuote(const std::string& text) {
+  std::string result = "\"";
+  const char* hex = "0123456789abcdef";
+  auto escape = [&](std::uint32_t code) {
+    result += "\\u";
+    for (int shift = 12; shift >= 0; shift -= 4) result += hex[(code >> shift) & 15];
+  };
+  for (std::size_t i = 0; i < text.size();) {
+    const auto first = static_cast<unsigned char>(text[i++]);
+    std::uint32_t code = first;
+    int extra = 0;
+    if (first >= 0xc2 && first <= 0xdf) { code = first & 31; extra = 1; }
+    else if (first >= 0xe0 && first <= 0xef) { code = first & 15; extra = 2; }
+    else if (first >= 0xf0 && first <= 0xf4) { code = first & 7; extra = 3; }
+    else if (first >= 0x80) throw std::runtime_error("native canonical identity has invalid UTF-8");
+    if (i + extra > text.size()) throw std::runtime_error("native canonical identity is truncated");
+    for (int j = 0; j < extra; ++j) {
+      const auto next = static_cast<unsigned char>(text[i++]);
+      if ((next & 0xc0) != 0x80) throw std::runtime_error("native canonical identity has invalid UTF-8");
+      code = (code << 6) | (next & 63);
+    }
+    if ((extra == 1 && code < 0x80) || (extra == 2 && code < 0x800) ||
+        (extra == 3 && code < 0x10000) || code > 0x10ffff ||
+        (code >= 0xd800 && code <= 0xdfff)) {
+      throw std::runtime_error("native canonical identity has invalid UTF-8");
+    }
+    switch (code) {
+      case '"': result += "\\\""; break;
+      case '\\': result += "\\\\"; break;
+      case '\b': result += "\\b"; break;
+      case '\f': result += "\\f"; break;
+      case '\n': result += "\\n"; break;
+      case '\r': result += "\\r"; break;
+      case '\t': result += "\\t"; break;
+      default:
+        if (code >= 0x20 && code <= 0x7e) result += static_cast<char>(code);
+        else if (code <= 0xffff) escape(code);
+        else { code -= 0x10000; escape(0xd800 + (code >> 10)); escape(0xdc00 + (code & 1023)); }
+    }
+  }
+  return result + "\"";
+}
+
+std::string ExactStringArray(const std::vector<std::string>& items) {
+  if (items.empty()) return "[]";
+  std::string value = "[";
+  for (std::size_t i = 0; i < items.size(); ++i) value += std::string(i ? ",\n        " : "\n        ") + ExactQuote(items[i]);
+  return value + "\n      ]";
+}
+
+std::string ExactBitDecimal(const std::string& bytes) {
+  std::vector<std::uint32_t> words{0};
+  for (const auto byte : bytes) {
+    std::uint64_t carry = static_cast<unsigned char>(byte);
+    for (auto& word : words) { carry += std::uint64_t(word) * 256; word = carry % 1000000000; carry /= 1000000000; }
+    if (carry) words.push_back(static_cast<std::uint32_t>(carry));
+  }
+  std::string result = std::to_string(words.back());
+  for (std::size_t i = words.size() - 1; i > 0; --i) {
+    const auto digits = std::to_string(words[i - 1]); result += std::string(9 - digits.size(), '0') + digits;
+  }
+  return result;
+}
+
+class ExactHashTable {
+ public:
+  ExactHashTable(const std::string& path, std::uint64_t magic, std::uint32_t version)
+      : reader(path), offsets(path) {
+    emuflow::core::ReadAndValidateHeader(reader, {magic, version, "native semantic records"});
+    count = reader.Read<std::uint32_t>(); size_ = reader.Read<std::uint64_t>();
+    start_ = 24ULL + 8ULL * (std::uint64_t(count) + 1);
+    if (start_ > reader.size() || size_ != reader.size() - start_) throw std::runtime_error("native canonical record envelope is invalid");
+    offsets.Seek(24ULL + 8ULL * count);
+    if (offsets.Read<std::uint64_t>() != size_) throw std::runtime_error("native canonical record extent is invalid");
+    Reset();
+  }
+  void Reset() {
+    reader.Seek(start_); offsets.Seek(24); observed_ = 0; end_ = 0;
+    if (offsets.Read<std::uint64_t>() != 0) throw std::runtime_error("native canonical record origin is invalid");
+  }
+  void Begin() {
+    if (observed_++ >= count) throw std::runtime_error("native canonical record count is invalid");
+    const auto next = offsets.Read<std::uint64_t>();
+    if (next <= end_ || next > size_) throw std::runtime_error("native canonical record offsets are invalid");
+    end_ = next;
+  }
+  std::uint64_t Remaining() const {
+    const auto position = reader.size() - reader.remaining();
+    if (position > start_ + end_) throw std::runtime_error("native canonical record exceeds its boundary");
+    return start_ + end_ - position;
+  }
+  void End() {
+    if (reader.size() - reader.remaining() != start_ + end_) throw std::runtime_error("native canonical record lengths disagree");
+  }
+  emuflow::core::BinaryReader reader;
+  std::uint32_t count = 0;
+ private:
+  emuflow::core::BinaryReader offsets;
+  std::uint64_t size_ = 0, start_ = 0, end_ = 0, observed_ = 0;
+};
+
+struct ExactHashNode {
+  std::string net, kind, source;
+  std::uint32_t level, depth;
+  std::vector<std::string> sinks, predecessors, sources, captures;
+  std::uint8_t flag;
+  std::vector<std::uint32_t> predecessor_indices;
+};
+
+ExactHashNode ReadExactHashNode(ExactHashTable& table) {
+  table.Begin(); auto& r = table.reader;
+  ExactHashNode node;
+  node.net = r.ReadString32(); node.kind = r.ReadString32(); node.source = r.ReadString32();
+  node.level = r.Read<std::uint32_t>(); node.depth = r.Read<std::uint32_t>();
+  std::array<std::uint32_t,4> counts{};
+  std::uint64_t total = 0;
+  for (auto& count : counts) { count = r.Read<std::uint32_t>(); total += count; }
+  if (total > table.Remaining() / 5) throw std::runtime_error("native canonical node fields are truncated");
+  std::array<std::vector<std::string>*,4> lists{&node.sinks,&node.predecessors,&node.sources,&node.captures};
+  for (int i = 0; i < 4; ++i) for (std::uint32_t j = 0; j < counts[i]; ++j) lists[i]->push_back(r.ReadString32());
+  for (std::uint32_t i = 0; i < counts[1]; ++i) {
+    const auto ordinal = r.Read<std::uint32_t>();
+    if (ordinal >= table.count || (i && ordinal <= node.predecessor_indices.back())) {
+      throw std::runtime_error("native canonical predecessor coordinate is invalid");
+    }
+    node.predecessor_indices.push_back(ordinal);
+  }
+  node.flag = r.Read<std::uint8_t>();
+  if (node.flag > 2 || node.sources.size() != node.predecessors.size() + (node.flag != 0) ||
+      (node.flag == 2 && !node.predecessors.empty()) || (!node.flag && node.predecessors.empty())) {
+    throw std::runtime_error("native canonical launch semantics disagree");
+  }
+  table.End(); return node;
+}
+
+struct ExactHashCapture { std::string net, fpga, endpoint, port, bit; std::uint8_t kind; };
+
+ExactHashCapture ReadExactHashCapture(ExactHashTable& table) {
+  table.Begin(); auto& r = table.reader;
+  ExactHashCapture capture; capture.kind = r.Read<std::uint8_t>();
+  std::array<std::uint32_t,5> lengths{}; std::uint64_t total = 0;
+  for (auto& length : lengths) { length = r.Read<std::uint32_t>(); total += length; }
+  if (total != table.Remaining()) throw std::runtime_error("native canonical capture fields are truncated");
+  std::array<std::string*,5> fields{&capture.net,&capture.fpga,&capture.endpoint,&capture.port,&capture.bit};
+  for (int i = 0; i < 5; ++i) { fields[i]->resize(lengths[i]); r.ReadBytes(fields[i]->data(), lengths[i]); }
+  if (capture.kind > 1 || capture.net.empty() || capture.fpga.empty() || capture.endpoint.empty() ||
+      (!capture.kind && (!capture.port.empty() || !capture.bit.empty())) ||
+      (capture.kind && (capture.port.empty() || capture.bit.empty() || capture.bit.size() > 1024 ||
+                       (capture.bit.size() > 1 && capture.bit[0] == 0)))) {
+    throw std::runtime_error("native canonical capture is invalid");
+  }
+  table.End(); return capture;
+}
+
+class ExactCanonicalHash {
+ public:
+  void Write(const std::string& text) {
+    buffer_ += text; if (buffer_.size() >= 8192) Flush();
+  }
+  void Object(std::initializer_list<std::pair<std::string,std::string>> fields) {
+    Write("{"); std::string previous; bool first = true;
+    for (const auto& field : fields) {
+      if (!first && field.first <= previous) throw std::runtime_error("native canonical field order is invalid");
+      Write(std::string(first ? "\n      " : ",\n      ") + ExactQuote(field.first) + ": " + field.second);
+      previous = field.first; first = false;
+    }
+    if (!first) Write("\n    "); Write("}");
+  }
+  void Element(std::uint64_t& count) { Write(count++ ? ",\n    " : "\n    "); }
+  void FinishArray(std::uint64_t count) { if (count) Write("\n  "); Write("]"); }
+  std::string Finish() {
+    Flush(); const auto digest = hash_.finish(); std::string result;
+    for (auto byte : digest) { result += "0123456789abcdef"[byte >> 4]; result += "0123456789abcdef"[byte & 15]; }
+    return result;
+  }
+ private:
+  void Flush() { hash_.update(reinterpret_cast<const unsigned char*>(buffer_.data()), buffer_.size()); buffer_.clear(); }
+  emuflow::core::Sha256 hash_; std::string buffer_;
+};
+
+}  // namespace
+
+void emuflow::native::HashStaticExactSemantics(
+    const std::string& nodes_path, const std::string& captures_path,
+    const std::string& request_path, const std::string& output_path) {
+  ExactHashTable nodes(nodes_path, 0x314E4553464D5545ULL, 2);
+  ExactHashTable captures(captures_path, 0x31434553464D5545ULL, 1);
+  emuflow::core::BinaryReader request(request_path);
+  emuflow::core::ReadAndValidateHeader(request, {0x31484553464D5545ULL, 1, "canonical header"});
+  const auto fields = request.Read<std::uint32_t>();
+  if (fields > request.remaining() / 6) throw std::runtime_error("native canonical header is truncated");
+  ExactCanonicalHash hash; hash.Write("{"); std::string previous; unsigned tags = 0;
+  for (std::uint32_t field = 0; field < fields; ++field) {
+    const auto key = request.ReadString32(); const auto tag = request.Read<std::uint8_t>();
+    if (field && key <= previous) throw std::runtime_error("native canonical header order is invalid");
+    previous = key; hash.Write(std::string(field ? ",\n  " : "\n  ") + ExactQuote(key) + ": ");
+    if (!tag) { hash.Write(request.ReadString32()); continue; }
+    const std::array<std::string,4> keys{"capture_requirements","cut_nodes","dependency_edges","logic_segments"};
+    if (tag > 4 || key != keys[tag - 1] || (tags & (1U << tag))) throw std::runtime_error("native canonical relation tag is invalid");
+    tags |= 1U << tag; hash.Write("["); std::uint64_t count = 0;
+    nodes.Reset(); captures.Reset();
+    if (tag == 1) {
+      for (std::uint32_t i = 0; i < captures.count; ++i) {
+        const auto c = ReadExactHashCapture(captures); hash.Element(count);
+        if (!c.kind) hash.Object({{"cut_net",ExactQuote(c.net)},{"endpoint",ExactQuote(c.endpoint)},
+            {"fpga",ExactQuote(c.fpga)},{"id",ExactQuote(ExactIdentity("capture",i))},{"kind","\"top-output\""}});
+        else hash.Object({{"bit",ExactBitDecimal(c.bit)},{"cut_net",ExactQuote(c.net)},{"endpoint",ExactQuote(c.endpoint)},
+            {"fpga",ExactQuote(c.fpga)},{"id",ExactQuote(ExactIdentity("capture",i))},{"kind","\"architectural-state\""},{"port",ExactQuote(c.port)}});
+      }
+    } else if (tag == 2) {
+      for (std::uint32_t i = 0; i < nodes.count; ++i) {
+        const auto n = ReadExactHashNode(nodes); hash.Element(count);
+        hash.Object({{"capture_segment_ids",ExactStringArray(n.captures)},{"combinational_dependency_depth",std::to_string(n.depth)},
+            {"cut_class",ExactQuote(n.kind)},{"dependency_level",std::to_string(n.level)},{"net",ExactQuote(n.net)},
+            {"predecessor_cut_nets",ExactStringArray(n.predecessors)},{"sink_fpgas",ExactStringArray(n.sinks)},
+            {"source_fpgas",ExactStringArray({n.source})},{"source_segment_ids",ExactStringArray(n.sources)}});
+      }
+    } else if (tag == 3) {
+      for (std::uint32_t i = 0; i < nodes.count; ++i) {
+        const auto n = ReadExactHashNode(nodes);
+        for (std::size_t j = 0; j < n.predecessors.size(); ++j) {
+          hash.Element(count); hash.Object({{"from",ExactQuote(n.predecessors[j])},
+              {"segment",ExactQuote(n.sources[j + (n.flag != 0)])},{"to",ExactQuote(n.net)}});
+        }
+      }
+    } else {
+      std::uint64_t capture_start = 0;
+      for (std::uint32_t i = 0; i < nodes.count; ++i) {
+        const auto n = ReadExactHashNode(nodes); capture_start += n.sources.size();
+        if (!n.flag) continue; hash.Element(count);
+        if (n.flag == 2) hash.Object({{"fpga",ExactQuote(n.source)},{"id",ExactQuote(n.sources[0])},
+            {"kind","\"launch_to_tx\""},{"sink_cut_net",ExactQuote(n.net)},{"source_semantics","\"configuration-stable-constant\""}});
+        else hash.Object({{"fpga",ExactQuote(n.source)},{"id",ExactQuote(n.sources[0])},{"kind","\"launch_to_tx\""},{"sink_cut_net",ExactQuote(n.net)}});
+      }
+      nodes.Reset();
+      for (std::uint32_t i = 0; i < nodes.count; ++i) {
+        const auto n = ReadExactHashNode(nodes);
+        for (std::size_t j = 0; j < n.predecessors.size(); ++j) {
+          hash.Element(count); hash.Object({{"fpga",ExactQuote(n.source)},{"id",ExactQuote(n.sources[j + (n.flag != 0)])},
+              {"kind","\"rx_to_tx\""},{"sink_cut_net",ExactQuote(n.net)},{"source_cut_net",ExactQuote(n.predecessors[j])}});
+        }
+      }
+      for (std::uint32_t i = 0; i < captures.count; ++i) {
+        const auto c = ReadExactHashCapture(captures); hash.Element(count);
+        hash.Object({{"capture_requirement",ExactQuote(ExactIdentity("capture",i))},{"fpga",ExactQuote(c.fpga)},
+            {"id",ExactQuote(ExactIdentity("segment",capture_start + i))},{"kind","\"rx_to_capture\""},{"source_cut_net",ExactQuote(c.net)}});
+      }
+    }
+    hash.FinishArray(count);
+  }
+  request.RequireEnd(); if (tags != 30) throw std::runtime_error("native canonical relation coverage is incomplete");
+  if (fields) hash.Write("\n"); hash.Write("}\n");
+  const auto digest = hash.Finish() + "\n";
+  emuflow::core::AtomicBinaryWriter output(output_path); output.WriteBytes(digest.data(), digest.size()); output.Commit();
+}
+
+namespace {
+// Disjoint buffered views fill one pre-sized private artifact. Each byte is
+// written once and hashed as it is emitted; the outer small-manifest commit
+// performs the only durability barrier for the final payload.
+class ExactOutputSection {
+ public:
+  ExactOutputSection(const std::string& path, std::uint64_t offset, std::uint64_t bytes)
+      : stream_(path, std::ios::binary | std::ios::in | std::ios::out), remaining_(bytes) {
+    stream_.seekp(offset);
+    if (!stream_) throw std::runtime_error("cannot open native exact output section");
+  }
+  template <typename T> void Write(const T& value) { WriteBytes(&value, sizeof(value)); }
+  void WriteBytes(const void* data, std::size_t size) {
+    if (size > remaining_) throw std::runtime_error("native exact section exceeds its extent");
+    stream_.write(static_cast<const char*>(data), size);
+    if (!stream_) throw std::runtime_error("cannot write native exact output section");
+    digest_.update(static_cast<const unsigned char*>(data), size); remaining_ -= size;
+  }
+  std::array<unsigned char,32> Close() {
+    if (remaining_) throw std::runtime_error("native exact section is incomplete");
+    stream_.flush(); stream_.close();
+    if (!stream_) throw std::runtime_error("cannot close native exact output section");
+    return digest_.finish();
+  }
+ private:
+  std::fstream stream_;
+  std::uint64_t remaining_;
+  emuflow::core::Sha256 digest_;
+};
+}  // namespace
+
+void emuflow::native::WriteStaticExactSections(
+    const std::string& nodes_path, const std::string& captures_path,
+    const std::string& request_path, const std::string& output_path) {
+  ExactHashTable nodes(nodes_path, 0x314E4553464D5545ULL, 2);
+  ExactHashTable captures(captures_path, 0x31434553464D5545ULL, 1);
+  emuflow::core::BinaryReader request(request_path);
+  emuflow::core::ReadAndValidateHeader(request, {0x31574553464D5545ULL, 1, "exact section request"});
+  const auto format = request.Read<std::uint32_t>();
+  const auto part_count = request.Read<std::uint32_t>();
+  const std::uint64_t section_count = 2ULL + 2ULL * part_count;
+  if ((format != 1 && format != 2) || !part_count ||
+      part_count > request.remaining() / 5 || section_count > UINT32_MAX) {
+    throw std::runtime_error("native exact section request is invalid");
+  }
+  std::vector<std::string> parts;
+  for (std::uint32_t i = 0; i < part_count; ++i) {
+    auto part = request.ReadString32();
+    if (i && part <= parts.back()) throw std::runtime_error("native exact parts are invalid");
+    parts.push_back(std::move(part));
+  }
+  auto part_index = [&](const std::string& fpga) {
+    const auto found = std::lower_bound(parts.begin(), parts.end(), fpga);
+    if (found == parts.end() || *found != fpga) throw std::runtime_error("native exact FPGA identity is invalid");
+    return static_cast<std::size_t>(found - parts.begin());
+  };
+  const auto staged_path = request.ReadString32();
+  if (staged_path == nodes_path || staged_path == captures_path || staged_path == request_path || staged_path == output_path) {
+    throw std::runtime_error("native exact output paths conflict");
+  }
+  request.RequireEnd();
+  // One packed UTF-8 identity pool allows independent integer/name checks,
+  // without recreating a name-to-ordinal hash table or per-edge objects.
+  std::string names;
+  std::vector<std::uint64_t> name_offsets{0};
+  std::string previous;
+  std::uint64_t launches = 0, dependencies = 0;
+  std::vector<std::uint64_t> sizes(section_count, 0), expected_counts(section_count, 0);
+  for (std::uint32_t i = 0; i < nodes.count; ++i) {
+    const auto node = ReadExactHashNode(nodes);
+    if (i && node.net <= previous) throw std::runtime_error("native exact cut order is invalid");
+    previous = node.net; names += node.net; name_offsets.push_back(names.size());
+    launches += node.flag != 0; dependencies += node.predecessors.size();
+    const auto section = 2 + 2 * part_index(node.source);
+    sizes[0] += 4 + node.net.size(); ++expected_counts[0];
+    sizes[1] += 4 + 4ULL * node.sources.size(); ++expected_counts[1];
+    sizes[section] += 14ULL * node.sources.size(); expected_counts[section] += node.sources.size();
+  }
+  const auto total_segments = launches + dependencies + captures.count;
+  if (total_segments >= UINT32_MAX) throw std::runtime_error("native exact segment population is too large");
+  for (std::uint32_t i = 0; i < captures.count; ++i) {
+    const auto capture = ReadExactHashCapture(captures);
+    const auto part = part_index(capture.fpga);
+    sizes[2 + 2 * part] += 14; ++expected_counts[2 + 2 * part];
+    sizes[3 + 2 * part] += 9 + 4 + capture.endpoint.size(); ++expected_counts[3 + 2 * part];
+    if (capture.kind) sizes[3 + 2 * part] += 4 + capture.port.size() + (format == 1 ? 4 : 4 + capture.bit.size());
+  }
+  std::vector<std::uint64_t> positions{28};
+  for (const auto size : sizes) positions.push_back(positions.back() + size);
+  {
+    std::ofstream staged(staged_path, std::ios::binary | std::ios::trunc);
+    const std::array<char,28> preamble{};
+    staged.write(preamble.data(), preamble.size()); staged.seekp(positions.back() - 1); staged.put(0); staged.close();
+    if (!staged) throw std::runtime_error("cannot initialize native exact artifact");
+  }
+  std::vector<std::unique_ptr<ExactOutputSection>> sections;
+  std::vector<std::uint64_t> counts(section_count, 0);
+  for (std::size_t i = 0; i < section_count; ++i) sections.push_back(std::make_unique<ExactOutputSection>(staged_path, positions[i], sizes[i]));
+  auto write_string = [&](std::size_t section, const std::string& value) {
+    sections[section]->Write(static_cast<std::uint32_t>(value.size()));
+    sections[section]->WriteBytes(value.data(), value.size());
+  };
+  auto segment = [&](std::size_t section, std::uint32_t id, std::uint8_t kind,
+                     std::uint8_t flags, std::uint32_t source, std::uint32_t sink) {
+    auto& writer = *sections[section];
+    writer.Write(id); writer.Write(kind); writer.Write(flags); writer.Write(source); writer.Write(sink);
+    ++counts[section];
+  };
+  nodes.Reset();
+  std::uint32_t launch = 0, edge = static_cast<std::uint32_t>(launches);
+  for (std::uint32_t i = 0; i < nodes.count; ++i) {
+    const auto node = ReadExactHashNode(nodes);
+    write_string(0, node.net); ++counts[0];
+    sections[1]->Write(static_cast<std::uint32_t>(node.sources.size())); ++counts[1];
+    if (node.flag) {
+      if (node.sources[0] != ExactIdentity("segment", launch)) throw std::runtime_error("native exact launch numbering disagrees");
+      sections[1]->Write(launch);
+      segment(2 + 2 * part_index(node.source), launch++, 0, node.flag == 2, UINT32_MAX, i);
+    }
+    for (std::size_t j = 0; j < node.predecessors.size(); ++j) {
+      const auto source = node.predecessor_indices[j];
+      if (names.compare(name_offsets[source], name_offsets[source + 1] - name_offsets[source], node.predecessors[j]) != 0 ||
+          node.sources[j + (node.flag != 0)] != ExactIdentity("segment", edge)) {
+        throw std::runtime_error("native exact dependency coordinates disagree");
+      }
+      sections[1]->Write(edge++);
+    }
+  }
+  if (launch != launches || edge != launches + dependencies) throw std::runtime_error("native exact source coverage disagrees");
+  nodes.Reset(); edge = static_cast<std::uint32_t>(launches);
+  for (std::uint32_t i = 0; i < nodes.count; ++i) {
+    const auto node = ReadExactHashNode(nodes);
+    for (const auto source : node.predecessor_indices) segment(2 + 2 * part_index(node.source), edge++, 1, 0, source, i);
+  }
+  nodes.Reset(); captures.Reset();
+  std::uint32_t capture_number = 0;
+  bool have_capture = captures.count != 0;
+  ExactHashCapture capture;
+  if (have_capture) capture = ReadExactHashCapture(captures);
+  for (std::uint32_t i = 0; i < nodes.count; ++i) {
+    const auto node = ReadExactHashNode(nodes);
+    const auto first_capture = capture_number;
+    while (have_capture && capture.net == node.net) {
+      const auto part = part_index(capture.fpga);
+      auto& writer = *sections[3 + 2 * part];
+      writer.Write(capture_number); writer.Write(i); writer.Write(capture.kind);
+      write_string(3 + 2 * part, capture.endpoint);
+      if (capture.kind) {
+        write_string(3 + 2 * part, capture.port);
+        if (format == 1) {
+          if (capture.bit.size() > 4) throw std::runtime_error("native exact legacy bit is invalid");
+          std::uint64_t value = 0;
+          for (const auto byte : capture.bit) value = value * 256 + static_cast<unsigned char>(byte);
+          if (value >= UINT32_MAX) throw std::runtime_error("native exact legacy bit is invalid");
+          writer.Write(static_cast<std::uint32_t>(value));
+        } else {
+          writer.Write(static_cast<std::uint32_t>(capture.bit.size())); writer.WriteBytes(capture.bit.data(), capture.bit.size());
+        }
+      }
+      ++counts[3 + 2 * part];
+      segment(2 + 2 * part, static_cast<std::uint32_t>(launches + dependencies + capture_number), 2, 0, i, capture_number);
+      ++capture_number;
+      have_capture = capture_number < captures.count;
+      if (have_capture) capture = ReadExactHashCapture(captures);
+    }
+    if ((have_capture && capture.net < node.net) || node.captures.size() != capture_number - first_capture) {
+      throw std::runtime_error("native exact capture coverage disagrees");
+    }
+    std::string last;
+    for (const auto& id : node.captures) {
+      if (id.size() < 13 || id.compare(0, 7, "segment") != 0 || (!last.empty() && id <= last)) {
+        throw std::runtime_error("native exact capture identity is invalid");
+      }
+      const auto number = std::stoull(id.substr(7));
+      if (id != ExactIdentity("segment", number) || number < launches + dependencies + first_capture ||
+          number >= launches + dependencies + capture_number) {
+        throw std::runtime_error("native exact capture numbering disagrees");
+      }
+      last = id;
+    }
+  }
+  if (have_capture || capture_number != captures.count) throw std::runtime_error("native exact capture population disagrees");
+  if (counts != expected_counts) throw std::runtime_error("native exact section counts disagree");
+  emuflow::core::AtomicBinaryWriter summary(output_path);
+  summary.Write(std::uint64_t{0x314F5753464D5545ULL}); summary.Write(std::uint32_t{2}); summary.Write(static_cast<std::uint32_t>(section_count));
+  for (std::size_t i = 0; i < section_count; ++i) {
+    const auto digest = sections[i]->Close();
+    summary.Write(positions[i]); summary.Write(sizes[i]); summary.Write(counts[i]); summary.WriteBytes(digest.data(), digest.size());
+  }
+  for (const auto count : std::array<std::uint64_t,5>{nodes.count, launches + dependencies, total_segments,
+                                                   dependencies + captures.count, captures.count}) summary.Write(count);
+  summary.Commit();
+}
+
 #if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << "usage: emuflow_static_exact_analyzer [--indexed-input EMUIR] INPUT OUTPUT\n"
+                 "       emuflow_static_exact_analyzer --hash-semantics NODES CAPTURES HEADER OUTPUT\n"
+                 "       emuflow_static_exact_analyzer --write-exact-sections NODES CAPTURES REQUEST OUTPUT\n"
                  "       emuflow_static_exact_analyzer --finalize-semantics TOPOLOGY METADATA OUTPUT\n"
                  "       emuflow_static_exact_analyzer --resolve-captures EMUIR REQUEST TOPOLOGY PARTS OUTPUT\n";
     return 0;
+  }
+  if (argc == 6 && std::string(argv[1]) == "--write-exact-sections") {
+    try {
+      emuflow::native::WriteStaticExactSections(argv[2], argv[3], argv[4], argv[5]);
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << "emuflow_static_exact_analyzer: " << error.what() << '\n';
+      return 1;
+    }
+  }
+  if (argc == 6 && std::string(argv[1]) == "--hash-semantics") {
+    try {
+      emuflow::native::HashStaticExactSemantics(argv[2], argv[3], argv[4], argv[5]);
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << "emuflow_static_exact_analyzer: " << error.what() << '\n';
+      return 1;
+    }
   }
   if (argc == 7 && std::string(argv[1]) == "--resolve-captures") {
     try {

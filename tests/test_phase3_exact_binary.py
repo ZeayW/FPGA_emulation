@@ -3,9 +3,13 @@ import hashlib
 import json
 import shutil
 import struct
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from tests.native_build import emuflow_native
 
 from emuflow.combinational_cut import semantic_contract_sha256
 from emuflow.errors import ValidationError
@@ -23,6 +27,8 @@ from emuflow.phase3_exact_records import (
     build_static_exact_capture_stream,
     build_static_exact_cut_node_stream,
     build_static_exact_record_streams,
+    read_native_static_exact_cut_node_stream,
+    read_native_static_exact_capture_stream,
 )
 
 
@@ -649,6 +655,124 @@ class Phase3ExactBinaryTest(unittest.TestCase):
         for contract in (invalid_direct, invalid_materialized):
             with self.assertRaises(TypeError):
                 semantic_contract_sha256(contract)
+
+    def test_native_canonical_hash_matches_python_for_unicode_flags_and_wide_bits(self):
+        executable = emuflow_native()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def string(value):
+                raw = value.encode("utf-8")
+                return struct.pack("<I", len(raw)) + raw
+            def artifact(path, magic, version, records):
+                offsets = [0]
+                for record in records:
+                    offsets.append(offsets[-1] + len(record))
+                path.write_bytes(struct.pack("<QIIQ", magic, version, len(records), offsets[-1]) +
+                    b"".join(struct.pack("<Q", offset) for offset in offsets) + b"".join(records))
+            for flag, bit in ((1, 0), (2, 255), (1, 256), (2, 1 << 130), (1, 1 << 8191)):
+                with self.subTest(flag=flag, bits=bit.bit_length()):
+                    contract = _contract("unicode\x00\b\f\n\r\t\"\\\x7fα😀")
+                    contract["extra_header"] = {"values": [1, True, False, None, {}, [], {"z": "α😀", "float": -0.0}], "n": 1.25e-30}
+                    contract["capture_requirements"][0].update(endpoint="state\x00\"\\\nα😀", port="D\tα😀", bit=bit)
+                    contract["cut_nodes"][1]["capture_segment_ids"].append("segment000003")
+                    contract["capture_requirements"].append({
+                        "id": "capture000001", "cut_net": "net1", "fpga": "fpga1",
+                        "kind": "top-output", "endpoint": "top:outα😀[0]",
+                    })
+                    contract["logic_segments"].append({
+                        "id": "segment000003", "kind": "rx_to_capture", "fpga": "fpga1",
+                        "source_cut_net": "net1", "capture_requirement": "capture000001",
+                    })
+                    contract["metrics"].update(logic_segments=4, capture_requirements=2)
+                    if flag == 2:
+                        contract["logic_segments"][0]["source_semantics"] = "configuration-stable-constant"
+                    expected = semantic_contract_sha256(contract)
+                    nodes_path, captures_path = root / "nodes.bin", root / "captures.bin"
+                    node_records = []
+                    for index, node in enumerate(contract["cut_nodes"]):
+                        lists = [node[key] for key in ("sink_fpgas", "predecessor_cut_nets", "source_segment_ids", "capture_segment_ids")]
+                        row = string(node["net"]) + string(node["cut_class"]) + string(node["source_fpgas"][0])
+                        row += struct.pack("<6I", node["dependency_level"], node["combinational_dependency_depth"], *(len(values) for values in lists))
+                        row += b"".join(string(value) for values in lists for value in values)
+                        coordinates = [next(i for i, candidate in enumerate(contract["cut_nodes"]) if candidate["net"] == net) for net in node["predecessor_cut_nets"]]
+                        node_records.append(row + b"".join(struct.pack("<I", value) for value in coordinates) + bytes([flag if index == 0 else 0]))
+                    captures = build_static_exact_capture_stream(
+                        (row["cut_net"], row["fpga"], row["kind"], row["endpoint"], row.get("port"), row.get("bit"))
+                        for row in contract["capture_requirements"]
+                    )
+                    capture_records = []
+                    for net, fpga, kind, endpoint, port, raw_bit in captures.iter_binary_captures():
+                        fields = [net, fpga, endpoint, port, raw_bit]
+                        capture_records.append(struct.pack("<B5I", kind, *(len(value) for value in fields)) + b"".join(fields))
+                    artifact(nodes_path, 0x314E4553464D5545, 2, node_records)
+                    artifact(captures_path, 0x31434553464D5545, 1, capture_records)
+                    nodes = read_native_static_exact_cut_node_stream(nodes_path)
+                    native_captures = read_native_static_exact_capture_stream(captures_path)
+                    streamed = {**contract, "cut_nodes": nodes, "capture_requirements": native_captures}
+                    streamed.update(build_static_exact_record_streams(
+                        nodes, native_captures, bytes([flag, 0]), integer_topology=self._IntegerTopology([[], [0]])
+                    ))
+                    with patch("emuflow.native_tools.resolve_native_stage_command", return_value=[str(executable), "phase3", "hash-semantics"]), patch(
+                        "emuflow.phase3_exact_records._emit_direct_cut_nodes", side_effect=AssertionError("Python must not hash the native graph")
+                    ):
+                        self.assertEqual(semantic_contract_sha256(streamed), expected)
+                    streamed["invalid_header"] = {1: "not-a-string-key"}
+                    with self.assertRaises(ValidationError):
+                        semantic_contract_sha256(streamed)
+                    del streamed["invalid_header"]
+                    expected_path, actual_path = root / "expected.bin", root / "native.bin"
+                    expected_descriptor = write_phase3_exact_binary(expected_path, contract, ["fpga0", "fpga1"], semantic_digest=expected)
+                    def native_command(legacy, phase, operation):
+                        return [str(executable), phase, operation]
+                    with patch("emuflow.native_tools.resolve_native_stage_command", side_effect=native_command), patch(
+                        "emuflow.phase3_exact_binary._write_raw_string", side_effect=AssertionError("Python must not encode native exact sections")
+                    ), patch("emuflow.phase3_exact_binary._Spool", side_effect=AssertionError("native publication must not stage duplicate section files")), patch(
+                        "emuflow.phase3_exact_binary._copy_section", side_effect=AssertionError("Python must not recopy native section bytes")
+                    ):
+                        actual_descriptor = write_phase3_exact_binary(actual_path, streamed, ["fpga0", "fpga1"], semantic_digest=expected)
+                    self.assertEqual(actual_path.read_bytes(), expected_path.read_bytes())
+                    self.assertEqual(actual_descriptor, expected_descriptor)
+                    if bit < 2**32 - 1:
+                        write_phase3_exact_binary(expected_path, contract, ["fpga0", "fpga1"], semantic_digest=expected, _format_version=1)
+                        with patch("emuflow.native_tools.resolve_native_stage_command", side_effect=native_command):
+                            write_phase3_exact_binary(actual_path, streamed, ["fpga0", "fpga1"], semantic_digest=expected, _format_version=1)
+                        self.assertEqual(actual_path.read_bytes(), expected_path.read_bytes())
+                    else:
+                        actual_path.write_bytes(b"previous-generation")
+                        with patch("emuflow.native_tools.resolve_native_stage_command", side_effect=native_command), self.assertRaises(ValidationError):
+                            write_phase3_exact_binary(actual_path, streamed, ["fpga0", "fpga1"], semantic_digest=expected, _format_version=1)
+                        self.assertEqual(actual_path.read_bytes(), b"previous-generation")
+                    broken = root / "broken-nodes.bin"
+                    broken.write_bytes(nodes_path.read_bytes()[:-1])
+                    nodes.native_semantic_artifact_path = broken
+                    with patch("emuflow.native_tools.resolve_native_stage_command", return_value=[str(executable), "phase3", "hash-semantics"]), self.assertRaises(ValidationError):
+                        semantic_contract_sha256(streamed)
+            # Independent command-envelope rejection must preserve the previous
+            # output and cannot silently fall back to the Python hasher.
+            tags = [("capture_requirements", 1), ("cut_nodes", 2), ("dependency_edges", 3), ("logic_segments", 4)]
+            good_request = struct.pack("<QII", 0x31484553464D5545, 1, 4) + b"".join(string(key) + bytes([tag]) for key, tag in tags)
+            request, output = root / "request.bin", root / "digest.txt"
+            for payload in (good_request[:-1], good_request + b"extra", struct.pack("<QII", 0x31484553464D5545, 1, 0)):
+                request.write_bytes(payload)
+                output.write_bytes(b"previous-generation")
+                result = subprocess.run([str(executable), "phase3", "hash-semantics", str(nodes_path), str(captures_path), str(request), str(output)], capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output.read_bytes(), b"previous-generation")
+
+            section_request = struct.pack("<QIII", 0x31574553464D5545, 1, 2, 2)
+            section_request += string("fpga0") + string("fpga1") + string(str(root / "staged-exact.bin"))
+            bad_node_path = root / "bad-coordinate-node.bin"
+            bad_node = bytearray(nodes_path.read_bytes())
+            struct.pack_into("<I", bad_node, len(bad_node) - 5, 1)
+            bad_node_path.write_bytes(bad_node)
+            for payload, node_path in ((section_request[:-1], nodes_path),
+                                       (section_request + b"extra", nodes_path),
+                                       (section_request, bad_node_path)):
+                request.write_bytes(payload)
+                output.write_bytes(b"previous-generation")
+                result = subprocess.run([str(executable), "phase3", "write-exact-sections", str(node_path), str(captures_path), str(request), str(output)], capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output.read_bytes(), b"previous-generation")
 
     def test_mutable_launch_flags_are_frozen_for_all_record_views(self):
         materialized = _contract("mutable_launch_flags")

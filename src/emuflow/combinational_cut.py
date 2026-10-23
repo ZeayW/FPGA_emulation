@@ -3104,10 +3104,17 @@ def _build_native_semantic_cut_nodes(ordered_cuts, topology, captures):
         if completed.returncode:
             raise ValidationError("native semantic finalization failed: " + completed.stderr.strip())
         nodes = read_native_static_exact_cut_node_stream(output)
+        if nodes.native_semantic_version != 2:
+            raise ValidationError("native semantic producer requires record format v2")
         nodes._native_semantic_owner = owner
         if len(nodes) != len(ordered_cuts):
             raise ValidationError("native semantic cut coverage disagrees")
         for index, (node, cut) in enumerate(zip(nodes, ordered_cuts)):
+            expected_flag = 1 if topology.local_launch(index) else (2 if topology.dependency_count(index) == 0 else 0)
+            if nodes.native_dependency_indices(index) != tuple(topology.dependency_indices(index)):
+                raise ValidationError("native semantic coordinates disagree with independent topology")
+            if nodes.native_launch_flag(index) != expected_flag:
+                raise ValidationError("native semantic launch flag disagrees with independent topology")
             if any(node[field] != cut[field] for field in (
                 "net", "cut_class", "source_fpgas", "sink_fpgas"
             )) or node["dependency_level"] != topology.dependency_level(index) or (

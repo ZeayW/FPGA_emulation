@@ -17,6 +17,14 @@
 
 namespace emuflow::core {
 
+void BinaryReader::Seek(std::size_t offset) {
+  if (offset > size_) throw std::runtime_error("native input seek is out of bounds");
+  stream_.clear();
+  stream_.seekg(static_cast<std::streamoff>(offset));
+  if (!stream_) throw std::runtime_error("cannot seek native input");
+  offset_ = offset;
+}
+
 void BinaryReader::ReadBytes(void* destination, std::size_t size) {
   if (size > remaining()) throw std::runtime_error("native input is truncated");
   if (size != 0) {

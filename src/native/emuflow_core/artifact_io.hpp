@@ -37,6 +37,7 @@ class BinaryReader {
   }
 
   void RequireEnd() const;
+  void Seek(std::size_t offset);
   void ReadBytes(void* destination, std::size_t size);
   std::string ReadString32();
   std::size_t size() const { return size_; }
