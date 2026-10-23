@@ -114,6 +114,10 @@ do
       "$source_dir/src/native/$tool.cpp" -o "$target"
   fi
 done
+target="$runtime_dir/bin/emuflow_xilinx_bookshelf_exporter"
+rm -f "$target"
+"$selected_cxx" -std=c++17 -O3 -static-libstdc++ -static-libgcc \
+  "$source_dir/src/native/xilinx_bookshelf_exporter.cpp" -lsqlite3 -o "$target"
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"
 printf '%s\n' "$source_dir/src" > "$runtime_dir/PYTHON_SOURCE_PATH"

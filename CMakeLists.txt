@@ -264,6 +264,19 @@ set(EMUFLOW_INSTALL_ROOT "${CMAKE_BINARY_DIR}/install")
 set(EMUFLOW_INSTALL_BINDIR "${EMUFLOW_INSTALL_ROOT}/${CMAKE_INSTALL_BINDIR}")
 file(MAKE_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
 
+find_package(SQLite3 REQUIRED)
+add_executable(emuflow_xilinx_bookshelf_exporter
+  "${CMAKE_SOURCE_DIR}/src/native/xilinx_bookshelf_exporter.cpp")
+target_compile_features(emuflow_xilinx_bookshelf_exporter PRIVATE cxx_std_17)
+target_compile_options(emuflow_xilinx_bookshelf_exporter PRIVATE -O3)
+target_link_libraries(emuflow_xilinx_bookshelf_exporter PRIVATE SQLite::SQLite3)
+set_target_properties(emuflow_xilinx_bookshelf_exporter PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
+if(BUILD_TESTING)
+  add_test(NAME emuflow_xilinx_bookshelf_exporter_cli
+    COMMAND "$<TARGET_FILE:emuflow_xilinx_bookshelf_exporter>" --help)
+endif()
+
 add_library(
   emuflow_core STATIC
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/artifact_io.cpp"

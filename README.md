@@ -34,6 +34,8 @@ an explicit compatibility operation. Phase 7 explicitly enables immutable
 SQLite input URIs across supported runtimes. A continued run uses the current
 BoardDB and does not inherit an older interconnect configuration from the saved input.
 Mapped physical pin indexes are built in bulk before their atomic publication.
+Indexed OpenPARF Bookshelf export streams typed pins through C++ without
+reconstructing the cell and pin population in Python.
 When driving the reusable stage commands directly, pass
 `experiment-stage cut-timing-run --prepared-timing-boundary` (and the same flag
 plus the expected `--clock-period` values to `cut-timing-validate`) to consume a
@@ -108,8 +110,9 @@ The root CMake project builds EmuFlow's native kernels and selected in-tree
 engines. Python packaging alone does not build a complete flow.
 
 Required tools include CMake 3.20+, GNU Make, a C++17 compiler, Python 3.9+,
-and Boost. The complete build also needs the development dependencies for
-OpenROAD, OpenSTA, OpenPARF, and VPR: Bison, Flex, Tcl, SWIG, Eigen3, zlib,
+Boost, and the SQLite3 development library. The complete build also needs the
+development dependencies for OpenROAD, OpenSTA, OpenPARF, and VPR: Bison, Flex,
+Tcl, SWIG, Eigen3, zlib,
 spdlog, LEMON, OR-Tools, OpenMP, and the appropriate Python/PyTorch packages.
 CUDA is optional and disabled by default. The OpenPARF Python/PyTorch ABI must
 match the interpreter selected when compiling its native operators.

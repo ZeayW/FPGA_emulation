@@ -12,6 +12,21 @@ _BUILD_ROOT = tempfile.TemporaryDirectory(prefix="emuflow-native-tests-")
 
 
 @lru_cache(maxsize=1)
+def xilinx_bookshelf_exporter() -> Path:
+    compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+    if compiler is None:
+        raise RuntimeError("a C++17 compiler is required for Bookshelf export tests")
+    executable = Path(_BUILD_ROOT.name) / "emuflow_xilinx_bookshelf_exporter"
+    subprocess.run(
+        [compiler, "-std=c++17", "-O2",
+         str(ROOT / "src/native/xilinx_bookshelf_exporter.cpp"),
+         "-lsqlite3", "-o", str(executable)],
+        check=True,
+    )
+    return executable
+
+
+@lru_cache(maxsize=1)
 def tlr_router() -> Path:
     compiler = (
         shutil.which("c++")

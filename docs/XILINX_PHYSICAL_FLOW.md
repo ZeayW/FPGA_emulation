@@ -31,6 +31,18 @@ insertion, then bulk-builds the auxiliary pin indexes before atomic publication.
 No consumer can observe a partially indexed netlist. This avoids per-pin random
 updates to the net-order index during large physical input generation.
 
+For mapped index v2, `emuflow_xilinx_bookshelf_exporter` reads the typed cell,
+pin, and validated atom relations directly. C++ checks atom ownership and types,
+contiguous port bits, pin directions, and multiple drivers, then streams nets in
+numeric net order with drivers first. Constants remain in primitive pin
+signatures but do not become net endpoints; single-endpoint nets are omitted.
+Only primitive pin signatures and aggregate counts return to Python, which
+renders the small library and atomically publishes the net file. The exporter
+uses the SQLite3 development library at build time. Materialized JSON callers
+retain the reference exporter for explicit compatibility and differential tests.
+This removes one graph-sized Python traversal; mapped lowering, physical macro
+preparation, and timing-query preparation are separate stages.
+
 OpenPARF applies a bounded square-root weight to large nets in its analytical
 placement objective. This guides placement without changing connectivity.
 Exact legalization and an independent site/BEL validator remain responsible
