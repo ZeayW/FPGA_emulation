@@ -61,6 +61,28 @@ def test_argv_environment_directory_and_child_metrics(runner, tmp_path):
     assert not list(tmp_path.iterdir())
 
 
+def test_empty_argv_and_environment_values_survive_native_protocol(runner, tmp_path):
+    command = [sys.executable, "-c", "import os,sys,json; print(json.dumps([sys.argv[1:],dict(os.environ)]))", "", "after-empty"]
+    with NativeToolProcess(runner, command, cwd=tmp_path,
+                           environment={"EMPTY": "", "NONEMPTY": "kept"}) as process:
+        result = process.finish()
+        assert result.returncode == 0
+        arguments, environment = json.loads(result.stdout)
+        assert arguments == ["", "after-empty"]
+        assert environment["EMPTY"] == "" and environment["NONEMPTY"] == "kept"
+        assert "PATH" not in environment
+
+
+@pytest.mark.parametrize("environment", [{"": "value"}, {"BAD=NAME": ""}])
+def test_empty_value_support_does_not_accept_invalid_environment_names(runner, tmp_path, environment):
+    marker = tmp_path / "started"
+    command = [sys.executable, "-c", "open(__import__('sys').argv[1],'w').write('bad')", str(marker)]
+    with NativeToolProcess(runner, command, environment=environment) as process:
+        with pytest.raises(EmuFlowError, match="supervisor failed|launch failed"):
+            process.finish()
+    assert not marker.exists()
+
+
 def test_result_uses_common_operation_schema(runner):
     jsonschema = pytest.importorskip("jsonschema")
     from referencing import Registry, Resource

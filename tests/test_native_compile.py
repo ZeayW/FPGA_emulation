@@ -244,6 +244,9 @@ def test_actual_shared_phase_adapters_complete_existing_nonphysical_contract_fix
     root = Path(__file__).resolve().parents[1]
     monkeypatch.setattr("emuflow.native_compile.resolve_native_executable", lambda _: str(emuflow_native()))
     output = tmp_path / "flow"
+    # Real launcher environments may contain intentionally empty values. The
+    # timing adapter forwards its environment through the binary tool protocol.
+    monkeypatch.setenv("EMUFLOW_COMPILE_EMPTY_ENV", "")
     report = run_native_multi_fpga_flow(
         platform_path=root / "platforms/virtual/static_exact_acceptance_2fpga.json",
         output_dir=output, yosys_json=root / "examples/yosys/static_exact_chain.json",

@@ -255,12 +255,12 @@ ToolRequest ReadToolRequest(const std::string& path) {
   request.working_directory = reader.ReadString32();
   const auto args = reader.Read<std::uint32_t>();
   if (!args || args > 4096) Invalid("external tool argv exceeds bound");
-  for (std::uint32_t i = 0; i < args; ++i) request.argv.push_back(reader.ReadString32());
+  for (std::uint32_t i = 0; i < args; ++i) request.argv.push_back(reader.ReadString32(i != 0));
   const auto env = reader.Read<std::uint32_t>();
   if (env > 4096) Invalid("external tool environment exceeds bound");
   for (std::uint32_t i = 0; i < env; ++i) {
     const auto key = reader.ReadString32();
-    request.environment.emplace_back(key, reader.ReadString32());
+    request.environment.emplace_back(key, reader.ReadString32(true));
   }
   reader.RequireEnd(); Validate(request); return request;
 }

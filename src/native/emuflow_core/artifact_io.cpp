@@ -34,9 +34,9 @@ void BinaryReader::ReadBytes(void* destination, std::size_t size) {
   offset_ += size;
 }
 
-std::string BinaryReader::ReadString32() {
+std::string BinaryReader::ReadString32(bool allow_empty) {
   const auto size = Read<std::uint32_t>();
-  if (size == 0 || size > remaining()) {
+  if ((!allow_empty && size == 0) || size > remaining()) {
     throw std::runtime_error("native input string is invalid");
   }
   std::string value(size, '\0');

@@ -64,7 +64,8 @@ validation precedes report publication.
 These production outputs stay compact without requiring a managed-storage flag;
 Python still publishes the compact manifest.
 The shared core also supervises external tools with process-group cancellation,
-resource limits and bounded diagnostics. Installed Yosys streaming and OpenSTA
+resource limits, literal arguments and environment values (including empty
+values), and bounded diagnostics. Installed Yosys streaming and OpenSTA
 extraction use that lifecycle through small requests.
 An opt-in `multi-fpga compile --compile-implementation native-control-v1` uses
 the C++ one-shot `emuflow-native compile` controller with isolated shared Python

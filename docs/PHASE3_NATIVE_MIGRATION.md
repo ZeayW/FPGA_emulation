@@ -205,7 +205,9 @@ ownership and real-design Phase 7/7C qualification remain required for completio
 `core::RunExternalTool` owns actual engine execution: explicit executable/argv,
 working directory, inherited or replaced environment, optional wall/CPU/address
 space/file-size limits, a separate process group, deadline/cancellation escalation
-and `wait4` reaping. It does not invoke a shell. Engine diagnostics use a fixed-size
+and `wait4` reaping. It does not invoke a shell. Empty argv elements and
+environment values remain distinct from missing fields; executable, working
+directory and environment names remain nonempty. Engine diagnostics use a fixed-size
 tail rather than a full temporary log or Python string. Forwarded stdout remains
 a direct engine-to-importer pipe for production Yosys; document bytes never pass
 through the request/result protocol. A failed importer cancels the supervisor,

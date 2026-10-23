@@ -39,7 +39,9 @@ class BinaryReader {
   void RequireEnd() const;
   void Seek(std::size_t offset);
   void ReadBytes(void* destination, std::size_t size);
-  std::string ReadString32();
+  // Artifact identities are nonempty by default. Protocol fields such as argv
+  // elements and environment values explicitly permit an empty string.
+  std::string ReadString32(bool allow_empty = false);
   std::size_t size() const { return size_; }
   std::size_t remaining() const { return size_ - offset_; }
 
