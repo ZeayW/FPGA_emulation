@@ -470,6 +470,14 @@ add_custom_command(
     "${EMUFLOW_INSTALL_ROOT}/scripts/yosys"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/scripts/openroad"
+    "${EMUFLOW_INSTALL_ROOT}/scripts/openroad"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/scripts/patron"
+    "${EMUFLOW_INSTALL_ROOT}/scripts/patron"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/scripts/vivado"
     "${EMUFLOW_INSTALL_ROOT}/scripts/vivado"
   COMMAND

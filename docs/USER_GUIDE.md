@@ -35,6 +35,16 @@ The native installation includes the EmuFlow CLI and selected in-tree engines.
 Use `emuflow --help` and the relevant subcommand's `--help` for the complete
 option list.
 
+For native binaries requiring a newer host ABI, the source tree provides
+optional container launchers under `scripts/yosys`, `scripts/opensta`,
+`scripts/openroad`, and `scripts/patron`. Select each launcher through the
+corresponding executable option, configure the shared
+`EMUFLOW_YOSYS_CONTAINER_{EXECUTABLE,IMAGE,BIND,LIBRARY_PATH}` variables, and
+set each tool's `EMUFLOW_<TOOL>_CONTAINER_BINARY` independently (`YOSYS`,
+`OPENSTA`, `OPENROAD`, or `PATRON`). `TMPDIR` must point into the active
+experiment. These launchers require an existing Singularity-compatible runtime
+and image; they do not install tools or change the host ABI.
+
 For dependencies outside system directories:
 
 ```bash
