@@ -300,6 +300,24 @@ def _add_mux_bels(architecture, primitives):
 
 
 class XilinxOpenparfAtomicTest(unittest.TestCase):
+    def test_density_headroom_uses_only_qualified_lut_bels(self):
+        # Sixteen z slots encode eight BLEs; paired LUTs are disabled. A
+        # seven-LUT region exceeds the 75% density target of the eight BELs,
+        # even though it would fit a fictitious sixteen-LUT density model.
+        sites = [({"name": "SLICE_X0Y0"}, {"LUT": 16, "FF": 16})]
+        with self.assertRaisesRegex(ValidationError, "headroom for LUT"):
+            atomic_adapter._validate_native_density_contract(
+                sites, [{"resource": "LUT"}] * 7
+            )
+        units, contract = atomic_adapter._validate_native_density_contract(
+            sites, [{"resource": "LUT"}] * 5 + [{"resource": "FF"}]
+        )
+        self.assertEqual(units, {"LUT": 8, "FF": 16})
+        self.assertEqual(contract["LUT"]["movable_area"], 5 / 8)
+        self.assertEqual(contract["LUT"]["filler_units"], 3)
+        self.assertEqual(contract["FF"]["movable_area"], 1 / 16)
+        self.assertEqual(sites[0][1]["LUT"], 16)
+
     def test_clock_region_site_headroom_is_reserved_before_placement(self):
         sites = []
         for x in range(2):
@@ -614,7 +632,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(manifest["atoms"], 128)
         self.assertEqual(manifest["resources"], {"FF": 64, "LUT": 64})
         self.assertEqual(
-            manifest["resource_unit_capacity"], {"LUT": 16, "FF": 16}
+            manifest["resource_unit_capacity"], {"LUT": 8, "FF": 16}
         )
         self.assertEqual(manifest["placement_region"], {
             "logic_sites": 16,
@@ -624,10 +642,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "available_logic_sites": 16,
         })
         self.assertEqual(manifest["density_contract"]["LUT"], {
-            "movable_area": 4.0,
+            "movable_area": 8.0,
             "placeable_area": 16.0,
             "target_area": 12.0,
-            "filler_units": 192,
+            "filler_units": 64,
         })
         self.assertEqual(manifest["net_export"], {
             "emitted": 129, "dropped_single_endpoint": 0,
@@ -1089,7 +1107,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "RAMB36E2": 1, "URAM288": 1,
         })
         self.assertEqual(manifest["resource_unit_capacity"], {
-            "LUT": 16, "FF": 16, "DSP48E2": 1,
+            "LUT": 8, "FF": 16, "DSP48E2": 1,
             "RAMB36E2": 1, "URAM288": 1,
         })
         self.assertEqual(manifest["net_export"], {
@@ -1302,7 +1320,8 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["detailed_place_flag"], 1)
         self.assertEqual(config["resource_categories"], {"FF": "FF", "LUT": "LUTL"})
         self.assertEqual(list(config["gp_model2area_types_map"]), ["LUT6", "FDRE"])
-        self.assertEqual(config["gp_model2area_types_map"]["LUT6"]["LUT"], [0.25, 0.25])
+        lut_dimensions = config["gp_model2area_types_map"]["LUT6"]["LUT"]
+        self.assertAlmostEqual(lut_dimensions[0] * lut_dimensions[1], 1 / 8)
         self.assertEqual(config["gp_model2area_types_map"]["FDRE"]["FF"], [0.25, 0.25])
         self.assertEqual(config["CLB_capacity"], 16)
         self.assertEqual(config["BLE_capacity"], 2)

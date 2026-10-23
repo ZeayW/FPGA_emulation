@@ -62,6 +62,15 @@ placement objective. This guides placement without changing connectivity.
 Exact legalization and an independent site/BEL validator remain responsible
 for physical legality.
 
+The conservative UltraScale+ model qualifies eight independent 6LUT BELs and
+sixteen FF BELs per slice. DirectLG retains sixteen LUT z positions to encode
+the 5LUT/6LUT pairs, with paired LUT use disabled. That encoding is not physical
+density capacity: each analytical LUT consumes `1/8` of a slice, each FF `1/16`.
+The density headroom check and filler count use the same qualified capacity.
+The `resource_unit_capacity` manifest field records these density units; the
+Bookshelf site grammar retains sixteen LUT slots for native BEL numbering.
+This leaves the configured target density and final site/BEL checks intact.
+
 The OpenPARF coordinate importer joins solver rows to the authenticated atomic
 name-map sidecar through an explicitly URI-enabled SQLite connection. The
 sidecar is attached read-only and immutable; the join independently checks atom

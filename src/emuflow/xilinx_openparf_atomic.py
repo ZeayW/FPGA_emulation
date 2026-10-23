@@ -124,6 +124,7 @@ OPENPARF_FF_CONTROL_LEGALIZATION_SCHEMA = (
 )
 OPENPARF_RESULT_CHECKPOINT_SCHEMA = "emuflow.openparf-result-checkpoint/v1"
 _TARGET_DENSITY = 0.75
+_QUALIFIED_LUTS_PER_SLICE = 8
 _CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
 _GLOBAL_PLACEMENT_STOP_OVERFLOW = 0.10
 _ROUTABILITY_ADJUSTMENT_OVERFLOW_THRESHOLD = 0.15
@@ -2715,11 +2716,25 @@ def _validate_native_density_contract(
     sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
     atoms: Sequence[Mapping[str, str]],
 ) -> Tuple[Dict[str, int], Dict[str, Dict[str, float]]]:
-    """Prove every active area type has finite density and filler headroom."""
+    """Normalize density to qualified BELs, independently of slot encoding."""
 
     demand = Counter(atom["resource"] for atom in atoms)
+
+    def density_capacity(resources: Mapping[str, int], resource: str) -> int:
+        capacity = resources.get(resource, 0)
+        # DirectLG retains sixteen z positions for the 5LUT/6LUT BLE encoding,
+        # but allow_paired_luts=0 makes only eight positions usable.  Its slot
+        # namespace must not halve each LUT's analytical area or double the
+        # physical headroom assumed by global placement.
+        return (
+            min(capacity, _QUALIFIED_LUTS_PER_SLICE)
+            if resource == "LUT" else capacity
+        )
+
     per_site_capacity = {
-        resource: max(resources.get(resource, 0) for _site, resources in sites)
+        resource: max(
+            density_capacity(resources, resource) for _site, resources in sites
+        )
         for resource in demand
     }
     result: Dict[str, Dict[str, float]] = {}
@@ -2730,7 +2745,7 @@ def _validate_native_density_contract(
                 f"OpenPARF atomic placement has no {resource} model capacity"
             )
         available_units = sum(
-            resources.get(resource, 0) for _site, resources in sites
+            density_capacity(resources, resource) for _site, resources in sites
         )
         movable_area = demand[resource] / unit_capacity
         placeable_area = available_units / unit_capacity
@@ -4437,7 +4452,9 @@ def export_xilinx_openparf_atomic(
     # The native CLB model exposes 16 LUT resource units for two-LUT BLE
     # compatibility, but EmuFlow's conservative architecture policy permits
     # only eight independent 6LUT BELs.  The importer enforces even z slots.
-    capacity["LUT"] = 8 * sum("LUT" in resources for _site, resources in sites)
+    capacity["LUT"] = _QUALIFIED_LUTS_PER_SLICE * sum(
+        "LUT" in resources for _site, resources in sites
+    )
     for resource, count in demand.items():
         if count > capacity[resource]:
             raise ValidationError(
@@ -4561,7 +4578,7 @@ def export_xilinx_openparf_atomic(
         "plot_target_at_names": sorted(demand, key=_resource_sort_key),
         "io_at_names": [], "num_threads": 8,
         "gp_model2area_types_map": model_map,
-        # Sixteen capacity-normalized LUT/FF slots share one physical slice.
+        # Eight qualified LUT BELs and sixteen FF BELs share one slice.
         # Median-cell fillers would therefore materialize roughly sixteen
         # Python/Torch rows per unused site (millions on XCVU19P).  Sixteen
         # samples per density bin are already finer than the analytical grid;

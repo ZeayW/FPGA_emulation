@@ -76,7 +76,9 @@ does not expand this platform ratio domain.
 
 The Xilinx Phase 7 path combines fanout-aware placement, RUDY/pin-density area
 adjustment, and a reserved post-adjustment convergence window before exact
-legalization and negotiated routing. The final route still requires zero
+legalization and negotiated routing. Analytical LUT density uses the eight
+qualified LUT BELs per slice, independently of the native sixteen-slot encoding.
+The final route still requires zero
 overused nodes and complete source-to-sink connectivity.
 
 Phase 3 can seal per-FPGA downstream resource reservations in
