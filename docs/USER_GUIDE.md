@@ -303,7 +303,7 @@ board support package. A virtual platform does not supply those facts.
 
 ## Output interpretation
 
-Large indexed Static Exact Phase 5 runs publish a typed `schedule.*.sqlite`
+Current indexed Static Exact Phase 5 runs publish a typed `schedule.*.sqlite`
 store, a compact `schedule.json` selector, cross-layer timing and the final
 report. Independent indexed validation completes before the report is committed.
 The producer executes model construction, scheduling, readiness certificates
@@ -313,6 +313,10 @@ files and Python result import are absent. The report records the producer
 implementation separately from its unchanged algorithm provider and labels
 the storage timer's scope, which includes calculation on this path.
 This compact production behavior does not require a managed-storage flag.
+Selection follows the current v3 indexed route/Static Exact contract at every
+route count and requires the unified `emuflow-native` scheduler; a missing unified
+entry does not silently select the reference producer. Reference and standalone
+comparisons remain available through the explicit `build_tdm_schedule` API.
 Native production does not implicitly emit the reference `schedule.tsv`,
 `transport_manifest.json`, testbench or feedback JSON, or run reference signal
 simulation. Those are explicit qualification/export functions; small reference

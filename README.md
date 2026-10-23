@@ -69,10 +69,12 @@ the shared core from EmuIR, TimingPathDB and packed primary cluster columns;
 Python carries bounded configuration and counts rather than a second pressure graph.
 Versioned native runtimes also build the Phase 3 topology hop refiner from the
 same source revision.
-Large indexed Static Exact Phase 5 runs use one shared-core call for model
+Current indexed Static Exact Phase 5 runs use one shared-core call for model
 construction, scheduling, readiness certificates and ScheduleStore publication,
 without Python result import or numeric intermediate files. Independent indexed
-validation precedes report publication.
+validation precedes report publication. Selection depends on the input contract,
+not its route count; this path requires the unified native scheduler. Reference
+and standalone comparisons remain explicit API operations.
 These production outputs stay compact without requiring a managed-storage flag;
 Python still publishes the compact manifest.
 The shared core also supervises external tools with process-group cancellation,

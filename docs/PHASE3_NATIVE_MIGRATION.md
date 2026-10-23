@@ -90,7 +90,7 @@ metadata and ordered-record checks remain required. This integration does not
 complete the other physical exporters or full W0/W7 qualification.
 
 `phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT`
-owns the complete large indexed exact producer. It builds the integer model
+owns the complete current indexed exact producer. It builds the integer model
 from v3 RouteStore, computes a typed in-process solution, derives the dependency
 and sink-readiness certificates and domain/phase metrics, then publishes the
 existing v4 ScheduleStore through the shared writer. Python sends only bounded
@@ -119,9 +119,12 @@ edge order from its model-building scan and moves them into the writer;
 publication does not rescan RouteStore to reconstruct them.
 
 This production path requires current v3 typed route input and the unified
-native scheduler. Explicit standalone comparison tools, older storage versions,
-dictionary compatibility inputs and small reference schedules retain the
-reference path. A native failure never retries that path. Requests retain the
+native scheduler, regardless of the route count. Indexed production never
+selects Python because a partition happens to have fewer cut routes, and a
+standalone-only installation is rejected for this boundary. Older storage and
+dictionary inputs retain their compatibility path; reference and standalone
+comparisons use the explicit `build_tdm_schedule` API. A native failure never
+retries that path. Requests retain the
 source file generations captured by their producer; stale references are rejected
 before computation and rechecked before atomic publication. The Python layer
 still commits the compact manifest and report. Phase 5 reports identify the

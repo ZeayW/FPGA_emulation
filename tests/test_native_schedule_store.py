@@ -168,6 +168,9 @@ def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch)
     assignment_path=tmp_path/"assignment.json"
     assignment_path.write_text(json.dumps(assignment),encoding="utf-8")
     output=tmp_path/"phase5"
+    # The production entry must select native from the indexed contract,
+    # independently of the explicit compatibility API's size threshold.
+    monkeypatch.setattr("emuflow.tdm.NATIVE_EXACT_SCHEDULE_MIN_ROUTES",100_000)
     with patch("emuflow.tdm_schedule_storage._publish_logical_schedule",side_effect=AssertionError("Python publisher used")), \
          patch("emuflow.phase5.build_tdm_schedule",side_effect=AssertionError("Python schedule/result import used")), \
          patch("emuflow.tdm._indexed_certificate",side_effect=AssertionError("Python producer certificate used")), \

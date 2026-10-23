@@ -1,3 +1,4 @@
+from contextlib import closing
 import copy
 import json
 import sqlite3
@@ -77,7 +78,7 @@ def _storage_routes(generation: int) -> dict:
 
 
 def _downgrade_route_relation_to_v2(store_path: Path) -> None:
-    with sqlite3.connect(store_path) as connection:
+    with closing(sqlite3.connect(store_path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         rows = list(connection.execute("SELECT * FROM routes ORDER BY seq"))
         connection.executescript(
@@ -244,7 +245,7 @@ class Phase4Test(unittest.TestCase):
                 key: manifest["sections"][key]
                 for key in ("demands", "routes", "timing_paths")
             }
-            with sqlite3.connect(store_path) as connection:
+            with closing(sqlite3.connect(store_path)) as connection, connection:
                 connection.executescript(
                     "DROP TABLE route_master_selections;"
                     "DROP TABLE refinement_batch_paths;"
@@ -324,7 +325,7 @@ class Phase4Test(unittest.TestCase):
             )
             manifest = write_system_route_storage(selector_path, logical)
             self.assertEqual(manifest["user_version"], SYSTEM_ROUTE_USER_VERSION)
-            with sqlite3.connect(root / manifest["artifact"]) as connection:
+            with closing(sqlite3.connect(root / manifest["artifact"])) as connection, connection:
                 columns = tuple(
                     row[1] for row in connection.execute("PRAGMA table_info(routes)")
                 )
@@ -356,7 +357,7 @@ class Phase4Test(unittest.TestCase):
                 selector_path, _storage_routes(0)
             )
             store_path = root / manifest["artifact"]
-            with sqlite3.connect(store_path) as connection:
+            with closing(sqlite3.connect(store_path)) as connection, connection:
                 connection.execute("ALTER TABLE routes ADD COLUMN hidden_json TEXT")
             store_sha256 = file_sha256(store_path)
             extended_path = root / f"routes.{store_sha256}.sqlite"

@@ -11,6 +11,28 @@ ROOT = Path(__file__).resolve().parents[1]
 _BUILD_ROOT = tempfile.TemporaryDirectory(prefix="emuflow-native-tests-")
 
 
+@lru_cache(maxsize=None)
+def _standalone_fixture_program(name: str) -> Path:
+    compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+    if compiler is None:
+        raise RuntimeError("a C++17 compiler is required for native fixture tools")
+    executable = Path(_BUILD_ROOT.name) / ("emuflow_" + name)
+    subprocess.run(
+        [compiler, "-std=c++17", "-O2", "-pthread",
+         str(ROOT / "src/native" / (name + ".cpp")), "-o", str(executable)],
+        check=True,
+    )
+    return executable
+
+
+def placement_aware_pin_planner() -> Path:
+    return _standalone_fixture_program("placement_aware_pin_planner")
+
+
+def chimew_bank_channel_assigner() -> Path:
+    return _standalone_fixture_program("chimew_bank_channel_assigner")
+
+
 @lru_cache(maxsize=1)
 def xilinx_bookshelf_exporter() -> Path:
     executable = Path(_BUILD_ROOT.name) / "emuflow_xilinx_bookshelf_exporter"

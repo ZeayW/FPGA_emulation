@@ -12,8 +12,10 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.errors import ValidationError
+from emuflow.io import read_json
 from emuflow.tdm import build_native_exact_schedule_request, build_tdm_schedule
 from emuflow.tdm_schedule_storage import read_tdm_schedule, write_tdm_schedule_storage
+from emuflow.system_route_storage import read_system_routes, write_system_route_storage
 from tests.native_build import emuflow_native, native_json_record
 from tests.test_native_schedule_ingress import _case
 
@@ -46,7 +48,6 @@ def install_runtime(tmp_path, monkeypatch):
     bindir.mkdir(parents=True)
     (bindir / "emuflow-native").symlink_to(emuflow_native())
     monkeypatch.setenv("EMUFLOW_NATIVE_ROOT", str(bindir.parent))
-    monkeypatch.setattr("emuflow.tdm.NATIVE_EXACT_SCHEDULE_MIN_ROUTES", 0)
 
 
 @pytest.mark.parametrize("affine,repeated", [(False, False), (True, False), (True, True), ("banks", False), ("tree", False)])
@@ -116,3 +117,29 @@ def test_native_generation_rejects_corruption_without_replacing_published_schedu
     assert read_tdm_schedule(manifest, materialize=True) == reference
     assert not list(tmp_path.glob("*.publishing.*"))
     assert not list(tmp_path.glob(".*.tmp*"))
+
+
+def test_indexed_production_rejects_standalone_without_reference_fallback(tmp_path):
+    case, routes = _case(tmp_path, False, False)
+    with patch("emuflow.native_tools.resolve_native_stage_command", return_value=["standalone"]):
+        with pytest.raises(ValidationError, match="requires the unified emuflow-native"):
+            build_native_exact_schedule_request(routes, case.platform)
+
+
+def test_empty_indexed_production_uses_native_and_matches_reference(tmp_path, monkeypatch):
+    case, _routes = _case(tmp_path, False, False)
+    empty = read_json(tmp_path / "routes.json")
+    empty["routes"] = []
+    empty["demands"] = []
+    path = tmp_path / "empty.json"
+    write_system_route_storage(path, empty)
+    routes = read_system_routes(path)
+    reference = build_tdm_schedule(routes, case.platform)
+    install_runtime(tmp_path, monkeypatch)
+    request = build_native_exact_schedule_request(routes, case.platform)
+    assert request is not None
+    output = tmp_path / "schedule.json"
+    with patch("emuflow.tdm_schedule_storage._publish_logical_schedule",
+               side_effect=AssertionError("empty production retried Python")):
+        write_tdm_schedule_storage(output, request)
+    assert read_tdm_schedule(output, materialize=True) == reference

@@ -1,10 +1,11 @@
 import copy
 import os
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+from tests.native_build import placement_aware_pin_planner
 
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.pin_plan_storage import (
@@ -38,29 +39,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class PlacementAwarePinPlanningTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.temporary_directory = tempfile.TemporaryDirectory()
-        cls.executable = (
-            Path(cls.temporary_directory.name) / "emuflow_pin_planner"
-        )
-        subprocess.run(
-            [
-                "c++",
-                "-std=c++17",
-                "-O2",
-                "-pthread",
-                str(
-                    ROOT
-                    / "src/native/placement_aware_pin_planner.cpp"
-                ),
-                "-o",
-                str(cls.executable),
-            ],
-            check=True,
-        )
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.temporary_directory.cleanup()
+        cls.executable = placement_aware_pin_planner()
 
     def setUp(self) -> None:
         self.platform = Platform.from_dict(

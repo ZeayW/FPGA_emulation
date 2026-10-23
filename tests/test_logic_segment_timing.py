@@ -1,3 +1,4 @@
+from contextlib import closing
 import tempfile
 import tracemalloc
 import unittest
@@ -1607,7 +1608,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
             identity, _header = self._typed_identity(root, 2)
             selector = read_json(identity)
             old_store = root / selector["artifact"]
-            with sqlite3.connect(old_store) as connection:
+            with closing(sqlite3.connect(old_store)) as connection, connection:
                 connection.execute("CREATE TABLE injected(value TEXT)")
             digest = hashlib.sha256(old_store.read_bytes()).hexdigest()
             new_store = root / f"{identity.name}.store.{digest}.sqlite"

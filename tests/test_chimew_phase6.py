@@ -1,12 +1,14 @@
+from contextlib import closing
 import copy
 import hashlib
 import shutil
 import sqlite3
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+from tests.native_build import chimew_bank_channel_assigner
 
 from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
@@ -67,27 +69,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ChimewPhase6AdapterTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.temporary_directory = tempfile.TemporaryDirectory()
-        compiler = shutil.which("c++") or shutil.which("clang++")
-        if compiler is None:
-            raise RuntimeError("a C++17 compiler is required")
-        cls.executable = Path(cls.temporary_directory.name) / "chimew-assignment"
-        subprocess.run(
-            [
-                compiler,
-                "-std=c++17",
-                "-O2",
-                "-pthread",
-                str(ROOT / "src/native/chimew_bank_channel_assigner.cpp"),
-                "-o",
-                str(cls.executable),
-            ],
-            check=True,
-        )
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.temporary_directory.cleanup()
+        cls.executable = chimew_bank_channel_assigner()
 
     def setUp(self) -> None:
         self.platform_document = {
@@ -741,7 +723,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 ChimewBindingView(selector)
 
             write_json(selector, manifest, compact=True)
-            with sqlite3.connect(indexed.store_path) as connection:
+            with closing(sqlite3.connect(indexed.store_path)) as connection, connection:
                 connection.execute(
                     "UPDATE members SET member='tampered' WHERE member='s0'"
                 )
@@ -1262,7 +1244,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             pragma_only = root / "pragma-only"
             shutil.copytree(output, pragma_only)
             original_store = pragma_only / report["artifacts"]["pin_plan_store"]
-            with sqlite3.connect(original_store) as connection:
+            with closing(sqlite3.connect(original_store)) as connection, connection:
                 application_id = connection.execute(
                     "PRAGMA application_id"
                 ).fetchone()[0]
@@ -1270,7 +1252,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                     "PRAGMA user_version"
                 ).fetchone()[0]
             fake_store = pragma_only / "pin_plan.incomplete.sqlite"
-            with sqlite3.connect(fake_store) as connection:
+            with closing(sqlite3.connect(fake_store)) as connection, connection:
                 connection.execute(f"PRAGMA application_id={application_id}")
                 connection.execute(f"PRAGMA user_version={user_version}")
             fake_store_digest = hashlib.sha256(fake_store.read_bytes()).hexdigest()

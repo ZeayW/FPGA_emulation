@@ -2178,8 +2178,7 @@ def build_native_exact_schedule_request(
     """
 
     raw = routes.get("routes")
-    if (getattr(raw, "_user_version", None) != 3 or
-            len(raw) < NATIVE_EXACT_SCHEDULE_MIN_ROUTES):
+    if getattr(raw, "_user_version", None) != 3:
         return None
     contract = _static_exact_contract_from_routes(routes)
     if contract is None or contract.get("indexed") is not True:
@@ -2188,7 +2187,10 @@ def build_native_exact_schedule_request(
 
     command = resolve_native_stage_command("emuflow_tdm_exact_scheduler", "phase5", "schedule")
     if len(command) != 3:
-        return None
+        raise ValidationError(
+            "indexed Phase 5 production requires the unified emuflow-native scheduler; "
+            "use build_tdm_schedule explicitly for reference/standalone comparisons"
+        )
     constraints = normalize_route_constraints(routes.get("constraints"), platform)
     _, arcs, capacities = build_directed_graph(platform, constraints)
     allocations = _bank_direction_allocations(routes, platform, constraints)
