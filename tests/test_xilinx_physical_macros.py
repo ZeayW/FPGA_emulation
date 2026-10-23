@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import MappingProxyType
+from unittest import mock
 
 from emuflow.errors import ValidationError
 import emuflow.xilinx_physical_macros as physical_macros
@@ -12,6 +13,72 @@ from emuflow.xilinx_physical_macros import (
     derive_xilinx_physical_macro_contract,
     validate_xilinx_physical_macro_contract,
 )
+from emuflow.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
+from emuflow.yosys import import_yosys_json
+
+
+class ImmutableMacroDerivationTests(unittest.TestCase):
+    def test_one_live_reader_reuses_private_facts_and_new_reader_derives(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "mapped.json"
+            source.write_text(json.dumps({"modules": {"top": {
+                "attributes": {"top": "1"}, "ports": {},
+                "cells": {"lut": {
+                    "type": "LUT1", "parameters": {"INIT": "10"},
+                    "attributes": {}, "connections": {"I0": [2], "O": [3]},
+                    "port_directions": {"I0": "input", "O": "output"},
+                }}, "netnames": {"a": {"bits": [2]}, "y": {"bits": [3]}},
+            }}}))
+            ir = root / "ir.sqlite"
+            mapped_path = root / "mapped.sqlite"
+            import_yosys_json(source).save(ir)
+            emit_xilinx_mapped_index(ir, mapped_path)
+            with mock.patch.object(
+                physical_macros, "_derive_contract", wraps=physical_macros._derive_contract
+            ) as derive:
+                with open_xilinx_mapped_index(mapped_path) as mapped:
+                    first = physical_macros.build_xilinx_physical_macro_contract(
+                        mapped_path, source=mapped
+                    )
+                    expected = copy.deepcopy(first)
+                    first["summary"]["site_macros"] = -1
+                    first["site_macros"].append({"id": "consumer mutation"})
+                    second = physical_macros.build_xilinx_physical_macro_contract(
+                        mapped_path, top="top", source=mapped
+                    )
+                    self.assertEqual(second, expected)
+                    self.assertEqual(derive.call_count, 1)
+                    second["policy"]["provider"] = "consumer mutation"
+                    self.assertEqual(
+                        physical_macros.build_xilinx_physical_macro_contract(
+                            mapped_path, source=mapped
+                        ), expected,
+                    )
+                    self.assertEqual(derive.call_count, 1)
+                    with self.assertRaises(ValidationError):
+                        physical_macros.build_xilinx_physical_macro_contract(
+                            mapped_path, top="wrong-top", source=mapped
+                        )
+                    self.assertEqual(derive.call_count, 2)
+                self.assertIsNone(mapped._derived_physical_macro_contract)
+                with open_xilinx_mapped_index(mapped_path) as independent:
+                    self.assertEqual(
+                        physical_macros.build_xilinx_physical_macro_contract(
+                            mapped_path, source=independent
+                        ), expected,
+                    )
+                self.assertEqual(derive.call_count, 3)
+
+    def test_mutable_json_derives_again_after_connectivity_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "mapped.json"
+            value = {"modules": {"top": {"cells": {}}}}
+            with mock.patch.object(physical_macros, "_derive_contract", return_value={}) as derive:
+                physical_macros.build_xilinx_physical_macro_contract(path, source=value)
+                value["modules"]["top"]["cells"]["new"] = {}
+                physical_macros.build_xilinx_physical_macro_contract(path, source=value)
+            self.assertEqual(derive.call_count, 2)
 
 
 def cell(cell_type, connections, outputs):

@@ -44,6 +44,13 @@ retain the reference exporter for explicit compatibility and differential tests.
 This removes one graph-sized Python traversal; mapped lowering, physical macro
 preparation, and timing-query preparation are separate stages.
 
+Atomic-source construction, Bookshelf export, and placement validation reuse
+the physical macro derivation owned by the same live immutable mapped reader.
+Consumers receive detached records, so modifying one returned contract cannot
+change later validation. Closing the reader releases this derived state. A new
+reader, a different mapped file/top, or a mutable JSON input derives its own
+facts; no persistent analysis artifact or cross-run cache is introduced.
+
 OpenPARF applies a bounded square-root weight to large nets in its analytical
 placement objective. This guides placement without changing connectivity.
 Exact legalization and an independent site/BEL validator remain responsible

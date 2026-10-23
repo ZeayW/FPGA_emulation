@@ -236,6 +236,9 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
         }
         self.modules: Mapping[str, Any] = {self.top: self.module}
         self._validated_physical_paths: set[Tuple[Path, int, int]] = set()
+        # A private, detached structural result for this immutable reader only.
+        # It is never serialized or shared with another reader/experiment.
+        self._derived_physical_macro_contract: Optional[Dict[str, Any]] = None
 
     def __getitem__(self, key: str) -> Any:
         if key == "creator":
@@ -501,6 +504,7 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
             connection.close()
 
     def close(self) -> None:
+        self._derived_physical_macro_contract = None
         connection = getattr(self, "connection", None)
         if connection is not None:
             connection.close()

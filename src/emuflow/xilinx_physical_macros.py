@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -554,6 +555,24 @@ def build_xilinx_physical_macro_contract(
     hot path.
     """
 
+    from .xilinx_netlist import IndexedXilinxMappedNetlist
+
+    if (
+        isinstance(source, IndexedXilinxMappedNetlist)
+        and source.connection is not None
+        and mapped_path.resolve() == source.path.resolve()
+        and (top is None or top == source.top)
+    ):
+        # Source construction, Bookshelf export, and placement validation use
+        # one immutable mapped reader. Repeating whole-netlist derivation adds
+        # no independent evidence. New readers and mutable JSON sources still
+        # derive independently. Keep a detached private result so a consumer
+        # cannot alter the facts used by the later placement validator.
+        if source._derived_physical_macro_contract is None:
+            result = _derive_contract(mapped_path, top=top, source=source)
+            source._derived_physical_macro_contract = deepcopy(result)
+            return result
+        return deepcopy(source._derived_physical_macro_contract)
     return _derive_contract(mapped_path, top=top, source=source)
 
 
