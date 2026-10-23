@@ -26,7 +26,6 @@ set(TCL_POSSIBLE_NAMES
   #tcl90 tcl9.0
   tcl87 tcl8.7
   tcl86 tcl8.6
-  tcl85 tcl8.5
   )
 
 # TCL lib path guesses.
@@ -78,4 +77,12 @@ message(STATUS "TCL header: ${TCL_HEADER}")
 
 if (TCL_HEADER)
   get_filename_component(TCL_INCLUDE_PATH "${TCL_HEADER}" PATH)
+  # EmuFlow: OpenSTA 3.1 procedures use try/finally (introduced in Tcl 8.6).
+  file(STRINGS "${TCL_HEADER}" TCL_MAJOR_LINE REGEX "^#define[ \t]+TCL_MAJOR_VERSION[ \t]+[0-9]+")
+  file(STRINGS "${TCL_HEADER}" TCL_MINOR_LINE REGEX "^#define[ \t]+TCL_MINOR_VERSION[ \t]+[0-9]+")
+  string(REGEX MATCH "[0-9]+" TCL_MAJOR "${TCL_MAJOR_LINE}")
+  string(REGEX MATCH "[0-9]+" TCL_MINOR "${TCL_MINOR_LINE}")
+  if (NOT TCL_MAJOR OR TCL_MAJOR LESS 8 OR (TCL_MAJOR EQUAL 8 AND TCL_MINOR LESS 6))
+    message(FATAL_ERROR "OpenSTA 3.1 requires Tcl 8.6+ headers and runtime; found ${TCL_MAJOR}.${TCL_MINOR}")
+  endif()
 endif()

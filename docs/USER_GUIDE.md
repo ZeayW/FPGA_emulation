@@ -34,6 +34,9 @@ export PATH="$PWD/build/native/install/bin:$PATH"
 The native installation includes the EmuFlow CLI and selected in-tree engines.
 Use `emuflow --help` and the relevant subcommand's `--help` for the complete
 option list.
+OpenSTA qualification checks both its engine version and Tcl 8.6+ `try/finally`
+support before an expensive frontend run. Rebuild an executable linked against
+an older Tcl; changing only its reported engine version is insufficient.
 
 For native binaries requiring a newer host ABI, the source tree provides
 optional container launchers under `scripts/yosys`, `scripts/opensta`,

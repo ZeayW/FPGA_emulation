@@ -231,13 +231,25 @@ class OpenStaProviderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             executable = Path(temporary) / "sta"
             executable.write_text(
-                "#!/bin/sh\necho 3.1.0\n", encoding="utf-8"
+                '#!/bin/sh\nif [ "$1" = -version ]; then echo 3.1.0; '
+                'else echo "EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16"; fi\n', encoding="utf-8"
             )
             executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
             with mock.patch("pathlib.Path.open", side_effect=AssertionError("hashed")):
                 self.assertEqual(
                     check_opensta_engine_version(str(executable)), "3.1.0"
                 )
+
+    def test_current_engine_with_incompatible_tcl_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "sta"
+            executable.write_text(
+                '#!/bin/sh\nif [ "$1" = -version ]; then echo 3.1.0; '
+                'else echo "EMUFLOW_OPENSTA_RUNTIME status=fail actual=8.5.13"; exit 1; fi\n'
+            )
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            with self.assertRaisesRegex(ValidationError, "Tcl 8.6\\+"):
+                check_opensta_engine_version(str(executable))
 
     def test_path_export_supports_directed_cut_net_queries(self) -> None:
         script = (
@@ -504,6 +516,9 @@ from pathlib import Path
 if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
+if "-no_init" in sys.argv:
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
+    raise SystemExit(0)
 
 through = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()
 _, requested_hex = through[1].split("\\t")
@@ -593,6 +608,9 @@ from pathlib import Path
 if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
+if "-no_init" in sys.argv:
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
+    raise SystemExit(0)
 timing_io = Path(os.environ["EMUFLOW_STA_TIMING_IO"]).read_text().splitlines()
 assert timing_io == [
     "direction\\tclock_hex\\tdelay_ns\\tport_hex",
@@ -644,6 +662,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
             executable.write_text(
                 "#!/bin/sh\n"
                 "if [ \"$1\" = \"-version\" ]; then echo 3.1.0; exit 0; fi\n"
+                "if [ \"$1\" = \"-no_init\" ]; then echo EMUFLOW_OPENSTA_RUNTIME status=pass; exit 0; fi\n"
                 "exit 99\n",
                 encoding="utf-8",
             )
@@ -799,6 +818,9 @@ from pathlib import Path
 if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
+if "-no_init" in sys.argv:
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
+    raise SystemExit(0)
 
 requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
 requested_hex = [row.split("\\t")[1] for row in requested]
@@ -866,6 +888,9 @@ from pathlib import Path
 
 if sys.argv[1:] == ["-version"]:
     print("3.1.0")
+    raise SystemExit(0)
+if "-no_init" in sys.argv:
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
     raise SystemExit(0)
 
 requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]

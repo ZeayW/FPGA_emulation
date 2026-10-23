@@ -7,6 +7,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from collections import defaultdict
 from copy import deepcopy
@@ -143,6 +144,16 @@ def check_opensta_engine_version(executable: str) -> str:
         raise ValidationError(
             f"OpenSTA {actual} is unsupported; EmuFlow requires {minimum} or newer"
         )
+    runtime_result = subprocess.run(
+        [executable, "-no_init", "-exit", str(OPENSTA_RUNTIME_CHECK_SCRIPT)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False,
+    )
+    if (runtime_result.returncode != 0 or
+            "EMUFLOW_OPENSTA_RUNTIME status=pass" not in runtime_result.stdout):
+        raise ValidationError(
+            "OpenSTA runtime qualification failed; Tcl 8.6+ with try/finally "
+            "is required: " + runtime_result.stdout[-1000:]
+        )
     return ".".join(str(field) for field in version_tuple)
 
 
@@ -165,6 +176,7 @@ def _runtime_data_path(relative: Path) -> Path:
     candidates = (
         root / relative,
         root / "share" / "emuflow" / relative,
+        Path(sys.prefix) / "share" / "emuflow" / relative,
     )
     for candidate in candidates:
         if candidate.is_file():
@@ -177,6 +189,9 @@ DEFAULT_TIMING_MODEL = _runtime_data_path(
 )
 OPENSTA_EXPORT_SCRIPT = _runtime_data_path(
     Path("scripts/opensta/export_timing_path_database.tcl")
+)
+OPENSTA_RUNTIME_CHECK_SCRIPT = _runtime_data_path(
+    Path("scripts/opensta/validate_runtime.tcl")
 )
 
 
