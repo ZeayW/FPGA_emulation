@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mmap
+from pathlib import Path
 import struct
 from array import array
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -340,6 +342,34 @@ def build_static_exact_cut_node_stream(
             for value in values:
                 append_string(value)
 
+    return _decode_cut_node_stream(encoded, offsets)
+
+
+def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSequence:
+    """Map final native-owned node bytes without repacking their records."""
+
+    try:
+        with path.open("rb") as stream:
+            data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+        if len(data) < 32:
+            raise ValidationError("native semantic node header is truncated")
+        magic, version, count, size = struct.unpack_from("<QIIQ", data)
+        start = 24 + 8 * (count + 1)
+        if magic != 0x314E4553464D5545 or version != 1 or start + size != len(data):
+            raise ValidationError("native semantic node envelope is invalid")
+        offsets = memoryview(data)[24:start].cast("Q")
+        if offsets[0] != 0 or offsets[-1] != size or any(
+            offsets[index] >= offsets[index + 1] for index in range(count)
+        ):
+            raise ValidationError("native semantic node offsets are invalid")
+        result = _decode_cut_node_stream(memoryview(data)[start:], offsets[:-1])
+        result.native_semantic_artifact_path = path
+        return result
+    except (OSError, ValueError, struct.error) as error:
+        raise ValidationError("native semantic node artifact is invalid") from error
+
+
+def _decode_cut_node_stream(encoded, offsets) -> StaticExactCutNodeSequence:
     count = len(offsets)
 
     def decode_fields(index: int, *, raw: bool) -> tuple[Any, ...]:

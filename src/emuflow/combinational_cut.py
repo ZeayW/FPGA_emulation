@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mmap
+import os
 import sqlite3
 import struct
 import subprocess
@@ -30,6 +31,7 @@ from .phase3_exact_records import (
     StaticExactRecordSequence,
     build_static_exact_capture_stream,
     build_static_exact_cut_node_stream,
+    read_native_static_exact_cut_node_stream,
     build_static_exact_record_streams,
     direct_static_exact_semantic_contract_sha256,
     validate_static_exact_capture_bit,
@@ -2517,6 +2519,12 @@ def _analyze_static_exact_dependencies_native(
                         "native Static Exact output has trailing bytes"
                     )
         del instance_index
+        # Keep only the compact native topology until final records are built.
+        retained = tempfile.TemporaryDirectory(prefix="emuflow-exact-topology-")
+        retained_path = Path(retained.name) / "topology.bin"
+        os.replace(native_output, retained_path)
+        analysis_records.native_topology_path = retained_path
+        analysis_records._native_topology_owner = retained
 
     analysis_records.finalize(
         bytearray(
@@ -2972,6 +2980,72 @@ def _resolve_native_capture_requests(
     )
 
 
+def _build_native_semantic_cut_nodes(ordered_cuts, topology, captures):
+    """Native final-record owner; Python supplies bounded identity cursors."""
+
+    owner = tempfile.TemporaryDirectory(prefix="emuflow-exact-semantics-")
+    root = Path(owner.name)
+    metadata = root / "identities.bin"
+    output = root / "cut-nodes.bin"
+    capture_cursor = iter(captures.iter_binary_captures())
+    capture = next(capture_cursor, None)
+    try:
+        with metadata.open("wb") as stream:
+            stream.write(struct.pack("<QII", 0x314D4553464D5545, 1, len(ordered_cuts)))
+            def write_string(value):
+                raw = value.encode("utf-8")
+                if not raw or len(raw) >= 2**32:
+                    raise ValidationError("native semantic identity is invalid")
+                stream.write(struct.pack("<I", len(raw)))
+                stream.write(raw)
+            for cut in ordered_cuts:
+                net = cut["net"].encode("utf-8")
+                count = 0
+                while capture is not None and capture[0] == net:
+                    count += 1
+                    capture = next(capture_cursor, None)
+                write_string(cut["net"])
+                write_string(cut["cut_class"])
+                write_string(cut["source_fpgas"][0])
+                stream.write(struct.pack("<I", len(cut["sink_fpgas"])))
+                for sink in cut["sink_fpgas"]:
+                    write_string(sink)
+                stream.write(struct.pack("<I", count))
+            if capture is not None:
+                raise ValidationError("native semantic capture coverage disagrees")
+        command = resolve_native_stage_command(
+            "emuflow_static_exact_analyzer", "phase3", "finalize-semantics"
+        )
+        # The standalone analyzer exposes the same operation with a flag.
+        if len(command) == 1:
+            command = [*command, "--finalize-semantics"]
+        completed = subprocess.run(
+            [*command, str(topology.native_topology_path), str(metadata), str(output)],
+            capture_output=True, text=True, check=False,
+        )
+        if completed.returncode:
+            raise ValidationError("native semantic finalization failed: " + completed.stderr.strip())
+        nodes = read_native_static_exact_cut_node_stream(output)
+        nodes._native_semantic_owner = owner
+        if len(nodes) != len(ordered_cuts):
+            raise ValidationError("native semantic cut coverage disagrees")
+        for index, (node, cut) in enumerate(zip(nodes, ordered_cuts)):
+            if any(node[field] != cut[field] for field in (
+                "net", "cut_class", "source_fpgas", "sink_fpgas"
+            )) or node["dependency_level"] != topology.dependency_level(index) or (
+                node["combinational_dependency_depth"] != topology.combinational_depth(index)
+            ) or node["predecessor_cut_nets"] != [
+                ordered_cuts[source]["net"] for source in topology.dependency_indices(index)
+            ]:
+                raise ValidationError("native semantic record disagrees with independent topology")
+        metadata.unlink()
+        topology._native_topology_owner.cleanup()
+        return nodes
+    except BaseException:
+        owner.cleanup()
+        raise
+
+
 def build_static_exact_semantic_contract(
     ir: EmuIR,
     platform: Mapping[str, Any],
@@ -3349,7 +3423,11 @@ def build_static_exact_semantic_contract(
             )
 
     if stream_records:
-        cut_nodes = build_static_exact_cut_node_stream(generate_cut_nodes())
+        cut_nodes = (
+            _build_native_semantic_cut_nodes(ordered_cuts, analysis_records, capture_records)
+            if analysis_records is not None
+            else build_static_exact_cut_node_stream(generate_cut_nodes())
+        )
         record_streams = build_static_exact_record_streams(
             cut_nodes,
             capture_records,

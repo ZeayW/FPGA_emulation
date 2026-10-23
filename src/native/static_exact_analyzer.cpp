@@ -755,11 +755,174 @@ void emuflow::native::AnalyzeStaticExact(const std::string& input_path,
   AnalyzeImpl(input_path, output_path, indexed_path);
 }
 
+// Final cut-node records are produced from analyzer topology and final identities.
+// The parent independently checks the topology; no scheduling policy is applied.
+void emuflow::native::FinalizeStaticExact(
+    const std::string& topology_path, const std::string& metadata_path,
+    const std::string& output_path) {
+  using emuflow::core::BinaryReader;
+  constexpr std::uint64_t metadata_magic = 0x314D4553464D5545ULL;
+  constexpr std::uint64_t nodes_magic = 0x314E4553464D5545ULL;
+  BinaryReader topology(topology_path), metadata(metadata_path);
+  emuflow::core::ReadAndValidateHeader(topology, {kOutputMagic, 3, "exact topology"});
+  emuflow::core::ReadAndValidateHeader(metadata, {metadata_magic, 1, "exact identities"});
+  const auto count = topology.Read<std::uint32_t>();
+  const auto raw_captures = topology.Read<std::uint64_t>();
+  if (metadata.Read<std::uint32_t>() != count || count > metadata.remaining() / 23) {
+    throw std::runtime_error("native semantic cut coverage disagrees");
+  }
+  struct Cut {
+    std::string net, kind, source;
+    std::vector<std::string> sinks;
+    std::uint32_t captures = 0;
+  };
+  std::vector<Cut> cuts(count);
+  std::vector<std::uint8_t> flags(count);
+  std::vector<std::uint64_t> offsets{0};
+  std::vector<std::uint32_t> dependencies;
+  std::uint64_t launches = 0, captures = 0;
+  for (std::uint32_t i = 0; i < count; ++i) {
+    auto& cut = cuts[i];
+    cut.net = metadata.ReadString32();
+    cut.kind = metadata.ReadString32();
+    cut.source = metadata.ReadString32();
+    if (i && cut.net <= cuts[i - 1].net) {
+      throw std::runtime_error("native semantic cut identity order is invalid");
+    }
+    const auto sinks = metadata.Read<std::uint32_t>();
+    if (sinks > metadata.remaining() / 5) {
+      throw std::runtime_error("native semantic sinks are truncated");
+    }
+    for (std::uint32_t j = 0; j < sinks; ++j) cut.sinks.push_back(metadata.ReadString32());
+    cut.captures = metadata.Read<std::uint32_t>();
+    captures += cut.captures;
+    const auto launch = topology.Read<std::uint8_t>();
+    const auto edges = topology.Read<std::uint32_t>();
+    if (launch > 1 || edges > count || edges > topology.remaining() / 4) {
+      throw std::runtime_error("native semantic topology is invalid");
+    }
+    flags[i] = launch ? 1 : (edges == 0 ? 2 : 0);
+    launches += flags[i] != 0;
+    std::uint32_t previous = 0;
+    for (std::uint32_t j = 0; j < edges; ++j) {
+      const auto source = topology.Read<std::uint32_t>();
+      if (source >= count || (j && source <= previous)) {
+        throw std::runtime_error("native semantic predecessor is invalid");
+      }
+      dependencies.push_back(source);
+      previous = source;
+    }
+    offsets.push_back(dependencies.size());
+  }
+  metadata.RequireEnd();
+  if (raw_captures > topology.remaining() / 16 || topology.remaining() != raw_captures * 16) {
+    throw std::runtime_error("native semantic capture coordinates are truncated");
+  }
+  // Coordinates have already been resolved and independently normalized. Check
+  // their envelope and range before discarding them; final counts may deduplicate.
+  for (std::uint64_t i = 0; i < raw_captures; ++i) {
+    if (topology.Read<std::uint32_t>() >= count) {
+      throw std::runtime_error("native semantic capture cut is invalid");
+    }
+    topology.Read<std::uint32_t>();
+    topology.Read<std::uint32_t>();
+    topology.Read<std::uint32_t>();
+  }
+  topology.RequireEnd();
+  if (captures > raw_captures || launches + dependencies.size() + captures >= UINT32_MAX) {
+    throw std::runtime_error("native semantic segment population is invalid");
+  }
+  std::vector<std::uint64_t> successor_offsets(count + 1, 0);
+  for (const auto source : dependencies) ++successor_offsets[source + 1];
+  for (std::uint32_t i = 0; i < count; ++i) successor_offsets[i + 1] += successor_offsets[i];
+  auto cursor = successor_offsets;
+  std::vector<std::uint32_t> successors(dependencies.size()), levels(count, 1), depths(count, 0);
+  std::vector<std::uint64_t> indegree(count);
+  std::queue<std::uint32_t> ready;
+  for (std::uint32_t i = 0; i < count; ++i) {
+    indegree[i] = offsets[i + 1] - offsets[i];
+    if (!indegree[i]) ready.push(i);
+    for (auto j = offsets[i]; j < offsets[i + 1]; ++j) successors[cursor[dependencies[j]]++] = i;
+  }
+  std::uint64_t visited = 0;
+  while (!ready.empty()) {
+    const auto i = ready.front(); ready.pop(); ++visited;
+    depths[i] += cuts[i].kind == "combinational";
+    for (auto j = successor_offsets[i]; j < successor_offsets[i + 1]; ++j) {
+      const auto sink = successors[j];
+      levels[sink] = std::max(levels[sink], levels[i] + 1);
+      depths[sink] = std::max(depths[sink], depths[i]);
+      if (--indegree[sink] == 0) ready.push(sink);
+    }
+  }
+  if (visited != count) throw std::runtime_error("native semantic topology contains a cycle");
+  auto segment = [](std::uint64_t number) {
+    const auto digits = std::to_string(number);
+    return std::string("segment") + std::string(digits.size() < 6 ? 6 - digits.size() : 0, '0') + digits;
+  };
+  auto string_size = [](const std::string& value) { return 4ULL + value.size(); };
+  std::vector<std::uint64_t> positions{0};
+  std::uint64_t launch_number = 0, edge_number = launches, capture_number = launches + dependencies.size();
+  auto visit = [&](auto&& record) {
+    for (std::uint32_t i = 0; i < count; ++i) {
+      const auto& cut = cuts[i];
+      record(i, cut, launch_number, edge_number, capture_number);
+      launch_number += flags[i] != 0;
+      edge_number += offsets[i + 1] - offsets[i];
+      capture_number += cut.captures;
+    }
+  };
+  visit([&](auto i, const auto& cut, auto launch, auto edge, auto capture) {
+    std::uint64_t bytes = string_size(cut.net) + string_size(cut.kind) + string_size(cut.source) + 24;
+    for (const auto& sink : cut.sinks) bytes += string_size(sink);
+    if (flags[i]) bytes += string_size(segment(launch));
+    for (auto j = offsets[i]; j < offsets[i + 1]; ++j) {
+      bytes += string_size(cuts[dependencies[j]].net) + string_size(segment(edge++));
+    }
+    for (std::uint32_t j = 0; j < cut.captures; ++j) bytes += string_size(segment(capture++));
+    positions.push_back(positions.back() + bytes);
+  });
+  emuflow::core::AtomicBinaryWriter output(output_path);
+  output.Write(nodes_magic); output.Write(std::uint32_t{1}); output.Write(count);
+  output.Write(positions.back());
+  for (const auto position : positions) output.Write(position);
+  auto write_string = [&](const std::string& value) {
+    output.Write(static_cast<std::uint32_t>(value.size())); output.WriteBytes(value.data(), value.size());
+  };
+  launch_number = 0; edge_number = launches; capture_number = launches + dependencies.size();
+  visit([&](auto i, const auto& cut, auto launch, auto edge, auto capture) {
+    write_string(cut.net); write_string(cut.kind); write_string(cut.source);
+    const auto edges = static_cast<std::uint32_t>(offsets[i + 1] - offsets[i]);
+    output.Write(levels[i]); output.Write(depths[i]);
+    output.Write(static_cast<std::uint32_t>(cut.sinks.size())); output.Write(edges);
+    output.Write(edges + std::uint32_t(flags[i] != 0)); output.Write(cut.captures);
+    for (const auto& sink : cut.sinks) write_string(sink);
+    for (auto j = offsets[i]; j < offsets[i + 1]; ++j) write_string(cuts[dependencies[j]].net);
+    if (flags[i]) write_string(segment(launch));
+    for (std::uint32_t j = 0; j < edges; ++j) write_string(segment(edge++));
+    std::vector<std::uint32_t> capture_ids(cut.captures);
+    for (std::uint32_t j = 0; j < cut.captures; ++j) capture_ids[j] = capture + j;
+    std::sort(capture_ids.begin(), capture_ids.end(), [&](auto left, auto right) { return segment(left) < segment(right); });
+    for (const auto number : capture_ids) write_string(segment(number));
+  });
+  output.Commit();
+}
+
 #if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "usage: emuflow_static_exact_analyzer [--indexed-input EMUIR] INPUT OUTPUT\n";
+    std::cout << "usage: emuflow_static_exact_analyzer [--indexed-input EMUIR] INPUT OUTPUT\n"
+                 "       emuflow_static_exact_analyzer --finalize-semantics TOPOLOGY METADATA OUTPUT\n";
     return 0;
+  }
+  if (argc == 5 && std::string(argv[1]) == "--finalize-semantics") {
+    try {
+      emuflow::native::FinalizeStaticExact(argv[2], argv[3], argv[4]);
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << "emuflow_static_exact_analyzer: " << error.what() << '\n';
+      return 1;
+    }
   }
   if (argc == 5 && std::string(argv[1]) == "--indexed-input") {
     try {

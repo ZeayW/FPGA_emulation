@@ -407,10 +407,17 @@ longer decodes every cell resource or scans and serializes all graph endpoints
 for this boundary. In-memory reference inputs retain protocol v3, and both
 modes return byte-identical v3 dependency/capture output in differential tests.
 Native import checks the storage envelope, record coverage, resource payloads
-and endpoint ownership before publishing. This completes graph import only:
-final semantic-record construction, contract hashing and assignment/index
-publication still have Python owners. Full NVDLA wall/RSS/I/O qualification
-remains pending.
+and endpoint ownership before publishing. The streamed native path also invokes
+`emuflow-native phase3 finalize-semantics TOPOLOGY METADATA OUTPUT`. C++ derives
+final dependency levels, source/capture segment numbering and canonical packed
+cut-node records from analyzer topology and streamed final identities. Python
+maps the resulting private binary artifact instead of generating per-cut Python
+dictionaries and retaining their complete packed bytearray. It independently
+recomputes topology and checks every native record before normal
+hashing/publication. Capture
+normalization, canonical contract hashing, exact-binary section publication and
+assignment/index publication still have Python owners. Full NVDLA wall/RSS/I/O
+qualification remains pending.
 The C++ analyzer now bounds protocol-v3
 capture ordering to a 1,048,576-record run and a 64-way external merge instead
 of retaining and sorting the complete capture population. Runs deduplicate

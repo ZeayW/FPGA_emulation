@@ -16,6 +16,25 @@
 #endif
 
 namespace emuflow::core {
+
+void BinaryReader::ReadBytes(void* destination, std::size_t size) {
+  if (size > remaining()) throw std::runtime_error("native input is truncated");
+  if (size != 0) {
+    stream_.read(static_cast<char*>(destination), size);
+    if (!stream_) throw std::runtime_error("cannot read native input");
+  }
+  offset_ += size;
+}
+
+std::string BinaryReader::ReadString32() {
+  const auto size = Read<std::uint32_t>();
+  if (size == 0 || size > remaining()) {
+    throw std::runtime_error("native input string is invalid");
+  }
+  std::string value(size, '\0');
+  ReadBytes(value.data(), size);
+  return value;
+}
 namespace {
 
 std::atomic<std::uint64_t> temporary_sequence{0};

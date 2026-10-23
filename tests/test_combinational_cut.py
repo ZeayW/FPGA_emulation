@@ -69,6 +69,8 @@ from emuflow.phase3_exact_records import (
     StaticExactCutNodeSequence,
     StaticExactRecordSequence,
     build_static_exact_capture_stream,
+    build_static_exact_cut_node_stream,
+    read_native_static_exact_cut_node_stream,
 )
 from emuflow.phase3_exact_binary import (
     validate_phase3_exact_binary,
@@ -1502,16 +1504,21 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                         "max_cross_fpga_dependency_depth"
                     ],
                 )
-                streamed = build_static_exact_semantic_contract(
-                    self.ir,
-                    self.platform.to_dict(),
-                    assignment["instance_assignment"],
-                    assignment["cut_nets"],
-                    max_dependency_depth=expected[
-                        "max_cross_fpga_dependency_depth"
-                    ],
-                    stream_records=True,
-                )
+                with patch(
+                    "emuflow.combinational_cut.build_static_exact_cut_node_stream",
+                    side_effect=AssertionError("native records must not be repacked in Python"),
+                ):
+                    streamed = build_static_exact_semantic_contract(
+                        self.ir,
+                        self.platform.to_dict(),
+                        assignment["instance_assignment"],
+                        assignment["cut_nets"],
+                        max_dependency_depth=expected[
+                            "max_cross_fpga_dependency_depth"
+                        ],
+                        stream_records=True,
+                    )
+                self.assertTrue(streamed["cut_nodes"].native_semantic_artifact_path.is_file())
             self.assertEqual(actual, expected)
             self.assertIsInstance(
                 streamed["cut_nodes"], StaticExactCutNodeSequence
@@ -1754,6 +1761,65 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     result = subprocess.run(command, capture_output=True, text=True)
                     self.assertNotEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(indexed_output.read_bytes(), b"previous-generation")
+
+    def test_native_semantic_finalizer_matches_records_and_rejects_bad_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            topology, metadata, output = root / "topology", root / "metadata", root / "nodes"
+            valid_topology = struct.pack("<QIIQ", 0x315845534F4D5545, 3, 2, 0)
+            valid_topology += struct.pack("<BI", 1, 0) + struct.pack("<BII", 0, 1, 0)
+            valid_metadata = bytearray(struct.pack("<QII", 0x314D4553464D5545, 1, 2))
+            for net, source, sink in (("a", "fpga0", "fpga1"), ("b", "fpga1", "fpga0")):
+                for value in (net, "combinational", source):
+                    raw = value.encode()
+                    valid_metadata.extend(struct.pack("<I", len(raw)) + raw)
+                raw = sink.encode()
+                valid_metadata.extend(struct.pack("<II", 1, len(raw)) + raw + struct.pack("<I", 0))
+            topology.write_bytes(valid_topology)
+            metadata.write_bytes(valid_metadata)
+            command = [str(emuflow_native()), "phase3", "finalize-semantics",
+                       str(topology), str(metadata), str(output)]
+            subprocess.run(command, check=True)
+            native = read_native_static_exact_cut_node_stream(output)
+            expected = []
+            for index, (net, source, sink) in enumerate((("a", "fpga0", "fpga1"), ("b", "fpga1", "fpga0"))):
+                expected.append({
+                    "net": net, "cut_class": "combinational",
+                    "source_fpgas": [source], "sink_fpgas": [sink],
+                    "dependency_level": index + 1,
+                    "combinational_dependency_depth": index + 1,
+                    "predecessor_cut_nets": [] if index == 0 else ["a"],
+                    "source_segment_ids": [f"segment{index:06d}"],
+                    "capture_segment_ids": [],
+                })
+            self.assertEqual(list(native), expected)
+            reference = build_static_exact_cut_node_stream(expected)
+            self.assertEqual([native.binary_node(i) for i in range(2)],
+                             [reference.binary_node(i) for i in range(2)])
+            valid_output = output.read_bytes()
+            for payload in (valid_output[:16], valid_output + b"extra",
+                            valid_output[:24] + struct.pack("<Q", 1) + valid_output[32:]):
+                corrupt = root / "corrupt"
+                corrupt.write_bytes(payload)
+                with self.assertRaises(ValidationError):
+                    read_native_static_exact_cut_node_stream(corrupt)
+            # Close the mapped generation by releasing its only reader before
+            # exercising replacement of the output path.
+            del native
+            for bad_topology, bad_metadata in (
+                (valid_topology[:-1], valid_metadata),
+                (valid_topology + b"extra", valid_metadata),
+                (valid_topology, valid_metadata[:-1]),
+                (valid_topology, valid_metadata + b"extra"),
+                (struct.pack("<QIIQ", 0x315845534F4D5545, 3, 2, 0)
+                 + struct.pack("<BII", 0, 1, 1) + struct.pack("<BII", 0, 1, 0), valid_metadata),
+            ):
+                topology.write_bytes(bad_topology)
+                metadata.write_bytes(bad_metadata)
+                output.write_bytes(b"previous-generation")
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output.read_bytes(), b"previous-generation")
 
     def test_compact_native_path_rejects_forged_cut_ordinal(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
