@@ -81,7 +81,8 @@ adjustment, and a reserved post-adjustment convergence window before exact
 legalization and negotiated routing. Analytical LUT density uses the eight
 qualified LUT BELs per slice, independently of the native sixteen-slot encoding.
 Empty and reserved rows retain zero placement capacity; the driver checks the
-parsed native density area before solving.
+parsed native density area before solving. Logic filler sampling preserves its
+exact total area and never spans more than one analytical density bin.
 The final route still requires zero
 overused nodes and complete source-to-sink connectivity.
 

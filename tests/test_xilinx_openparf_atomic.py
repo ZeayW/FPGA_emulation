@@ -748,7 +748,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-stable-feasible-v4",
+            "provider": "openparf-rudy-pin-stable-feasible-v5",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": 0.10,
             "adjustment_overflow_threshold": 0.15,
@@ -757,6 +757,11 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "maximum_route_adjustment_rate": 2.0,
             "maximum_pin_adjustment_rate": 1.6,
             "resource_area_adjustment": False,
+            "density_filler_sampling": {
+                "provider": "density-bin-bounded-fillers-v1",
+                "preferred_maximum_rows_per_area_type": 65536,
+                "maximum_bin_span": [1.0, 1.0],
+            },
             "sll_weighting": {
                 "provider": "leaps-fixed-adam-step-v2",
                 "step_size": 0.002,
@@ -2684,7 +2689,20 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                                 "step_size": 0.002,
                                 "delta_sll_ema_weight": 0.9,
                                 "accepted_range": [0.0, 1000.0],
-                            }
+                            },
+                            "density_filler_sampling": {
+                                "provider": "density-bin-bounded-fillers-v1",
+                                "status": "pass",
+                                "maximum_bin_span": [1.0, 1.0],
+                                "resources": {
+                                    "LUT": {
+                                        "count": 4,
+                                        "size": [0.5, 0.5],
+                                        "bin_size": [1.0, 1.0],
+                                        "bin_span": [0.5, 0.5],
+                                    }
+                                },
+                            },
                         },
                     }),
                     encoding="utf-8",

@@ -17,6 +17,8 @@ import uuid
 
 REPLACEMENTS = (
     "openparf/params.json",
+    "openparf/placement/data_collections.py",
+    "openparf/placement/filler.py",
     "openparf/placement/placer.py",
     "openparf/placement/sll_weight.py",
 )

@@ -98,6 +98,45 @@ def validate_native_logic_site_area(engine: Any) -> dict[str, Any]:
     return {"status": "pass", "expected": dict(expected), "actual": actual}
 
 
+def validate_native_filler_geometry(engine: Any) -> dict[str, Any]:
+    """Require each logic filler sample to fit inside one density bin."""
+
+    names = tuple(getattr(engine.params, "logic_area_type_names", ()))
+    if not names:
+        raise RuntimeError("OpenPARF has no logic area types for filler validation")
+    resources = {}
+    for name in names:
+        index = int(engine.placedb.getAreaTypeIndexFromName(name))
+        count = int(engine.data_cls.num_fillers[index])
+        size = [float(value) for value in engine.data_cls.filler_sizes[index]]
+        bin_size = [
+            float(value) for value in engine.data_cls.bin_map_sizes[index]
+        ]
+        if count <= 0 or not all(
+            math.isfinite(value) and value > 0
+            for value in size + bin_size
+        ):
+            raise RuntimeError(f"OpenPARF {name} filler geometry is invalid")
+        span = [size[axis] / bin_size[axis] for axis in range(2)]
+        if any(value > 1.0 + 1.0e-6 for value in span):
+            raise RuntimeError(
+                f"OpenPARF {name} filler exceeds one density bin: "
+                f"size={size}, bin={bin_size}"
+            )
+        resources[name] = {
+            "count": count,
+            "size": size,
+            "bin_size": bin_size,
+            "bin_span": span,
+        }
+    return {
+        "provider": "density-bin-bounded-fillers-v1",
+        "status": "pass",
+        "maximum_bin_span": [1.0, 1.0],
+        "resources": resources,
+    }
+
+
 def _active_overflow_is_feasible(engine: Any, metric: Any) -> bool:
     """Qualify routability-bearing logic density before exact legalization.
 
@@ -349,6 +388,7 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
                 ),
                 "accepted_range": [0.0, 1000.0],
             },
+            "density_filler_sampling": engine._emuflow_filler_geometry,
         },
     }
     weighting = getattr(engine, "_emuflow_high_fanout_weighting", None)
@@ -391,6 +431,10 @@ def validate_openparf_native_metrics(
         sll_weighting.get("delta_sll_ema_weight")
         if isinstance(sll_weighting, dict) else None
     )
+    filler_sampling = (
+        policy.get("density_filler_sampling")
+        if isinstance(policy, dict) else None
+    )
     if (
         not isinstance(sll_weighting, dict)
         or sll_weighting.get("provider") != "leaps-fixed-adam-step-v2"
@@ -405,6 +449,52 @@ def validate_openparf_native_metrics(
         or sll_weighting.get("accepted_range") != [0.0, 1000.0]
     ):
         raise RuntimeError("OpenPARF native SLL weighting policy is invalid")
+    if (
+        not isinstance(filler_sampling, dict)
+        or filler_sampling.get("provider")
+        != "density-bin-bounded-fillers-v1"
+        or filler_sampling.get("status") != "pass"
+        or filler_sampling.get("maximum_bin_span") != [1.0, 1.0]
+        or not isinstance(filler_sampling.get("resources"), dict)
+        or not filler_sampling["resources"]
+    ):
+        raise RuntimeError("OpenPARF native density filler policy is invalid")
+    for resource, geometry in filler_sampling["resources"].items():
+        if not isinstance(resource, str) or not isinstance(geometry, dict):
+            raise RuntimeError("OpenPARF native density filler policy is invalid")
+        count = geometry.get("count")
+        size = geometry.get("size")
+        bin_size = geometry.get("bin_size")
+        span = geometry.get("bin_span")
+        if (
+            isinstance(count, bool) or not isinstance(count, int) or count <= 0
+            or not all(
+                isinstance(values, list) and len(values) == 2
+                for values in (size, bin_size, span)
+            )
+        ):
+            raise RuntimeError("OpenPARF native density filler policy is invalid")
+        for axis in range(2):
+            values = (size[axis], bin_size[axis], span[axis])
+            if (
+                any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or float(value) <= 0.0
+                    for value in values
+                )
+                or float(span[axis]) > 1.0 + 1.0e-6
+                or not math.isclose(
+                    float(span[axis]),
+                    float(size[axis]) / float(bin_size[axis]),
+                    rel_tol=1.0e-9,
+                    abs_tol=1.0e-9,
+                )
+            ):
+                raise RuntimeError(
+                    "OpenPARF native density filler policy is invalid"
+                )
     stop_reason = value.get("stop_reason")
     globally_feasible = value.get("status") == "pass" and stop_reason in {
         "feasible-hpwl-patience",
@@ -491,6 +581,7 @@ def main() -> int:
     ) -> None:
         original_init(engine, loaded_params, placedb)
         engine._emuflow_logic_site_area = validate_native_logic_site_area(engine)
+        engine._emuflow_filler_geometry = validate_native_filler_geometry(engine)
         apply_high_fanout_net_weights(engine)
 
     def call_and_capture(engine: Any) -> Any:

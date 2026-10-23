@@ -142,7 +142,20 @@ class ArchitectureDBTest(unittest.TestCase):
                                 "step_size": 0.002,
                                 "delta_sll_ema_weight": 0.9,
                                 "accepted_range": [0.0, 1000.0],
-                            }
+                            },
+                            "density_filler_sampling": {
+                                "provider": "density-bin-bounded-fillers-v1",
+                                "status": "pass",
+                                "maximum_bin_span": [1.0, 1.0],
+                                "resources": {
+                                    "LUT": {
+                                        "count": 4,
+                                        "size": [0.5, 0.5],
+                                        "bin_size": [1.0, 1.0],
+                                        "bin_span": [0.5, 0.5],
+                                    }
+                                },
+                            },
                         },
                     }),
                     encoding="utf-8",

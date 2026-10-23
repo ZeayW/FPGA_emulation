@@ -231,6 +231,10 @@ class DataCollections(object):
                 filler_caps[
                     placedb.getAreaTypeIndexFromName(area_type_name)
                 ] = cap
+            logic_area_types = {
+                placedb.getAreaTypeIndexFromName(name)
+                for name in params.logic_area_type_names
+            }
             # inst_area_types = np.array(placedb.instAreaTypes().tolist(), dtype=np.uint8)
             for area_type in range(placedb.numAreaTypes()):
                 if total_movable_areas[area_type] > 0:
@@ -262,6 +266,11 @@ class DataCollections(object):
                         self.total_filler_areas[area_type],
                         filler_sizes,
                         filler_caps.get(area_type),
+                        (
+                            self.bin_map_sizes[area_type]
+                            if area_type in logic_area_types
+                            else None
+                        ),
                     )
                     self.num_fillers[area_type] = filler_count
                     self.filler_sizes[area_type] = filler_size

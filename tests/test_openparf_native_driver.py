@@ -10,6 +10,7 @@ from emuflow.openparf_native_driver import (
     OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
     bounded_native_area_adjustment_condition,
     stable_native_stop_condition,
+    validate_native_filler_geometry,
     validate_native_logic_site_area,
     validate_openparf_native_metrics,
 )
@@ -30,7 +31,20 @@ def _policy():
             "step_size": 0.002,
             "delta_sll_ema_weight": 0.9,
             "accepted_range": [0.0, 1000.0],
-        }
+        },
+        "density_filler_sampling": {
+            "provider": "density-bin-bounded-fillers-v1",
+            "status": "pass",
+            "maximum_bin_span": [1.0, 1.0],
+            "resources": {
+                "LUT": {
+                    "count": 4,
+                    "size": [0.5, 0.5],
+                    "bin_size": [1.0, 1.0],
+                    "bin_span": [0.5, 0.5],
+                }
+            },
+        },
     }
 
 
@@ -66,6 +80,25 @@ def _engine(*, patience=2, minimum=3):
 
 
 class OpenparfNativeDriverTest(unittest.TestCase):
+    def test_native_filler_samples_fit_density_bins(self):
+        engine = SimpleNamespace(
+            params=SimpleNamespace(logic_area_type_names=["LUT", "FF"]),
+            placedb=SimpleNamespace(
+                getAreaTypeIndexFromName=lambda name: {"LUT": 0, "FF": 1}[name]
+            ),
+            data_cls=SimpleNamespace(
+                num_fillers=[370000, 478000],
+                filler_sizes=[[0.877, 0.877], [0.837, 0.837]],
+                bin_map_sizes=[[0.877, 1.215], [0.877, 1.215]],
+            ),
+        )
+        result = validate_native_filler_geometry(engine)
+        self.assertEqual(result["status"], "pass")
+        self.assertLessEqual(result["resources"]["LUT"]["bin_span"][0], 1.0)
+        engine.data_cls.filler_sizes[0][0] = 2.0
+        with self.assertRaisesRegex(RuntimeError, "exceeds one density bin"):
+            validate_native_filler_geometry(engine)
+
     def test_native_density_domain_matches_qualified_site_area(self):
         engine = _engine()
         engine.params.emuflow_expected_logic_site_area = {"LUT": 2, "FF": 3}

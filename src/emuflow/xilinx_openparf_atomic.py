@@ -4602,10 +4602,10 @@ def export_xilinx_openparf_atomic(
         "io_at_names": [], "num_threads": 8,
         "gp_model2area_types_map": model_map,
         # Eight qualified LUT BELs and sixteen FF BELs share one slice.
-        # Median-cell fillers would therefore materialize roughly sixteen
-        # Python/Torch rows per unused site (millions on XCVU19P).  Sixteen
-        # samples per density bin are already finer than the analytical grid;
-        # preserve exact filler area while bounding the tensor population.
+        # Median-cell fillers would therefore materialize millions of
+        # Python/Torch rows on XCVU19P.  Treat this as a preferred row limit,
+        # but never enlarge a logic filler beyond one analytical density bin;
+        # the runtime records and validates the effective sampling geometry.
         "gp_max_fillers_per_area_type": {
             resource: (
                 _LOGIC_FILLER_LIMIT if resource in {"LUT", "FF"} else 1
@@ -5138,7 +5138,7 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-stable-feasible-v4",
+            "provider": "openparf-rudy-pin-stable-feasible-v5",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW
@@ -5151,6 +5151,11 @@ def export_xilinx_openparf_atomic(
             "maximum_route_adjustment_rate": _MAX_ROUTE_AREA_ADJUSTMENT_RATE,
             "maximum_pin_adjustment_rate": _MAX_PIN_AREA_ADJUSTMENT_RATE,
             "resource_area_adjustment": False,
+            "density_filler_sampling": {
+                "provider": "density-bin-bounded-fillers-v1",
+                "preferred_maximum_rows_per_area_type": _LOGIC_FILLER_LIMIT,
+                "maximum_bin_span": [1.0, 1.0],
+            },
             "sll_weighting": {
                 "provider": "leaps-fixed-adam-step-v2",
                 "step_size": _SLL_ADAM_STEP_SIZE,
