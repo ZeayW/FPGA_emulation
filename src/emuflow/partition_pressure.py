@@ -2445,9 +2445,17 @@ def build_partition_pressure_model(
     *,
     independent_validation: bool = True,
     timing_database_path: Optional[Path] = None,
+    native_store_model: bool = False,
 ) -> Dict[str, Any]:
-    """Build the immutable source-bound reference model."""
+    """Select a bounded native store request or the explicit reference model."""
 
+    if not isinstance(native_store_model, bool):
+        raise ValidationError("native pressure model selection must be boolean")
+    if native_store_model:
+        from .phase3_pressure_native import NativePressureModel, supports_native_pressure_model
+        if independent_validation or timing_database_path is None or not supports_native_pressure_model(ir, clusters_artifact, timing_database):
+            raise ValidationError("native pressure model requires compact indexed production inputs")
+        return NativePressureModel(ir, platform, clusters_artifact, constraints, timing_database, route_constraints, timing_database_path)
     model = _reconstruct_partition_pressure_model(
         ir,
         platform,
@@ -4567,6 +4575,8 @@ def run_partition_pressure_native(
     _release_model_before_assignment: bool = False,
     _defer_candidate_derived_records: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    from .phase3_pressure_native import NativePressureModel
+    store_model = isinstance(model, NativePressureModel)
     limit = len(model["clusters"]) if max_moves is None else max_moves
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
         raise ValidationError("native PATRON max_moves is invalid")
@@ -4634,6 +4644,9 @@ def run_partition_pressure_native(
         algorithm_version = 10
     flow_refinement = algorithm_version != 6
     use_physical_feedback = physical_feedback is not None
+    if store_model and (algorithm_version != 14 or retain_trace_seals or physical_feedback is not None
+                        or executable is not None or not stream_semantic_records):
+        raise ValidationError("native store model requires unified v14 summary production")
     if use_physical_feedback:
         if algorithm_version != 11:
             raise ValidationError(
@@ -4661,9 +4674,9 @@ def run_partition_pressure_native(
                 "native PATRON physical feedback scale has no artifact"
             )
         feedback_sha256 = None
-    native_command = resolve_native_stage_command(
+    native_command = ([] if store_model else resolve_native_stage_command(
         "emuflow_patron_refiner", "phase3", "refine-patron", executable
-    )
+    ))
     with tempfile.TemporaryDirectory(prefix="emuflow-patron-") as temporary:
         root = Path(temporary)
         native_output = root / "patron.out"
@@ -4677,7 +4690,13 @@ def run_partition_pressure_native(
             command.extend(("--summary-output", "--typed-output"))
         elif len(native_command) > 1:
             command.append("--trace-output")
-        if native_input_copy:
+        if store_model:
+            if native_input_copy:
+                raise ValidationError("native store model does not materialize a legacy input copy")
+            indexes = phase3_runtime_call("patron.build_and_refine_native_model", model.execute,
+                root, native_output, initial_assignment, limit, timeout_seconds, environment)
+            completed = subprocess.CompletedProcess([], 0, "", "")
+        elif native_input_copy:
             copy_path = Path(native_input_copy)
             copy_path.parent.mkdir(parents=True, exist_ok=True)
             indexes = phase3_runtime_call(
@@ -4798,21 +4817,16 @@ def run_partition_pressure_native(
                 "native PATRON failed with exit code "
                 f"{completed.returncode}: {detail}"
             )
-        (
-            cluster_assignment,
-            moves,
-            batches,
-            initial_metrics,
-            final_metrics,
-            mode,
-            output_summary,
-        ) = phase3_runtime_call(
-            "patron.parse_native_output",
-            _parse_patron_native_output,
-            native_output,
-            indexes,
-            packed_assignment=stream_semantic_records,
-        )
+        try:
+            (
+                cluster_assignment, moves, batches, initial_metrics, final_metrics, mode, output_summary,
+            ) = phase3_runtime_call(
+                "patron.parse_native_output", _parse_patron_native_output,
+                native_output, indexes, packed_assignment=stream_semantic_records,
+            )
+        finally:
+            if store_model:
+                indexes["clusters"].close()
         output_summary["input"] = indexes["input"]
     provider_metadata = {
         "initial_provider": initial_assignment.get("provider"),
@@ -4942,6 +4956,10 @@ def run_partition_pressure_native(
         ),
         "final_metrics": final_metrics,
     }
+    if store_model:
+        trace["model_implementation_id"] = model.implementation_id
+        trace["model_counts"] = output_summary["input"]["model"]
+        trace["native_model_metrics"] = output_summary["input"]["metrics"]
     if retain_trace_seals:
         trace.update(
             {

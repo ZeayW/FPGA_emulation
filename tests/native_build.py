@@ -259,6 +259,7 @@ _NATIVE_STAGE_SOURCES = (
     "emuflow_core/tool_runtime.cpp",
     "emuflow_core/compile.cpp",
     "emuflow_core/bookshelf.cpp",
+    "emuflow_core/patron_ingress.cpp",
 )
 
 
@@ -282,6 +283,14 @@ def emuflow_native() -> Path:
     return _build_native_stage_program(
         ROOT / "src/native/emuflow_native.cpp",
         Path(_BUILD_ROOT.name) / "unified/emuflow-native",
+    )
+
+
+@lru_cache(maxsize=1)
+def patron_ingress_oracle() -> Path:
+    return _build_native_stage_program(
+        ROOT / "tests/native_patron_ingress_test.cpp",
+        Path(_BUILD_ROOT.name) / "native_patron_ingress_test",
     )
 
 

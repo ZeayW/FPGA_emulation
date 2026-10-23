@@ -156,6 +156,17 @@ std::string SqliteFilePath(const std::string& path_or_uri) {
   return result;
 }
 
+std::string SqliteImmutableUri(const std::string& path) {
+  std::string filename = "file:";
+  for (unsigned char c : std::filesystem::absolute(path).string()) {
+    if (c == '%' || c == '?' || c == '#') {
+      filename += '%'; filename += "0123456789ABCDEF"[c >> 4];
+      filename += "0123456789ABCDEF"[c & 15];
+    } else filename += static_cast<char>(c);
+  }
+  return filename + "?mode=ro&immutable=1";
+}
+
 SqliteDatabase::SqliteDatabase(const std::string& path, Mode mode) {
   if (mode == Mode::kCreateExclusive && std::filesystem::exists(path)) {
     throw std::runtime_error("refusing to replace an existing SQLite artifact");
@@ -166,16 +177,7 @@ SqliteDatabase::SqliteDatabase(const std::string& path, Mode mode) {
                         : SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX;
   std::string filename = path;
   if (mode == Mode::kImmutableReadOnly) {
-    filename = "file:";
-    const auto absolute = std::filesystem::absolute(path).string();
-    for (unsigned char c : absolute) {
-      if (c == '%' || c == '?' || c == '#') {
-        filename += '%';
-        filename += "0123456789ABCDEF"[c >> 4];
-        filename += "0123456789ABCDEF"[c & 15];
-      } else filename += static_cast<char>(c);
-    }
-    filename += "?mode=ro&immutable=1";
+    filename = SqliteImmutableUri(path);
     flags |= SQLITE_OPEN_URI;
   }
   const int code = sqlite3_open_v2(filename.c_str(), &database_, flags, nullptr);

@@ -47,7 +47,8 @@ class EmuirView {
   std::string NetName(const EmuirNetId& net);
   void VisitCellStates(const std::function<void(EmuirCellId, bool)>& visitor);
   void VisitConnectivity(const std::function<void(const EmuirEndpoint&)>& endpoint,
-                         const std::function<void(EmuirNetId)>& net_end);
+                         const std::function<void(EmuirNetId)>& net_end,
+                         bool validate_pins = false);
  private:
   std::shared_ptr<const ArtifactRef> artifact_;
   SqliteDatabase database_;

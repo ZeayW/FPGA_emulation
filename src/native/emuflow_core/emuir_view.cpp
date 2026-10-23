@@ -1,6 +1,7 @@
 #include "emuflow_core/emuir_view.hpp"
 
 #include <limits>
+#include <set>
 
 namespace emuflow::core {
 namespace {
@@ -71,15 +72,28 @@ void EmuirView::VisitCellStates(const std::function<void(EmuirCellId, bool)>& vi
 }
 void EmuirView::VisitConnectivity(
     const std::function<void(const EmuirEndpoint&)>& endpoint,
-    const std::function<void(EmuirNetId)>& net_end) {
+    const std::function<void(EmuirNetId)>& net_end, bool validate_pins) {
   artifact_->RequireUnchanged();
+  std::set<std::string> top_ports;
+  if (validate_pins) {
+    auto ports = database_.Prepare("SELECT seq,json_extract(record_json,'$.id'),"
+        "json_type(record_json,'$.id') FROM port_records ORDER BY seq");
+    std::uint64_t ordinal = 0;
+    while (ports.Step()) {
+      if (ports.TypedInteger(0) != static_cast<std::int64_t>(ordinal++) ||
+          ports.Text(2) != "text" || ports.Text(1).empty() || !top_ports.insert(ports.Text(1)).second)
+        Invalid("native compact EmuIR port sequence is invalid");
+    }
+  }
   auto nets = database_.Prepare("SELECT seq FROM net_records ORDER BY seq");
   auto endpoints = database_.Prepare(
-      "SELECT net_seq,role,ordinal,coalesce(instance_seq,-1),"
-      "typeof(net_seq)='integer' AND typeof(role)='integer' AND "
-      "typeof(ordinal)='integer' AND (instance_seq IS NULL OR "
-      "(typeof(instance_seq)='integer' AND instance_seq>=0)) "
-      "FROM endpoint_records ORDER BY net_seq,role,ordinal");
+      std::string("SELECT e.net_seq,e.role,e.ordinal,coalesce(e.instance_seq,-1),"
+      "typeof(e.net_seq)='integer' AND typeof(e.role)='integer' AND "
+      "typeof(e.ordinal)='integer' AND (e.instance_seq IS NULL OR "
+      "(typeof(e.instance_seq)='integer' AND e.instance_seq>=0)) ") +
+      (validate_pins ? ",p.name,e.bit,typeof(e.bit)='integer' FROM endpoint_records e "
+                      "LEFT JOIN pin_names p ON p.seq=e.port_seq " : "FROM endpoint_records e ") +
+      "ORDER BY e.net_seq,e.role,e.ordinal");
   bool have_endpoint = endpoints.Step();
   std::uint64_t observed_nets = 0, observed_endpoints = 0;
   while (nets.Step()) {
@@ -93,6 +107,10 @@ void EmuirView::VisitConnectivity(
           role < previous_role || (role == previous_role && ordinal <= previous_ordinal) ||
           owner < -1 || (owner >= 0 && static_cast<std::uint64_t>(owner) >= counts_.cells))
         Invalid("native compact EmuIR endpoint is invalid");
+      if (validate_pins && (endpoints.IsNull(5) || endpoints.TypedText(5).empty() ||
+          !endpoints.Integer(7) || endpoints.TypedInteger(6) < 0 ||
+          (owner < 0 && !top_ports.count(endpoints.Text(5)))))
+        Invalid("native compact EmuIR endpoint pin is invalid");
       std::optional<EmuirCellId> cell;
       if (owner >= 0) cell = EmuirCellId(artifact_, static_cast<std::uint64_t>(owner));
       endpoint({net, role == 0 ? EndpointRole::kDriver : EndpointRole::kSink,

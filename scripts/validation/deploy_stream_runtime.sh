@@ -133,6 +133,7 @@ core_sources=(
   emuflow_core/route_view.cpp emuflow_core/schedule_model.cpp
   emuflow_core/schedule_ingress.cpp emuflow_core/tool_runtime.cpp
   emuflow_core/compile.cpp emuflow_core/bookshelf.cpp
+  emuflow_core/patron_ingress.cpp
   patron_refiner.cpp static_exact_analyzer.cpp tlr_router.cpp
   tdm_exact_scheduler.cpp chimew_bank_channel_assigner.cpp chimew_rudy.cpp
   chimew_signal_grouper.cpp chimew_position_refiner.cpp

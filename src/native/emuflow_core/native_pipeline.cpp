@@ -3,6 +3,7 @@
 #include "emuflow_core/schedule_store.hpp"
 #include "emuflow_core/schedule_ingress.hpp"
 #include "emuflow_core/bookshelf.hpp"
+#include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/sqlite.hpp"
 
 #include <filesystem>
@@ -28,6 +29,7 @@ const char* StageName(Stage stage) {
     case Stage::kRefinePositions: return "phase6.refine-groups";
     case Stage::kRudy: return "phase6.rudy";
     case Stage::kExportBookshelf: return "phase7.export-bookshelf";
+    case Stage::kRefinePatronFromStore: return "phase3.refine-patron-from-store";
   }
   return "unknown-native-stage";
 }
@@ -57,6 +59,8 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kRefinePositions: return {request.typed_input ? "chimew-refine-input-v1" : "chimew-refine-legacy-text"};
     case Stage::kRudy: return {"chimew-rudy-input-v1"};
     case Stage::kExportBookshelf: return {"xilinx-mapped-index-v2", "openparf-atom-index-private-v1"};
+    case Stage::kRefinePatronFromStore:
+      return {"emuir-compact-v2","timing-path-store-v1","patron-cluster-columns-v1","patron-board-request-v1"};
   }
   throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
 }
@@ -122,6 +126,16 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     }
     if (!request.report_path.empty() && request.output_path != "-" && Equivalent(request.report_path, request.output_path))
       throw core::StageError(core::ErrorCode::kInvalidRequest, "native report aliases the stage output");
+    if (request.stage == Stage::kRefinePatronFromStore) {
+      for (const auto* suffix : {".order",".summary.json"}) {
+        const auto auxiliary=request.output_path+suffix;
+        for (const auto& path:paths)
+          if (Equivalent(path,auxiliary))
+            throw core::StageError(core::ErrorCode::kInvalidRequest,"PATRON auxiliary output aliases an input");
+        if (!request.report_path.empty() && Equivalent(request.report_path,auxiliary))
+          throw core::StageError(core::ErrorCode::kInvalidRequest,"PATRON report aliases an auxiliary output");
+      }
+    }
     if (request.stage == Stage::kScheduleFromStore) {
       const auto auxiliary = request.output_path + ".input";
       for (const auto& path : paths)
@@ -170,6 +184,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kExportBookshelf:
         core::ExportBookshelf(inputs[0],inputs[1],output,request.auxiliary_output_path,request.scratch_path);
         break;
+      case Stage::kRefinePatronFromStore: core::RefinePatronFromStore(inputs,output); break;
       default: throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
     }
     if (output == "-") {
@@ -195,6 +210,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kRefinePositions: schema = "chimew-refine-output-text"; break;
       case Stage::kRudy: schema = "chimew-rudy-output-text"; break;
       case Stage::kExportBookshelf: schema = "openparf-bookshelf-nets-v1"; break;
+      case Stage::kRefinePatronFromStore: schema = "patron-output-v1"; break;
       default: throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
     }
     std::vector<core::ArtifactRef> refs{core::ArtifactRef::Bind(request.output_path, schema, request.output_path == "-")};
@@ -204,6 +220,10 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       refs.push_back(core::ArtifactRef::Bind(request.output_path + ".input", "exact-schedule-input-v1"));
     if (request.stage == Stage::kExportBookshelf)
       refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path, "openparf-bookshelf-summary-v1"));
+    if (request.stage == Stage::kRefinePatronFromStore) {
+      refs.push_back(core::ArtifactRef::Bind(request.output_path+".order","patron-cluster-order-v1"));
+      refs.push_back(core::ArtifactRef::Bind(request.output_path+".summary.json","patron-model-summary-v1"));
+    }
     return refs;
   });
 }

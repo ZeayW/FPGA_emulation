@@ -61,6 +61,7 @@ class SqliteDatabase {
 // Compatibility URI normalization uses SQLite's own URI parser, never a
 // second percent-decoder. Plain paths require no database open here.
 std::string SqliteFilePath(const std::string& path_or_uri);
+std::string SqliteImmutableUri(const std::string& path);
 
 class SqliteTransaction {
  public:

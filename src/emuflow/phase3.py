@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import math
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -769,6 +770,13 @@ def run_phase3(
         timing_database = phase3_runtime_call(
             "patron.load_timing_database", read_json, timing_database_path
         )
+        from .phase3_pressure_native import supports_native_pressure_model
+        native_store_model = (
+            not retain_diagnostics and patron_algorithm_version == 14
+            and patron_physical_system_timing_path is None and patron_refiner is None
+            and not os.environ.get("EMUFLOW_PATRON_INPUT_COPY")
+            and supports_native_pressure_model(ir, clusters, timing_database)
+        )
         model = phase3_runtime_call(
             "patron.build_pressure_model",
             build_partition_pressure_model,
@@ -780,6 +788,7 @@ def run_phase3(
             route_constraints,
             independent_validation=retain_diagnostics,
             timing_database_path=timing_database_path,
+            native_store_model=native_store_model,
         )
         patron_model_counts = {
             "clusters": len(model.get("clusters", [])),
@@ -787,11 +796,12 @@ def run_phase3(
             "paths": len(model.get("paths", [])),
             "capacity_domains": len(model.get("capacities", [])),
         }
-        phase3_runtime_observe(
-            pressure_clusters=patron_model_counts["clusters"],
-            pressure_nets=patron_model_counts["nets"],
-            pressure_paths=patron_model_counts["paths"],
-        )
+        if not native_store_model:
+            phase3_runtime_observe(
+                pressure_clusters=patron_model_counts["clusters"],
+                pressure_nets=patron_model_counts["nets"],
+                pressure_paths=patron_model_counts["paths"],
+            )
         if hasattr(model.get("nets"), "payload_bytes"):
             phase3_runtime_observe(
                 # Packed net identity/member/ordinal storage only.  This does
@@ -865,6 +875,12 @@ def run_phase3(
                 and cut_mode == CUT_MODE_STATIC_EXACT
             ),
         )
+        if native_store_model:
+            if patron_trace.get("model_implementation_id") != "native-store-model-v1":
+                raise ValidationError("PATRON native model implementation disagrees")
+            patron_model_counts = patron_trace["model_counts"]
+            phase3_runtime_observe(pressure_clusters=patron_model_counts["clusters"],
+                pressure_nets=patron_model_counts["nets"], pressure_paths=patron_model_counts["paths"])
         if retain_diagnostics:
             write_json(output_dir / "patron" / "pressure_model.json", model)
             write_json(
@@ -945,7 +961,7 @@ def run_phase3(
                 or not isinstance(change_count, int)
                 or change_count < 0
                 or native_input_transport
-                not in {"typed-binary-pipe", "atomic-text-file"}
+                not in {"typed-binary-pipe", "atomic-text-file", "native-store-model-v1"}
                 or isinstance(native_input_bytes, bool)
                 or not isinstance(native_input_bytes, int)
                 or native_input_bytes <= 0
@@ -988,6 +1004,9 @@ def run_phase3(
                 "native_input_crc32": native_input_crc32,
                 "native_output_bytes": native_output_bytes,
             }
+            if native_store_model:
+                patron_validation["model_implementation_id"] = "native-store-model-v1"
+                patron_validation["native_model_metrics"] = patron_trace["native_model_metrics"]
         if patron_physical_feedback_validation is not None:
             patron_validation["physical_feedback"] = (
                 patron_physical_feedback_validation

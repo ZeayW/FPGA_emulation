@@ -58,6 +58,9 @@ API, registered artifact envelopes, file-generation checks, and a structured
 `--report` error/metrics contract. Phase 3 analysis consumes the shared compact
 EmuIR view with artifact-scoped record IDs and ordered connectivity traversal.
 PATRON search is linked into this entry too.
+Compact indexed PATRON v14 production builds its pressure model directly in
+the shared core from EmuIR, TimingPathDB and packed primary cluster columns;
+Python carries bounded configuration and counts rather than a second pressure graph.
 Large indexed Static Exact Phase 5 runs use one shared-core call for model
 construction, scheduling, readiness certificates and ScheduleStore publication,
 without Python result import or numeric intermediate files. Independent indexed

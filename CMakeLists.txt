@@ -294,6 +294,7 @@ add_library(
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/tool_runtime.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/compile.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/bookshelf.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/patron_ingress.cpp"
 )
 target_compile_features(emuflow_core PUBLIC cxx_std_17)
 target_compile_options(emuflow_core PRIVATE -O3)
@@ -338,6 +339,9 @@ if(BUILD_TESTING)
     "${CMAKE_SOURCE_DIR}/tests/native_pipeline_api_test.cpp")
   target_link_libraries(emuflow_native_pipeline_api_test PRIVATE emuflow_core)
   add_test(NAME emuflow_native_pipeline_api COMMAND emuflow_native_pipeline_api_test)
+  add_executable(emuflow_native_patron_ingress_test "${CMAKE_SOURCE_DIR}/tests/native_patron_ingress_test.cpp")
+  target_link_libraries(emuflow_native_patron_ingress_test PRIVATE emuflow_core)
+  add_test(NAME emuflow_native_patron_order COMMAND emuflow_native_patron_ingress_test --order)
 endif()
 
 add_executable(

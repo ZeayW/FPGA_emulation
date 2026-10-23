@@ -36,6 +36,43 @@ only a CMake compatibility alias; the executable and native library tests link
 the core directly. This does not yet cover every standalone adapter or complete
 the native production data plane.
 
+`phase3 refine-patron-from-store EMUIR TIMING CLUSTERS REQUEST OUTPUT` builds
+the PATRON v14 model and invokes the existing solver in one shared-core process.
+Compact indexed production with canonical packed clusters selects this producer.
+The Python adapter carries board-sized configuration, source generations and bulk
+primary cluster columns; it does not create pressure-net/path/name populations,
+derive a second dimension/model representation or stream per-record solver input.
+The original packed clustering and initial ownership are still Python-owned;
+this migration does not claim complete native Phase 3 construction/publication.
+
+The shared model is move-only, and both its typed compatibility reader and direct
+store producer call the same search implementation. The producer checks primary
+cell/membership coverage, pin identities, sparse endpoint ordinals, ordered timing
+paths/net references, fixed ownership, resource/balance limits and bank symmetry.
+Capacity and route policies retain their existing meanings; no schedule-readiness
+or Static Exact feasibility guard is introduced. Input CRCs and retained file
+generations reject truncation, corruption and mixed sources before solving.
+The output keeps the existing typed assignment format. A sealed integer order
+sidecar binds its lexical native coordinates to canonical cluster ordinals,
+including identities longer than six digits; Python maps it without a name pool.
+Only counts and implementation identity return in the bounded
+[model summary](../schemas/patron-native-model-v1.schema.json).
+The summary also separates model-build and search operations using the common
+wall/CPU/I/O metrics. Their RSS values are process-lifetime high-water snapshots,
+not incremental stage memory; the enclosing sampled process-tree peak remains
+the whole-phase memory measurement.
+Normal handoff still runs the independent assignment validator and candidate
+selection before final semantic/index publication.
+
+Small/inline and explicitly selected legacy tools, retained diagnostic traces,
+physical-feedback algorithms and explicit legacy input copies keep the reference
+model path. A selected native producer never retries through that path. Its
+`native_input_transport` is `native-store-model-v1`; input bytes count the bulk
+cluster-column snapshot plus bounded request, and input records count those two
+private artifacts rather than pressure vertices/hops. They are phase-owned scratch,
+not checkpoints. Full NVDLA runtime/RSS/disk and terminal Phase 7/7C qualification
+remain required before declaring the migration complete.
+
 `phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL` is also a shared
 `StageRequest`/`ArtifactRef` operation. The production adapter prefers the unified
 entry, and the standalone compatibility CLI links the same core. The core owns
@@ -263,7 +300,7 @@ there is no silent implementation or provider fallback.
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
 | Phase 1–2 | Native synthesis/STA engines; compact indexed inputs | Consolidate import, identities and timing adapters under the shared artifact API |
-| Phase 3 | Compact clustering/pressure views; native search and semantic/capture production; native exact-binary writer | Migrate cluster/pressure production owners and remaining assignment publication; qualify complete stage costs |
+| Phase 3 | Compact clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate primary clustering and remaining assignment publication/reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | One native exact model/solver/certificate/store producer; independent staged cursor validation | Native independent validation, timing adapters and non-exact interfaces |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |

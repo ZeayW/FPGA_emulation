@@ -78,6 +78,17 @@ before launching expensive work. The probe checks native core loading, SQLite
 External synthesis, placement, routing and timing engines require their
 separate dependency and device-data checks.
 
+Compact indexed PATRON v14 runs normally select the shared native pressure-model
+producer. `algorithm_validation.model_implementation_id` identifies
+`native-store-model-v1`; its input-transport counters describe the primary packed
+cluster columns and bounded request, not a serialized pressure graph. The native
+entry `phase3 refine-patron-from-store EMUIR TIMING CLUSTERS REQUEST OUTPUT`
+also writes `OUTPUT.order` (sealed integer identity mapping) and
+`OUTPUT.summary.json` (bounded model counts). These are invocation-owned intermediates.
+Diagnostic/explicit comparison modes retain their named reference input path;
+a native failure never switches implementations. This does not establish complete
+native Phase 3 ownership or real-design physical/timing qualification.
+
 `emuflow-native [--report OPERATION_JSON] phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL`
 streams the finalized mapped v2 and private lexical atom relations to OpenPARF
 net text. Inputs may be file paths or read-only SQLite file URIs. `SPOOL` must
