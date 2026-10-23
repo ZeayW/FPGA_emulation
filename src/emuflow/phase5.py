@@ -759,6 +759,12 @@ def _finish_phase5_generation(
         report["artifacts"]["schedule_store"] = schedule_storage["artifact"]
         report["schedule_storage"] = {
             "schema": schedule_storage["schema"],
+            "implementation_id": (
+                "native-exact-schedule-store-v1"
+                if getattr(schedule["entries"], "native_store_publication_source", None)
+                is not None
+                else "python-reference-schedule-store-v1"
+            ),
             "dataflow": (
                 "typed-sqlite-route-entry-completion-relations-v1"
                 if schedule_storage["schema"]

@@ -14,6 +14,8 @@ import os
 import re
 import shutil
 import sqlite3
+import struct
+import subprocess
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
@@ -1829,6 +1831,79 @@ def _publish_logical_schedule(
         relation_counts,
     )
 
+def _publish_native_exact_store(
+    temporary: Path,
+    schedule: Mapping[str, Any],
+    source: Mapping[str, Any],
+) -> tuple[str, str, dict[str, dict[str, Any]], dict[str, int]]:
+    """Native record owner publishes v4; Python sends only header/domain data."""
+
+    if source.get("schema") != "emuflow.native-exact-schedule-publication-source/v1":
+        raise ValidationError("unsupported native schedule publication source")
+    if source.get("route_records") is not schedule["routes"] or source.get("completion_records") is not schedule["demand_completions"]:
+        raise ValidationError("native ScheduleStore record owners were replaced")
+    command = source.get("command")
+    if not isinstance(command, list) or len(command) != 3 or command[1:] != ["phase5", "publish-schedule"]:
+        raise ValidationError("invalid native schedule publication command")
+    request = temporary.with_name(temporary.name + ".request")
+    try:
+        with request.open("wb") as stream:
+            def text(value: str) -> None:
+                encoded = value.encode("utf-8")
+                stream.write(struct.pack("<I", len(encoded)))
+                stream.write(encoded)
+
+            def value(item: Any) -> None:
+                text(_canonical(item))
+                text(json.dumps(item, ensure_ascii=True, sort_keys=True, indent=2, allow_nan=False))
+
+            stream.write(struct.pack("<QI", 0x3157534D44544545, 1))
+            generations = source.get("generations", ())
+            if len(generations) != 3 or any(len(item) != 7 for item in generations):
+                raise ValidationError("native ScheduleStore source generations are missing")
+            for generation in generations:
+                stream.write(struct.pack("<3Q4q", *generation))
+            catalogs = source.get("catalogs", ())
+            if len(catalogs) != 3:
+                raise ValidationError("native ScheduleStore board catalogs are missing")
+            for catalog in catalogs:
+                stream.write(struct.pack("<I", len(catalog)))
+                for identity in catalog:
+                    text(identity)
+            header = {key: item for key, item in schedule.items() if key not in TDM_SCHEDULE_SECTIONS}
+            stream.write(struct.pack("<I", len(header)))
+            for key, item in sorted(header.items()):
+                text(key)
+                value(item)
+            domains = schedule["domain_schedules"]
+            stream.write(struct.pack("<I", len(domains)))
+            for domain in domains:
+                text(_section_identity("domain_schedules", domain))
+                value(domain)
+        completed = subprocess.run(
+            [*command, str(source["input"]), str(source["result"]),
+             str(source["route_store"]), str(request), str(temporary)],
+            capture_output=True, text=True,
+        )
+        if completed.returncode:
+            raise ValidationError("native ScheduleStore publication failed: " + completed.stderr.strip())
+        with sqlite3.connect(f"file:{temporary.resolve()}?mode=ro&immutable=1", uri=True) as connection:
+            row = connection.execute("SELECT value FROM metadata WHERE key='native_publication_summary'").fetchone()
+        if row is None:
+            raise ValidationError("native ScheduleStore publication summary is missing")
+        summary = json.loads(row[0])
+        if summary.get("schema") != "emuflow.native-schedule-publication/v1":
+            raise ValidationError("unsupported native ScheduleStore publication summary")
+        sections = summary["sections"]
+        for section in TDM_SCHEDULE_SECTIONS:
+            if sections[section]["records"] != len(schedule[section]):
+                raise ValidationError("native ScheduleStore publication coverage disagrees")
+        return (summary["logical_sha256"], summary["logical_pretty_sha256"],
+                sections, summary["relation_counts"])
+    finally:
+        request.unlink(missing_ok=True)
+
+
 def write_tdm_schedule_storage(
     manifest_path: Path,
     schedule: Mapping[str, Any],
@@ -1871,35 +1946,47 @@ def write_tdm_schedule_storage(
     store_path = legacy_store_path
     store_sha256: str | None = None
     store_bytes: int | None = None
-    connection = sqlite3.connect(temporary)
+    connection: sqlite3.Connection | None = None
     try:
-        connection.execute("PRAGMA journal_mode=OFF")
-        connection.execute("PRAGMA synchronous=OFF")
-        connection.execute("PRAGMA temp_store=FILE")
-        connection.execute(f"PRAGMA application_id={TDM_SCHEDULE_APPLICATION_ID}")
-        connection.execute(f"PRAGMA user_version={user_version}")
-        connection.executescript(
-            FULLY_TYPED_DDL if fully_typed else (
-                TYPED_DDL if typed_entries else LEGACY_DDL
+        native_source = getattr(schedule["entries"], "native_store_publication_source", None)
+        if native_source is not None:
+            if not fully_typed:
+                raise ValidationError("native ScheduleStore publication requires fully typed exact semantics")
+            (logical_sha256, logical_pretty_sha256, section_summaries, relation_counts) = (
+                _publish_native_exact_store(temporary, schedule, native_source)
             )
-        )
-        (
-            logical_sha256,
-            logical_pretty_sha256,
-            section_summaries,
-            relation_counts,
-        ) = _publish_logical_schedule(
-            connection,
-            schedule,
-            typed_entries=typed_entries,
-            fully_typed=fully_typed,
-        )
-        if typed_entries:
-            connection.executescript(TYPED_INDEX_DDL)
-        connection.commit()
-        connection.close()
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
+            # The core has committed and closed its store. No Python row writer
+            # or logical-record hash traversal follows this production branch.
+        else:
+            connection = sqlite3.connect(temporary)
+            connection.execute("PRAGMA journal_mode=OFF")
+            connection.execute("PRAGMA synchronous=OFF")
+            connection.execute("PRAGMA temp_store=FILE")
+            connection.execute(f"PRAGMA application_id={TDM_SCHEDULE_APPLICATION_ID}")
+            connection.execute(f"PRAGMA user_version={user_version}")
+            connection.executescript(
+                FULLY_TYPED_DDL if fully_typed else (
+                    TYPED_DDL if typed_entries else LEGACY_DDL
+                )
+            )
+            (
+                logical_sha256,
+                logical_pretty_sha256,
+                section_summaries,
+                relation_counts,
+            ) = _publish_logical_schedule(
+                connection,
+                schedule,
+                typed_entries=typed_entries,
+                fully_typed=fully_typed,
+            )
+            if typed_entries:
+                connection.executescript(TYPED_INDEX_DDL)
+            connection.commit()
+            connection.close()
+            connection = None
+            with temporary.open("rb") as stream:
+                os.fsync(stream.fileno())
         store_bytes = temporary.stat().st_size
         store_sha256 = file_sha256(temporary)
         store_path = manifest_path.with_name(
@@ -1918,7 +2005,8 @@ def write_tdm_schedule_storage(
             os.replace(temporary, store_path)
     except sqlite3.IntegrityError as error:
         try:
-            connection.close()
+            if connection is not None:
+                connection.close()
         finally:
             temporary.unlink(missing_ok=True)
         if "UNIQUE constraint failed" not in str(error):
@@ -1930,7 +2018,8 @@ def write_tdm_schedule_storage(
         ) from error
     except BaseException:
         try:
-            connection.close()
+            if connection is not None:
+                connection.close()
         finally:
             temporary.unlink(missing_ok=True)
         raise

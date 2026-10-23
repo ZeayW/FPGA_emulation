@@ -287,6 +287,8 @@ add_library(
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/sqlite.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/stage_runtime.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/emuir_view.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/schedule_store.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/route_view.cpp"
 )
 target_compile_features(emuflow_core PUBLIC cxx_std_17)
 target_compile_options(emuflow_core PRIVATE -O3)

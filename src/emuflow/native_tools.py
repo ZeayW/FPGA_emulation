@@ -110,3 +110,14 @@ def resolve_native_stage_command(
         if legacy.is_file() and os.access(legacy, os.X_OK):
             return [str(legacy)]
     return [resolve_native_executable(legacy_name)]
+
+
+def native_file_generation(path: Path) -> tuple[int, ...]:
+    """Local ArtifactRef metadata; not a portable source/semantic hash."""
+    status = Path(path).stat()
+    modified_seconds, modified_ns = divmod(status.st_mtime_ns, 1_000_000_000)
+    changed_seconds, changed_ns = divmod(status.st_ctime_ns, 1_000_000_000)
+    return (
+        status.st_dev, status.st_ino, status.st_size, modified_seconds,
+        modified_ns, changed_seconds, changed_ns,
+    )

@@ -1,5 +1,6 @@
 #include "emuflow_core/native_pipeline.hpp"
 #include "emuflow_core/native_stages.hpp"
+#include "emuflow_core/schedule_store.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -16,6 +17,7 @@ const char* StageName(Stage stage) {
     case Stage::kRefinePatron: return "phase3.refine-patron";
     case Stage::kRoute: return "phase4.route";
     case Stage::kSchedule: return "phase5.schedule";
+    case Stage::kPublishSchedule: return "phase5.publish-schedule";
     case Stage::kAssignBanks: return "phase6.assign-banks";
     case Stage::kGroupSignals: return "phase6.group-signals";
     case Stage::kRefinePositions: return "phase6.refine-groups";
@@ -41,6 +43,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kRefinePatron: return {request.typed_input ? "patron-input-v1" : "patron-legacy-text"};
     case Stage::kRoute: return {"tlr-input-text"};
     case Stage::kSchedule: return {"exact-schedule-input-v1"};
+    case Stage::kPublishSchedule: return {"exact-schedule-input-v1", "exact-schedule-output-v2", "system-route-store-v3", "exact-schedule-publication-request-v1"};
     case Stage::kAssignBanks: return {request.typed_input ? "chimew-bank-input-v1" : "chimew-bank-legacy-text"};
     case Stage::kGroupSignals: return {request.typed_input ? "chimew-group-input-v1" : "chimew-group-legacy-text"};
     case Stage::kRefinePositions: return {request.typed_input ? "chimew-refine-input-v1" : "chimew-refine-legacy-text"};
@@ -109,6 +112,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kRefinePatron: RefinePatron(path(0), output, request.typed_input, request.summary_output, request.typed_output); break;
       case Stage::kRoute: RouteTlr(path(0), output, request.typed_output); break;
       case Stage::kSchedule: ScheduleStaticExact(path(0), output); break;
+      case Stage::kPublishSchedule: core::PublishExactScheduleStore(path(0), path(1), path(2), path(3), output); break;
       case Stage::kAssignBanks: AssignChimewBankChannels(path(0), output, request.typed_input); break;
       case Stage::kGroupSignals: GroupChimewSignals(path(0), output, request.typed_input, request.expected_sha256); break;
       case Stage::kRefinePositions: RefineChimewPositions(path(0), output, request.typed_input, request.expected_sha256); break;
@@ -130,6 +134,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kRefinePatron: schema = request.typed_output ? "patron-output-v1" : "patron-output-text"; break;
       case Stage::kRoute: schema = request.typed_output ? "tlr-output-v1" : "tlr-output-text"; break;
       case Stage::kSchedule: schema = "exact-schedule-output-v2"; break;
+      case Stage::kPublishSchedule: schema = "tdm-schedule-store-v4"; break;
       case Stage::kAssignBanks: schema = "chimew-bank-output-text"; break;
       case Stage::kGroupSignals: schema = "chimew-group-output-text"; break;
       case Stage::kRefinePositions: schema = "chimew-refine-output-text"; break;

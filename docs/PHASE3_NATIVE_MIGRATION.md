@@ -34,6 +34,33 @@ only a CMake compatibility alias; the executable and native library tests link
 the core directly. This does not yet cover every standalone adapter or supply
 the missing complete native compiler.
 
+The native exact schedule publisher consumes the scheduler's binary input and
+result, the existing Phase 4 RouteStore, and bounded board/header/domain
+configuration. It writes the existing v4 ScheduleStore route, hop, completion and child
+relations through the shared SQLite owner. Canonical and pretty logical hashes
+are accumulated from typed records during publication; hop records do not pass
+back through Python dictionaries or JSON encoding. Original route edge order,
+Unicode identities, nullable ratios and all logical section seals are retained.
+The shared `RouteView` reads route identities, sinks and original edge order
+directly from the authoritative RouteStore through ordered joins. It does not
+create another graph identity catalog or run per-route SQL lookups. The existing
+numeric scheduler input/result remain temporary run data and are released with
+the schedule owner.
+
+This production path requires current v3 typed route input and the unified
+native scheduler. Explicit standalone comparison tools, older storage versions,
+dictionary compatibility inputs and small reference schedules retain the
+reference publisher. A native
+publication failure never retries that publisher. Native record owners cannot
+be replaced independently. The publication request retains the input/result/
+RouteStore file generations captured by the producer; stale references are
+rejected before reading their records and rechecked before atomic publication.
+The Python layer still commits the compact manifest and report. Phase 5 reports
+identify the store implementation separately from the schedule algorithm.
+Ingress identity construction, some scheduling validation and the remaining
+phase orchestration are still Python-owned; this publisher does not complete
+W7 or establish whole-stage performance gains.
+
 SQLite owns relations requiring joins, uniqueness or bounded lookup. Large
 ordered populations may use typed binary sections or ordered record streams;
 they must not be expanded into SQLite solely for container uniformity.
@@ -128,7 +155,7 @@ there is no silent implementation or provider fallback.
 | Phase 1–2 | Native synthesis/STA engines; compact indexed inputs | Consolidate import, identities and timing adapters under the shared artifact API |
 | Phase 3 | Compact clustering/pressure views; native search and semantic/capture production; native exact-binary writer | Migrate cluster/pressure production owners and remaining assignment publication; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
-| Phase 5 | Native exact scheduler; typed ScheduleStore and cursor validation | Complete producer ownership and explicit non-exact/compatibility interfaces |
+| Phase 5 | Native exact scheduler and direct v4 ScheduleStore publisher; cursor validation | Complete native ingress, validation and non-exact interfaces |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
 | Global STA | Typed segments/results and bounded identity/stitching views | Native check/input construction, result import and ordered complete-path stitching |

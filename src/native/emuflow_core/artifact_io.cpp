@@ -140,6 +140,14 @@ void AtomicBinaryWriter::Commit() {
   stream_.flush();
   if (!stream_) throw std::runtime_error("cannot flush native output");
   stream_.close();
+  PublishTemporaryFile(temporary_path_, target_path_);
+  committed_ = true;
+}
+
+void PublishTemporaryFile(const std::string& temporary_path_, const std::string& target_path_) {
+  if (std::filesystem::absolute(temporary_path_).parent_path().lexically_normal() !=
+      std::filesystem::absolute(target_path_).parent_path().lexically_normal())
+    throw std::runtime_error("native publication requires a same-directory temporary");
   SyncFile(temporary_path_);
   std::error_code error;
   std::filesystem::rename(temporary_path_, target_path_, error);
@@ -148,7 +156,6 @@ void AtomicBinaryWriter::Commit() {
                              error.message());
   }
   SyncDirectory(std::filesystem::path(target_path_).parent_path());
-  committed_ = true;
 }
 
 }  // namespace emuflow::core

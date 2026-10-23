@@ -54,6 +54,10 @@ class BinaryReader {
 // behavior without teaching the shared core any stage-specific payload.
 void ReadAndValidateHeader(BinaryReader& reader, const ArtifactSchema& schema);
 
+// Publish an already closed same-directory file (including a SQLite store)
+// through the same synchronization/rename boundary as binary artifacts.
+void PublishTemporaryFile(const std::string& temporary, const std::string& target);
+
 // Same-directory temporary publication prevents consumers from observing a
 // partial native artifact. Commit synchronizes the file before atomic rename;
 // an exception or early exit removes only the unpublished temporary.

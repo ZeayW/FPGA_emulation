@@ -23,6 +23,7 @@ from emuflow.errors import ValidationError
 from emuflow.platform import Platform
 from emuflow.phase3_assignment_index import (
     ASSIGNMENT_INDEX_APPLICATION_ID,
+    LEGACY_ASSIGNMENT_INDEX_SCHEMA,
 )
 from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
@@ -364,6 +365,7 @@ class CrossLayerTimingContractTest(unittest.TestCase):
                 connection.executemany(
                     "INSERT INTO metadata VALUES (?,?)",
                     [
+                        ("schema", json.dumps(LEGACY_ASSIGNMENT_INDEX_SCHEMA)),
                         ("semantic_contract_schema", json.dumps(semantic["schema"])),
                         ("semantic_contract_sha256", json.dumps("a" * 64)),
                     ],

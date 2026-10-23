@@ -33,6 +33,7 @@ class NativeStageRuntimeTest(unittest.TestCase):
                 ["phase3", "refine-patron", "--typed-input", missing],
                 ["phase4", "route", "--typed-output", missing],
                 ["phase5", "schedule", missing],
+                ["phase5", "publish-schedule", missing, missing, missing, missing],
                 ["phase6", "assign-banks", "--typed-input", missing],
                 ["phase6", "group-signals", "--typed-input", missing],
                 ["phase6", "refine-groups", "--typed-input", missing],

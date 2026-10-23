@@ -128,6 +128,8 @@ rm -f "$unified"
   "${sqlite_flags[@]}" -I"$source_dir/src/native" \
   "$source_dir/src/native/emuflow_native.cpp" \
   "$source_dir/src/native/emuflow_core/native_pipeline.cpp" \
+  "$source_dir/src/native/emuflow_core/schedule_store.cpp" \
+  "$source_dir/src/native/emuflow_core/route_view.cpp" \
   "$source_dir/src/native/patron_refiner.cpp" \
   "$source_dir/src/native/static_exact_analyzer.cpp" \
   "$source_dir/src/native/tlr_router.cpp" \

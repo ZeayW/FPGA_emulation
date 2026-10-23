@@ -86,6 +86,7 @@ class _NativeExactEntryRecords(list):
         capacity_keys: Sequence[str],
         link_ids: Sequence[str],
         fpga_ids: Sequence[str],
+        native_store_source: Optional[Mapping[str, Any]] = None,
     ) -> None:
         super().__init__()
         self._owner = owner
@@ -96,6 +97,7 @@ class _NativeExactEntryRecords(list):
         self._capacity_keys = capacity_keys
         self._link_ids = link_ids
         self._fpga_ids = fpga_ids
+        self.native_store_publication_source = native_store_source
 
     def __len__(self) -> int:
         return self._count
@@ -1581,12 +1583,20 @@ def _schedule_indexed_exact_native(
     rescan those records after the native result is imported.
     """
 
-    from .native_tools import resolve_native_stage_command
+    from .native_tools import native_file_generation, resolve_native_stage_command
 
     typed_record_cursor = getattr(
         raw_routes, "iter_native_exact_records", None
     )
     typed_routes = callable(typed_record_cursor)
+    native_route_store = (
+        getattr(raw_routes, "store_path", None)
+        if getattr(raw_routes, "_user_version", None) == 3 else None
+    )
+    route_generation = (
+        native_file_generation(native_route_store)
+        if native_route_store is not None else None
+    )
     route_count = len(raw_routes)
     ordered_by_net: Sequence[Mapping[str, Any]]
     if typed_routes:
@@ -1995,6 +2005,23 @@ def _schedule_indexed_exact_native(
         )
         retained_output = Path(retained.name) / output_path.name
         os.replace(output_path, retained_output)
+        native_store_source = None
+        if len(native_command) > 1 and native_route_store is not None:
+            retained_input = Path(retained.name) / input_path.name
+            os.replace(input_path, retained_input)
+            native_store_source = {
+                "schema": "emuflow.native-exact-schedule-publication-source/v1",
+                "command": [native_command[0], "phase5", "publish-schedule"],
+                "input": retained_input,
+                "result": retained_output,
+                "route_store": native_route_store,
+                "catalogs": (fpga_ids, link_ids, capacity_keys),
+                "generations": [
+                    native_file_generation(retained_input),
+                    native_file_generation(retained_output),
+                    route_generation,
+                ],
+            }
         entries = _NativeExactEntryRecords(
             owner=retained,
             path=retained_output,
@@ -2013,6 +2040,7 @@ def _schedule_indexed_exact_native(
             capacity_keys=capacity_keys,
             link_ids=link_ids,
             fpga_ids=fpga_ids,
+            native_store_source=native_store_source,
         )
         completions = _NativeExactCompletionRecords(
             owner=retained,
@@ -2565,6 +2593,10 @@ def build_tdm_schedule(
             completion_by_round,
             planned_round_one_ready,
         )
+    native_source = getattr(entries, "native_store_publication_source", None)
+    if native_source is not None:
+        native_source["route_records"] = result["routes"]
+        native_source["completion_records"] = result["demand_completions"]
     return result
 
 
