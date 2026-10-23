@@ -274,7 +274,7 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
             "best_diagnostic_hpwl": None,
             "best_diagnostic_logic_overflow": None,
             "best_diagnostic_max_overflow": None,
-            "last_diagnostic_progress_iteration": None,
+            "last_diagnostic_hpwl_improvement_iteration": None,
             "diagnostic_samples": 0,
             "restored_best_diagnostic": False,
             "stop_reason": None,
@@ -320,7 +320,6 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
             < float(best_diagnostic_overflow) - 1.0e-4
         ):
             state["best_diagnostic_max_overflow"] = maximum_logic_overflow
-            state["last_diagnostic_progress_iteration"] = iteration
         best_diagnostic_hpwl = state["best_diagnostic_hpwl"]
         if best_diagnostic_hpwl is None or hpwl < float(best_diagnostic_hpwl):
             state["best_diagnostic_hpwl"] = hpwl
@@ -331,7 +330,7 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
             engine._emuflow_best_diagnostic_position = (
                 engine.data_cls.pos[0].data.clone()
             )
-            state["last_diagnostic_progress_iteration"] = iteration
+            state["last_diagnostic_hpwl_improvement_iteration"] = iteration
     if not _active_overflow_is_feasible(engine, current):
         state["consecutive_feasible_samples"] = 0
         if at_iteration_limit:
@@ -346,12 +345,12 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
                     else "maximum-iterations-infeasible"
                 )
             return True
-        last_diagnostic_progress = state[
-            "last_diagnostic_progress_iteration"
+        last_diagnostic_hpwl_improvement = state[
+            "last_diagnostic_hpwl_improvement_iteration"
         ]
         if (
-            last_diagnostic_progress is not None
-            and iteration - int(last_diagnostic_progress)
+            last_diagnostic_hpwl_improvement is not None
+            and iteration - int(last_diagnostic_hpwl_improvement)
             >= diagnostic_patience
         ):
             _restore_best_diagnostic(engine, state)

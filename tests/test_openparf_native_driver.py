@@ -268,7 +268,7 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             "FF": 0.20,
         })
 
-    def test_diagnostic_handoff_waits_while_overflow_improves(self):
+    def test_diagnostic_handoff_ignores_overflow_only_progress(self):
         engine = _engine(
             patience=100,
             minimum=100,
@@ -280,8 +280,16 @@ class OpenparfNativeDriverTest(unittest.TestCase):
         self.assertFalse(stable_native_stop_condition(
             engine, [_metric(21, [3, 3], overflow=(0.23, 0.19, 0.9))]
         ))
-        self.assertFalse(stable_native_stop_condition(
+        self.assertTrue(stable_native_stop_condition(
             engine, [_metric(22, [4, 4], overflow=(0.22, 0.18, 0.9))]
+        ))
+        self.assertEqual(
+            engine._emuflow_stable_convergence["stop_reason"],
+            "diagnostic-handoff-patience",
+        )
+        self.assertTrue(torch.equal(
+            engine.data_cls.pos[0],
+            torch.tensor([[1.0, 2.0]], dtype=torch.float64),
         ))
 
     def test_validates_compact_native_certificate(self):

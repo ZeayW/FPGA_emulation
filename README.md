@@ -87,8 +87,11 @@ density field retains enough spatial resolution before exact legalization.
 The native certificate records the effective count, geometry, and span.
 The `0.10` global-placement overflow target remains the normal routability
 criterion. A representative placement may also restore a bounded `0.25`
-checkpoint for diagnostic DirectLG; that path records legalization displacement
-and still requires exact site/BEL validation before any routing release.
+checkpoint for diagnostic DirectLG. Once bounded, overflow-only progress does
+not extend the HPWL patience window; the solver restores the lowest-HPWL
+checkpoint instead of allowing density multipliers to destroy wirelength. The
+diagnostic path records legalization displacement and still requires exact
+site/BEL validation before any routing release.
 The final route still requires zero
 overused nodes and complete source-to-sink connectivity.
 
