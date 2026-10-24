@@ -308,3 +308,10 @@ references, selected values, policy, and counts. A synthesis-only preflight must
 explicitly select the synthesized lineage stage and is never accepted as routed
 proof by a routed consumer. The native producer still needs to connect this
 checked input at its post-implementation import boundary.
+
+Endpoint association uses the indexed source-origin lookup for retained cells.
+Only absent origins enter the indexed identical-input signature lookup. Both
+branches use the stage/origin index explicitly, so a pin query cannot become a
+scan of the full physical inventory. The lineage snapshot is immutable during
+query consumption; no whole-circuit Python map or SQLite integrity audit is
+needed for resolution.

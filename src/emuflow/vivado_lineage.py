@@ -121,7 +121,7 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
     """
     if stage not in {"synthesized", "routed"}:
         raise ValidationError("unsupported Vivado timing-query lineage stage")
-    connection = sqlite3.connect(f"file:{lineage.resolve()}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"file:{lineage.resolve()}?mode=ro&immutable=1", uri=True)
     try:
         connection.execute("ATTACH DATABASE ? AS mapped", (f"file:{mapped.resolve()}?mode=ro&immutable=1",))
         connection.execute("ATTACH DATABASE ? AS functions", (f"file:{functions.resolve()}?mode=ro&immutable=1",))
@@ -142,15 +142,29 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
             # Query names use Vivado's doubled-backslash NAME spelling; the
             # indexed source owner retains the original escaped identifier.
             cell = cell.replace("\\\\", "\\")
-            rows = connection.execute("""
-                SELECT DISTINCT a.name,a.transformations,a.ref FROM mapped.cells c
-                JOIN functions.signatures f ON f.seq=c.seq
-                JOIN functions.signatures equivalent ON equivalent.signature=f.signature
-                JOIN objects a ON a.origin=equivalent.seq AND a.stage=? AND a.ref=c.type
-                WHERE c.id=? AND (a.origin=c.seq OR NOT EXISTS (
-                    SELECT 1 FROM objects own WHERE own.stage=? AND own.origin=c.seq
-                )) ORDER BY a.name
-            """, (stage,cell,stage))
+            source_cell = connection.execute("""
+                SELECT c.seq,c.type,f.signature FROM mapped.cells c
+                JOIN functions.signatures f ON f.seq=c.seq WHERE c.id=?
+            """, (cell,)).fetchone()
+            if source_cell is None:
+                if not required:
+                    return ""
+                raise ValidationError(f"Vivado optimized timing source has no proven endpoint association: {name} (absent source cell)")
+            origin, reference, signature = source_cell
+            own = connection.execute("SELECT 1 FROM objects INDEXED BY objects_origin WHERE stage=? AND origin=? LIMIT 1", (stage,origin)).fetchone()
+            if own is not None:
+                # Point lookup for retained origins. A disjunction with the
+                # alias branch lets SQLite scan every stage object per pin.
+                rows = connection.execute("SELECT name,transformations,ref FROM objects INDEXED BY objects_origin WHERE stage=? AND origin=? AND ref=? ORDER BY name", (stage,origin,reference))
+            else:
+                # Force the small signature class before the stage/origin
+                # index lookup, preserving all actual equivalent descendants.
+                rows = connection.execute("""
+                    SELECT DISTINCT a.name,a.transformations,a.ref
+                    FROM functions.signatures equivalent
+                    CROSS JOIN objects a INDEXED BY objects_origin ON a.origin=equivalent.seq AND a.stage=?
+                    WHERE equivalent.signature=? AND a.ref=? ORDER BY a.name
+                """, (stage,signature,reference))
             encoded = []
             for row in rows:
                 changes = row[1].upper()

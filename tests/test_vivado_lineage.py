@@ -283,3 +283,38 @@ proc get_timing_paths {args} {
             query = root/"query.tsv"
             query.write_text("endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex\n70\trx\t71\t0\t6e\t"+"escaped\\\\alias".encode().hex()+"\n")
             self.assertEqual(resolve_timing_query(mapped,functions,lineage,query,root/"resolved.tsv",boundary=True)["queries"],1)
+
+    def test_point_and_alias_resolution_do_not_scan_unrelated_stage_objects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            report,mapped,functions,inventory=self.prepare(root)
+            with sqlite3.connect(mapped) as db:
+                origin=db.execute("SELECT seq FROM cells WHERE id='launch'").fetchone()[0]
+            with inventory.open("a") as stream:
+                writer=csv.writer(stream,delimiter="\t",lineterminator="\n",quoting=csv.QUOTE_NONE)
+                for index in range(25000):
+                    writer.writerow([f"partition/unrelated_launch_{index:05d}","FDRE",f"s{origin}",""])
+            lineage=root/"lineage.sqlite"
+            import_cell_lineage(mapped,functions,{"routed":inventory},lineage,mapped_sha256=report["mapped_index"]["sha256"])
+            query=root/"query.tsv"
+            query.write_text("endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex\n"+
+                             "\n".join("\t".join([identity,"rx","72","0","6e",name.encode().hex()])
+                                       for identity,name in [("70","capture"),("71","alias")])+"\n")
+            original_connect=sqlite3.connect
+            ticks=[0]
+            def bounded_connect(*args,**kwargs):
+                connection=original_connect(*args,**kwargs)
+                def progress():
+                    ticks[0]+=1
+                    return int(ticks[0]>=10)
+                connection.set_progress_handler(progress,1000)
+                return connection
+            with patch("emuflow.vivado_lineage.sqlite3.connect",side_effect=bounded_connect):
+                result=resolve_timing_query(mapped,functions,lineage,query,root/"resolved.tsv",boundary=True)
+            self.assertEqual(result["queries"],2)
+            self.assertLess(ticks[0],10)
+            with (root/"resolved.tsv").open() as stream:
+                rows=list(csv.reader(stream,delimiter="\t"))
+            expected={"partition/renamed_capture","partition/replica"}
+            for row in rows[1:]:
+                self.assertEqual({bytes.fromhex(value).decode() for value in row[-1].split(",")},expected)
