@@ -275,6 +275,16 @@ if(BUILD_TESTING)
   add_test(NAME emuflow_xilinx_lut_depopulation_cli
     COMMAND "$<TARGET_FILE:emuflow_xilinx_lut_depopulation>" --help)
 endif()
+add_executable(emuflow_xilinx_slice_spreading
+  "${CMAKE_SOURCE_DIR}/src/native/xilinx_slice_spreading.cpp")
+target_compile_features(emuflow_xilinx_slice_spreading PRIVATE cxx_std_17)
+target_compile_options(emuflow_xilinx_slice_spreading PRIVATE -O3)
+set_target_properties(emuflow_xilinx_slice_spreading PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
+if(BUILD_TESTING)
+  add_test(NAME emuflow_xilinx_slice_spreading_cli
+    COMMAND "$<TARGET_FILE:emuflow_xilinx_slice_spreading>" --help)
+endif()
 add_executable(emuflow_xilinx_bookshelf_exporter
   "${CMAKE_SOURCE_DIR}/src/native/xilinx_bookshelf_exporter.cpp")
 target_compile_features(emuflow_xilinx_bookshelf_exporter PRIVATE cxx_std_17)

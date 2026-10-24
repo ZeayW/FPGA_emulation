@@ -122,6 +122,20 @@ enabled in the production flow. Its nearest-vacancy heuristic is an EmuFlow
 implementation inspired by selective congestion-aware depopulation, not a
 reproduction of the papers below.
 
+`spread_hot_slice_sites` is a second explicit post-DP qualification experiment.
+It dilates ordinary occupied slices around the selected regions' physical
+slice-coordinate center, then assigns whole slice contents to vacant qualified
+sites near those targets. LUT/FF co-location, BEL slots, and control sets stay
+intact; fixed, macro-bearing, carry, MUX, and hard-resource sites stay fixed.
+The default ratio is 11/10 on each axis, with a bounded target search of 16
+physical slice-grid Manhattan units. These are experiment parameters, not
+device capacities. An original-site eviction chain guarantees complete group
+assignment when the target search has no vacancy. The report records fallback
+and actual movement; it does not infer wirelength or routing improvement from
+the dilation ratio. The caller must measure actual HPWL, independently certify
+the candidate, and trial-route it before acceptance. Neither experiment is
+automatically enabled in the production flow.
+
 The academic literature reaches the same conclusion through different
 algorithms:
 
