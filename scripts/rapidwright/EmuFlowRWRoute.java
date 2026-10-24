@@ -1523,6 +1523,7 @@ public final class EmuFlowRWRoute {
             );
         }
         Path inputPath = Path.of(args[0]);
+        Path outputPath = Path.of(args[1]);
         String part = null;
         Map<String, String> metadata = new HashMap<>();
         Map<String, String[]> cellRows = new HashMap<>();
@@ -1887,7 +1888,6 @@ public final class EmuFlowRWRoute {
         TimingModel timingModel = new TimingModel(design.getDevice());
         timingModel.build();
 
-        Path outputPath = Path.of(args[1]);
         Path netsPath = outputPath.resolveSibling(
             outputPath.getFileName().toString() + ".nets.jsonl"
         );
