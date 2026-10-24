@@ -133,7 +133,7 @@ SQLite handles and circuit-sized Python containers do not cross it.
 
 | Contract | Shared owner | Required behavior |
 | --- | --- | --- |
-| Build closure | `libemuflow_core`, `emuflow_core/sources.txt` | CMake, native fixtures and thin runtime deployment consume one checked source manifest; compatibility tools link the same facilities. |
+| Build closure | `libemuflow_core`, `emuflow_core/sources.txt` | CMake, native fixtures and thin runtime deployment consume one checked source manifest; migrated kernels have one executable and implementation owner. |
 | Schema and source binding | `SchemaRegistry`, `ArtifactRef`, `SqliteStore` | Explicit versions, registered logical envelopes, immutable generations and mixed-source rejection; bounded metadata checks rather than integrity scans or recounts. |
 | Identity and order | `ArtifactScope`, `ArtifactId`, typed views | Cell/net/path/endpoint/FPGA/link identities retain their artifact namespace. Route source sequence and canonical net order are distinct coordinates. |
 | Storage and publication | SQLite connection/statement leases, `SqliteArtifactWriter`, `AtomicBinaryWriter` | Last borrowers retain connections and private staging. Close connections before retirement; reject active transactions/statements, input aliases and changed sources before atomic publication. |
@@ -159,6 +159,15 @@ joins borrow the existing `EmuirView` store, sharing its source connection/cache
 and lifetime. The schema registry also names mapped/physical handoffs
 and boundary, logic-segment and local-path timing stores. Their phase-specific
 readers and independent electrical/timing validators retain semantic authority.
+
+Static Exact analysis and the four Chimew kernels have no standalone production
+wrappers or separate build targets. Chimew grouping, refinement and bank/channel
+assignment expose only typed inputs; the old text parsers, writers and registry
+entries are retired. Chimew kernels write to caller-owned streams. Their file output passes
+through `PublishTextArtifact` and `AtomicBinaryWriter`: producer failure, bad
+stream state or changed inputs cannot replace an already published result.
+The stage API and CLI share this policy. Stdout is an uncommitted stream until
+the consumer verifies complete records and successful process termination.
 
 W0 closes only after versioned round trips, deterministic ordered records and
 negative cases pass: unknown versions, truncation, duplicate keys, orphan or

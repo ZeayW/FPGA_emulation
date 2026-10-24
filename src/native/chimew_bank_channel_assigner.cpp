@@ -76,139 +76,8 @@ double manhattan(const Point& lhs, const Point& rhs) {
   return std::abs(lhs.x - rhs.x) + std::abs(lhs.y - rhs.y);
 }
 
-bool finite_point(const Point& point) {
-  return std::isfinite(point.x) && std::isfinite(point.y);
-}
 
-Input read_text_input(const std::string& path) {
-  std::ifstream stream(path);
-  std::string header;
-  if (!(stream >> header) ||
-      (header != "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V1" &&
-       header != "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V2")) {
-    throw std::runtime_error("invalid Chimew bank/channel input header");
-  }
-  const bool input_v2 = header == "EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V2";
-  Input input;
-  std::string record;
-  while (stream >> record) {
-    if (record == "PARAM") {
-      if (!(stream >> input.cost_scale) || !std::isfinite(input.cost_scale) ||
-          input.cost_scale <= 0.0) {
-        throw std::runtime_error("invalid Chimew cost scale");
-      }
-    } else if (record == "BANK") {
-      BankPair bank;
-      if (!(stream >> bank.index >> bank.domain >> bank.bank_a.x >>
-            bank.bank_a.y >> bank.bank_b.x >> bank.bank_b.y) ||
-          bank.index != static_cast<int>(input.banks.size()) ||
-          bank.domain < 0 || !finite_point(bank.bank_a) ||
-          !finite_point(bank.bank_b)) {
-        throw std::runtime_error("invalid Chimew bank pair");
-      }
-      input.banks.push_back(bank);
-    } else if (record == "CHANNEL") {
-      Channel channel;
-      if (!(stream >> channel.index >> channel.bank >> channel.order >>
-            channel.pin_a.x >> channel.pin_a.y >> channel.pin_b.x >>
-            channel.pin_b.y) ||
-          channel.index != static_cast<int>(input.channels.size()) ||
-          channel.bank < 0 ||
-          channel.bank >= static_cast<int>(input.banks.size()) ||
-          channel.order < 0 || !finite_point(channel.pin_a) ||
-          !finite_point(channel.pin_b)) {
-        throw std::runtime_error("invalid Chimew channel");
-      }
-      input.banks[channel.bank].channels.push_back(channel.index);
-      input.channels.push_back(channel);
-    } else if (record == "GROUP") {
-      Group group;
-      if (!(stream >> group.index >> group.domain >> group.kind >>
-            group.direction >> group.expected_members) ||
-          group.index != static_cast<int>(input.groups.size()) ||
-          group.domain < 0 || (group.kind != 0 && group.kind != 1) ||
-          (group.direction != 0 && group.direction != 1 &&
-           (!input_v2 || group.direction != 2)) ||
-          group.expected_members <= 0 ||
-          (group.kind == 1 && group.expected_members != 1)) {
-        throw std::runtime_error("invalid Chimew signal group");
-      }
-      input.groups.push_back(group);
-    } else if (record == "MEMBER") {
-      int group_index = -1;
-      int member_index = -1;
-      int fanin_count = 0;
-      Member member;
-      if (!(stream >> group_index >> member_index) ||
-          (input_v2 && !(stream >> member.direction)) ||
-          !(stream >> member.timing_weight >>
-            member.fanout.x >>
-            member.fanout.y >> fanin_count) ||
-          group_index < 0 ||
-          group_index >= static_cast<int>(input.groups.size()) ||
-          member_index !=
-              static_cast<int>(input.groups[group_index].members.size()) ||
-          fanin_count <= 0 || !std::isfinite(member.timing_weight) ||
-          member.timing_weight <= 0.0 || !finite_point(member.fanout)) {
-        throw std::runtime_error("invalid Chimew signal member");
-      }
-      if (!input_v2) {
-        member.direction = input.groups[group_index].direction;
-      }
-      if ((member.direction != 0 && member.direction != 1) ||
-          (input.groups[group_index].direction != 2 &&
-           member.direction != input.groups[group_index].direction)) {
-        throw std::runtime_error("invalid Chimew member direction");
-      }
-      member.fanins.resize(fanin_count);
-      for (Point& fanin : member.fanins) {
-        if (!(stream >> fanin.x >> fanin.y) || !finite_point(fanin)) {
-          throw std::runtime_error("invalid Chimew fanin location");
-        }
-      }
-      input.groups[group_index].members.push_back(std::move(member));
-    } else {
-      throw std::runtime_error("invalid Chimew bank/channel record");
-    }
-  }
-  if (!(input.cost_scale > 0.0) || input.banks.empty() ||
-      input.channels.empty() || input.groups.empty()) {
-    throw std::runtime_error("incomplete Chimew bank/channel input");
-  }
-  for (BankPair& bank : input.banks) {
-    if (bank.channels.empty()) {
-      throw std::runtime_error("Chimew bank pair has no channels");
-    }
-    std::sort(bank.channels.begin(), bank.channels.end(),
-              [&](int lhs, int rhs) {
-                return std::tie(input.channels[lhs].order, lhs) <
-                    std::tie(input.channels[rhs].order, rhs);
-              });
-    for (int order = 0; order < static_cast<int>(bank.channels.size());
-         ++order) {
-      if (input.channels[bank.channels[order]].order != order) {
-        throw std::runtime_error(
-            "Chimew bank channel order must be contiguous");
-      }
-    }
-  }
-  for (const Group& group : input.groups) {
-    if (static_cast<int>(group.members.size()) != group.expected_members) {
-      throw std::runtime_error("Chimew group member count does not agree");
-    }
-    if (group.direction == 2) {
-      bool seen_direction[2] = {false, false};
-      for (const Member& member : group.members) {
-        seen_direction[member.direction] = true;
-      }
-      if (!seen_direction[0] || !seen_direction[1]) {
-        throw std::runtime_error(
-            "bidirectional Chimew bundle lacks one direction");
-      }
-    }
-  }
-  return input;
-}
+
 
 void read_exact(std::istream& stream, void* destination, std::size_t size,
                 const char* label) {
@@ -1043,10 +912,8 @@ void write_certificate(std::ostream& output, const std::string& label,
   }
 }
 
-void run(const std::string& input_path, const std::string& output_path,
-         bool typed_input) {
-  const Input input = typed_input ? read_typed_input(input_path)
-                                  : read_text_input(input_path);
+void run(const std::string& input_path, std::ostream& output) {
+  const Input input = read_typed_input(input_path);
   std::vector<CandidateEdge> bank_candidates;
   for (int bank = 0; bank < static_cast<int>(input.banks.size()); ++bank) {
     for (int group = 0; group < static_cast<int>(input.groups.size()); ++group) {
@@ -1120,43 +987,34 @@ void run(const std::string& input_path, const std::string& output_path,
     stage2_total += cost;
   }
 
-  std::ofstream output_file;
-  std::ostream* output = &std::cout;
-  if (output_path != "-") {
-    output_file.open(output_path);
-    if (!output_file) {
-      throw std::runtime_error("cannot open Chimew bank/channel output");
-    }
-    output = &output_file;
-  }
-  *output << "EMUFLOW_CHIMEW_BANK_CHANNEL_OUTPUT_V1\n";
-  *output << "METRIC " << input.groups.size() << " " << stage1.total_cost << " "
+  output << "EMUFLOW_CHIMEW_BANK_CHANNEL_OUTPUT_V1\n";
+  output << "METRIC " << input.groups.size() << " " << stage1.total_cost << " "
          << stage2_total << "\n";
   for (int group = 0; group < static_cast<int>(input.groups.size()); ++group) {
-    *output << "BANK_ASSIGN " << group << " " << stage1.right_for_left[group]
+    output << "BANK_ASSIGN " << group << " " << stage1.right_for_left[group]
            << " " << stage1.cost_for_left[group] << "\n";
   }
-  write_certificate(*output, "STAGE1", stage1);
+  write_certificate(output, "STAGE1", stage1);
   for (int bank = 0; bank < static_cast<int>(input.banks.size()); ++bank) {
     if (groups_by_bank[bank].empty()) {
       continue;
     }
-    *output << "CHOSEN " << bank << " " << chosen_priority[bank] << "\n";
+    output << "CHOSEN " << bank << " " << chosen_priority[bank] << "\n";
     for (int priority = 0; priority < 2; ++priority) {
       const Stage2Result& result = priority == 0 ? alternatives[bank].first
                                                  : alternatives[bank].second;
       const std::string label =
           "BANK" + std::to_string(bank) + "P" + std::to_string(priority);
-      *output << "ALTERNATIVE " << bank << " " << priority << " "
+      output << "ALTERNATIVE " << bank << " " << priority << " "
              << result.assignment.total_cost << "\n";
       for (int left = 0; left < static_cast<int>(result.groups.size()); ++left) {
         const int local_channel = result.assignment.right_for_left[left];
-        *output << "CHANNEL_ASSIGN " << bank << " " << priority << " "
+        output << "CHANNEL_ASSIGN " << bank << " " << priority << " "
                << result.groups[left] << " "
                << input.banks[bank].channels[local_channel] << " "
                << result.assignment.cost_for_left[left] << "\n";
       }
-      write_certificate(*output, label, result.assignment);
+      write_certificate(output, label, result.assignment);
     }
   }
 }
@@ -1164,33 +1022,6 @@ void run(const std::string& input_path, const std::string& output_path,
 }  // namespace
 
 void emuflow::native::AssignChimewBankChannels(
-    const std::string& input_path, const std::string& output_path,
-    bool typed_input) {
-  run(input_path, output_path, typed_input);
+    const std::string& input_path, std::ostream& output) {
+  run(input_path, output);
 }
-
-#if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
-int main(int argc, char** argv) {
-  if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "usage: emuflow_chimew_bank_channel_assigner "
-                 "(--typed-input|--legacy-text) INPUT OUTPUT\n";
-    return 0;
-  }
-  const bool typed_input = argc == 4 && std::string(argv[1]) == "--typed-input";
-  const bool legacy_text = argc == 4 && std::string(argv[1]) == "--legacy-text";
-  if (!typed_input && !legacy_text) {
-    std::cerr << "usage: emuflow_chimew_bank_channel_assigner "
-                 "(--typed-input|--legacy-text) INPUT OUTPUT\n";
-    return 2;
-  }
-  try {
-    emuflow::native::AssignChimewBankChannels(
-        argv[2], argv[3], typed_input);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "emuflow_chimew_bank_channel_assigner: " << error.what()
-              << "\n";
-    return 1;
-  }
-}
-#endif

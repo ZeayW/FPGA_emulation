@@ -1,4 +1,5 @@
 #include "emuflow_core/native_pipeline.hpp"
+#include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/schedule_store.hpp"
 #include "emuflow_core/schedule_ingress.hpp"
@@ -77,9 +78,14 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       return {"patron-input-v1"};
     case Stage::kRoute: return {"global-route-input-v1"};
     case Stage::kBuildSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1"};
-    case Stage::kAssignBanks: return {request.typed_input ? "chimew-bank-input-v1" : "chimew-bank-legacy-text"};
-    case Stage::kGroupSignals: return {request.typed_input ? "chimew-group-input-v1" : "chimew-group-legacy-text"};
-    case Stage::kRefinePositions: return {request.typed_input ? "chimew-refine-input-v1" : "chimew-refine-legacy-text"};
+    case Stage::kAssignBanks:
+    case Stage::kGroupSignals:
+    case Stage::kRefinePositions:
+      if (!request.typed_input)
+        throw core::StageError(core::ErrorCode::kInvalidRequest, "Chimew requires typed input");
+      if (request.stage == Stage::kAssignBanks) return {"chimew-bank-input-v1"};
+      if (request.stage == Stage::kGroupSignals) return {"chimew-group-input-v1"};
+      return {"chimew-refine-input-v1"};
     case Stage::kRudy: return {"chimew-rudy-input-v1"};
     case Stage::kExportBookshelf: return {"xilinx-mapped-index-v2", "openparf-atom-index-private-v1"};
     case Stage::kBuildCandidateIds: return {"emuir-compact-v2","candidate-policy-request-v1"};
@@ -182,6 +188,25 @@ core::StageResult ExecuteStage(const StageRequest& request) {
   }, [&](const auto& inputs) {
     const auto path = [&](std::size_t i) -> const std::string& { return inputs.at(i).path(); };
     const auto& output = request.output_path;
+    if (request.stage == Stage::kAssignBanks || request.stage == Stage::kGroupSignals ||
+        request.stage == Stage::kRefinePositions || request.stage == Stage::kRudy) {
+      const auto produce = [&](std::ostream& stream) {
+        switch (request.stage) {
+          case Stage::kAssignBanks: AssignChimewBankChannels(path(0),stream); break;
+          case Stage::kGroupSignals: GroupChimewSignals(path(0),stream,request.expected_sha256); break;
+          case Stage::kRefinePositions: RefineChimewPositions(path(0),stream,request.expected_sha256); break;
+          case Stage::kRudy: EvaluateChimewRudy(path(0),stream); break;
+          default: throw core::StageError(core::ErrorCode::kInvalidRequest,"unknown text kernel");
+        }
+      };
+      if (output == "-") {
+        produce(std::cout);
+        std::cout.flush();
+        if (!std::cout) throw core::StageError(core::ErrorCode::kPublicationFailed,"cannot flush native stage output");
+        for (const auto& input : inputs) input.RequireUnchanged();
+      } else core::PublishTextArtifact(output,inputs,produce);
+      return;
+    }
     switch (request.stage) {
       case Stage::kImportVivadoLineage:
         core::ImportVivadoLineage(inputs,output,request.auxiliary_output_path); break;
@@ -202,10 +227,6 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kRefinePatron: RefinePatron(path(0), output, request.summary_output, request.typed_output); break;
       case Stage::kRoute: RouteTlr(path(0), output); break;
       case Stage::kBuildSchedule: core::BuildExactScheduleStore(path(0),path(1),path(2),output); break;
-      case Stage::kAssignBanks: AssignChimewBankChannels(path(0), output, request.typed_input); break;
-      case Stage::kGroupSignals: GroupChimewSignals(path(0), output, request.typed_input, request.expected_sha256); break;
-      case Stage::kRefinePositions: RefineChimewPositions(path(0), output, request.typed_input, request.expected_sha256); break;
-      case Stage::kRudy: EvaluateChimewRudy(path(0), output); break;
       case Stage::kExportBookshelf:
         core::ExportBookshelf(inputs[0],inputs[1],output,request.auxiliary_output_path,request.scratch_path);
         break;

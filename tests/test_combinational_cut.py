@@ -1731,9 +1731,9 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             legacy_input.write_bytes(legacy)
             indexed_input.write_bytes(indexed)
             legacy_output, indexed_output = root / "legacy.out", root / "indexed.out"
-            subprocess.run([str(executable), str(legacy_input), str(legacy_output)], check=True)
+            subprocess.run([str(executable), "phase3", "analyze", str(legacy_input), str(legacy_output)], check=True)
             source_digest = hashlib.sha256(database.read_bytes()).hexdigest()
-            command = [str(executable), "--indexed-input", str(database),
+            command = [str(executable), "phase3", "analyze", "--indexed-input", str(database),
                        str(indexed_input), str(indexed_output)]
             subprocess.run(command, check=True)
             self.assertEqual(indexed_output.read_bytes(), legacy_output.read_bytes())
@@ -2209,7 +2209,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     native_output = root / f"huge-{label}.out"
                     native_input.write_bytes(payload)
                     completed = subprocess.run(
-                        [executable, native_input, native_output],
+                        [executable, "phase3", "analyze", native_input, native_output],
                         capture_output=True,
                         text=True,
                         check=False,

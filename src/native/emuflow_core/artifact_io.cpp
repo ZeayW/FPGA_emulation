@@ -191,6 +191,25 @@ void AtomicBinaryWriter::Commit() {
   committed_ = true;
 }
 
+void PublishTextArtifact(const std::string& target,
+                         const std::vector<ArtifactRef>& inputs,
+                         const std::function<void(std::ostream&)>& produce) {
+  if (target.empty() || target == "-")
+    throw StageError(ErrorCode::kInvalidRequest, "text artifact requires a file destination");
+  for (const auto& input : inputs) {
+    std::error_code error;
+    if (!input.is_pipe() &&
+        (std::filesystem::equivalent(target,input.path(),error) ||
+         std::filesystem::weakly_canonical(target) == std::filesystem::weakly_canonical(input.path())))
+      throw StageError(ErrorCode::kInvalidRequest, "text artifact destination aliases an input");
+    input.RequireUnchanged();
+  }
+  AtomicBinaryWriter writer(target);
+  produce(writer.stream());
+  for (const auto& input : inputs) input.RequireUnchanged();
+  writer.Commit();
+}
+
 void PublishTemporaryFile(const std::string& temporary_path_, const std::string& target_path_) {
   if (std::filesystem::absolute(temporary_path_).parent_path().lexically_normal() !=
       std::filesystem::absolute(target_path_).parent_path().lexically_normal())

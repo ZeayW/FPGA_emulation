@@ -322,6 +322,58 @@ int main() {
     }
     const auto pipe = ArtifactRef::Bind("-", "patron-input-v1", true);
     if (!pipe.is_pipe()) throw std::runtime_error("native pipe was treated as a file");
+    // File consumers must never observe a partial result or an output from
+    // changed source generations, including when a producer fails late.
+    {
+      const auto text_source = (root / "text-source").string();
+      const auto text_output = (root / "text-output").string();
+      { std::ofstream file(text_source); file << "source"; }
+      const auto read_text = [](const std::string& path) {
+        std::ifstream file(path); return std::string(std::istreambuf_iterator<char>(file), {});
+      };
+      const auto attempt = [&](const std::function<void(std::ostream&)>& produce) {
+        return emuflow::core::RunStage("test.publish-text", [&]() {
+          return std::vector<ArtifactRef>{ArtifactRef::Bind(text_source,"chimew-rudy-input-v1")};
+        }, [&](const auto& inputs) {
+          emuflow::core::PublishTextArtifact(text_output,inputs,produce);
+        });
+      };
+      { std::ofstream file(text_output); file << "old"; }
+      const auto committed = attempt([&](std::ostream& output) {
+        output << "new";
+        if (read_text(text_output) != "old") throw std::runtime_error("uncommitted text became visible");
+      });
+      if (!committed.ok() || read_text(text_output) != "new")
+        throw std::runtime_error("shared text publication changed bytes");
+      const auto failed = attempt([](std::ostream& output) {
+        output << "partial"; throw std::runtime_error("injected producer failure");
+      });
+      if (failed.ok() || read_text(text_output) != "new")
+        throw std::runtime_error("failed text producer replaced its prior result");
+      const auto changed = attempt([&](std::ostream& output) {
+        output << "untrusted";
+        std::ofstream mutation(text_source,std::ios::app); mutation << "mutation";
+      });
+      if (changed.error != ErrorCode::kMixedGeneration || read_text(text_output) != "new")
+        throw std::runtime_error("changed text source was published");
+      const auto unwritable = attempt([](std::ostream& output) {
+        output << "partial"; output.setstate(std::ios::badbit);
+      });
+      if (unwritable.error != ErrorCode::kPublicationFailed || read_text(text_output) != "new")
+        throw std::runtime_error("failed output stream replaced its prior result");
+      bool alias_rejected = false;
+      try {
+        emuflow::core::PublishTextArtifact(text_source,
+            {ArtifactRef::Bind(text_source,"chimew-rudy-input-v1")},
+            [](std::ostream&) { throw std::runtime_error("aliased producer executed"); });
+      } catch (const emuflow::core::StageError& error) {
+        alias_rejected = error.code() == ErrorCode::kInvalidRequest;
+      }
+      if (!alias_rejected) throw std::runtime_error("shared text publisher accepted source alias");
+      for (const auto& file : std::filesystem::directory_iterator(root))
+        if (file.path().filename().string().find("text-output.tmp.") == 0)
+          throw std::runtime_error("failed text publication retained private scratch");
+    }
     const auto sqlite_artifact = (root / "source-artifact.sqlite").string();
     {
       emuflow::core::SqliteDatabase db(sqlite_artifact, emuflow::core::SqliteDatabase::Mode::kCreateExclusive);

@@ -162,8 +162,13 @@ The shared solver, hardware ratio
 constraints, independent validators and optional Phase 6 Chimew remain.
 Phase 6 maintains baseline transport and optional Chimew. The independent
 placement-aware planner, its executable/CLI and its comparison arm are retired;
-shared pin/electrical validation remains. `EMUFLOW_BUILD_CHIMEW` builds the four
-Chimew kernels. Fixed-board adapters support sealed LVDS P/N channels; the
+shared pin/electrical validation remains. Static Exact analysis and the four
+Chimew kernels run only through `emuflow-native` and `libemuflow_core`; duplicate
+standalone programs and their build switches are retired. Chimew grouping,
+refinement and bank assignment accept only the current typed input protocol.
+Chimew file outputs use the shared atomic writer with source checks before
+publication; pipe outputs remain streamed and require successful process
+completion. Fixed-board adapters support sealed LVDS P/N channels; the
 lookahead uses the selected Xilinx backend and source-qualified package geometry.
 Shared device site maps carry a producer content seal; legitimate hard-link
 publication is distinguished from changed content. See the

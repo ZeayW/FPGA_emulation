@@ -76,6 +76,18 @@ only a CMake compatibility alias; the executable and native library tests link
 the core directly. This does not yet cover every standalone adapter or complete
 the native production data plane.
 
+The duplicate Static Exact analyzer and four Chimew executables/build options
+are retired. Tests and current adapters call the same unified entry and shared
+kernel implementation. Chimew's superseded text readers/writers and schema
+registry names are removed. Its grouping, refinement, bank and RUDY kernels
+accept a caller-owned output stream; the shared stage layer publishes file
+outputs only after production completes and source generations still match.
+Atomicity failure gates exercise early parse rejection, late producer failure,
+changed sources, failed output streams and prior-result preservation. Pipe
+outputs retain their streaming protocol and require complete record validation
+plus process success. This infrastructure change does not complete W0's frozen
+NVDLA overhead gate, the remaining adapter integration or W7's native data plane.
+
 `phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT`
 builds the PATRON v14 model and invokes the existing solver in one shared-core
 process. Normal compact native clustering selects this direct owner. The shared

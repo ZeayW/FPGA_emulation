@@ -33,11 +33,9 @@ constexpr const char* kUsage =
     "  phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT\n"
     "  phase4 route --typed-output INPUT OUTPUT\n"
     "  phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT\n"
-    "  phase6 assign-banks (--typed-input|--legacy-text) INPUT OUTPUT\n"
+    "  phase6 assign-banks --typed-input INPUT OUTPUT\n"
     "  phase6 group-signals --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
-    "  phase6 group-signals --legacy-text INPUT OUTPUT\n"
     "  phase6 refine-groups --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
-    "  phase6 refine-groups --legacy-text INPUT OUTPUT\n"
     "  phase6 rudy INPUT OUTPUT\n"
     "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n"
     "  phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY\n"
@@ -198,14 +196,12 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     if (operation == "rudy" && argc == 5)
       return run(Stage::kRudy, {argv[3]}, argv[4]);
     const std::string mode = argc > 3 ? argv[3] : "";
-    if (operation == "assign-banks" && argc == 6 && (mode == "--typed-input" || mode == "--legacy-text"))
+    if (operation == "assign-banks" && argc == 6 && mode == "--typed-input")
       return run(Stage::kAssignBanks, {argv[4]}, argv[5], mode == "--typed-input");
     if (operation == "group-signals" || operation == "refine-groups") {
       const auto stage = operation == "group-signals" ? Stage::kGroupSignals : Stage::kRefinePositions;
       if (argc == 7 && mode == "--typed-input")
         return run(stage, {argv[4]}, argv[5], true, false, argv[6]);
-      if (argc == 6 && mode == "--legacy-text")
-        return run(stage, {argv[4]}, argv[5]);
     }
   }
   if (phase == "phase7" && operation == "export-bookshelf" && argc == 8) {

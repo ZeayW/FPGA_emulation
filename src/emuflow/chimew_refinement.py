@@ -448,31 +448,6 @@ def _typed_refinement_sha256(
     return digest.hexdigest()
 
 
-def _serialize_legacy_refinement(
-    entries: Sequence[Mapping[str, Any]],
-    encodings: Mapping[str, int],
-    positions: Mapping[str, float],
-    initial: Mapping[str, int],
-    guards: Mapping[str, Optional[tuple[Any, ...]]],
-    path: Path,
-) -> None:
-    """Write the historical text protocol for explicit differential tests."""
-
-    domain_index = _refinement_domains(entries, guards)
-    with path.open("w", encoding="utf-8") as stream:
-        stream.write("EMUFLOW_CHIMEW_REFINER_INPUT_V1\n")
-        for index, entry in enumerate(entries):
-            entry_id = entry["id"]
-            domain = (
-                _domain(entry),
-                guards.get(entry_id),
-                _tdm_slot(entry, index) if "slot" in entry else None,
-            )
-            stream.write(
-                f"SIGNAL {index} {domain_index[domain]} "
-                f"{_tdm_ratio(entry)} {encodings[entry_id]} "
-                f"{initial[entry_id]} {positions[entry_id]:.17g}\n"
-            )
 
 
 def _serialize_typed_refinement(

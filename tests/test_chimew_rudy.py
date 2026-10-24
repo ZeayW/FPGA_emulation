@@ -26,21 +26,8 @@ class ChimewRudyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temporary_directory = tempfile.TemporaryDirectory()
-        compiler = shutil.which("c++") or shutil.which("clang++")
-        if compiler is None:
-            raise RuntimeError("a C++17 compiler is required")
-        cls.executable = Path(cls.temporary_directory.name) / "chimew-rudy"
-        subprocess.run(
-            [
-                compiler,
-                "-std=c++17",
-                "-O2",
-                str(ROOT / "src/native/chimew_rudy.cpp"),
-                "-o",
-                str(cls.executable),
-            ],
-            check=True,
-        )
+        cls.executable = emuflow_native()
+        cls.command = [str(cls.executable), "phase6", "rudy"]
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -101,32 +88,25 @@ class ChimewRudyTest(unittest.TestCase):
         )
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
 
-    def test_unified_rudy_is_byte_exact_and_accepts_streams(self) -> None:
+    def test_file_publication_matches_stdin_stdout_stream(self) -> None:
         problem = validate_chimew_rudy_input(self.document)
-        input_stream = io.StringIO()
-        rudy_module._write_native_input(problem, input_stream)
-        payload = input_stream.getvalue()
-        standalone = subprocess.run(
-            [str(self.executable), "-", "-"],
-            input=payload,
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        unified = subprocess.run(
-            [str(emuflow_native()), "phase6", "rudy", "-", "-"],
-            input=payload,
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        self.assertEqual(unified.stdout, standalone.stdout)
+        stream = io.StringIO()
+        rudy_module._write_native_input(problem, stream)
+        payload = stream.getvalue()
+        streamed = subprocess.run([*self.command, "-", "-"], input=payload,
+            text=True, capture_output=True, check=True)
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "rudy.input"
+            output = Path(temporary) / "rudy.output"
+            source.write_text(payload)
+            subprocess.run([*self.command, str(source), str(output)], check=True)
+            self.assertEqual(output.read_text(), streamed.stdout)
 
     def test_production_uses_unified_stage_resolver_without_scratch_payloads(self) -> None:
         with mock.patch.object(
             rudy_module,
             "resolve_native_stage_command",
-            return_value=[str(self.executable)],
+            return_value=[*self.command],
         ) as resolver, mock.patch.object(
             Path,
             "write_text",

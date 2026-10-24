@@ -251,6 +251,22 @@ int main() {
         result.outputs[0].schema() != "chimew-rudy-output-text") {
       throw std::runtime_error("typed native stage failed: " + result.message);
     }
+    {
+      const auto read_text = [](const std::string& path) {
+        std::ifstream file(path); return std::string(std::istreambuf_iterator<char>(file), {});
+      };
+      const auto before = read_text(output);
+      const auto invalid_source = (root / "invalid-rudy.input").string();
+      { std::ofstream file(invalid_source); file << "invalid-input"; }
+      StageRequest malformed_rudy{Stage::kRudy,{invalid_source},output};
+      if (emuflow::native::ExecuteStage(malformed_rudy).ok() || read_text(output) != before)
+        throw std::runtime_error("RUDY parse failure destroyed a published result");
+      for (const auto stage : {Stage::kGroupSignals,Stage::kRefinePositions,Stage::kAssignBanks}) {
+        StageRequest legacy{stage,{invalid_source},output}; legacy.typed_input = false;
+        if (emuflow::native::ExecuteStage(legacy).error != ErrorCode::kInvalidRequest || read_text(output) != before)
+          throw std::runtime_error("retired Chimew text API executed");
+      }
+    }
     auto wrong = request;
     wrong.input_artifacts = {ArtifactRef::Bind(source, "global-route-input-v1")};
     const auto mismatch = emuflow::native::ExecuteStage(wrong);

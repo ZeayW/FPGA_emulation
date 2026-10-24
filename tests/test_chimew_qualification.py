@@ -1,3 +1,4 @@
+from tests.native_build import emuflow_native
 import copy
 import hashlib
 import shutil
@@ -72,30 +73,7 @@ class ChimewQualificationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temporary_directory = tempfile.TemporaryDirectory()
-        compiler = shutil.which("c++") or shutil.which("clang++")
-        if compiler is None:
-            raise RuntimeError("a C++17 compiler is required")
-        cls.executables = {}
-        for source, name in (
-            ("chimew_signal_grouper.cpp", "grouper"),
-            ("chimew_position_refiner.cpp", "refiner"),
-            ("chimew_rudy.cpp", "rudy"),
-            ("chimew_bank_channel_assigner.cpp", "assigner"),
-        ):
-            executable = Path(cls.temporary_directory.name) / name
-            subprocess.run(
-                [
-                    compiler,
-                    "-std=c++17",
-                    "-O2",
-                    "-pthread",
-                    str(ROOT / "src/native" / source),
-                    "-o",
-                    str(executable),
-                ],
-                check=True,
-            )
-            cls.executables[name] = str(executable)
+        cls.executables = {name: str(emuflow_native()) for name in ("grouper", "refiner", "rudy", "assigner")}
 
     @classmethod
     def tearDownClass(cls) -> None:

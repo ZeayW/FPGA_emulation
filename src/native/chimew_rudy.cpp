@@ -209,7 +209,7 @@ void run(std::istream& input_stream, std::ostream& output) {
 namespace emuflow::native {
 
 void EvaluateChimewRudy(const std::string& input_path,
-                        const std::string& output_path) {
+                        std::ostream& output) {
   std::ifstream input_file;
   std::istream* input = &std::cin;
   if (input_path != "-") {
@@ -219,39 +219,10 @@ void EvaluateChimewRudy(const std::string& input_path,
     }
     input = &input_file;
   }
-  std::ofstream output_file;
-  std::ostream* output = &std::cout;
-  if (output_path != "-") {
-    output_file.open(output_path);
-    if (!output_file) {
-      throw std::runtime_error("cannot open Chimew RUDY output");
-    }
-    output = &output_file;
-  }
-  run(*input, *output);
-  if (!*output) {
+  run(*input, output);
+  if (!output) {
     throw std::runtime_error("cannot write Chimew RUDY output");
   }
 }
 
 }  // namespace emuflow::native
-
-#ifndef EMUFLOW_NATIVE_STAGE_LIBRARY
-int main(int argc, char** argv) {
-  if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "usage: emuflow_chimew_rudy INPUT OUTPUT\n";
-    return 0;
-  }
-  if (argc != 3) {
-    std::cerr << "usage: emuflow_chimew_rudy INPUT OUTPUT\n";
-    return 2;
-  }
-  try {
-    emuflow::native::EvaluateChimewRudy(argv[1], argv[2]);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "emuflow_chimew_rudy: " << error.what() << "\n";
-    return 1;
-  }
-}
-#endif

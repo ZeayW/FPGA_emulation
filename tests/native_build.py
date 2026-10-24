@@ -13,22 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 _BUILD_ROOT = tempfile.TemporaryDirectory(prefix="emuflow-native-tests-")
 
 
-@lru_cache(maxsize=None)
-def _standalone_fixture_program(name: str) -> Path:
-    compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
-    if compiler is None:
-        raise RuntimeError("a C++17 compiler is required for native fixture tools")
-    executable = Path(_BUILD_ROOT.name) / ("emuflow_" + name)
-    subprocess.run(
-        [compiler, "-std=c++17", "-O2", "-pthread",
-         str(ROOT / "src/native" / (name + ".cpp")), "-o", str(executable)],
-        check=True,
-    )
-    return executable
-
-
 def chimew_bank_channel_assigner() -> Path:
-    return _standalone_fixture_program("chimew_bank_channel_assigner")
+    return emuflow_native()
 
 
 def tlr_router() -> Path:
@@ -36,45 +22,10 @@ def tlr_router() -> Path:
     return emuflow_native()
 
 
-@lru_cache(maxsize=1)
+
+
 def static_exact_analyzer() -> Path:
-    compiler = (
-        shutil.which("c++")
-        or shutil.which("g++")
-        or shutil.which("clang++")
-    )
-    if compiler is None:
-        raise RuntimeError(
-            "a C++17 compiler is required for Static Exact tests"
-        )
-    root = Path(_BUILD_ROOT.name)
-    executable = root / "bin" / "emuflow_static_exact_analyzer"
-    executable.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            compiler,
-            "-std=c++17",
-            "-O2",
-            str(ROOT / "src/native/static_exact_analyzer.cpp"),
-            str(ROOT / "src/native/emuflow_core/store.cpp"),
-            str(ROOT / "src/native/emuflow_core/emuir_view.cpp"),
-            str(ROOT / "src/native/emuflow_core/stage_runtime.cpp"),
-            str(ROOT / "src/native/emuflow_core/artifact_io.cpp"),
-            str(ROOT / "src/native/emuflow_core/sqlite.cpp"),
-            "-lsqlite3",
-            "-I",
-            str(ROOT / "src/native"),
-            "-o",
-            str(executable),
-        ],
-        check=True,
-    )
-    # Compact native semantic analysis now also owns candidate production in
-    # the unified core. Model the installed sibling dependency in this fixture.
-    unified = executable.parent / "emuflow-native"
-    if not unified.exists():
-        unified.symlink_to(emuflow_native())
-    return executable
+    return emuflow_native()
 
 
 _NATIVE_STAGE_SOURCES = tuple(
@@ -108,7 +59,7 @@ def _build_native_stage_program(entry: Path, executable: Path) -> Path:
 def emuflow_native() -> Path:
     return _build_native_stage_program(
         ROOT / "src/native/emuflow_native.cpp",
-        Path(_BUILD_ROOT.name) / "unified/emuflow-native",
+        Path(_BUILD_ROOT.name) / "bin/emuflow-native",
     )
 
 

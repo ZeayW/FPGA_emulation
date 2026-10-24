@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -129,6 +130,13 @@ class AtomicBinaryWriter {
   std::ofstream stream_;
   bool committed_ = false;
 };
+
+// Stream a file artifact into the common writer and recheck source generations
+// before publication. Failure leaves a prior destination intact. Pipe output
+// remains the caller's explicitly uncommitted streaming protocol.
+void PublishTextArtifact(const std::string& target,
+                         const std::vector<ArtifactRef>& inputs,
+                         const std::function<void(std::ostream&)>& produce);
 
 template <typename Tag, typename Representation = std::uint32_t>
 class TypedId {

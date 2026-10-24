@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <ostream>
 
 namespace emuflow::core { struct ExactScheduleModel; struct ExactScheduleSolution; }
 
@@ -33,15 +34,14 @@ void WriteStaticExactSections(const std::string& nodes_path,
 void RouteTlr(const std::string& input_path,
               const std::string& output_path);
 void AssignChimewBankChannels(const std::string& input_path,
-                              const std::string& output_path,
-                              bool typed_input);
+                              std::ostream& output);
 void GroupChimewSignals(const std::string& input_path,
-                        const std::string& output_path, bool typed_input,
+                        std::ostream& output,
                         const std::string& expected_sha256);
 void RefineChimewPositions(const std::string& input_path,
-                           const std::string& output_path, bool typed_input,
+                           std::ostream& output,
                            const std::string& expected_sha256);
 void EvaluateChimewRudy(const std::string& input_path,
-                        const std::string& output_path);
+                        std::ostream& output);
 
 }  // namespace emuflow::native

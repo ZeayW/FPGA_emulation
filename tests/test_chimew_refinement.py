@@ -33,26 +33,9 @@ class ChimewRefinementTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temporary_directory = tempfile.TemporaryDirectory()
-        compiler = shutil.which("c++") or shutil.which("clang++")
-        if compiler is None:
-            raise RuntimeError("a C++17 compiler is required")
-        cls.grouper = Path(cls.temporary_directory.name) / "chimew-grouper"
-        cls.refiner = Path(cls.temporary_directory.name) / "chimew-refiner"
-        for source, executable in (
-            ("chimew_signal_grouper.cpp", cls.grouper),
-            ("chimew_position_refiner.cpp", cls.refiner),
-        ):
-            subprocess.run(
-                [
-                    compiler,
-                    "-std=c++17",
-                    "-O2",
-                    str(ROOT / "src/native" / source),
-                    "-o",
-                    str(executable),
-                ],
-                check=True,
-            )
+        cls.grouper = cls.refiner = emuflow_native()
+        cls.grouper_command = [str(cls.grouper), "phase6", "group-signals"]
+        cls.refiner_command = [str(cls.refiner), "phase6", "refine-groups"]
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -140,83 +123,7 @@ class ChimewRefinementTest(unittest.TestCase):
         )
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
 
-    def test_typed_legacy_and_unified_refinement_are_byte_exact(self) -> None:
-        encodings = refinement_module.validate_chimew_crossings(
-            self.schedule, self.crossings
-        )
-        positions = validate_chimew_positions(self.schedule, self.positions)
-        initial = refinement_module._validate_initial_groups(
-            self.schedule, self.initial, encodings
-        )
-        guards = refinement_module._timing_guards(self.schedule, self.initial)
-        entries = sorted(self.schedule["entries"], key=lambda entry: entry["id"])
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            legacy_input = root / "legacy.txt"
-            typed_input = root / "typed.bin"
-            legacy_output = root / "legacy.out"
-            typed_output = root / "typed.out"
-            unified_output = root / "unified.out"
-            refinement_module._serialize_legacy_refinement(
-                entries,
-                encodings,
-                positions,
-                initial,
-                guards,
-                legacy_input,
-            )
-            with typed_input.open("wb") as stream:
-                metadata = refinement_module._serialize_typed_refinement(
-                    entries, encodings, positions, initial, guards, stream
-                )
-            subprocess.run(
-                [
-                    str(self.refiner),
-                    "--legacy-text",
-                    str(legacy_input),
-                    str(legacy_output),
-                ],
-                check=True,
-            )
-            subprocess.run(
-                [
-                    str(self.refiner),
-                    "--typed-input",
-                    str(typed_input),
-                    str(typed_output),
-                    metadata["logical_sha256"],
-                ],
-                check=True,
-            )
-            subprocess.run(
-                [
-                    str(emuflow_native()),
-                    "phase6",
-                    "refine-groups",
-                    "--typed-input",
-                    str(typed_input),
-                    str(unified_output),
-                    metadata["logical_sha256"],
-                ],
-                check=True,
-            )
-            self.assertEqual(typed_output.read_bytes(), legacy_output.read_bytes())
-            self.assertEqual(unified_output.read_bytes(), legacy_output.read_bytes())
 
-    def test_production_refinement_does_not_publish_legacy_text(self) -> None:
-        with mock.patch.object(
-            refinement_module,
-            "_serialize_legacy_refinement",
-            side_effect=AssertionError("legacy refinement producer was called"),
-        ):
-            result = refine_chimew_groups(
-                self.schedule,
-                self.crossings,
-                self.initial,
-                self.positions,
-                executable=str(self.refiner),
-            )
-        self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
 
     def test_typed_refinement_rejects_corruption(self) -> None:
         encodings = refinement_module.validate_chimew_crossings(
@@ -241,7 +148,7 @@ class ChimewRefinementTest(unittest.TestCase):
                 input_path.write_bytes(payload)
                 completed = subprocess.run(
                     [
-                        str(self.refiner),
+                        *self.refiner_command,
                         "--typed-input",
                         str(input_path),
                         "-",

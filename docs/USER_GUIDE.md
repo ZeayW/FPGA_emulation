@@ -447,11 +447,19 @@ and closure fields; obsolete VPR-only wirelength is not reported as zero or
 substituted with an unrelated vendor metric.
 See the [fixed wiring contract](HARDWARE_PLATFORM.md#fixed-virtual-board-wiring).
 
-Build Chimew's grouping, position-refinement, RUDY and bank/channel kernels
-with `EMUFLOW_BUILD_CHIMEW=ON` (the default). The old
-`EMUFLOW_BUILD_PIN_PLANNER` cache entry must be removed; configuring with that
-retired option fails explicitly. The logical pin-plan schema retains its v1
-identifier for current Chimew records; this does not retain the old planner.
+Chimew's grouping, position-refinement, RUDY and bank/channel kernels are always
+linked into `libemuflow_core` and run through the unified `emuflow-native phase6`
+commands. Static Exact analysis uses `emuflow-native phase3 analyze`. Their five
+duplicate standalone executables are no longer built or deployed. Remove the
+retired `EMUFLOW_BUILD_CHIMEW` and `EMUFLOW_BUILD_STATIC_EXACT_ANALYZER` cache
+options; explicitly enabling them fails. The older `EMUFLOW_BUILD_PIN_PLANNER`
+cache entry must also be removed. These changes do not remove the Chimew provider.
+Grouping, refinement and bank assignment reject `--legacy-text`; use the typed
+input protocol. RUDY retains its current single input stream protocol. Chimew
+file results publish atomically after input generation checks. Stdout results remain
+streamed and are accepted only after their record grammar and process success
+are validated. The logical pin-plan schema retains its v1 identifier for current
+Chimew records; this does not retain the old planner.
 
 Canonical provider comparisons now require baseline and Chimew under identical
 upstream, backend, seed and clock contracts. Both arms must reach complete

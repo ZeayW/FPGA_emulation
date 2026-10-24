@@ -644,35 +644,6 @@ def _typed_logical_sha256(
     return logical.hexdigest()
 
 
-def _serialize_legacy_text(
-    entries: Sequence[Mapping[str, Any]],
-    encodings: Mapping[str, int],
-    guarded_lanes: Sequence[Optional[Tuple[str, str, str, int]]]
-    | Mapping[str, Optional[Tuple[str, str, str, int]]],
-    path: Path,
-) -> None:
-    """Write the historical text protocol for explicit differential tests."""
-
-    guard_sentinel = ("", "", "", -1)
-    domains = sorted(
-        {
-            (_domain(entry), _guard_at(guarded_lanes, entries, index))
-            for index, entry in enumerate(entries)
-        },
-        key=lambda item: (
-            item[0], item[1] is not None, item[1] or guard_sentinel
-        ),
-    )
-    domain_index = {domain: index for index, domain in enumerate(domains)}
-    with path.open("w", encoding="utf-8") as stream:
-        stream.write("EMUFLOW_CHIMEW_GROUPER_INPUT_V2\n")
-        for index, entry in enumerate(entries):
-            guard = _guard_at(guarded_lanes, entries, index)
-            stream.write(
-                f"SIGNAL {index} {domain_index[(_domain(entry), guard)]} "
-                f"{_tdm_ratio(entry)} {_tdm_slot(entry, index)} "
-                f"{encodings[entry['id']]}\n"
-            )
 
 
 def _parse_native_output(stream: Any, signal_count: int) -> tuple[array, int, int]:

@@ -20,11 +20,16 @@ find_program(EMUFLOW_MAKE_EXECUTABLE NAMES gmake make REQUIRED)
 
 foreach(EMUFLOW_RETIRED_BUILD_OPTION IN ITEMS
     EMUFLOW_BUILD_VTR_ARCHITECTURE EMUFLOW_BUILD_VPR
-    EMUFLOW_BUILD_VPR_PACKED_NETLIST EMUFLOW_BUILD_VPR_ROUTE_CHECKER)
+    EMUFLOW_BUILD_VPR_PACKED_NETLIST EMUFLOW_BUILD_VPR_ROUTE_CHECKER
+    EMUFLOW_BUILD_STATIC_EXACT_ANALYZER EMUFLOW_BUILD_CHIMEW)
   if(${EMUFLOW_RETIRED_BUILD_OPTION})
-    message(FATAL_ERROR "${EMUFLOW_RETIRED_BUILD_OPTION} is retired; only the Xilinx physical backends are maintained")
+    message(FATAL_ERROR "${EMUFLOW_RETIRED_BUILD_OPTION} is retired; use the unified emuflow-native build")
   endif()
 endforeach()
+
+if(DEFINED EMUFLOW_BUILD_PIN_PLANNER)
+  message(FATAL_ERROR "EMUFLOW_BUILD_PIN_PLANNER is retired; remove the cache entry; Chimew is in the shared native core")
+endif()
 
 option(EMUFLOW_BUILD_YOSYS "Build the in-tree Yosys and ABC source" ON)
 option(
@@ -43,21 +48,8 @@ option(
   "Build the in-tree topology-constrained FM partition refiner"
   ON
 )
-option(
-  EMUFLOW_BUILD_STATIC_EXACT_ANALYZER
-  "Build the native Static Exact dependency and capture analyzer"
-  ON
-)
 
-if(DEFINED EMUFLOW_BUILD_PIN_PLANNER)
-  message(FATAL_ERROR "EMUFLOW_BUILD_PIN_PLANNER is retired; configure EMUFLOW_BUILD_CHIMEW explicitly and remove the old cache entry")
-endif()
 
-option(
-  EMUFLOW_BUILD_CHIMEW
-  "Build Chimew grouping, refinement, RUDY and bank/channel kernels"
-  ON
-)
 option(
   EMUFLOW_BUILD_BSP_PIN_SOLVER
   "Build the in-tree electrical package-pin min-cost-flow solver"
@@ -495,6 +487,11 @@ add_custom_command(
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/contest_validation_matrix.json"
   COMMAND
     "${CMAKE_COMMAND}" -E rm -f
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_static_exact_analyzer"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_chimew_signal_grouper"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_chimew_position_refiner"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_chimew_rudy"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_chimew_bank_channel_assigner"
     "${EMUFLOW_INSTALL_BINDIR}/vpr"
     "${EMUFLOW_INSTALL_BINDIR}/emuflow_vtr_arch_importer"
     "${EMUFLOW_INSTALL_BINDIR}/emuflow_vpr_packed_netlist_importer"
@@ -576,9 +573,6 @@ if(EMUFLOW_BUILD_FPGA_INTERCHANGE)
 endif()
 
 
-
-
-
 if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
   add_executable(
     emuflow_eda2025_topology_optimizer
@@ -610,72 +604,6 @@ if(EMUFLOW_BUILD_HOP_PARTITION_REFINER)
   )
 endif()
 
-if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
-  add_executable(
-    emuflow_static_exact_analyzer
-    "${CMAKE_SOURCE_DIR}/src/native/static_exact_analyzer.cpp"
-  )
-  target_compile_features(emuflow_static_exact_analyzer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_static_exact_analyzer PRIVATE -O3)
-  target_link_libraries(emuflow_static_exact_analyzer PRIVATE emuflow_core)
-  set_target_properties(
-    emuflow_static_exact_analyzer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-
-if(EMUFLOW_BUILD_CHIMEW)
-  add_executable(
-    emuflow_chimew_signal_grouper
-    "${CMAKE_SOURCE_DIR}/src/native/chimew_signal_grouper.cpp"
-  )
-  target_compile_features(emuflow_chimew_signal_grouper PRIVATE cxx_std_17)
-  target_compile_options(emuflow_chimew_signal_grouper PRIVATE -O3)
-  set_target_properties(
-    emuflow_chimew_signal_grouper
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_chimew_position_refiner
-    "${CMAKE_SOURCE_DIR}/src/native/chimew_position_refiner.cpp"
-  )
-  target_compile_features(emuflow_chimew_position_refiner PRIVATE cxx_std_17)
-  target_compile_options(emuflow_chimew_position_refiner PRIVATE -O3)
-  set_target_properties(
-    emuflow_chimew_position_refiner
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_chimew_rudy
-    "${CMAKE_SOURCE_DIR}/src/native/chimew_rudy.cpp"
-  )
-  target_compile_features(emuflow_chimew_rudy PRIVATE cxx_std_17)
-  target_compile_options(emuflow_chimew_rudy PRIVATE -O3)
-  set_target_properties(
-    emuflow_chimew_rudy
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_chimew_bank_channel_assigner
-    "${CMAKE_SOURCE_DIR}/src/native/chimew_bank_channel_assigner.cpp"
-  )
-  target_compile_features(emuflow_chimew_bank_channel_assigner PRIVATE cxx_std_17)
-  target_compile_options(emuflow_chimew_bank_channel_assigner PRIVATE -O3)
-  target_link_libraries(
-    emuflow_chimew_bank_channel_assigner
-    PRIVATE Threads::Threads
-  )
-  set_target_properties(
-    emuflow_chimew_bank_channel_assigner
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
 if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
   add_executable(
@@ -1051,32 +979,6 @@ if(BUILD_TESTING)
     )
   endif()
 
-  if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
-    add_test(
-      NAME emuflow_static_exact_analyzer_cli
-      COMMAND "$<TARGET_FILE:emuflow_static_exact_analyzer>" --help
-    )
-  endif()
-
-
-  if(EMUFLOW_BUILD_CHIMEW)
-    add_test(
-      NAME emuflow_chimew_signal_grouper_cli
-      COMMAND "$<TARGET_FILE:emuflow_chimew_signal_grouper>" --help
-    )
-    add_test(
-      NAME emuflow_chimew_position_refiner_cli
-      COMMAND "$<TARGET_FILE:emuflow_chimew_position_refiner>" --help
-    )
-    add_test(
-      NAME emuflow_chimew_rudy_cli
-      COMMAND "$<TARGET_FILE:emuflow_chimew_rudy>" --help
-    )
-    add_test(
-      NAME emuflow_chimew_bank_channel_assigner_cli
-      COMMAND "$<TARGET_FILE:emuflow_chimew_bank_channel_assigner>" --help
-    )
-  endif()
 
   if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
     add_test(
@@ -1095,8 +997,6 @@ if(BUILD_TESTING)
       COMMAND "$<TARGET_FILE:emuflow_fpgaif_arch_importer>" --help
     )
   endif()
-
-
 
 
   if(EMUFLOW_BUILD_YOSYS)
