@@ -148,6 +148,16 @@ diagnostics: the [UltraScale clock structure](https://docs.amd.com/r/en-US/ug572
 contains segmented routing/distribution tracks, so exact device resources and
 completed routing must establish physical acceptance.
 
+The explicit `EmuFlowRWRoute` qualification suffix `--audit-clock-leaf-domains`
+materializes the normal frozen input, audits its physical clock sink pins, then
+exits without routing. It groups identical sets of two-hop upstream leaf nodes
+and compares distinct clock demand with that exact local node count. Overfull
+domains prove that ordinary local leaf assignments cannot serve that demand;
+they do not prove that every extended fabric clock path is impossible. Pins
+without such a domain are counted separately. The report seals the input hash
+and retains at most sixteen overfull examples. This read-only audit does not
+certify placement, clock skew, or route completion.
+
 After global-clock routing, the adapter independently counts distinct clock
 nets on each routed PIP endpoint node before starting signal routing. Repeated
 uses by one clock count once. It records shared nodes, maximum distinct users,

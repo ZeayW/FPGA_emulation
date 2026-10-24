@@ -117,7 +117,7 @@ Hot-region selection joins qualified physical site identities to the
 source-sealed ArchitectureDB, independent of solver region reindexing.
 A separate native spreading experiment moves ordinary occupied slices as
 rigid LUT/FF groups and preserves their internal BEL assignments.
-A device-backed clock-site audit checks region membership and reports clock counts.
+Device-backed clock audits check region membership and ordinary leaf-domain demand.
 Clock routing checks resource availability along dedicated source-to-leaf paths
 and bounded sink tails, including device clock-mux connector wires, and rejects
 cross-net node ownership before signal routing.

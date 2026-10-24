@@ -1463,8 +1463,59 @@ public final class EmuFlowRWRoute {
         );
     }
 
+    private static JSONObject auditClockLeafDomains(Design design, Map<String, String> netKinds) {
+        Map<String, Set<String>> bankClocks = new HashMap<>();
+        Map<String, List<String>> bankLeaves = new HashMap<>();
+        Map<String, String> examplePins = new HashMap<>();
+        int clocks = 0, sinks = 0, uncovered = 0;
+        for (Map.Entry<String, String> entry : netKinds.entrySet()) {
+            if (!entry.getValue().equals("clock")) continue;
+            Net clock = design.getNet(entry.getKey());
+            if (clock == null || clock.getSinkPins().isEmpty()) continue;
+            clocks++;
+            for (SitePinInst pin : clock.getSinkPins()) {
+                sinks++;
+                Node intNode = RouterHelper.projectInputPinToINTNode(pin);
+                Set<String> leaves = new java.util.TreeSet<>();
+                if (intNode != null) {
+                    for (Node first : intNode.getAllUphillNodes()) {
+                        for (Node leaf : first.getAllUphillNodes()) {
+                            if (leaf.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF) leaves.add(leaf.toString());
+                        }
+                    }
+                }
+                if (leaves.isEmpty()) { uncovered++; continue; }
+                String bank = String.join(";", leaves);
+                bankClocks.computeIfAbsent(bank, ignored -> new HashSet<>()).add(clock.getName());
+                if (!bankLeaves.containsKey(bank)) bankLeaves.put(bank, new ArrayList<>(leaves));
+                examplePins.putIfAbsent(bank, pin.toString());
+            }
+        }
+        List<String> banks = new ArrayList<>(bankClocks.keySet());
+        banks.sort(Comparator.<String>comparingInt(bank ->
+            bankClocks.get(bank).size()-bankLeaves.get(bank).size()).reversed().thenComparing(bank -> bank));
+        int overfull = 0, worstExcess = 0;
+        JSONArray examples = new JSONArray();
+        for (String bank : banks) {
+            int demand = bankClocks.get(bank).size(), capacity = bankLeaves.get(bank).size();
+            if (demand <= capacity) continue;
+            overfull++; worstExcess = Math.max(worstExcess, demand-capacity);
+            if (examples.length() < 16) examples.put(new JSONObject().put("clocks", demand)
+                .put("leaf_nodes", new JSONArray(bankLeaves.get(bank))).put("local_capacity", capacity)
+                .put("example_pin", examplePins.get(bank))
+                .put("clock_nets", new JSONArray(new java.util.TreeSet<>(bankClocks.get(bank)))));
+        }
+        return new JSONObject().put("schema", "emuflow.clock-leaf-domain-audit/v1")
+            .put("qualification", "ordinary-two-hop-leaf-domain-capacity-only")
+            .put("clock_nets", clocks).put("sink_site_pins", sinks).put("domains", banks.size())
+            .put("sinks_without_two_hop_leaf_domain", uncovered)
+            .put("oversubscribed_domains", overfull).put("maximum_excess_clocks", worstExcess)
+            .put("examples", examples);
+    }
+
     public static void main(String[] args) throws Exception {
-        if (args.length != 7) {
+        boolean auditClockDomains = args.length == 8 && args[7].equals("--audit-clock-leaf-domains");
+        if (args.length != 7 && !auditClockDomains) {
             throw new IllegalArgumentException(
                 "usage: EmuFlowRWRoute <input.tsv> <output.json> "
                 + "<timing-revision> <intersite-sha256> <intrasite-sha256> "
@@ -1789,6 +1840,13 @@ public final class EmuFlowRWRoute {
             }
         }
         reportHeap("pins-connected");
+        if (auditClockDomains) {
+            JSONObject audit = auditClockLeafDomains(design, netKinds)
+                .put("input_sha256", sha256(inputPath));
+            Files.writeString(outputPath, audit.toString() + "\n", StandardCharsets.UTF_8);
+            System.out.println("INFO: EmuFlow clock leaf domains: " + audit);
+            return;
+        }
 
         List<String> sourceOnlyInternalizedClockNets = new ArrayList<>();
         for (String netName : internalizedClockEdges) {
