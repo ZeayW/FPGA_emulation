@@ -123,6 +123,35 @@ public final class EmuFlowRWRoute {
         );
     }
 
+    /** Bounded attribution of temporary cross-clock resource conflicts. */
+    static <T> JSONObject clockConflictSummary(
+        Map<T, Set<String>> users, Function<T, String> name,
+        Function<T, String> intent, Function<T, String> tileRegion
+    ) {
+        long shared=0,excess=0;int maximum=0;
+        Map<String,Long> intents=new java.util.TreeMap<>(),regions=new java.util.TreeMap<>();
+        java.util.TreeMap<String,JSONObject> examples=new java.util.TreeMap<>();
+        for (Map.Entry<T,Set<String>> entry : users.entrySet()) {
+            int count=entry.getValue().size();maximum=Math.max(maximum,count);
+            if (count<2) continue;
+            shared++;excess+=count-1;
+            T node=entry.getKey();String nodeName=name.apply(node),kind=intent.apply(node);
+            String region=tileRegion.apply(node);if (region==null) region="@unassigned";
+            intents.merge(kind,1L,Long::sum);regions.merge(region,1L,Long::sum);
+            String key=String.format(java.util.Locale.ROOT,"%010d:%s",Integer.MAX_VALUE-count,nodeName);
+            if (examples.size()<8 || key.compareTo(examples.lastKey())<0) {
+                examples.put(key,new JSONObject().put("node",nodeName).put("intent",kind)
+                    .put("tile_clock_region",region)
+                    .put("clock_nets",new JSONArray(new java.util.TreeSet<>(entry.getValue()))));
+                if (examples.size()>8) examples.pollLastEntry();
+            }
+        }
+        return new JSONObject().put("shared_nodes",shared).put("excess_users",excess)
+            .put("maximum_users",maximum).put("shared_node_intents",new JSONObject(intents))
+            .put("shared_node_tile_regions",new JSONObject(regions))
+            .put("examples",new JSONArray(examples.values()));
+    }
+
     static List<PIP> extendedClockPathPIPs(List<Node> sourceToSinkPath) {
         if (sourceToSinkPath.size() < 2) {
             throw new IllegalArgumentException("extended clock path needs two nodes");
@@ -556,7 +585,12 @@ public final class EmuFlowRWRoute {
                 }
                 System.out.println("INFO: EmuFlow clock negotiation: " + new JSONObject()
                     .put("iteration",iteration+1).put("shared_nodes",shared).put("excess_users",excess)
-                    .put("maximum_users",maximum).put("seconds",(System.nanoTime()-start)/1e9));
+                    .put("maximum_users",maximum).put("seconds",(System.nanoTime()-start)/1e9)
+                    .put("conflicts",clockConflictSummary(clockUsers,Node::toString,
+                        node -> node.getIntentCode().name(),node -> {
+                            ClockRegion region=node.getTile().getClockRegion();
+                            return region==null?null:region.getName();
+                        })));
                 if (shared==0) { solved=true;break; }
                 clockPresentFactor*=1.5;
             }

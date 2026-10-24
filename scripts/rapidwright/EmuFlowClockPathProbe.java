@@ -190,7 +190,22 @@ public final class EmuFlowClockPathProbe {
             users.add("n1", "c"); users.add("n2", "b");
             if (users.firstOwner.size()!=3 || users.sharedOwners.size()!=1 || users.maximumUsers!=3
                 || users.sharedOwners.get("n1").size()!=3) throw new IllegalStateException("clock node ownership lost distinct-user coverage");
+            Map<String,Set<String>> occupancy=new TreeMap<>();
+            for (int i=0;i<12;i++) occupancy.put(String.format("n%02d",i),Set.of("a","b"));
+            occupancy.put("n99",Set.of("c","b","a"));occupancy.put("single",Set.of("a"));
+            JSONObject conflicts=EmuFlowRWRoute.clockConflictSummary(occupancy,n -> n,
+                n -> n.equals("n99")?"spine":"leaf",n -> n.equals("n99")?null:"X0Y0");
+            JSONArray examples=conflicts.getJSONArray("examples");
+            if (conflicts.getLong("shared_nodes")!=13 || conflicts.getLong("excess_users")!=14
+                || conflicts.getInt("maximum_users")!=3 || examples.length()!=8
+                || conflicts.getJSONObject("shared_node_intents").getInt("leaf")!=12
+                || conflicts.getJSONObject("shared_node_tile_regions").getInt("@unassigned")!=1
+                || !examples.getJSONObject(0).getString("node").equals("n99")
+                || !examples.getJSONObject(7).getString("node").equals("n06")
+                || !examples.getJSONObject(0).getJSONArray("clock_nets").toString().equals("[\"a\",\"b\",\"c\"]"))
+                throw new IllegalStateException("clock conflict attribution/count/order/bound is invalid: "+conflicts);
             System.out.println("PASS: repeated PIP endpoints do not duplicate clock users; shared-node ownership is exact");
+            System.out.println("PASS: clock conflict summaries retain exact totals and eight deterministic owner examples");
             return;
         }
         if (args.length == 4 && args[0].equals("--audit-site-clocks")) {

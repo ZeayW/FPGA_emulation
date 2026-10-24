@@ -233,6 +233,10 @@ also has a 200,000-node work bound. Exhaustion reports the endpoint, depth,
 local leaf owners and resource status; it is explicitly a search-budget failure,
 not proof that the placement is unroutable. All joins in a BFS layer are scored
 before any non-join in that layer expands.
+Every negotiation iteration also reports shared-node intent and canonical-tile
+clock-region counts, plus at most eight node/owner examples ranked by distinct
+clock users and then node name. Canonical tile membership localizes a resource;
+it is not a regional demand or capacity certificate for a segmented clock wire.
 Clock-tile reservation arrays use each tile's complete device wire domain;
 clock exploration must not index a shorter sparse array inferred from another
 tile of the same type. Ordinary signal tiles retain upstream sparse allocation.

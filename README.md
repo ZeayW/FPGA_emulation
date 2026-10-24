@@ -128,6 +128,7 @@ Fresh placement certification and clock/routing checks remain required.
 Clock routing negotiates shared clock resources using congestion costs, while
 protecting ordinary signals and foreign clock endpoints. It requires zero
 cross-net node sharing before signal routing.
+Each clock iteration attributes conflicts to device resources and clock owners.
 Typed placement export checks its required C++ exporter before full-design
 preparation; external native installs must be selected with `EMUFLOW_NATIVE_ROOT`.
 Its output requires remapping and a new placement/routing validation; see
