@@ -8,7 +8,9 @@ from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.io import file_sha256
 from emuflow.transport_fanout import buffer_transport_high_fanout_nets
-from emuflow.transport_physical_opt import _assign, _cluster, rewire_transport_buffers
+from emuflow.transport_physical_opt import (
+    _assign, _cluster, rewire_transport_buffers, validate_transport_rewire,
+)
 from emuflow.xilinx_physical_handoff import write_xilinx_physical_handoff
 from tests.test_transport_fanout import _transport_ir
 from tests.test_xilinx_physical_handoff import _contracts
@@ -67,6 +69,7 @@ class PhysicalTransportTest(unittest.TestCase):
             self.assertEqual([len(n['sinks']) for n in changed['nets']], [2, 4, 4])
             self.assertEqual(file_sha256(source), source_hash)
             self.assertEqual(file_sha256(handoff), handoff_hash)
+            self.assertEqual(report['validation']['status'], 'pass')
             # Once physically coherent, the same transform is a no-op.
             repeat = rewire_transport_buffers(output, handoff, root/'repeat.emuir.sqlite')
             self.assertEqual(repeat['summary']['moved_sinks'], 0)
@@ -107,13 +110,60 @@ class PhysicalTransportTest(unittest.TestCase):
             source, handoff = _fixture(root)
             db = sqlite3.connect(source)
             buffers = list(db.execute("SELECT seq FROM cell_records WHERE id LIKE '$emuflow_transport_fanout$%' ORDER BY id"))
-            # Move one buffer's input to its own output; it is no longer equivalent.
-            out = db.execute('SELECT net_seq FROM endpoint_records WHERE instance_seq=? AND role=0', buffers[1]).fetchone()[0]
-            db.execute('UPDATE endpoint_records SET net_seq=?,ordinal=99 WHERE instance_seq=? AND role=1', (out, buffers[1][0]))
+            # Give one branch a distinct input driven by an ordinary sink's
+            # formerly unconnected output; do not create a combinational cycle.
+            new = db.execute('SELECT max(seq)+1 FROM net_records').fetchone()[0]
+            db.execute("INSERT INTO net_records SELECT ?, 'other_input',name,flags,yosys_bit,bus_index,1,cut_class,extras_seq FROM net_records WHERE seq=0", (new,))
+            driver = db.execute('SELECT * FROM endpoint_records WHERE net_seq=0 AND role=0').fetchone()
+            sink_seq = db.execute("SELECT seq FROM cell_records WHERE id='sink0000'").fetchone()[0]
+            db.execute('INSERT INTO endpoint_records VALUES (?,?,?,?,?,?,?)',
+                       (new, 0, 0, sink_seq, driver[4], driver[5], driver[6]))
+            db.execute('UPDATE endpoint_records SET net_seq=?,ordinal=0 WHERE instance_seq=? AND role=1', (new, buffers[1][0]))
             db.commit()
             db.close()
             report = rewire_transport_buffers(source, handoff, root/'optimized.emuir.sqlite')
             self.assertEqual(report['summary']['moved_sinks'], 0)
+
+    def test_independent_validator_rejects_lost_and_duplicated_sink(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            source, handoff = _fixture(root)
+            candidate = root/'candidate.emuir.sqlite'
+            rewire_transport_buffers(source, handoff, candidate)
+            db = sqlite3.connect(candidate)
+            row = db.execute('SELECT net_seq,ordinal,instance_seq FROM endpoint_records '
+                             'WHERE role=1 AND net_seq>0 ORDER BY net_seq,ordinal').fetchone()
+            db.execute('UPDATE endpoint_records SET instance_seq=0 WHERE net_seq=? AND role=1 AND ordinal=?', row[:2])
+            db.commit()
+            db.close()
+            with self.assertRaisesRegex(ValidationError, 'sink coverage'):
+                validate_transport_rewire(source, candidate)
+
+    def test_independent_validator_rejects_changed_driver(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            source, handoff = _fixture(root)
+            candidate = root/'candidate.emuir.sqlite'
+            rewire_transport_buffers(source, handoff, candidate)
+            db = sqlite3.connect(candidate)
+            db.execute('UPDATE endpoint_records SET instance_seq=0 WHERE role=0 AND net_seq>0')
+            db.commit()
+            db.close()
+            with self.assertRaisesRegex(ValidationError, 'driver or nonleaf'):
+                validate_transport_rewire(source, candidate)
+
+    def test_independent_validator_rejects_changed_truth_table(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            source, handoff = _fixture(root)
+            candidate = root/'candidate.emuir.sqlite'
+            rewire_transport_buffers(source, handoff, candidate)
+            db = sqlite3.connect(candidate)
+            db.execute("UPDATE cell_records SET type='FDRE' WHERE seq=0")
+            db.commit()
+            db.close()
+            with self.assertRaisesRegex(ValidationError, 'non-endpoint table cells|non-endpoint table cell_records'):
+                validate_transport_rewire(source, candidate)
 
 
 if __name__ == '__main__':

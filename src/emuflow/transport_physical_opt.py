@@ -206,6 +206,7 @@ def rewire_transport_buffers(source: Path, handoff: Path, output: Path):
         db.commit()
         db.close()
         db = None
+        validation = validate_transport_rewire(source, temporary)
         with temporary.open('rb') as stream:
             os.fsync(stream.fileno())
         os.replace(temporary, output)
@@ -213,6 +214,7 @@ def rewire_transport_buffers(source: Path, handoff: Path, output: Path):
                 'source_sha256': source_sha, 'placement_handoff_sha256': handoff_sha,
                 'objective': 'capacity-preserving-sink-cluster-median-distance',
                 'coordinate_system': 'physical-slice-xy',
+                'validation': validation,
                 'output_sha256': file_sha256(output), 'groups': records,
                 'summary': {'improved_groups': sum(r['status'] == 'improved' for r in records),
                             'moved_sinks': sum(len(r.get('moves', [])) for r in records),
@@ -223,3 +225,104 @@ def rewire_transport_buffers(source: Path, handoff: Path, output: Path):
             db.close()
         temporary.unlink(missing_ok=True)
         raise
+
+
+def validate_transport_rewire(source: Path, candidate: Path):
+    """Independently compare circuits after collapsing equivalent leaf LUT1s.
+
+    No transform report or optimizer state is trusted. All tables other than
+    endpoints must match exactly. Non-leaf endpoints and every driver remain
+    exact; leaf sinks must retain their multiset after projection to their
+    common input net. Each individual branch also keeps its original capacity.
+    """
+    source, candidate = Path(source), Path(candidate)
+    checked = open_emuir_sqlite_read_only(candidate)
+    checked.close()
+    db = open_emuir_sqlite_read_only(source)
+    try:
+        db.execute("PRAGMA temp_store=FILE")
+        db.execute("ATTACH DATABASE ? AS candidate", (
+            candidate.resolve().as_uri() + "?mode=ro&immutable=1",
+        ))
+        tables = {r[0] for r in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )}
+        other_tables = {r[0] for r in db.execute(
+            "SELECT name FROM candidate.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )}
+        if tables != other_tables or 'endpoint_records' not in tables:
+            raise ValidationError("transport rewire table inventory changed")
+        for table in sorted(tables - {'endpoint_records'}):
+            # Names are schema data; quote as SQLite identifiers.
+            name = '"' + table.replace('"', '""') + '"'
+            for left, right in [('main', 'candidate'), ('candidate', 'main')]:
+                if db.execute(
+                    f'SELECT * FROM {left}.{name} EXCEPT SELECT * FROM {right}.{name} LIMIT 1'
+                ).fetchone() is not None:
+                    raise ValidationError(f"transport rewire changed non-endpoint table {table}")
+        db.execute("CREATE TEMP TABLE leaf(net INTEGER PRIMARY KEY,parent INTEGER NOT NULL)")
+        buffers = []
+        for row in db.execute(
+            "SELECT c.seq,c.type,p.value AS params,k.value AS constants,a.value AS attrs "
+            "FROM cell_records c JOIN payloads p ON p.seq=c.parameters_seq "
+            "JOIN payloads k ON k.seq=c.constants_seq "
+            "JOIN payloads a ON a.seq=c.attributes_seq"
+        ):
+            attrs = json.loads(row['attrs'])
+            if (attrs.get('emuflow_high_fanout_buffer') != 'transport-balanced-tree-v1'
+                    or attrs.get('emuflow_high_fanout_level') != '0'):
+                continue
+            params = json.loads(row['params'])
+            if (row['type'] != '$lut' or params.get('LUT') != '10'
+                    or int(params.get('WIDTH', '0'), 2) != 1 or json.loads(row['constants']) != []):
+                raise ValidationError("transport rewire source contains a nonidentity branch")
+            pins = list(db.execute(
+                "SELECT e.net_seq,e.role,p.name,e.bit FROM endpoint_records e "
+                "JOIN pin_names p ON p.seq=e.port_seq WHERE e.instance_seq=?", (row['seq'],)
+            ))
+            inputs = [p for p in pins if (p['role'], p['name'], p['bit']) == (1, 'A', 0)]
+            outputs = [p for p in pins if (p['role'], p['name'], p['bit']) == (0, 'Y', 0)]
+            if len(pins) != 2 or len(inputs) != 1 or len(outputs) != 1:
+                raise ValidationError("transport rewire source branch has ambiguous pins")
+            net, parent = outputs[0]['net_seq'], inputs[0]['net_seq']
+            drivers = list(db.execute(
+                'SELECT instance_seq FROM endpoint_records WHERE net_seq=? AND role=0', (net,)
+            ))
+            if len(drivers) != 1 or drivers[0][0] != row['seq'] or net == parent:
+                raise ValidationError("transport rewire source branch has ambiguous driver")
+            buffers.append((net, parent))
+        db.executemany('INSERT INTO leaf VALUES (?,?)', buffers)
+        # A leaf must not feed another branch, including through a cycle.
+        if db.execute('SELECT 1 FROM leaf a JOIN leaf b ON a.parent=b.net LIMIT 1').fetchone():
+            raise ValidationError("transport rewire leaf hierarchy contains a branch dependency")
+        for left, right in [('main', 'candidate'), ('candidate', 'main')]:
+            query = lambda schema: (
+                f'SELECT e.* FROM {schema}.endpoint_records e LEFT JOIN leaf l ON l.net=e.net_seq '
+                'WHERE l.net IS NULL OR e.role!=1'
+            )
+            if db.execute(query(left)+' EXCEPT '+query(right)+' LIMIT 1').fetchone():
+                raise ValidationError("transport rewire changed a driver or nonleaf endpoint")
+        for left, right in [('main', 'candidate'), ('candidate', 'main')]:
+            query = lambda schema: (
+                f'SELECT l.parent,e.instance_seq,e.port_seq,e.bit,e.extras_seq,count(*) '
+                f'FROM {schema}.endpoint_records e JOIN leaf l ON l.net=e.net_seq '
+                'WHERE e.role=1 GROUP BY l.parent,e.instance_seq,e.port_seq,e.bit,e.extras_seq'
+            )
+            if db.execute(query(left)+' EXCEPT '+query(right)+' LIMIT 1').fetchone():
+                raise ValidationError("transport rewire changed projected leaf sink coverage")
+        for net, _ in buffers:
+            original = db.execute(
+                'SELECT count(*) FROM endpoint_records WHERE net_seq=? AND role=1', (net,)
+            ).fetchone()[0]
+            count, low, high = db.execute(
+                'SELECT count(*),min(ordinal),max(ordinal) FROM candidate.endpoint_records '
+                'WHERE net_seq=? AND role=1', (net,)
+            ).fetchone()
+            if count != original or (count and (low != 0 or high != count-1)):
+                raise ValidationError("transport rewire changed branch capacity or sink ordinals")
+        return {'schema': 'emuflow.transport-physical-rewire-validation/v1', 'status': 'pass',
+                'source_sha256': file_sha256(source), 'candidate_sha256': file_sha256(candidate),
+                'identity_branches': len(buffers),
+                'proof': 'exact-nonendpoint-tables-and-equivalent-leaf-sink-projection'}
+    finally:
+        db.close()

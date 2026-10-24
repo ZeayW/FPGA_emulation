@@ -107,6 +107,7 @@ overused nodes and complete source-to-sink connectivity.
 An explicit qualification transform can spatially cluster transport buffer
 loads and compute new branch centers from preliminary placement while
 preserving equivalent drivers and branch fanout on the physical slice lattice.
+Independent circuit comparison checks the rewired candidate before publication.
 Its output requires remapping and a new placement/routing validation; see
 [physical optimization](docs/PHASE7_PHYSICAL_OPTIMIZATION.md).
 

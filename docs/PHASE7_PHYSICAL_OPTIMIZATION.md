@@ -86,6 +86,11 @@ skip the whole group. Each move is recorded with the original and new net
 ordinals, input identities, and source/output hashes.
 
 The transform publishes a separate candidate transport EmuIR atomically. It
+independently compares every non-endpoint table, every driver and non-leaf
+endpoint, each branch's fanout, and the sink multiset projected through proven
+equivalent identity LUT1s. This comparison reads the two circuits without
+trusting the optimizer's move report and rejects changed truth tables, lost or
+duplicated sinks, changed drivers, and branch dependencies before publication. It
 must subsequently pass normal lowering, remapping, placement, and routing;
 editing a frozen route-input TSV or rebinding an old certificate is not
 permitted. The distance improvement is a placement predictor and cannot be
