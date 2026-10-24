@@ -18,7 +18,7 @@ from typing import Any, Mapping
 from .errors import ValidationError
 
 LINEAGE_POLICY = "vivado-optimized-source-lineage-v1"
-INVENTORY_HEADER = ["name_hex", "relative_name_hex", "ref_name", "source_origin", "transformations_hex"]
+INVENTORY_HEADER = ["name", "ref_name", "source_origin", "transformations_hex"]
 
 
 def primitive_function_signature(cell: Mapping[str, Any]) -> str:
@@ -51,26 +51,26 @@ def import_cell_lineage(mapped: Path, functions: Path, inventories: Mapping[str,
         ).fetchone():
             raise ValidationError("Vivado function-signature source coverage disagrees")
         connection.executescript("""
-            CREATE TABLE objects(stage TEXT,name TEXT,relative_name TEXT,ref TEXT,origin INTEGER,transformations TEXT,
+            CREATE TABLE objects(stage TEXT,name TEXT,ref TEXT,origin INTEGER,transformations TEXT,
                                  PRIMARY KEY(stage,name)) WITHOUT ROWID;
             CREATE INDEX objects_origin ON objects(stage,origin);
         """)
         stages = {}
         for stage, path in inventories.items():
             with path.open(encoding="utf-8", newline="") as stream:
-                rows = csv.reader(stream, delimiter="\t")
+                rows = csv.reader(stream, delimiter="\t", quoting=csv.QUOTE_NONE)
                 if next(rows, None) != INVENTORY_HEADER:
                     raise ValidationError("Vivado lineage inventory header is invalid")
                 for row in rows:
                     try:
-                        if len(row) != 5 or not row[2] or not row[3].startswith("s"):
+                        if len(row) != 4 or not row[1] or not row[2].startswith("s"):
                             raise ValueError("invalid row")
-                        origin = int(row[3][1:])
-                        name, relative = (bytes.fromhex(value).decode("utf-8") for value in row[:2])
-                        if not name or not relative or origin < 0:
+                        origin = int(row[2][1:])
+                        name = row[0]
+                        if not name or origin < 0:
                             raise ValueError("invalid identity")
-                        transformations = bytes.fromhex(row[4]).decode("utf-8")
-                        connection.execute("INSERT INTO objects VALUES (?,?,?,?,?,?)", (stage,name,relative,row[2],origin,transformations))
+                        transformations = bytes.fromhex(row[3]).decode("utf-8")
+                        connection.execute("INSERT INTO objects VALUES (?,?,?,?,?)", (stage,name,row[1],origin,transformations))
                     except (ValueError, UnicodeError, sqlite3.IntegrityError) as error:
                         raise ValidationError("Vivado lineage contains invalid or duplicate objects") from error
             if connection.execute("SELECT 1 FROM objects a LEFT JOIN mapped.cells c ON a.origin=c.seq WHERE a.stage=? AND c.seq IS NULL LIMIT 1", (stage,)).fetchone():
@@ -81,6 +81,10 @@ def import_cell_lineage(mapped: Path, functions: Path, inventories: Mapping[str,
             stages[stage] = {"observed_objects": objects, "source_cells_with_lineage": observed,
                              "unretained_source_cells": source_count-observed,
                              "source_cells_with_multiple_objects": replicated, "changed_type_objects": changed}
+            # Only routed objects have a downstream name-resolution consumer.
+            # Reuse these SQLite pages instead of retaining two full snapshots.
+            if stage != "routed":
+                connection.execute("DELETE FROM objects WHERE stage=?", (stage,))
         connection.commit()
         return {"status": "pass", "provider": LINEAGE_POLICY, "source_cells": source_count,
                 "stages": stages, "output": str(output),

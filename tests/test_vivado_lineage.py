@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from emuflow.errors import ValidationError
 from emuflow.vivado_lineage import (INVENTORY_HEADER, LINEAGE_POLICY,
@@ -15,6 +16,58 @@ from emuflow.yosys import import_yosys_json
 
 
 class VivadoLineageTests(unittest.TestCase):
+    def test_large_census_streams_and_releases_pre_route_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report,mapped,functions,inventory = self.prepare(root)
+            with sqlite3.connect(mapped) as connection:
+                origin = connection.execute("SELECT seq FROM cells WHERE id='capture'").fetchone()[0]
+            before = root/"before.tsv"
+            with before.open("w") as stream:
+                writer = csv.writer(stream,delimiter="\t",lineterminator="\n",quoting=csv.QUOTE_NONE)
+                writer.writerow(INVENTORY_HEADER)
+                for index in range(100000):
+                    writer.writerow([f"partition/long_repeated_source_name/replica_{index:06d}","FDRE",f"s{origin}",""])
+            output = root/"lineage.sqlite"
+            with patch.object(Path,"read_text",side_effect=AssertionError("whole inventory read")):
+                summary = import_cell_lineage(mapped,functions,{"synthesized":before,"routed":inventory},output,
+                                              mapped_sha256=report["mapped_index"]["sha256"])
+            self.assertEqual(summary["stages"]["synthesized"]["observed_objects"],100000)
+            with sqlite3.connect(output) as connection:
+                self.assertEqual(connection.execute("SELECT DISTINCT stage FROM objects").fetchall(),[("routed",)])
+                self.assertEqual(connection.execute("SELECT count(*) FROM objects").fetchone()[0],3)
+
+    @unittest.skipUnless(shutil.which("tclsh"), "requires Tcl interpreter")
+    def test_inventory_preserves_raw_quotes_and_backslashes_once(self):
+        helper = Path(__file__).resolve().parents[1]/"scripts/vivado/source_inventory.tcl"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root/"inventory.tsv"
+            mock = r'''
+if {[catch {binary encode hex a}]} {
+  rename binary native_binary
+  proc binary {operation format value} {native_binary scan $value H* result; return $result}
+}
+proc get_cells {args} {return {a}}
+proc get_property {args} {
+  global props
+  set key [lindex $args end-1]
+  if {[dict exists $props $key]} {return [dict get $props $key]}
+  return ""
+}
+dict set props NAME {"quoted\path[0]}
+dict set props EMUFLOW_SOURCE s0
+dict set props REF_NAME FDRE
+'''
+            wrapper = root/"run.tcl"
+            wrapper.write_text(mock+f"\nsource {{{helper}}}\nemuflow_inventory {{{output}}} {{}}\n")
+            completed = subprocess.run([shutil.which("tclsh"),str(wrapper)],capture_output=True,text=True)
+            self.assertEqual(completed.returncode,0,completed.stderr)
+            with output.open() as stream:
+                rows = list(csv.reader(stream,delimiter="\t",quoting=csv.QUOTE_NONE))
+            self.assertEqual(rows[0],INVENTORY_HEADER)
+            self.assertEqual(rows[1][:3],['"quoted\\path[0]',"FDRE","s0"])
+
     @unittest.skipUnless(shutil.which("tclsh"), "requires Tcl interpreter")
     def test_export_queries_all_descendants_and_checks_actual_extent(self):
         helper = Path(__file__).resolve().parents[1]/"scripts/vivado/export_logic_segment_timing.tcl"
@@ -104,10 +157,10 @@ proc get_timing_paths {args} {
 
     def write_inventory(self, path, rows):
         with path.open("w") as stream:
-            writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
+            writer = csv.writer(stream, delimiter="\t", lineterminator="\n", quoting=csv.QUOTE_NONE)
             writer.writerow(INVENTORY_HEADER)
             for name, relative, ref, origin in rows:
-                writer.writerow([name.encode().hex(), relative.encode().hex(), ref, origin, ""])
+                writer.writerow([name, ref, origin, ""])
 
     def test_merge_and_replication_keep_original_query_population(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -151,7 +204,7 @@ proc get_timing_paths {args} {
                 origin = connection.execute("SELECT seq FROM cells WHERE id='alias'").fetchone()[0]
             with inventory.open("a") as stream:
                 csv.writer(stream,delimiter="\t",lineterminator="\n").writerow([
-                    "partition/alias".encode().hex(),"alias".encode().hex(),"FDRE",f"s{origin}",""])
+                    "partition/alias","FDRE",f"s{origin}",""])
             lineage = root/"lineage.sqlite"
             import_cell_lineage(mapped,functions,{"routed":inventory},lineage,mapped_sha256=report["mapped_index"]["sha256"])
             query = root/"query.tsv"
