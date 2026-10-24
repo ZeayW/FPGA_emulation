@@ -83,9 +83,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch(
             "emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream",
             side_effect=EmuFlowError("selected Xilinx synthesis"),
-        ) as xilinx, patch("emuflow.multi_fpga_flow.run_vtr_yosys") as vtr, patch(
-            "emuflow.multi_fpga_flow.run_generic_yosys"
-        ) as generic, patch("emuflow.multi_fpga_flow._validate_mapping_timing_contract"), patch("emuflow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"):
+        ) as xilinx, patch("emuflow.multi_fpga_flow.run_vtr_yosys") as vtr, patch("emuflow.multi_fpga_flow._validate_mapping_timing_contract"), patch("emuflow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"):
             with self.assertRaisesRegex(EmuFlowError, "selected Xilinx synthesis"):
                 run_multi_fpga_flow(
                     ROOT / "platforms/virtual/academic_vtr_2fpga_p2p.json",
@@ -95,8 +93,36 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
                 )
             xilinx.assert_called_once()
             vtr.assert_not_called()
-            generic.assert_not_called()
 
+
+    def test_retired_generic_upstream_is_rejected_before_any_work(self):
+        from contextlib import redirect_stderr
+        import io
+        import json
+        from emuflow.benchmark import BenchmarkRun
+
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            _build_parser().parse_args([
+                "multi-fpga", "compile", "design.v", "--out", "unused",
+                "--mapping-profile", "generic-soft",
+            ])
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "emuflow.multi_fpga_flow.run_phase1"
+        ) as frontend, patch(
+            "emuflow.multi_fpga_flow.resolve_native_executable"
+        ) as tool:
+            out = Path(temporary) / "flow"
+            with self.assertRaisesRegex(EmuFlowError, "unsupported multi-FPGA mapping profile"):
+                run_multi_fpga_flow(output_dir=out, mapping_profile="generic-soft")
+            frontend.assert_not_called()
+            tool.assert_not_called()
+            self.assertFalse(out.exists())
+            value = json.loads((ROOT / "benchmarks/runs/koios_dla_medium_l5.json").read_text())
+            value["physical_mapping_profile"] = "generic-soft"
+            spec = Path(temporary) / "retired.json"
+            spec.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValidationError, "physical_mapping_profile"):
+                BenchmarkRun.load(spec)
 
     def test_default_physical_requires_rapidwright_inputs_without_fallback(self):
         with tempfile.TemporaryDirectory() as temporary, patch(

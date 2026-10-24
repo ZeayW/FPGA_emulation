@@ -12,9 +12,8 @@ from emuflow.io import read_json
 from emuflow.synthesis import (
     DEFAULT_XILINX_MAPPING_STRATEGY,
     build_xilinx_mapping_statistics_script,
-    build_generic_yosys_script,
+    _build_generic_yosys_stream_script,
     build_yosys_script,
-    run_generic_yosys,
     run_generic_yosys_stream,
     run_yosys,
     run_xilinx_ultrascaleplus_yosys_stream,
@@ -269,12 +268,11 @@ class SynthesisTest(unittest.TestCase):
                 "emuflow.synthesis.run_with_bounded_output",
                 side_effect=complete,
             ):
-                run_generic_yosys([source], "design", root / "generic.json")
                 run_yosys([source], "design", root / "mapped.json")
 
         self.assertEqual(
             [command[1:3] for command in captured],
-            [["-q", "-p"], ["-q", "-p"]],
+            [["-q", "-p"]],
         )
 
     def test_cli_exposes_fail_closed_mapping_profile(self) -> None:
@@ -483,16 +481,15 @@ class SynthesisTest(unittest.TestCase):
             )
 
     def test_generic_script_has_no_vendor_family_dependency(self) -> None:
-        script = build_generic_yosys_script(
+        script = _build_generic_yosys_stream_script(
             [Path("rtl/counter.sv")],
             top="counter",
-            output=Path("build/counter-generic.json"),
             include_dirs=[Path("rtl/include")],
             defines=["SYNTHESIS"],
         )
         self.assertIn("abc -lut 6", script)
         self.assertIn("memory_map", script)
-        self.assertIn('write_json "build/counter-generic.json"', script)
+        self.assertEqual(script.split("; ")[-1], "write_json")
         self.assertNotIn("synth_xilinx", script)
         self.assertNotIn("xcup", script)
         self.assertIn("-Irtl/include", script)

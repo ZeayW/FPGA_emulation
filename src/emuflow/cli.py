@@ -840,7 +840,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mapping-profile",
         choices=(
             "vtr-hard-blocks",
-            "generic-soft",
             "xilinx-ultrascaleplus-open-v1",
         ),
         default=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,

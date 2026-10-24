@@ -83,7 +83,6 @@ from .sta import (
 from .synthesis import (
     DEFAULT_XILINX_MAPPING_STRATEGY,
     VALID_XILINX_MAPPING_STRATEGIES,
-    run_generic_yosys,
     run_xilinx_ultrascaleplus_yosys_stream,
 )
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
@@ -102,7 +101,6 @@ MULTI_FPGA_FLOW_PROVIDER = (
 )
 MULTI_FPGA_MAPPING_PROFILES = (
     "vtr-hard-blocks",
-    "generic-soft",
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
 )
 MULTI_FPGA_PHASE6_PROVIDERS = ("auto", "chimew", "baseline")
@@ -1474,18 +1472,6 @@ def _compile_frontend(ctx: _CompileContext):
                     top=ctx.top,
                 )
                 synthesis_mode = "vtr-lut6-ff-hard-blocks"
-            elif ctx.mapping_profile == "generic-soft":
-                synthesis_report = run_generic_yosys(
-                    source_list,
-                    ctx.top,
-                    synthesized_json,
-                    executable=ctx.yosys,
-                    log_path=frontend_root / "yosys.log",
-                    include_dirs=include_dir_list,
-                    defines=define_list,
-                )
-                normalization_report = None
-                synthesis_mode = "generic-lut6-ff"
             elif ctx.mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
                 indexed_staging_transform = normalize_xilinx_indexed_staging
                 synthesis_report, ctx.frontend_report = (

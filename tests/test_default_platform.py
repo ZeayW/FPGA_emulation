@@ -118,7 +118,7 @@ class DefaultPlatformTest(unittest.TestCase):
                         output_dir=Path(directory) / "run",
                         yosys_json=ROOT / "examples/yosys/counter.json",
                         top="counter", clocks=["clk"], clock_periods={"clk": 10.0},
-                        mapping_profile="generic-soft",
+                        mapping_profile="vtr-hard-blocks",
                         timing_driven=False, opensta="/usr/bin/true",
                     )
                 self.assertEqual(frontend.call_args.args[1], DEFAULT_PLATFORM_PATH)

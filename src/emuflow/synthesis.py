@@ -393,15 +393,13 @@ def _run_yosys_streaming_gzip(
         diagnostic.unlink(missing_ok=True)
 
 
-def build_generic_yosys_script(
+def _build_generic_yosys_stream_script(
     sources: Iterable[Path],
     top: str,
-    output: Path,
     include_dirs: Iterable[Path] = (),
     defines: Iterable[str] = (),
-    stream_json: bool = False,
 ) -> str:
-    """Build an architecture-neutral LUT6/FF synthesis script for EmuIR."""
+    """Build the internal LUT6/FF stream used by VTR transport synthesis."""
 
     source_list = list(sources)
     if not source_list:
@@ -431,56 +429,9 @@ def build_generic_yosys_script(
         "delete t:$scopeinfo",
         "clean",
         "check",
-        "write_json" if stream_json else f"write_json {_yosys_quote(str(output))}",
+        "write_json",
     ]
     return "; ".join(commands)
-
-
-def run_generic_yosys(
-    sources: Iterable[Path],
-    top: str,
-    output: Path,
-    executable: Optional[str] = None,
-    log_path: Optional[Path] = None,
-    include_dirs: Iterable[Path] = (),
-    defines: Iterable[str] = (),
-) -> None:
-    """Synthesize RTL to provider-neutral LUT6/FF Yosys JSON."""
-
-    source_list = list(sources)
-    for source in source_list:
-        if not source.is_file():
-            raise EmuFlowError(f"RTL source does not exist: {source}")
-    include_list = list(include_dirs)
-    for include_dir in include_list:
-        if not include_dir.is_dir():
-            raise EmuFlowError(
-                f"Verilog include directory does not exist: {include_dir}"
-            )
-    define_list = list(defines)
-    command = resolve_native_executable("yosys", executable)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    script = build_generic_yosys_script(
-        source_list,
-        top,
-        output,
-        include_dirs=include_list,
-        defines=define_list,
-    )
-    completed = run_with_bounded_output([command, "-q", "-p", script])
-    if log_path is not None:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(completed.stdout, encoding="utf-8")
-    if completed.returncode != 0:
-        tail = "\n".join(completed.stdout.splitlines()[-20:])
-        raise EmuFlowError(
-            "generic Yosys synthesis failed with exit code "
-            f"{completed.returncode}\n{tail}"
-        )
-    if not output.is_file():
-        raise EmuFlowError(
-            f"Yosys reported success but did not create expected output: {output}"
-        )
 
 
 def _run_yosys_json_consumer(
@@ -593,13 +544,11 @@ def run_generic_yosys_stream(
                 f"Verilog include directory does not exist: {include_dir}"
             )
     command = resolve_native_executable("yosys", executable)
-    script = build_generic_yosys_script(
+    script = _build_generic_yosys_stream_script(
         source_list,
         top,
-        Path("<stdout>"),
         include_dirs=include_list,
         defines=list(defines),
-        stream_json=True,
     )
     return _run_yosys_json_consumer(
         [command, "-q", "-p", script],

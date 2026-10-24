@@ -327,6 +327,8 @@ To use the alternative VTR route, explicitly select
 `--physical-backend open --mapping-profile vtr-hard-blocks`. Standalone
 `multi-fpga physical` also defaults to RapidWright; use `--backend open` for VTR.
 Missing RapidWright inputs do not trigger an automatic VTR fallback.
+The independent `generic-soft` compile profile and file-based generic frontend
+are retired; VTR remains only until the Chimew lookahead dependency is replaced.
 
 Other CLI defaults are TritonPart initial partitioning followed by
 timing-driven PATRON v14 post-processing, `static-exact-combinational` cuts,

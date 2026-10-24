@@ -258,8 +258,11 @@ Mapping profiles are explicit:
 | Profile | Purpose |
 | --- | --- |
 | `vtr-hard-blocks` | Public VTR LUT/FF, RAM, and multiplier mapping |
-| `generic-soft` | Architecture-neutral LUT6/FF studies; memory/arithmetic expansion can be expensive |
 | `xilinx-ultrascaleplus-open-v1` | Supported Xilinx UltraScale+ primitive namespace for the corresponding device backend |
+
+The standalone `generic-soft` upstream and its file-based synthesis API are
+retired. The internal streaming LUT6/FF helper remains only for the still-used
+VTR transport adapter; it is not another compile profile.
 
 Do not change mapping profiles silently to make a capacity failure disappear.
 Match resource units, device geometry, and physical architecture to the selected

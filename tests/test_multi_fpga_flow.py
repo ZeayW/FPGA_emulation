@@ -131,7 +131,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
 
     def test_mapper_override_rejects_invalid_context_before_frontend(self):
         for profile, supplied, strategy, message in (
-            ("generic-soft", None, "hierarchical-classic-v1", "requires native Xilinx"),
+            ("vtr-hard-blocks", None, "hierarchical-classic-v1", "requires native Xilinx"),
             ("xilinx-ultrascaleplus-open-v1", ROOT / "examples/yosys/counter.json",
              "hierarchical-abc9-v1", "requires native Xilinx"),
             ("xilinx-ultrascaleplus-open-v1", None, "unknown", "unsupported Xilinx"),
@@ -748,7 +748,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 path = root / "board-link-timing.json"
                 write_json(path, database)
                 output = root / "flow"
-                with patch("emuflow.multi_fpga_flow.run_generic_yosys") as synthesis, patch(
+                with patch("emuflow.multi_fpga_flow.run_vtr_yosys") as synthesis, patch(
                     "emuflow.multi_fpga_flow.check_opensta_engine_version"
                 ) as engine_check:
                     with self.assertRaisesRegex(ValidationError, "board link timing"):
@@ -757,7 +757,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                             output_dir=output,
                             sources=[ROOT / "examples/rtl/counter.v"],
                             top="counter",
-                            mapping_profile="generic-soft",
+                            mapping_profile="vtr-hard-blocks",
                             partition_provider="tritonpart",
                             cut_mode="static-exact-combinational",
                             timing_driven=False,
@@ -785,7 +785,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 "provenance": {"class": OPEN_TRANSPORT_PROVENANCE, "fit_sha256": "1" * 64},
             })
             output = root / "flow"
-            with patch("emuflow.multi_fpga_flow.run_generic_yosys") as synthesis, patch(
+            with patch("emuflow.multi_fpga_flow.run_vtr_yosys") as synthesis, patch(
                 "emuflow.multi_fpga_flow.check_opensta_engine_version"
             ) as engine_check:
                 with self.assertRaisesRegex(ValidationError, "transport cost platform disagrees"):
@@ -794,7 +794,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                         output_dir=output,
                         sources=[ROOT / "examples/rtl/counter.v"],
                         top="counter",
-                        mapping_profile="generic-soft",
+                        mapping_profile="vtr-hard-blocks",
                         partition_provider="tritonpart",
                         cut_mode="static-exact-combinational",
                         timing_driven=False,
