@@ -315,3 +315,11 @@ branches use the stage/origin index explicitly, so a pin query cannot become a
 scan of the full physical inventory. The lineage snapshot is immutable during
 query consumption; no whole-circuit Python map or SQLite integrity audit is
 needed for resolution.
+
+An explicit `diagnostic_unresolved_path` on `resolve_timing_query` scans the
+whole requested query population and aggregates unresolved required sources by
+source pin and role into a bounded-memory SQLite diagnostic. It reports
+`incomplete` when any required use is unresolved. Optional unused cone anchors
+remain deferred. Diagnostic TSV rows use an invalid native hint, so ignoring
+the incomplete status cannot silently produce partial timing measurements.
+Normal execution retains fail-fast behavior.

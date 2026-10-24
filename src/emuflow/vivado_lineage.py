@@ -21,6 +21,12 @@ LINEAGE_POLICY = "vivado-optimized-source-lineage-v1"
 INVENTORY_HEADER = ["name", "ref_name", "source_origin", "transformations_hex"]
 
 
+class _UnassociatedTimingSource(ValidationError):
+    def __init__(self, name, cell, origin, cell_only):
+        super().__init__(f"Vivado optimized timing source has no proven endpoint association: {name}")
+        self.name, self.cell, self.origin, self.cell_only = name, cell, origin, cell_only
+
+
 def primitive_function_signature(cell: Mapping[str, Any]) -> str:
     """Only identical primitives, parameters and input bits can alias here.
 
@@ -112,7 +118,8 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
                          output: Path, *, boundary: bool = False,
                          optimization_proofs: Path | None = None,
                          allow_eliminated: bool = False,
-                         stage: str = "routed") -> dict[str, Any]:
+                         stage: str = "routed",
+                         diagnostic_unresolved_path: Path | None = None) -> dict[str, Any]:
     """Resolve requested source pins to all typed descendants or identical inputs.
 
     Candidate collections are measured as a worst physical endpoint bound. A
@@ -122,15 +129,41 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
     if stage not in {"synthesized", "routed"}:
         raise ValidationError("unsupported Vivado timing-query lineage stage")
     connection = sqlite3.connect(f"file:{lineage.resolve()}?mode=ro&immutable=1", uri=True)
+    diagnostic = None
+    diagnostic_complete = False
     try:
         connection.execute("ATTACH DATABASE ? AS mapped", (f"file:{mapped.resolve()}?mode=ro&immutable=1",))
         connection.execute("ATTACH DATABASE ? AS functions", (f"file:{functions.resolve()}?mode=ro&immutable=1",))
+        lineage_owner = dict(connection.execute("SELECT key,value FROM metadata"))
+        if lineage_owner.get("retained_stage") != stage:
+            raise ValidationError("Vivado timing query belongs to a different source or stage")
+        if diagnostic_unresolved_path is not None:
+            if diagnostic_unresolved_path.exists():
+                raise ValidationError("Vivado unresolved-source diagnostic already exists")
+            if diagnostic_unresolved_path.resolve() == output.resolve():
+                raise ValidationError("Vivado unresolved-source report must differ from the query output")
+            diagnostic = sqlite3.connect(diagnostic_unresolved_path)
+            diagnostic.executescript("""
+                PRAGMA journal_mode=OFF;
+                PRAGMA synchronous=OFF;
+                CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;
+                CREATE TABLE unresolved_sources(
+                    name TEXT NOT NULL,role TEXT NOT NULL,source_cell TEXT NOT NULL,
+                    source_origin INTEGER,cell_only INTEGER NOT NULL CHECK(cell_only IN (0,1)),
+                    uses INTEGER NOT NULL CHECK(uses>0),PRIMARY KEY(name,role)
+                ) WITHOUT ROWID;
+                CREATE INDEX unresolved_by_origin ON unresolved_sources(source_origin,role);
+            """)
+            diagnostic.executemany("INSERT INTO metadata VALUES (?,?)", ((key,json.dumps(value)) for key,value in {
+                "schema":"emuflow.vivado-unassociated-timing-sources/v1", "status":"running", "stage":stage,
+                "mapped_index_sha256":lineage_owner["mapped_index_sha256"],
+                "stage_inventory_sha256":json.loads(lineage_owner["stages_json"])[stage]["inventory_sha256"],
+            }.items()))
         if allow_eliminated:
             if optimization_proofs is None:
                 raise ValidationError("eliminated endpoint queries require a supported source proof owner")
             connection.execute("ATTACH DATABASE ? AS proofs", (f"file:{optimization_proofs.resolve()}?mode=ro&immutable=1",))
             owner = {key:json.loads(value) for key,value in connection.execute("SELECT key,value FROM proofs.metadata")}
-            lineage_owner = dict(connection.execute("SELECT key,value FROM metadata"))
             if owner.get("mapped_index_sha256") != lineage_owner.get("mapped_index_sha256") or owner.get("stage") != stage:
                 raise ValidationError("eliminated timing query proof belongs to a different source or stage")
 
@@ -149,7 +182,7 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
             if source_cell is None:
                 if not required:
                     return ""
-                raise ValidationError(f"Vivado optimized timing source has no proven endpoint association: {name} (absent source cell)")
+                raise _UnassociatedTimingSource(name,cell,None,cell_only)
             origin, reference, signature = source_cell
             own = connection.execute("SELECT 1 FROM objects INDEXED BY objects_origin WHERE stage=? AND origin=? LIMIT 1", (stage,origin)).fetchone()
             if own is not None:
@@ -177,10 +210,24 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
                     proof = connection.execute("SELECT p.origin FROM mapped.cells c JOIN proofs.eliminated_sources p ON p.origin=c.seq JOIN proofs.source_names n ON n.origin=p.origin AND n.name=c.id WHERE c.id=?", (cell,)).fetchone()
                     if proof is not None:
                         return f"optimized-away:s{proof[0]}"
-                raise ValidationError(f"Vivado optimized timing source has no proven endpoint association: {name}")
+                raise _UnassociatedTimingSource(name,cell,origin,cell_only)
             return ",".join(encoded)
 
+        def hint(name, cell_only, role, required=True):
+            try:
+                return candidates(name,cell_only,required)
+            except _UnassociatedTimingSource as error:
+                if diagnostic is None:
+                    raise
+                diagnostic.execute("""INSERT INTO unresolved_sources VALUES (?,?,?,?,?,1)
+                    ON CONFLICT(name,role) DO UPDATE SET uses=uses+1""",
+                    (error.name,role,error.cell,error.origin,int(error.cell_only)))
+                # Deliberately invalid as a native pin/cell hint. A caller
+                # ignoring the incomplete status still cannot measure this TSV.
+                return "unresolved-source"
+
         count = 0
+        unresolved_rows = 0
         with source.open(encoding="utf-8", newline="") as incoming, output.open("w", encoding="utf-8", newline="") as outgoing:
             reader, writer = csv.reader(incoming, delimiter="\t"), csv.writer(outgoing, delimiter="\t", lineterminator="\n")
             header = next(reader, [])
@@ -196,16 +243,30 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
                 if len(row) != len(header):
                     raise ValidationError("Vivado timing query row is invalid")
                 if boundary:
-                    hints = [candidates(bytes.fromhex(row[5]).decode(), True) if row[5] else ""]
+                    hints = [hint(bytes.fromhex(row[5]).decode(),True,"boundary") if row[5] else ""]
                 else:
                     # A cone anchor is consumed only if the endpoint query has
                     # no physical path. An optimized-away, unused anchor must
                     # not reject a valid endpoint measurement. The Tcl exporter
                     # still requires the actual anchor if it takes that branch.
-                    hints = [candidates(bytes.fromhex(row[index+1]).decode(), False, required=index != 6) if row[index]=="pin" else "" for index in (2,4,6)]
+                    hints = [hint(bytes.fromhex(row[index+1]).decode(),False,{2:"start",4:"end",6:"cone"}[index],required=index != 6) if row[index]=="pin" else "" for index in (2,4,6)]
                 writer.writerow(row+hints)
                 count += 1
-        return {"status": "pass", "queries": count, "output": str(output), "provider": LINEAGE_POLICY,
-                "stage": stage}
+                unresolved_rows += int("unresolved-source" in hints)
+        result = {"status":"incomplete" if unresolved_rows else "pass", "queries":count,
+                  "output":str(output), "provider":LINEAGE_POLICY, "stage":stage}
+        if diagnostic is not None:
+            uses, sources = diagnostic.execute("SELECT COALESCE(SUM(uses),0),COUNT(*) FROM unresolved_sources").fetchone()
+            result.update(unresolved_query_rows=unresolved_rows, unresolved_required_endpoint_uses=uses,
+                          unresolved_source_pins=sources, unresolved_source_report=str(diagnostic_unresolved_path))
+            diagnostic.executemany("INSERT OR REPLACE INTO metadata VALUES (?,?)", ((key,json.dumps(value)) for key,value in
+                {"status":result["status"],"queries":count,"unresolved_query_rows":unresolved_rows,"complete":True}.items()))
+            diagnostic_complete = True
+        return result
     finally:
+        if diagnostic is not None:
+            if not diagnostic_complete:
+                diagnostic.execute("INSERT OR REPLACE INTO metadata VALUES ('status','\"failed\"')")
+            diagnostic.commit()
+            diagnostic.close()
         connection.close()

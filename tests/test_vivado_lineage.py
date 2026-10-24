@@ -318,3 +318,32 @@ proc get_timing_paths {args} {
             expected={"partition/renamed_capture","partition/replica"}
             for row in rows[1:]:
                 self.assertEqual({bytes.fromhex(value).decode() for value in row[-1].split(",")},expected)
+
+    def test_diagnostic_collects_all_unassociated_required_sources_without_claiming_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            report,mapped,functions,inventory=self.prepare(root,alias_init="1")
+            lineage=root/"lineage.sqlite"
+            import_cell_lineage(mapped,functions,{"routed":inventory},lineage,mapped_sha256=report["mapped_index"]["sha256"])
+            query=root/"query.tsv"
+            header="endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex\tcone_anchor_kind\tcone_anchor_object_hex"
+            query.write_text(header+"\n"+"\n".join("\t".join([str(i+70),"local","pin","launch/Q".encode().hex(),"pin",
+                              "alias/D".encode().hex(),"pin","unused/O".encode().hex()]) for i in range(2))+"\n")
+            with self.assertRaisesRegex(ValidationError,"no proven endpoint association"):
+                resolve_timing_query(mapped,functions,lineage,query,root/"normal.tsv")
+            output=root/"diagnostic.tsv";missing=root/"missing.sqlite"
+            result=resolve_timing_query(mapped,functions,lineage,query,output,diagnostic_unresolved_path=missing)
+            self.assertEqual(result["status"],"incomplete")
+            self.assertEqual(result["queries"],2)
+            self.assertEqual(result["unresolved_query_rows"],2)
+            self.assertEqual(result["unresolved_required_endpoint_uses"],2)
+            self.assertEqual(result["unresolved_source_pins"],1)
+            self.assertEqual(output.read_text().count("unresolved-source"),2)
+            with sqlite3.connect(missing) as db:
+                metadata={k:json.loads(v) for k,v in db.execute("SELECT key,value FROM metadata")}
+                self.assertIs(metadata["complete"],True)
+                self.assertEqual(metadata["status"],"incomplete")
+                self.assertEqual(db.execute("SELECT name,role,source_cell,uses FROM unresolved_sources").fetchall(),
+                                 [("alias/D","end","alias",2)])
+            with self.assertRaisesRegex(ValidationError,"already exists"):
+                resolve_timing_query(mapped,functions,lineage,query,output,diagnostic_unresolved_path=missing)

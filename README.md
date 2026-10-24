@@ -26,7 +26,7 @@ cross-FPGA logic segments, and shadow interfaces can retain eliminated records
 with null delays and checked source-proof references. Selected vendor constant
 choices additionally require complete frontier checks and checkpoint binding. Complete physical coverage
 and global timing remain required qualification gates; the physical evidence
-schemas follow this disposition contract. Explicit checkpoint I/O and selected source-bound constant-state
+schemas follow this disposition contract. Explicit checkpoint I/O, unresolved endpoint, and selected constant-state
 diagnostics are documented with the provider. See the
 [Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider) and
 [user guide](docs/USER_GUIDE.md#physical-implementation).
