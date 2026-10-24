@@ -371,3 +371,13 @@ or the direct primary-store operation. The separate PATRON executable and text
 input format are retired. `EMUFLOW_PATRON_INPUT_COPY` explicitly requests an
 atomically published CRC-checked binary input copy for diagnosis; it is not an
 alternative text protocol. Detailed output traces require `--trace-output`.
+
+### Retired partition providers
+
+RePart, RePart replication and MFSPart, including MFSPart post-refinement,
+are removed from the CLI, Python phase APIs and root build. Their tool paths,
+post-refinement options and dedicated qualification compiler are unsupported.
+Use the matching historical Git version to interpret or reproduce those routes.
+TritonPart remains the PATRON initializer and a direct comparison capability;
+PATRON's internal communication costs and hop validation remain in use.
+Phase 6 baseline remains the default, and explicit Chimew support is retained.

@@ -62,7 +62,6 @@ from .combinational_cut import (
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
-from .mfspart_refine import DEFAULT_TIMING_PATH_BETA
 from .native_tools import resolve_native_executable
 from .platform import Platform
 from .ppro_calibrated_platform import validate_transport_cost_database
@@ -1310,6 +1309,8 @@ class _CompileContext:
 
 
 def _compile_preflight(ctx: _CompileContext):
+    if ctx.partition_provider not in {"patron", "tritonpart", "greedy"}:
+        raise EmuFlowError(f"unsupported Phase 3 provider {ctx.partition_provider!r}")
     if ctx._native_mode and (
         ctx.cross_stage_iterations or ctx.optimize_frame_slots or
         ctx.phase6_provider == "chimew" or
@@ -1907,8 +1908,6 @@ def _compile_partition(ctx: _CompileContext):
         tritonpart_repair_min_used_fpgas=(
             ctx.partition_repair_min_used_fpgas
         ),
-        repart=ctx.repart,
-        repart_timeout_seconds=ctx.partition_timeout_seconds,
         net_weights_path=(
             ctx.net_weights_path
             if ctx.timing_driven
@@ -1925,13 +1924,6 @@ def _compile_partition(ctx: _CompileContext):
         patron_flow_refinement=ctx.patron_flow_refinement,
         patron_algorithm_version=ctx.patron_algorithm_version,
         static_exact_candidate_policy=ctx.static_exact_candidate_policy,
-        mfspart_post_refinement=ctx.mfspart_post_refinement,
-        timing_path_database_path=(
-            ctx.path_database_path if ctx.exact_cut_mode else None
-        ),
-        mfspart_post_refinement_timing_path_beta=(
-            ctx.mfspart_post_refinement_timing_path_beta
-        ),
         retain_patron_baseline=(
             ctx.partition_provider == "patron" and bool(ctx.cross_stage_iterations)
         ),
@@ -2112,7 +2104,6 @@ def _compile_routing_schedule(ctx: _CompileContext):
             min_used_fpgas=ctx.min_used_fpgas,
             balance_tolerance=ctx.balance_tolerance,
             openroad=ctx.openroad,
-            repart=ctx.repart,
             patron_refiner=ctx.patron_refiner,
             patron_max_moves=ctx.patron_max_moves,
             patron_flow_refinement=ctx.patron_flow_refinement,
@@ -2966,7 +2957,6 @@ def run_multi_fpga_flow(
     balance_tolerance: Optional[float] = None,
     openroad: Optional[str] = None,
     tritonpart_solution: Optional[Path] = None,
-    repart: Optional[str] = None,
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
@@ -2981,8 +2971,6 @@ def run_multi_fpga_flow(
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
-    mfspart_post_refinement: bool = False,
-    mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     timing_driven: bool = True,
     timing_backend: str = "opensta",
     clock_periods: Optional[Dict[str, float]] = None,

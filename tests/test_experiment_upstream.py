@@ -764,14 +764,6 @@ class ExperimentUpstreamTest(unittest.TestCase):
                         "status": "pass",
                         "combinational_cut_nets": 0,
                     },
-                    "mfspart_post_refinement": {
-                        "refinement": {
-                            "runtime": {
-                                "optimizer_wall_seconds": 1.0,
-                                "candidate_check_wall_seconds": 0.1,
-                            }
-                        }
-                    },
                 }
 
             with (

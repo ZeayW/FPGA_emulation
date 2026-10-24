@@ -102,7 +102,7 @@ class NativeToolsTest(unittest.TestCase):
             root = Path(temp_dir)
             path_bin = root / "path-bin"
             path_bin.mkdir()
-            executable = path_bin / "repart"
+            executable = path_bin / "emuflow-native"
             executable.write_text("#!/bin/sh\n", encoding="utf-8")
             executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
 
@@ -117,9 +117,9 @@ class NativeToolsTest(unittest.TestCase):
                 "emuflow.native_tools.REPO_ROOT", root / "empty-repo"
             ):
                 with self.assertRaisesRegex(
-                    EmuFlowError, "in-tree repart build product"
+                    EmuFlowError, "in-tree emuflow-native build product"
                 ):
-                    resolve_native_executable("repart")
+                    resolve_native_executable("emuflow-native")
 
     def test_explicit_override_is_preserved_for_comparison_runs(self) -> None:
         self.assertEqual(

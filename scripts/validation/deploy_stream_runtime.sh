@@ -85,7 +85,7 @@ for binary in "$native_base"/bin/*; do
   test -e "$binary" || continue
   # Retired provider binaries must not leak in through an older native base.
   case "$(basename "$binary")" in
-    emuflow_tritonpart_balance_legalizer|emuflow_xilinx_bookshelf_exporter|emuflow_tdm_exact_scheduler|emuflow_patron_refiner) continue ;;
+    emuflow_tritonpart_balance_legalizer|emuflow_xilinx_bookshelf_exporter|emuflow_tdm_exact_scheduler|emuflow_patron_refiner|repart|emuflow_mfspart_*) continue ;;
   esac
   ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")"
 done

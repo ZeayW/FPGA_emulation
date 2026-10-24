@@ -398,9 +398,6 @@ class CanonicalExperimentTest(unittest.TestCase):
                 ],
                 0,
             )
-            self.assertFalse(
-                partition["configuration"]["mfspart_post_refinement"]
-            )
             self.assertIn("--patron-refiner", partition["command"])
             self.assertIn(
                 "--patron-initial-assignment", partition["command"]
@@ -421,12 +418,6 @@ class CanonicalExperimentTest(unittest.TestCase):
                 "shared-patron-initial-assignment",
             )
             self.assertNotIn("--patron-refiner", baseline["command"])
-            self.assertIn(
-                "--no-mfspart-post-refinement", baseline["command"]
-            )
-            self.assertIn(
-                "--no-mfspart-post-refinement", baseline["validator"]
-            )
             self.assertEqual(
                 partition["configuration"][
                     "patron_initial_assignment_source"
@@ -889,24 +880,6 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertIn("phase6-chimew", nodes)
             self.assertIn("qor-comparison", nodes)
             partition = nodes["partition"]
-            self.assertFalse(
-                partition["configuration"]["mfspart_post_refinement"]
-            )
-            self.assertEqual(
-                partition["configuration"][
-                    "mfspart_post_refinement_bottleneck_beta"
-                ],
-                256.0,
-            )
-            self.assertIn("--no-mfspart-post-refinement", partition["command"])
-            self.assertNotIn(
-                "--mfspart-post-refinement-bottleneck-beta",
-                partition["command"],
-            )
-            self.assertNotIn(
-                "mfspart-post-refinement",
-                {artifact["path"] for artifact in partition["artifacts"]},
-            )
             self.assertEqual(
                 partition["configuration"]["cut_mode"],
                 "static-exact-combinational",
@@ -972,12 +945,6 @@ class CanonicalExperimentTest(unittest.TestCase):
                     "max_cross_fpga_dependency_depth"
                 ],
                 0,
-            )
-            self.assertEqual(
-                partition["configuration"][
-                    "mfspart_post_refinement_timing_path_beta"
-                ],
-                1.0,
             )
 
     def test_generalized_static_exact_accepts_depth_beyond_two(self) -> None:

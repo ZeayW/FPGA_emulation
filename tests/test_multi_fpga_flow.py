@@ -607,12 +607,6 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 run.call_args.kwargs["max_cross_fpga_dependency_depth"], 0
             )
             self.assertEqual(
-                run.call_args.kwargs[
-                    "mfspart_post_refinement_timing_path_beta"
-                ],
-                1.0,
-            )
-            self.assertEqual(
                 run.call_args.kwargs["patron_algorithm_version"], 14
             )
             run.reset_mock()
@@ -625,9 +619,6 @@ class MultiFpgaFlowTest(unittest.TestCase):
             )
             self.assertEqual(
                 run.call_args.kwargs["patron_algorithm_version"], 6
-            )
-            self.assertFalse(
-                run.call_args.kwargs["mfspart_post_refinement"]
             )
             self.assertEqual(
                 run.call_args.kwargs["cut_mode"],

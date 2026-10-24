@@ -19,7 +19,6 @@ find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
 find_program(EMUFLOW_MAKE_EXECUTABLE NAMES gmake make REQUIRED)
 
 option(EMUFLOW_BUILD_YOSYS "Build the in-tree Yosys and ABC source" ON)
-option(EMUFLOW_BUILD_REPART "Build the in-tree RePart source" ON)
 option(
   EMUFLOW_BUILD_CUDD
   "Build the in-tree CUDD source required by OpenROAD/OpenSTA"
@@ -66,11 +65,6 @@ option(
   ON
 )
 
-option(
-  EMUFLOW_BUILD_MFSPART_COARSENER
-  "Build the in-tree MFSPart-style multilevel affinity coarsener"
-  ON
-)
 option(
   EMUFLOW_BUILD_PIN_PLANNER
   "Build the in-tree placement-aware TDM grouping and pin planner"
@@ -746,63 +740,6 @@ endif()
 
 
 
-if(EMUFLOW_BUILD_MFSPART_COARSENER)
-  add_executable(
-    emuflow_mfspart_coarsener
-    "${CMAKE_SOURCE_DIR}/src/native/mfspart_coarsener.cpp"
-  )
-  target_compile_features(emuflow_mfspart_coarsener PRIVATE cxx_std_17)
-  target_compile_options(emuflow_mfspart_coarsener PRIVATE -O3)
-  set_target_properties(
-    emuflow_mfspart_coarsener
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_mfspart_initializer
-    "${CMAKE_SOURCE_DIR}/src/native/mfspart_initializer.cpp"
-  )
-  target_compile_features(emuflow_mfspart_initializer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_mfspart_initializer PRIVATE -O3)
-  set_target_properties(
-    emuflow_mfspart_initializer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_mfspart_refiner
-    "${CMAKE_SOURCE_DIR}/src/native/mfspart_refiner.cpp"
-  )
-  target_compile_features(emuflow_mfspart_refiner PRIVATE cxx_std_17)
-  target_compile_options(emuflow_mfspart_refiner PRIVATE -O3)
-  set_target_properties(
-    emuflow_mfspart_refiner
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_mfspart_refiner_checker
-    "${CMAKE_SOURCE_DIR}/src/native/mfspart_refiner_checker.cpp"
-  )
-  target_compile_features(emuflow_mfspart_refiner_checker PRIVATE cxx_std_17)
-  target_compile_options(emuflow_mfspart_refiner_checker PRIVATE -O3)
-  set_target_properties(
-    emuflow_mfspart_refiner_checker
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_mfspart_legalizer
-    "${CMAKE_SOURCE_DIR}/src/native/mfspart_legalizer.cpp"
-  )
-  target_compile_features(emuflow_mfspart_legalizer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_mfspart_legalizer PRIVATE -O3)
-  set_target_properties(
-    emuflow_mfspart_legalizer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
 if(EMUFLOW_BUILD_PIN_PLANNER)
   add_executable(
@@ -881,35 +818,6 @@ if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
   )
 endif()
 
-if(EMUFLOW_BUILD_REPART)
-  # RePart's upstream build contract links Boost statically.  Keep the
-  # installed executable self-contained so it does not depend on the exact
-  # Boost SONAME available in the build container.
-  set(Boost_USE_STATIC_LIBS ON)
-  find_package(Boost 1.65 REQUIRED COMPONENTS system thread)
-  find_package(Threads REQUIRED)
-
-  add_executable(
-    repart
-    "${CMAKE_SOURCE_DIR}/engines/repart/RePart/partitioner.cpp"
-  )
-  target_compile_features(repart PRIVATE cxx_std_17)
-  target_compile_options(repart PRIVATE -O3)
-  target_compile_definitions(repart PRIVATE NDEBUG)
-  target_include_directories(
-    repart
-    PRIVATE "${CMAKE_SOURCE_DIR}/engines/repart/RePart"
-  )
-  target_link_libraries(
-    repart
-    PRIVATE Boost::system Boost::thread Threads::Threads
-  )
-  set_target_properties(
-    repart
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
 if(EMUFLOW_BUILD_YOSYS)
   set(EMUFLOW_YOSYS_SOURCE_DIR "${CMAKE_SOURCE_DIR}/engines/yosys")
@@ -1330,10 +1238,6 @@ if(BUILD_TESTING)
     )
   endforeach()
 
-  if(EMUFLOW_BUILD_REPART)
-    add_test(NAME repart_cli COMMAND "$<TARGET_FILE:repart>")
-    set_tests_properties(repart_cli PROPERTIES WILL_FAIL TRUE)
-  endif()
 
   if(EMUFLOW_BUILD_TLR_ROUTER)
     add_test(
@@ -1391,28 +1295,6 @@ if(BUILD_TESTING)
     )
   endif()
 
-  if(EMUFLOW_BUILD_MFSPART_COARSENER)
-    add_test(
-      NAME emuflow_mfspart_coarsener_cli
-      COMMAND "$<TARGET_FILE:emuflow_mfspart_coarsener>" --help
-    )
-    add_test(
-      NAME emuflow_mfspart_initializer_cli
-      COMMAND "$<TARGET_FILE:emuflow_mfspart_initializer>" --help
-    )
-    add_test(
-      NAME emuflow_mfspart_refiner_cli
-      COMMAND "$<TARGET_FILE:emuflow_mfspart_refiner>" --help
-    )
-    add_test(
-      NAME emuflow_mfspart_refiner_checker_cli
-      COMMAND "$<TARGET_FILE:emuflow_mfspart_refiner_checker>" --help
-    )
-    add_test(
-      NAME emuflow_mfspart_legalizer_cli
-      COMMAND "$<TARGET_FILE:emuflow_mfspart_legalizer>" --help
-    )
-  endif()
 
 
   if(EMUFLOW_BUILD_PIN_PLANNER)

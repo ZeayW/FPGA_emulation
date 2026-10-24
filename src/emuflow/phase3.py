@@ -36,10 +36,6 @@ from .platform import Platform
 from .partition_limits import planning_resource_capacities, strict_balance_limits
 from .resource_budget import validate_device_resource_usage
 from .resources import RESOURCE_FIELDS
-from .repart import run_repart
-from .mfspart_provider import refine_mfspart_partition, run_mfspart
-from .mfspart_refine import DEFAULT_BOTTLENECK_BETA, DEFAULT_TIMING_PATH_BETA
-from .sta import validate_sta_path_database
 from .tritonpart import (
     load_partition_net_weights,
     run_tritonpart,
@@ -289,28 +285,6 @@ def _rebase_patron_initial_assignment(
     return rebased
 
 
-def _mfspart_report_summary(report: Optional[Dict[str, Any]]) -> Any:
-    if report is None:
-        return None
-    refinement = report["refinement"]
-    return {
-        key: value
-        for key, value in report.items()
-        if key != "refinement"
-    } | {
-        "refinement": {
-            "schema": refinement["schema"],
-            "provider": refinement["provider"],
-            "claim_scope": refinement["claim_scope"],
-            "metrics": refinement["metrics"],
-            "validation": refinement["validation"],
-            "runtime": refinement.get("runtime"),
-            "path_safe_selection": refinement.get("path_safe_selection"),
-            "artifacts": refinement["artifacts"],
-        }
-    }
-
-
 def _hop_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
     return {
         key: value
@@ -382,21 +356,8 @@ def run_phase3(
     tritonpart_num_best_initial_solutions: int = 10,
     tritonpart_repair_min_used_fpgas: bool = True,
     tritonpart_run_unweighted_baseline: bool = False,
-    repart: Optional[str] = None,
-    repart_solution: Optional[Path] = None,
-    repart_timeout_seconds: int = 3600,
     route_constraints_path: Optional[Path] = None,
     hop_refiner: Optional[str] = None,
-    mfspart_coarsener: Optional[str] = None,
-    mfspart_initializer: Optional[str] = None,
-    mfspart_refiner: Optional[str] = None,
-    mfspart_refiner_checker: Optional[str] = None,
-    mfspart_legalizer: Optional[str] = None,
-    mfspart_post_refinement: Optional[bool] = None,
-    mfspart_post_refinement_early_stop: int = 1000,
-    mfspart_post_refinement_bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
-    timing_path_database_path: Optional[Path] = None,
-    mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
@@ -414,6 +375,8 @@ def run_phase3(
     retain_diagnostics: bool = False,
     retain_patron_baseline: bool = False,
 ) -> Dict[str, Any]:
+    if provider not in {"patron", "tritonpart", "greedy"}:
+        raise ValidationError(f"unsupported Phase 3 provider {provider!r}")
     if patron_initial_clusters_path is not None and (
         provider != "patron"
         or patron_initial_assignment_path is None
@@ -481,12 +444,6 @@ def run_phase3(
         raise ValidationError(
             "PATRON physical feedback scale has no system timing source"
         )
-    if mfspart_post_refinement is None:
-        mfspart_post_refinement = False
-    if mfspart_post_refinement and provider != "tritonpart":
-        raise ValueError(
-            "MFSPart post-refinement requires provider='tritonpart'"
-        )
     # Explicit qualification mode may request full canonical source seals and
     # replay artifacts.  Production keeps only the partition facts resident.
     ir = phase3_runtime_call(
@@ -504,22 +461,6 @@ def run_phase3(
         min_used_fpgas=min_used_fpgas,
         balance_tolerance=balance_tolerance,
     )
-    if (
-        len(constraints["active_fpgas"]) != len(platform.fpgas)
-        and (
-            provider in {"mfspart", "repart", "repart-replication"}
-            or mfspart_post_refinement
-        )
-    ):
-        feature = (
-            "MFSPart post-refinement"
-            if mfspart_post_refinement
-            else f"Phase 3 provider {provider!r}"
-        )
-        raise ValidationError(
-            f"{feature} does not yet support a selected "
-            "assignment-target subset; use greedy, tritonpart, or patron"
-        )
     route_constraints = phase3_runtime_call(
         "load_route_constraints",
         load_route_constraints,
@@ -637,44 +578,6 @@ def run_phase3(
             persist_input_manifest=retain_diagnostics,
         )
         assignment = tritonpart_assignment
-    elif provider in {"repart", "repart-replication"}:
-        assignment = phase3_runtime_call(
-            "provider.repart",
-            run_repart,
-            ir,
-            platform,
-            clusters,
-            constraints,
-            output_dir / "repart",
-            executable=repart,
-            solution_input=repart_solution,
-            net_weights_path=net_weights_path,
-            timeout_seconds=repart_timeout_seconds,
-            enable_replication=provider == "repart-replication",
-            defer_semantic_contract=(
-                not retain_diagnostics
-                and provider != "repart-replication"
-            ),
-        )
-    elif provider == "mfspart":
-        assignment = phase3_runtime_call(
-            "provider.mfspart",
-            run_mfspart,
-            ir,
-            platform,
-            clusters,
-            constraints,
-            route_constraints,
-            output_dir / "mfspart",
-            seed=seed,
-            net_weights=load_partition_net_weights(net_weights_path),
-            coarsener=mfspart_coarsener,
-            initializer=mfspart_initializer,
-            refiner=mfspart_refiner,
-            refiner_checker=mfspart_refiner_checker,
-            legalizer=mfspart_legalizer,
-            defer_semantic_contract=not retain_diagnostics,
-        )
     elif provider == "patron":
         if timing_database_path is None:
             raise ValueError(
@@ -1051,37 +954,7 @@ def run_phase3(
     else:
         raise ValueError(
             f"unknown Phase 3 provider {provider!r}; "
-            "expected 'repart-replication', 'repart', 'tritonpart', "
-            "'mfspart', 'patron', or 'greedy'"
-        )
-    mfspart_post_refinement_report = None
-    if mfspart_post_refinement and not single_active_selection:
-        if timing_path_database_path is not None and retain_diagnostics:
-            phase3_runtime_call(
-                "post_refinement.validate_timing_database",
-                validate_sta_path_database,
-                timing_path_database_path,
-                ir_path,
-            )
-        assignment, mfspart_post_refinement_report = phase3_runtime_call(
-            "post_refinement.mfspart",
-            refine_mfspart_partition,
-            ir,
-            platform,
-            clusters,
-            constraints,
-            route_constraints,
-            assignment,
-            output_dir / "mfspart-post-refinement",
-            net_weights=load_partition_net_weights(net_weights_path),
-            early_stop=mfspart_post_refinement_early_stop,
-            bottleneck_beta=mfspart_post_refinement_bottleneck_beta,
-            timing_path_database_path=timing_path_database_path,
-            timing_path_beta=mfspart_post_refinement_timing_path_beta,
-            refiner=mfspart_refiner,
-            refiner_checker=mfspart_refiner_checker,
-            defer_semantic_contract=True,
-            online_validation=True,
+            "expected 'tritonpart', 'patron', or 'greedy'"
         )
     if single_active_selection:
         hop_refinement = phase3_runtime_call(
@@ -1162,7 +1035,7 @@ def run_phase3(
             provider_metadata=assignment.get("provider_metadata"),
             _stream_semantic_records=not retain_diagnostics,
         )
-    if retain_diagnostics or provider == "repart-replication":
+    if retain_diagnostics:
         validation = phase3_runtime_call(
             "validate_final_assignment_full",
             validate_partition_artifacts,
@@ -1195,9 +1068,6 @@ def run_phase3(
         "seed": assignment["seed"],
         "validation": validation,
         "hop_refinement": persisted_hop_refinement,
-        "mfspart_post_refinement": _mfspart_report_summary(
-            mfspart_post_refinement_report
-        ),
         "patron_initial_clusters_reused": (
             patron_initial_clusters_path is not None
         ),
@@ -1246,16 +1116,6 @@ def run_phase3(
             report["artifacts"]["tritonpart"] = (
                 "tritonpart/tritonpart_input.json"
             )
-        if mfspart_post_refinement_report is not None:
-            report["artifacts"]["mfspart_post_refinement"] = (
-                "mfspart-post-refinement/post_refinement.json"
-            )
-    elif provider in {"repart", "repart-replication"}:
-        report["artifacts"]["repart"] = "repart/repart_input.json"
-        if provider == "repart-replication":
-            report["artifacts"]["replication"] = "replication.json"
-    elif provider == "mfspart":
-        report["artifacts"]["mfspart"] = "mfspart/hierarchy.json"
     elif provider == "patron":
         report["patron_algorithm_version"] = patron_algorithm_version
         report["patron_initialization"] = patron_initialization

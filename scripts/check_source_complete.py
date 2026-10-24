@@ -44,13 +44,6 @@ REQUIRED_SOURCE_FILES = {
         "COPYING",
         "EMUFLOW_PROVENANCE.md",
     ),
-    "repart": (
-        "RePart/partitioner.cpp",
-        "RePart/solution_audit.h",
-        "RePart/datastructure/hypergraph.h",
-        "LICENSE",
-        "EMUFLOW_PROVENANCE.md",
-    ),
     "openroad": (
         "CMakeLists.txt",
         "src/par/src/TritonPart.cpp",
@@ -175,16 +168,16 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/native/tlr_router.cpp",
     "src/native/hop_partition_refiner.cpp",
     "src/emuflow/partition_hops.py",
-    "src/native/mfspart_coarsener.cpp",
-    "src/emuflow/mfspart.py",
-    "src/native/mfspart_initializer.cpp",
-    "src/emuflow/mfspart_initial.py",
-    "src/native/mfspart_refiner.cpp",
-    "src/native/mfspart_refiner_checker.cpp",
-    "src/emuflow/mfspart_refine.py",
-    "src/emuflow/mfspart_provider.py",
-    "src/native/mfspart_legalizer.cpp",
-    "src/emuflow/mfspart_legalize.py",
+
+
+
+
+
+
+
+
+
+
     "src/native/tdm_ratio_optimizer.cpp",
     "src/native/tdm_partition_feedback.cpp",
     "src/native/placement_aware_pin_planner.cpp",

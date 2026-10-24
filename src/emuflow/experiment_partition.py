@@ -32,11 +32,6 @@ from .combinational_cut import (
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
-from .mfspart_refine import (
-    DEFAULT_BOTTLENECK_BETA,
-    DEFAULT_TIMING_PATH_BETA,
-    validate_mfspart_native_certificate,
-)
 from .phase3 import run_phase3, validate_phase3_indexed
 from .platform import Platform
 from .routing import load_route_constraints
@@ -46,145 +41,6 @@ from .sta import (
     STA_PATH_DATABASE_STREAM_SCHEMA,
     iter_sta_path_database_paths,
 )
-
-
-def _rebuild_timing_path_objective(
-    ir_path: Path,
-    clusters_path: Path,
-    database_path: Path,
-) -> Dict[str, Any]:
-    """Independently bind native PATH records to TimingDB semantics."""
-
-    ir = EmuIR.load(ir_path)
-    clusters = read_json(clusters_path)
-    database = read_json(database_path)
-    if (
-        database.get("schema") not in {
-            STA_PATH_DATABASE_SCHEMA,
-            STA_PATH_DATABASE_STREAM_SCHEMA,
-            STA_PATH_DATABASE_INDEX_SCHEMA,
-        }
-        or database.get("design") != ir.value["design"]["name"]
-    ):
-        raise ValidationError("invalid partition timing-path database")
-    ordered_clusters = sorted(clusters["clusters"], key=lambda item: item["id"])
-    node_index = {
-        cluster["id"]: index for index, cluster in enumerate(ordered_clusters)
-    }
-    cluster_by_instance = {
-        instance: cluster["id"]
-        for cluster in ordered_clusters
-        for instance in cluster["instances"]
-    }
-    net_driver_clusters: Dict[str, tuple[int, ...]] = {}
-    net_sink_clusters: Dict[str, tuple[int, ...]] = {}
-    for net in ir.value["nets"]:
-        net_driver_clusters[net["id"]] = tuple(
-            sorted(
-                {
-                    node_index[cluster_by_instance[endpoint["instance"]]]
-                    for endpoint in net["drivers"]
-                    if endpoint["instance"] in cluster_by_instance
-                }
-            )
-        )
-        net_sink_clusters[net["id"]] = tuple(
-            sorted(
-                {
-                    node_index[cluster_by_instance[endpoint["instance"]]]
-                    for endpoint in net["sinks"]
-                    if endpoint["instance"] in cluster_by_instance
-                }
-            )
-        )
-    grouped: Dict[tuple[int, int], float] = {}
-    eligible_paths = 0
-    unmaterialized_paths = 0
-    materialized_transitions = 0
-    path_guard_chains: set[tuple[int, ...]] = set()
-    database_paths = 0
-    for path in iter_sta_path_database_paths(
-        database_path, database, verify_payload=False
-    ):
-        database_paths += 1
-        try:
-            chain: list[int] = []
-
-            def append_pin(pin: int) -> None:
-                if not chain or chain[-1] != pin:
-                    chain.append(pin)
-
-            startpoint = path.get("startpoint")
-            if (
-                startpoint is not None
-                and startpoint["instance"] in cluster_by_instance
-            ):
-                append_pin(
-                    node_index[cluster_by_instance[startpoint["instance"]]]
-                )
-            for net_id in path["path_nets"]:
-                for pin in net_driver_clusters[net_id]:
-                    append_pin(pin)
-            endpoint = path.get("endpoint")
-            if endpoint is not None and endpoint["instance"] in cluster_by_instance:
-                append_pin(
-                    node_index[cluster_by_instance[endpoint["instance"]]]
-                )
-            else:
-                for pin in net_sink_clusters[path["path_nets"][-1]]:
-                    append_pin(pin)
-        except (KeyError, IndexError, TypeError) as error:
-            raise ValidationError(
-                "malformed partition timing-path database record"
-            ) from error
-        transitions = [
-            tuple(sorted((source, target)))
-            for source, target in zip(chain, chain[1:])
-            if source != target
-        ]
-        if not transitions:
-            unmaterialized_paths += 1
-            continue
-        eligible_paths += 1
-        materialized_transitions += len(transitions)
-        path_guard_chains.add(tuple(chain))
-        for transition in transitions:
-            grouped[transition] = grouped.get(transition, 0.0) + 1.0
-    digest = hashlib.sha256()
-    compressed_pins = 0
-    for index, (pins, weight) in enumerate(sorted(grouped.items())):
-        compressed_pins += len(pins)
-        record = "PATH " + " ".join(
-            str(value)
-            for value in (index, format(weight, ".17g"), len(pins), *pins)
-        )
-        digest.update((record + "\n").encode("utf-8"))
-    guard_digest = hashlib.sha256()
-    for index, chain in enumerate(sorted(path_guard_chains)):
-        guard_digest.update(
-            (
-                "GUARD "
-                + " ".join(str(value) for value in (index, len(chain), *chain))
-                + "\n"
-            ).encode("utf-8")
-        )
-    return {
-        "schema": "emuflow.mfspart-timing-path-objective/v2",
-        "database_sha256": _sha256(database_path),
-        "database_paths": database_paths,
-        "eligible_paths": eligible_paths,
-        "unmaterialized_paths": unmaterialized_paths,
-        "materialized_transitions": materialized_transitions,
-        "compressed_groups": len(grouped),
-        "compressed_pins": compressed_pins,
-        "path_guards": len(path_guard_chains),
-        "path_guard_pins": sum(len(chain) for chain in path_guard_chains),
-        "path_guard_sha256": guard_digest.hexdigest(),
-        "objective_sha256": digest.hexdigest(),
-        "weighting": (
-            "uniform-path-count-with-identical-adjacent-transition-aggregation"
-        ),
-    }
 
 
 def run_partition_checkpoint(
@@ -202,15 +58,6 @@ def run_partition_checkpoint(
     openroad: Optional[str] = None,
     tritonpart_solution: Optional[Path] = None,
     hop_refiner: Optional[str] = None,
-    mfspart_coarsener: Optional[str] = None,
-    mfspart_initializer: Optional[str] = None,
-    mfspart_refiner: Optional[str] = None,
-    mfspart_refiner_checker: Optional[str] = None,
-    mfspart_legalizer: Optional[str] = None,
-    mfspart_post_refinement: Optional[bool] = None,
-    mfspart_post_refinement_early_stop: int = 1000,
-    mfspart_post_refinement_bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
-    mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
     timeout_seconds: int = 3600,
     seed_attempts: int = 1,
     repair_min_used_fpgas: bool = True,
@@ -241,8 +88,6 @@ def run_partition_checkpoint(
         patron_flow_refinement = patron_algorithm_version != 6
     else:
         patron_flow_refinement = False
-    if mfspart_post_refinement is None:
-        mfspart_post_refinement = False
     if (
         isinstance(minimum_combinational_cut_nets, bool)
         or not isinstance(minimum_combinational_cut_nets, int)
@@ -266,10 +111,8 @@ def run_partition_checkpoint(
             "a precomputed TritonPart solution requires provider=tritonpart "
             "or provider=patron"
         )
-    if mfspart_post_refinement and provider != "tritonpart":
-        raise ValidationError(
-            "MFSPart post-refinement requires provider=tritonpart"
-        )
+    if provider not in {"patron", "tritonpart", "greedy"}:
+        raise ValidationError(f"unsupported Phase 3 provider {provider!r}")
     ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")
     if not managed_dag_node:
         validate_timing_checkpoint(frontend_root, timing_root)
@@ -295,22 +138,6 @@ def run_partition_checkpoint(
         net_weights_path=weights_path,
         route_constraints_path=route_constraints_path,
         hop_refiner=hop_refiner,
-        mfspart_coarsener=mfspart_coarsener,
-        mfspart_initializer=mfspart_initializer,
-        mfspart_refiner=mfspart_refiner,
-        mfspart_refiner_checker=mfspart_refiner_checker,
-        mfspart_legalizer=mfspart_legalizer,
-        mfspart_post_refinement=mfspart_post_refinement,
-        mfspart_post_refinement_early_stop=(
-            mfspart_post_refinement_early_stop
-        ),
-        mfspart_post_refinement_bottleneck_beta=(
-            mfspart_post_refinement_bottleneck_beta
-        ),
-        timing_path_database_path=timing_path_database,
-        mfspart_post_refinement_timing_path_beta=(
-            mfspart_post_refinement_timing_path_beta
-        ),
         cut_mode=cut_mode,
         max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
         static_exact_candidate_policy=static_exact_candidate_policy,
@@ -338,16 +165,6 @@ def run_partition_checkpoint(
         "seed": seed,
         "seed_attempts": seed_attempts,
         "repair_min_used_fpgas": repair_min_used_fpgas,
-        "mfspart_post_refinement": mfspart_post_refinement,
-        "mfspart_post_refinement_early_stop": (
-            mfspart_post_refinement_early_stop
-        ),
-        "mfspart_post_refinement_bottleneck_beta": (
-            mfspart_post_refinement_bottleneck_beta
-        ),
-        "mfspart_post_refinement_timing_path_beta": (
-            mfspart_post_refinement_timing_path_beta
-        ),
         "cut_mode": cut_mode,
         "max_cross_fpga_dependency_depth": (
             max_cross_fpga_dependency_depth
@@ -441,42 +258,6 @@ def run_partition_checkpoint(
     return report
 
 
-def _validate_post_refinement_selection(
-    post_report: Dict[str, Any], post_metadata: Dict[str, Any],
-    certificate: Dict[str, Any], required_fpgas: int,
-) -> list[int]:
-    """Reconstruct selection independently from sealed native input/output."""
-    candidate = certificate["parsed"]["assignment"]
-    selection = post_report.get("assignment_selection")
-    if selection is None:
-        if post_metadata.get("assignment_selection") is not None:
-            raise ValidationError("partition MFSPart selection evidence is incomplete")
-        return candidate  # Historical reports always selected the native output.
-    initial = certificate["initial_assignment"]
-    initial_used = len(set(initial))
-    candidate_used = len(set(candidate))
-    selected_candidate = candidate_used >= required_fpgas
-    if not selected_candidate and initial_used < required_fpgas:
-        raise ValidationError("partition MFSPart selection has no legal occupancy")
-    metrics = certificate["parsed"]["metrics"]
-    expected = {
-        "policy": "required-fpga-count-v1",
-        "selected": "refined-candidate" if selected_candidate else "initialization",
-        "reason": "required-count-satisfied" if selected_candidate else "candidate-emptied-required-fpga",
-        "required_fpgas": required_fpgas,
-        "initial_used_fpgas": initial_used,
-        "candidate_used_fpgas": candidate_used,
-        "selected_used_fpgas": candidate_used if selected_candidate else initial_used,
-        "selected_prefix": int(metrics["best_prefix"]) if selected_candidate else 0,
-        "selected_cumulative_gain": metrics["best_cumulative_gain"] if selected_candidate else 0.0,
-    }
-    if (selection != expected or post_metadata.get("assignment_selection") != expected
-        or post_metadata.get("best_prefix") != expected["selected_prefix"]
-        or post_metadata.get("best_cumulative_gain") != expected["selected_cumulative_gain"]):
-        raise ValidationError("partition MFSPart selection disagrees with native certificate")
-    return candidate if selected_candidate else initial
-
-
 def validate_partition_checkpoint(
     frontend_root: Path,
     timing_root: Path,
@@ -490,10 +271,6 @@ def validate_partition_checkpoint(
     expected_seed: int | None = None,
     expected_seed_attempts: int | None = None,
     expected_repair_min_used_fpgas: bool | None = None,
-    expected_mfspart_post_refinement: bool | None = None,
-    expected_mfspart_post_refinement_early_stop: int | None = None,
-    expected_mfspart_post_refinement_bottleneck_beta: float | None = None,
-    expected_mfspart_post_refinement_timing_path_beta: float | None = None,
     expected_cut_mode: str | None = None,
     expected_max_cross_fpga_dependency_depth: int | None = None,
     expected_minimum_combinational_cut_nets: int | None = None,
@@ -517,6 +294,8 @@ def validate_partition_checkpoint(
         or report.get("status") != "pass"
     ):
         raise ValidationError("partition checkpoint report is invalid")
+    if report.get("provider") not in {"patron", "tritonpart", "greedy"}:
+        raise ValidationError("unsupported partition report provider")
     if expected_provider is not None and report.get("provider") != expected_provider:
         raise ValidationError("partition provider contract disagrees")
     if report.get("patron_initial_clusters_reused", False) is not (
@@ -532,41 +311,6 @@ def validate_partition_checkpoint(
         and report.get("seed_attempts") != expected_seed_attempts
     ):
         raise ValidationError("partition seed-attempt contract disagrees")
-    if (
-        expected_mfspart_post_refinement is not None
-        and report.get("mfspart_post_refinement", False)
-        is not expected_mfspart_post_refinement
-    ):
-        raise ValidationError("partition MFSPart post-refinement contract disagrees")
-    if (
-        expected_mfspart_post_refinement_early_stop is not None
-        and report.get("mfspart_post_refinement_early_stop", 1000)
-        != expected_mfspart_post_refinement_early_stop
-    ):
-        raise ValidationError(
-            "partition MFSPart post-refinement early-stop contract disagrees"
-        )
-    if (
-        expected_mfspart_post_refinement_timing_path_beta is not None
-        and report.get(
-            "mfspart_post_refinement_timing_path_beta",
-            DEFAULT_TIMING_PATH_BETA,
-        ) != expected_mfspart_post_refinement_timing_path_beta
-    ):
-        raise ValidationError(
-            "partition MFSPart timing-path-beta contract disagrees"
-        )
-    if (
-        expected_mfspart_post_refinement_bottleneck_beta is not None
-        and report.get(
-            "mfspart_post_refinement_bottleneck_beta",
-            DEFAULT_BOTTLENECK_BETA,
-        ) != expected_mfspart_post_refinement_bottleneck_beta
-    ):
-        raise ValidationError(
-            "partition MFSPart post-refinement bottleneck-beta contract "
-            "disagrees"
-        )
     legacy_cut_defaults = {
         "cut_mode": CUT_MODE_SEQUENTIAL_ONLY,
         "max_cross_fpga_dependency_depth": 1,
@@ -610,36 +354,12 @@ def validate_partition_checkpoint(
             or phase3["validation"].get("status") != "pass"
         ):
             raise ValidationError("partition online legality evidence is invalid")
-        runtime = (
-            phase3.get("mfspart_post_refinement") or {}
-        ).get("refinement", {}).get("runtime")
-        validator_wall_seconds = time.perf_counter() - validation_started
-        if isinstance(runtime, dict):
-            optimizer_wall_seconds = runtime.get("optimizer_wall_seconds")
-            candidate_check_wall_seconds = runtime.get(
-                "candidate_check_wall_seconds"
-            )
-            if (
-                not isinstance(optimizer_wall_seconds, (int, float))
-                or optimizer_wall_seconds < 0
-                or not isinstance(candidate_check_wall_seconds, (int, float))
-                or candidate_check_wall_seconds < 0
-                or validator_wall_seconds < 0
-            ):
-                raise ValidationError(
-                    "partition online validation runtime evidence is invalid"
-                )
         return {
             "status": "pass",
             "provider": report["provider"],
             "validation": phase3["validation"],
             "runtime": {
-                "validator_wall_seconds": validator_wall_seconds,
-                "optimizer_wall_seconds": (
-                    runtime.get("optimizer_wall_seconds")
-                    if isinstance(runtime, dict)
-                    else None
-                ),
+                "validator_wall_seconds": time.perf_counter() - validation_started,
             },
         }
     if route_constraints_path is not None and report.get(
@@ -769,165 +489,6 @@ def validate_partition_checkpoint(
                 "partition checkpoint timing-path database seal is broken"
             )
     assignment = read_json(seals["assignment_sha256"])
-    post_refinement = report.get("mfspart_post_refinement", False)
-    if not isinstance(post_refinement, bool):
-        raise ValidationError("partition MFSPart post-refinement flag is invalid")
-    post_metadata = assignment.get("provider_metadata", {}).get(
-        "directional_mfspart_post_refinement"
-    )
-    if post_refinement != (post_metadata is not None):
-        raise ValidationError(
-            "partition MFSPart post-refinement evidence disagrees with assignment"
-        )
-    if post_refinement:
-        if not isinstance(post_metadata, dict):
-            raise ValidationError(
-                "partition MFSPart post-refinement metadata is invalid"
-            )
-        post_root = root / "mfspart-post-refinement"
-        post_report = read_json(
-            _require(post_root, "post_refinement.json")
-        )
-        post_schema = post_report.get("schema")
-        if (
-            post_schema not in {
-                "emuflow.mfspart-post-refinement/v1",
-                "emuflow.mfspart-post-refinement/v2",
-                "emuflow.mfspart-post-refinement/v3",
-            }
-            or post_report.get("status") != "pass"
-            or post_report.get("direction_source")
-            != "EmuIR net drivers/sinks"
-            or post_report.get("early_stop")
-            != report.get("mfspart_post_refinement_early_stop")
-            or post_report.get("bottleneck_beta")
-            != report.get("mfspart_post_refinement_bottleneck_beta")
-            or post_report.get("timing_path_beta", 0.0)
-            != report.get("mfspart_post_refinement_timing_path_beta", 0.0)
-        ):
-            raise ValidationError("partition MFSPart post-refinement report is invalid")
-        if post_schema in {
-            "emuflow.mfspart-post-refinement/v2",
-            "emuflow.mfspart-post-refinement/v3",
-        }:
-            expected_guard = (
-                "non-combinational-net-worst-sink-distance-non-regression-v1"
-                if report.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
-                != CUT_MODE_SEQUENTIAL_ONLY
-                else "not-requested"
-            )
-            if (
-                post_report.get("topology_guard") != expected_guard
-                or not isinstance(post_report.get("guarded_nets"), int)
-                or isinstance(post_report.get("guarded_nets"), bool)
-                or post_report.get("guarded_nets") < 0
-                or post_metadata.get("topology_guard") != expected_guard
-            ):
-                raise ValidationError(
-                    "partition MFSPart topology-guard evidence is invalid"
-                )
-        refinement = post_report.get("refinement")
-        if not isinstance(refinement, dict):
-            raise ValidationError(
-                "partition MFSPart post-refinement certificate is missing"
-            )
-        artifacts = refinement.get("artifacts")
-        if not isinstance(artifacts, dict):
-            raise ValidationError(
-                "partition MFSPart post-refinement artifact seals are missing"
-            )
-        native_paths = {
-            "input": _require(post_root, "mfspart_refiner.in"),
-            "output": _require(post_root, "mfspart_refiner.out"),
-            "checker_output": _require(post_root, "mfspart_refiner.check"),
-        }
-        for label, path in native_paths.items():
-            if artifacts.get(label) != path.name:
-                raise ValidationError(
-                    f"partition MFSPart post-refinement {label} path is invalid"
-                )
-        certificate = validate_mfspart_native_certificate(
-            native_paths["input"], native_paths["output"]
-        )
-        if post_schema in {
-            "emuflow.mfspart-post-refinement/v2",
-            "emuflow.mfspart-post-refinement/v3",
-        }:
-            input_evidence = certificate["input_evidence"]
-            if (
-                post_report.get("guarded_nets")
-                != input_evidence["guarded_nets"]
-                or post_report.get("combinational_candidate_nets")
-                != input_evidence["zero_bottleneck_nets"]
-                or post_metadata.get("guarded_nets")
-                != input_evidence["guarded_nets"]
-                or post_metadata.get("combinational_candidate_nets")
-                != input_evidence["zero_bottleneck_nets"]
-            ):
-                raise ValidationError(
-                    "partition MFSPart topology-guard counts disagree with "
-                    "the independently checked native input"
-                )
-        if post_schema == "emuflow.mfspart-post-refinement/v3":
-            input_evidence = certificate["input_evidence"]
-            objective = post_report.get("timing_path_objective")
-            reconstructed_objective = _rebuild_timing_path_objective(
-                ir_path,
-                seals["clusters_sha256"],
-                timing_path_database,
-            )
-            if (
-                not isinstance(objective, dict)
-                or "timing_path_database_sha256" not in report
-                or objective
-                != {
-                    **reconstructed_objective,
-                    "status": "enabled",
-                    "beta": post_report.get("timing_path_beta"),
-                }
-                or input_evidence["timing_paths"]
-                != reconstructed_objective["compressed_groups"]
-                or input_evidence["timing_path_pins"]
-                != reconstructed_objective["compressed_pins"]
-                or input_evidence["timing_path_objective_sha256"]
-                != reconstructed_objective["objective_sha256"]
-            ):
-                raise ValidationError(
-                    "partition MFSPart timing-path objective evidence is invalid"
-                )
-        parsed = certificate["parsed"]
-        for label in ("moves", "assignment", "metrics"):
-            if refinement.get(label) != parsed[label]:
-                raise ValidationError(
-                    "partition MFSPart post-refinement JSON differs from "
-                    "the independently checked native certificate"
-                )
-        clusters = sorted(
-            read_json(_require(root, "clusters.json"))["clusters"],
-            key=lambda item: item["id"],
-        )
-        parts = post_report.get("parts")
-        if not isinstance(parts, list) or any(
-            not isinstance(part, str) for part in parts
-        ):
-            raise ValidationError("partition MFSPart FPGA order is invalid")
-        selected_assignment = _validate_post_refinement_selection(
-            post_report, post_metadata, certificate,
-            assignment["constraints"]["min_used_fpgas"],
-        )
-        try:
-            expected_cluster_assignment = {
-                cluster["id"]: parts[selected_assignment[index]]
-                for index, cluster in enumerate(clusters)
-            }
-        except (IndexError, KeyError, TypeError) as error:
-            raise ValidationError(
-                "partition MFSPart kept-prefix assignment is invalid"
-            ) from error
-        if assignment.get("cluster_assignment") != expected_cluster_assignment:
-            raise ValidationError(
-                "partition assignment differs from MFSPart selected assignment"
-            )
     if report["provider"] == "tritonpart":
         metadata = assignment.get("provider_metadata", {})
         # Read-only support for sealed historical artifacts. Current producers

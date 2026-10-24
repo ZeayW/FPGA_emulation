@@ -127,20 +127,6 @@
       "integration": "default-in-tree-build"
     },
     {
-      "id": "repart-partitioning",
-      "stage": "Phase 3",
-      "source_paths": [
-        "engines/repart/RePart"
-      ],
-      "build_targets": [
-        "repart"
-      ],
-      "runtime_products": [
-        "repart"
-      ],
-      "integration": "default-in-tree-build"
-    },
-    {
       "id": "partition-independent-sta",
       "stage": "R0 / Phase 3/4/5 cross-stage timing projection",
       "source_paths": [
@@ -179,17 +165,14 @@
         "schemas/partition-net-weights-v1.schema.json",
         "schemas/frame-search-v2.schema.json",
         "schemas/cross-stage-candidate-v2.schema.json",
-        "schemas/cross-stage-report-v2.schema.json",
-        "engines/repart/RePart"
+        "schemas/cross-stage-report-v2.schema.json"
       ],
       "build_targets": [
         "emuflow_tdm_partition_feedback",
-        "repart",
         "emuflow_python"
       ],
       "runtime_products": [
         "emuflow_tdm_partition_feedback",
-        "repart",
         "emuflow"
       ],
       "integration": "default-in-tree-build"

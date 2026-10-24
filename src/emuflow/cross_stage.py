@@ -1086,7 +1086,7 @@ def run_cross_stage_optimization(
     phase3_constraints_path: Optional[Path] = None,
     route_constraints_path: Optional[Path] = None,
     board_link_timing_path: Optional[Path] = None,
-    phase3_provider: str = "repart-replication",
+    phase3_provider: str = "patron",
     cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
@@ -1099,7 +1099,6 @@ def run_cross_stage_optimization(
     min_used_fpgas: Optional[int] = None,
     balance_tolerance: Optional[float] = None,
     openroad: Optional[str] = None,
-    repart: Optional[str] = None,
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
     patron_flow_refinement: bool = False,
@@ -1514,8 +1513,6 @@ def run_cross_stage_optimization(
                     tritonpart_repair_min_used_fpgas=(
                         partition_repair_min_used_fpgas
                     ),
-                    repart=repart,
-                    repart_timeout_seconds=partition_timeout_seconds,
                     route_constraints_path=(
                         effective_route_constraints_path
                     ),

@@ -39,7 +39,9 @@ emuflow multi-fpga compile \
   --clock clk \
   --clock-period clk=10 \
   --opensta build/codespaces-opensta/install/bin/sta \
-  --partition-provider mfspart \
+  --partition-provider patron \
+  --patron-algorithm-version 14 \
+  --cut-mode static-exact-combinational \
   --min-used-fpgas 2 \
   --equivalence-cycles 4 \
   --out "${output_root}/flow"

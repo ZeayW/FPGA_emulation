@@ -31,10 +31,6 @@ from .combinational_cut import (
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
 from .platform import Platform
-from .mfspart_refine import (
-    DEFAULT_BOTTLENECK_BETA,
-    DEFAULT_TIMING_PATH_BETA,
-)
 from .routing import load_route_constraints
 from .tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
@@ -224,10 +220,6 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/combinational_cut.py",
         "src/emuflow/native_tools.py",
         "src/emuflow/partition_hops.py",
-        "src/emuflow/mfspart.py",
-        "src/emuflow/mfspart_initial.py",
-        "src/emuflow/mfspart_refine.py",
-        "src/emuflow/mfspart_provider.py",
         "src/emuflow/tritonpart.py",
         "src/emuflow/routing.py",
         "src/native/hop_partition_refiner.cpp",
@@ -236,8 +228,6 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/native/emuflow_core/artifact_io.cpp",
         "src/native/emuflow_core/artifact_io.hpp",
         "src/native/emuflow_core/native_stages.hpp",
-        "src/native/mfspart_refiner.cpp",
-        "src/native/mfspart_refiner_checker.cpp",
     ),
     "partition-patron": (
         "src/emuflow/experiment_upstream.py::validate_timing_checkpoint",
@@ -429,6 +419,12 @@ def compile_canonical_experiment_spec(
     config = read_json(config_path)
     if config.get("schema") != CANONICAL_EXPERIMENT_CONFIG_SCHEMA:
         raise ValidationError("canonical experiment config schema is invalid")
+    retired = sorted(
+        key for key in config
+        if key in {"mfspart", "repart"} or key.startswith(("mfspart_", "repart_"))
+    )
+    if retired:
+        raise ValidationError("retired partition configuration: " + ", ".join(retired))
     repository_root = _directory(str(repository_root), "repository_root")
     case_id = config.get("case_id")
     source_commit = config.get("source_commit")
@@ -681,39 +677,6 @@ def compile_canonical_experiment_spec(
             "canonical experiment tritonpart_solution requires "
             "partition_seed_attempts=1"
         )
-    mfspart_post_refinement = config.get("mfspart_post_refinement", False)
-    if not isinstance(mfspart_post_refinement, bool):
-        raise ValidationError(
-            "canonical experiment mfspart_post_refinement must be boolean"
-        )
-    if mfspart_post_refinement and partition_provider != "tritonpart":
-        raise ValidationError(
-            "canonical MFSPart post-refinement requires partition_provider "
-            "'tritonpart'"
-        )
-    mfspart_post_refinement_early_stop = _positive_integer(
-        config.get("mfspart_post_refinement_early_stop", 1000),
-        "mfspart_post_refinement_early_stop",
-    )
-    mfspart_post_refinement_bottleneck_beta = config.get(
-        "mfspart_post_refinement_bottleneck_beta",
-        DEFAULT_BOTTLENECK_BETA,
-    )
-    if (
-        isinstance(mfspart_post_refinement_bottleneck_beta, bool)
-        or not isinstance(
-            mfspart_post_refinement_bottleneck_beta, (int, float)
-        )
-        or not math.isfinite(mfspart_post_refinement_bottleneck_beta)
-        or mfspart_post_refinement_bottleneck_beta < 0
-    ):
-        raise ValidationError(
-            "canonical experiment mfspart_post_refinement_bottleneck_beta "
-            "must be a finite non-negative number"
-        )
-    mfspart_post_refinement_bottleneck_beta = float(
-        mfspart_post_refinement_bottleneck_beta
-    )
     max_cross_fpga_dependency_depth = config.get(
         "max_cross_fpga_dependency_depth",
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
@@ -727,25 +690,6 @@ def compile_canonical_experiment_spec(
             "canonical experiment max_cross_fpga_dependency_depth must be a "
             "non-negative integer (zero disables the policy limit)"
         )
-    mfspart_post_refinement_timing_path_beta = config.get(
-        "mfspart_post_refinement_timing_path_beta",
-        DEFAULT_TIMING_PATH_BETA,
-    )
-    if (
-        isinstance(mfspart_post_refinement_timing_path_beta, bool)
-        or not isinstance(
-            mfspart_post_refinement_timing_path_beta, (int, float)
-        )
-        or not math.isfinite(mfspart_post_refinement_timing_path_beta)
-        or mfspart_post_refinement_timing_path_beta < 0
-    ):
-        raise ValidationError(
-            "canonical experiment mfspart_post_refinement_timing_path_beta "
-            "must be a finite non-negative number"
-        )
-    mfspart_post_refinement_timing_path_beta = float(
-        mfspart_post_refinement_timing_path_beta
-    )
     static_exact_candidate_policy = config.get(
         "static_exact_candidate_policy",
         STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
@@ -1020,30 +964,6 @@ def compile_canonical_experiment_spec(
         str(minimum_combinational_cut_nets),
         "--online-validation",
     ]
-    if mfspart_post_refinement:
-        partition_command.insert(-2, "--mfspart-post-refinement")
-        partition_command[-2:-2] = [
-            "--mfspart-post-refinement-early-stop",
-            str(mfspart_post_refinement_early_stop),
-            "--mfspart-post-refinement-bottleneck-beta",
-            format(mfspart_post_refinement_bottleneck_beta, ".17g"),
-            "--mfspart-post-refinement-timing-path-beta",
-            format(mfspart_post_refinement_timing_path_beta, ".17g"),
-        ]
-        partition_validator.extend(
-            (
-                "--mfspart-post-refinement",
-                "--mfspart-post-refinement-early-stop",
-                str(mfspart_post_refinement_early_stop),
-                "--mfspart-post-refinement-bottleneck-beta",
-                format(mfspart_post_refinement_bottleneck_beta, ".17g"),
-                "--mfspart-post-refinement-timing-path-beta",
-                format(mfspart_post_refinement_timing_path_beta, ".17g"),
-            )
-        )
-    else:
-        partition_command.insert(-2, "--no-mfspart-post-refinement")
-        partition_validator.append("--no-mfspart-post-refinement")
     if partition_constraints is not None:
         partition_command.extend(("--constraints", str(partition_constraints)))
         partition_validator.extend(("--constraints", str(partition_constraints)))
@@ -1080,10 +1000,6 @@ def compile_canonical_experiment_spec(
     ]
     if tritonpart_solution is not None:
         partition_inputs.append("tritonpart_solution")
-    if mfspart_post_refinement:
-        partition_artifacts.append(
-            _artifact("mfspart-post-refinement", "consumer-checkpoint")
-        )
     partition_dependencies = ["frontend", "timing"]
     effective_patron_initial_assignment = (
         str(patron_initial_assignment)
@@ -1119,7 +1035,6 @@ def compile_canonical_experiment_spec(
                     "seed": partition_seed,
                     "seed_attempts": partition_seed_attempts,
                     "repair_min_used_fpgas": partition_repair_min_used,
-                    "mfspart_post_refinement": False,
                     "route_constraints": contract["route_constraints"],
                     "partition_constraints_sha256": base_inputs.get(
                         "partition_constraints"
@@ -1279,16 +1194,6 @@ def compile_canonical_experiment_spec(
             "seed": partition_seed,
             "seed_attempts": partition_seed_attempts,
             "repair_min_used_fpgas": partition_repair_min_used,
-            "mfspart_post_refinement": mfspart_post_refinement,
-            "mfspart_post_refinement_early_stop": (
-                mfspart_post_refinement_early_stop
-            ),
-            "mfspart_post_refinement_bottleneck_beta": (
-                mfspart_post_refinement_bottleneck_beta
-            ),
-            "mfspart_post_refinement_timing_path_beta": (
-                mfspart_post_refinement_timing_path_beta
-            ),
             "route_constraints": contract["route_constraints"],
             "partition_constraints_sha256": base_inputs.get(
                 "partition_constraints"

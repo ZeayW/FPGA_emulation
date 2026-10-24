@@ -34,7 +34,6 @@ their own licenses.
 | `engines/yosys/abc` | [YosysHQ ABC](https://github.com/YosysHQ/abc) | `8827bafb7f288de6749dc6e30fa452f2040949c0` | ABC upstream notices | Logic optimization and mapping |
 | `engines/yosys/libs/cxxopts` | [cxxopts](https://github.com/jarro2783/cxxopts) | `4bf61f08697b110d9e3991864650a405b3dd515d` | MIT | Yosys command-line parsing |
 | `engines/yosys/libs/minisat` | [MiniSat](https://github.com/niklasso/minisat) | Yosys v0.57 vendored snapshot | MIT | Yosys SAT solving |
-| `engines/repart` | [RePart](https://github.com/Welement-zyf/RePart) | `211a9d8fd526576387cad7ac6dd3531354aeb31c` | GPL-3.0-only | Multilevel hypergraph partitioning |
 | `engines/openroad` | [OpenROAD](https://github.com/The-OpenROAD-Project/OpenROAD) | `a008522d88b669ac4c985609533cf5a3d2649222` | BSD-3-Clause | TritonPart and timing infrastructure |
 | `engines/openroad/src/sta` | [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) | `aa598a2f14c5c142e90391a69988523505e7db3d` | GPL-3.0-or-later | API-coupled timing engine embedded in the pinned OpenROAD/TritonPart build |
 | `engines/opensta` | [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) | `051222e4ecc1cb61bb216f392646b602f4b22661` / 3.1.0 | GPL-3.0-or-later | Standalone authoritative TimingPathDB and global timing engine |
@@ -93,7 +92,7 @@ an EmuFlow optimization engine.
 | GNU Make | [GNU Make](https://git.savannah.gnu.org/cgit/make.git) | Root, Yosys, and CUDD builds |
 | GCC or LLVM/Clang | [gcc-mirror/gcc](https://github.com/gcc-mirror/gcc), [llvm/llvm-project](https://github.com/llvm/llvm-project) | C/C++17 compilation |
 | Python | [python/cpython](https://github.com/python/cpython) | Control plane, checkers, OpenPARF |
-| Boost | [boostorg/boost](https://github.com/boostorg/boost) | RePart, OpenROAD, OpenPARF |
+| Boost | [boostorg/boost](https://github.com/boostorg/boost) | OpenROAD, OpenPARF |
 | Bison | [GNU Bison](https://git.savannah.gnu.org/cgit/bison.git) | Yosys, OpenROAD, OpenPARF parsers |
 | Flex | [westes/flex](https://github.com/westes/flex) | Yosys, OpenROAD, OpenPARF parsers |
 | Tcl | [tcltk/tcl](https://github.com/tcltk/tcl) | OpenROAD command interface and VPR SDC parsing |

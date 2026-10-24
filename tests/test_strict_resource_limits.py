@@ -4,8 +4,6 @@ from types import SimpleNamespace
 from emuflow.errors import ValidationError
 from emuflow.partition import summarize_balance_observation, validate_cluster_assignment_balance
 from emuflow.platform import FpgaNode
-from emuflow.repart import _balanced_repart_capacities
-from emuflow.mfspart_provider import _balanced_capacities
 from emuflow.partition_limits import strict_balance_limits, validate_indivisible_limits
 from emuflow.resource_budget import validate_device_resource_usage, validate_materialized_resource_counts
 
@@ -143,15 +141,6 @@ class StrictPartitionLimitsTest(unittest.TestCase):
         self.assertTrue(observed["diagnostic_only"])
         self.assertEqual(observed["design_share_by_fpga"]["fpga0"]["lut"], 0.4)
         self.assertEqual(observed["max_to_mean_by_dimension"]["lut"], 1.6)
-        dimensions, repart_limits, _ = _balanced_repart_capacities(
-            clusters, SimpleNamespace(fpgas=fpgas), ["lut"], 0.1)
-        self.assertEqual(dimensions, ["cells", "lut"])
-        self.assertEqual(repart_limits, [[100, 100]] * 4)
-        native_limits, _ = _balanced_capacities(
-            [{"id": item["id"], "weights": {"cells": len(item["instances"]), **item["resources"]},
-              "fixed_part": -1} for item in clusters], SimpleNamespace(fpgas=fpgas),
-            ["cells", "lut"], {"balance_tolerance": 0.1})
-        self.assertEqual(native_limits["fpga0"], {"cells": 100, "lut": 100})
         with self.assertRaisesRegex(ValidationError, "balance/capacity"):
             validate_cluster_assignment_balance(
                 SimpleNamespace(fpgas=fpgas), clusters, assignments, 0.1,

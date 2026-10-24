@@ -20,7 +20,6 @@ case "${suite}" in
     modules=(
       tests.test_phase1
       tests.test_phase3
-      tests.test_mfspart_phase3
     )
     ;;
   partition)
@@ -28,11 +27,6 @@ case "${suite}" in
       tests.test_phase1
       tests.test_phase3
       tests.test_tritonpart
-      tests.test_mfspart
-      tests.test_mfspart_initial
-      tests.test_mfspart_refine
-      tests.test_mfspart_legalize
-      tests.test_mfspart_phase3
       tests.test_partition_hops
       tests.test_partition_feedback
       tests.test_cross_stage

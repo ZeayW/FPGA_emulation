@@ -124,7 +124,6 @@ from .canonical_experiment import (
     compile_canonical_experiment_spec,
     compile_static_exact_ab_experiment_spec,
 )
-from .partition_qualification import compile_partition_qualification_spec
 from .canonical_qor import (
     parse_canonical_qor_arms,
     run_canonical_qor_comparison,
@@ -135,7 +134,6 @@ from .static_exact_qor import (
     run_static_exact_qor_comparison,
     validate_static_exact_qor_comparison,
 )
-from .mfspart_refine import DEFAULT_TIMING_PATH_BETA
 from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
@@ -675,9 +673,6 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=(
             "tritonpart",
             "greedy",
-            "repart",
-            "repart-replication",
-            "mfspart",
             "patron",
         ),
         default="patron",
@@ -720,33 +715,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     partition_run.add_argument(
         "--patron-physical-feedback-scale", type=float, default=0.0
-    )
-    partition_run.add_argument("--mfspart-coarsener")
-    partition_run.add_argument("--mfspart-initializer")
-    partition_run.add_argument("--mfspart-refiner")
-    partition_run.add_argument("--mfspart-refiner-checker")
-    partition_run.add_argument("--mfspart-legalizer")
-    partition_run.add_argument(
-        "--mfspart-post-refinement",
-        action=_BooleanOptionalAction,
-        default=None,
-        help=(
-            "directionally post-refine a TritonPart assignment with the "
-            "source-bound MFSPart FM refiner"
-        ),
-    )
-    partition_run.add_argument(
-        "--mfspart-post-refinement-early-stop", type=int, default=1000
-    )
-    partition_run.add_argument(
-        "--mfspart-post-refinement-bottleneck-beta",
-        type=float,
-        default=256.0,
-    )
-    partition_run.add_argument(
-        "--mfspart-post-refinement-timing-path-beta",
-        type=float,
-        default=DEFAULT_TIMING_PATH_BETA,
     )
     partition_run.add_argument("--timeout-seconds", type=int, default=3600)
     partition_run.add_argument("--seed-attempts", type=int, default=1)
@@ -798,20 +766,6 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate.add_argument("--constraints", type=Path)
     partition_validate.add_argument("--route-constraints", type=Path)
     partition_validate.add_argument("--tritonpart-solution", type=Path)
-    partition_validate.add_argument(
-        "--mfspart-post-refinement",
-        action=_BooleanOptionalAction,
-        default=None,
-    )
-    partition_validate.add_argument(
-        "--mfspart-post-refinement-early-stop", type=int
-    )
-    partition_validate.add_argument(
-        "--mfspart-post-refinement-bottleneck-beta", type=float
-    )
-    partition_validate.add_argument(
-        "--mfspart-post-refinement-timing-path-beta", type=float
-    )
     partition_validate.add_argument("--provider")
     partition_validate.add_argument("--patron-initial-assignment", type=Path)
     partition_validate.add_argument("--patron-initial-clusters", type=Path)
@@ -2006,10 +1960,7 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--partition-provider",
         choices=(
-            "repart-replication",
-            "repart",
             "tritonpart",
-            "mfspart",
             "patron",
             "greedy",
         ),
@@ -2032,7 +1983,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "resuming Phase 3 after a validated provider boundary"
         ),
     )
-    multi_fpga_compile.add_argument("--repart")
     multi_fpga_compile.add_argument("--patron-refiner")
     multi_fpga_compile.add_argument("--patron-max-moves", type=int)
     multi_fpga_compile.add_argument(
@@ -2086,24 +2036,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--static-exact-candidate-policy",
         choices=(STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,),
         default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
-    )
-    multi_fpga_compile.add_argument(
-        "--mfspart-post-refinement",
-        action=_BooleanOptionalAction,
-        default=False,
-        help=(
-            "explicitly run the experimental MFSPart follow-up after a "
-            "TritonPart assignment (disabled by default)"
-        ),
-    )
-    multi_fpga_compile.add_argument(
-        "--mfspart-post-refinement-timing-path-beta",
-        type=float,
-        default=DEFAULT_TIMING_PATH_BETA,
-        help=(
-            "weight of adjacent logical transitions from pre-partition "
-            "timing paths in an explicitly enabled MFSPart follow-up"
-        ),
     )
     multi_fpga_compile.add_argument(
         "--timing-driven",
@@ -2669,15 +2601,6 @@ def _build_parser() -> argparse.ArgumentParser:
     benchmark_experiment.add_argument("--config", type=Path, required=True)
     benchmark_experiment.add_argument("--repository-root", type=Path, required=True)
     benchmark_experiment.add_argument("--out", type=Path, required=True)
-    partition_qualification = subparsers.add_parser(
-        "benchmark-partition-experiment-compile",
-        help="compile one canonical real-RTL Phase 1-3 partition qualification DAG",
-    )
-    partition_qualification.add_argument("--config", type=Path, required=True)
-    partition_qualification.add_argument(
-        "--repository-root", type=Path, required=True
-    )
-    partition_qualification.add_argument("--out", type=Path, required=True)
     static_exact_experiment = subparsers.add_parser(
         "benchmark-static-exact-ab-compile",
         help=(
@@ -3186,10 +3109,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--provider",
         choices=(
-            "repart-replication",
-            "repart",
             "tritonpart",
-            "mfspart",
             "patron",
             "greedy",
         ),
@@ -3242,37 +3162,12 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     phase3.add_argument(
-        "--repart",
-        help=(
-            "explicit comparison override; defaults to the in-tree "
-            "RePart build"
-        ),
-    )
-    phase3.add_argument(
-        "--repart-solution",
-        type=Path,
-        help=(
-            "import a precomputed RePart solution; '*' records are accepted "
-            "only by --provider repart-replication"
-        ),
-    )
-    phase3.add_argument(
-        "--repart-timeout-seconds",
-        type=int,
-        default=3600,
-    )
-    phase3.add_argument(
         "--hop-refiner",
         help=(
             "explicit comparison override; defaults to the in-tree C++ "
             "topology-constrained FM refiner"
         ),
     )
-    phase3.add_argument("--mfspart-coarsener")
-    phase3.add_argument("--mfspart-initializer")
-    phase3.add_argument("--mfspart-refiner")
-    phase3.add_argument("--mfspart-refiner-checker")
-    phase3.add_argument("--mfspart-legalizer")
     phase3.add_argument(
         "--timing-database",
         type=Path,
@@ -3292,25 +3187,6 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--patron-physical-system-timing", type=Path)
     phase3.add_argument(
         "--patron-physical-feedback-scale", type=float, default=0.0
-    )
-    phase3.add_argument(
-        "--mfspart-post-refinement",
-        action=_BooleanOptionalAction,
-        default=None,
-    )
-    phase3.add_argument(
-        "--mfspart-post-refinement-early-stop", type=int, default=1000
-    )
-    phase3.add_argument(
-        "--mfspart-post-refinement-bottleneck-beta",
-        type=float,
-        default=256.0,
-    )
-    phase3.add_argument("--timing-path-database", type=Path)
-    phase3.add_argument(
-        "--mfspart-post-refinement-timing-path-beta",
-        type=float,
-        default=DEFAULT_TIMING_PATH_BETA,
     )
 
     sta_parser = subparsers.add_parser(
@@ -3737,13 +3613,10 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument(
         "--phase3-provider",
         choices=(
-            "repart-replication",
-            "repart",
             "tritonpart",
-            "mfspart",
             "patron",
         ),
-        default="repart-replication",
+        default="patron",
     )
     cross_stage_optimize.add_argument(
         "--cut-mode",
@@ -3780,7 +3653,6 @@ def _build_parser() -> argparse.ArgumentParser:
               "capacity limits"),
     )
     cross_stage_optimize.add_argument("--openroad")
-    cross_stage_optimize.add_argument("--repart")
     cross_stage_optimize.add_argument("--patron-refiner")
     cross_stage_optimize.add_argument("--patron-max-moves", type=int)
     cross_stage_optimize.add_argument(
@@ -4303,21 +4175,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                     openroad=args.openroad,
                     tritonpart_solution=args.tritonpart_solution,
                     hop_refiner=args.hop_refiner,
-                    mfspart_coarsener=args.mfspart_coarsener,
-                    mfspart_initializer=args.mfspart_initializer,
-                    mfspart_refiner=args.mfspart_refiner,
-                    mfspart_refiner_checker=args.mfspart_refiner_checker,
-                    mfspart_legalizer=args.mfspart_legalizer,
-                    mfspart_post_refinement=args.mfspart_post_refinement,
-                    mfspart_post_refinement_early_stop=(
-                        args.mfspart_post_refinement_early_stop
-                    ),
-                    mfspart_post_refinement_bottleneck_beta=(
-                        args.mfspart_post_refinement_bottleneck_beta
-                    ),
-                    mfspart_post_refinement_timing_path_beta=(
-                        args.mfspart_post_refinement_timing_path_beta
-                    ),
                     timeout_seconds=args.timeout_seconds,
                     seed_attempts=args.seed_attempts,
                     repair_min_used_fpgas=args.repair_min_used_fpgas,
@@ -4368,18 +4225,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 expected_seed=args.seed,
                 expected_seed_attempts=args.seed_attempts,
                 expected_repair_min_used_fpgas=args.repair_min_used_fpgas,
-                expected_mfspart_post_refinement=(
-                    args.mfspart_post_refinement
-                ),
-                expected_mfspart_post_refinement_early_stop=(
-                    args.mfspart_post_refinement_early_stop
-                ),
-                expected_mfspart_post_refinement_bottleneck_beta=(
-                    args.mfspart_post_refinement_bottleneck_beta
-                ),
-                expected_mfspart_post_refinement_timing_path_beta=(
-                    args.mfspart_post_refinement_timing_path_beta
-                ),
                 expected_cut_mode=args.cut_mode,
                 expected_max_cross_fpga_dependency_depth=(
                     args.max_cross_fpga_dependency_depth
@@ -5384,13 +5229,6 @@ def _dispatch(args: argparse.Namespace) -> int:
         _print_json(report)
         return 0
 
-    if args.command == "benchmark-partition-experiment-compile":
-        report = compile_partition_qualification_spec(
-            args.config, args.repository_root, args.out
-        )
-        _print_json(report)
-        return 0
-
     if args.command == "benchmark-static-exact-ab-compile":
         report = compile_static_exact_ab_experiment_spec(
             args.config,
@@ -5909,7 +5747,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             balance_tolerance=args.balance_tolerance,
             openroad=args.openroad,
             tritonpart_solution=args.tritonpart_solution,
-            repart=args.repart,
             patron_refiner=args.patron_refiner,
             patron_max_moves=args.patron_max_moves,
             patron_flow_refinement=args.patron_flow_refinement,
@@ -5933,10 +5770,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             static_exact_candidate_policy=(
                 args.static_exact_candidate_policy
-            ),
-            mfspart_post_refinement=args.mfspart_post_refinement,
-            mfspart_post_refinement_timing_path_beta=(
-                args.mfspart_post_refinement_timing_path_beta
             ),
             timing_driven=args.timing_driven,
             timing_backend=args.timing_backend,
@@ -6113,27 +5946,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             tritonpart_repair_min_used_fpgas=(
                 args.tritonpart_repair_min_used_fpgas
             ),
-            repart=args.repart,
-            repart_solution=args.repart_solution,
-            repart_timeout_seconds=args.repart_timeout_seconds,
             route_constraints_path=args.route_constraints,
             hop_refiner=args.hop_refiner,
-            mfspart_coarsener=args.mfspart_coarsener,
-            mfspart_initializer=args.mfspart_initializer,
-            mfspart_refiner=args.mfspart_refiner,
-            mfspart_refiner_checker=args.mfspart_refiner_checker,
-            mfspart_legalizer=args.mfspart_legalizer,
-            mfspart_post_refinement=args.mfspart_post_refinement,
-            mfspart_post_refinement_early_stop=(
-                args.mfspart_post_refinement_early_stop
-            ),
-            mfspart_post_refinement_bottleneck_beta=(
-                args.mfspart_post_refinement_bottleneck_beta
-            ),
-            timing_path_database_path=args.timing_path_database,
-            mfspart_post_refinement_timing_path_beta=(
-                args.mfspart_post_refinement_timing_path_beta
-            ),
             cut_mode=args.cut_mode,
             max_cross_fpga_dependency_depth=(
                 args.max_cross_fpga_dependency_depth
@@ -6363,7 +6177,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 min_used_fpgas=args.min_used_fpgas,
                 balance_tolerance=args.balance_tolerance,
                 openroad=args.openroad,
-                repart=args.repart,
                 patron_refiner=args.patron_refiner,
                 patron_max_moves=args.patron_max_moves,
                 patron_flow_refinement=args.patron_flow_refinement,

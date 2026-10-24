@@ -118,11 +118,10 @@ physical results. Any claim of final timing improvement therefore requires a
 separate complete-flow comparison. PATRON is the project's algorithm name,
 not a claim to reproduce one particular paper.
 
-Explicit alternatives include upstream **RePart**, with an optional
-logic-replication route ([RePart paper](#research-references)), and
-EmuFlow's separately implemented **MFSPart-based** multilevel provider
-([MFSPart paper](#research-references)). Greedy partitioning remains a
-baseline. Boundary policy is a separate choice: sequential-only and generalized
+RePart and MFSPart initialization, replication and post-refinement routes are
+retired. TritonPart remains the PATRON initializer and a direct comparison
+capability. Historical implementations are available through Git.
+Boundary policy is a separate choice: sequential-only and generalized
 Static Exact admit different cut locations. Exact transport-event legality is
 established after routing and TDM assignment, not by a Phase 3 timing proxy.
 
@@ -221,7 +220,7 @@ adapter.
 | --- | --- | --- |
 | Yosys / ABC synthesis | Direct upstream tool execution; EmuFlow mapping profiles and import | [yosys.py](../src/emuflow/yosys.py) |
 | OpenSTA path extraction | Direct STA-engine integration; EmuFlow path contract | [opensta.py](../src/emuflow/opensta.py) |
-| TritonPart / RePart | Upstream partitioner integrations; shared assignment/legality contracts | [partition.py](../src/emuflow/partition.py) |
+| TritonPart | Upstream initializer integration; shared assignment/legality contracts | [partition.py](../src/emuflow/partition.py) |
 | PATRON | EmuFlow path-aware K-way refinement initialized by TritonPart; not an external paper implementation | [patron_refiner.cpp](../src/native/patron_refiner.cpp) |
 | Static Exact semantic analysis | EmuFlow structural dependency/capture traversal with a Python reference and native large-design implementation | [static_exact_analyzer.cpp](../src/native/static_exact_analyzer.cpp) |
 | System router | EmuFlow implementation drawing on DAC 2025 delay-demand balancing and ASP-DAC 2026 timing-aware routing, with additional candidate trees | [tlr_router.cpp](../src/native/tlr_router.cpp) |
@@ -252,12 +251,6 @@ points are mapped in [implementation and reference map](#implementation-and-refe
 
 - **TritonPart** — multilevel, multi-constraint partitioning, ICCAD 2023.
   [Author project and paper](https://github.com/ABKGroup/TritonPart).
-- **RePart: Efficient Hypergraph Partitioning with Logic Replication Optimization
-  for Multi-FPGA System** — 2026 preprint.
-  [Paper](https://arxiv.org/abs/2604.00780), [source](https://github.com/Welement-zyf/RePart).
-- **MFSPart: A Generalized Partitioning Framework for Multi-FPGA Systems and Its
-  Ensemble-Based Extension** — TCAD 2026.
-  [Author manuscript](https://zhiyaoxie.com/files/TCAD26_MFSPart.pdf).
 - **Synergistic Die-Level Router for Multi-FPGA System with Time-Division
   Multiplexing Optimization** — Wang et al., DAC 2025.
   [Author manuscript](https://yibolin.com/publications/papers/ROUTE_DAC2025_Wang.pdf).
