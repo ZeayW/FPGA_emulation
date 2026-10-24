@@ -1,3 +1,4 @@
+from contextlib import closing
 import copy
 import hashlib
 import json
@@ -587,7 +588,7 @@ class Phase6Test(unittest.TestCase):
                 clocks=self.ir.value["clocks"],
             )
             self.assertEqual(proof["status"], "pass")
-            with sqlite3.connect(split_path) as connection:
+            with closing(sqlite3.connect(split_path)) as connection, connection:
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
                     2,
@@ -943,7 +944,7 @@ class Phase6Test(unittest.TestCase):
             schedule_path = root / "schedule.json"
             output_path = root / "phase6"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            with sqlite3.connect(ir_path) as connection:
+            with closing(sqlite3.connect(ir_path)) as connection, connection:
                 connection.execute(
                     "UPDATE metadata SET value=? "
                     "WHERE key='record_counts_json'",
@@ -1251,22 +1252,8 @@ class Phase6Test(unittest.TestCase):
             schedule = copy.deepcopy(self.schedule)
             for entry in schedule["entries"]:
                 entry["tdm_ratio"] = schedule["metrics"]["frame_slots"]
-            executable = root / "emuflow_pin_planner"
-            subprocess.run(
-                [
-                    "c++",
-                    "-std=c++17",
-                    "-O2",
-                    "-pthread",
-                    str(
-                        ROOT
-                        / "src/native/placement_aware_pin_planner.cpp"
-                    ),
-                    "-o",
-                    str(executable),
-                ],
-                check=True,
-            )
+            from tests.native_build import placement_aware_pin_planner
+            executable = placement_aware_pin_planner()
             positions = {
                 "schema": SIGNAL_POSITION_HINTS_SCHEMA,
                 "design": schedule["design"],
