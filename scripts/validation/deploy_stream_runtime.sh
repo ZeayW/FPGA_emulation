@@ -101,7 +101,7 @@ fi
 # standalone binaries would silently execute stale stage code.
 unified="$runtime_dir/bin/emuflow-native"
 rm -f "$unified"
-# The unified entry and physical compatibility CLI link the same archive.
+# The unified entry and retained hop repair helper link the same archive.
 # Compile the native core once rather than embedding an independent parser /
 # SQLite / lifecycle implementation in each executable.
 object_dir="$runtime_dir/tmp/core-objects"
@@ -132,8 +132,7 @@ done
 archive="$runtime_dir/lib/libemuflow_core.a"
 "$("$selected_cxx" -print-prog-name=ar)" rcs "$archive" "${objects[@]}"
 for tool in \
-  hop_partition_refiner \
-  static_exact_analyzer
+  hop_partition_refiner
 do
   target="$runtime_dir/bin/emuflow_$tool"
   rm -f "$target"

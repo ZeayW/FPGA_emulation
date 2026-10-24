@@ -169,6 +169,13 @@ class NativeToolsTest(unittest.TestCase):
             self.assertIn(source, manifest)
         self.assertIn('emuflow_native.cpp', script)
         self.assertIn('"$archive"', script)
+        # Retired analyzer/Chimew shells have no main; deployment must not
+        # compile a second executable from those shared kernel sources.
+        link_helpers = script[script.index("for tool in "):script.index('"$unified" check-runtime')]
+        for retired in ("static_exact_analyzer", "chimew_signal_grouper", "chimew_position_refiner",
+                        "chimew_rudy", "chimew_bank_channel_assigner"):
+            self.assertNotIn(retired, link_helpers)
+
 
     def test_thin_runtime_borrows_only_maintained_dependency_programs(self) -> None:
         import subprocess
