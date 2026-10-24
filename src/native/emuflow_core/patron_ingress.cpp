@@ -64,22 +64,7 @@ void SealOrder(const std::string& output, const std::vector<std::uint32_t>& orde
   put(&magic,sizeof magic); put(&version,sizeof version); put(&count,sizeof count);
   put(order.data(),order.size()*sizeof(std::uint32_t)); writer.Write(crc); writer.Commit();
 }
-class StagedOutput {
- public:
-  explicit StagedOutput(const std::string& output) {
-    auto pattern=output+".stage.XXXXXX";
-    std::vector<char> name(pattern.begin(),pattern.end()); name.push_back('\0');
-    const int file=mkstemp(name.data());
-    if (file<0) throw StageError(ErrorCode::kPublicationFailed,"cannot stage PATRON output");
-    close(file); path=name.data();
-  }
-  ~StagedOutput() {
-    for (const auto* suffix:{"",".order",".summary.json"}) {
-      std::error_code error; std::filesystem::remove(path+suffix,error);
-    }
-  }
-  std::string path;
-};
+
 }
 
 std::vector<std::uint32_t> CanonicalPatronClusterOrder(std::uint32_t count) {
@@ -337,25 +322,25 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
 }
 
 void RefinePatronFromStore(const std::vector<ArtifactRef>& inputs, const std::string& output) {
-  StagedOutput staged(output);
+  StagedArtifact staged(output,{".order",".summary.json"});
   PatronBuildContext context; patron::Model model;
   const auto build=RunStage("phase3.model-build",[&]{return inputs;},[&](const auto& refs){model=BuildPatronModel(refs,context);});
   if (!build.ok()) throw StageError(build.error,"PATRON model build: "+build.message);
   const auto search=RunStage("phase3.patron-search",[&]{return inputs;},[&](const auto&){
-    emuflow::native::RefinePatronModel(model,staged.path,true,true);
+    emuflow::native::RefinePatronModel(model,staged.path(),true,true);
   });
   if (!search.ok()) throw StageError(search.error,"PATRON search: "+search.message);
   for (const auto& input:inputs) input.RequireUnchanged();
-  SealOrder(staged.path+".order",context.native_to_artifact);
+  SealOrder(staged.path()+".order",context.native_to_artifact);
   auto summary=JsonRecord(std::map<std::string,JsonRecord>{{"schema","emuflow.patron-native-model/v1"},
       {"implementation_id",inputs.size()==5 ? "native-primary-store-model-v2" : "native-store-model-v1"},{"clusters",model.clusters},{"nets",model.nets},
       {"paths",model.paths},{"dimensions",model.dimensions},{"capacity_domains",model.domains}}).Encode();
   summary.pop_back();
   summary+=",\"model_build\":"+StageResultJson(build)+",\"search\":"+StageResultJson(search)+"}";
-  AtomicBinaryWriter writer(staged.path+".summary.json"); writer.WriteBytes(summary.data(),summary.size()); writer.Commit();
+  AtomicBinaryWriter writer(staged.path()+".summary.json"); writer.WriteBytes(summary.data(),summary.size()); writer.Commit();
   for (const auto& input:inputs) input.RequireUnchanged();
-  PublishTemporaryFile(staged.path+".order",output+".order");
-  PublishTemporaryFile(staged.path,output);
-  PublishTemporaryFile(staged.path+".summary.json",output+".summary.json");
+  PublishTemporaryFile(staged.path()+".order",output+".order");
+  PublishTemporaryFile(staged.path(),output);
+  PublishTemporaryFile(staged.path()+".summary.json",output+".summary.json");
 }
 }  // namespace emuflow::core

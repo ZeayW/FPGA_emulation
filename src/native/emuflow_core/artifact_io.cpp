@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #if defined(_WIN32)
 #include <process.h>
@@ -108,6 +109,27 @@ void ReadAndValidateHeader(BinaryReader& reader, const ArtifactSchema& schema) {
     throw std::runtime_error(std::string("unsupported ") + schema.name +
                              " header");
   }
+}
+
+StagedArtifact::StagedArtifact(const std::string& target,std::vector<std::string> suffixes)
+    :suffixes_(std::move(suffixes)) {
+  for (const auto& suffix:suffixes_)
+    if (suffix.empty() || suffix[0]!='.' || suffix.find('/')!=std::string::npos || suffix.find('\\')!=std::string::npos)
+      throw std::runtime_error("invalid staged artifact sidecar");
+#if !defined(_WIN32)
+  auto pattern=target+".stage.XXXXXX";
+  std::vector<char> name(pattern.begin(),pattern.end()); name.push_back('\0');
+  int descriptor=mkstemp(name.data());
+  if (descriptor<0) throw std::runtime_error("cannot stage native artifact");
+  close(descriptor); path_=name.data();
+#else
+  throw std::runtime_error("exclusive native staging is unavailable");
+#endif
+}
+StagedArtifact::~StagedArtifact() {
+  std::error_code error;
+  std::filesystem::remove(path_,error);
+  for (const auto& suffix:suffixes_) std::filesystem::remove(path_+suffix,error);
 }
 
 AtomicBinaryWriter::AtomicBinaryWriter(const std::string& target_path)

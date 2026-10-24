@@ -6,6 +6,7 @@
 #include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/partition_clusters.hpp"
 #include "emuflow_core/partition_loads.hpp"
+#include "emuflow_core/exact_captures.hpp"
 #include "emuflow_core/candidate_ids.hpp"
 #include "emuflow_core/sqlite.hpp"
 
@@ -16,6 +17,8 @@ namespace emuflow::native {
 const char* StageName(Stage stage) {
   switch (stage) {
     case Stage::kInvalid: return "native.request";
+    case Stage::kBuildCaptures: return "phase3.build-captures";
+    case Stage::kValidateCaptures: return "phase3.validate-captures";
     case Stage::kReducePartitionLoads: return "phase3.reduce-loads";
     case Stage::kAnalyzeExact: return "phase3.analyze";
     case Stage::kFinalizeExact: return "phase3.finalize-semantics";
@@ -44,6 +47,8 @@ namespace {
 std::vector<std::string> InputSchemas(const StageRequest& request) {
   switch (request.stage) {
     case Stage::kInvalid: break;
+    case Stage::kBuildCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1"};
+    case Stage::kValidateCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1","exact-captures-v1"};
     case Stage::kReducePartitionLoads: return {"emuir-compact-v2","partition-cluster-columns-v2","partition-load-request-v1"};
     case Stage::kAnalyzeExact:
       return request.indexed_input
@@ -176,6 +181,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     const auto& output = request.output_path;
     switch (request.stage) {
       case Stage::kReducePartitionLoads: core::ReducePartitionLoads(inputs,output); break;
+      case Stage::kBuildCaptures: core::BuildExactCaptures(inputs,output); break;
+      case Stage::kValidateCaptures: core::ValidateExactCaptures(inputs,output); break;
       case Stage::kAnalyzeExact:
         if (request.indexed_input) AnalyzeStaticExact(path(1), output, path(0));
         else AnalyzeStaticExact(path(0), output);
@@ -211,6 +218,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     const char* schema = nullptr;
     switch (request.stage) {
       case Stage::kReducePartitionLoads: schema = "partition-load-summary-v1"; break;
+      case Stage::kBuildCaptures: schema = "exact-captures-v1"; break;
+      case Stage::kValidateCaptures: schema = "exact-capture-validation-v1"; break;
       case Stage::kAnalyzeExact: schema = "exact-topology-v3"; break;
       case Stage::kFinalizeExact: schema = "exact-nodes-v2"; break;
       case Stage::kResolveCaptures: schema = "exact-captures-v1"; break;

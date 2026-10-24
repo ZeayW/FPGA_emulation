@@ -20,6 +20,8 @@ constexpr const char* kUsage =
     "  phase3 analyze --indexed-input EMUIR INPUT OUTPUT\n"
     "  phase3 finalize-semantics TOPOLOGY METADATA OUTPUT\n"
     "  phase3 resolve-captures EMUIR REQUEST TOPOLOGY PARTS OUTPUT\n"
+    "  phase3 build-captures EMUIR REQUEST TOPOLOGY PARTS OUTPUT\n"
+    "  phase3 validate-captures EMUIR REQUEST TOPOLOGY PARTS CAPTURES OUTPUT\n"
     "  phase3 hash-semantics NODES CAPTURES HEADER OUTPUT\n"
     "  phase3 write-exact-sections NODES CAPTURES REQUEST OUTPUT\n"
     "  phase3 refine-patron [--summary-output|--trace-output] [--typed-output] "
@@ -129,6 +131,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   };
   if (phase == "phase3" && operation == "refine-patron-from-primary" && argc == 9)
     return run(Stage::kRefinePatronFromPrimary,{argv[3],argv[4],argv[5],argv[6],argv[7]},argv[8]);
+  if (phase == "phase3" && operation == "build-captures" && argc == 8)
+    return run(Stage::kBuildCaptures,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
+  if (phase == "phase3" && operation == "validate-captures" && argc == 9)
+    return run(Stage::kValidateCaptures,{argv[3],argv[4],argv[5],argv[6],argv[7]},argv[8]);
   if (phase == "phase3" && operation == "reduce-loads" && argc == 7)
     return run(Stage::kReducePartitionLoads,{argv[3],argv[4],argv[5]},argv[6]);
   if (phase == "phase3" && operation == "build-candidate-ids" && argc == 6)

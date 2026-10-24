@@ -21,6 +21,7 @@
 #endif
 
 #include "emuflow_core/artifact_io.hpp"
+#include "emuflow_core/ordered_record_table.hpp"
 #include "emuflow_core/hash.hpp"
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/sqlite.hpp"
@@ -850,7 +851,7 @@ void emuflow::native::FinalizeStaticExact(
 void emuflow::native::ResolveStaticExactCaptures(
     const std::string& source_path, const std::string& request_path,
     const std::string& topology_path, const std::string& parts_path,
-    const std::string& output_path) {
+    const std::string& output_path, bool legacy_index) {
   using emuflow::core::BinaryReader;
   using emuflow::core::SqliteDatabase;
   BinaryReader request(request_path), topology(topology_path), identities(parts_path);
@@ -1038,6 +1039,18 @@ void emuflow::native::ResolveStaticExactCaptures(
   output.Write(std::uint64_t{0x31434553464D5545ULL}); output.Write(std::uint32_t{1});
   output.Write(static_cast<std::uint32_t>(positions.size() - 1)); output.Write(positions.back());
   for (const auto position : positions) output.Write(position);
+  if (!legacy_index) {
+    // The native independent merge validates records directly. No consumer
+    // needs a seq lookup index, so one cursor writes the immutable stream.
+    while (rows.Step()) {
+      output.Write(std::uint8_t(rows.Text(2) == "top-output" ? 0 : 1));
+      const std::array<std::string,5> fields{
+          rows.Text(0),rows.Text(1),rows.Text(3),rows.Text(4),rows.Blob(6)};
+      for (const auto& field:fields) output.Write(static_cast<std::uint32_t>(field.size()));
+      for (const auto& field:fields) output.WriteBytes(field.data(),field.size());
+    }
+    transaction.Commit(); output.Commit(); return;
+  }
   auto update = index.Prepare("UPDATE capture_relation SET seq=? WHERE cut_net=? AND fpga=? "
       "AND kind=? AND endpoint=? AND port_key=? AND bit_length=? AND bit_key=?");
   auto first = index.Prepare("SELECT " + columns + " FROM capture_relation ORDER BY " + columns + " LIMIT 1");
@@ -1141,42 +1154,7 @@ std::string ExactBitDecimal(const std::string& bytes) {
   return result;
 }
 
-class ExactHashTable {
- public:
-  ExactHashTable(const std::string& path, std::uint64_t magic, std::uint32_t version)
-      : reader(path), offsets(path) {
-    emuflow::core::ReadAndValidateHeader(reader, {magic, version, "native semantic records"});
-    count = reader.Read<std::uint32_t>(); size_ = reader.Read<std::uint64_t>();
-    start_ = 24ULL + 8ULL * (std::uint64_t(count) + 1);
-    if (start_ > reader.size() || size_ != reader.size() - start_) throw std::runtime_error("native canonical record envelope is invalid");
-    offsets.Seek(24ULL + 8ULL * count);
-    if (offsets.Read<std::uint64_t>() != size_) throw std::runtime_error("native canonical record extent is invalid");
-    Reset();
-  }
-  void Reset() {
-    reader.Seek(start_); offsets.Seek(24); observed_ = 0; end_ = 0;
-    if (offsets.Read<std::uint64_t>() != 0) throw std::runtime_error("native canonical record origin is invalid");
-  }
-  void Begin() {
-    if (observed_++ >= count) throw std::runtime_error("native canonical record count is invalid");
-    const auto next = offsets.Read<std::uint64_t>();
-    if (next <= end_ || next > size_) throw std::runtime_error("native canonical record offsets are invalid");
-    end_ = next;
-  }
-  std::uint64_t Remaining() const {
-    const auto position = reader.size() - reader.remaining();
-    if (position > start_ + end_) throw std::runtime_error("native canonical record exceeds its boundary");
-    return start_ + end_ - position;
-  }
-  void End() {
-    if (reader.size() - reader.remaining() != start_ + end_) throw std::runtime_error("native canonical record lengths disagree");
-  }
-  emuflow::core::BinaryReader reader;
-  std::uint32_t count = 0;
- private:
-  emuflow::core::BinaryReader offsets;
-  std::uint64_t size_ = 0, start_ = 0, end_ = 0, observed_ = 0;
-};
+using ExactHashTable = emuflow::core::OrderedRecordTable;
 
 struct ExactHashNode {
   std::string net, kind, source;
@@ -1212,24 +1190,8 @@ ExactHashNode ReadExactHashNode(ExactHashTable& table) {
   table.End(); return node;
 }
 
-struct ExactHashCapture { std::string net, fpga, endpoint, port, bit; std::uint8_t kind; };
-
-ExactHashCapture ReadExactHashCapture(ExactHashTable& table) {
-  table.Begin(); auto& r = table.reader;
-  ExactHashCapture capture; capture.kind = r.Read<std::uint8_t>();
-  std::array<std::uint32_t,5> lengths{}; std::uint64_t total = 0;
-  for (auto& length : lengths) { length = r.Read<std::uint32_t>(); total += length; }
-  if (total != table.Remaining()) throw std::runtime_error("native canonical capture fields are truncated");
-  std::array<std::string*,5> fields{&capture.net,&capture.fpga,&capture.endpoint,&capture.port,&capture.bit};
-  for (int i = 0; i < 5; ++i) { fields[i]->resize(lengths[i]); r.ReadBytes(fields[i]->data(), lengths[i]); }
-  if (capture.kind > 1 || capture.net.empty() || capture.fpga.empty() || capture.endpoint.empty() ||
-      (!capture.kind && (!capture.port.empty() || !capture.bit.empty())) ||
-      (capture.kind && (capture.port.empty() || capture.bit.empty() || capture.bit.size() > 1024 ||
-                       (capture.bit.size() > 1 && capture.bit[0] == 0)))) {
-    throw std::runtime_error("native canonical capture is invalid");
-  }
-  table.End(); return capture;
-}
+using emuflow::core::ExactCaptureRecord;
+using emuflow::core::ReadExactCaptureRecord;
 
 class ExactCanonicalHash {
  public:
@@ -1280,7 +1242,7 @@ void emuflow::native::HashStaticExactSemantics(
     nodes.Reset(); captures.Reset();
     if (tag == 1) {
       for (std::uint32_t i = 0; i < captures.count; ++i) {
-        const auto c = ReadExactHashCapture(captures); hash.Element(count);
+        const auto c = ReadExactCaptureRecord(captures); hash.Element(count);
         if (!c.kind) hash.Object({{"cut_net",ExactQuote(c.net)},{"endpoint",ExactQuote(c.endpoint)},
             {"fpga",ExactQuote(c.fpga)},{"id",ExactQuote(ExactIdentity("capture",i))},{"kind","\"top-output\""}});
         else hash.Object({{"bit",ExactBitDecimal(c.bit)},{"cut_net",ExactQuote(c.net)},{"endpoint",ExactQuote(c.endpoint)},
@@ -1320,7 +1282,7 @@ void emuflow::native::HashStaticExactSemantics(
         }
       }
       for (std::uint32_t i = 0; i < captures.count; ++i) {
-        const auto c = ReadExactHashCapture(captures); hash.Element(count);
+        const auto c = ReadExactCaptureRecord(captures); hash.Element(count);
         hash.Object({{"capture_requirement",ExactQuote(ExactIdentity("capture",i))},{"fpga",ExactQuote(c.fpga)},
             {"id",ExactQuote(ExactIdentity("segment",capture_start + i))},{"kind","\"rx_to_capture\""},{"source_cut_net",ExactQuote(c.net)}});
       }
@@ -1414,7 +1376,7 @@ void emuflow::native::WriteStaticExactSections(
   const auto total_segments = launches + dependencies + captures.count;
   if (total_segments >= UINT32_MAX) throw std::runtime_error("native exact segment population is too large");
   for (std::uint32_t i = 0; i < captures.count; ++i) {
-    const auto capture = ReadExactHashCapture(captures);
+    const auto capture = ReadExactCaptureRecord(captures);
     const auto part = part_index(capture.fpga);
     sizes[2 + 2 * part] += 14; ++expected_counts[2 + 2 * part];
     sizes[3 + 2 * part] += 9 + 4 + capture.endpoint.size(); ++expected_counts[3 + 2 * part];
@@ -1470,8 +1432,8 @@ void emuflow::native::WriteStaticExactSections(
   nodes.Reset(); captures.Reset();
   std::uint32_t capture_number = 0;
   bool have_capture = captures.count != 0;
-  ExactHashCapture capture;
-  if (have_capture) capture = ReadExactHashCapture(captures);
+  ExactCaptureRecord capture;
+  if (have_capture) capture = ReadExactCaptureRecord(captures);
   for (std::uint32_t i = 0; i < nodes.count; ++i) {
     const auto node = ReadExactHashNode(nodes);
     const auto first_capture = capture_number;
@@ -1496,7 +1458,7 @@ void emuflow::native::WriteStaticExactSections(
       segment(2 + 2 * part, static_cast<std::uint32_t>(launches + dependencies + capture_number), 2, 0, i, capture_number);
       ++capture_number;
       have_capture = capture_number < captures.count;
-      if (have_capture) capture = ReadExactHashCapture(captures);
+      if (have_capture) capture = ReadExactCaptureRecord(captures);
     }
     if ((have_capture && capture.net < node.net) || node.captures.size() != capture_number - first_capture) {
       throw std::runtime_error("native exact capture coverage disagrees");

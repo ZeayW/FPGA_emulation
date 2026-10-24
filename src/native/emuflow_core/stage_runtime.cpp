@@ -16,6 +16,7 @@
 namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
+    {"exact-capture-validation-v1", ArtifactEncoding::kText, 0, 1},
     {"partition-load-request-v1", ArtifactEncoding::kBinary, 0x3151454c504d5545ULL, 1},
     {"partition-load-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"native-compile-request-v1", ArtifactEncoding::kText, 0, 1},

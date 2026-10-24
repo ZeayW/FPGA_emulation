@@ -101,6 +101,40 @@ match, the packed part column; it does not rebuild cluster IDs or member counts.
 The public assignment and balance-report schemas are unchanged. Final semantic
 record construction and index publication still require further native ownership.
 
+`phase3 build-captures EMUIR REQUEST TOPOLOGY PARTS OUTPUT` owns compact capture
+production and independent source validation in one shared-core operation.
+Inputs keep their current EmuIR v2, exact request v4, topology v3 and part-catalog
+v1 envelopes; the final capture stream remains byte-compatible v1. Python sends
+file references and the bounded part catalog, then reads the checked output. It
+does not replay capture coordinates, decode the capture population, retain a
+coverage bitset or issue a SQLite lookup for each capture.
+
+The producer writes one ordered cursor directly rather than maintain the legacy
+per-capture seq index through repeated select/update statements. Its private
+normalization spool closes and is removed before validation. The independent
+checker does not consume that spool: it rebinds topology coordinates to source
+endpoints, validates dense ordinals despite stored ordinal gaps, checks owners,
+architectural-state resources and exact pin/bit identities, and merges its own
+canonical relation with the immutable capture stream. Missing, extra, reordered
+or changed records reject. Coverage is relative to the declared topology
+coordinates; graph traversal and downstream equivalence/timing retain their
+separate qualification gates. A complete required source cursor also checks sink
+coverage without a separate recount. Its temporary relation is retired on exit.
+
+Shared `OrderedRecordTable` decoding is also used by native semantic hashing and
+section emission. `StagedArtifact` owns exclusive same-directory staging and
+private sidecars for both PATRON and capture operations. A capture result replaces
+an older generation only after independent checking and source-generation checks.
+`phase3 validate-captures EMUIR REQUEST TOPOLOGY PARTS CAPTURES OUTPUT` exposes the
+same independent checker with a bounded JSON proof. Explicit legacy
+`resolve-captures` comparisons retain their seq index; production never falls
+back to that path or to Python when the unified native operation fails.
+The Phase 3 profiler records a nested `static_exact.native_capture_build_and_validation`
+interval and native capture count. The interval belongs to its enclosing semantic
+operation and must not be added to that enclosing time. Final semantic-node
+metadata construction, other Python semantic traversals and assignment/index
+publication are still separate migration work.
+
 Small/inline and explicitly selected legacy tools, retained diagnostic traces,
 physical-feedback algorithms and explicit legacy input copies keep the reference
 model path. A selected native producer never retries through that path. Its
@@ -208,8 +242,8 @@ recount the graph. Sparse endpoint ordinals, top-level endpoints and empty nets
 retain their existing meaning. Algorithms explicitly extract local integer
 sequences for their own arrays; public cell/net IDs retain the source artifact
 namespace. A lookup using an ID from another artifact is rejected even when its
-local sequence matches. This does not yet migrate legacy v1 readers, capture
-identity joins, mapped physical stores or the other remaining phase views.
+local sequence matches. This does not yet migrate legacy v1 readers, noncompact
+capture adapters, mapped physical stores or the other remaining phase views.
 
 ### Native operation API
 

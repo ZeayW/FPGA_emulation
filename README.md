@@ -70,6 +70,8 @@ it avoids a second membership/resource snapshot and transposed resource matrix.
 Python carries configuration and packed initial ownership, not a pressure graph.
 Assignment summaries and independent capacity/balance validation also reduce
 the shared primary columns in C++, without decoding cluster member records.
+Compact exact captures are produced and independently checked in the shared
+core before publication, without Python capture replay or per-record lookups.
 SQLite adapter scopes explicitly close readers and writers before publication
 or temporary-file retirement, including lazy physical and timing-store queries.
 The [offline handoff differential](docs/VALIDATION.md#primary-store-handoff-differential)

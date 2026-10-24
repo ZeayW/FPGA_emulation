@@ -97,6 +97,18 @@ to preserve any previously published output.
 
 ## Timing acceptance
 
+Native compact capture contracts compare complete output bytes with the explicit
+legacy producer and complete records with the independent Python source oracle.
+Fixtures include sparse endpoint ordinals, Unicode identities, repeated physical
+endpoints, top outputs, zero captures, relay dependencies and the largest compact
+integer bit. Negative cases mutate record coverage/order/identities/bits/offsets
+and require existing outputs and proofs to survive rejection. A source-resource
+mutation accepted by the producer's selected-flag query must still be rejected by
+the independent shared resource decoder before publication. Poisoned Python
+capture replay verifies that normal production crosses only the native boundary.
+These fixtures are contract tests, not a substitute for real-design feature,
+whole-phase runtime/RSS or complete physical/global timing acceptance.
+
 A complete physical flow requires explicit clock periods, routed logic and
 interface timing, concrete board routes/TDM events, and original-path binding.
 Missing data makes the result incomplete; it must not be replaced by guessed

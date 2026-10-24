@@ -2495,10 +2495,11 @@ def _analyze_static_exact_dependencies_native(
 
                 if compact_ir_path is not None:
                     capture_stream = _produce_native_compact_captures(
-                        compact_ir_path, native_input, native_output,
-                        capture_coordinates(), ordered_cut_ids, part_ids,
-                        ordered_cuts, instance_assignment, root,
+                        compact_ir_path, native_input, native_output, part_ids, root,
                     )
+                    # The native owner consumed and checked all coordinates;
+                    # advance the bounded parent envelope without Python replay.
+                    offset += 16 * capture_count
                 else:
                     if instance_index is None:
                         raise ValidationError(
@@ -3010,8 +3011,7 @@ def _resolve_compact_native_coordinate_capture_stream(
 
 
 def _produce_native_compact_captures(
-    path, request_path, topology_path, capture_coordinates, ordered_cut_ids,
-    part_ids, ordered_cuts, instance_assignment, root,
+    path, request_path, topology_path, part_ids, root,
 ):
     """Native producer plus independently scanned source/capture coverage."""
 
@@ -3025,53 +3025,33 @@ def _produce_native_compact_captures(
                 raw = part.encode("utf-8")
                 stream.write(struct.pack("<I", len(raw)))
                 stream.write(raw)
-        command = resolve_native_stage_command(
-            "emuflow_static_exact_analyzer", "phase3", "resolve-captures"
-        )
-        if len(command) == 1:
-            command = [*command, "--resolve-captures"]
-        completed = subprocess.run(
-            [*command, str(path.resolve()), str(request_path), str(topology_path), str(parts_path), str(output)],
-            capture_output=True, text=True, check=False,
-        )
+        from .native_tools import native_file_generation, resolve_native_executable
+        from .tool_runtime import NativeToolProcess
+        inputs = (path.resolve(), request_path, topology_path, parts_path)
+        generations = tuple(native_file_generation(item) for item in inputs)
+        executable = resolve_native_executable("emuflow-native")
+        report = root / "capture-operation.json"
+        command = [executable, "--report", str(report), "phase3", "build-captures",
+                   *(str(item) for item in inputs), str(output)]
+        from .phase3_runtime import phase3_runtime_call, phase3_runtime_observe
+        def produce():
+            with NativeToolProcess(executable, command, environment=dict(os.environ),
+                                   scratch_parent=root, timeout_ms=21600000) as process:
+                return process.finish()
+        completed = phase3_runtime_call("static_exact.native_capture_build_and_validation", produce)
         if completed.returncode:
-            raise ValidationError("native capture production failed: " + completed.stderr.strip())
+            raise ValidationError("native capture production/validation failed: " + completed.stdout)
+        if tuple(native_file_generation(item) for item in inputs) != generations:
+            raise ValidationError("native capture source generation changed")
+        if report.stat().st_size > 65536:
+            raise ValidationError("native capture operation summary exceeds bound")
+        operation = json.loads(report.read_text())
+        if (not isinstance(operation, dict) or operation.get("schema") != "emuflow.native-stage-result/v1" or
+                operation.get("stage") != "phase3.build-captures" or operation.get("status") != "pass"):
+            raise ValidationError("native capture operation report disagrees")
         result = read_native_static_exact_capture_stream(output)
-        index_path = output.with_name(output.name + ".sqlite")
-        connection = sqlite3.connect(f"file:{index_path.resolve()}?mode=ro&immutable=1", uri=True)
-        try:
-            if connection.execute("SELECT count(*) FROM capture_relation").fetchone()[0] != len(result):
-                raise ValidationError("native capture coverage disagrees")
-            seen = bytearray((len(result) + 7) // 8)
-            unique = 0
-            for net, fpga, kind, endpoint, port, bit in _iter_compact_native_capture_relation(
-                path, capture_coordinates, ordered_cut_ids, part_ids,
-                ordered_cuts, instance_assignment,
-            ):
-                key = b"" if bit is None else bit.to_bytes(max(1, (bit.bit_length() + 7) // 8), "big")
-                row = connection.execute(
-                    "SELECT seq FROM capture_relation WHERE cut_net=? AND fpga=? AND kind=? "
-                    "AND endpoint=? AND port_key=? AND bit_length=? AND bit_key=?",
-                    (net, fpga, kind, endpoint, port or "", -1 if bit is None else len(key), key),
-                ).fetchone()
-                if row is None or not isinstance(row[0], int) or not 0 <= row[0] < len(result):
-                    raise ValidationError("native capture source coverage disagrees")
-                expected = (net.encode(), fpga.encode(), 0 if kind == "top-output" else 1,
-                            endpoint.encode(), (port or "").encode(), key)
-                if result.binary_capture(row[0]) != expected:
-                    raise ValidationError("native capture record disagrees with independent source")
-                mask = 1 << (row[0] % 8)
-                if not seen[row[0] // 8] & mask:
-                    seen[row[0] // 8] |= mask
-                    unique += 1
-            if unique != len(result):
-                raise ValidationError("native capture result has unrequested records")
-            # Validate complete canonical order without a second decoded population.
-            for _ in result.iter_binary_captures():
-                pass
-        finally:
-            connection.close()
-        index_path.unlink()
+        phase3_runtime_observe(native_capture_records=len(result))
+        report.unlink()
         parts_path.unlink()
         result._native_capture_owner = owner
         return result

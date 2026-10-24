@@ -70,6 +70,15 @@ int main() {
   const auto target = root / "artifact.bin";
   const auto database_path = root / "artifact.sqlite";
   try {
+    std::string staged_path;
+    {
+      emuflow::core::StagedArtifact staged(target.string(),{".spool"});
+      staged_path=staged.path();
+      std::ofstream sidecar(staged_path+".spool"); sidecar<<"private"; sidecar.close();
+      if (!std::filesystem::exists(staged_path)) throw std::runtime_error("exclusive staging is missing");
+    }
+    if (std::filesystem::exists(staged_path) || std::filesystem::exists(staged_path+".spool"))
+      throw std::runtime_error("staged artifacts were retained");
     {
       std::ofstream original(target, std::ios::binary | std::ios::trunc);
       original << "old";

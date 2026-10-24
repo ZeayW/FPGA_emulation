@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 namespace emuflow::core {
 
@@ -59,6 +60,21 @@ void ReadAndValidateHeader(BinaryReader& reader, const ArtifactSchema& schema);
 // Publish an already closed same-directory file (including a SQLite store)
 // through the same synchronization/rename boundary as binary artifacts.
 void PublishTemporaryFile(const std::string& temporary, const std::string& target);
+
+// Same-directory exclusive staging with invocation-owned sidecars. Destruction
+// happens after reader/writer scopes unwind; it never removes published inputs.
+class StagedArtifact {
+ public:
+  explicit StagedArtifact(const std::string& target,
+                          std::vector<std::string> suffixes = {});
+  ~StagedArtifact();
+  StagedArtifact(const StagedArtifact&) = delete;
+  StagedArtifact& operator=(const StagedArtifact&) = delete;
+  const std::string& path() const { return path_; }
+ private:
+  std::string path_;
+  std::vector<std::string> suffixes_;
+};
 
 // Same-directory temporary publication prevents consumers from observing a
 // partial native artifact. Commit synchronizes the file before atomic rename;

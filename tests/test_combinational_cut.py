@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import tracemalloc
 import unittest
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -771,7 +771,7 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "design.emuir.sqlite"
             write_compact_emuir(path, value)
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute(
                     "UPDATE endpoint_records SET ordinal=ordinal+1000000"
                 )
@@ -1052,7 +1052,7 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
                 path = Path(temporary) / "design.emuir.sqlite"
                 write_compact_emuir(path, _chain_ir().to_dict())
                 compact_ir = load_partition_ir(path)
-                with sqlite3.connect(path) as connection:
+                with closing(sqlite3.connect(path)) as connection, connection:
                     mutate(connection)
                 with self.assertRaisesRegex(ValidationError, message):
                     _build_combinational_cut_candidate_index(
@@ -1066,7 +1066,7 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
             path = Path(temporary) / "design.emuir.sqlite"
             write_compact_emuir(path, _chain_ir().to_dict())
             compact_ir = load_partition_ir(path)
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 resources_seq = connection.execute(
                     "SELECT resources_seq FROM cell_records WHERE seq=0"
                 ).fetchone()[0]
@@ -1186,7 +1186,7 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
                 path = Path(temporary) / "design.emuir.sqlite"
                 write_compact_emuir(path, _chain_ir().to_dict())
                 compact_ir = load_partition_ir(path)
-                with sqlite3.connect(path) as connection:
+                with closing(sqlite3.connect(path)) as connection, connection:
                     mutate(connection)
                 with self.assertRaisesRegex(ValidationError, message):
                     _build_combinational_cut_candidate_index(
@@ -1275,7 +1275,7 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "million.emuir.sqlite"
             write_compact_emuir(path, value)
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute("PRAGMA synchronous=OFF")
                 template = connection.execute(
                     """SELECT resources_seq,constants_seq,extras_seq
@@ -1645,7 +1645,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "design.emuir.sqlite"
             write_compact_emuir(path, self.ir.to_dict())
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute(
                     "UPDATE endpoint_records SET ordinal=ordinal+100 "
                     "WHERE net_seq=0 AND role=0"
@@ -1793,7 +1793,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             coordinates = list(struct.iter_unpack("<4I", raw_topology[offset:]))
             self.assertTrue(coordinates)
             _, _, capture_net, capture_sink = coordinates[0]
-            with sqlite3.connect(database) as connection:
+            with closing(sqlite3.connect(database)) as connection, connection:
                 next_sink = connection.execute(
                     "SELECT max(ordinal)+1 FROM endpoint_records WHERE net_seq=? AND role=1",
                     (capture_net,),
@@ -1864,7 +1864,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             ):
                 with self.subTest(mutation=mutation):
                     database.write_bytes(pristine)
-                    with sqlite3.connect(database) as connection:
+                    with closing(sqlite3.connect(database)) as connection, connection:
                         connection.execute(mutation)
                     indexed_output.write_bytes(b"previous-generation")
                     result = subprocess.run(command, capture_output=True, text=True)
@@ -2719,7 +2719,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "index is malformed"):
                 read_json(root / "assignment.json")
 
-            with sqlite3.connect(root / "assignment.sqlite") as connection:
+            with closing(sqlite3.connect(root / "assignment.sqlite")) as connection, connection:
                 connection.execute(
                     "UPDATE cuts SET sink_endpoints=sink_endpoints+1 "
                     "WHERE cut_index=0"
@@ -2801,7 +2801,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                         index_path, ir_path, assignment_path
                     )
                     self.assertEqual(summary["status"], "pass")
-                    with sqlite3.connect(index_path) as connection:
+                    with closing(sqlite3.connect(index_path)) as connection, connection:
                         stored = connection.execute(
                             "SELECT typeof(bit),CASE WHEN typeof(bit)='blob' "
                             "THEN length(bit) END "
@@ -2876,7 +2876,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     "port": "D",
                     "bit": bit,
                 }
-                with sqlite3.connect(v1_path) as connection:
+                with closing(sqlite3.connect(v1_path)) as connection, connection:
                     connection.executescript(
                         f"""
                         PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
@@ -2966,7 +2966,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             )
             for encoded, message in invalid_blobs:
                 with self.subTest(encoded_bytes=len(encoded), message=message):
-                    with sqlite3.connect(v2_path) as connection:
+                    with closing(sqlite3.connect(v2_path)) as connection, connection:
                         connection.execute(
                             "UPDATE exact_capture_requirements SET bit=? "
                             "WHERE capture_id=?",
