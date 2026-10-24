@@ -24,9 +24,10 @@ contract requires an explicit measured or proven optimized-away disposition for
 every original path; WNS/TNS use surviving implemented paths. Local paths,
 cross-FPGA logic segments, and shadow interfaces can retain eliminated records
 with null delays and checked source-proof references. Selected vendor constant
-choices require proof that selected states remain constant, complete frontier
-checks, and checkpoint binding. Complete physical coverage
-and global timing remain required qualification gates; the physical evidence
+choices require proof that selected state components remain constant, complete
+frontier checks, and checkpoint binding; a bounded inspection planner follows
+state-to-state fanouts before native observations are checked. Complete physical
+coverage and global timing remain required qualification gates; the physical evidence
 schemas follow this disposition contract. Explicit checkpoint I/O, unresolved endpoint, and selected constant-state
 diagnostics are documented with the provider. See the
 [Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider) and

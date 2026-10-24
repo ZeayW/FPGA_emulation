@@ -285,10 +285,21 @@ the diagnostic reconstructs only one LUT pair at a time. Conditional candidate
 values remain hypotheses in this comparison and still need complete fanout
 coverage before they can become elimination proofs.
 
-`confirm_selected_constant_sources` checks complete direct fanout coverage for
-selected conditional states. Every use must reach a checked retained LUT and
-every native replica must be observed; a direct output port or unsupported
-fanout remains unresolved. The certificate binds the FPGA, mapped source,
+`prepare_constant_frontier_query` follows state-to-state fanouts through
+conditional candidates to construct a bounded closed component, proves its
+joint state values inductively, and returns the complete native LUT inspection
+query. It closes the source databases before the native checkpoint is opened;
+the plan has `status: inspection-required` and is not an elimination proof.
+The component is limited to 4096 states, 4096 retained LUT objects, 65536 fanout
+uses and frontier references, and a bounded closure traversal.
+
+`confirm_selected_constant_sources` rebuilds that plan and checks complete
+fanout coverage for the closed component. Every use must stay inside the
+independently inductive selected state set or reach a checked retained LUT, and
+every native replica must be observed. Each source record lists all reachable
+external LUT frontiers, including exits through other selected states;
+components without an observed frontier remain unresolved. Likewise, a direct
+output port or unsupported fanout remains unresolved. The certificate binds the FPGA, mapped source,
 conditional source-model artifact, synthesized checkpoint, source inventory,
 and native observations. Its explicit policy chooses a legal joint
 initialization for unspecified states and confirms the selected substitutions

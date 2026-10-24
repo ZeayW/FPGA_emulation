@@ -330,19 +330,16 @@ def _require_inductive_selected_states(db, mapped_path: Path, values: Mapping[in
                 raise ValidationError("selected source states are not independently inductive; unconfirmed state assumptions remain")
 
 
-def confirm_selected_constant_sources(mapped_path: Path, functions_path: Path,
-                                      candidates_path: Path, observations_path: Path,
-                                      inventory_path: Path, *, mapped_sha256: str,
-                                      candidate_proofs_sha256: str, checkpoint_sha256: str,
-                                      fpga: str, selected_sources) -> dict[str, Any]:
-    """Check every observable use of selected conditional constant states.
+def prepare_constant_frontier_query(mapped_path: Path, candidates_path: Path,
+                                    inventory_path: Path, *, mapped_sha256: str,
+                                    candidate_proofs_sha256: str, checkpoint_sha256: str,
+                                    fpga: str, selected_sources) -> dict[str, Any]:
+    """Plan a bounded closed state component before opening a native checkpoint.
 
-    The source model chooses a legal joint initialization for unspecified
-    states. This certificate confirms that replacing the selected absent state
-    outputs by those constants agrees with every retained direct LUT frontier.
-    It is a vendor refinement under that explicit initialization policy, not
-    equivalence for every possible initial state. Unsupported fanouts remain
-    unresolved. A routed consumer must additionally bind the synthesized DCP.
+    Follow state-to-state fanouts only through conditional candidates. Every
+    selected state must independently remain constant under the joint values,
+    and all observable exits must be retained LUTs. No native observations are
+    inferred here; the returned query is only an inspection plan.
     """
     from .io import file_sha256
     from .vivado_lineage import INVENTORY_HEADER
@@ -366,8 +363,11 @@ def confirm_selected_constant_sources(mapped_path: Path, functions_path: Path,
         source_rows = []
         frontier_origins = set()
         selected_q = set()
-        for identity in selected_sources:
-            origin = int(identity[1:])
+        pending = list(int(identity[1:]) for identity in selected_sources)
+        discovered = set(pending)
+        direct_frontiers, state_successors = {}, {}
+        uses = 0
+        for origin in pending:
             candidate = db.execute("SELECT constant_value,initialization FROM proofs.constant_candidates WHERE origin=?", (origin,)).fetchone()
             outputs = db.execute("SELECT port,port_bit,net_bit,value_kind FROM cell_pins WHERE cell_seq=? AND direction=1", (origin,)).fetchall()
             if (candidate is None or candidate[0] not in (0, 1)
@@ -376,22 +376,47 @@ def confirm_selected_constant_sources(mapped_path: Path, functions_path: Path,
                 raise ValidationError("selected source is not a supported conditional constant state")
             q = outputs[0][2]
             selected_q.add(q)
-            fanouts = []
-            for row in db.execute("SELECT s.cell_seq,c.type,s.port,s.port_bit FROM cell_pins s JOIN cells c ON c.seq=s.cell_seq WHERE s.net_bit=? AND s.value_kind=0 AND s.direction=0 ORDER BY s.cell_seq,s.port,s.port_bit", (q,)):
-                if row[1] not in {f"LUT{i}" for i in range(1, 7)} or not re.fullmatch(r"I[0-5]", row[2]) or row[3] != 0:
+            direct_frontiers[origin], state_successors[origin] = set(), set()
+            for target,kind,pin,bit in db.execute("SELECT s.cell_seq,c.type,s.port,s.port_bit FROM cell_pins s JOIN cells c ON c.seq=s.cell_seq WHERE s.net_bit=? AND s.value_kind=0 AND s.direction=0 ORDER BY s.cell_seq,s.port,s.port_bit", (q,)):
+                uses += 1
+                if uses > 65536:
+                    raise ValidationError("conditional source component exceeds bounded fanout scope")
+                if kind in {f"LUT{i}" for i in range(1, 7)} and re.fullmatch(r"I[0-5]",pin) and bit == 0:
+                    direct_frontiers[origin].add(target)
+                    frontier_origins.add(target)
+                elif kind in {"FDRE","FDSE","FDCE","FDPE"} and pin in {"D","CE","R","S","CLR","PRE"} and bit == 0:
+                    # An unsupported/noncandidate successor fails on its own
+                    # row. Never silently treat it as an internal constant.
+                    state_successors[origin].add(target)
+                    if target not in discovered:
+                        discovered.add(target)
+                        pending.append(target)
+                else:
                     raise ValidationError("conditional source has an unsupported observable fanout")
-                fanouts.append(row[0])
-                if len(fanouts) > 4096:
-                    raise ValidationError("conditional source fanout exceeds diagnostic scope")
-            if not fanouts:
+                if len(discovered) > 4096 or len(frontier_origins) > 4096:
+                    raise ValidationError("constant confirmation component exceeds diagnostic scope")
+            source_rows.append({"source":f"s{origin}", "constant_value":int(candidate[0]),
+                                "source_initialization":candidate[1]})
+        # Each row references all reachable external LUT frontiers, including
+        # exits through other selected states. Bound both traversal and output.
+        visits, references = 0, 0
+        for row in source_rows:
+            queue, seen, reachable = [int(row["source"][1:])], set(), set()
+            for origin in queue:
+                if origin in seen:
+                    continue
+                seen.add(origin)
+                visits += 1
+                if visits > 4_194_304:
+                    raise ValidationError("constant confirmation closure exceeds traversal scope")
+                reachable.update(direct_frontiers[origin])
+                queue.extend(target for target in state_successors[origin] if target not in seen)
+            if not reachable:
                 raise ValidationError("conditional source lacks an observed functional frontier")
-            frontiers = sorted(set(fanouts))
-            frontier_origins.update(frontiers)
-            if len(frontier_origins) > 4096:
-                raise ValidationError("constant confirmation frontier exceeds diagnostic scope")
-            source_rows.append({"source":identity, "constant_value":int(candidate[0]),
-                                "source_initialization":candidate[1],
-                                "frontier_sources":[f"s{i}" for i in frontiers]})
+            references += len(reachable)
+            if references > 65536:
+                raise ValidationError("constant confirmation closure exceeds frontier-reference scope")
+            row["frontier_sources"] = [f"s{i}" for i in sorted(reachable)]
         ports = json.loads(db.execute("SELECT value FROM metadata WHERE key='ports_json'").fetchone()[0])
         if any(bit in selected_q for port in ports.values() if port["direction"] == "output"
                for bit in port["bits"] if isinstance(bit, int)):
@@ -399,7 +424,7 @@ def confirm_selected_constant_sources(mapped_path: Path, functions_path: Path,
         selected_values = {int(row["source"][1:]):row["constant_value"] for row in source_rows}
         _require_inductive_selected_states(db,mapped_path,selected_values)
         expected_objects = []
-        selected_origins = {int(s[1:]) for s in selected_sources}
+        selected_origins = set(selected_values)
         inventory_digest = hashlib.sha256()
         with inventory_path.open("rb") as stream:
             def lines():
@@ -423,20 +448,46 @@ def confirm_selected_constant_sources(mapped_path: Path, functions_path: Path,
             raise ValidationError("constant confirmation inventory belongs to a different source model")
         if {int(item["source_origin"][1:]) for item in expected_objects} != frontier_origins:
             raise ValidationError("conditional source has an unobserved or optimized frontier")
-        comparison = compare_selected_constant_frontiers(mapped_path, functions_path, candidates_path, observations_path,
-            mapped_sha256=mapped_sha256, expected_objects=expected_objects,
-            selected_constant_values=selected_values,require_input_identity=True)
-        return {"schema":CONSTANT_CONFIRMATION_SCHEMA, "status":"pass", "fpga":fpga,
-                "mapped_index_sha256":mapped_sha256, "source_stage":"synthesized",
-                "initialization_policy":CONSTANT_INITIALIZATION_POLICY,
-                "source_model_scope":CONSTANT_MODEL_SCOPE, "native_input_policy":CONSTANT_NATIVE_INPUT_POLICY,
+        return {"schema":"emuflow.vivado-constant-frontier-query-plan/v1", "status":"inspection-required",
+                "fpga":fpga, "mapped_index_sha256":mapped_sha256,
                 "synthesized_checkpoint_sha256":checkpoint_sha256,
                 "source_candidate_proofs_sha256":candidate_proofs_sha256,
                 "source_inventory_sha256":inventory_digest.hexdigest(),
-                "observations_sha256":file_sha256(observations_path),
-                "sources":sorted(source_rows, key=lambda row:row["source"]),
-                "frontiers":comparison["frontiers"]}
+                "requested_sources":list(selected_sources),
+                "sources":sorted(source_rows,key=lambda row:row["source"]),
+                "query_objects":expected_objects}
     except (ValueError, UnicodeError, OverflowError, sqlite3.DatabaseError) as error:
         raise ValidationError("constant confirmation source evidence is malformed") from error
     finally:
         db.close()
+
+
+def confirm_selected_constant_sources(mapped_path: Path, functions_path: Path,
+                                      candidates_path: Path, observations_path: Path,
+                                      inventory_path: Path, *, mapped_sha256: str,
+                                      candidate_proofs_sha256: str, checkpoint_sha256: str,
+                                      fpga: str, selected_sources) -> dict[str, Any]:
+    """Confirm all retained LUT exits of a closed inductive state component.
+
+    This refines unspecified initialization under an explicit vendor choice;
+    it does not establish equivalence for every initial state or assign delay.
+    """
+    from .io import file_sha256
+    plan = prepare_constant_frontier_query(mapped_path,candidates_path,inventory_path,
+        mapped_sha256=mapped_sha256,candidate_proofs_sha256=candidate_proofs_sha256,
+        checkpoint_sha256=checkpoint_sha256,fpga=fpga,selected_sources=selected_sources)
+    source_rows, expected_objects = plan["sources"], plan["query_objects"]
+    selected_values = {int(row["source"][1:]):row["constant_value"] for row in source_rows}
+    comparison = compare_selected_constant_frontiers(mapped_path, functions_path, candidates_path, observations_path,
+        mapped_sha256=mapped_sha256, expected_objects=expected_objects,
+        selected_constant_values=selected_values,require_input_identity=True)
+    return {"schema":CONSTANT_CONFIRMATION_SCHEMA, "status":"pass", "fpga":fpga,
+            "mapped_index_sha256":mapped_sha256, "source_stage":"synthesized",
+            "initialization_policy":CONSTANT_INITIALIZATION_POLICY,
+            "source_model_scope":CONSTANT_MODEL_SCOPE, "native_input_policy":CONSTANT_NATIVE_INPUT_POLICY,
+            "synthesized_checkpoint_sha256":checkpoint_sha256,
+            "source_candidate_proofs_sha256":candidate_proofs_sha256,
+            "source_inventory_sha256":plan["source_inventory_sha256"],
+            "observations_sha256":file_sha256(observations_path),
+            "sources":sorted(source_rows, key=lambda row:row["source"]),
+            "frontiers":comparison["frontiers"]}

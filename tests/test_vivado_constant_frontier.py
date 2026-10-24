@@ -69,7 +69,7 @@ def test_selected_native_observations_use_indexed_source_driver_identity(tmp_pat
     with pytest.raises(ValidationError,match="input coverage"): compare()
 
 
-def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False, dependent=False):
+def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False, dependent=False, state_chain=None):
     import csv
     import json
     from emuflow.yosys import import_yosys_json
@@ -93,6 +93,17 @@ def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False,
             "port_directions":{"C":"input","CE":"input","D":"input","R":"input","Q":"output"},
             "connections":{"C":[2],"CE":["0"],"D":[3],"R":["0"],"Q":[7]}}
         cells["conditional"]["connections"]["D"]=[7]
+    if state_chain:
+        cells["relay"]={"type":"FDRE","parameters":{"INIT":"x"},"attributes":{},
+            "port_directions":{"C":"input","CE":"input","D":"input","R":"input","Q":"output"},
+            "connections":{"C":[2],"CE":["1"],"D":[5],"R":["0"],"Q":[8]}}
+        cells["front"]["connections"]["I0"]=[8]
+        if state_chain == "cycle":
+            cells["conditional"]["connections"]["D"]=[8]
+        if state_chain == "dynamic":
+            cells["relay"]["connections"]["D"]=[3]
+        if state_chain == "output":
+            expose_state=True
     source=tmp_path/"source.json"
     source.write_text(json.dumps({"modules":{"dut":{"attributes":{"top":"1"},"cells":cells,
         "ports":{"clk":{"direction":"input","bits":[2]},"d":{"direction":"input","bits":[3]},
@@ -148,7 +159,8 @@ def test_unobserved_output_or_native_clone_prevents_constant_confirmation(tmp_pa
             candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
 
 
-def test_only_checked_constant_sources_can_enter_a_bound_routed_proof(tmp_path):
+@pytest.mark.parametrize("chain",[None,"pipeline","cycle"])
+def test_only_checked_constant_sources_can_enter_a_bound_routed_proof(tmp_path,chain):
     import sqlite3
     import json
     import hashlib
@@ -156,7 +168,7 @@ def test_only_checked_constant_sources_can_enter_a_bound_routed_proof(tmp_path):
     from emuflow.vivado_lineage import import_cell_lineage
     from emuflow.vivado_optimization import build_optimization_proofs, OptimizationProofView
     from emuflow.io import file_sha256
-    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path)
+    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,state_chain=chain)
     args=(mapped,functions,proof,observed,inventory)
     kwargs=dict(mapped_sha256=digest,candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,
                 fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
@@ -174,7 +186,7 @@ def test_only_checked_constant_sources_can_enter_a_bound_routed_proof(tmp_path):
                                       checked_constants=supplied,synthesized_checkpoint_sha256=checkpoint)
     report=build_optimization_proofs(mapped,routed_lineage,final,mapped_sha256=digest,fpga="fpga0",
                                      checked_constants=checked,synthesized_checkpoint_sha256="a"*64)
-    assert report["vendor_confirmed_constant_state_cells"] == 1
+    assert report["vendor_confirmed_constant_state_cells"] == (1 if chain is None else 2)
     assert report["conditional_constant_state_candidates"] == 0
     with OptimizationProofView(final,expected_fpga="fpga0") as view:
         result=view.require_eliminated_source(f"s{origins['conditional']}")
@@ -254,3 +266,55 @@ def test_functional_equivalence_alone_is_not_a_synthesis_pin_projection(tmp_path
     assert compare_selected_constant_frontiers(mapped,functions,proof,observed,**options)["status"] == "pass"
     with pytest.raises(ValidationError,match="pin bindings"):
         compare_selected_constant_frontiers(mapped,functions,proof,observed,require_input_identity=True,**options)
+
+
+@pytest.mark.parametrize("chain",["pipeline","cycle"])
+def test_closed_state_component_is_planned_before_native_observation(tmp_path,chain):
+    from emuflow.vivado_constant_frontier import prepare_constant_frontier_query, confirm_selected_constant_sources
+    from emuflow.io import file_sha256
+    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,state_chain=chain)
+    options=dict(mapped_sha256=digest,candidate_proofs_sha256=file_sha256(proof),
+                 checkpoint_sha256="a"*64,fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
+    plan=prepare_constant_frontier_query(mapped,proof,inventory,**options)
+    assert plan["status"] == "inspection-required"
+    assert {r["source"] for r in plan["sources"]} == {f"s{origins['conditional']}",f"s{origins['relay']}"}
+    assert plan["query_objects"] == [{"source_origin":f"s{origins['front']}","name":"p/front"}]
+    for row in plan["sources"]:
+        assert row["frontier_sources"] == [f"s{origins['front']}"]
+    result=confirm_selected_constant_sources(mapped,functions,proof,observed,inventory,**options)
+    assert result["sources"] == plan["sources"]
+    # A real live input cannot be substituted just because both states were
+    # selected. All native pins remain part of the same source projection.
+    observed.write_text(observed.read_text().replace("\tI1\tsource\t","\tI1\tzero\t"))
+    with pytest.raises(ValidationError,match="pin bindings"):
+        confirm_selected_constant_sources(mapped,functions,proof,observed,inventory,**options)
+
+
+@pytest.mark.parametrize("chain,match",[("dynamic","supported conditional constant state"),("output","output port")])
+def test_state_component_cannot_hide_nonconstant_successor_or_output(tmp_path,chain,match):
+    from emuflow.vivado_constant_frontier import prepare_constant_frontier_query
+    from emuflow.io import file_sha256
+    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,state_chain=chain)
+    with pytest.raises(ValidationError,match=match):
+        prepare_constant_frontier_query(mapped,proof,inventory,mapped_sha256=digest,
+            candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,
+            fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
+
+
+def test_internal_state_must_be_absent_from_the_native_snapshot(tmp_path):
+    import csv
+    import json
+    import sqlite3
+    from emuflow.vivado_constant_frontier import prepare_constant_frontier_query
+    from emuflow.io import file_sha256
+    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,state_chain="pipeline")
+    with inventory.open("a") as stream:
+        csv.writer(stream,delimiter="\t",lineterminator="\n").writerow(["p/relay","FDRE",f"s{origins['relay']}",""])
+    # Bind this altered observation owner, so failure exercises the internal
+    # state's actual presence rather than a mismatched inventory seal.
+    with sqlite3.connect(proof) as db:
+        db.execute("UPDATE metadata SET value=? WHERE key='stage_inventory_sha256'",(json.dumps(file_sha256(inventory)),))
+    with pytest.raises(ValidationError,match="still implemented"):
+        prepare_constant_frontier_query(mapped,proof,inventory,mapped_sha256=digest,
+            candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,
+            fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
