@@ -78,6 +78,14 @@ A legal placement with reasonable HPWL can still present the router with poor
 site-pin access, physically incoherent high-fanout trees, or local clusters
 whose external connectivity exceeds nearby routing supply.
 
+The RWRoute adapter now emits the first feedback artifact directly in each
+iteration log.  It ranks the sixteen logical nets touching the most overused
+nodes and records their routed connection uses, shared excess exposure, local,
+short-wire and pin-access contributions, SLR distribution, fanout, HPWL and
+physical source.  The data comes from RWRoute's exact route-node user maps; it
+does not infer ownership from a bounding-box congestion proxy.  This is the
+selection input for the structural passes below.
+
 ## Relevant academic results
 
 The academic literature reaches the same conclusion through different

@@ -279,6 +279,23 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertIn("without reducing its active", source)
         self.assertIn("refusing an unbounded recovery tail", source)
 
+    def test_congestion_snapshot_attributes_exact_router_users_to_nets(self):
+        source = (
+            Path(__file__).parents[1]
+            / "scripts/rapidwright/EmuFlowRWRoute.java"
+        ).read_text(encoding="utf-8")
+        self.assertIn("node.getUsersConnectionCounts().entrySet()", source)
+        self.assertIn("Map<NetWrapper, long[]> byNet", source)
+        self.assertIn("EmuFlow congested net", source)
+        for field in (
+            "overused_nodes", "connection_uses", "shared_excess_exposure",
+            "local_nodes", "short_nodes", "pin_access_nodes",
+            "fanout", "double_hpwl", "source",
+        ):
+            self.assertIn(f'" {field}="', source)
+        self.assertIn('" slr_nodes=0:"', source)
+        self.assertIn("if (topNets.size() > 16) topNets.remove()", source)
+
     def test_rapidwright_block_ram_aliases_match_yosys_ports(self):
         source = (
             Path(__file__).parents[1]

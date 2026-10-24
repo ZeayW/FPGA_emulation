@@ -26,6 +26,7 @@ import com.xilinx.rapidwright.edif.EDIFNet;
 import com.xilinx.rapidwright.edif.EDIFPort;
 import com.xilinx.rapidwright.rwroute.CUFR;
 import com.xilinx.rapidwright.rwroute.Connection;
+import com.xilinx.rapidwright.rwroute.NetWrapper;
 import com.xilinx.rapidwright.rwroute.NodeStatus;
 import com.xilinx.rapidwright.rwroute.RouterHelper;
 import com.xilinx.rapidwright.rwroute.RWRouteConfig;
@@ -55,6 +56,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
@@ -674,6 +676,9 @@ public final class EmuFlowRWRoute {
             int maximumOccupancy = 0;
             Map<String, Long> byIntent = new HashMap<>();
             Map<Integer, Long> bySLR = new HashMap<>();
+            // [overused nodes, routed connection uses, shared excess exposure,
+            // local, short, pin access, SLR0, SLR1, SLR2, SLR3]
+            Map<NetWrapper, long[]> byNet = new HashMap<>();
             for (com.xilinx.rapidwright.rwroute.RouteNode node
                 : routingGraph.getRnodes()) {
                 if (!node.isOverUsed()) continue;
@@ -681,8 +686,25 @@ public final class EmuFlowRWRoute {
                 int occupancy = node.getOccupancy();
                 excessUsers += Math.max(0, occupancy - 1);
                 maximumOccupancy = Math.max(maximumOccupancy, occupancy);
-                byIntent.merge(node.getIntentCode().name(), 1L, Long::sum);
-                bySLR.merge(node.getSLRIndex(routingGraph), 1L, Long::sum);
+                String intent = node.getIntentCode().name();
+                int slr = node.getSLRIndex(routingGraph);
+                byIntent.merge(intent, 1L, Long::sum);
+                bySLR.merge(slr, 1L, Long::sum);
+                for (Map.Entry<NetWrapper, Integer> user
+                    : node.getUsersConnectionCounts().entrySet()) {
+                    long[] contribution = byNet.computeIfAbsent(
+                        user.getKey(), ignored -> new long[10]
+                    );
+                    contribution[0]++;
+                    contribution[1] += user.getValue();
+                    contribution[2] += Math.max(0, occupancy - 1);
+                    if (intent.equals("NODE_LOCAL")) contribution[3]++;
+                    if (intent.equals("NODE_SINGLE")
+                        || intent.equals("NODE_DOUBLE")) contribution[4]++;
+                    if (intent.equals("NODE_PINBOUNCE")
+                        || intent.equals("NODE_PINFEED")) contribution[5]++;
+                    if (slr >= 0 && slr < 4) contribution[6 + slr]++;
+                }
             }
             List<Map.Entry<String, Long>> intents = new ArrayList<>(
                 byIntent.entrySet()
@@ -716,6 +738,64 @@ public final class EmuFlowRWRoute {
                 + " slr_overused_nodes=" + slrCounts
                 + " top_intents=" + topIntents
             );
+            PriorityQueue<Map.Entry<NetWrapper, long[]>> topNets =
+                new PriorityQueue<>(17, (left, right) -> {
+                    int order = Long.compare(
+                        left.getValue()[0], right.getValue()[0]
+                    );
+                    if (order != 0) return order;
+                    order = Long.compare(
+                        left.getValue()[1], right.getValue()[1]
+                    );
+                    if (order != 0) return order;
+                    return right.getKey().getNet().getName().compareTo(
+                        left.getKey().getNet().getName()
+                    );
+                });
+            for (Map.Entry<NetWrapper, long[]> entry : byNet.entrySet()) {
+                topNets.add(entry);
+                if (topNets.size() > 16) topNets.remove();
+            }
+            List<Map.Entry<NetWrapper, long[]>> rankedNets =
+                new ArrayList<>(topNets);
+            rankedNets.sort((left, right) -> {
+                int order = Long.compare(
+                    right.getValue()[0], left.getValue()[0]
+                );
+                if (order != 0) return order;
+                order = Long.compare(
+                    right.getValue()[1], left.getValue()[1]
+                );
+                if (order != 0) return order;
+                return left.getKey().getNet().getName().compareTo(
+                    right.getKey().getNet().getName()
+                );
+            });
+            for (int rank = 0; rank < rankedNets.size(); rank++) {
+                Map.Entry<NetWrapper, long[]> entry = rankedNets.get(rank);
+                NetWrapper wrapper = entry.getKey();
+                Net net = wrapper.getNet();
+                long[] contribution = entry.getValue();
+                SitePinInst source = net.getSource();
+                System.out.println(
+                    "INFO: EmuFlow congested net: iteration=" + routeIteration
+                    + " rank=" + (rank + 1)
+                    + " net=" + net.getName()
+                    + " overused_nodes=" + contribution[0]
+                    + " connection_uses=" + contribution[1]
+                    + " shared_excess_exposure=" + contribution[2]
+                    + " local_nodes=" + contribution[3]
+                    + " short_nodes=" + contribution[4]
+                    + " pin_access_nodes=" + contribution[5]
+                    + " slr_nodes=0:" + contribution[6]
+                    + ",1:" + contribution[7]
+                    + ",2:" + contribution[8]
+                    + ",3:" + contribution[9]
+                    + " fanout=" + wrapper.getConnections().size()
+                    + " double_hpwl=" + wrapper.getDoubleHpwl()
+                    + " source=" + (source == null ? "none" : source.toString())
+                );
+            }
         }
 
         private void routeRecoveryTree(RecoveryPartitionTree.Node node) {
