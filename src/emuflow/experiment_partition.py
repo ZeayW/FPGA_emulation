@@ -23,7 +23,12 @@ from .experiment_upstream import (
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition_hops import validate_assignment_hop_constraints
-from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
+from .partition import (
+    CUT_MODE_SEQUENTIAL_ONLY,
+    CUT_MODE_STATIC_EXACT,
+    DEFAULT_PARTITION_CUT_MODE,
+    DEFAULT_PATRON_ALGORITHM_VERSION,
+)
 from .partition_pressure import validate_partition_pressure_native_bundle
 from .partition_physical_feedback import (
     validate_partition_physical_feedback,
@@ -63,15 +68,14 @@ def run_partition_checkpoint(
     repair_min_used_fpgas: bool = True,
     num_initial_solutions: int = 50,
     num_best_initial_solutions: int = 10,
-    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
+    cut_mode: str = DEFAULT_PARTITION_CUT_MODE,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
     minimum_combinational_cut_nets: int = 0,
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
-    patron_flow_refinement: bool = False,
-    patron_algorithm_version: int = 6,
+    patron_algorithm_version: int = DEFAULT_PATRON_ALGORITHM_VERSION,
     patron_initial_assignment_path: Optional[Path] = None,
     patron_initial_clusters_path: Optional[Path] = None,
     patron_physical_system_timing_path: Optional[Path] = None,
@@ -79,15 +83,8 @@ def run_partition_checkpoint(
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
-    if provider == "patron":
-        if patron_physical_system_timing_path is not None:
-            if patron_algorithm_version == 6 and patron_flow_refinement:
-                patron_algorithm_version = 11
-        elif patron_algorithm_version == 6 and patron_flow_refinement:
-            patron_algorithm_version = 10
-        patron_flow_refinement = patron_algorithm_version != 6
-    else:
-        patron_flow_refinement = False
+    patron_flow_refinement = provider == "patron" and patron_algorithm_version != 6
+
     if (
         isinstance(minimum_combinational_cut_nets, bool)
         or not isinstance(minimum_combinational_cut_nets, int)
@@ -148,7 +145,6 @@ def run_partition_checkpoint(
         ),
         patron_refiner=patron_refiner,
         patron_max_moves=patron_max_moves,
-        patron_flow_refinement=patron_flow_refinement,
         patron_algorithm_version=patron_algorithm_version,
         patron_initial_assignment_path=patron_initial_assignment_path,
         patron_initial_clusters_path=patron_initial_clusters_path,
@@ -276,7 +272,6 @@ def validate_partition_checkpoint(
     expected_minimum_combinational_cut_nets: int | None = None,
     patron_initial_assignment_path: Path | None = None,
     patron_initial_clusters_path: Path | None = None,
-    expected_patron_flow_refinement: bool | None = None,
     expected_patron_algorithm_version: int | None = None,
     expected_patron_max_moves: int | None = None,
     patron_physical_system_timing_path: Path | None = None,
@@ -395,27 +390,20 @@ def validate_partition_checkpoint(
         raise ValidationError(
             "partition PATRON flow-refinement contract is invalid"
         )
-    if (
-        expected_patron_flow_refinement is not None
-        and actual_patron_flow_refinement
-        is not expected_patron_flow_refinement
-    ):
-        raise ValidationError(
-            "partition PATRON flow-refinement contract disagrees"
-        )
     if actual_patron_flow_refinement and report.get("provider") != "patron":
         raise ValidationError(
             "partition flow refinement requires the PATRON provider"
         )
-    actual_patron_algorithm_version = report.get(
-        "patron_algorithm_version", 10 if actual_patron_flow_refinement else 6
-    )
+    actual_patron_algorithm_version = report.get("patron_algorithm_version")
     if (
         isinstance(actual_patron_algorithm_version, bool)
         or not isinstance(actual_patron_algorithm_version, int)
         or actual_patron_algorithm_version not in {6, 9, 10, 11, 14}
         or actual_patron_flow_refinement
-        is not (actual_patron_algorithm_version != 6)
+        is not (
+            report.get("provider") == "patron"
+            and actual_patron_algorithm_version != 6
+        )
     ):
         raise ValidationError(
             "partition PATRON algorithm-version contract is invalid"

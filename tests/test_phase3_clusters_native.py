@@ -45,7 +45,7 @@ def test_primary_columns_match_independent_reference(source,mode):
                 db.execute('UPDATE payloads SET value=? WHERE seq=?',(json.dumps({'lut':4294967295}),row[0]))
             else:
                 db.execute('UPDATE endpoint_records SET ordinal=ordinal*7+3')
-    options={'cut_mode':CUT_MODE_STATIC_EXACT} if mode=='static' else {}
+    options={'cut_mode':CUT_MODE_STATIC_EXACT if mode=='static' else 'sequential-only'}
     expected=build_clusters(ir,constraints,**options)
     with patch('emuflow.partition._build_clusters_from_compact_ir',side_effect=AssertionError('Python UF invoked')):
         actual=build_clusters(ir,constraints,_native_compact_clusters=True,**options)
@@ -74,7 +74,7 @@ def test_fixed_conflict_is_rejected(source):
     constraints=dict(constraints,groups=[{'id':'same','instances':['u0','u1']}],
                      fixed=[{'instance':'u0','fpga':'a'},{'instance':'u1','fpga':'b'}])
     with pytest.raises(ValidationError,match='conflicting fixed'):
-        build_clusters(ir,constraints,_native_compact_clusters=True)
+        build_clusters(ir,constraints,cut_mode="sequential-only", _native_compact_clusters=True)
 
 
 @pytest.mark.parametrize('kind',['unknown-resource','negative-resource','boolean-resource','truncated-request','stale-generation','unknown-group','bad-padding'])
@@ -144,9 +144,9 @@ def test_large_fanout_primary_union_matches_reference(tmp_path,monkeypatch):
         sinks=[{'instance':f'cell-{i:05d}','port':'I','bit':0} for i in range(1,5000)])]
     path=tmp_path/'fanout.sqlite'; write_compact_emuir(path,value)
     ir=load_partition_ir(path)
-    expected=build_clusters(ir,fixture.constraints)
+    expected=build_clusters(ir,fixture.constraints, cut_mode="sequential-only")
     with patch('emuflow.partition._UnionFind',side_effect=AssertionError('Python UF invoked')):
-        actual=build_clusters(ir,fixture.constraints,_native_compact_clusters=True)
+        actual=build_clusters(ir,fixture.constraints,cut_mode="sequential-only", _native_compact_clusters=True)
     assert list(actual['clusters'])==list(expected['clusters'])
     assert len(actual['clusters'])==1
 
@@ -168,7 +168,7 @@ def test_tritonpart_resource_summaries_do_not_scan_native_columns(source,tmp_pat
     root=tmp_path/'summary-native'; (root/'bin').mkdir(parents=True)
     (root/'bin/emuflow-native').symlink_to(emuflow_native())
     monkeypatch.setenv('EMUFLOW_NATIVE_ROOT',str(root))
-    columns=build_clusters(ir,constraints,_native_compact_clusters=True)['clusters']
+    columns=build_clusters(ir,constraints,cut_mode="sequential-only", _native_compact_clusters=True)['clusters']
     expected=[sum(column) for column in columns._resource_columns]
     assert list(columns.native_resource_totals)==[len(columns.source_cluster_indices),*expected]
     with patch.object(type(columns._resource_columns[0]),'__iter__',side_effect=AssertionError('summary scanned native columns')):

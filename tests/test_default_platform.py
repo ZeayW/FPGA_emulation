@@ -144,13 +144,13 @@ class DefaultPlatformTest(unittest.TestCase):
             pass
 
         with tempfile.TemporaryDirectory() as directory:
-            with patch("emuflow.multi_fpga_flow.run_phase1", side_effect=FrontendReached) as frontend, patch("emuflow.multi_fpga_flow.check_opensta_engine_version"):
+            with patch("emuflow.multi_fpga_flow.run_phase1", side_effect=FrontendReached) as frontend, patch("emuflow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.multi_fpga_flow._resolve_partition_openroad", return_value=None):
                 with self.assertRaises(FrontendReached):
                     run_multi_fpga_flow(
                         output_dir=Path(directory) / "run",
                         yosys_json=ROOT / "examples/yosys/counter.json",
                         top="counter", clocks=["clk"], clock_periods={"clk": 10.0},
-                        mapping_profile="generic-soft", partition_provider="greedy",
+                        mapping_profile="generic-soft",
                         timing_driven=False, opensta="/usr/bin/true",
                     )
                 self.assertEqual(frontend.call_args.args[1], DEFAULT_PLATFORM_PATH)

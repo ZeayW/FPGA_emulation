@@ -102,7 +102,7 @@ class Phase6Test(unittest.TestCase):
         constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         self.assignment = assign_clusters(
             self.ir,
             self.platform,
@@ -1491,7 +1491,7 @@ class Phase6Test(unittest.TestCase):
         constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         cluster_by_instance = {
             instance: cluster["id"]
             for cluster in clusters["clusters"]

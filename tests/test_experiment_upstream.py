@@ -1042,6 +1042,8 @@ class ExperimentUpstreamTest(unittest.TestCase):
         (partition / "phase3_report.json").write_text("{}", encoding="utf-8")
         report = {
             "schema": EXPERIMENT_PARTITION_SCHEMA,
+            "patron_algorithm_version": 6,
+            "patron_flow_refinement": False,
             "status": "pass",
             "provider": "tritonpart",
             "seed": 0,

@@ -109,7 +109,7 @@ class TritonPartTest(unittest.TestCase):
         self.constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
-        self.clusters = build_clusters(self.ir, self.constraints)
+        self.clusters = build_clusters(self.ir, self.constraints, cut_mode="sequential-only")
 
     def test_export_keeps_resource_absent_from_one_device(self):
         value = self.platform.to_dict()
@@ -205,7 +205,7 @@ class TritonPartTest(unittest.TestCase):
             write_compact_emuir(ir_path, self.ir.to_dict())
             compact_ir = load_partition_ir(ir_path)
             compact_clusters = build_clusters(
-                compact_ir, self.constraints
+                compact_ir, self.constraints, cut_mode="sequential-only"
             )
             actual = export_tritonpart_inputs(
                 compact_ir,
@@ -252,7 +252,7 @@ class TritonPartTest(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = export_tritonpart_inputs(
                 self.ir,
@@ -335,7 +335,7 @@ class TritonPartTest(unittest.TestCase):
             ir_path = root / "partition.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
             compact_ir = load_partition_ir(ir_path)
-            clusters = build_clusters(compact_ir, self.constraints)
+            clusters = build_clusters(compact_ir, self.constraints, cut_mode="sequential-only")
             solution = root / "solution.txt"
             solution.write_text(
                 "\n".join(
@@ -512,7 +512,7 @@ class TritonPartTest(unittest.TestCase):
     def test_min_used_repair_populates_multiple_empty_partitions(self) -> None:
         platform = Platform.load(FOUR_FPGA_PLATFORM_PATH)
         constraints = normalize_partition_constraints(None, self.ir, platform)
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = export_tritonpart_inputs(
                 self.ir,

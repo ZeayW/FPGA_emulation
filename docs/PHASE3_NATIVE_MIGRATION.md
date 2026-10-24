@@ -339,7 +339,9 @@ physical → signoff → finalize sequence. The opt-in CLI bridge is
 does not call the Python compiler. Each transitional Python adapter invokes one
 shared phase body and exits, releasing its working population before the next
 phase starts. The existing Python controller uses the same phase bodies and
-retains advanced modes. Current defaults resolve from its unchanged API signature;
+retains advanced modes. Current defaults resolve from the shared phase API
+signature: PATRON v14 and generalized Static Exact. Cut mode does not infer an
+algorithm version, and the redundant flow-refinement selector is retired;
 both requested and effective configuration are recorded in the separate native
 result. See [supported modes and contracts](USER_GUIDE.md#native-compile-control).
 
@@ -445,7 +447,7 @@ select this operation. Explicit characterization/reference APIs keep their own
 independent implementation; a selected native failure never falls back.
 The name-facing policy export remains a conversion boundary to retire during
 final publication work. Normal native primary-to-pressure handoff reuses the
-primary artifact; v1 snapshots are explicit compatibility/qualification inputs.
+primary artifact; full membership/resource snapshot protocols are retired.
 
 ## Primary cluster production
 

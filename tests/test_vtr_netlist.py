@@ -6,7 +6,7 @@ from pathlib import Path
 from emuflow.equivalence import _MappedModel
 from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
-from emuflow.multi_fpga_flow import run_multi_fpga_flow
+from tests.partition_fixture import run_multi_fpga_flow_fixture
 from emuflow.partition import build_clusters, normalize_partition_constraints
 from emuflow.platform import Platform
 from emuflow.vtr_architecture import run_vtr_architecture_import
@@ -251,7 +251,7 @@ class VtrNetlistTest(unittest.TestCase):
             constraints = normalize_partition_constraints(
                 None, ir, platform
             )
-            clusters = build_clusters(ir, constraints)["clusters"]
+            clusters = build_clusters(ir, constraints, cut_mode="sequential-only")["clusters"]
             hard_clusters = [
                 cluster
                 for cluster in clusters
@@ -308,14 +308,14 @@ class VtrNetlistTest(unittest.TestCase):
                     ],
                 },
             )
-            report = run_multi_fpga_flow(
+            report = run_multi_fpga_flow_fixture(
                 platform_path=PLATFORM,
                 output_dir=root / "flow",
                 yosys_json=normalized,
                 top="top",
                 clocks=["clk"],
                 partition_constraints=constraints,
-                partition_provider="greedy",
+                partition_provider="tritonpart",
                 cut_mode="sequential-only",
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),

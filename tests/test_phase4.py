@@ -1837,7 +1837,7 @@ class Phase4Test(unittest.TestCase):
         )
         platform = Platform.load(PLATFORM_PATH)
         constraints = normalize_partition_constraints(None, ir, platform)
-        clusters = build_clusters(ir, constraints)
+        clusters = build_clusters(ir, constraints, cut_mode="sequential-only")
         assignment = assign_clusters(
             ir,
             platform,

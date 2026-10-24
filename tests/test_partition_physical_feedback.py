@@ -54,7 +54,7 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        self.clusters = build_clusters(self.ir, self.constraints)
+        self.clusters = build_clusters(self.ir, self.constraints, cut_mode="sequential-only")
         self.by_instance = {
             cluster["instances"][0]: cluster["id"]
             for cluster in self.clusters["clusters"]
@@ -255,9 +255,9 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
             self.route_constraints,
             self.model,
             self.assignment,
+            algorithm_version=11,
             executable=str(emuflow_native()),
             max_moves=8,
-            flow_refinement=True,
             physical_feedback=self.feedback,
             physical_feedback_scale=0.25,
         )
@@ -325,7 +325,6 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
                 hop_refiner=str(hop_partition_refiner()),
                 patron_refiner=str(emuflow_native()),
                 patron_max_moves=8,
-                patron_flow_refinement=True,
                 patron_initial_assignment_path=initial_path,
                 patron_physical_system_timing_path=system_timing_path,
                 patron_physical_feedback_scale=0.25,
@@ -398,7 +397,6 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
                     hop_refiner=str(hop_partition_refiner()),
                     patron_refiner=str(emuflow_native()),
                     patron_max_moves=8,
-                    patron_flow_refinement=True,
                     patron_initial_assignment_path=initial_path,
                     patron_physical_system_timing_path=system_timing_path,
                     patron_physical_feedback_scale=0.25,
@@ -412,7 +410,6 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
                     expected_provider="patron",
                     expected_seed=1,
                     patron_initial_assignment_path=initial_path,
-                    expected_patron_flow_refinement=True,
                     expected_patron_max_moves=8,
                     patron_physical_system_timing_path=system_timing_path,
                     expected_patron_physical_feedback_scale=0.25,

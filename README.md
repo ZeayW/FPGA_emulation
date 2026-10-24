@@ -209,8 +209,8 @@ execution environment to verify core library loading and SQLite/JSON support.
 
 Use the CLI produced by the root build. The following smoke run uses the
 current defaults: the `xilinx-ultrascaleplus-open-v1` mapping profile, the
-bundled four-XCVU19P BoardDB, timing-driven PATRON, native system routing and
-TDM assignment, and baseline Phase 6 generation:
+bundled four-XCVU19P BoardDB, timing-driven PATRON v14 with Static Exact cuts,
+native system routing and TDM assignment, and baseline Phase 6 generation:
 
 ```bash
 export PATH="$PWD/build/native/install/bin:$PATH"
@@ -255,14 +255,18 @@ To use the alternative VTR route, explicitly select
 Missing RapidWright inputs do not trigger an automatic VTR fallback.
 
 Other CLI defaults are TritonPart initial partitioning followed by
-timing-driven PATRON post-processing, `sequential-only` cuts, baseline Phase 6,
-and OpenSTA global physical timing. Global timing consumes complete, contiguous
-original-path bundles with concrete scheduled events; historical regrouping and
+timing-driven PATRON v14 post-processing, `static-exact-combinational` cuts,
+baseline Phase 6, and OpenSTA global physical timing. Global timing consumes
+complete, contiguous original-path bundles with concrete scheduled events;
+historical regrouping and
 schedule reconstruction fallbacks are retired. See the
 [global timing contract](docs/global-opensta-qualification.md#current-event-stream-contract).
-Generalized Static Exact combinational
-cuts and Chimew are explicit options. The integrated Chimew
-lookahead path currently requires the explicit VTR backend/profile combination.
+CLI, Python phase APIs and experiment configurations share these defaults;
+cut mode never implicitly selects an older PATRON version. The redundant
+`--patron-flow-refinement` selector is retired. Chimew remains an explicit
+Phase 6 option, with its implementation, dependencies and validation retained.
+The integrated Chimew lookahead path currently requires the explicit VTR
+backend/profile combination.
 Phase 3 supplies exact resource limits to TritonPart, checks feasibility during
 native search, and independently validates its output. PATRON receives a legal
 initial assignment: bounded native ILP establishes coarse resource feasibility

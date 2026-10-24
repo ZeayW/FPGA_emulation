@@ -33,6 +33,7 @@ from .emuir_storage import open_emuir_sqlite_read_only
 from .ir import EMUIR_SCHEMA, VALID_CUT_CLASSES, EmuIR
 from .io import read_json, write_json
 from .partition import (
+    DEFAULT_PATRON_ALGORITHM_VERSION,
     CUT_MODE_STATIC_EXACT,
     _PackedClusterAssignment,
     active_partition_fpgas,
@@ -4390,8 +4391,7 @@ def run_partition_pressure_native(
     *,
     executable: Optional[str] = None,
     max_moves: Optional[int] = None,
-    flow_refinement: bool = False,
-    algorithm_version: Optional[int] = None,
+    algorithm_version: int = DEFAULT_PATRON_ALGORITHM_VERSION,
     physical_feedback: Optional[Mapping[str, Any]] = None,
     physical_feedback_scale: float = 0.0,
     output_validation: str = "full",
@@ -4406,8 +4406,6 @@ def run_partition_pressure_native(
     limit = len(model["clusters"]) if max_moves is None else max_moves
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
         raise ValidationError("native PATRON max_moves is invalid")
-    if not isinstance(flow_refinement, bool):
-        raise ValidationError("native PATRON flow_refinement is invalid")
     if output_validation not in {"full", "online", "caller"}:
         raise ValidationError("native PATRON output validation mode is invalid")
     if not isinstance(retain_trace_seals, bool):
@@ -4454,20 +4452,12 @@ def run_partition_pressure_native(
             )
         },
     }
-    if algorithm_version is None:
-        algorithm_version = (
-            11
-            if physical_feedback is not None
-            else (10 if flow_refinement else 6)
-        )
     if (
         isinstance(algorithm_version, bool)
         or not isinstance(algorithm_version, int)
         or algorithm_version not in {6, 9, 10, 11, 14}
     ):
         raise ValidationError("native PATRON algorithm version is invalid")
-    if flow_refinement and algorithm_version == 6:
-        algorithm_version = 10
     flow_refinement = algorithm_version != 6
     use_physical_feedback = physical_feedback is not None
     if store_model and (algorithm_version != 14 or retain_trace_seals or physical_feedback is not None

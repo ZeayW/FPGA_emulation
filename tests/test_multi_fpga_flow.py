@@ -131,6 +131,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 ):
                     with self.assertRaisesRegex(RuntimeError, "reached mapper"):
                         run_multi_fpga_flow_fixture(
+                            cut_mode="sequential-only",
                             platform_path=PLATFORM, output_dir=root / "flow",
                             sources=[ROOT / "examples/rtl/counter.v"], top="counter",
                             mapping_profile="xilinx-ultrascaleplus-open-v1",
@@ -550,7 +551,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             ]
         )
         self.assertEqual(phase3.provider, "patron")
-        self.assertEqual(phase3.cut_mode, "sequential-only")
+        self.assertEqual(phase3.cut_mode, "static-exact-combinational")
         checkpoint = _build_parser().parse_args(
             [
                 "experiment-stage",
@@ -566,7 +567,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             ]
         )
         self.assertEqual(checkpoint.provider, "patron")
-        self.assertEqual(checkpoint.cut_mode, "sequential-only")
+        self.assertEqual(checkpoint.cut_mode, "static-exact-combinational")
         cross_stage = _build_parser().parse_args(
             [
                 "cross-stage",
@@ -583,7 +584,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 "cross-stage",
             ]
         )
-        self.assertEqual(cross_stage.cut_mode, "sequential-only")
+        self.assertEqual(cross_stage.cut_mode, "static-exact-combinational")
 
     def test_cli_exact_mode_inherits_unified_slot_refinement_default(self):
         base = [
@@ -630,11 +631,11 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 run.call_args.kwargs["partition_provider"], "patron"
             )
             self.assertEqual(
-                run.call_args.kwargs["patron_algorithm_version"], 6
+                run.call_args.kwargs["patron_algorithm_version"], 14
             )
             self.assertEqual(
                 run.call_args.kwargs["cut_mode"],
-                "sequential-only",
+                "static-exact-combinational",
             )
             self.assertEqual(
                 run.call_args.kwargs["static_exact_candidate_policy"],

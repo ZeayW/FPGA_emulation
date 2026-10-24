@@ -19,7 +19,7 @@ from emuflow.partition import (
 from tests.partition_reference import _partition_hop_distances
 from emuflow.partition_hops import refine_partition_hops
 from emuflow.partition_ir import load_partition_ir
-from emuflow.phase3 import run_phase3
+from tests.partition_fixture import run_phase3_fixture
 from emuflow.platform import Platform
 from emuflow.yosys import import_yosys_json
 
@@ -106,7 +106,7 @@ class HopPartitionRefinementTest(unittest.TestCase):
         constraints = normalize_partition_constraints(
             raw_constraints, self.ir, self.platform
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         cluster_by_instance = {
             instance: cluster["id"]
             for cluster in clusters["clusters"]
@@ -249,7 +249,7 @@ class HopPartitionRefinementTest(unittest.TestCase):
             ir_path = root / "partition.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
             compact_ir = load_partition_ir(ir_path)
-            compact_clusters = build_clusters(compact_ir, constraints)
+            compact_clusters = build_clusters(compact_ir, constraints, cut_mode="sequential-only")
             compact_assignment = build_partition_assignment(
                 compact_ir,
                 self.platform,
@@ -470,11 +470,11 @@ class HopPartitionRefinementTest(unittest.TestCase):
             platform_path.write_text(
                 json.dumps(self.platform.to_dict()), encoding="utf-8"
             )
-            report = run_phase3(
+            report = run_phase3_fixture(
                 ir_path,
                 platform_path,
                 root / "phase3",
-                provider="greedy",
+                provider="tritonpart",
                 cut_mode="sequential-only",
                 balance_tolerance=1.0,
                 route_constraints_path=self._route_constraints(root),
@@ -507,11 +507,11 @@ class HopPartitionRefinementTest(unittest.TestCase):
             previous = Path.cwd()
             try:
                 os.chdir(root)
-                report = run_phase3(
+                report = run_phase3_fixture(
                     Path("design.emuir.json"),
                     Path("board.json"),
                     Path("relative-phase3"),
-                    provider="greedy",
+                    provider="tritonpart",
                     cut_mode="sequential-only",
                     balance_tolerance=1.0,
                     route_constraints_path=self._route_constraints(root),

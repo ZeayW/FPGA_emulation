@@ -1,12 +1,13 @@
 # Static Exact combinational cuts
 
-Static Exact is an explicit boundary-semantics mode for supported synchronous
+Static Exact is the default boundary-semantics mode for supported synchronous
 circuits. It allows structurally supported combinational signals to cross FPGA
 boundaries while retaining the same virtual-cycle behavior.
 
-Select it with `--cut-mode static-exact-combinational`. The ordinary full-flow
-CLI defaults to `sequential-only`. Optimizer choice and cut semantics are
-separate options.
+CLI, Python phase APIs and experiment configurations default to PATRON v14
+with `--cut-mode static-exact-combinational`. Optimizer choice and cut semantics
+remain separate options. An explicit `sequential-only` policy does not infer an
+older algorithm; PATRON v14 rejects that combination.
 
 ## Supported circuit model
 

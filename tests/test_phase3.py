@@ -54,7 +54,7 @@ class Phase3Test(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         assignment = assign_clusters(
             self.ir,
             self.platform,
@@ -83,7 +83,7 @@ class Phase3Test(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        expected = build_clusters(self.ir, constraints)
+        expected = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         with tempfile.TemporaryDirectory() as temporary_directory:
             ir_path = Path(temporary_directory) / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
@@ -95,7 +95,7 @@ class Phase3Test(unittest.TestCase):
                 "emuflow.partition_ir._CompactPartitionNets.__iter__",
                 side_effect=AssertionError("net dictionaries were decoded"),
             ):
-                actual = build_clusters(compact_ir, constraints)
+                actual = build_clusters(compact_ir, constraints, cut_mode="sequential-only")
             expected_exact = build_clusters(
                 self.ir,
                 constraints,
@@ -167,7 +167,7 @@ class Phase3Test(unittest.TestCase):
         constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
-        expected = build_clusters(self.ir, constraints)
+        expected = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         with tempfile.TemporaryDirectory() as temporary_directory:
             ir_path = Path(temporary_directory) / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
@@ -184,7 +184,7 @@ class Phase3Test(unittest.TestCase):
                 "emuflow.partition.ResourceVector.from_mapping",
                 wraps=ResourceVector.from_mapping,
             ) as decode:
-                actual = build_clusters(compact_ir, constraints)
+                actual = build_clusters(compact_ir, constraints, cut_mode="sequential-only")
         self.assertEqual(actual, expected)
         self.assertEqual(decode.call_count, unique_payloads)
 
@@ -231,7 +231,7 @@ class Phase3Test(unittest.TestCase):
             with self.assertRaisesRegex(
                 ValidationError, "endpoint owner is invalid"
             ):
-                build_clusters(compact_ir, constraints)
+                build_clusters(compact_ir, constraints, cut_mode="sequential-only")
 
     def test_compact_cluster_builder_rejects_missing_resource_payload(
         self,
@@ -254,7 +254,7 @@ class Phase3Test(unittest.TestCase):
             with self.assertRaisesRegex(
                 ValidationError, "resource payload is missing"
             ):
-                build_clusters(compact_ir, constraints)
+                build_clusters(compact_ir, constraints, cut_mode="sequential-only")
 
     def test_compact_cluster_builder_rejects_non_object_resources(self) -> None:
         constraints = normalize_partition_constraints(
@@ -275,7 +275,7 @@ class Phase3Test(unittest.TestCase):
             with self.assertRaisesRegex(
                 ValidationError, "resources: expected an object"
             ):
-                build_clusters(compact_ir, constraints)
+                build_clusters(compact_ir, constraints, cut_mode="sequential-only")
 
     def test_indexed_terminal_validation_avoids_graph_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -293,6 +293,7 @@ class Phase3Test(unittest.TestCase):
                     ir_path,
                     PLATFORM_PATH,
                     output,
+                    cut_mode="sequential-only",
                     provider="tritonpart",
                     seed=7,
                 )
@@ -387,6 +388,7 @@ class Phase3Test(unittest.TestCase):
                         ir_path,
                         PLATFORM_PATH,
                         output,
+                        cut_mode="sequential-only",
                         provider="tritonpart",
                         seed=7,
                     )
@@ -548,7 +550,7 @@ class Phase3Test(unittest.TestCase):
         )
         self.assertEqual(constraints["active_fpgas"], ["fpga0"])
         self.assertEqual(constraints["min_used_fpgas"], 1)
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         assignment = assign_clusters(
             self.ir,
             self.platform,
@@ -1045,7 +1047,7 @@ class Phase3Test(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         assignment = assign_clusters(
             self.ir,
             self.platform,
@@ -1093,7 +1095,7 @@ class Phase3Test(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         assignment = assign_clusters(
             self.ir,
             self.platform,
@@ -1124,7 +1126,7 @@ class Phase3Test(unittest.TestCase):
         constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         cluster_by_instance = {
             instance: cluster["id"]
             for cluster in clusters["clusters"]
@@ -1169,7 +1171,7 @@ class Phase3Test(unittest.TestCase):
             self.ir,
             platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         with self.assertRaisesRegex(ValidationError, "cannot fit any FPGA"):
             assign_clusters(
                 self.ir,
@@ -1189,7 +1191,7 @@ class Phase3Test(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         assignment = build_partition_assignment(
             self.ir,
             self.platform,

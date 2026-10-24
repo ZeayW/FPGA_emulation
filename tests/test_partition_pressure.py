@@ -243,7 +243,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        self.clusters = build_clusters(self.ir, self.constraints)
+        self.clusters = build_clusters(self.ir, self.constraints, cut_mode="sequential-only")
         by_instance = {
             cluster["instances"][0]: cluster["id"]
             for cluster in self.clusters["clusters"]
@@ -398,7 +398,7 @@ class PartitionPressureTest(unittest.TestCase):
             ir_path = root / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
             compact_ir = load_partition_ir(ir_path)
-            compact_clusters = build_clusters(compact_ir, self.constraints)
+            compact_clusters = build_clusters(compact_ir, self.constraints, cut_mode="sequential-only")
             compact_initial = build_partition_assignment(
                 compact_ir,
                 self.platform,
@@ -426,6 +426,7 @@ class PartitionPressureTest(unittest.TestCase):
                 self.route_constraints,
                 compact_model,
                 compact_initial,
+                algorithm_version=6,
                 executable=str(emuflow_native()),
                 max_moves=0,
                 output_validation="online",
@@ -475,7 +476,7 @@ class PartitionPressureTest(unittest.TestCase):
             ir_path = root / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
             compact_ir = load_partition_ir(ir_path)
-            compact_clusters = build_clusters(compact_ir, self.constraints)
+            compact_clusters = build_clusters(compact_ir, self.constraints, cut_mode="sequential-only")
             compact_initial = build_partition_assignment(
                 compact_ir,
                 self.platform,
@@ -504,6 +505,7 @@ class PartitionPressureTest(unittest.TestCase):
                 self.route_constraints,
                 compact_model,
                 compact_initial,
+                algorithm_version=6,
                 executable=str(emuflow_native()),
                 max_moves=0,
                 output_validation="caller",
@@ -540,6 +542,7 @@ class PartitionPressureTest(unittest.TestCase):
                     self.route_constraints,
                     self.model,
                     self.initial,
+                    algorithm_version=6,
                     executable=str(emuflow_native()),
                     max_moves=0,
                 )
@@ -637,13 +640,15 @@ class PartitionPressureTest(unittest.TestCase):
             with patch.dict(os.environ, {"EMUFLOW_NATIVE_ROOT": str(installed.parent)}):
                 final, trace = run_partition_pressure_native(
                     self.ir, self.platform, self.clusters, self.constraints,
-                    self.route_constraints, self.model, self.initial, max_moves=4,
+                    self.route_constraints, self.model, self.initial, algorithm_version=6,
+                                                                      max_moves=4,
                     retain_trace_seals=False, stream_semantic_records=True,
                     output_validation="online",
                 )
                 reference_final, reference_trace = run_partition_pressure_native(
                     self.ir, self.platform, self.clusters, self.constraints,
-                    self.route_constraints, self.model, self.initial, max_moves=4,
+                    self.route_constraints, self.model, self.initial, algorithm_version=6,
+                                                                      max_moves=4,
                 )
             self.assertEqual(dict(final["cluster_assignment"]), dict(reference_assignment))
             self.assertEqual(trace["trace_storage"], "summary-only")
@@ -860,7 +865,7 @@ class PartitionPressureTest(unittest.TestCase):
                     reference_ir,
                     self.platform,
                 )
-                clusters = build_clusters(reference_ir, constraints)
+                clusters = build_clusters(reference_ir, constraints, cut_mode="sequential-only")
                 timing = {
                     **self.timing,
                     "design": value["design"]["name"],
@@ -1376,6 +1381,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.route_constraints,
             self.model,
             self.initial,
+            algorithm_version=6,
             executable=str(emuflow_native()),
             max_moves=0,
         )
@@ -1800,7 +1806,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.ir,
             platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         by_instance = {
             cluster["instances"][0]: cluster["id"]
             for cluster in clusters["clusters"]
@@ -1862,6 +1868,7 @@ class PartitionPressureTest(unittest.TestCase):
             routes,
             model,
             initial,
+            algorithm_version=6,
             executable=str(emuflow_native()),
             max_moves=0,
         )
@@ -2091,7 +2098,7 @@ class PartitionPressureTest(unittest.TestCase):
             ir,
             platform,
         )
-        clusters = build_clusters(ir, constraints)
+        clusters = build_clusters(ir, constraints, cut_mode="sequential-only")
         by_instance = {
             cluster["instances"][0]: cluster["id"]
             for cluster in clusters["clusters"]
@@ -2205,9 +2212,9 @@ class PartitionPressureTest(unittest.TestCase):
                 route_constraints,
                 model,
                 initial,
+                algorithm_version=10,
                 executable=str(emuflow_native()),
                 max_moves=0,
-                flow_refinement=True,
             )
             self.assertEqual(len(trace["batches"]), 1)
             self.assertEqual(
@@ -2294,7 +2301,7 @@ class PartitionPressureTest(unittest.TestCase):
             ir,
             platform,
         )
-        clusters = build_clusters(ir, constraints)
+        clusters = build_clusters(ir, constraints, cut_mode="sequential-only")
         cluster_by_instance = {
             cluster["instances"][0]: cluster["id"]
             for cluster in clusters["clusters"]
@@ -2564,6 +2571,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.route_constraints,
             self.model,
             self.initial,
+            algorithm_version=6,
             executable=str(emuflow_native()),
         )
         checked = validate_partition_pressure_native_against_exhaustive(
@@ -2630,6 +2638,7 @@ class PartitionPressureTest(unittest.TestCase):
                     self.route_constraints,
                     self.model,
                     self.initial,
+                    algorithm_version=6,
                     executable="/bin/true",
                     timeout_seconds=7,
                 )
@@ -2649,6 +2658,7 @@ class PartitionPressureTest(unittest.TestCase):
                 self.route_constraints,
                 self.model,
                 self.initial,
+                algorithm_version=6,
                 executable="/bin/true",
                 timeout_seconds=0,
             )
@@ -2678,6 +2688,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.route_constraints,
             model,
             self.initial,
+            algorithm_version=6,
             executable=str(emuflow_native()),
         )
         checked = validate_partition_pressure_native_against_exhaustive(
@@ -2705,7 +2716,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         by_instance = {
             cluster["instances"][0]: cluster["id"]
             for cluster in clusters["clusters"]
@@ -2740,6 +2751,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.route_constraints,
             model,
             initial,
+            algorithm_version=6,
             executable=str(emuflow_native()),
             max_moves=4,
         )
@@ -3428,7 +3440,7 @@ class PartitionPressureTest(unittest.TestCase):
             ir,
             platform,
         )
-        clusters = build_clusters(ir, constraints)
+        clusters = build_clusters(ir, constraints, cut_mode="sequential-only")
         initial = build_partition_assignment(
             ir,
             platform,
@@ -3506,6 +3518,7 @@ class PartitionPressureTest(unittest.TestCase):
                 route_constraints,
                 model,
                 initial,
+                algorithm_version=6,
                 executable=str(emuflow_native()),
                 max_moves=64,
             )
@@ -3598,9 +3611,9 @@ class PartitionPressureTest(unittest.TestCase):
             route_constraints,
             model,
             initial,
+            algorithm_version=10,
             executable=str(emuflow_native()),
             max_moves=0,
-            flow_refinement=True,
         )
         self.assertEqual(
             flow_trace["mode"], "endpoint-exact-critical-flow-v10"
@@ -3725,7 +3738,7 @@ class PartitionPressureTest(unittest.TestCase):
             ir,
             platform,
         )
-        clusters = build_clusters(ir, constraints)
+        clusters = build_clusters(ir, constraints, cut_mode="sequential-only")
         self.assertEqual(len(clusters["clusters"]), 300)
         by_instance = {
             cluster["instances"][0]: cluster["id"]
@@ -3798,6 +3811,7 @@ class PartitionPressureTest(unittest.TestCase):
             route_constraints,
             model,
             initial,
+            algorithm_version=6,
             executable=str(emuflow_native()),
             max_moves=8,
         )
@@ -3871,7 +3885,7 @@ class PartitionPressureTest(unittest.TestCase):
             ir,
             platform,
         )
-        clusters = build_clusters(ir, constraints)
+        clusters = build_clusters(ir, constraints, cut_mode="sequential-only")
         mapping = {
             cluster["id"]: (
                 "a" if int(cluster["instances"][0][1:]) % 2 == 0 else "b"
@@ -3939,6 +3953,7 @@ class PartitionPressureTest(unittest.TestCase):
             routes,
             model,
             initial,
+            algorithm_version=6,
             executable=str(emuflow_native()),
             max_moves=4,
         )
@@ -4037,7 +4052,7 @@ class PartitionPressureTest(unittest.TestCase):
             ir,
             platform,
         )
-        clusters = build_clusters(ir, constraints)
+        clusters = build_clusters(ir, constraints, cut_mode="sequential-only")
         by_instance = {
             cluster["instances"][0]: cluster["id"]
             for cluster in clusters["clusters"]
@@ -4101,6 +4116,7 @@ class PartitionPressureTest(unittest.TestCase):
             routes,
             model,
             initial,
+            algorithm_version=6,
             executable=str(emuflow_native()),
             max_moves=4,
         )

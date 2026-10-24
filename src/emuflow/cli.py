@@ -33,13 +33,7 @@ _BooleanOptionalAction = getattr(
 )
 
 
-def _effective_patron_algorithm_version(
-    value: Optional[int], cut_mode: str
-) -> int:
-    if value is not None:
-        return value
-    return 14 if cut_mode == "static-exact-combinational" else 6
-
+from .partition import DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION
 
 from .archive import (
     DEFAULT_MAX_COPY_BYTES,
@@ -699,13 +693,10 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument("--patron-refiner")
     partition_run.add_argument("--patron-max-moves", type=int)
     partition_run.add_argument(
-        "--patron-flow-refinement", action="store_true"
-    )
-    partition_run.add_argument(
         "--patron-algorithm-version",
         type=int,
         choices=(6, 9, 10, 11, 14),
-        default=None,
+        default=DEFAULT_PATRON_ALGORITHM_VERSION,
     )
     partition_run.add_argument("--patron-initial-assignment", type=Path)
     partition_run.add_argument("--patron-initial-clusters", type=Path)
@@ -726,7 +717,7 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_run.add_argument(
         "--cut-mode",
         choices=("sequential-only", "static-exact-combinational"),
-        default="sequential-only",
+        default=DEFAULT_PARTITION_CUT_MODE,
     )
     partition_run.add_argument(
         "--max-cross-fpga-dependency-depth",
@@ -773,11 +764,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     partition_validate.add_argument(
         "--patron-physical-feedback-scale", type=float
-    )
-    partition_validate.add_argument(
-        "--patron-flow-refinement",
-        action=_BooleanOptionalAction,
-        default=None,
     )
     partition_validate.add_argument(
         "--patron-algorithm-version",
@@ -1984,13 +1970,10 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--patron-refiner")
     multi_fpga_compile.add_argument("--patron-max-moves", type=int)
     multi_fpga_compile.add_argument(
-        "--patron-flow-refinement", action="store_true"
-    )
-    multi_fpga_compile.add_argument(
         "--patron-algorithm-version",
         type=int,
         choices=(6, 9, 10, 11, 14),
-        default=None,
+        default=DEFAULT_PATRON_ALGORITHM_VERSION,
     )
     multi_fpga_compile.add_argument(
         "--partition-timeout-seconds", type=int, default=3600
@@ -2015,10 +1998,9 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--cut-mode",
         choices=("sequential-only", "static-exact-combinational"),
-        default="sequential-only",
+        default=DEFAULT_PARTITION_CUT_MODE,
         help=(
-            "partition boundary semantics; generalized Static Exact is an "
-            "explicit Phase 1--7 comparison mode"
+            "partition boundary semantics; generalized Static Exact is the default"
         ),
     )
     multi_fpga_compile.add_argument(
@@ -3078,9 +3060,9 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--cut-mode",
         choices=("sequential-only", "static-exact-combinational"),
-        default="sequential-only",
+        default=DEFAULT_PARTITION_CUT_MODE,
         help=(
-            "Phase 3 cut legality; generalized Static Exact v2 is explicit"
+            "Phase 3 cut legality; generalized Static Exact v2 is the default"
         ),
     )
     phase3.add_argument(
@@ -3172,12 +3154,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase3.add_argument("--patron-refiner")
     phase3.add_argument("--patron-max-moves", type=int)
-    phase3.add_argument("--patron-flow-refinement", action="store_true")
     phase3.add_argument(
         "--patron-algorithm-version",
         type=int,
         choices=(6, 9, 10, 11, 14),
-        default=None,
+        default=DEFAULT_PATRON_ALGORITHM_VERSION,
     )
     phase3.add_argument("--patron-initial-assignment", type=Path)
     phase3.add_argument("--patron-initial-clusters", type=Path)
@@ -3618,7 +3599,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument(
         "--cut-mode",
         choices=("sequential-only", "static-exact-combinational"),
-        default="sequential-only",
+        default=DEFAULT_PARTITION_CUT_MODE,
         help=(
             "partition boundary semantics used by the initial assignment and "
             "every feedback Phase 3 candidate"
@@ -3653,13 +3634,10 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument("--patron-refiner")
     cross_stage_optimize.add_argument("--patron-max-moves", type=int)
     cross_stage_optimize.add_argument(
-        "--patron-flow-refinement", action="store_true"
-    )
-    cross_stage_optimize.add_argument(
         "--patron-algorithm-version",
         type=int,
         choices=(6, 9, 10, 11, 14),
-        default=None,
+        default=DEFAULT_PATRON_ALGORITHM_VERSION,
     )
     cross_stage_optimize.add_argument(
         "--partition-timeout-seconds", type=int, default=3600
@@ -4189,12 +4167,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                     ),
                     patron_refiner=args.patron_refiner,
                     patron_max_moves=args.patron_max_moves,
-                    patron_flow_refinement=args.patron_flow_refinement,
-                    patron_algorithm_version=(
-                        _effective_patron_algorithm_version(
-                            args.patron_algorithm_version, args.cut_mode
-                        )
-                    ),
+                    patron_algorithm_version=args.patron_algorithm_version,
                     patron_initial_assignment_path=(
                         args.patron_initial_assignment
                     ),
@@ -4238,12 +4211,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 patron_initial_clusters_path=(
                     args.patron_initial_clusters
                 ),
-                expected_patron_flow_refinement=(
-                    args.patron_flow_refinement
-                ),
-                expected_patron_algorithm_version=(
-                    args.patron_algorithm_version
-                ),
+                expected_patron_algorithm_version=args.patron_algorithm_version,
                 expected_patron_max_moves=args.patron_max_moves,
                 patron_physical_system_timing_path=(
                     args.patron_physical_system_timing
@@ -5746,10 +5714,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             tritonpart_solution=args.tritonpart_solution,
             patron_refiner=args.patron_refiner,
             patron_max_moves=args.patron_max_moves,
-            patron_flow_refinement=args.patron_flow_refinement,
-            patron_algorithm_version=_effective_patron_algorithm_version(
-                args.patron_algorithm_version, args.cut_mode
-            ),
+            patron_algorithm_version=args.patron_algorithm_version,
             partition_timeout_seconds=args.partition_timeout_seconds,
             partition_seed_attempts=args.partition_seed_attempts,
             partition_num_initial_solutions=(
@@ -5952,10 +5917,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             timing_database_path=args.timing_database,
             patron_refiner=args.patron_refiner,
             patron_max_moves=args.patron_max_moves,
-            patron_flow_refinement=args.patron_flow_refinement,
-            patron_algorithm_version=_effective_patron_algorithm_version(
-                args.patron_algorithm_version, args.cut_mode
-            ),
+            patron_algorithm_version=args.patron_algorithm_version,
             patron_initial_assignment_path=(
                 args.patron_initial_assignment
             ),
@@ -6176,12 +6138,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 openroad=args.openroad,
                 patron_refiner=args.patron_refiner,
                 patron_max_moves=args.patron_max_moves,
-                patron_flow_refinement=args.patron_flow_refinement,
-                patron_algorithm_version=(
-                    _effective_patron_algorithm_version(
-                        args.patron_algorithm_version, args.cut_mode
-                    )
-                ),
+                patron_algorithm_version=args.patron_algorithm_version,
                 partition_timeout_seconds=(
                     args.partition_timeout_seconds
                 ),

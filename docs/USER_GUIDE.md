@@ -237,9 +237,10 @@ platform.
 
 ## Providers and boundary semantics
 
-The CLI defaults to timing-driven PATRON partitioning with a TritonPart
-initializer, sequential-only cut semantics, and baseline Phase 6.
-Select alternatives explicitly:
+CLI, Python phase APIs and experiment configurations default to timing-driven
+PATRON v14 with a TritonPart initializer, `static-exact-combinational` boundary
+semantics and baseline Phase 6. These defaults also apply to the native compile
+bridge. Select alternatives explicitly.
 Use the bundled OpenROAD build: Phase 3 requires its `-resource_bounds_file`
 interface to enforce independent resource limits inside TritonPart. Illegal
 provider output fails validation instead of being repaired after partitioning.
@@ -253,7 +254,13 @@ emuflow phase7c --help
 
 `--partition-provider` selects the optimizer. `--cut-mode` separately selects
 boundary semantics; `static-exact-combinational` requires the supported
-single-virtual-clock contract. See [Static Exact](STATIC_EXACT_COMBINATIONAL_CUT.md).
+single-virtual-clock contract. Selecting `sequential-only` does not select an
+older PATRON version: v14 rejects that combination. Explicit reference reruns
+must name both their algorithm version and noncurrent boundary policy. The
+redundant `--patron-flow-refinement` flag, Python argument and experiment-config
+key are retired; an explicit algorithm version determines its own refinement
+behavior. Published reports retain the derived field for validation and must
+record the algorithm version. See [Static Exact](STATIC_EXACT_COMBINATIONAL_CUT.md).
 
 `--no-timing-driven` changes optimization, not the requirement to carry
 original timing identities into a physical flow.

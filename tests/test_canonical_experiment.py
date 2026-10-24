@@ -363,7 +363,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 )
             )
 
-    def test_compiler_defaults_to_sequential_patron(self) -> None:
+    def test_compiler_defaults_to_static_exact_patron_v14(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / "spec.json"
@@ -377,16 +377,16 @@ class CanonicalExperimentTest(unittest.TestCase):
                 )["nodes"]
             }
             partition = nodes["partition"]
-            self.assertEqual(report["cut_mode"], "sequential-only")
+            self.assertEqual(report["cut_mode"], "static-exact-combinational")
             self.assertEqual(
                 partition["configuration"]["provider"], "patron"
             )
             self.assertEqual(
-                partition["configuration"]["patron_algorithm_version"], 6
+                partition["configuration"]["patron_algorithm_version"], 14
             )
             self.assertEqual(
                 partition["configuration"]["cut_mode"],
-                "sequential-only",
+                "static-exact-combinational",
             )
             self.assertEqual(
                 partition["configuration"]["static_exact_candidate_policy"],
@@ -466,7 +466,6 @@ class CanonicalExperimentTest(unittest.TestCase):
             config["partition_provider"] = "patron"
             config["cut_mode"] = "sequential-only"
             config["patron_algorithm_version"] = 11
-            config["patron_flow_refinement"] = True
             config["patron_initial_assignment"] = str(initial)
             config["patron_initial_clusters"] = str(initial_clusters)
             config["patron_physical_system_timing"] = str(physical_timing)
@@ -493,8 +492,8 @@ class CanonicalExperimentTest(unittest.TestCase):
             self.assertIn(
                 "--patron-initial-clusters", partition["command"]
             )
-            self.assertIn("--patron-flow-refinement", partition["command"])
-            self.assertIn(
+            self.assertNotIn("--patron-flow-refinement", partition["command"])
+            self.assertNotIn(
                 "--patron-flow-refinement", partition["validator"]
             )
             self.assertIn(
@@ -557,7 +556,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             config_path = self._config(root)
             config = json.loads(config_path.read_text())
             config["patron_algorithm_version"] = 9
-            config["patron_flow_refinement"] = True
+            config["cut_mode"] = "sequential-only"
             config["patron_max_moves"] = 16
             config_path.write_text(json.dumps(config), encoding="utf-8")
             output = root / "patron-v9-spec.json"

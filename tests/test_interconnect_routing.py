@@ -127,6 +127,7 @@ def test_partition_python_and_native_share_bank_delay_model():
     final, trace = run_partition_pressure_native(
         fixture.ir, platform, fixture.clusters, fixture.constraints,
         fixture.route_constraints, model, fixture.initial,
+        algorithm_version=6,
         executable=str(emuflow_native()),
     )
     check = validate_partition_pressure_native_against_exhaustive(
@@ -215,7 +216,7 @@ def test_partition_move_recomputes_opposite_direction_pressure():
         "schema": "emuflow.partition-constraints/v1", "min_used_fpgas": 2,
         "balance_tolerance": 1.0,
     }, ir, platform)
-    clusters = build_clusters(ir, constraints)
+    clusters = build_clusters(ir, constraints, cut_mode="sequential-only")
     by_instance = {c["instances"][0]: c["id"] for c in clusters["clusters"]}
     assignment = {by_instance[f"u{i}"]: ("a" if i == 0 or i > 1 and i % 2 else "b")
                   for i in range(8)}
@@ -240,6 +241,7 @@ def test_partition_move_recomputes_opposite_direction_pressure():
     assert sorted(d["predicted_tdm_ratio"] for d in evaluation["capacity_domains"]) == [1, 3]
     final, trace = run_partition_pressure_native(
         ir, platform, clusters, constraints, route_constraints, model, initial,
+        algorithm_version=6,
         executable=str(emuflow_native()),
     )
     assert validate_partition_pressure_native_against_exhaustive(

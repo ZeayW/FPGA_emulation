@@ -23,7 +23,12 @@ from .experiment_identity import (
     validate_implementation_closure,
 )
 from .io import read_json, write_json
-from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
+from .partition import (
+    CUT_MODE_SEQUENTIAL_ONLY,
+    CUT_MODE_STATIC_EXACT,
+    DEFAULT_PARTITION_CUT_MODE,
+    DEFAULT_PATRON_ALGORITHM_VERSION,
+)
 from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_CANDIDATE_POLICIES,
@@ -421,7 +426,7 @@ def compile_canonical_experiment_spec(
         raise ValidationError("canonical experiment config schema is invalid")
     retired = sorted(
         key for key in config
-        if key in {"mfspart", "repart"} or key.startswith(("mfspart_", "repart_"))
+        if key in {"mfspart", "repart", "patron_flow_refinement"} or key.startswith(("mfspart_", "repart_"))
     )
     if retired:
         raise ValidationError("retired partition configuration: " + ", ".join(retired))
@@ -468,17 +473,9 @@ def compile_canonical_experiment_spec(
             "canonical experiment partition_provider must be "
             "'tritonpart' or 'patron'"
         )
-    patron_flow_refinement = config.get("patron_flow_refinement", False)
-    if not isinstance(patron_flow_refinement, bool):
-        raise ValidationError(
-            "canonical patron_flow_refinement must be a boolean"
-        )
-    requested_cut_mode = config.get("cut_mode", CUT_MODE_SEQUENTIAL_ONLY)
     patron_algorithm_version = config.get(
-        "patron_algorithm_version",
-        14 if requested_cut_mode == CUT_MODE_STATIC_EXACT else 6,
+        "patron_algorithm_version", DEFAULT_PATRON_ALGORITHM_VERSION
     )
-    patron_algorithm_version_explicit = "patron_algorithm_version" in config
     if (
         isinstance(patron_algorithm_version, bool)
         or not isinstance(patron_algorithm_version, int)
@@ -490,22 +487,6 @@ def compile_canonical_experiment_spec(
     patron_flow_refinement = (
         partition_provider == "patron" and patron_algorithm_version != 6
     )
-    if (
-        partition_provider == "patron"
-        and patron_algorithm_version_explicit
-        and "patron_flow_refinement" in config
-        and config["patron_flow_refinement"]
-        is not patron_flow_refinement
-    ):
-        raise ValidationError(
-            "canonical patron flow-refinement flag disagrees with its "
-            "algorithm version"
-        )
-    if patron_flow_refinement and partition_provider != "patron":
-        raise ValidationError(
-            "canonical patron_flow_refinement requires partition_provider "
-            "'patron'"
-        )
     patron_max_moves_value = config.get("patron_max_moves")
     patron_max_moves = (
         _positive_integer(patron_max_moves_value, "patron_max_moves")
@@ -590,7 +571,7 @@ def compile_canonical_experiment_spec(
         )
     ):
         raise ValidationError("canonical experiment clocks/periods are invalid")
-    cut_mode = requested_cut_mode
+    cut_mode = config.get("cut_mode", DEFAULT_PARTITION_CUT_MODE)
     if (
         partition_provider == "patron"
         and patron_algorithm_version == 14
@@ -1082,8 +1063,6 @@ def compile_canonical_experiment_spec(
                 "--patron-initial-clusters",
                 effective_patron_initial_clusters,
             ]
-        if patron_flow_refinement:
-            partition_command.insert(-2, "--patron-flow-refinement")
         partition_command[-2:-2] = [
             "--patron-algorithm-version",
             str(patron_algorithm_version),
@@ -1114,8 +1093,6 @@ def compile_canonical_experiment_spec(
                     effective_patron_initial_clusters,
                 ]
             )
-        if patron_flow_refinement:
-            partition_validator.append("--patron-flow-refinement")
         partition_validator.extend(
             [
                 "--patron-algorithm-version",

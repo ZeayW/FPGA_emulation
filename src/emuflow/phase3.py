@@ -10,6 +10,8 @@ from typing import Any, Dict, Optional
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import (
+    DEFAULT_PARTITION_CUT_MODE,
+    DEFAULT_PATRON_ALGORITHM_VERSION,
     CUT_MODE_SEQUENTIAL_ONLY,
     CUT_MODE_STATIC_EXACT,
     _PackedClusterAssignment,
@@ -358,7 +360,7 @@ def run_phase3(
     tritonpart_run_unweighted_baseline: bool = False,
     route_constraints_path: Optional[Path] = None,
     hop_refiner: Optional[str] = None,
-    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
+    cut_mode: str = DEFAULT_PARTITION_CUT_MODE,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
@@ -366,8 +368,7 @@ def run_phase3(
     timing_database_path: Optional[Path] = None,
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
-    patron_flow_refinement: bool = False,
-    patron_algorithm_version: int = 6,
+    patron_algorithm_version: int = DEFAULT_PATRON_ALGORITHM_VERSION,
     patron_initial_assignment_path: Optional[Path] = None,
     patron_initial_clusters_path: Optional[Path] = None,
     patron_physical_system_timing_path: Optional[Path] = None,
@@ -395,23 +396,14 @@ def run_phase3(
         raise ValidationError(
             "Phase 3 retain_patron_baseline requires provider='patron'"
         )
-    if not isinstance(patron_flow_refinement, bool):
-        raise ValidationError("PATRON flow refinement flag is invalid")
     if (
         isinstance(patron_algorithm_version, bool)
         or not isinstance(patron_algorithm_version, int)
         or patron_algorithm_version not in {6, 9, 10, 11, 14}
     ):
         raise ValidationError("PATRON algorithm version is invalid")
-    if provider == "patron":
-        if patron_physical_system_timing_path is not None:
-            if patron_algorithm_version == 6 and patron_flow_refinement:
-                patron_algorithm_version = 11
-        elif patron_algorithm_version == 6 and patron_flow_refinement:
-            patron_algorithm_version = 10
-        patron_flow_refinement = patron_algorithm_version != 6
-    else:
-        patron_flow_refinement = False
+    patron_flow_refinement = provider == "patron" and patron_algorithm_version != 6
+
     if (
         provider == "patron"
         and patron_algorithm_version == 14
@@ -419,10 +411,6 @@ def run_phase3(
     ):
         raise ValidationError(
             "PATRON v14 requires generalized Static Exact mode"
-        )
-    if patron_flow_refinement and provider != "patron":
-        raise ValidationError(
-            "PATRON flow refinement requires provider='patron'"
         )
     if patron_physical_system_timing_path is not None and (
         provider != "patron"
@@ -767,7 +755,6 @@ def run_phase3(
             initial,
             executable=patron_refiner,
             max_moves=patron_max_moves,
-            flow_refinement=patron_flow_refinement,
             algorithm_version=patron_algorithm_version,
             physical_feedback=patron_physical_feedback,
             physical_feedback_scale=patron_physical_feedback_scale,

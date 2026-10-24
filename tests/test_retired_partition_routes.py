@@ -43,7 +43,7 @@ def test_retired_provider_has_no_cli_route(tmp_path, provider):
         assert rejected.value.code == 2
 
 
-@pytest.mark.parametrize("option", ["mfspart_post_refinement", "mfspart_refiner", "repart"])
+@pytest.mark.parametrize("option", ["mfspart_post_refinement", "mfspart_refiner", "repart", "patron_flow_refinement"])
 def test_retired_config_keys_are_rejected_even_when_disabled(tmp_path, option):
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"schema": CANONICAL_EXPERIMENT_CONFIG_SCHEMA, option: False}))

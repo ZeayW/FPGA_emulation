@@ -43,7 +43,7 @@ def inputs():
     ir=import_yosys_json(ROOT/'examples/yosys/counter.json',top='counter',clocks=['clk'])
     platform=Platform.load(research_platform_path(2))
     constraints=normalize_partition_constraints(None,ir,platform)
-    clusters=build_clusters(ir,constraints)
+    clusters=build_clusters(ir,constraints, cut_mode="sequential-only")
     assignment=assign_clusters(ir,platform,clusters,constraints,seed=20260727)
     routes=route_system_native(assignment,platform,normalize_route_constraints(None,platform,frame_slots=32),executable=str(tlr_router()))
     schedule=build_tdm_schedule(routes,platform)

@@ -3331,7 +3331,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         return persisted
 
     def test_safe_default_is_identical_to_explicit_safe_mode(self):
-        implicit = build_clusters(self.ir, self.constraints)
+        implicit = build_clusters(self.ir, self.constraints, cut_mode="sequential-only")
         explicit = build_clusters(
             self.ir, self.constraints, cut_mode="sequential-only"
         )
@@ -3369,7 +3369,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         )
 
     def test_depth_one_cut_has_independently_validated_contract(self):
-        safe = build_clusters(self.ir, self.constraints)
+        safe = build_clusters(self.ir, self.constraints, cut_mode="sequential-only")
         clusters, assignment = self._exact_artifacts()
         self.assertGreater(
             len(clusters["clusters"]), len(safe["clusters"])
@@ -4202,7 +4202,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
     def test_wide_cone_splits_and_improves_checked_balance(self):
         ir = _wide_fanout_ir()
         constraints = normalize_partition_constraints(None, ir, self.platform)
-        safe_clusters = build_clusters(ir, constraints)
+        safe_clusters = build_clusters(ir, constraints, cut_mode="sequential-only")
         exact_clusters = build_clusters(
             ir,
             constraints,
@@ -4237,7 +4237,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             exact_validation["combinational_cut_nets"], 0
         )
 
-    def test_phase3_cli_emits_opt_in_provisional_qualification(self):
+    def test_phase3_cli_emits_structural_qualification(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             ir_path = root / "design.emuir.json"
@@ -4245,6 +4245,11 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             ir_path.write_text(
                 json.dumps(self.ir.to_dict()), encoding="utf-8"
             )
+            from tests.partition_fixture import write_fixture_solution
+            solution = root / "initial.part"
+            write_fixture_solution(self.ir, PLATFORM_PATH, solution,
+                cut_mode="static-exact-combinational",
+                max_cross_fpga_dependency_depth=2, balance_tolerance=1.0)
             with redirect_stdout(io.StringIO()):
                 status = main(
                     [
@@ -4254,7 +4259,9 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                         "--platform",
                         str(PLATFORM_PATH),
                         "--provider",
-                        "greedy",
+                        "tritonpart",
+                        "--tritonpart-solution",
+                        str(solution),
                         "--cut-mode",
                         "static-exact-combinational",
                         "--max-cross-fpga-dependency-depth",

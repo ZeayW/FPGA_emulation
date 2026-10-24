@@ -35,6 +35,8 @@ LEGAL_CUT_CLASSES = {*TRANSPORTED_CUT_CLASSES, "primary_input"}
 REPLICATED_NET_CLASSES = {"clock", "reset", "primary_input"}
 CUT_MODE_SEQUENTIAL_ONLY = "sequential-only"
 CUT_MODE_STATIC_EXACT = "static-exact-combinational"
+DEFAULT_PARTITION_CUT_MODE = CUT_MODE_STATIC_EXACT
+DEFAULT_PATRON_ALGORITHM_VERSION = 14
 HARD_MACRO_RESOURCES = {
     "bram",
     "dsp",
@@ -1831,7 +1833,7 @@ def load_partition_constraints(
 def build_clusters(
     ir: EmuIR,
     constraints: Mapping[str, Any],
-    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
+    cut_mode: str = DEFAULT_PARTITION_CUT_MODE,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),

@@ -23,6 +23,8 @@ from .frame_search import (
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import (
+    DEFAULT_PARTITION_CUT_MODE,
+    DEFAULT_PATRON_ALGORITHM_VERSION,
     CUT_MODE_SEQUENTIAL_ONLY,
     CUT_MODE_STATIC_EXACT,
     PARTITION_ASSIGNMENT_SCHEMA,
@@ -1087,7 +1089,7 @@ def run_cross_stage_optimization(
     route_constraints_path: Optional[Path] = None,
     board_link_timing_path: Optional[Path] = None,
     phase3_provider: str = "patron",
-    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
+    cut_mode: str = DEFAULT_PARTITION_CUT_MODE,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
@@ -1101,8 +1103,7 @@ def run_cross_stage_optimization(
     openroad: Optional[str] = None,
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
-    patron_flow_refinement: bool = False,
-    patron_algorithm_version: int = 6,
+    patron_algorithm_version: int = DEFAULT_PATRON_ALGORITHM_VERSION,
     partition_timeout_seconds: int = 3600,
     partition_seed_attempts: int = 1,
     partition_num_initial_solutions: int = 50,
@@ -1523,7 +1524,6 @@ def run_cross_stage_optimization(
                     ),
                     patron_refiner=patron_refiner,
                     patron_max_moves=patron_max_moves,
-                    patron_flow_refinement=patron_flow_refinement,
                     patron_algorithm_version=patron_algorithm_version,
                 )
                 candidate = _run_candidate_flow(
