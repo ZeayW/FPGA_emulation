@@ -672,7 +672,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--provider",
         choices=(
             "tritonpart",
-            "greedy",
             "patron",
         ),
         default="patron",
@@ -1962,7 +1961,6 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=(
             "tritonpart",
             "patron",
-            "greedy",
         ),
         default="patron",
     )
@@ -3111,7 +3109,6 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=(
             "tritonpart",
             "patron",
-            "greedy",
         ),
         default="patron",
         help="partition provider (default: patron)",

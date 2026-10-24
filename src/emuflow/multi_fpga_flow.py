@@ -160,9 +160,12 @@ def _validate_mapping_timing_contract(
 def _resolve_partition_openroad(
     partition_provider: str,
     executable: Optional[str],
+    solution_input: Optional[Path] = None,
 ) -> Optional[str]:
     """Resolve a required partition engine before producing flow artifacts."""
 
+    if solution_input is not None:
+        return executable
     if partition_provider in {"tritonpart", "patron"}:
         return resolve_native_executable("openroad", executable)
     return executable
@@ -1309,7 +1312,7 @@ class _CompileContext:
 
 
 def _compile_preflight(ctx: _CompileContext):
-    if ctx.partition_provider not in {"patron", "tritonpart", "greedy"}:
+    if ctx.partition_provider not in {"patron", "tritonpart"}:
         raise EmuFlowError(f"unsupported Phase 3 provider {ctx.partition_provider!r}")
     if ctx._native_mode and (
         ctx.cross_stage_iterations or ctx.optimize_frame_slots or
@@ -1535,7 +1538,9 @@ def _compile_preflight(ctx: _CompileContext):
                 "multi-FPGA output path must be an empty directory: "
                 f"{ctx.output_dir}"
             )
-    ctx.openroad = _resolve_partition_openroad(ctx.partition_provider, ctx.openroad)
+    ctx.openroad = _resolve_partition_openroad(
+        ctx.partition_provider, ctx.openroad, ctx.tritonpart_solution
+    )
     ctx.output_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -1854,9 +1859,7 @@ def _compile_timing(ctx: _CompileContext):
         }
 
     if ctx.timing_report is not None:
-        provider_consumes_weights = (
-            ctx.timing_driven and ctx.partition_provider != "greedy"
-        )
+        provider_consumes_weights = ctx.timing_driven
         hop_refiner_consumes_weights = False
         if ctx.effective_route_constraints is not None:
             raw_route_constraints = read_json(

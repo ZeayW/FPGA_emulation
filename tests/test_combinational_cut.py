@@ -48,12 +48,12 @@ from emuflow.netlist import (
 )
 from emuflow.partition import (
     CUT_MODE_STATIC_EXACT,
-    assign_clusters,
     build_clusters,
     build_partition_assignment,
     normalize_partition_constraints,
     validate_partition_artifacts,
 )
+from tests.partition_reference import assign_clusters
 from emuflow.platform import Platform
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.split_netlist_storage import SplitNetlistView

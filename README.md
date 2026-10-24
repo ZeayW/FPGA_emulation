@@ -72,9 +72,12 @@ it avoids a second membership/resource snapshot and transposed resource matrix.
 Python carries configuration and packed initial ownership, not a pressure graph.
 The old snapshot-based native model command is retired; direct model construction
 requires the shared primary artifact and rejects missing ownership.
+Greedy partitioning is a small test oracle only; it has no production entry.
 RePart and MFSPart production routes, post-refinement, executables and build
 dependencies are retired. Their post-refinement proofs are not accepted by the
 current validator; historical runs require their matching Git revision.
+Explicit TritonPart solution imports validate the current cluster contract
+without requiring an unused OpenROAD executable.
 Assignment summaries and independent capacity/balance validation also reduce
 the shared primary columns in C++, without decoding cluster member records.
 Compact exact captures are produced and independently checked in the shared

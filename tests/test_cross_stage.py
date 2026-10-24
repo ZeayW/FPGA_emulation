@@ -1,3 +1,4 @@
+from tests.partition_fixture import run_cross_stage_fixture, run_phase3_fixture
 import copy
 import json
 import shutil
@@ -55,11 +56,11 @@ class CrossStageCandidateTest(unittest.TestCase):
                 / "platforms/virtual/static_exact_acceptance_2fpga.json"
             )
             write_json(ir_path, ir.value)
-            run_phase3(
+            run_phase3_fixture(
                 ir_path,
                 platform_path,
                 phase3_root,
-                provider="greedy",
+                provider="tritonpart",
                 cut_mode=CUT_MODE_STATIC_EXACT,
                 max_cross_fpga_dependency_depth=2,
                 min_used_fpgas=2,
@@ -429,11 +430,11 @@ class CrossStageCandidateTest(unittest.TestCase):
                     [_link("ab", "a", "b", lanes=8, latency=1)],
                 ),
             )
-            run_phase3(
+            run_phase3_fixture(
                 ir_path,
                 platform_path,
                 initial_root,
-                provider="greedy",
+                provider="tritonpart",
                 cut_mode="sequential-only",
                 min_used_fpgas=2,
                 balance_tolerance=1.0,
@@ -509,7 +510,7 @@ class CrossStageCandidateTest(unittest.TestCase):
             reports = []
             for run in range(2):
                 output = root / f"run_{run}"
-                report = run_cross_stage_optimization(
+                report = run_cross_stage_fixture(
                     ir_path=ir_path,
                     platform_path=platform_path,
                     database_path=database_path,
@@ -518,7 +519,7 @@ class CrossStageCandidateTest(unittest.TestCase):
                     ),
                     output_dir=output,
                     board_link_timing_path=board_link_timing_path,
-                    phase3_provider="greedy",
+                    phase3_provider="tritonpart",
                     cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
                     max_outer_iterations=1,
                     min_used_fpgas=2,
@@ -614,14 +615,14 @@ class CrossStageCandidateTest(unittest.TestCase):
                 reports[1]["candidates"][0]["objective_key"],
             )
             seed_output = root / "seed_candidate"
-            seed_report = run_cross_stage_optimization(
+            seed_report = run_cross_stage_fixture(
                 ir_path=ir_path,
                 platform_path=platform_path,
                 database_path=database_path,
                 initial_assignment_path=initial_root / "assignment.json",
                 seed_candidate_phase3_root=initial_root,
                 output_dir=seed_output,
-                phase3_provider="greedy",
+                phase3_provider="tritonpart",
                 cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
                 max_outer_iterations=0,
                 min_used_fpgas=2,
@@ -730,13 +731,13 @@ class CrossStageCandidateTest(unittest.TestCase):
                 )
 
             optimized_root = root / "frame_optimized"
-            optimized = run_cross_stage_optimization(
+            optimized = run_cross_stage_fixture(
                 ir_path=ir_path,
                 platform_path=platform_path,
                 database_path=database_path,
                 initial_assignment_path=initial_root / "assignment.json",
                 output_dir=optimized_root,
-                phase3_provider="greedy",
+                phase3_provider="tritonpart",
                 cut_mode=CUT_MODE_SEQUENTIAL_ONLY,
                 max_outer_iterations=0,
                 min_used_fpgas=2,

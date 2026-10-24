@@ -12,7 +12,7 @@ from .ir import EmuIR
 from .partition import (
     CUT_MODE_SEQUENTIAL_ONLY,
     CUT_MODE_STATIC_EXACT,
-    assign_clusters,
+    _PackedClusterAssignment,
     build_clusters,
     build_partition_assignment,
     load_partition_constraints,
@@ -375,7 +375,9 @@ def run_phase3(
     retain_diagnostics: bool = False,
     retain_patron_baseline: bool = False,
 ) -> Dict[str, Any]:
-    if provider not in {"patron", "tritonpart", "greedy"}:
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValidationError("partition seed: expected a non-negative integer")
+    if provider not in {"patron", "tritonpart"}:
         raise ValidationError(f"unsupported Phase 3 provider {provider!r}")
     if patron_initial_clusters_path is not None and (
         provider != "patron"
@@ -526,14 +528,19 @@ def run_phase3(
     if single_active_selection:
         assignment = phase3_runtime_call(
             "provider.single_active_assignment",
-            assign_clusters,
+            build_partition_assignment,
             ir,
             platform,
             clusters,
             constraints,
+            _PackedClusterAssignment(
+                (constraints["active_fpgas"][0],),
+                (0 for _ in range(len(clusters["clusters"]))),
+            ),
+            provider="single-active-fpga-capacity-selection-v1",
             seed=seed,
-            route_constraints=route_constraints,
             _include_semantic_contract=retain_diagnostics,
+            _stream_semantic_records=not retain_diagnostics,
         )
         assignment["provider"] = "single-active-fpga-capacity-selection-v1"
         assignment["provider_metadata"] = {
@@ -541,18 +548,6 @@ def run_phase3(
             "reason": "no partition decision exists with one active target",
             "active_fpgas": list(constraints["active_fpgas"]),
         }
-    elif provider == "greedy":
-        assignment = phase3_runtime_call(
-            "provider.greedy_assignment",
-            assign_clusters,
-            ir,
-            platform,
-            clusters,
-            constraints,
-            seed=seed,
-            route_constraints=route_constraints,
-            _include_semantic_contract=retain_diagnostics,
-        )
     elif provider == "tritonpart":
         tritonpart_assignment = phase3_runtime_call(
             "provider.tritonpart",
@@ -954,7 +949,7 @@ def run_phase3(
     else:
         raise ValueError(
             f"unknown Phase 3 provider {provider!r}; "
-            "expected 'tritonpart', 'patron', or 'greedy'"
+            "expected 'tritonpart' or 'patron'"
         )
     if single_active_selection:
         hop_refinement = phase3_runtime_call(

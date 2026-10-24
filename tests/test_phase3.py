@@ -1,3 +1,4 @@
+from tests.partition_fixture import run_phase3_fixture
 from contextlib import closing
 import copy
 import hashlib
@@ -14,7 +15,6 @@ from emuflow.emuir_compact import write_compact_emuir
 from emuflow.io import read_json
 from emuflow.ir import EmuIR
 from emuflow.partition import (
-    assign_clusters,
     build_partition_assignment,
     build_clusters,
     normalize_partition_constraints,
@@ -22,6 +22,7 @@ from emuflow.partition import (
     validate_partition_artifacts,
     validate_partition_artifacts_online,
 )
+from tests.partition_reference import assign_clusters
 from emuflow.partition_ir import load_partition_ir
 from emuflow.phase3 import run_phase3, validate_phase3_indexed
 from emuflow.phase3_assignment_index import (
@@ -288,11 +289,11 @@ class Phase3Test(unittest.TestCase):
                     "production Phase 3 must stream compact EmuIR"
                 ),
             ):
-                report = run_phase3(
+                report = run_phase3_fixture(
                     ir_path,
                     PLATFORM_PATH,
                     output,
-                    provider="greedy",
+                    provider="tritonpart",
                     seed=7,
                 )
             runtime = read_json(output / "phase3-runtime.json")
@@ -310,7 +311,7 @@ class Phase3Test(unittest.TestCase):
             for name in (
                 "load_partition_ir",
                 "build_clusters",
-                "provider.greedy_assignment",
+                "provider.tritonpart",
                 "publish.write_assignment_index",
             ):
                 self.assertEqual(step_by_name[name]["status"], "pass")
@@ -382,11 +383,11 @@ class Phase3Test(unittest.TestCase):
                 side_effect=RuntimeError("synthetic cluster failure"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "cluster failure"):
-                    run_phase3(
+                    run_phase3_fixture(
                         ir_path,
                         PLATFORM_PATH,
                         output,
-                        provider="greedy",
+                        provider="tritonpart",
                         seed=7,
                     )
             runtime = read_json(output / "phase3-runtime.json")
@@ -459,11 +460,11 @@ class Phase3Test(unittest.TestCase):
                 "emuflow.phase3.write_phase3_assignment_index",
                 side_effect=publish_index,
             ):
-                run_phase3(
+                run_phase3_fixture(
                     ir_path,
                     PLATFORM_PATH,
                     output,
-                    provider="greedy",
+                    provider="tritonpart",
                     seed=7,
                     cut_mode="static-exact-combinational",
                 )
@@ -784,45 +785,47 @@ class Phase3Test(unittest.TestCase):
         self.assertEqual(constraints["active_fpgas"], ["fpga1", "fpga2"])
 
     def test_single_active_target_skips_requested_patron(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            ir_path = root / "design.emuir.json"
-            constraints_path = root / "constraints.json"
-            ir_path.write_text(
-                json.dumps(self.ir.to_dict()), encoding="utf-8"
-            )
-            constraints_path.write_text(
-                json.dumps(
-                    {
-                        "schema": "emuflow.partition-constraints/v1",
-                        "fpga_selection_policy": "minimum-capacity",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            with (
-                patch("emuflow.phase3.run_tritonpart") as tritonpart,
-                patch(
-                    "emuflow.phase3.run_partition_pressure_native"
-                ) as patron,
-            ):
-                report = run_phase3(
-                    ir_path=ir_path,
-                    platform_path=PLATFORM_PATH,
-                    output_dir=root / "phase3",
-                    constraints_path=constraints_path,
-                    provider="patron",
-                    seed=19,
+        for compact in (False, True):
+            with self.subTest(compact=compact), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                ir_path = root / ("design.emuir.sqlite" if compact else "design.emuir.json")
+                constraints_path = root / "constraints.json"
+                if compact:
+                    write_compact_emuir(ir_path, self.ir.to_dict())
+                else:
+                    ir_path.write_text(json.dumps(self.ir.to_dict()), encoding="utf-8")
+                constraints_path.write_text(
+                    json.dumps(
+                        {
+                            "schema": "emuflow.partition-constraints/v1",
+                            "fpga_selection_policy": "minimum-capacity",
+                        }
+                    ),
+                    encoding="utf-8",
                 )
-            tritonpart.assert_not_called()
-            patron.assert_not_called()
-            self.assertEqual(
-                report["provider"],
-                "single-active-fpga-capacity-selection-v1",
-            )
-            self.assertEqual(report["requested_provider"], "patron")
-            self.assertFalse(report["partition_decision"]["executed"])
-            self.assertEqual(report["validation"]["used_fpgas"], 1)
+                with (
+                    patch("emuflow.phase3.run_tritonpart") as tritonpart,
+                    patch(
+                        "emuflow.phase3.run_partition_pressure_native"
+                    ) as patron,
+                ):
+                    report = run_phase3(
+                        ir_path=ir_path,
+                        platform_path=PLATFORM_PATH,
+                        output_dir=root / "phase3",
+                        constraints_path=constraints_path,
+                        provider="patron",
+                        seed=19,
+                    )
+                tritonpart.assert_not_called()
+                patron.assert_not_called()
+                self.assertEqual(
+                    report["provider"],
+                    "single-active-fpga-capacity-selection-v1",
+                )
+                self.assertEqual(report["requested_provider"], "patron")
+                self.assertFalse(report["partition_decision"]["executed"])
+                self.assertEqual(report["validation"]["used_fpgas"], 1)
 
     def test_explicit_active_subset_rejects_inactive_fixed_instance(self) -> None:
         with self.assertRaisesRegex(ValidationError, "inactive FPGAs"):
@@ -982,12 +985,12 @@ class Phase3Test(unittest.TestCase):
             ir_path.write_text(
                 json.dumps(self.ir.to_dict()), encoding="utf-8"
             )
-            report = run_phase3(
+            report = run_phase3_fixture(
                 ir_path=ir_path,
                 platform_path=PLATFORM_PATH,
                 output_dir=output / "phase3",
                 seed=11,
-                provider="greedy",
+                provider="tritonpart",
                 cut_mode="sequential-only",
             )
             self.assertEqual(report["status"], "pass")

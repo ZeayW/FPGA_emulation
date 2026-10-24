@@ -1,3 +1,4 @@
+from tests.partition_fixture import run_multi_fpga_flow_fixture
 import copy
 import hashlib
 import json
@@ -95,14 +96,14 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 ) as mapper,
             ):
                 with self.assertRaisesRegex(RuntimeError, "reached multi-clock mapper"):
-                    run_multi_fpga_flow(
+                    run_multi_fpga_flow_fixture(
                         platform_path=PLATFORM, output_dir=root / "flow",
                         sources=[ROOT / "examples/rtl/counter.v"], top="counter",
                         clocks=["dla_core_clk", "dla_csb_clk"],
                         clock_periods={"dla_core_clk": 10, "dla_csb_clk": 20},
                         architecture_timing_db=timing,
                         mapping_profile="xilinx-ultrascaleplus-open-v1",
-                        cut_mode="static-exact-combinational", partition_provider="greedy",
+                        cut_mode="static-exact-combinational", partition_provider="tritonpart",
                     )
                 mapper.assert_called_once()
 
@@ -119,13 +120,13 @@ class MultiFpgaFlowTest(unittest.TestCase):
                           side_effect=RuntimeError("reached mapper")) as frontend,
                 ):
                     with self.assertRaisesRegex(RuntimeError, "reached mapper"):
-                        run_multi_fpga_flow(
+                        run_multi_fpga_flow_fixture(
                             platform_path=PLATFORM, output_dir=root / "flow",
                             sources=[ROOT / "examples/rtl/counter.v"], top="counter",
                             mapping_profile="xilinx-ultrascaleplus-open-v1",
                             xilinx_mapping_strategy=strategy,
                             architecture_timing_db=timing, clock_periods={"clk": 10},
-                            partition_provider="greedy",
+                            partition_provider="tritonpart",
                         )
                     self.assertEqual(frontend.call_args.kwargs["mapping_strategy"],
                                      strategy or "hierarchical-abc9-v1")
@@ -176,7 +177,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 _resolve_partition_openroad("tritonpart", "/explicit/openroad"),
                 "/sealed/install/bin/openroad",
             )
-            self.assertIsNone(_resolve_partition_openroad("greedy", None))
+            self.assertIsNone(_resolve_partition_openroad("tritonpart", None, Path("initial.part")))
         self.assertEqual(
             resolver.call_args_list,
             [
@@ -249,14 +250,14 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 },
             )
             output = root / "flow"
-            report = run_multi_fpga_flow(
+            report = run_multi_fpga_flow_fixture(
                 platform_path=PLATFORM, mapping_profile="vtr-hard-blocks",
                 output_dir=output,
                 yosys_json=ROOT / "examples/yosys/counter.json",
                 top="counter",
                 clocks=["clk"],
                 partition_constraints=constraints,
-                partition_provider="greedy",
+                partition_provider="tritonpart",
                 cut_mode="sequential-only",
                 timing_driven=True,
                 clock_periods={"clk": 10.0},
@@ -313,7 +314,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 EmuFlowError, "cannot populate|required FPGA|capacity"
             ):
-                run_multi_fpga_flow(
+                run_multi_fpga_flow_fixture(
                     platform_path=STATIC_EXACT_PLATFORM,
                     output_dir=Path(temporary_directory) / "sequential",
                     yosys_json=(
@@ -321,7 +322,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     ),
                     top="static_exact_chain",
                     clocks=["clk"],
-                    partition_provider="greedy",
+                    partition_provider="tritonpart",
                     cut_mode="sequential-only",
                     timing_driven=False,
                     clock_periods={"clk": 10.0},
@@ -334,13 +335,13 @@ class MultiFpgaFlowTest(unittest.TestCase):
     def test_one_command_static_exact_flow_reaches_phase7c_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "static-exact"
-            report = run_multi_fpga_flow(
+            report = run_multi_fpga_flow_fixture(
                 platform_path=STATIC_EXACT_PLATFORM,
                 output_dir=root,
                 yosys_json=ROOT / "examples/yosys/static_exact_chain.json",
                 top="static_exact_chain",
                 clocks=["clk"],
-                partition_provider="greedy",
+                partition_provider="tritonpart",
                 # This transport fixture has one indivisible FF across two parts.
                 balance_tolerance=1.0,
                 timing_driven=False,
@@ -431,13 +432,13 @@ class MultiFpgaFlowTest(unittest.TestCase):
     def test_static_exact_cross_stage_preserves_policy_in_feedback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "static-exact-cross-stage"
-            report = run_multi_fpga_flow(
+            report = run_multi_fpga_flow_fixture(
                 platform_path=STATIC_EXACT_PLATFORM,
                 output_dir=root,
                 yosys_json=ROOT / "examples/yosys/static_exact_chain.json",
                 top="static_exact_chain",
                 clocks=["clk"],
-                partition_provider="greedy",
+                partition_provider="tritonpart",
                 # This transport fixture has one indivisible FF across two parts.
                 balance_tolerance=1.0,
                 timing_driven=True,
@@ -871,13 +872,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     return_value={"status": "pass"},
                 ),
             ):
-                report = run_multi_fpga_flow(
+                report = run_multi_fpga_flow_fixture(
                     platform_path=PLATFORM,
                     output_dir=root / "flow",
                     yosys_json=ROOT / "examples/yosys/counter.json",
                     top="counter",
                     clocks=["clk"],
-                    partition_provider="greedy",
+                    partition_provider="tritonpart",
                     cut_mode="sequential-only",
                     timing_driven=False,
                     clock_periods={"clk": 10.0},
@@ -920,13 +921,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 with self.assertRaisesRegex(
                     EmuFlowError, "missing PyTorch runtime"
                 ):
-                    run_multi_fpga_flow(
+                    run_multi_fpga_flow_fixture(
                         platform_path=PLATFORM,
                         output_dir=root,
                         yosys_json=ROOT / "examples/yosys/counter.json",
                         top="counter",
                         clocks=["clk"],
-                        partition_provider="greedy",
+                        partition_provider="tritonpart",
                         cut_mode="sequential-only",
                         timing_driven=False,
                         clock_periods={"clk": 10.0},
@@ -955,13 +956,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 with self.assertRaisesRegex(
                     EmuFlowError, "missing PyTorch runtime"
                 ):
-                    run_multi_fpga_flow(
+                    run_multi_fpga_flow_fixture(
                         platform_path=PLATFORM,
                         output_dir=root,
                         yosys_json=ROOT / "examples/yosys/counter.json",
                         top="counter",
                         clocks=["clk"],
-                        partition_provider="greedy",
+                        partition_provider="tritonpart",
                         cut_mode="sequential-only",
                         timing_driven=False,
                         clock_periods={"clk": 10.0},
@@ -999,13 +1000,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     "emuflow.multi_fpga_flow.check_opensta_engine_version"
                 ) as engine_check:
                     with self.assertRaisesRegex(ValidationError, "board link timing"):
-                        run_multi_fpga_flow(
+                        run_multi_fpga_flow_fixture(
                             platform_path=PLATFORM,
                             output_dir=output,
                             sources=[ROOT / "examples/rtl/counter.v"],
                             top="counter",
                             mapping_profile="generic-soft",
-                            partition_provider="greedy",
+                            partition_provider="tritonpart",
                             cut_mode="sequential-only",
                             timing_driven=False,
                             clock_periods={"clk": 10.0},
@@ -1036,13 +1037,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 "emuflow.multi_fpga_flow.check_opensta_engine_version"
             ) as engine_check:
                 with self.assertRaisesRegex(ValidationError, "transport cost platform disagrees"):
-                    run_multi_fpga_flow(
+                    run_multi_fpga_flow_fixture(
                         platform_path=PLATFORM,
                         output_dir=output,
                         sources=[ROOT / "examples/rtl/counter.v"],
                         top="counter",
                         mapping_profile="generic-soft",
-                        partition_provider="greedy",
+                        partition_provider="tritonpart",
                         cut_mode="sequential-only",
                         timing_driven=False,
                         clock_periods={"clk": 10.0},
@@ -1061,13 +1062,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             with self.assertRaisesRegex(
                 ValidationError, "requires 3.1.0 or newer"
             ):
-                run_multi_fpga_flow(
+                run_multi_fpga_flow_fixture(
                     platform_path=PLATFORM, mapping_profile="vtr-hard-blocks",
                     output_dir=root,
                     yosys_json=ROOT / "examples/yosys/counter.json",
                     top="counter",
                     clocks=["clk"],
-                    partition_provider="greedy",
+                    partition_provider="tritonpart",
                     cut_mode="sequential-only",
                     timing_driven=False,
                     clock_periods={"clk": 10.0},
@@ -1080,13 +1081,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
     def test_finalizes_checked_independent_physical_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "multi"
-            report = run_multi_fpga_flow(
+            report = run_multi_fpga_flow_fixture(
                 platform_path=PLATFORM,
                 output_dir=root,
                 yosys_json=ROOT / "examples/yosys/counter.json",
                 top="counter",
                 clocks=["clk"],
-                partition_provider="greedy",
+                partition_provider="tritonpart",
                 cut_mode="sequential-only",
                 timing_driven=False,
                 clock_periods={"clk": 10.0},
@@ -1168,13 +1169,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     ],
                 },
             )
-            report = run_multi_fpga_flow(
+            report = run_multi_fpga_flow_fixture(
                 platform_path=PLATFORM,
                 output_dir=output,
                 yosys_json=ROOT / "examples/yosys/counter.json",
                 top="counter",
                 clocks=["clk"],
-                partition_provider="greedy",
+                partition_provider="tritonpart",
                 cut_mode="sequential-only",
                 timing_driven=False,
                 router=str(tlr_router()),
@@ -1230,13 +1231,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     },
                 },
             )
-            report = run_multi_fpga_flow(
+            report = run_multi_fpga_flow_fixture(
                 platform_path=PLATFORM,
                 output_dir=output,
                 yosys_json=ROOT / "examples/yosys/counter.json",
                 top="counter",
                 clocks=["clk"],
-                partition_provider="greedy",
+                partition_provider="tritonpart",
                 cut_mode="sequential-only",
                 timing_driven=False,
                 board_link_timing_db=link_timing_path,
@@ -1330,13 +1331,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
 
     def test_report_rejects_cross_stage_identity_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            report = run_multi_fpga_flow(
+            report = run_multi_fpga_flow_fixture(
                 platform_path=PLATFORM,
                 output_dir=Path(temporary_directory) / "multi",
                 yosys_json=ROOT / "examples/yosys/counter.json",
                 top="counter",
                 clocks=["clk"],
-                partition_provider="greedy",
+                partition_provider="tritonpart",
                 cut_mode="sequential-only",
                 timing_driven=False,
                 clock_periods={"clk": 10.0},
@@ -1414,13 +1415,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             link_timing_path = root / "board-link-timing.json"
             write_json(link_timing_path, link_timing)
             output = root / "multi"
-            report = run_multi_fpga_flow(
+            report = run_multi_fpga_flow_fixture(
                 platform_path=PLATFORM,
                 output_dir=output,
                 yosys_json=ROOT / "examples/yosys/counter.json",
                 top="counter",
                 clocks=["clk"],
-                partition_provider="greedy",
+                partition_provider="tritonpart",
                 cut_mode="sequential-only",
                 timing_driven=True,
                 board_link_timing_db=link_timing_path,
@@ -1436,7 +1437,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 cross_stage_feedback_optimizer=str(
                     tdm_partition_feedback()
                 ),
-                partition_seed_attempts=2,
+                partition_seed_attempts=1,
                 partition_repair_min_used_fpgas=True,
                 equivalence_cycles=2,
                 mapping_profile="vtr-hard-blocks",
@@ -1478,10 +1479,10 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                         hop["base_link_delay_ns"],
                         delay_by_arc[(hop["link"], hop["from"], hop["to"])],
                     )
-            self.assertFalse(
+            self.assertTrue(
                 report["timing"]["partition_weights_applied"]
             )
-            self.assertFalse(
+            self.assertTrue(
                 report["timing"]["partition_provider_weights_applied"]
             )
             self.assertFalse(
@@ -1489,7 +1490,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             )
             self.assertEqual(
                 report["timing"]["partition_weight_consumers"],
-                [],
+                ["phase3-provider"],
             )
             self.assertGreater(
                 report["timing"]["cut_path_projection"][
@@ -1551,7 +1552,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 report["cross_stage"]["configuration"][
                     "partition_seed_attempts"
                 ],
-                2,
+                1,
             )
             self.assertEqual(
                 report["cross_stage"]["configuration"]["cut_mode"],
@@ -1589,13 +1590,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 self.assertTrue((output / relative).is_file(), relative)
 
             direct_output = root / "multi-direct"
-            direct_report = run_multi_fpga_flow(
+            direct_report = run_multi_fpga_flow_fixture(
                 platform_path=PLATFORM,
                 output_dir=direct_output,
                 yosys_json=ROOT / "examples/yosys/counter.json",
                 top="counter",
                 clocks=["clk"],
-                partition_provider="greedy",
+                partition_provider="tritonpart",
                 cut_mode="sequential-only",
                 timing_driven=True,
                 board_link_timing_db=link_timing_path,
@@ -1708,13 +1709,13 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 "emuflow.multi_fpga_flow.run_multi_fpga_bsp_flow",
                 side_effect=fake_bsp,
             ):
-                report = run_multi_fpga_flow(
+                report = run_multi_fpga_flow_fixture(
                     platform_path=PLATFORM,
                     output_dir=output,
                     yosys_json=ROOT / "examples/yosys/counter.json",
                     top="counter",
                     clocks=["clk"],
-                    partition_provider="greedy",
+                    partition_provider="tritonpart",
                     cut_mode="sequential-only",
                     timing_driven=False,
                     clock_periods={"clk": 10.0},

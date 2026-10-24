@@ -111,7 +111,7 @@ def run_partition_checkpoint(
             "a precomputed TritonPart solution requires provider=tritonpart "
             "or provider=patron"
         )
-    if provider not in {"patron", "tritonpart", "greedy"}:
+    if provider not in {"patron", "tritonpart"}:
         raise ValidationError(f"unsupported Phase 3 provider {provider!r}")
     ir_path = _require(frontend_root, "phase1/design.emuir.sqlite")
     if not managed_dag_node:
@@ -297,7 +297,7 @@ def validate_partition_checkpoint(
     if (report.get("mfspart_post_refinement")
         or (report.get("phase3") or {}).get("mfspart_post_refinement")):
         raise ValidationError("retired MFSPart post-refinement evidence is unsupported")
-    if report.get("provider") not in {"patron", "tritonpart", "greedy"}:
+    if report.get("provider") not in {"patron", "tritonpart"}:
         raise ValidationError("unsupported partition report provider")
     if expected_provider is not None and report.get("provider") != expected_provider:
         raise ValidationError("partition provider contract disagrees")

@@ -119,7 +119,8 @@ separate complete-flow comparison. PATRON is the project's algorithm name,
 not a claim to reproduce one particular paper.
 
 RePart and MFSPart initialization, replication and post-refinement routes are
-retired. TritonPart remains the PATRON initializer and a direct comparison
+retired. Greedy partitioning is retained only as a small independent test oracle.
+TritonPart remains the PATRON initializer and a direct comparison
 capability. Historical implementations are available through Git.
 Boundary policy is a separate choice: sequential-only and generalized
 Static Exact admit different cut locations. Exact transport-event legality is

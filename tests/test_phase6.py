@@ -33,12 +33,8 @@ from emuflow.netlist import (
     transport_to_systemverilog,
     validate_split_artifacts,
 )
-from emuflow.partition import (
-    assign_clusters,
-    build_partition_assignment,
-    build_clusters,
-    normalize_partition_constraints,
-)
+from emuflow.partition import (build_partition_assignment, build_clusters, normalize_partition_constraints)
+from tests.partition_reference import assign_clusters
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.phase3_assignment_index import (
     migrate_phase3_assignment_index,

@@ -14,7 +14,7 @@ from emuflow.multi_fpga_flow import run_multi_fpga_flow
 from emuflow.phase3 import run_phase3
 
 
-@pytest.mark.parametrize("provider", ["repart", "repart-replication", "mfspart"])
+@pytest.mark.parametrize("provider", ["repart", "repart-replication", "mfspart", "greedy"])
 def test_retired_provider_rejected_before_phase_input(tmp_path, provider):
     with patch("emuflow.phase3.load_partition_ir", side_effect=AssertionError("circuit loaded")):
         with pytest.raises(ValidationError, match="unsupported Phase 3 provider"):
@@ -23,7 +23,7 @@ def test_retired_provider_rejected_before_phase_input(tmp_path, provider):
     assert not (tmp_path / "partition/assignment.json").exists()
 
 
-@pytest.mark.parametrize("provider", ["repart", "repart-replication", "mfspart"])
+@pytest.mark.parametrize("provider", ["repart", "repart-replication", "mfspart", "greedy"])
 def test_retired_provider_rejected_before_compile_frontend(tmp_path, provider):
     with patch("emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend entered")):
         with pytest.raises(EmuFlowError, match="unsupported Phase 3 provider"):
@@ -31,7 +31,7 @@ def test_retired_provider_rejected_before_compile_frontend(tmp_path, provider):
     assert not (tmp_path / "flow").exists()
 
 
-@pytest.mark.parametrize("provider", ["repart", "repart-replication", "mfspart"])
+@pytest.mark.parametrize("provider", ["repart", "repart-replication", "mfspart", "greedy"])
 def test_retired_provider_has_no_cli_route(tmp_path, provider):
     parser = _build_parser()
     for command in (

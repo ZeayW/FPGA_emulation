@@ -374,10 +374,17 @@ alternative text protocol. Detailed output traces require `--trace-output`.
 
 ### Retired partition providers
 
-RePart, RePart replication and MFSPart, including MFSPart post-refinement,
+Greedy, RePart, RePart replication and MFSPart, including MFSPart post-refinement,
 are removed from the CLI, Python phase APIs and root build. Their tool paths,
 post-refinement options and dedicated qualification compiler are unsupported.
 Use the matching historical Git version to interpret or reproduce those routes.
 TritonPart remains the PATRON initializer and a direct comparison capability;
 PATRON's internal communication costs and hop validation remain in use.
 Phase 6 baseline remains the default, and explicit Chimew support is retained.
+
+The greedy initializer oracle lives only under `tests/` and is bounded to small
+contract fixtures. It cannot initialize a production or NVDLA acceptance run.
+Explicit `--tritonpart-solution` inputs use the shared imported-solution validator
+and do not require OpenROAD when it will not execute. A single active FPGA uses
+direct packed ownership and the common legality/resource validators; it does not
+construct a greedy adjacency graph.

@@ -14,7 +14,8 @@ from emuflow.ir import EmuIR
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from emuflow.io import read_json, write_json
-from emuflow.partition import assign_clusters, build_clusters, normalize_partition_constraints
+from emuflow.partition import (build_clusters, normalize_partition_constraints)
+from tests.partition_reference import assign_clusters
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints

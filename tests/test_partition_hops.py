@@ -11,12 +11,12 @@ from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.partition import (
-    _partition_hop_distances,
     build_clusters,
     build_partition_assignment,
     normalize_partition_constraints,
     validate_partition_artifacts,
 )
+from tests.partition_reference import _partition_hop_distances
 from emuflow.partition_hops import refine_partition_hops
 from emuflow.partition_ir import load_partition_ir
 from emuflow.phase3 import run_phase3

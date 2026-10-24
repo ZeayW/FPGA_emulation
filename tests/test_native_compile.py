@@ -77,7 +77,8 @@ def test_shared_preflight_publishes_effective_configuration_and_restores_next_co
     from emuflow.multi_fpga_flow import run_multi_fpga_flow
     request = tmp_path / "request.json"
     options = {"output_dir": str(tmp_path / "out"), "mapping_profile": "vtr-hard-blocks",
-               "partition_provider": "greedy", "clock_periods": {"clk": 10.0}, "opensta": sys.executable}
+               "partition_provider": "tritonpart", "clock_periods": {"clk": 10.0}, "opensta": sys.executable,
+               "openroad": sys.executable}
     request.write_text(json.dumps({"options": options}))
     previous = tmp_path / "preflight.json"
     with patch("emuflow.multi_fpga_flow.check_opensta_engine_version"):
@@ -251,10 +252,20 @@ def test_actual_shared_phase_adapters_complete_existing_nonphysical_contract_fix
     # Real launcher environments may contain intentionally empty values. The
     # timing adapter forwards its environment through the binary tool protocol.
     monkeypatch.setenv("EMUFLOW_COMPILE_EMPTY_ENV", "")
+    from tests.partition_fixture import write_fixture_solution
+    from emuflow.yosys import import_yosys_json
+    solution = tmp_path / "initial.part"
+    write_fixture_solution(
+        import_yosys_json(root / "examples/yosys/static_exact_chain.json", top="static_exact_chain", clocks=["clk"]),
+        root / "platforms/virtual/static_exact_acceptance_2fpga.json", solution,
+        cut_mode="static-exact-combinational", balance_tolerance=1.0,
+        max_cross_fpga_dependency_depth=2,
+    )
     report = run_native_multi_fpga_flow(
+        tritonpart_solution=solution,
         platform_path=root / "platforms/virtual/static_exact_acceptance_2fpga.json",
         output_dir=output, yosys_json=root / "examples/yosys/static_exact_chain.json",
-        top="static_exact_chain", clocks=["clk"], partition_provider="greedy", balance_tolerance=1.0,
+        top="static_exact_chain", clocks=["clk"], partition_provider="tritonpart", balance_tolerance=1.0,
         timing_driven=False, clock_periods={"clk": 10.0},
         opensta=str(root / "tests/fixtures/fake_opensta_paths.py"), router=str(tlr_router()),
         frame_slots=32, equivalence_cycles=2, cut_mode="static-exact-combinational",

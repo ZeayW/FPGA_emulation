@@ -11,12 +11,8 @@ from unittest import mock
 import emuflow.timing_routing as timing_routing
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import file_sha256, read_json
-from emuflow.partition import (
-    PARTITION_ASSIGNMENT_SCHEMA,
-    assign_clusters,
-    build_clusters,
-    normalize_partition_constraints,
-)
+from emuflow.partition import (PARTITION_ASSIGNMENT_SCHEMA, build_clusters, normalize_partition_constraints)
+from tests.partition_reference import assign_clusters
 from emuflow.phase4 import run_phase4
 from emuflow.platform import Platform
 from emuflow.routing import (
