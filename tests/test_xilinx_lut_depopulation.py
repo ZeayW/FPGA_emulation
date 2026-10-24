@@ -7,7 +7,13 @@ import unittest
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
-from emuflow.xilinx_lut_depopulation import _hot_region_boxes, depopulate_hot_lut_sites
+from emuflow.xilinx_lut_depopulation import depopulate_hot_lut_sites
+from emuflow.io import file_sha256
+from emuflow.xilinx_openparf_atomic import (
+    export_xilinx_openparf_atomic, load_xilinx_openparf_atomic_sites,
+    read_xilinx_openparf_atomic_name_map,
+)
+from tests.test_xilinx_openparf_atomic import _fixture
 
 
 class NativeLutDepopulationTest(unittest.TestCase):
@@ -93,38 +99,51 @@ class NativeLutDepopulationTest(unittest.TestCase):
                 self.assertNotEqual(completed.returncode, 0)
                 self.assertFalse(output.exists())
 
-    def test_wrapper_reads_regions_from_contract_without_per_site_metadata(self):
+    def wrapper_fixture(self, root):
+        mapped, packed, architecture = _fixture(root, clock_regions=True)
+        native = root/"native"
+        export_xilinx_openparf_atomic(mapped, packed, architecture, native)
+        name_map_path = native/"name_map.json"
+        seals = dict(mapped_sha256=file_sha256(mapped), packed_sha256=file_sha256(packed))
+        view = read_xilinx_openparf_atomic_name_map(name_map_path, **seals)
+        try:
+            self.assertNotIn("clock_regions", view["coordinate_system"])
+            sites = load_xilinx_openparf_atomic_sites(name_map_path, resources=["LUT"], **seals)
+            self.assertTrue(all("physical_region" not in site for site in sites))
+            x, y = sites[0]["dense_x"], sites[0]["dense_y"]
+            placement = root/"input.pl"
+            placement.write_text("".join(
+                f"{atom['openparf']} {x} {y} {1 if atom['resource']=='LUT' else 0}\n"
+                for atom in view["atoms"]
+            ))
+        finally:
+            view.close()
+        return placement, name_map_path, dict(**seals, architecture_path=architecture)
+
+    def test_wrapper_reads_actual_architecture_regions_without_site_metadata(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            self.run_case(root)
-            atoms = [dict(zip(("openparf", "source_cluster", "resource", "cell_type"),
-                              line.split())) for line in (root/"atoms.tsv").read_text().splitlines()]
-            name_map = {"atoms": atoms, "coordinate_system": {"clock_regions": {"regions": [
-                {"name": "X0Y0", "source_name": "X6Y9", "bbox": [0, 0, 0, 0]},
-                {"name": "X1Y0", "source_name": "X7Y9", "bbox": [1, 0, 2, 0]},
-            ]}}}
-            sites = [dict(dense_x=x, dense_y=0, resources={"LUT": 8},
-                          physical_sites={"LUT": [f"SLICE_X{x}Y0"]}) for x in range(3)]
-            module = "emuflow.xilinx_lut_depopulation"
-            with patch(module+".resolve_native_executable", return_value=str(self.exe)), \
-                 patch(module+".read_xilinx_openparf_atomic_name_map", return_value=name_map), \
-                 patch(module+".load_xilinx_openparf_atomic_sites", return_value=sites):
+            placement, name_map, kwargs = self.wrapper_fixture(root)
+            with patch("emuflow.xilinx_lut_depopulation.resolve_native_executable", return_value=str(self.exe)):
                 report = depopulate_hot_lut_sites(
-                    root/"input.pl", root/"name_map.json", root/"candidate.pl",
-                    mapped_sha256="mapped", packed_sha256="packed", hot_clock_regions=["X6Y9"],
+                    placement, name_map, root/"candidate.pl", **kwargs, hot_clock_regions=["X0Y0"],
                 )
-            self.assertEqual(report["counters"]["moved_luts"], 2)
+            self.assertEqual(report["counters"]["atoms"], 2)
+            self.assertEqual(report["architecture_sha256"], file_sha256(kwargs["architecture_path"]))
             self.assertTrue(report["requires_exact_placement_validation"])
 
-    def test_invalid_or_missing_region_contract_is_rejected(self):
-        def contract(regions):
-            return {"coordinate_system": {"clock_regions": {"regions": regions}}}
-        for name_map in ({}, contract([None]), contract([
-            {"name": "X0Y0", "bbox": [0, 0, 2, 2]},
-            {"name": "X1Y0", "bbox": [2, 0, 3, 2]},
-        ]), contract([{"name": "X0Y0", "bbox": [True, 0, 2, 2]}])):
-            with self.subTest(name_map=name_map), self.assertRaises(ValidationError):
-                _hot_region_boxes(name_map, {"X0Y0", "X1Y0"})
+    def test_missing_region_and_changed_architecture_are_rejected_before_publication(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            placement, name_map, kwargs = self.wrapper_fixture(root)
+            output = root/"candidate.pl"
+            with patch("emuflow.xilinx_lut_depopulation.resolve_native_executable", return_value=str(self.exe)):
+                with self.assertRaisesRegex(ValidationError, "hot region is absent"):
+                    depopulate_hot_lut_sites(placement, name_map, output, **kwargs, hot_clock_regions=["X99Y99"])
+                kwargs["architecture_path"].write_text(kwargs["architecture_path"].read_text()+"\n")
+                with self.assertRaises(ValidationError):
+                    depopulate_hot_lut_sites(placement, name_map, output, **kwargs, hot_clock_regions=["X0Y0"])
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

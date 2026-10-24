@@ -102,9 +102,11 @@ in the production flow until a complete physical run qualifies it.
 The explicit `depopulate_hot_lut_sites` API adds a post-DP experiment for
 selective packing depopulation. It streams atom identity and the complete
 qualified LUT site domain to `emuflow_xilinx_lut_depopulation`. The C++ mover
-selects hot sites using the name map's sealed dense-grid clock-region boxes,
-including original region names when the solver grid was reindexed. It does
-not require region metadata in the normalized site database. The mover
+selects hot sites by joining their physical site identities to the source-sealed
+ArchitectureDB. Its explicit `architecture_path` must match the name map's
+architecture SHA-256; region metadata is not stored in the normalized site
+database or name-map coordinate header. Solver region reindexing does not
+affect this join. The mover
 preserves all FFs, hard blocks, fixed atoms, and macro-bearing sites. Only
 singleton LUT1--LUT6 atoms in caller-selected hot clock regions can move to
 nearby free qualified BELs. The default search target is six LUTs per slice
