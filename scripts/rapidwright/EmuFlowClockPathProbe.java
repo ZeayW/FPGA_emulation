@@ -90,6 +90,23 @@ public final class EmuFlowClockPathProbe {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 4 && args[0].equals("--clock-graph")) {
+            Device device = Device.getDevice(args[1]);
+            String[] a = args[2].split("/", 2), b = args[3].split("/", 2);
+            Node source = new Node(device.getTile(a[0]), device.getTile(a[0]).getWireIndex(a[1]));
+            Node sink = new Node(device.getTile(b[0]), device.getTile(b[0]).getWireIndex(b[1]));
+            Map<Node, Node> tree = EmuFlowRWRoute.availableClockTree(source,
+                Node::getAllDownhillNodes, EmuFlowRWRoute::isDedicatedClockNode, n -> true);
+            Map<String, Integer> intents = new TreeMap<>();
+            for (Node node : tree.keySet()) intents.merge(node.getIntentCode().name(), 1, Integer::sum);
+            System.out.println("clock-graph nodes=" + tree.size() + " intents=" + intents);
+            List<Node> path = EmuFlowRWRoute.availableClockSinkPath(sink, tree,
+                Node::getAllUphillNodes, n -> n.getIntentCode().name().equals("NODE_GLOBAL_LEAF"), n -> true, 16);
+            List<PIP> pips = EmuFlowRWRoute.extendedClockPathPIPs(path);
+            for (Node node : path) System.out.println(node.getIntentCode() + " " + node);
+            System.out.println("PASS: device clock path has " + pips.size() + " directed PIPs");
+            return;
+        }
         if (args.length == 1 && args[0].equals("--clock-tree-self-test")) {
             Map<String, List<String>> down = Map.of(
                 "source", List.of("blocked", "spine"),

@@ -156,7 +156,8 @@ does not replace final source-to-sink/resource validation. Shared ownership or
 unresolved endpoints stop execution before signal routing.
 
 The dedicated-clock search checks availability on every source-to-leaf edge,
-including routing and distribution nodes. A sink's bounded uphill search must
+including routing and distribution nodes and `CLK_` connector wires that the
+device labels `INTENT_DEFAULT`. A sink's bounded uphill search must
 join a leaf reachable from that source; an available but unreachable leaf is
 insufficient. BUFGCE cascade inputs may join another reachable dedicated node.
 Only selected paths are reserved for subsequent clocks, and ownership remains
@@ -169,7 +170,8 @@ readable by the validator.
 `EmuFlowClockPathProbe --clock-owner-self-test` checks distinct-user counters.
 `--clock-tree-self-test` exercises blocked resources, dedicated-graph boundaries,
 cycles, unreachable nearer leaves, occupied sources and bounded sink tails
-without loading a device.
+without loading a device. `--clock-graph DEVICE SOURCE_NODE SINK_NODE` additionally
+checks a concrete device path and its programmable edge directions.
 
 The academic literature reaches the same conclusion through different
 algorithms:

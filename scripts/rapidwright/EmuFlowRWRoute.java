@@ -132,6 +132,14 @@ public final class EmuFlowRWRoute {
         return pips;
     }
 
+    static boolean isDedicatedClockNode(Node node) {
+        String intent = node.getIntentCode().name();
+        // Device data also represents clock mux/buffer connector wires with
+        // INTENT_DEFAULT. They are real clock graph edges, not fabric detours.
+        return intent.startsWith("NODE_GLOBAL")
+            || (intent.equals("INTENT_DEFAULT") && node.getWireName().startsWith("CLK_"));
+    }
+
     /** Dedicated-clock reachability, checking every node before inserting an edge. */
     static <T> Map<T, T> availableClockTree(
         T source, Function<T, ? extends Iterable<T>> downhill,
@@ -487,7 +495,7 @@ public final class EmuFlowRWRoute {
             if (source == null) throw new IllegalStateException("clock has no source: " + clk.getName());
             Map<Node, Node> tree = availableClockTree(
                 source.getConnectedNode(), Node::getAllDownhillNodes,
-                node -> node.getIntentCode().name().startsWith("NODE_GLOBAL"), available
+                EmuFlowRWRoute::isDedicatedClockNode, available
             );
             System.out.println("INFO: EmuFlow available clock tree: net=" + clk.getName()
                 + " reachable_nodes=" + tree.size() + " sinks=" + (clk.getPins().size() - 1)
