@@ -285,6 +285,16 @@ if(BUILD_TESTING)
   add_test(NAME emuflow_xilinx_slice_spreading_cli
     COMMAND "$<TARGET_FILE:emuflow_xilinx_slice_spreading>" --help)
 endif()
+add_executable(emuflow_xilinx_clock_leaf_repair
+  "${CMAKE_SOURCE_DIR}/src/native/xilinx_clock_leaf_repair.cpp")
+target_compile_features(emuflow_xilinx_clock_leaf_repair PRIVATE cxx_std_17)
+target_compile_options(emuflow_xilinx_clock_leaf_repair PRIVATE -O3)
+set_target_properties(emuflow_xilinx_clock_leaf_repair PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
+if(BUILD_TESTING)
+  add_test(NAME emuflow_xilinx_clock_leaf_repair_cli
+    COMMAND "$<TARGET_FILE:emuflow_xilinx_clock_leaf_repair>" --help)
+endif()
 add_executable(emuflow_xilinx_bookshelf_exporter
   "${CMAKE_SOURCE_DIR}/src/native/xilinx_bookshelf_exporter.cpp")
 target_compile_features(emuflow_xilinx_bookshelf_exporter PRIVATE cxx_std_17)

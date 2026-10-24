@@ -1463,6 +1463,81 @@ public final class EmuFlowRWRoute {
         );
     }
 
+    private static List<String> clockLeafDomain(Node intNode) {
+        Set<String> leaves = new java.util.TreeSet<>();
+        if (intNode != null) {
+            for (Node first : intNode.getAllUphillNodes()) {
+                for (Node leaf : first.getAllUphillNodes()) {
+                    if (leaf.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF) leaves.add(leaf.toString());
+                }
+            }
+        }
+        return new ArrayList<>(leaves);
+    }
+
+    private static int exportClockDomain(
+        List<String> leaves, Map<String, Integer> ids, BufferedWriter out
+    ) throws Exception {
+        if (leaves.isEmpty()) throw new IllegalStateException("empty ordinary clock leaf domain");
+        String key = String.join(";", leaves);
+        Integer id = ids.get(key);
+        if (id == null) {
+            id = ids.size(); ids.put(key, id);
+            out.write("D\t" + id + "\t" + leaves.size() + "\n");
+        }
+        return id;
+    }
+
+    private static JSONObject exportClockLeafDomains(Design design, Map<String, String> kinds, Path output)
+        throws Exception {
+        Map<String, Integer> ids = new HashMap<>();
+        long sliceSites = 0, clockPins = 0, fixedPins = 0;
+        try (BufferedWriter out = Files.newBufferedWriter(output, StandardCharsets.UTF_8)) {
+            List<Site> sites = new ArrayList<>();
+            for (SiteTypeEnum type : new SiteTypeEnum[] {SiteTypeEnum.SLICEL, SiteTypeEnum.SLICEM}) {
+                Collections.addAll(sites, design.getDevice().getAllSitesOfType(type));
+            }
+            sites.sort(Comparator.comparing(Site::getName));
+            for (Site site : sites) {
+                if (!site.hasPin("CLK1") || !site.hasPin("CLK2")) {
+                    throw new IllegalStateException("slice has no CLK1/CLK2 pins: " + site);
+                }
+                int first = exportClockDomain(clockLeafDomain(site.getConnectedNode("CLK1")), ids, out);
+                int second = exportClockDomain(clockLeafDomain(site.getConnectedNode("CLK2")), ids, out);
+                out.write("S\t" + site.getName() + "\t" + first + "\t" + second + "\n");
+                sliceSites++;
+            }
+            List<String> nets = new ArrayList<>(kinds.keySet()); Collections.sort(nets);
+            for (String name : nets) {
+                if (!kinds.get(name).equals("clock")) continue;
+                Net net = design.getNet(name);
+                if (net == null) continue;
+                List<SitePinInst> pins = new ArrayList<>(net.getSinkPins());
+                pins.sort(Comparator.comparing(SitePinInst::toString));
+                for (SitePinInst pin : pins) {
+                    List<String> leaves = clockLeafDomain(RouterHelper.projectInputPinToINTNode(pin));
+                    int domain = exportClockDomain(leaves, ids, out);
+                    Site site = pin.getSiteInst().getSite();
+                    if (site.getSiteTypeEnum().name().startsWith("SLICE")) {
+                        String clockPin = pin.getName();
+                        if (!(clockPin.equals("CLK1") || clockPin.equals("CLK2"))
+                            || !leaves.equals(clockLeafDomain(site.getConnectedNode(clockPin)))) {
+                            throw new IllegalStateException("projected and direct slice clock domains differ: " + pin);
+                        }
+                        out.write("C\t" + site.getName() + "\t" + clockPin + "\t" + name + "\n");
+                        clockPins++;
+                    } else {
+                        out.write("P\t" + domain + "\t" + name + "\n"); fixedPins++;
+                    }
+                }
+            }
+        }
+        return new JSONObject().put("schema", "emuflow.clock-leaf-placement-domain/v1")
+            .put("path", output.getFileName().toString()).put("sha256", sha256(output))
+            .put("slice_sites", sliceSites).put("domains", ids.size())
+            .put("slice_clock_pins", clockPins).put("fixed_clock_pins", fixedPins);
+    }
+
     private static JSONObject auditClockLeafDomains(Design design, Map<String, String> netKinds) {
         Map<String, Set<String>> bankClocks = new HashMap<>();
         Map<String, List<String>> bankLeaves = new HashMap<>();
@@ -1476,14 +1551,7 @@ public final class EmuFlowRWRoute {
             for (SitePinInst pin : clock.getSinkPins()) {
                 sinks++;
                 Node intNode = RouterHelper.projectInputPinToINTNode(pin);
-                Set<String> leaves = new java.util.TreeSet<>();
-                if (intNode != null) {
-                    for (Node first : intNode.getAllUphillNodes()) {
-                        for (Node leaf : first.getAllUphillNodes()) {
-                            if (leaf.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF) leaves.add(leaf.toString());
-                        }
-                    }
-                }
+                List<String> leaves = clockLeafDomain(intNode);
                 if (leaves.isEmpty()) { uncovered++; continue; }
                 String bank = String.join(";", leaves);
                 bankClocks.computeIfAbsent(bank, ignored -> new HashSet<>()).add(clock.getName());
@@ -1514,7 +1582,9 @@ public final class EmuFlowRWRoute {
     }
 
     public static void main(String[] args) throws Exception {
-        boolean auditClockDomains = args.length == 8 && args[7].equals("--audit-clock-leaf-domains");
+        boolean exportClockDomains = args.length == 8 && args[7].equals("--export-clock-leaf-domains");
+        boolean auditClockDomains = exportClockDomains
+            || (args.length == 8 && args[7].equals("--audit-clock-leaf-domains"));
         if (args.length != 7 && !auditClockDomains) {
             throw new IllegalArgumentException(
                 "usage: EmuFlowRWRoute <input.tsv> <output.json> "
@@ -1843,7 +1913,10 @@ public final class EmuFlowRWRoute {
         reportHeap("pins-connected");
         if (auditClockDomains) {
             JSONObject audit = auditClockLeafDomains(design, netKinds)
-                .put("input_sha256", sha256(inputPath));
+                .put("input_sha256", sha256(inputPath)).put("source", new JSONObject(metadata));
+            if (exportClockDomains) audit.put("placement_domain", exportClockLeafDomains(
+                design, netKinds, outputPath.resolveSibling(outputPath.getFileName() + ".domains.tsv")
+            ));
             Files.writeString(outputPath, audit.toString() + "\n", StandardCharsets.UTF_8);
             System.out.println("INFO: EmuFlow clock leaf domains: " + audit);
             return;

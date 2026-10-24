@@ -156,3 +156,62 @@ def spread_hot_slice_sites(
         parameters=dict(scale_numerator=scale_numerator, scale_denominator=scale_denominator,
                         maximum_target_distance=maximum_target_distance), physical_slice_coordinates=True,
     )
+
+
+def repair_clock_leaf_domains(
+    placement: Path, name_map_path: Path, output: Path, *,
+    mapped_sha256: str, packed_sha256: str, architecture_path: Path,
+    hot_clock_regions, clock_domain_audit: Path, route_input_path: Path,
+    placement_certificate_path: Path, maximum_radius: int = 128,
+):
+    """Repair ordinary clock-leaf demand using separately certified rigid slices."""
+    if (isinstance(maximum_radius, bool) or not isinstance(maximum_radius, int)
+            or not 0 <= maximum_radius <= 1024):
+        raise ValidationError("invalid clock repair displacement bound")
+    audit_path, route_input, certificate_path = map(
+        Path, (clock_domain_audit, route_input_path, placement_certificate_path)
+    )
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    certificate = json.loads(certificate_path.read_text(encoding="utf-8"))
+    certificate_source = certificate.get("source", {})
+    if (certificate.get("status") != "pass"
+            or certificate_source.get("native_placement_sha256") != file_sha256(Path(placement))
+            or certificate_source.get("mapped_sha256") != mapped_sha256
+            or certificate_source.get("packed_sha256") != packed_sha256):
+        raise ValidationError("clock repair source placement certificate differs")
+    metadata = {}
+    with route_input.open(encoding="utf-8") as stream:
+        for line in stream:
+            fields = line.rstrip("\n").split("\t")
+            if fields[0] != "META":
+                break
+            if len(fields) != 3 or fields[1] in metadata:
+                raise ValidationError("invalid clock repair route-input metadata")
+            metadata[fields[1]] = fields[2]
+    payload = audit.get("placement_domain", {})
+    payload_name = payload.get("path")
+    if (audit.get("schema") != "emuflow.clock-leaf-domain-audit/v1"
+            or audit.get("input_sha256") != file_sha256(route_input)
+            or audit.get("source") != metadata
+            or metadata.get("mapped_sha256") != mapped_sha256
+            or metadata.get("part") != certificate.get("part")
+            or payload.get("schema") != "emuflow.clock-leaf-placement-domain/v1"
+            or not isinstance(payload_name, str) or not payload_name
+            or Path(payload_name).name != payload_name):
+        raise ValidationError("clock repair domain source identity differs")
+    domain_path = audit_path.parent / payload_name
+    if file_sha256(domain_path) != payload.get("sha256"):
+        raise ValidationError("clock repair domain payload hash differs")
+    return _run_hot_site_transform(
+        placement, name_map_path, output, mapped_sha256=mapped_sha256,
+        packed_sha256=packed_sha256, architecture_path=architecture_path,
+        hot_clock_regions=hot_clock_regions, executable_name="emuflow_xilinx_clock_leaf_repair",
+        native_arguments=[domain_path, maximum_radius],
+        schema="emuflow.xilinx-clock-leaf-repair/v1", provider="native-rigid-slice-clock-domain-repair-v1",
+        parameters=dict(maximum_radius=maximum_radius,
+                        clock_domain_audit_sha256=file_sha256(audit_path),
+                        clock_domain_payload_sha256=payload["sha256"],
+                        source_route_input_sha256=audit["input_sha256"],
+                        source_placement_certificate_sha256=file_sha256(certificate_path)),
+        physical_slice_coordinates=True,
+    )

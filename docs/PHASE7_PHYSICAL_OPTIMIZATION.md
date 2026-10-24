@@ -158,6 +158,27 @@ without such a domain are counted separately. The report seals the input hash
 and retains at most sixteen overfull examples. This read-only audit does not
 certify placement, clock skew, or route completion.
 
+`--export-clock-leaf-domains` extends that audit with a SHA-sealed TSV of every
+device SLICEL/SLICEM site's two clock-pin domains, modeled slice clock loads,
+and fixed loads from other resources. Direct site-pin domains must match the
+projected domains of every actual slice sink. This explicit qualification export
+is scratch for the active experiment, not a reusable routing certificate.
+
+`repair_clock_leaf_domains` consumes that export, the matching frozen route
+input and a certified native placement. It checks source and payload identities
+before invoking `emuflow_xilinx_clock_leaf_repair`. The C++ repair selects an
+overfull domain and an entire clock's removable slice groups there. It attempts
+nearest-vacancy assignments of all donor groups as one transaction, preserving
+LUT/FF co-location and BEL slots. Target domains must fit their exact ordinary
+leaf counts, and failed transactions restore both placement and clock references.
+Fixed, macro, carry, MUX and hard-resource groups remain protected. The bounded
+physical-slice search defaults to 128 units; it is an experiment displacement
+bound, not a device limit. No net or cell is added, removed or rewired. Remaining
+overfull domains are reported explicitly. A zero count is only ordinary local
+leaf-demand evidence: new exact placement certification, independent device
+reaudit and complete routing/timing are still required. The repair is not
+automatically enabled in the production flow.
+
 After global-clock routing, the adapter independently counts distinct clock
 nets on each routed PIP endpoint node before starting signal routing. Repeated
 uses by one clock count once. It records shared nodes, maximum distinct users,
