@@ -21,6 +21,7 @@ import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Site;
 import com.xilinx.rapidwright.device.SiteTypeEnum;
+import com.xilinx.rapidwright.device.Tile;
 import com.xilinx.rapidwright.edif.EDIFCell;
 import com.xilinx.rapidwright.edif.EDIFNet;
 import com.xilinx.rapidwright.edif.EDIFPort;
@@ -30,6 +31,7 @@ import com.xilinx.rapidwright.rwroute.NetWrapper;
 import com.xilinx.rapidwright.rwroute.NodeStatus;
 import com.xilinx.rapidwright.rwroute.RouterHelper;
 import com.xilinx.rapidwright.rwroute.RWRouteConfig;
+import com.xilinx.rapidwright.rwroute.RouteNodeGraph;
 import com.xilinx.rapidwright.timing.TimingModel;
 import com.xilinx.rapidwright.util.ParallelismTools;
 import java.io.BufferedInputStream;
@@ -226,6 +228,21 @@ public final class EmuFlowRWRoute {
         "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
         "DSP_ALU", "DSP_M_DATA", "DSP_OUTPUT", "DSP_PREADD"
     };
+
+    static final class ClockDomainRouteNodeGraph extends CUFR.RouteNodeGraphCUFR {
+        ClockDomainRouteNodeGraph(Design design, RWRouteConfig config) { super(design, config); }
+
+        @Override
+        protected int getHighestBaseWireIndex(Tile tile, int startWireIndex) {
+            // Clock-tile base wire domains differ even within one tile type.
+            // Upstream grows sparse arrays on preserve(), but an exploratory
+            // getPreservedNet() can read a higher unpreserved index first.
+            // Size clock tiles from their own complete device wire domain.
+            String name = tile.getName();
+            if (name.startsWith("RCLK_") || name.startsWith("CMT_")) return tile.getWireCount();
+            return super.getHighestBaseWireIndex(tile, startWireIndex);
+        }
+    }
 
     /**
      * CUFR's upstream --enlargeBoundingBox policy enlarges both unroutable and
@@ -437,6 +454,12 @@ public final class EmuFlowRWRoute {
                     + "bounding-box expansion policy to remain disabled"
                 );
             }
+        }
+
+        @Override
+        protected RouteNodeGraph createRouteNodeGraph() {
+            return config.isTimingDriven() ? super.createRouteNodeGraph()
+                : new ClockDomainRouteNodeGraph(design, config);
         }
 
         private static final int MAX_LCB_SEARCH_DEPTH = 16;
