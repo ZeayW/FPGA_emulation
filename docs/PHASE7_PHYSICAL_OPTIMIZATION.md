@@ -196,25 +196,32 @@ unresolved endpoints, intent counts, and at most eight examples. This census
 does not replace final source-to-sink/resource validation. Shared ownership or
 unresolved endpoints stop execution before signal routing.
 
-The dedicated-clock search checks availability on every source-to-leaf edge,
-including routing and distribution nodes and `CLK_` connector wires that the
-device labels `INTENT_DEFAULT`. A sink's bounded uphill search must
+Dedicated-clock routing uses a bounded negotiation loop. Ordinary signal
+reservations and other clock endpoints remain unavailable on every edge.
+Clock route-node overlaps are temporary search states, penalized by present
+occupancy and accumulated historical excess. Clocks are processed by descending
+fanout with stable name ties. Each iteration rips up and recomputes weighted
+source trees, then selects the cheapest join among all nearest reachable sink
+leaves. The search includes routing/distribution nodes and `CLK_` connector
+wires that the device labels `INTENT_DEFAULT`. A sink's uphill search must
 join a leaf reachable from that source; an available but unreachable leaf is
 insufficient. The sink tail does not expand back into an unreachable dedicated
 clock branch: all source-reachable dedicated nodes have already been explored.
 BUFGCE cascade inputs may join another reachable dedicated node. A tail search
 also has a 200,000-node work bound. Exhaustion reports the endpoint, depth,
 local leaf owners and resource status; it is explicitly a search-budget failure,
-not proof that the placement is unroutable. Matching leaves terminate discovery
-when enqueued, avoiding unnecessary expansion of an already solved BFS layer.
+not proof that the placement is unroutable. All joins in a BFS layer are scored
+before any non-join in that layer expands.
 Clock-tile reservation arrays use each tile's complete device wire domain;
 clock exploration must not index a shorter sparse array inferred from another
 tile of the same type. Ordinary signal tiles retain upstream sparse allocation.
-Only selected paths are reserved for subsequent clocks, and ownership remains
-separate from endpoint unpreservation. This removes unconstrained helper calls
+Only selected paths contribute to clock occupancy. Inter-site clock PIPs enter
+the preserved signal-routing graph only after an entire iteration has zero
+cross-clock shared nodes. The loop has a 24-iteration work bound and fails
+explicitly if no legal clock routing is produced. This removes unconstrained helper calls
 from the source/centroid/distribution path. It is a connectivity/resource policy,
 not a clock-skew or timing guarantee. The producer identifies this policy as
-`recovery-available-clock-tree-v1`; historical sealed route strategies remain
+`recovery-negotiated-clock-tree-v2`; historical sealed route strategies remain
 readable by the validator.
 
 `EmuFlowClockPathProbe --clock-owner-self-test` checks distinct-user counters.

@@ -139,6 +139,22 @@ public final class EmuFlowClockPathProbe {
                 } catch (IllegalStateException expected) { continue; }
                 throw new IllegalStateException("clock tail exceeded depth bound " + depth);
             }
+            Map<String,List<String>> weightedDown=Map.of(
+                "source",List.of("busy","free"),"busy",List.of("leaf"),
+                "free",List.of("leaf","source"));
+            EmuFlowRWRoute.ClockTree<String> weighted=EmuFlowRWRoute.weightedClockTree(
+                "source",n -> weightedDown.getOrDefault(n,List.of()),n -> true,n -> true,
+                n -> n.equals("busy")?20.0:1.0);
+            if (!weighted.parents.get("leaf").equals("free") || weighted.distance.get("leaf")!=2.0)
+                throw new IllegalStateException("clock tree ignored congestion penalty");
+            Map<String,String> alternatives=new java.util.HashMap<>();
+            alternatives.put("source",null);alternatives.put("leaf0","source");alternatives.put("leaf1","source");
+            List<String> chosen=EmuFlowRWRoute.availableClockSinkPath("sink",alternatives,
+                n -> n.equals("sink")?List.of("leaf0","leaf1"):List.of(),
+                n -> n.startsWith("leaf"),n -> true,n -> true,2,
+                n -> n.equals("leaf0")?20.0:1.0,n -> 1.0);
+            if (!chosen.equals(List.of("source","leaf1","sink")))
+                throw new IllegalStateException("sink ignored alternate leaf congestion cost");
             try {
                 EmuFlowRWRoute.availableClockTree("source", n -> List.of(), n -> true, n -> false);
             } catch (IllegalStateException expected) {

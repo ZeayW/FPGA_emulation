@@ -1344,6 +1344,8 @@ def validate_xilinx_route_db(
             "parallel-unroutable-recovery-extended-lcb-clock",
             "CUFR-HUS-non-timing-driven-uturn-enabled-"
             "parallel-unroutable-recovery-available-clock-tree-v1",
+            "CUFR-HUS-non-timing-driven-uturn-enabled-"
+            "parallel-unroutable-recovery-negotiated-clock-tree-v2",
         }
     ):
         raise ValidationError("XilinxRouteDB transformed-cell accounting is invalid")

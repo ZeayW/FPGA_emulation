@@ -59,6 +59,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.function.ToDoubleFunction;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -66,7 +67,7 @@ public final class EmuFlowRWRoute {
     private static final String SCHEMA = "emuflow.xilinx-route-db/v2";
     private static final String ROUTER_STRATEGY =
         "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-"
-        + "recovery-available-clock-tree-v1";
+        + "recovery-negotiated-clock-tree-v2";
     private static final double MAX_RECOVERY_ITERATION_SECONDS = 600.0;
     private static final Set<String> EXTENDED_LCB_CLOCK_NETS =
         ConcurrentHashMap.newKeySet();
@@ -164,10 +165,53 @@ public final class EmuFlowRWRoute {
         return parents;
     }
 
+    static final class ClockTree<T> {
+        final Map<T,T> parents = new HashMap<>();
+        final Map<T,Double> distance = new HashMap<>();
+    }
+    private static final class ClockStep<T> {
+        final T node; final double cost; final long order;
+        ClockStep(T node, double cost, long order) { this.node=node; this.cost=cost; this.order=order; }
+    }
+    static <T> ClockTree<T> weightedClockTree(
+        T source, Function<T, ? extends Iterable<T>> downhill,
+        Predicate<T> dedicated, Predicate<T> available, ToDoubleFunction<T> cost
+    ) {
+        if (source == null || !available.test(source)) throw new IllegalStateException("clock source unavailable: " + source);
+        ClockTree<T> tree = new ClockTree<>();
+        PriorityQueue<ClockStep<T>> queue = new PriorityQueue<>(Comparator
+            .<ClockStep<T>>comparingDouble(step -> step.cost).thenComparingLong(step -> step.order));
+        long order=0; tree.parents.put(source,null); tree.distance.put(source,0.0);
+        queue.add(new ClockStep<>(source,0.0,order++));
+        while (!queue.isEmpty()) {
+            ClockStep<T> step=queue.poll();
+            if (step.cost != tree.distance.get(step.node)) continue;
+            for (T next : downhill.apply(step.node)) {
+                if (!dedicated.test(next) || !available.test(next)) continue;
+                double increment=cost.applyAsDouble(next);
+                if (!(increment>=1.0) || !Double.isFinite(increment)) throw new IllegalStateException("invalid clock routing cost");
+                double candidate=step.cost+increment;
+                if (candidate>=tree.distance.getOrDefault(next,Double.POSITIVE_INFINITY)) continue;
+                tree.parents.put(next,step.node); tree.distance.put(next,candidate);
+                queue.add(new ClockStep<>(next,candidate,order++));
+            }
+        }
+        return tree;
+    }
+
     /** Find a bounded, available sink tail that joins the reachable clock tree. */
     static <T> List<T> availableClockSinkPath(
         T sink, Map<T, T> parents, Function<T, ? extends Iterable<T>> uphill,
         Predicate<T> join, Predicate<T> available, Predicate<T> expand, int maximumDepth
+    ) {
+        return availableClockSinkPath(sink, parents, uphill, join, available, expand,
+            maximumDepth, node -> 0.0, node -> 1.0);
+    }
+
+    static <T> List<T> availableClockSinkPath(
+        T sink, Map<T,T> parents, Function<T, ? extends Iterable<T>> uphill,
+        Predicate<T> join, Predicate<T> available, Predicate<T> expand, int maximumDepth,
+        ToDoubleFunction<T> rootCost, ToDoubleFunction<T> nodeCost
     ) {
         if (sink == null || !available.test(sink)) {
             throw new IllegalStateException("global-clock sink unavailable: " + sink);
@@ -176,28 +220,32 @@ public final class EmuFlowRWRoute {
         ArrayDeque<T> queue = new ArrayDeque<>();
         towardSink.put(sink, null); queue.add(sink);
         T selected = null;
-        search: for (int depth = 0; depth <= maximumDepth && !queue.isEmpty(); depth++) {
-            int count = queue.size();
+        for (int depth = 0; depth <= maximumDepth && !queue.isEmpty(); depth++) {
+            // Test every join in this layer before expanding any non-join.
+            // Selecting the first leaf would defeat negotiated congestion:
+            // all clocks would keep selecting the same physical leaf.
+            double best=Double.POSITIVE_INFINITY;
+            for (T node : queue) {
+                if (!parents.containsKey(node) || !join.test(node)) continue;
+                double candidate=rootCost.applyAsDouble(node);
+                for (T cursor=towardSink.get(node); cursor!=null; cursor=towardSink.get(cursor))
+                    candidate+=nodeCost.applyAsDouble(cursor);
+                if (candidate<best) { best=candidate; selected=node; }
+            }
+            if (selected!=null) break;
+            int count=queue.size();
             while (count-- > 0) {
-                T node = queue.removeFirst();
-                if (parents.containsKey(node) && join.test(node)) {
-                    selected = node; break;
-                }
-                if (depth == maximumDepth || !expand.test(node)) continue;
+                T node=queue.removeFirst();
+                if (depth==maximumDepth || !expand.test(node)) continue;
                 for (T next : uphill.apply(node)) {
                     if (towardSink.containsKey(next) || !available.test(next)) continue;
-                    towardSink.put(next, node);
-                    if (parents.containsKey(next) && join.test(next)) {
-                        selected = next; break search;
-                    }
-                    if (towardSink.size() >= 200000) {
-                        throw new IllegalStateException("clock tail search budget exhausted (not an infeasibility proof): "
-                            + sink + "; visited=" + towardSink.size() + "; depth=" + (depth + 1));
-                    }
+                    towardSink.put(next,node);
+                    if (towardSink.size()>=200000) throw new IllegalStateException(
+                        "clock tail search budget exhausted (not an infeasibility proof): "
+                        + sink + "; visited=" + towardSink.size() + "; depth=" + (depth+1));
                     queue.addLast(next);
                 }
             }
-            if (selected != null) break;
         }
         if (selected == null) {
             throw new IllegalStateException("no reachable available clock leaf within "
@@ -474,7 +522,49 @@ public final class EmuFlowRWRoute {
 
         @Override
         protected void routeGlobalClkNets() {
-            super.routeGlobalClkNets();
+            List<Net> clocks=new ArrayList<>(clkNets);
+            clocks.sort(Comparator.<Net>comparingInt(net -> net.getPins().size()).reversed()
+                .thenComparing(Net::getName));
+            for (Net clock : clocks) for (SitePinInst pin : clock.getPins()) {
+                Node node=pin.getConnectedNode();
+                if (node==null) throw new IllegalStateException("clock endpoint has no node: " + pin);
+                String previous=clockEndpointOwners.putIfAbsent(node,clock.getName());
+                if (previous!=null && !previous.equals(clock.getName()))
+                    throw new IllegalStateException("different clocks share a physical endpoint: " + pin);
+                routingGraph.unpreserve(node);
+            }
+            boolean solved=false;
+            for (int iteration=0; iteration<24; iteration++) {
+                long start=System.nanoTime();
+                for (Net clock : clocks) {
+                    for (Node node : clockRouteNodes(clock)) {
+                        Set<String> owners=clockUsers.get(node);
+                        if (owners==null || !owners.remove(clock.getName()))
+                            throw new IllegalStateException("lost negotiated clock owner");
+                        if (owners.isEmpty()) clockUsers.remove(node);
+                    }
+                    clock.setPIPs(new HashSet<PIP>());
+                    routeGlobalClkNet(clock,Collections.emptyMap());
+                }
+                long shared=0,excess=0;int maximum=0;
+                for (Map.Entry<Node,Set<String>> entry : clockUsers.entrySet()) {
+                    int count=entry.getValue().size();maximum=Math.max(maximum,count);
+                    if (count>1) {
+                        shared++;excess+=count-1;
+                        clockHistory.merge(entry.getKey(),(double)(count-1),Double::sum);
+                    }
+                }
+                System.out.println("INFO: EmuFlow clock negotiation: " + new JSONObject()
+                    .put("iteration",iteration+1).put("shared_nodes",shared).put("excess_users",excess)
+                    .put("maximum_users",maximum).put("seconds",(System.nanoTime()-start)/1e9));
+                if (shared==0) { solved=true;break; }
+                clockPresentFactor*=1.5;
+            }
+            if (!solved) throw new IllegalStateException("clock negotiation exhausted 24 iterations; no legal clock route produced");
+            for (Net clock : clocks) {
+                preserveNet(clock,false);
+                for (SitePinInst pin : clock.getPins()) pin.setRouted(true);
+            }
             DistinctClockNodeUsers<Node> users = new DistinctClockNodeUsers<>();
             long unresolved = 0;
             for (Net clock : clkNets) {
@@ -504,30 +594,43 @@ public final class EmuFlowRWRoute {
             }
         }
 
-        // Keep ownership independent of routingGraph.unpreserve(pin): freeing a
-        // current endpoint must never hide another clock's physical reservation.
-        private final Map<Node, String> clockRouteOwners = new HashMap<>();
+        private final Map<Node,Set<String>> clockUsers=new HashMap<>();
+        private final Map<Node,String> clockEndpointOwners=new HashMap<>();
+        private final Map<Node,Double> clockHistory=new HashMap<>();
+        private double clockPresentFactor=1.0;
+
+        private Set<Node> clockRouteNodes(Net clock) {
+            Set<Node> result=new HashSet<>();
+            for (PIP pip : clock.getPIPs()) {
+                Node start=pip.getStartNode(),end=pip.getEndNode();
+                if (start==null || end==null) throw new IllegalStateException("unresolved clock PIP");
+                result.add(start);result.add(end);
+            }
+            return result;
+        }
+
+        private double clockCost(Node node) {
+            Set<String> users=clockUsers.get(node);
+            return (1.0+clockHistory.getOrDefault(node,0.0))
+                *(1.0+clockPresentFactor*(users==null?0:users.size()));
+        }
 
         @Override
         protected void routeGlobalClkNet(
             Net clk, Map<Integer, Set<ClockRegion>> usedRoutingTracks
         ) {
-            for (SitePinInst pin : clk.getPins()) {
-                Node node = pin.getConnectedNode();
-                if (node != null && !clockRouteOwners.containsKey(node)) routingGraph.unpreserve(node);
-            }
             Predicate<Node> available = node -> {
-                String owner = clockRouteOwners.get(node);
-                return (owner == null || owner.equals(clk.getName()))
-                    && getGlobalRoutingNodeStatus(clk, node) != NodeStatus.UNAVAILABLE;
+                String endpointOwner=clockEndpointOwners.get(node);
+                return (endpointOwner==null || endpointOwner.equals(clk.getName()))
+                    && getGlobalRoutingNodeStatus(clk,node)!=NodeStatus.UNAVAILABLE;
             };
             long start = System.nanoTime();
             SitePinInst source = clk.getSource();
             if (source == null) throw new IllegalStateException("clock has no source: " + clk.getName());
-            Map<Node, Node> tree = availableClockTree(
-                source.getConnectedNode(), Node::getAllDownhillNodes,
-                EmuFlowRWRoute::isDedicatedClockNode, available
-            );
+            ClockTree<Node> weighted=weightedClockTree(
+                source.getConnectedNode(),Node::getAllDownhillNodes,
+                EmuFlowRWRoute::isDedicatedClockNode,available,this::clockCost);
+            Map<Node,Node> tree=weighted.parents;
             System.out.println("INFO: EmuFlow available clock tree: net=" + clk.getName()
                 + " reachable_nodes=" + tree.size() + " sinks=" + (clk.getPins().size() - 1)
                 + " seconds=" + ((System.nanoTime()-start)/1e9));
@@ -540,7 +643,8 @@ public final class EmuFlowRWRoute {
                     path = availableClockSinkPath(
                         pin.getConnectedNode(), tree, Node::getAllUphillNodes,
                         node -> cascade || node.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF,
-                        available, node -> !isDedicatedClockNode(node), MAX_LCB_SEARCH_DEPTH
+                        available, node -> !isDedicatedClockNode(node), MAX_LCB_SEARCH_DEPTH,
+                        node -> weighted.distance.get(node),this::clockCost
                     );
                 } catch (IllegalStateException error) {
                     Map<String, Long> frontier = new java.util.TreeMap<>();
@@ -561,7 +665,7 @@ public final class EmuFlowRWRoute {
                             for (Node leaf : first.getAllUphillNodes()) {
                                 if (leaf.getIntentCode() != IntentCode.NODE_GLOBAL_LEAF) continue;
                                 localLeaves.put(leaf.toString(), "reachable=" + tree.containsKey(leaf)
-                                    + ",owner=" + clockRouteOwners.get(leaf)
+                                    + ",owner=" + clockUsers.get(leaf)
                                     + ",status=" + getGlobalRoutingNodeStatus(clk, leaf));
                             }
                         }
@@ -579,20 +683,14 @@ public final class EmuFlowRWRoute {
                 // independently checked, rather than delegated to an opaque helper.
                 if (!cascade) EXTENDED_LCB_CLOCK_NETS.add(clk.getName());
             }
-            // Commit only after all sinks are reachable. Reserve used paths,
-            // not the whole explored dedicated graph, for subsequent clocks.
-            for (PIP pip : pips) {
-                for (Node node : new Node[] {pip.getStartNode(), pip.getEndNode()}) {
-                    if (node == null || !available.test(node)) {
-                        throw new IllegalStateException("clock path occupies unavailable node: "
-                            + clk.getName() + " " + node);
-                    }
-                    clockRouteOwners.put(node, clk.getName());
-                }
-            }
+            // Negotiation may temporarily share routing nodes, but never an
+            // endpoint or an ordinary signal reservation. No clock PIPs enter
+            // RWRoute's preserved graph until all clock ownership is legal.
             clk.setPIPs(pips);
-            preserveNet(clk, false);
-            for (SitePinInst pin : clk.getPins()) pin.setRouted(true);
+            for (Node node : clockRouteNodes(clk)) {
+                if (!available.test(node)) throw new IllegalStateException("clock uses protected resource: " + node);
+                clockUsers.computeIfAbsent(node,ignored -> new HashSet<>()).add(clk.getName());
+            }
         }
 
         @Override
