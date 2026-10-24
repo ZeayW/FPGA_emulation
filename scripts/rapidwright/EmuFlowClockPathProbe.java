@@ -101,7 +101,7 @@ public final class EmuFlowClockPathProbe {
             for (Node node : tree.keySet()) intents.merge(node.getIntentCode().name(), 1, Integer::sum);
             System.out.println("clock-graph nodes=" + tree.size() + " intents=" + intents);
             List<Node> path = EmuFlowRWRoute.availableClockSinkPath(sink, tree,
-                Node::getAllUphillNodes, n -> n.getIntentCode().name().equals("NODE_GLOBAL_LEAF"), n -> true, 16);
+                Node::getAllUphillNodes, n -> n.getIntentCode().name().equals("NODE_GLOBAL_LEAF"), n -> true, n -> !EmuFlowRWRoute.isDedicatedClockNode(n), 16);
             List<PIP> pips = EmuFlowRWRoute.extendedClockPathPIPs(path);
             for (Node node : path) System.out.println(node.getIntentCode() + " " + node);
             System.out.println("PASS: device clock path has " + pips.size() + " directed PIPs");
@@ -127,7 +127,7 @@ public final class EmuFlowClockPathProbe {
             );
             List<String> path = EmuFlowRWRoute.availableClockSinkPath(
                 "sink", tree, n -> up.getOrDefault(n, List.of()),
-                n -> n.endsWith("leaf"), n -> true, 2
+                n -> n.endsWith("leaf"), n -> true, n -> !n.endsWith("leaf"), 2
             );
             if (!path.equals(List.of("source", "spine", "leaf", "tail", "sink"))) {
                 throw new IllegalStateException("clock selected an unreachable nearer leaf: " + path);
@@ -135,7 +135,7 @@ public final class EmuFlowClockPathProbe {
             for (int depth : new int[] {0, 1}) {
                 try {
                     EmuFlowRWRoute.availableClockSinkPath("sink", tree,
-                        n -> up.getOrDefault(n, List.of()), n -> n.endsWith("leaf"), n -> true, depth);
+                        n -> up.getOrDefault(n, List.of()), n -> n.endsWith("leaf"), n -> true, n -> !n.endsWith("leaf"), depth);
                 } catch (IllegalStateException expected) { continue; }
                 throw new IllegalStateException("clock tail exceeded depth bound " + depth);
             }

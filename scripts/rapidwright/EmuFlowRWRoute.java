@@ -167,7 +167,7 @@ public final class EmuFlowRWRoute {
     /** Find a bounded, available sink tail that joins the reachable clock tree. */
     static <T> List<T> availableClockSinkPath(
         T sink, Map<T, T> parents, Function<T, ? extends Iterable<T>> uphill,
-        Predicate<T> join, Predicate<T> available, int maximumDepth
+        Predicate<T> join, Predicate<T> available, Predicate<T> expand, int maximumDepth
     ) {
         if (sink == null || !available.test(sink)) {
             throw new IllegalStateException("global-clock sink unavailable: " + sink);
@@ -183,7 +183,7 @@ public final class EmuFlowRWRoute {
                 if (parents.containsKey(node) && join.test(node)) {
                     selected = node; break;
                 }
-                if (depth == maximumDepth) continue;
+                if (depth == maximumDepth || !expand.test(node)) continue;
                 for (T next : uphill.apply(node)) {
                     if (towardSink.containsKey(next) || !available.test(next)) continue;
                     towardSink.put(next, node); queue.addLast(next);
@@ -193,7 +193,7 @@ public final class EmuFlowRWRoute {
         }
         if (selected == null) {
             throw new IllegalStateException("no reachable available clock leaf within "
-                + maximumDepth + " uphill hops of " + sink);
+                + maximumDepth + " uphill hops of " + sink + "; visited=" + towardSink.size());
         }
         List<T> path = new ArrayList<>();
         for (T cursor = selected; cursor != null; cursor = parents.get(cursor)) path.add(cursor);
@@ -532,7 +532,7 @@ public final class EmuFlowRWRoute {
                     path = availableClockSinkPath(
                         pin.getConnectedNode(), tree, Node::getAllUphillNodes,
                         node -> cascade || node.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF,
-                        available, MAX_LCB_SEARCH_DEPTH
+                        available, node -> !isDedicatedClockNode(node), MAX_LCB_SEARCH_DEPTH
                     );
                 } catch (IllegalStateException error) {
                     Map<String, Long> frontier = new java.util.TreeMap<>();

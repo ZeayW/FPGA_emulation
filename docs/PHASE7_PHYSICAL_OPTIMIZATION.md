@@ -159,7 +159,9 @@ The dedicated-clock search checks availability on every source-to-leaf edge,
 including routing and distribution nodes and `CLK_` connector wires that the
 device labels `INTENT_DEFAULT`. A sink's bounded uphill search must
 join a leaf reachable from that source; an available but unreachable leaf is
-insufficient. BUFGCE cascade inputs may join another reachable dedicated node.
+insufficient. The sink tail does not expand back into an unreachable dedicated
+clock branch: all source-reachable dedicated nodes have already been explored.
+BUFGCE cascade inputs may join another reachable dedicated node.
 Clock-tile reservation arrays use each tile's complete device wire domain;
 clock exploration must not index a shorter sparse array inferred from another
 tile of the same type. Ordinary signal tiles retain upstream sparse allocation.
