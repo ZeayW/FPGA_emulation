@@ -136,6 +136,27 @@ class ArchitectureDBTest(unittest.TestCase):
                         "restored_best_feasible": True,
                         "best_feasible_hpwl": 10.0,
                         "final_legal_hpwl": 11.0,
+                        "policy": {
+                            "sll_weighting": {
+                                "provider": "leaps-fixed-adam-step-v2",
+                                "step_size": 0.002,
+                                "delta_sll_ema_weight": 0.9,
+                                "accepted_range": [0.0, 1000.0],
+                            },
+                            "density_filler_sampling": {
+                                "provider": "density-bin-bounded-fillers-v2",
+                                "status": "pass",
+                                "maximum_bin_span": [0.5, 0.5],
+                                "resources": {
+                                    "LUT": {
+                                        "count": 4,
+                                        "size": [0.5, 0.5],
+                                        "bin_size": [1.0, 1.0],
+                                        "bin_span": [0.5, 0.5],
+                                    }
+                                },
+                            },
+                        },
                     }),
                     encoding="utf-8",
                 )

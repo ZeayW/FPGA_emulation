@@ -2622,7 +2622,10 @@ class PartitionPressureTest(unittest.TestCase):
                 self.killed = True
 
         process = TimeoutProcess()
-        with patch(
+        with patch.dict("os.environ", {
+            "EMUFLOW_PATRON_CONTAINER_BINARY": "/versioned/patron",
+            "EMUFLOW_PATRON_FLOW_APPLY": "1",
+        }), patch(
             "emuflow.partition_pressure.subprocess.Popen",
             return_value=process,
         ) as popen:
@@ -2645,6 +2648,8 @@ class PartitionPressureTest(unittest.TestCase):
         self.assertEqual(process.wait_timeouts, [7, None])
         self.assertTrue(process.killed)
         self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.PIPE)
+        self.assertEqual(popen.call_args.kwargs["env"]["EMUFLOW_PATRON_CONTAINER_BINARY"], "/versioned/patron")
+        self.assertNotIn("EMUFLOW_PATRON_FLOW_APPLY", popen.call_args.kwargs["env"])
 
     def test_native_patron_timeout_must_be_positive(self) -> None:
         with self.assertRaisesRegex(

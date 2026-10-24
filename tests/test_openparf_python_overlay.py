@@ -28,17 +28,31 @@ class OpenParfPythonOverlayTests(unittest.TestCase):
             git("init")
             placement = source / "engines/openparf/openparf/placement"
             placement.mkdir(parents=True)
+            params = source / "engines/openparf/openparf/params.json"
+            params.write_text("{\"step\": 1.002}\n")
             (placement / "placer.py").write_text("baseline\n")
+            (placement / "data_collections.py").write_text("baseline data\n")
+            (placement / "filler.py").write_text("baseline filler\n")
             git("add", "."); git("commit", "-m", "baseline")
             baseline = git("rev-parse", "HEAD")
             (placement / "placer.py").write_text("patched\n")
             (placement / "sll_weight.py").write_text("helper\n")
+            (placement / "data_collections.py").write_text("bounded data\n")
+            (placement / "filler.py").write_text("bounded filler\n")
+            params.write_text("{\"step\": 0.002}\n")
             git("add", "."); git("commit", "-m", "python fix")
             commit = git("rev-parse", "HEAD")
             (base / "openparf/placement").mkdir(parents=True)
             (base / "openparf/ops").mkdir()
+            (base / "openparf/params.json").write_text("{\"step\": 1.002}\n")
             original = base / "openparf/placement/placer.py"
             original.write_text("baseline\n")
+            (base / "openparf/placement/data_collections.py").write_text(
+                "baseline data\n"
+            )
+            (base / "openparf/placement/filler.py").write_text(
+                "baseline filler\n"
+            )
             (base / "openparf/ops/native.so").write_bytes(b"native ABI")
             (base / "openparf.py").write_text("entry\n")
             digest = hashlib.sha256(original.read_bytes()).hexdigest()
@@ -46,6 +60,9 @@ class OpenParfPythonOverlayTests(unittest.TestCase):
             self.assertEqual(result["source_commit"], commit)
             self.assertEqual((target / "openparf/placement/placer.py").resolve(), (placement / "placer.py").resolve())
             self.assertEqual((target / "openparf/placement/sll_weight.py").resolve(), (placement / "sll_weight.py").resolve())
+            self.assertEqual((target / "openparf/placement/data_collections.py").resolve(), (placement / "data_collections.py").resolve())
+            self.assertEqual((target / "openparf/placement/filler.py").resolve(), (placement / "filler.py").resolve())
+            self.assertEqual((target / "openparf/params.json").resolve(), params.resolve())
             self.assertEqual((target / "openparf/ops/native.so").read_bytes(), b"native ABI")
             self.assertEqual(hashlib.sha256(original.read_bytes()).hexdigest(), digest)
             with self.assertRaisesRegex(RuntimeError, "already exists"):

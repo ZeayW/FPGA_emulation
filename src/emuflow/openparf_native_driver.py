@@ -65,6 +65,81 @@ def _logic_overflow(engine: Any, metric: Any) -> dict[str, float]:
     return result
 
 
+def validate_native_logic_site_area(engine: Any) -> dict[str, Any]:
+    """Check the native density domain using already constructed tensors."""
+
+    expected = getattr(engine.params, "emuflow_expected_logic_site_area", None)
+    names = tuple(engine.params.logic_area_type_names)
+    if not isinstance(expected, dict) or not names or set(expected) != set(names):
+        raise RuntimeError("OpenPARF expected logic site area is missing or invalid")
+    actual = {}
+    for name in names:
+        value = expected[name]
+        if (
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value <= 0
+        ):
+            raise RuntimeError("OpenPARF expected logic site area is invalid")
+        index = int(engine.placedb.getAreaTypeIndexFromName(name))
+        if index < 0 or index >= len(engine.data_cls.initial_density_maps):
+            raise RuntimeError(f"OpenPARF logic area type {name!r} is unavailable")
+        density = engine.data_cls.initial_density_maps[index]
+        if density is None:
+            raise RuntimeError(f"OpenPARF logic area type {name!r} is unavailable")
+        area = _number(engine.data_cls.total_area) - _number(density.sum())
+        if not math.isfinite(area) or not math.isclose(
+            area, float(value), rel_tol=1.0e-9, abs_tol=1.0e-6
+        ):
+            raise RuntimeError(
+                f"OpenPARF {name} site area mismatch: native={area}, "
+                f"qualified={value}; check Bookshelf gaps and site bounds"
+            )
+        actual[name] = area
+    return {"status": "pass", "expected": dict(expected), "actual": actual}
+
+
+def validate_native_filler_geometry(engine: Any) -> dict[str, Any]:
+    """Require fine-grained logic filler sampling on the density grid."""
+
+    names = tuple(getattr(engine.params, "logic_area_type_names", ()))
+    if not names:
+        raise RuntimeError("OpenPARF has no logic area types for filler validation")
+    maximum_span = float(engine.params.gp_max_logic_filler_bin_span)
+    if not math.isfinite(maximum_span) or not 0.0 < maximum_span <= 0.5:
+        raise RuntimeError("OpenPARF logic filler bin span is invalid")
+    resources = {}
+    for name in names:
+        index = int(engine.placedb.getAreaTypeIndexFromName(name))
+        count = int(engine.data_cls.num_fillers[index])
+        size = [float(value) for value in engine.data_cls.filler_sizes[index]]
+        bin_size = [
+            float(value) for value in engine.data_cls.bin_map_sizes[index]
+        ]
+        if count <= 0 or not all(
+            math.isfinite(value) and value > 0
+            for value in size + bin_size
+        ):
+            raise RuntimeError(f"OpenPARF {name} filler geometry is invalid")
+        span = [size[axis] / bin_size[axis] for axis in range(2)]
+        if any(value > maximum_span + 1.0e-6 for value in span):
+            raise RuntimeError(
+                f"OpenPARF {name} filler exceeds the density sampling span: "
+                f"size={size}, bin={bin_size}"
+            )
+        resources[name] = {
+            "count": count,
+            "size": size,
+            "bin_size": bin_size,
+            "bin_span": span,
+        }
+    return {
+        "provider": "density-bin-bounded-fillers-v2",
+        "status": "pass",
+        "maximum_bin_span": [maximum_span, maximum_span],
+        "resources": resources,
+    }
+
+
 def _active_overflow_is_feasible(engine: Any, metric: Any) -> bool:
     """Qualify routability-bearing logic density before exact legalization.
 
@@ -162,6 +237,17 @@ def _restore_best_feasible(
     state["restored_best_feasible"] = True
 
 
+def _restore_best_diagnostic(
+    engine: Any, state: MutableMapping[str, Any]
+) -> None:
+    best = getattr(engine, "_emuflow_best_diagnostic_position", None)
+    if best is None:
+        return
+    engine.data_cls.pos[0].data.copy_(best)
+    engine._emuflow_restored_diagnostic_position = best.clone()
+    state["restored_best_diagnostic"] = True
+
+
 def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
     """Require stable feasible progress and restore the best feasible iterate."""
 
@@ -183,10 +269,19 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
             "feasible_samples": 0,
             "consecutive_feasible_samples": 0,
             "restored_best_feasible": False,
+            "first_diagnostic_iteration": None,
+            "best_diagnostic_iteration": None,
+            "best_diagnostic_hpwl": None,
+            "best_diagnostic_logic_overflow": None,
+            "best_diagnostic_max_overflow": None,
+            "last_diagnostic_hpwl_improvement_iteration": None,
+            "diagnostic_samples": 0,
+            "restored_best_diagnostic": False,
             "stop_reason": None,
         }
         engine._emuflow_stable_convergence = state
         engine._emuflow_best_feasible_position = None
+        engine._emuflow_best_diagnostic_position = None
 
     state["terminal_logic_overflow"] = _logic_overflow(engine, current)
 
@@ -198,21 +293,71 @@ def stable_native_stop_condition(engine: Any, metrics: list[Any]) -> bool:
         return True
     if not _area_adjustment_is_finished(engine) and not at_iteration_limit:
         return False
+    hpwl = _weighted_hpwl(engine, current)
+    if not math.isfinite(hpwl) or hpwl < 0.0:
+        raise RuntimeError("OpenPARF produced an invalid weighted HPWL")
+    diagnostic_limit = float(
+        getattr(engine.params, "emuflow_diagnostic_handoff_overflow", 0.25)
+    )
+    diagnostic_patience = int(
+        getattr(engine.params, "emuflow_diagnostic_handoff_patience", 64)
+    )
+    if (
+        not math.isfinite(diagnostic_limit)
+        or not float(engine.params.stop_overflow) < diagnostic_limit < 1.0
+        or diagnostic_patience < 0
+    ):
+        raise RuntimeError("OpenPARF diagnostic handoff policy is invalid")
+    maximum_logic_overflow = max(state["terminal_logic_overflow"].values())
+    if maximum_logic_overflow <= diagnostic_limit:
+        state["diagnostic_samples"] += 1
+        if state["first_diagnostic_iteration"] is None:
+            state["first_diagnostic_iteration"] = iteration
+        best_diagnostic_overflow = state["best_diagnostic_max_overflow"]
+        if (
+            best_diagnostic_overflow is None
+            or maximum_logic_overflow
+            < float(best_diagnostic_overflow) - 1.0e-4
+        ):
+            state["best_diagnostic_max_overflow"] = maximum_logic_overflow
+        best_diagnostic_hpwl = state["best_diagnostic_hpwl"]
+        if best_diagnostic_hpwl is None or hpwl < float(best_diagnostic_hpwl):
+            state["best_diagnostic_hpwl"] = hpwl
+            state["best_diagnostic_iteration"] = iteration
+            state["best_diagnostic_logic_overflow"] = dict(
+                state["terminal_logic_overflow"]
+            )
+            engine._emuflow_best_diagnostic_position = (
+                engine.data_cls.pos[0].data.clone()
+            )
+            state["last_diagnostic_hpwl_improvement_iteration"] = iteration
     if not _active_overflow_is_feasible(engine, current):
         state["consecutive_feasible_samples"] = 0
         if at_iteration_limit:
             _restore_best_feasible(engine, state)
-            state["stop_reason"] = (
-                "maximum-iterations-feasible"
-                if state["restored_best_feasible"]
-                else "maximum-iterations-infeasible"
-            )
+            if state["restored_best_feasible"]:
+                state["stop_reason"] = "maximum-iterations-feasible"
+            else:
+                _restore_best_diagnostic(engine, state)
+                state["stop_reason"] = (
+                    "maximum-iterations-diagnostic"
+                    if state["restored_best_diagnostic"]
+                    else "maximum-iterations-infeasible"
+                )
+            return True
+        last_diagnostic_hpwl_improvement = state[
+            "last_diagnostic_hpwl_improvement_iteration"
+        ]
+        if (
+            last_diagnostic_hpwl_improvement is not None
+            and iteration - int(last_diagnostic_hpwl_improvement)
+            >= diagnostic_patience
+        ):
+            _restore_best_diagnostic(engine, state)
+            state["stop_reason"] = "diagnostic-handoff-patience"
             return True
         return False
 
-    hpwl = _weighted_hpwl(engine, current)
-    if not math.isfinite(hpwl) or hpwl < 0.0:
-        raise RuntimeError("OpenPARF produced an invalid weighted HPWL")
     state["feasible_samples"] += 1
     state["consecutive_feasible_samples"] += 1
     if state["first_feasible_iteration"] is None:
@@ -270,11 +415,20 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
         _number(value) * float(engine.params.wirelength_weights[index])
         for index, value in enumerate(final_hpwl_values)
     )
-    status = "pass" if state.get("stop_reason") in {
+    stop_reason = state.get("stop_reason")
+    if stop_reason in {
         "feasible-hpwl-patience",
         "maximum-iterations-feasible",
         "empty-active-subspace",
-    } else "fail"
+    }:
+        status = "pass"
+    elif stop_reason in {
+        "diagnostic-handoff-patience",
+        "maximum-iterations-diagnostic",
+    }:
+        status = "diagnostic"
+    else:
+        status = "fail"
     current_metric = getattr(engine, "cur_metric_record", None)
     termination_iteration = (
         _iteration(current_metric) if current_metric is not None else None
@@ -296,6 +450,21 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
         "restored_best_feasible": bool(
             state.get("restored_best_feasible", False)
         ),
+        "first_diagnostic_iteration": state.get(
+            "first_diagnostic_iteration"
+        ),
+        "best_diagnostic_iteration": state.get("best_diagnostic_iteration"),
+        "best_diagnostic_hpwl": state.get("best_diagnostic_hpwl"),
+        "best_diagnostic_logic_overflow": state.get(
+            "best_diagnostic_logic_overflow"
+        ),
+        "best_diagnostic_max_overflow": state.get(
+            "best_diagnostic_max_overflow"
+        ),
+        "diagnostic_samples": int(state.get("diagnostic_samples", 0)),
+        "restored_best_diagnostic": bool(
+            state.get("restored_best_diagnostic", False)
+        ),
         "feasibility_scope": "logic-area-types-before-exact-legalization",
         "terminal_logic_overflow": state.get("terminal_logic_overflow", {}),
         "policy": {
@@ -308,14 +477,48 @@ def _write_native_metrics(engine: Any, placement_path: Path) -> None:
             "relative_hpwl_improvement": float(
                 engine.params.emuflow_relative_hpwl_improvement
             ),
+            "diagnostic_handoff_overflow": float(
+                engine.params.emuflow_diagnostic_handoff_overflow
+            ),
+            "diagnostic_handoff_patience": int(
+                engine.params.emuflow_diagnostic_handoff_patience
+            ),
+            "sll_weighting": {
+                "provider": "leaps-fixed-adam-step-v2",
+                "step_size": float(engine.params.wlw_psi_step_size),
+                "delta_sll_ema_weight": float(
+                    engine.params.wlw_delta_sll_ema_weight
+                ),
+                "accepted_range": [0.0, 1000.0],
+            },
+            "density_filler_sampling": engine._emuflow_filler_geometry,
         },
     }
     weighting = getattr(engine, "_emuflow_high_fanout_weighting", None)
     if weighting is not None:
         value["high_fanout_net_weighting"] = weighting
+    geometry = getattr(engine, "_emuflow_logic_site_area", None)
+    if geometry is not None:
+        value["logic_site_area_validation"] = geometry
     cutoff = getattr(engine, "_emuflow_area_adjustment_cutoff", None)
     if cutoff is not None:
         value["area_adjustment_cutoff"] = cutoff
+    diagnostic_position = getattr(
+        engine, "_emuflow_restored_diagnostic_position", None
+    )
+    if diagnostic_position is not None:
+        import torch
+
+        begin, end = map(int, engine.data_cls.movable_range)
+        legal_position = engine.data_cls.pos[0][begin:end]
+        displacement = torch.norm(
+            legal_position - diagnostic_position[begin:end], dim=1
+        )
+        value["diagnostic_legalization_displacement"] = {
+            "instances": int(displacement.numel()),
+            "mean": _number(displacement.mean()),
+            "maximum": _number(displacement.max()),
+        }
     output = native_metrics_path(placement_path)
     output.write_text(
         json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
@@ -335,6 +538,82 @@ def validate_openparf_native_metrics(
         or value.get("schema") != OPENPARF_NATIVE_CONVERGENCE_SCHEMA
     ):
         raise RuntimeError("OpenPARF native convergence certificate is invalid")
+    policy = value.get("policy")
+    sll_weighting = (
+        policy.get("sll_weighting") if isinstance(policy, dict) else None
+    )
+    step_size = (
+        sll_weighting.get("step_size")
+        if isinstance(sll_weighting, dict) else None
+    )
+    ema_weight = (
+        sll_weighting.get("delta_sll_ema_weight")
+        if isinstance(sll_weighting, dict) else None
+    )
+    filler_sampling = (
+        policy.get("density_filler_sampling")
+        if isinstance(policy, dict) else None
+    )
+    if (
+        not isinstance(sll_weighting, dict)
+        or sll_weighting.get("provider") != "leaps-fixed-adam-step-v2"
+        or isinstance(step_size, bool)
+        or not isinstance(step_size, (int, float))
+        or not math.isfinite(float(step_size))
+        or float(step_size) <= 0.0
+        or isinstance(ema_weight, bool)
+        or not isinstance(ema_weight, (int, float))
+        or not math.isfinite(float(ema_weight))
+        or not 0.0 < float(ema_weight) <= 1.0
+        or sll_weighting.get("accepted_range") != [0.0, 1000.0]
+    ):
+        raise RuntimeError("OpenPARF native SLL weighting policy is invalid")
+    if (
+        not isinstance(filler_sampling, dict)
+        or filler_sampling.get("provider")
+        != "density-bin-bounded-fillers-v2"
+        or filler_sampling.get("status") != "pass"
+        or filler_sampling.get("maximum_bin_span") != [0.5, 0.5]
+        or not isinstance(filler_sampling.get("resources"), dict)
+        or not filler_sampling["resources"]
+    ):
+        raise RuntimeError("OpenPARF native density filler policy is invalid")
+    for resource, geometry in filler_sampling["resources"].items():
+        if not isinstance(resource, str) or not isinstance(geometry, dict):
+            raise RuntimeError("OpenPARF native density filler policy is invalid")
+        count = geometry.get("count")
+        size = geometry.get("size")
+        bin_size = geometry.get("bin_size")
+        span = geometry.get("bin_span")
+        if (
+            isinstance(count, bool) or not isinstance(count, int) or count <= 0
+            or not all(
+                isinstance(values, list) and len(values) == 2
+                for values in (size, bin_size, span)
+            )
+        ):
+            raise RuntimeError("OpenPARF native density filler policy is invalid")
+        for axis in range(2):
+            values = (size[axis], bin_size[axis], span[axis])
+            if (
+                any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or float(value) <= 0.0
+                    for value in values
+                )
+                or float(span[axis]) > 0.5 + 1.0e-6
+                or not math.isclose(
+                    float(span[axis]),
+                    float(size[axis]) / float(bin_size[axis]),
+                    rel_tol=1.0e-9,
+                    abs_tol=1.0e-9,
+                )
+            ):
+                raise RuntimeError(
+                    "OpenPARF native density filler policy is invalid"
+                )
     stop_reason = value.get("stop_reason")
     globally_feasible = value.get("status") == "pass" and stop_reason in {
         "feasible-hpwl-patience",
@@ -343,8 +622,12 @@ def validate_openparf_native_metrics(
     }
     detailed_legalization_handoff = (
         allow_detailed_legalization_handoff
-        and value.get("status") == "fail"
-        and stop_reason == "maximum-iterations-infeasible"
+        and value.get("status") == "diagnostic"
+        and stop_reason in {
+            "diagnostic-handoff-patience",
+            "maximum-iterations-diagnostic",
+        }
+        and value.get("restored_best_diagnostic") is True
     )
     if not globally_feasible and not detailed_legalization_handoff:
         raise RuntimeError("OpenPARF native convergence certificate is invalid")
@@ -352,6 +635,8 @@ def validate_openparf_native_metrics(
         "feasible-hpwl-patience",
         "maximum-iterations-feasible",
         "empty-active-subspace",
+        "diagnostic-handoff-patience",
+        "maximum-iterations-diagnostic",
         "maximum-iterations-infeasible",
     }:
         raise RuntimeError("OpenPARF native placement did not converge")
@@ -370,8 +655,46 @@ def validate_openparf_native_metrics(
             raise RuntimeError(f"OpenPARF native metric {key} is invalid")
     if detailed_legalization_handoff and value.get("restored_best_feasible"):
         raise RuntimeError(
-            "OpenPARF infeasible handoff cannot claim a restored feasible iterate"
+            "OpenPARF diagnostic handoff cannot claim a restored feasible iterate"
         )
+    if value.get("status") == "diagnostic":
+        threshold = policy.get("diagnostic_handoff_overflow")
+        patience = policy.get("diagnostic_handoff_patience")
+        overflow = value.get("best_diagnostic_logic_overflow")
+        displacement = value.get("diagnostic_legalization_displacement")
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or not math.isfinite(float(threshold))
+            or not 0.1 < float(threshold) <= 0.25
+            or isinstance(patience, bool)
+            or not isinstance(patience, int)
+            or patience < 0
+            or not isinstance(overflow, dict)
+            or not overflow
+            or any(
+                isinstance(number, bool)
+                or not isinstance(number, (int, float))
+                or not math.isfinite(float(number))
+                or float(number) > float(threshold) + 1.0e-9
+                for number in overflow.values()
+            )
+            or not isinstance(displacement, dict)
+            or isinstance(displacement.get("instances"), bool)
+            or not isinstance(displacement.get("instances"), int)
+            or displacement["instances"] <= 0
+            or any(
+                isinstance(displacement.get(name), bool)
+                or not isinstance(displacement.get(name), (int, float))
+                or not math.isfinite(float(displacement[name]))
+                or float(displacement[name]) < 0.0
+                for name in ("mean", "maximum")
+            )
+            or float(displacement["maximum"]) < float(displacement["mean"])
+        ):
+            raise RuntimeError(
+                "OpenPARF diagnostic legalization evidence is invalid"
+            )
     return value
 
 
@@ -420,6 +743,8 @@ def main() -> int:
         engine: Any, loaded_params: Any, placedb: Any
     ) -> None:
         original_init(engine, loaded_params, placedb)
+        engine._emuflow_logic_site_area = validate_native_logic_site_area(engine)
+        engine._emuflow_filler_geometry = validate_native_filler_geometry(engine)
         apply_high_fanout_net_weights(engine)
 
     def call_and_capture(engine: Any) -> Any:

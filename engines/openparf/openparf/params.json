@@ -61,6 +61,14 @@
     "description": "stopping criteria, consider stop when the overflow reaches to a ratio",
     "default": 0.2
   },
+  "emuflow_diagnostic_handoff_overflow": {
+    "description": "Maximum logic overflow allowed for an explicitly diagnostic legalization handoff",
+    "default": 0.25
+  },
+  "emuflow_diagnostic_handoff_patience": {
+    "description": "Iterations without diagnostic-candidate HPWL improvement before restoring that candidate for legalization",
+    "default": 64
+  },
   "dtype": {
     "description": "data type, float32 | float64",
     "default": "float32"
@@ -199,8 +207,12 @@
     "default": {}
   },
   "gp_max_fillers_per_area_type": {
-    "description": "Optional positive per-area-type cap on analytical filler count; filler size is rescaled to preserve exact total density area",
+    "description": "Preferred positive per-area-type limit on analytical filler count; total area is preserved and logic fillers may exceed the limit to satisfy the configured density-grid span",
     "default": {}
+  },
+  "gp_max_logic_filler_bin_span": {
+    "description": "Maximum width and height of a logic filler as a fraction of one density bin; smaller samples improve the spatial resolution of the density force",
+    "default": 0.5
   },
   "gp_resource2area_types_map": {
     "description": "Map resource to area types",
@@ -450,8 +462,12 @@
     "description": "Defines the initial reset value for the psi parameter",
     "default": 5.0
   },
-  "wlw_step_rate": {
-    "description": "Step rate for adjusting psi value at each epoch",
-    "default": 1.002
+  "wlw_psi_step_size": {
+    "description": "Fixed LEAPS Adam step size t_psi for adjusting psi at each epoch",
+    "default": 0.002
+  },
+  "wlw_delta_sll_ema_weight": {
+    "description": "LEAPS EMA weight rho applied to the current SLL-count delta",
+    "default": 0.9
   }
 }

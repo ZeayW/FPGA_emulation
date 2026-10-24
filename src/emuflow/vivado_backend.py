@@ -68,52 +68,67 @@ def write_vivado_boundary_timing_query(
     identity_path: Path,
     output_path: Path,
 ) -> Dict[str, Any]:
-    ir = EmuIR.load(ir_path)
-    identities = read_boundary_identity_storage(identity_path, allow_legacy=True)
-    if identities.get("schema") != BOUNDARY_IDENTITY_SCHEMA:
-        raise ValidationError("Vivado boundary timing identity schema is invalid")
-    net_index = {
-        net["id"]: index for index, net in enumerate(ir.value["nets"])
-    }
-    lines = [_BOUNDARY_QUERY_HEADER]
-    for endpoint in identities.get("endpoints", []):
-        merged = endpoint["merged_ir"]
-        logical_net = merged["logical_net"]
-        if (
-            endpoint["kind"] == "tx"
-            and not merged["boundary_register_instances"]
-            and logical_net not in net_index
-        ):
-            raise ValidationError(
-                f"boundary endpoint {endpoint['id']!r} net is absent"
-            )
-        cells = merged["boundary_register_instances"]
-        if endpoint["kind"] == "rx" and len(cells) != 1:
-            raise ValidationError(
-                f"RX endpoint {endpoint['id']!r} lacks one boundary register"
-            )
-        boundary_cell = _vivado_mapped_name(cells[0]) if cells else ""
-        fields = (
-            _hex(endpoint["id"]),
-            endpoint["kind"],
-            _hex(merged["external_port"]),
-            str(merged["external_port_bit"]),
-            _hex(
-                f"__emuflow_net_{net_index[logical_net]}"
-                if logical_net in net_index
-                else ""
-            ),
-            _hex(boundary_cell),
-        )
-        lines.append("\t".join(fields))
-    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return {
-        "status": "pass",
-        "fpga": identities["fpga"],
-        "endpoints": len(lines) - 1,
-        "output": str(output_path),
-    }
+    from .emuir_compact import is_compact_emuir
+    from .indexed_physical_ir import IndexedPhysicalIR
 
+    from .emuir_storage import is_emuir_sqlite
+
+    indexed = is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path)
+    ir = IndexedPhysicalIR(ir_path) if indexed else EmuIR.load(ir_path)
+    identities = None
+    try:
+        identities = read_boundary_identity_storage(identity_path, allow_legacy=True)
+        if identities.get("schema") != BOUNDARY_IDENTITY_SCHEMA:
+            raise ValidationError("Vivado boundary timing identity schema is invalid")
+        net_index = ir.net_indices if indexed else {
+            net["id"]: index for index, net in enumerate(ir.value["nets"])
+        }
+        count = 0
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as stream:
+            stream.write(_BOUNDARY_QUERY_HEADER + "\n")
+            for endpoint in identities.get("endpoints", []):
+                count += 1
+                _write_vivado_boundary_query_row(endpoint, net_index, stream)
+        return {"status": "pass", "fpga": identities["fpga"], "endpoints": count, "output": str(output_path)}
+    finally:
+        if indexed:
+            ir.close()
+        close = getattr(identities, "close", None)
+        if callable(close):
+            close()
+
+
+def _write_vivado_boundary_query_row(endpoint, net_index, stream):
+    merged = endpoint["merged_ir"]
+    logical_net = merged["logical_net"]
+    if (
+        endpoint["kind"] == "tx"
+        and not merged["boundary_register_instances"]
+        and logical_net not in net_index
+    ):
+        raise ValidationError(
+            f"boundary endpoint {endpoint['id']!r} net is absent"
+        )
+    cells = merged["boundary_register_instances"]
+    if endpoint["kind"] == "rx" and len(cells) != 1:
+        raise ValidationError(
+            f"RX endpoint {endpoint['id']!r} lacks one boundary register"
+        )
+    boundary_cell = _vivado_mapped_name(cells[0]) if cells else ""
+    fields = (
+        _hex(endpoint["id"]),
+        endpoint["kind"],
+        _hex(merged["external_port"]),
+        str(merged["external_port_bit"]),
+        _hex(
+            f"__emuflow_net_{net_index[logical_net]}"
+            if logical_net in net_index
+            else ""
+        ),
+        _hex(boundary_cell),
+    )
+    stream.write("\t".join(fields) + "\n")
 
 def import_vivado_boundary_timing(
     input_path: Path,
@@ -273,8 +288,16 @@ def vivado_runtime_xdc(
     ir_path: Path,
     runtime: Mapping[str, Any],
 ) -> str:
-    ir = EmuIR.load(ir_path)
-    ports = {item["id"] for item in ir.value["ports"]}
+    from .emuir_compact import is_compact_emuir
+    from .indexed_physical_ir import IndexedPhysicalIR
+
+    from .emuir_storage import is_emuir_sqlite
+
+    if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path):
+        with IndexedPhysicalIR(ir_path) as ir:
+            ports = {item["id"] for item in ir.value["ports"]}
+    else:
+        ports = {item["id"] for item in EmuIR.load(ir_path).value["ports"]}
     timing = runtime["timing_model"]
     dut_ports = timing["dut_clock_ports"]
     fabric_port = timing["fabric_clock_port"]
@@ -543,7 +566,30 @@ def run_vivado_partition_backend(
     max_timing_paths: int = 10000,
     place_directive: str = "Default",
     route_directive: str = "Default",
+    mapped_report: Optional[Mapping[str, Any]] = None,
+    virtual_io_contract: Optional[Mapping[str, Any]] = None,
+    local_identity_path: Optional[Path] = None,
+    local_query_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    from .emuir_storage import is_emuir_sqlite
+    from .emuir_compact import is_compact_emuir
+
+    if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path):
+        from .vivado_physical import run_indexed_vivado_partition
+
+        if mapped_report is None:
+            raise ValidationError("indexed Vivado execution requires its mapped export report")
+        return run_indexed_vivado_partition(
+            fpga=fpga, part=part, ir_path=ir_path, mapped_verilog_path=mapped_verilog_path,
+            mapped_report=mapped_report, runtime=runtime, original_cells=original_cells,
+            transport_cells=transport_cells, output_dir=output_dir,
+            boundary_identity_path=boundary_identity_path, logic_identity_path=logic_identity_path,
+            logic_query_path=logic_query_path, local_identity_path=local_identity_path,
+            local_query_path=local_query_path, virtual_io_contract=virtual_io_contract,
+            executable=executable, place_directive=place_directive, route_directive=route_directive,
+        )
+    if virtual_io_contract is not None or local_identity_path is not None or local_query_path is not None:
+        raise ValidationError("current fixed-I/O/local timing requires compact EmuIR input")
     if not part.startswith("xc"):
         raise ValidationError(
             f"Vivado backend requires a concrete Xilinx part, got {part!r}"

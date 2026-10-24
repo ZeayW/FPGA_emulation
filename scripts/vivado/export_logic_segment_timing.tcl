@@ -10,12 +10,15 @@ set hierarchy_prefix ""
 if {$argc >= 4} {
   set hierarchy_prefix [string trimright [lindex $argv 3] "/"]
 }
+source [file join [file dirname [info script]] timing_contract.tcl]
 set allow_missing false
+set fixed_io_map [dict create]
 if {$argc == 5} {
-  if {[lindex $argv 4] ne "allow-missing"} {
-    error "invalid logic segment missing-path policy"
+  if {[lindex $argv 4] eq "allow-missing"} {
+    set allow_missing true
+  } else {
+    set fixed_io_map [emuflow_load_fixed_io_map [lindex $argv 4]]
   }
-  set allow_missing true
 }
 
 proc emuflow_hex_decode {value} {
@@ -24,7 +27,21 @@ proc emuflow_hex_decode {value} {
 proc emuflow_hex_encode {value} {
   return [binary encode hex [encoding convertto utf-8 $value]]
 }
-proc emuflow_resolve_object {kind name prefix} {
+proc emuflow_resolve_object {kind name prefix {resolved_hex ""}} {
+  global fixed_io_map
+  if {$resolved_hex ne ""} {
+    if {$kind ne "pin"} {error "lineage candidates require primitive pins"}
+    set result [list]
+    foreach candidate [split $resolved_hex ,] {
+      set actual [emuflow_hex_decode $candidate]
+      set pin [emuflow_resolve_object pin $actual ""]
+      if {[get_property NAME $pin] ne $actual} {error "lineage pin identity disagrees: $actual"}
+      # get_pins returns an object collection, not an individual object.
+      # Flatten collections rather than nesting them in a Tcl list.
+      set result [concat $result $pin]
+    }
+    return $result
+  }
   set physical_name $name
   if {$prefix ne ""} {
     set physical_name "$prefix/$name"
@@ -57,7 +74,9 @@ proc emuflow_resolve_object {kind name prefix} {
       }
     }
   } elseif {$kind eq "port"} {
-    set object [get_ports -quiet [list $name]]
+    set lookup $name
+    if {[dict exists $fixed_io_map $name]} {set lookup [dict get $fixed_io_map $name]}
+    set object [get_ports -quiet [list $lookup]]
     if {[llength $object] == 0 && $prefix ne ""} {
       set object [get_pins -quiet -hier [list $physical_name]]
     }
@@ -71,26 +90,28 @@ proc emuflow_resolve_object {kind name prefix} {
 }
 
 open_checkpoint $input_dcp
+emuflow_use_data_path_constraints
 set input [open $query_path r]
-set lines [split [read $input] "\n"]
-close $input
+gets $input header
 set legacy_header "endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex"
 set cone_header "$legacy_header\tcone_anchor_kind\tcone_anchor_object_hex"
-if {[lindex $lines 0] ne $legacy_header && [lindex $lines 0] ne $cone_header} {
+set resolved_header "$cone_header\tresolved_start_pins_hex\tresolved_end_pins_hex\tresolved_cone_pins_hex"
+if {$header ni [list $legacy_header $cone_header $resolved_header]} {
   error "invalid logic segment timing query header"
 }
-set cone_queries [expr {[lindex $lines 0] eq $cone_header}]
+set cone_queries [expr {$header ne $legacy_header}]
+set resolved_queries [expr {$header eq $resolved_header}]
 
 set output [open $output_path w]
 puts $output "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex\tmeasurement\tactual_start_object_hex\tactual_end_object_hex"
 set emitted 0
 set missing 0
-foreach line [lrange $lines 1 end] {
+while {[gets $input line] >= 0} {
   if {$line eq ""} {
     continue
   }
   set fields [split $line "\t"]
-  set expected_fields [expr {$cone_queries ? 8 : 6}]
+  set expected_fields [expr {$resolved_queries ? 11 : ($cone_queries ? 8 : 6)}]
   if {[llength $fields] != $expected_fields} {
     error "malformed logic segment timing query row"
   }
@@ -112,9 +133,18 @@ foreach line [lrange $lines 1 end] {
       set cone_name [emuflow_hex_decode $cone_hex]
     }
   }
-  set start_object [emuflow_resolve_object $start_kind $start_name $hierarchy_prefix]
-  set end_object [emuflow_resolve_object $end_kind $end_name $hierarchy_prefix]
+  set start_hint ""
+  set end_hint ""
+  set cone_hint ""
+  if {$resolved_queries} {
+    lassign [lrange $fields 8 10] start_hint end_hint cone_hint
+  }
+  set start_object [emuflow_resolve_object $start_kind $start_name $hierarchy_prefix $start_hint]
+  set end_object [emuflow_resolve_object $end_kind $end_name $hierarchy_prefix $end_hint]
   set measurement "endpoint-exact"
+  if {[llength $start_object] > 1 || [llength $end_object] > 1} {
+    set measurement "optimized-endpoint-collection-upper-bound"
+  }
   set start_is_hier_pin [expr {$start_kind eq "port" && \
     [get_property CLASS $start_object] eq "pin"}]
   set end_is_hier_pin [expr {$end_kind eq "port" && \
@@ -175,7 +205,7 @@ foreach line [lrange $lines 1 end] {
   # routed upper bound, but is deliberately not labeled endpoint-exact.
   if {[llength $paths] == 0 && $cone_name ne ""} {
     set cone_object [emuflow_resolve_object \
-      $cone_kind $cone_name $hierarchy_prefix]
+      $cone_kind $cone_name $hierarchy_prefix $cone_hint]
     set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
       -through $cone_object -through $end_object]
     if {[llength $paths] == 0} {
@@ -195,6 +225,7 @@ foreach line [lrange $lines 1 end] {
     }
     error "logic segment [emuflow_hex_decode $endpoint_hex] has no routed timing path"
   }
+  emuflow_validate_segment_extent [lindex $paths 0] $start_object $end_object $measurement
   set delay [get_property DATAPATH_DELAY [lindex $paths 0]]
   if {$delay eq ""} {
     error "logic segment [emuflow_hex_decode $endpoint_hex] has no datapath delay"
@@ -208,4 +239,5 @@ foreach line [lrange $lines 1 end] {
   incr emitted
 }
 close $output
+close $input
 puts "EMUFLOW_LOGIC_SEGMENT_TIMING status=pass segments=$emitted missing=$missing output=$output_path"

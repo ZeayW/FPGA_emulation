@@ -128,16 +128,38 @@ change later validation. Closing the reader releases this derived state. A new
 reader, a different mapped file/top, or a mutable JSON input derives its own
 facts; no persistent analysis artifact or cross-run cache is introduced.
 
-The native SLL multiplier keeps OpenPARF's `[0,1000)` acceptance policy. When
-the exponential step exceeds floating-point range, a log-domain comparison
-implements the same positive-update rejection or negative-update clamp without
-materializing the overflowing power. Normal finite updates keep the original
-arithmetic; this does not disable SLL optimization or relax placement checks.
+The native SLL multiplier keeps OpenPARF's `[0,1000)` acceptance policy and
+uses the fixed `t_psi=0.002` Adam step from LEAPS Equation (23). This is the
+incremental component of the former `1.002` exponential growth rate, rather
+than that rate itself. The current SLL-count delta receives the paper's
+`rho=0.9` EMA weight before entering the Adam moments. Applying the absolute
+delta again as an exponential factor makes the update depend exponentially on
+design size. Oversize positive updates are rejected and negative updates clamp
+at zero without disabling SLL optimization or relaxing placement checks.
 
 OpenPARF applies a bounded square-root weight to large nets in its analytical
 placement objective. This guides placement without changing connectivity.
+The preferred logic-filler row limit may be exceeded when necessary to keep
+each LUT/FF filler within half a density bin. Native startup validates the
+actual filler count, size, bin size, and span, and the convergence certificate
+records those values. Preserving total filler area alone is insufficient:
+coarse samples alias the density field and can leave overflow flat while the
+placement multipliers diverge. For square logic fillers, the half-bin bound
+requires about four times the sampling rows of the former full-bin bound.
 Exact legalization and an independent site/BEL validator remain responsible
 for physical legality.
+
+Global-placement overflow is an analytical quality signal, not a site/BEL
+legality rule. The normal pass target is `0.10`. When the optimizer reaches a
+stable candidate between `0.10` and `0.25`, the representative diagnostic path
+restores the lowest-HPWL bounded checkpoint and runs DirectLG. Its certificate
+records mean and maximum legalization displacement, post-legalization HPWL,
+and exact legality. A diagnostic handoff does not authorize routing by itself;
+the placement and initial congestion evidence must be reviewed first.
+The diagnostic patience window is measured from the last improvement to the
+best bounded HPWL. A smaller analytical overflow alone does not reset it,
+because the density multiplier can otherwise keep reducing overflow while
+wirelength and SLL cost diverge.
 
 The conservative UltraScale+ model qualifies eight independent 6LUT BELs and
 sixteen FF BELs per slice. DirectLG retains sixteen LUT z positions to encode
@@ -147,6 +169,15 @@ The density headroom check and filler count use the same qualified capacity.
 The `resource_unit_capacity` manifest field records these density units; the
 Bookshelf site grammar retains sixteen LUT slots for native BEL numbering.
 This leaves the configured target density and final site/BEL checks intact.
+
+Bookshelf's column grammar stretches each site to the next entry. The exporter
+therefore inserts zero-resource entries after a logic site when physical gaps
+or reserved rows follow it. LUT/FF sites occupy one native grid row; hard-block
+spans keep their qualified heights. These unavailable entries are not physical
+sites and never appear in the atom-to-site database. The driver compares the
+already constructed native density tensors with the exported LUT/FF site-area
+totals before optimization. Missing or mismatched area contracts fail closed;
+regenerate native inputs when continuing from an older configuration.
 
 The OpenPARF coordinate importer joins solver rows to the authenticated atomic
 name-map sidecar through an explicitly URI-enabled SQLite connection. The
@@ -198,3 +229,94 @@ Passing partition resource checks, placement legality, or routing alone does
 not establish whole-design timing closure. Phase 7 publishes a successful
 whole-design result only after every selected FPGA record and the global timing
 contract pass their independent validators.
+
+## Vivado indexed provider
+
+The optional `vivado` backend consumes the current compact Phase 6 split and
+transport contracts. It streams native Xilinx primitives through the canonical
+mapped SQLite index into RTL, then runs Vivado synthesis, optimization,
+placement, physical optimization, and routing in out-of-context (OOC) mode.
+Fixed data pads are implemented, while external clock sources remain abstract;
+absolute clock insertion/skew and board signoff are not qualified. This scope
+is retained in each physical result and its summary projection. The common
+physical-result schema accepts the native resource dimensions, resource-budget
+evidence, and explicit OOC analysis scope. The retired whole-EmuIR adapter
+remains only for explicit legacy inputs. This integration is undergoing
+real-device qualification; unit tests alone do not establish routed or global
+STA success.
+
+The exporter declares actual SQL net ordinals, including one-based or sparse
+keys. Disconnected input identities start beyond the maximum source ordinal,
+so they cannot alias a real net. Generated RTL disables implicit net creation.
+Before mapping, a bounded SQLite audit rejects every used net without a driver,
+including source-declared `undriven` nets, and saves a compact diagnostic sample.
+An upstream semantic repair or an explicitly specified OOC input model is
+required for these sources; the provider never invents constant bindings.
+
+Native timing bindings include FF clock-enable and reset/set controls, both
+LUT6_2 outputs, and the qualified RAMB18 physical write-enable aliases.
+
+The provider uses the Phase 6 sealed differential adapter and XDC through a
+physical wrapper. Post-route checks require exact P/N package pins,
+IOSTANDARD, IBUFDS/OBUFDS ownership (including Vivado's native DIFFINBUF/IBUFCTRL
+decomposition), zero unrouted nets, and zero blocking DRC violations.
+Mapped primitives carry source tags, without global KEEP/DONT_TOUCH, LOC/BEL,
+or implicit pblocks. Synthesis and physical optimization may remove, merge,
+replicate, or change cells. Indexed inventories record observed source lineage
+and unretained source tags; this census does not certify functional equivalence.
+The explicit `vivado-optimized-source-lineage-v1` policy separates this source
+census from actual routed physical components and inserted infrastructure.
+Timing queries resolve the original source's typed descendants first, without
+broadening a retained source to other equivalent cells. A removed object may
+alias another source only when the primitive, parameters, pin interfaces and
+original input connections are identical. Queries across descendant collections
+take the worst physical endpoint delay. Removed source objects require checked
+elimination proofs before an original path can be marked optimized away.
+Unproved missing associations and unsupported transformations fail timing
+coverage; they never trigger blanket endpoint locks, silently drop original
+paths, or qualify incomplete global WNS/TNS. Fixed I/O
+and the complete original TimingPathDB remain independently checked.
+Collections with multiple physical endpoints are labelled
+`optimized-endpoint-collection-upper-bound`, rather than endpoint-exact.
+Sequential transformations whose cycle correspondence is not established
+are rejected by the timing adapter, without disabling the vendor optimization.
+The indexed elimination-proof owner records closed source regions with no path
+to a retained source or partition output, and inductively constant register
+states with specified initial values. A proof that depends on selecting a
+don't-care initial value remains a conditional candidate until the vendor's
+choice is confirmed; it cannot eliminate a timing record on its own.
+Unknown combinational behavior, changing reset values,
+and unsupported primitives do not establish a constant proof. Timing records
+must reference this canonical source proof rather than invent a zero delay.
+The proof owner is not yet connected to terminal path dispositions. Until that
+consumer is implemented and independently qualified, missing original timing
+endpoints remain a coverage failure; the proof store alone cannot qualify
+global WNS/TNS.
+Whole-device resource budgets also apply to the final physical cell population.
+Resource accounting excludes MACRO wrappers while retaining LEAF and INTERNAL
+implementation components. LUT capacity is counted by occupied site/LUT letter
+(O5/O6 share one LUT); DSP and URAM components are counted by unique sites.
+
+Same-FPGA timing queries cover the complete declared original-path population;
+cross-FPGA logic and interface queries retain the Phase 6 identities. Fixed
+logical transport ports resolve to the declared physical P pad. Query extents
+are checked against actual timing endpoints; a sequential Q launch may start
+at the same primitive's clock to include clock-to-Q, while an unrelated prefix
+or any suffix beyond the requested endpoint is rejected. Fresh timing-export
+sessions apply equal datapath-only requirements across clock pairs so a cone
+query ranks physical delay rather than nominal clock slack. This measurement
+constraint is never written to the routed checkpoint or used for implementation
+WNS/TNS or global event deadlines. The
+indexed provider does not use the legacy sampled Vivado TimingPathDB as terminal
+evidence. Per-FPGA vendor WNS/TNS describe vendor endpoint constraints; global
+original-path WNS/TNS still require the separate complete OpenSTA composition.
+
+Use an installed Vivado with the exact part database and a valid synthesis and
+implementation license. `EMUFLOW_VIVADO_THREADS` controls the recorded thread
+limit (default 2). All generated files, checkpoints, and temporary tool files
+belong to the selected output directory and experiment scratch lifecycle.
+`scripts/validation/qualify_vivado_indexed.py` exercises a small three-clock,
+four-differential-pair implementation on XCVU19P. Its default `Quick` placement
+directive is specific to this smoke test; the production provider remains
+`Default`. Its result explicitly covers
+synthetic physical/provider qualification only.

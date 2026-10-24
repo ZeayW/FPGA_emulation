@@ -597,9 +597,14 @@ requirements, not optional micro-optimizations.
   whose endpoints remain on one FPGA and paths that cross one or more FPGAs.
   For cross-FPGA paths, the result must compose routed intra-FPGA logic and
   boundary delay with the concrete Phase 5 slot wait and board-link delay.
-  For same-FPGA paths, it must use the corresponding post-route local path
-  delay.  Together these two disjoint sets must cover every original
-  TimingPathDB path exactly once.
+  For implemented same-FPGA paths, it must use the corresponding post-route
+  local path delay. Every original TimingPathDB member must have exactly one
+  disposition: physically timed, or explicitly optimized away with a checked
+  source-bound elimination proof. Eliminated records retain their original
+  identities but have no numerical delay or slack; never substitute zero.
+  Report original, implemented, and optimized-away counts separately. A missing
+  or unproved endpoint remains incomplete. The absence of a source tag alone
+  is not an elimination proof.
 - Registered-boundary and sampled-virtual-wire comparison arms must both use
   the same fixed-slot event propagation over the concrete Phase 5 schedule.
   An additive average/ratio wait is diagnostic-only and must never be used as
@@ -613,9 +618,13 @@ requirements, not optional micro-optimizations.
   appear free. The native optimizer, independent reconstruction, and small
   exhaustive oracle must share this event definition, including a regression
   where two zero-relative-wait schedules differ by one absolute slot.
-- `global WNS` is the minimum composed slack over all original design paths.
-  `global TNS` is the sum of every negative composed path slack, counted once
-  per original TimingPathDB path.  A timing-equivalent representative used by
+- `global WNS` is the minimum composed slack over implemented original design
+  paths. `global TNS` sums their negative composed slacks once per original
+  TimingPathDB member. Proven optimized-away members remain in source coverage
+  with explicit elimination records and are excluded from numerical metrics.
+  The report must identify this population policy; if no implemented paths
+  remain, WNS is N/A and TNS is zero, without a synthetic worst path.
+  A timing-equivalent representative used by
   an optimizer may prove WNS, but it must be expanded to its original members
   before TNS is accumulated.
 - WNS/TNS reported by an individual FPGA backend, or an aggregate formed only
@@ -653,10 +662,10 @@ For every Phase 6 QoR claim or default-provider promotion:
    compared.
 5. Report at least:
    - explicitly labelled per-FPGA physical WNS and TNS diagnostics;
-   - global WNS over all composed original TimingPathDB paths;
-   - global TNS as the sum of negative composed slack over all original
-     TimingPathDB paths, without representative compression or double
-     counting;
+   - global WNS over all implemented original TimingPathDB paths;
+   - global TNS as the sum of their negative composed slacks, without
+     representative compression or double counting, plus original,
+     implemented, and proven optimized-away member counts;
    - the absolute baseline-to-candidate change for WNS and TNS, where a
      positive slack delta is an improvement;
    - percentage improvement computed from negative-slack deficit reduction,

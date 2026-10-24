@@ -376,7 +376,42 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 "END SITEMAP", 1
             )[0].strip().splitlines()
         ]
-        self.assertEqual(rows, [(0, 0), (0, 3), (1, 0), (1, 3)])
+        self.assertEqual(rows, [(0, 0), (0, 1), (0, 3), (1, 0), (1, 1), (1, 3)])
+        self.assertIn("SITE EMUFLOW_UNAVAILABLE\nEND SITE", _prefix)
+        self.assertEqual(
+            [item["placement_y"] for item in coordinates["sites"]],
+            [0.5, 3.5, 0.5, 3.5],
+        )
+
+    def test_logic_gaps_do_not_stretch_sites_or_change_hardblock_spans(self):
+        sites = [
+            ({"name": "SLICE_X0Y0", "type": "SLICEL", "x": 0, "y": 0},
+             {"LUT": 16, "FF": 16}),
+            ({"name": "SLICE_X0Y3", "type": "SLICEL", "x": 0, "y": 3},
+             {"LUT": 16, "FF": 16}),
+            ({"name": "DSP48E2_X1Y0", "type": "DSP48E2", "x": 1, "y": 0},
+             {"DSP48E2": 1}),
+            ({"name": "DSP48E2_X1Y5", "type": "DSP48E2", "x": 1, "y": 5},
+             {"DSP48E2": 1}),
+        ]
+        _prefix, suffix, coordinates = atomic_adapter._render_site_geometry(sites)
+        rows = [line.split() for line in suffix.split("SITEMAP 2 6\n", 1)[1]
+                .split("END SITEMAP", 1)[0].strip().splitlines()]
+        # Apply the native reader's next-entry bounding-box rule to the
+        # exported grammar, including the trailing unavailable interval.
+        logic_area = 0
+        for index, (x, y, site_type) in enumerate(rows):
+            if x != "0" or site_type == "EMUFLOW_UNAVAILABLE":
+                continue
+            upper = int(rows[index + 1][1]) if (
+                index + 1 < len(rows) and rows[index + 1][0] == x
+            ) else 6
+            logic_area += upper - int(y)
+        self.assertEqual(logic_area, 2)
+        self.assertIn(["0", "4", "EMUFLOW_UNAVAILABLE"], rows)
+        hard_sites = [item for item in coordinates["sites"]
+                      if "DSP48E2" in item["resources"]]
+        self.assertEqual([item["placement_y"] for item in hard_sites], [2.5, 5.5])
 
     def test_slr_seams_cover_both_dense_y_orientations(self):
         sites = []
@@ -705,10 +740,14 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(
             config["emuflow_post_adjustment_iteration_reserve"], 384
         )
+        self.assertEqual(config["emuflow_diagnostic_handoff_overflow"], 0.25)
+        self.assertEqual(config["emuflow_diagnostic_handoff_patience"], 64)
         self.assertEqual(config["stop_overflow"], 0.10)
         self.assertEqual(config["emuflow_high_fanout_weight_threshold"], 64)
         self.assertEqual(config["emuflow_high_fanout_weight_exponent"], 0.5)
         self.assertEqual(config["emuflow_high_fanout_weight_maximum"], 4.0)
+        self.assertEqual(config["wlw_psi_step_size"], 0.002)
+        self.assertEqual(config["wlw_delta_sll_ema_weight"], 0.9)
         self.assertEqual(config["gp_adjust_area"], 1)
         self.assertEqual(config["gp_adjust_area_types"], ["LUT", "FF"])
         self.assertEqual(config["gp_max_adjust_area_iters"], 6)
@@ -720,15 +759,32 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-stable-feasible-v4",
+            "provider": "openparf-rudy-pin-stable-feasible-v7",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": 0.10,
+            "diagnostic_legalization_handoff": {
+                "maximum_logic_overflow": 0.25,
+                "hpwl_patience": 64,
+                "requires_exact_legalization_evidence": True,
+                "authorizes_routing_release": False,
+            },
             "adjustment_overflow_threshold": 0.15,
             "maximum_iterations": 6,
             "route_adjustment_exponent": 2.0,
             "maximum_route_adjustment_rate": 2.0,
             "maximum_pin_adjustment_rate": 1.6,
             "resource_area_adjustment": False,
+            "density_filler_sampling": {
+                "provider": "density-bin-bounded-fillers-v2",
+                "preferred_maximum_rows_per_area_type": 65536,
+                "maximum_bin_span": [0.5, 0.5],
+            },
+            "sll_weighting": {
+                "provider": "leaps-fixed-adam-step-v2",
+                "step_size": 0.002,
+                "delta_sll_ema_weight": 0.9,
+                "accepted_range": [0.0, 1000.0],
+            },
             "convergence": {
                 "provider": "best-feasible-hpwl-patience-v1",
                 "minimum_feasible_iterations": 96,
@@ -1339,6 +1395,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             config["gp_max_fillers_per_area_type"],
             {"FF": 65536, "LUT": 65536},
         )
+        self.assertEqual(config["gp_max_logic_filler_bin_span"], 0.5)
         self.assertIn("PIN C INPUT CLOCK", library)
         self.assertIn("PIN CE INPUT CTRL_CE", library)
         self.assertIn("PIN R INPUT CTRL_SR", library)
@@ -2128,6 +2185,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 "URAM288": 1,
             },
         )
+        self.assertEqual(config["gp_max_logic_filler_bin_span"], 0.5)
         self.assertIn("PIN A[0] INPUT", library)
         self.assertIn("PIN P[1] OUTPUT", library)
         defined, resource_models = _defined_and_resource_models(library, sites)
@@ -2644,6 +2702,27 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                         "restored_best_feasible": True,
                         "best_feasible_hpwl": 10.0,
                         "final_legal_hpwl": 11.0,
+                        "policy": {
+                            "sll_weighting": {
+                                "provider": "leaps-fixed-adam-step-v2",
+                                "step_size": 0.002,
+                                "delta_sll_ema_weight": 0.9,
+                                "accepted_range": [0.0, 1000.0],
+                            },
+                            "density_filler_sampling": {
+                                "provider": "density-bin-bounded-fillers-v2",
+                                "status": "pass",
+                                "maximum_bin_span": [0.5, 0.5],
+                                "resources": {
+                                    "LUT": {
+                                        "count": 4,
+                                        "size": [0.5, 0.5],
+                                        "bin_size": [1.0, 1.0],
+                                        "bin_span": [0.5, 0.5],
+                                    }
+                                },
+                            },
+                        },
                     }),
                     encoding="utf-8",
                 )

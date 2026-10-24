@@ -367,8 +367,12 @@ file(
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/io/*.json"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/rapidwright/*.json"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/*.sql"
+  "${CMAKE_SOURCE_DIR}/platforms/virtual/*.wires.csv"
   "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
   "${CMAKE_SOURCE_DIR}/scripts/yosys/*"
+  "${CMAKE_SOURCE_DIR}/scripts/openroad/*"
+  "${CMAKE_SOURCE_DIR}/scripts/patron/*"
+  "${CMAKE_SOURCE_DIR}/scripts/vivado/*.tcl"
 )
 set(
   EMUFLOW_PUBLIC_CONTEST_DATA
@@ -432,6 +436,10 @@ add_custom_command(
     "${CMAKE_SOURCE_DIR}/src/emuflow/data/rapidwright"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/rapidwright"
   COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/platforms/virtual"
+    "${EMUFLOW_INSTALL_ROOT}/platforms/virtual"
+  COMMAND
     "${CMAKE_COMMAND}" -E copy
     "${CMAKE_BINARY_DIR}/emuflow"
     "${EMUFLOW_INSTALL_BINDIR}/emuflow"
@@ -451,6 +459,18 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/scripts/yosys"
     "${EMUFLOW_INSTALL_ROOT}/scripts/yosys"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/scripts/openroad"
+    "${EMUFLOW_INSTALL_ROOT}/scripts/openroad"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/scripts/patron"
+    "${EMUFLOW_INSTALL_ROOT}/scripts/patron"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/scripts/vivado"
+    "${EMUFLOW_INSTALL_ROOT}/scripts/vivado"
   COMMAND
     "${CMAKE_COMMAND}" -E make_directory
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts"

@@ -34,6 +34,44 @@ class OpenPARFFillerTest(unittest.TestCase):
         self.assertEqual(count, 256)
         self.assertTrue(math.isclose(count * size[0] * size[1], 16.0))
 
+    def test_cap_yields_to_density_bin_geometry(self):
+        count, size = self._module().compute_filler_geometry(
+            284990.8828125,
+            (0.3535533905932738, 0.3535533905932738),
+            65536,
+            (0.876953, 1.21484),
+        )
+        self.assertGreater(count, 65536)
+        self.assertLessEqual(size[0], 0.876953)
+        self.assertLessEqual(size[1], 1.21484)
+        self.assertTrue(
+            math.isclose(count * size[0] * size[1], 284990.8828125)
+        )
+
+    def test_half_bin_sampling_increases_spatial_resolution(self):
+        module = self._module()
+        full_count, _ = module.compute_filler_geometry(
+            284990.8828125,
+            (0.3535533905932738, 0.3535533905932738),
+            65536,
+            (0.876953, 1.21484),
+        )
+        half_count, half_size = module.compute_filler_geometry(
+            284990.8828125,
+            (0.3535533905932738, 0.3535533905932738),
+            65536,
+            (0.876953 * 0.5, 1.21484 * 0.5),
+        )
+        self.assertGreaterEqual(half_count, full_count * 4 - 3)
+        self.assertLessEqual(half_size[0], 0.876953 * 0.5)
+        self.assertLessEqual(half_size[1], 1.21484 * 0.5)
+        self.assertTrue(
+            math.isclose(
+                half_count * half_size[0] * half_size[1],
+                284990.8828125,
+            )
+        )
+
     def test_zero_area_needs_no_filler(self):
         self.assertEqual(
             self._module().compute_filler_geometry(0.0, (1.0, 1.0), 1),

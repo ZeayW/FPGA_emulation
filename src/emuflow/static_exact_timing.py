@@ -343,7 +343,7 @@ def build_static_exact_segment_deadlines(
                 delay = max(float(item["delay_ns"]) for item in physical)
                 cone_bound = any(
                     item.get("measurement", "endpoint-exact")
-                    == "cut-net-cone-upper-bound"
+                    in {"cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}
                     for item in physical
                 )
                 slack = available_slots * slot_ns - uncertainty_ns - delay
@@ -615,7 +615,7 @@ def validate_static_exact_segment_deadlines(
             delay = max(float(item["delay_ns"]) for item in physical)
             cone_bound = any(
                 item.get("measurement", "endpoint-exact")
-                == "cut-net-cone-upper-bound"
+                in {"cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}
                 for item in physical
             )
             evidence_name = (

@@ -12,6 +12,27 @@ from emuflow.physical_backend import (
 
 
 class PhysicalBackendContractTest(unittest.TestCase):
+    def test_optimized_vivado_separates_source_census_from_physical_components(self):
+        from emuflow.vivado_lineage import LINEAGE_POLICY
+
+        result = self._result()
+        result["identity"]["backend"] = "vivado"
+        result["analysis_scope"] = {"cell_accounting_policy": LINEAGE_POLICY}
+        result["cell_accounting"].update(routed_cells=80, physical_cells=86,
+            optimization_cells=5, source_cells_with_lineage=80,
+            unretained_source_cells=25, source_cells_with_multiple_objects=5)
+        kwargs = dict(backend="vivado", fpga="fpga0", part="academic-part", original_cells=100, transport_cells=5)
+        self.assertEqual(validate_physical_partition_result(result, **kwargs)["routed_cells"],80)
+        for field, value in (("unretained_source_cells",24), ("source_cells_with_multiple_objects",81),
+                             ("source_cells_with_lineage",True), ("physical_cells",106)):
+            bad = copy.deepcopy(result)
+            bad["cell_accounting"][field] = value
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                validate_physical_partition_result(bad, **kwargs)
+        del result["analysis_scope"]
+        with self.assertRaises(ValidationError):
+            validate_physical_partition_result(result, **kwargs)
+
     def _result(self):
         return {
             "schema": PHYSICAL_PARTITION_RESULT_SCHEMA,

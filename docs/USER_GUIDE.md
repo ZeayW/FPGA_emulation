@@ -168,6 +168,25 @@ export PATH="$PWD/build/native/install/bin:$PATH"
 The native installation includes the EmuFlow CLI and selected in-tree engines.
 Use `emuflow --help` and the relevant subcommand's `--help` for the complete
 option list.
+OpenSTA qualification checks both its engine version and Tcl 8.6+ `try/finally`
+support before an expensive frontend run. Rebuild an executable linked against
+an older Tcl; changing only its reported engine version is insufficient.
+
+For native binaries requiring a newer host ABI, the source tree provides
+optional container launchers under `scripts/yosys`, `scripts/opensta`,
+`scripts/openroad`, and `scripts/patron`. Select each launcher through the
+corresponding executable option, configure the shared
+`EMUFLOW_YOSYS_CONTAINER_{EXECUTABLE,IMAGE,BIND,LIBRARY_PATH}` variables, and
+set each tool's `EMUFLOW_<TOOL>_CONTAINER_BINARY` independently (`YOSYS`,
+`OPENSTA`, `OPENROAD`, or `PATRON`). `TMPDIR` must point into the active
+experiment. These launchers require an existing Singularity-compatible runtime
+and image; they do not install tools or change the host ABI.
+If an image lacks Tcl's matching script library, explicitly set
+`EMUFLOW_OPENSTA_CONTAINER_TCL_LIBRARY` or
+`EMUFLOW_OPENROAD_CONTAINER_TCL_LIBRARY` to that tool's versioned directory
+containing `init.tcl`.
+PATRON's runtime binary binding survives the native environment filter;
+retired implicit algorithm-tuning variables remain excluded.
 
 For dependencies outside system directories:
 
@@ -246,6 +265,13 @@ Do not change mapping profiles silently to make a capacity failure disappear.
 Match resource units, device geometry, and physical architecture to the selected
 platform.
 
+The indexed hierarchical frontend propagates child-module constant outputs
+through parent aliases, including previously visited consumers. Values `0`,
+`1`, `x`, and `z` retain their source meaning; conflicting constant bindings
+are rejected. This also preserves synthesis-model control constants across
+module boundaries. A frontend repair changes the design contract: regenerate
+Phase 1, timing, partitioning, and Phase 6 rather than patching an old split.
+
 ## Providers and boundary semantics
 
 CLI, Python phase APIs and experiment configurations default to timing-driven
@@ -315,6 +341,43 @@ options and packed-cluster pack/guide/place commands are removed. Independent
   `--physical-openparf-python`.
 - `--physical-backend vivado`: optional proprietary device implementation.
   It requires the matching Vivado installation, device support, and licenses.
+
+To consume an existing current Phase 6 output with Vivado, use the standalone
+entry point and the matching original source/assignment/routing/timing inputs:
+
+```bash
+emuflow multi-fpga physical --split RUN/flow/split --platform PLATFORM.json \
+  --schedule SCHEDULE.json --out RUN/vivado-physical --backend vivado \
+  --vivado vivado \
+  --original-ir ORIGINAL.emuir.sqlite --assignment ASSIGNMENT.json \
+  --routes ROUTES.json --path-database PATHS.json
+```
+
+CMake and Python package installations include the Vivado Tcl adapters, native
+primitive contracts, and fixed virtual-board wiring tables; the
+indexed provider resolves the installed data directory when outside a source
+checkout.
+
+On hosts whose system C library is older than the versioned Yosys build,
+`scripts/yosys/container_runtime.sh` is an optional `--yosys` launcher. Set its
+`EMUFLOW_YOSYS_CONTAINER_*` variables to the executable, immutable image, binary,
+bind root, and runtime library paths listed at the top of that script, plus the
+active experiment's `TMPDIR`. This isolates the synthesis runtime from host
+Vivado and keeps writable container work under that scratch directory.
+For the same host ABI issue with OpenSTA, set `EMUFLOW_OPENSTA_CONTAINER_BINARY`
+and pass `scripts/opensta/container_runtime.sh` to `--global-sta-executable`.
+It shares the container configuration and selects OpenSTA independently of
+Yosys, so both launchers can be used in one compile invocation.
+Native install aliases resolve to their actual executable, so launchers find
+their sibling runtime files. When the repository OpenSTA container launcher is
+selected, timing evidence seals both its delegated engine and the launcher.
+
+Supply the exact paths from the source run, including `--logic-path-database`
+when required by its timing contract. `--fpga fpgaN` selects a representative
+partition diagnostic and does not constitute a complete global run. The
+indexed adapter uses complete timing queries; `--vivado-max-timing-paths` is a
+legacy sampled-export option. See the [provider contract](XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider)
+for current qualification and optimization limits.
 
 Standalone `multi-fpga physical` uses `--backend` for the same selection and
 also defaults to RapidWright. The integrated Chimew lookahead path currently

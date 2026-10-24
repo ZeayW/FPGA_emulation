@@ -12,6 +12,7 @@ import tempfile
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
@@ -71,6 +72,8 @@ _LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER = (
     "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
 )
 _FF_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
+_VIVADO_FF_CONTROLS = {"FDRE": {"CE", "R"}, "FDSE": {"CE", "S"},
+                       "FDCE": {"CE", "CLR"}, "FDPE": {"CE", "PRE"}}
 _STATE_RESOURCES = {"ff", "bram", "bram18k", "uram288"}
 
 
@@ -366,6 +369,14 @@ def _vpr_atom_pin(
     )
 
 
+@lru_cache(maxsize=1)
+def _vivado_native_cell_types() -> frozenset[str]:
+    from .xilinx_primitives import load_xilinx_primitive_library
+
+    _library, contract = load_xilinx_primitive_library()
+    return frozenset(contract["cells"])
+
+
 def _vivado_object(
     ir: EmuIR,
     endpoint: Mapping[str, Any],
@@ -390,6 +401,8 @@ def _vivado_object(
         }
     if pins is None:
         pins = _instance_pin_inventory(ir)
+    endpoint = _normalize_xilinx_logical_endpoint(endpoint, pins, instances)
+    port, bit = endpoint["port"], endpoint["bit"]
     if instance_id not in instances or (port, bit) not in pins[instance_id]:
         raise ValidationError(
             f"physical logic endpoint {instance_id}.{port}[{bit}] is absent"
@@ -407,8 +420,8 @@ def _vivado_object(
     physical_port = port
     physical_bit = bit
     if cell_type.startswith("LUT"):
-        if port == "O":
-            physical_port, physical_bit = "O", 0
+        if port == "O" or (cell_type == "LUT6_2" and port in {"O5", "O6"}):
+            physical_port, physical_bit = port, 0
         elif re.fullmatch(r"I\d+", port) is None or bit != 0:
             raise ValidationError(
                 f"unsupported Vivado LUT pin {instance_id}.{port}[{bit}]"
@@ -423,14 +436,15 @@ def _vivado_object(
                 f"unsupported Vivado LUT pin {instance_id}.{port}[{bit}]"
             )
     elif cell_type in _FF_TYPES or cell_type.startswith("$_DFF_"):
-        if port not in {"C", "D", "Q"} or bit != 0:
+        if (port not in {"C", "D", "Q"} and port not in _VIVADO_FF_CONTROLS.get(cell_type, ())) or bit != 0:
             raise ValidationError(
                 f"unsupported Vivado FF pin {instance_id}.{port}[{bit}]"
             )
     elif cell_type not in {"VTR_MULTIPLY", "VTR_SP_RAM", "VTR_DP_RAM"}:
-        raise ValidationError(
-            f"unsupported Vivado physical logic cell {cell_type}"
-        )
+        if cell_type not in _vivado_native_cell_types():
+            raise ValidationError(
+                f"unsupported Vivado physical logic cell {cell_type}"
+            )
     if cell_type.startswith("LUT") or cell_type in {"$lut", "$_LUT_"}:
         pin_name = physical_port
     else:
@@ -2160,7 +2174,7 @@ def _indexed_logic_measurement_import(
                         and fields[1] in {"launch", "transition", "capture"}
                         and bool(segment_id and start_object and end_object)
                         and measurement in {
-                            "endpoint-exact", "cut-net-cone-upper-bound"
+                            "endpoint-exact", "cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"
                         }
                         and (not vivado or bool(actual_start and actual_end))
                         and math.isfinite(delay)
@@ -2528,6 +2542,7 @@ def import_vivado_logic_segment_timing(
             or measurement not in {
                 "endpoint-exact",
                 "cut-net-cone-upper-bound",
+                "optimized-endpoint-collection-upper-bound",
             }
             or not actual_start
             or not actual_end
@@ -2658,6 +2673,7 @@ def validate_logic_segment_timing(
     maximum = 0.0
     endpoint_exact = 0
     cone_bound = 0
+    collection_bound = 0
     for segment in database["segments"]:
         delay = segment.get("delay_ns")
         if (
@@ -2671,6 +2687,7 @@ def validate_logic_segment_timing(
         if measurement not in {
             "endpoint-exact",
             "cut-net-cone-upper-bound",
+            "optimized-endpoint-collection-upper-bound",
         }:
             raise ValidationError("logic segment timing measurement is invalid")
         if measurement == "cut-net-cone-upper-bound":
@@ -2681,6 +2698,8 @@ def validate_logic_segment_timing(
                     "logic segment cone-bound trace is invalid"
                 )
             cone_bound += 1
+        elif measurement == "optimized-endpoint-collection-upper-bound":
+            collection_bound += 1
         else:
             endpoint_exact += 1
         for field in ("actual_start_object", "actual_end_object"):
@@ -2697,5 +2716,6 @@ def validate_logic_segment_timing(
         "segments": len(database["segments"]),
         "endpoint_exact_segments": endpoint_exact,
         "cone_bound_segments": cone_bound,
+        "endpoint_collection_bound_segments": collection_bound,
         "maximum_delay_ns": maximum,
     }

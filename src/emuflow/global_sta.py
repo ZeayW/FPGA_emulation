@@ -1818,6 +1818,8 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
             "EmuFlow OpenSTA executable SHA256 "
             f"{engine['executable_sha256']}\n"
         )
+        if "launcher_sha256" in engine:
+            log.write(f"EmuFlow OpenSTA launcher SHA256 {engine['launcher_sha256']}\n")
         log.flush()
         result = subprocess.run([tool, "-exit", "analyze.tcl"], cwd=directory,
                                 stdout=log, stderr=subprocess.STDOUT, check=False)
@@ -1845,6 +1847,7 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
 def read_engine_identity(log_path: Path) -> dict:
     """Read the existing process banner, without another tool invocation."""
     executable_sha256 = None
+    launcher_sha256 = None
     banner = None
     with log_path.open() as stream:
         for _ in range(32):
@@ -1856,6 +1859,12 @@ def read_engine_identity(log_path: Path) -> dict:
             )
             if seal:
                 executable_sha256 = seal[1]
+                continue
+            launcher_seal = re.fullmatch(
+                r"EmuFlow OpenSTA launcher SHA256 ([0-9a-f]{64})\n?", line
+            )
+            if launcher_seal:
+                launcher_sha256 = launcher_seal[1]
                 continue
             match = re.match(r"OpenSTA\s+(\S+)\s+(\S+)", line)
             if match:
@@ -1870,6 +1879,8 @@ def read_engine_identity(log_path: Path) -> dict:
             }
             if executable_sha256 is not None:
                 result["executable_sha256"] = executable_sha256
+            if launcher_sha256 is not None:
+                result["launcher_sha256"] = launcher_sha256
             return result
         if executable_sha256 is not None:
             return {
@@ -1878,6 +1889,7 @@ def read_engine_identity(log_path: Path) -> dict:
                 "revision": f"binary-sha256:{executable_sha256}",
                 "reported_revision": reported_revision,
                 "executable_sha256": executable_sha256,
+                **({"launcher_sha256": launcher_sha256} if launcher_sha256 is not None else {}),
             }
     raise ValidationError("global OpenSTA log lacks engine version/revision")
 
@@ -1971,7 +1983,7 @@ the Python event propagator or consume its per-path numerical results.
                         clock_domain=record.get("clock_domain"),
                         target_period_ns=record["clock_period_ns"],
                         physical_logic_segments_cone_bound=any(
-                            s.get("measurement") == "cut-net-cone-upper-bound"
+                            s.get("measurement") in {"cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}
                             for s in chain
                         ),
                         interconnect_delay_model=(

@@ -22,6 +22,30 @@ PHYSICAL_PARTITION_RESULT_SCHEMA = (
 PHYSICAL_BACKENDS = ("open", "rapidwright", "vivado")
 
 
+def validate_source_cell_accounting(accounting: Mapping[str, Any], *, backend: str,
+                                    analysis_scope: Mapping[str, Any]) -> None:
+    """Version the source census separately from optimized physical objects."""
+    if not isinstance(analysis_scope, Mapping):
+        raise ValidationError("physical result analysis scope is invalid")
+    policy = analysis_scope.get("cell_accounting_policy")
+    source_cells = accounting["original_cells"] + accounting["transport_cells"]
+    if policy is None:
+        if accounting.get("routed_cells") != source_cells:
+            raise ValidationError("physical result source cell accounting disagrees")
+        return
+    from .vivado_lineage import LINEAGE_POLICY
+
+    if backend != "vivado" or policy != LINEAGE_POLICY:
+        raise ValidationError("physical result source accounting policy is invalid")
+    for field in ("routed_cells", "source_cells_with_lineage", "unretained_source_cells", "source_cells_with_multiple_objects"):
+        value = accounting.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValidationError(f"physical result {field} must be non-negative")
+    if (accounting["source_cells_with_lineage"] + accounting["unretained_source_cells"] != source_cells
+            or accounting["source_cells_with_multiple_objects"] > accounting["source_cells_with_lineage"]):
+        raise ValidationError("physical result source lineage census disagrees")
+
+
 _DESCRIPTORS: Dict[str, Dict[str, Any]] = {
     "open": {
         "schema": PHYSICAL_BACKEND_SCHEMA,
@@ -143,10 +167,7 @@ def validate_physical_partition_result(
         raise ValidationError(
             f"physical result transport cells for {fpga} disagree"
         )
-    if accounting.get("routed_cells") != expected_routed:
-        raise ValidationError(
-            f"physical result routed cells for {fpga} disagree"
-        )
+    validate_source_cell_accounting(accounting, backend=backend, analysis_scope=result.get("analysis_scope", {}))
     infrastructure = accounting.get("infrastructure_cells")
     optimization = accounting.get("optimization_cells")
     physical_cells = accounting.get("physical_cells")
@@ -158,7 +179,7 @@ def validate_physical_partition_result(
         or not isinstance(optimization, int)
         or optimization < 0
         or physical_cells
-        != expected_routed + infrastructure + optimization
+        != accounting["routed_cells"] + infrastructure + optimization
     ):
         raise ValidationError(
             f"physical result implementation cells for {fpga} disagree"
@@ -361,7 +382,7 @@ def validate_physical_partition_result(
         "backend": backend,
         "fpga": fpga,
         "part": part,
-        "routed_cells": expected_routed,
+        "routed_cells": accounting["routed_cells"],
         "physical_cells": physical_cells,
         "wns_ns": float(timing["wns_ns"]),
         **(
@@ -416,6 +437,7 @@ def physical_summary_item(result: Mapping[str, Any]) -> Dict[str, Any]:
             ),
         },
         "clocks": clocks,
+        **({"analysis_scope": dict(result["analysis_scope"])} if "analysis_scope" in result else {}),
         **(
             {"critical_path_ns": timing["critical_path_ns"]}
             if "critical_path_ns" in timing

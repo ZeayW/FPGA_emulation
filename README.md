@@ -8,6 +8,23 @@ routing, TDM assignment, physical implementation, and global timing analysis.
 The default research route uses RapidWright device resources, native OpenPARF
 placement, and RWRoute routing for supported Xilinx FPGAs. VTR/VPR remains an
 alternative academic backend, and Vivado is an optional proprietary backend.
+Optional container launchers support native-tool ABI and Tcl script bindings,
+with runtime selection separate from algorithm settings. See the
+[build instructions](docs/USER_GUIDE.md#complete-build).
+OpenSTA container evidence identifies the native engine and launcher separately.
+The indexed Vivado adapter consumes current Phase 6 SQLite contracts with
+canonical net identities, fixed LVDS I/O, native sequential control pins, and
+the common physical-result contract. Real-device qualification is in progress. Its OOC implementation retains abstract external clock sources and
+does not establish board clock/skew signoff. Used undriven source nets are
+rejected before mapping or vendor implementation. Physical capacity accounting
+handles native macro expansion and shared LUT halves.
+Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
+constraints; source-bound coverage is checked after optimization. The timing
+contract requires an explicit measured or proven optimized-away disposition for
+every original path. Elimination-proof consumption by terminal global timing
+is still incomplete; unresolved original members fail coverage. See the
+[Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider) and
+[user guide](docs/USER_GUIDE.md#physical-implementation).
 The virtual BoardDB is a declared academic platform model rather than evidence
 of a manufactured board or hardware signoff. See the
 [hardware platform model](docs/HARDWARE_PLATFORM.md),
@@ -22,6 +39,8 @@ synthesis or pre-partition STA. The continuation validates the saved design,
 mapping, clock, timing-path, and SQLite contracts, then uses the currently
 selected BoardDB for Phases 3–7. See the
 [user guide](docs/USER_GUIDE.md) for input requirements and failure behavior.
+The indexed frontend preserves constant child-module outputs across hierarchy
+boundaries, including consumers visited before their drivers.
 The saved BoardDB supplies only the mapping device identity; older link-model
 fields do not need migration to continue with the current BoardDB.
 Terminal validation also verifies the declared read-only EmuIR binding and
@@ -39,8 +58,10 @@ core and `emuflow-native phase7 export-bookshelf`, without reconstructing the
 cell, pin or per-net fanout population in memory.
 Physical macro derivation is shared within one immutable mapped reader;
 independent artifact readers still derive and validate their own contracts.
-The native SLL weight update evaluates overflowing exponential steps against
-its existing bounds without changing the placement objective.
+The native SLL weight update follows LEAPS' fixed-step Adam equation with
+`t_psi=0.002` and the paper's current-delta EMA weight `rho=0.9`. Absolute
+SLL-count changes feed the EMA and moments once; the update no longer depends
+exponentially on the absolute change in SLL count.
 When driving the reusable stage commands directly, pass
 `experiment-stage cut-timing-run --prepared-timing-boundary` (and the same flag
 plus the expected `--clock-period` values to `cut-timing-validate`) to consume a
@@ -165,6 +186,18 @@ The Xilinx Phase 7 path combines fanout-aware placement, RUDY/pin-density area
 adjustment, and a reserved post-adjustment convergence window before exact
 legalization and negotiated routing. Analytical LUT density uses the eight
 qualified LUT BELs per slice, independently of the native sixteen-slot encoding.
+Empty and reserved rows retain zero placement capacity; the driver checks the
+parsed native density area before solving. Logic filler sampling preserves its
+exact total area and limits each LUT/FF sample to half a density bin so the
+density field retains enough spatial resolution before exact legalization.
+The native certificate records the effective count, geometry, and span.
+The `0.10` global-placement overflow target remains the normal routability
+criterion. A representative placement may also restore a bounded `0.25`
+checkpoint for diagnostic DirectLG. Once bounded, overflow-only progress does
+not extend the HPWL patience window; the solver restores the lowest-HPWL
+checkpoint instead of allowing density multipliers to destroy wirelength. The
+diagnostic path records legalization displacement and still requires exact
+site/BEL validation before any routing release.
 The final route still requires zero
 overused nodes and complete source-to-sink connectivity.
 
@@ -208,7 +241,7 @@ engines. Python packaging alone does not build a complete flow.
 Required tools include CMake 3.20+, GNU Make, a C++17 compiler, Python 3.9+,
 Boost, and the SQLite 3.22+ development library. The complete build also needs the
 development dependencies for OpenROAD, OpenSTA, OpenPARF, and VPR: Bison, Flex,
-Tcl, SWIG, Eigen3, zlib,
+Tcl 8.6+ (including the OpenSTA runtime), SWIG, Eigen3, zlib,
 spdlog, LEMON, OR-Tools, OpenMP, and the appropriate Python/PyTorch packages.
 CUDA is optional and disabled by default. The OpenPARF Python/PyTorch ABI must
 match the interpreter selected when compiling its native operators.
@@ -333,7 +366,10 @@ the same logical EmuIR semantics without rewriting the SQLite database.
   board support package, clock/reset configuration, and transport interface.
 - RapidWright device/API dependencies have their own licensing conditions.
   Vivado is proprietary and is not bundled. The alternative VTR backend does
-  not require Vivado.
+  not require Vivado. Native installations include the primitive contracts,
+  fixed wiring tables, and Tcl adapters required by the indexed Vivado route.
+  Separate optional container launchers support Yosys and OpenSTA on older HPC
+  hosts; see the [user guide](docs/USER_GUIDE.md#physical-implementation).
 - WNS/TNS are scoped to the declared source TimingPathDB population.
   Original-path TNS sums negative slack per original path, not once per
   unique register endpoint. Per-FPGA metrics are separate diagnostics.

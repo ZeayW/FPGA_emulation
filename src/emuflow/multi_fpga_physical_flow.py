@@ -1019,7 +1019,7 @@ def run_multi_fpga_physical_flow(
             raise ValidationError(
                 "physical virtual-board binding source seals disagree"
             )
-        if backend != "rapidwright":
+        if backend not in {"rapidwright", "vivado"}:
             raise ValidationError(
                 f"the {backend} physical backend does not yet consume the fixed "
                 "differential-I/O contract"
@@ -1092,7 +1092,7 @@ def run_multi_fpga_physical_flow(
                 "split manifest resource reservations disagree with the "
                 "Phase 3 assignment"
             )
-        if backend in {"open", "rapidwright"}:
+        if backend in {"open", "rapidwright", "vivado"}:
             prepared_local_inputs = prepare_vpr_local_path_query_inputs(
                 original_ir_path,
                 assignment_path,
@@ -1425,7 +1425,7 @@ def run_multi_fpga_physical_flow(
                         "logic_timing": logic_timing_path,
                     }
                 )
-                if backend in {"open", "rapidwright"}:
+                if backend in {"open", "rapidwright", "vivado"}:
                     local_identity_path = fpga_root / "local-path-identity.json"
                     local_query_path = fpga_root / "local-path-query.tsv"
                     local_writer = (
@@ -2050,9 +2050,18 @@ def run_multi_fpga_physical_flow(
             boundary_identity_path = Path(
                 lowering_report["boundary_identity"]["output"]
             )
+            mapped_verilog = fpga_root / "partition.v"
+            mapped_report = emit_vivado_mapped_verilog(
+                merged_ir,
+                mapped_verilog,
+                fpga_root / "mapped-verilog-report.json",
+            )
             logic_identity_path = None
             logic_query_path = None
             logic_query_report = None
+            local_identity_path = None
+            local_query_path = None
+            local_query_report = None
             if all(path is not None for path in logic_context):
                 logic_identity_path = (
                     fpga_root / "logic-segment-identity.json"
@@ -2072,18 +2081,22 @@ def run_multi_fpga_physical_flow(
                     logic_identity_path,
                     prepared_inputs=prepared_logic_inputs,
                 )
-            mapped_verilog = fpga_root / "partition.v"
-            mapped_report = emit_vivado_mapped_verilog(
-                merged_ir,
-                mapped_verilog,
-                fpga_root / "mapped-verilog-report.json",
-            )
+                from .vivado_physical_timing import write_vivado_local_query
+
+                local_identity_path = fpga_root / "vivado-local-identity.sqlite"
+                local_query_path = fpga_root / "vivado-local-query.tsv"
+                local_query_report = write_vivado_local_query(
+                    merged_ir, fpga_id, local_query_path, local_identity_path,
+                    prepared_local_inputs,
+                )
             vivado_report = run_vivado_partition_backend(
                 fpga=fpga_id,
                 part=fpga_part,
                 ir_path=merged_ir,
                 mapped_verilog_path=mapped_verilog,
-                runtime=runtime,
+                runtime={**runtime, "resource_budget": next(
+                    fpga.to_dict() for fpga in platform.fpgas if fpga.id == fpga_id
+                )},
                 original_cells=original_cells,
                 transport_cells=transport_cells,
                 output_dir=fpga_root / "vivado",
@@ -2094,11 +2107,19 @@ def run_multi_fpga_physical_flow(
                 max_timing_paths=vivado_max_timing_paths,
                 place_directive=vivado_place_directive,
                 route_directive=vivado_route_directive,
+                mapped_report=mapped_report,
+                virtual_io_contract=virtual_io_contract,
+                local_identity_path=local_identity_path,
+                local_query_path=local_query_path,
             )
             if logic_query_report is not None:
                 vivado_report["logic_segment_timing"][
                     "query"
                 ] = logic_query_report
+            if local_query_report is not None:
+                vivado_report["local_path_timing"]["query"] = local_query_report
+            if virtual_io_contract is not None:
+                stages["virtual_io_implementation"] = vivado_report["virtual_io_implementation"]
             physical_result = vivado_report["result"]
             stages.update(
                 {
@@ -2264,8 +2285,8 @@ def _assemble_multi_fpga_physical_results(
     records = [by_fpga[fpga] for fpga in expected_fpgas]
     requires_virtual_io = manifest.get("virtual_board_binding") is not None
     if requires_virtual_io:
-        if backend != "rapidwright":
-            raise ValidationError("completed fixed differential I/O requires RapidWright")
+        if backend not in {"rapidwright", "vivado"}:
+            raise ValidationError("completed fixed differential I/O requires a supported Xilinx backend")
         for record in records:
             if record.get("active") is False:
                 continue
@@ -2274,7 +2295,7 @@ def _assemble_multi_fpga_physical_results(
                 raise ValidationError(
                     f"completed fixed differential I/O evidence for {record['fpga']} is missing"
                 )
-    if backend == "rapidwright":
+    if backend in {"rapidwright", "vivado"}:
         fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
         for record in records:
             if record.get("active") is False:
@@ -2307,7 +2328,7 @@ def _assemble_multi_fpga_physical_results(
     if requires_virtual_io:
         physical_summary["virtual_io_implementation"] = {
             "status": "pass",
-            "provider": "rapidwright-fixed-lvds-iob-routed-boundary-v1",
+            "provider": ("rapidwright-fixed-lvds-iob-routed-boundary-v1" if backend == "rapidwright" else "vivado-fixed-lvds-routed-boundary-v1"),
             "fpgas": {
                 item["fpga"]: item["stages"]["virtual_io_implementation"]
                 for item in records
@@ -2409,7 +2430,7 @@ def _assemble_multi_fpga_physical_results(
             physical_summary[
                 "logic_segment_semantic_contract_sha256"
             ] = logic_semantic_seal
-        if backend in {"open", "rapidwright"}:
+        if backend in {"open", "rapidwright", "vivado"}:
             physical_summary["local_path_timing"] = {}
             for item in records:
                 path = Path(

@@ -231,13 +231,58 @@ class OpenStaProviderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             executable = Path(temporary) / "sta"
             executable.write_text(
-                "#!/bin/sh\necho 3.1.0\n", encoding="utf-8"
+                '#!/bin/sh\nif [ "$1" = -version ]; then echo 3.1.0; '
+                'else echo "EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16"; fi\n', encoding="utf-8"
             )
             executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
-            with mock.patch("pathlib.Path.open", side_effect=AssertionError("hashed")):
+            original_open = Path.open
+
+            def open_without_engine_read(path, *args, **kwargs):
+                if path.resolve() == executable.resolve():
+                    raise AssertionError("lightweight probe read the executable")
+                return original_open(path, *args, **kwargs)
+
+            # Shared native lifecycle requests may open their own tiny files;
+            # only reading the engine bytes would violate this probe's contract.
+            with mock.patch("pathlib.Path.open", open_without_engine_read):
                 self.assertEqual(
                     check_opensta_engine_version(str(executable)), "3.1.0"
                 )
+
+    def test_container_engine_identity_tracks_binary_changes_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launcher, binary = root/"container_runtime.sh", root/"sta"
+            launcher.write_text("#!/bin/sh\n")
+            installed_alias = root/"installed-launcher"
+            installed_alias.write_bytes(launcher.read_bytes())
+            binary.write_bytes(b"engine-revision-a")
+            binary.chmod(0o755)
+            with mock.patch("emuflow.opensta.check_opensta_engine_version",return_value="3.1.0"), \
+                 mock.patch("emuflow.opensta._runtime_data_path",return_value=launcher), \
+                 mock.patch.dict("os.environ", {"EMUFLOW_OPENSTA_CONTAINER_BINARY":str(binary)}):
+                first = require_opensta_engine(str(launcher))
+                binary.write_bytes(b"engine-revision-b")
+                second = require_opensta_engine(str(launcher))
+                aliased = require_opensta_engine(str(installed_alias))
+                direct = require_opensta_engine(str(binary))
+            self.assertEqual(first["executable_sha256"],hashlib.sha256(b"engine-revision-a").hexdigest())
+            self.assertNotEqual(first["executable_sha256"],second["executable_sha256"])
+            self.assertEqual(first["launcher_sha256"],second["launcher_sha256"])
+            self.assertEqual(aliased,second)
+            self.assertEqual(direct["executable_sha256"],second["executable_sha256"])
+            self.assertNotIn("launcher_sha256",direct)
+
+    def test_current_engine_with_incompatible_tcl_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "sta"
+            executable.write_text(
+                '#!/bin/sh\nif [ "$1" = -version ]; then echo 3.1.0; '
+                'else echo "EMUFLOW_OPENSTA_RUNTIME status=fail actual=8.5.13"; exit 1; fi\n'
+            )
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            with self.assertRaisesRegex(ValidationError, "Tcl 8.6\\+"):
+                check_opensta_engine_version(str(executable))
 
     def test_path_export_supports_directed_cut_net_queries(self) -> None:
         script = (
@@ -504,6 +549,9 @@ from pathlib import Path
 if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
+if "-no_init" in sys.argv:
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
+    raise SystemExit(0)
 
 through = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()
 _, requested_hex = through[1].split("\\t")
@@ -593,6 +641,9 @@ from pathlib import Path
 if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
+if "-no_init" in sys.argv:
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
+    raise SystemExit(0)
 timing_io = Path(os.environ["EMUFLOW_STA_TIMING_IO"]).read_text().splitlines()
 assert timing_io == [
     "direction\\tclock_hex\\tdelay_ns\\tport_hex",
@@ -644,6 +695,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
             executable.write_text(
                 "#!/bin/sh\n"
                 "if [ \"$1\" = \"-version\" ]; then echo 3.1.0; exit 0; fi\n"
+                "if [ \"$1\" = \"-no_init\" ]; then echo EMUFLOW_OPENSTA_RUNTIME status=pass; exit 0; fi\n"
                 "exit 99\n",
                 encoding="utf-8",
             )
@@ -799,6 +851,9 @@ from pathlib import Path
 if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
+if "-no_init" in sys.argv:
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
+    raise SystemExit(0)
 
 requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
 requested_hex = [row.split("\\t")[1] for row in requested]
@@ -866,6 +921,9 @@ from pathlib import Path
 
 if sys.argv[1:] == ["-version"]:
     print("3.1.0")
+    raise SystemExit(0)
+if "-no_init" in sys.argv:
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
     raise SystemExit(0)
 
 requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]

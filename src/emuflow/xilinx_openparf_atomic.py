@@ -81,7 +81,7 @@ OPENPARF_ATOMIC_PLACEMENT_DATABASE_USER_VERSION = 3
 _PLACEMENT_CERTIFICATE_STORE_SUFFIX = ".sqlite"
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"
 OPENPARF_ATOMIC_PROVIDER = (
-    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v7"
+    "openparf-native-rudy-pin-aware-mcf-direct-lg-ism-atomic-v8"
 )
 XILINX_OPENPARF_SITE_DATABASE_SCHEMA = (
     "emuflow.openparf-atomic-site-database/v1"
@@ -129,6 +129,8 @@ _TARGET_DENSITY = 0.75
 _QUALIFIED_LUTS_PER_SLICE = 8
 _CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
 _GLOBAL_PLACEMENT_STOP_OVERFLOW = 0.10
+_DIAGNOSTIC_HANDOFF_OVERFLOW = 0.25
+_DIAGNOSTIC_HANDOFF_PATIENCE = 64
 _ROUTABILITY_ADJUSTMENT_OVERFLOW_THRESHOLD = 0.15
 _ROUTABILITY_ADJUSTMENT_ITERATIONS = 6
 _ROUTE_AREA_ADJUSTMENT_EXPONENT = 2.0
@@ -137,6 +139,8 @@ _MAX_PIN_AREA_ADJUSTMENT_RATE = 1.6
 _HIGH_FANOUT_WEIGHT_THRESHOLD = 64
 _HIGH_FANOUT_WEIGHT_EXPONENT = 0.5
 _HIGH_FANOUT_WEIGHT_MAXIMUM = 4.0
+_SLL_ADAM_STEP_SIZE = 0.002
+_SLL_DELTA_EMA_WEIGHT = 0.9
 _POST_ADJUSTMENT_ITERATION_RESERVE = 384
 _LOGIC_FILLER_LIMIT = 65_536
 _CLOCK_REGION_NAME = re.compile(r"^X([0-9]+)Y([0-9]+)$")
@@ -3877,7 +3881,7 @@ def _render_site_geometry(
         lines.append(f"SITE {signature_names[signature]}")
         lines.extend(f"  {resource} {count}" for resource, count in signature)
         lines.extend(["END SITE", ""])
-    site_prefix = "\n".join([*lines, "RESOURCES"]) + "\n"
+    site_prefix = "\n".join(lines) + "\n"
     lines = ["END RESOURCES", "", f"SITEMAP {len(x_axis)} {len(y_axis)}"]
     site_map = []
     # Bookshelf requires site records in increasing dense coordinate order;
@@ -3891,10 +3895,6 @@ def _render_site_geometry(
     ):
         resources = group["resources"]
         dense = (x_index[coordinate[0]], y_index[coordinate[1]])
-        signature = tuple(sorted(
-            resources.items(), key=lambda item: _resource_sort_key(item[0])
-        ))
-        lines.append(f"{dense[0]} {dense[1]} {signature_names[signature]}")
         physical_sites = {
             resource: list(names)
             for resource, names in sorted(
@@ -3913,8 +3913,9 @@ def _render_site_geometry(
             "physical_sites": physical_sites,
             "physical_region": group["physical_region"],
         })
-    # OpenPARF's Bookshelf reader derives a site's bounding box from the next
-    # entry in the same column (or the top of the SITEMAP for the final entry).
+    # OpenPARF extends each entry to the next entry in its column. Terminate
+    # each logic site after one row: physical gaps and derated sites are not
+    # extra placement area. Hard-resource spans retain their native height.
     # Legalizer position tensors use the center of that box, while the emitted
     # .pl file is written back using its lower-left dense coordinate.  Preserve
     # both coordinate systems explicitly so typed hard blocks do not confuse
@@ -3922,6 +3923,7 @@ def _render_site_geometry(
     sites_by_x: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     for item in site_map:
         sites_by_x[item["dense_x"]].append(item)
+    blocked_rows = False
     for column in sites_by_x.values():
         column.sort(key=lambda item: item["dense_y"])
         for index, item in enumerate(column):
@@ -3931,7 +3933,26 @@ def _render_site_geometry(
                 else len(y_axis)
             )
             item["placement_x"] = item["dense_x"] + 0.5
-            item["placement_y"] = (item["dense_y"] + next_y) * 0.5
+            logic_site = any(
+                item["resources"].get(resource, 0) for resource in ("LUT", "FF")
+            )
+            upper_y = item["dense_y"] + 1 if logic_site else next_y
+            item["placement_y"] = (item["dense_y"] + upper_y) * 0.5
+            signature = tuple(sorted(
+                item["resources"].items(),
+                key=lambda entry: _resource_sort_key(entry[0]),
+            ))
+            lines.append(
+                f"{item['dense_x']} {item['dense_y']} {signature_names[signature]}"
+            )
+            if upper_y < next_y:
+                blocked_rows = True
+                lines.append(
+                    f"{item['dense_x']} {upper_y} EMUFLOW_UNAVAILABLE"
+                )
+    if blocked_rows:
+        site_prefix += "SITE EMUFLOW_UNAVAILABLE\nEND SITE\n\n"
+    site_prefix += "RESOURCES\n"
     lines.append("END SITEMAP")
     present_regions = [
         item["physical_region"] for item in site_map
@@ -4561,6 +4582,16 @@ def export_xilinx_openparf_atomic(
         "emuflow_min_feasible_iterations": 96,
         "emuflow_convergence_patience": 64,
         "emuflow_relative_hpwl_improvement": 1.0e-4,
+        # Overflow 0.10 is a routability target rather than a physical
+        # legality theorem.  Preserve a bounded 0.25 candidate so DirectLG
+        # can provide exact displacement and legality evidence on one
+        # representative FPGA without weakening the normal pass criterion.
+        "emuflow_diagnostic_handoff_overflow": (
+            _DIAGNOSTIC_HANDOFF_OVERFLOW
+        ),
+        "emuflow_diagnostic_handoff_patience": (
+            _DIAGNOSTIC_HANDOFF_PATIENCE
+        ),
         # Area inflation resets the nonlinear optimizer.  Do not begin a late
         # RUDY/pin adjustment unless the bounded run can still provide a full
         # settling interval plus the stable feasible window.
@@ -4578,21 +4609,27 @@ def export_xilinx_openparf_atomic(
         "global_place_flag": 1, "legalize_flag": 1,
         "detailed_place_flag": 1, "generic_cluster_placement_flag": 0,
         "logic_area_type_names": ["LUT", "FF"],
+        "emuflow_expected_logic_site_area": {
+            resource: density_contract[resource]["placeable_area"]
+            for resource in ("LUT", "FF") if resource in density_contract
+        },
         "plot_flag": 0,
         "plot_target_at_names": sorted(demand, key=_resource_sort_key),
         "io_at_names": [], "num_threads": 8,
         "gp_model2area_types_map": model_map,
         # Eight qualified LUT BELs and sixteen FF BELs share one slice.
-        # Median-cell fillers would therefore materialize roughly sixteen
-        # Python/Torch rows per unused site (millions on XCVU19P).  Sixteen
-        # samples per density bin are already finer than the analytical grid;
-        # preserve exact filler area while bounding the tensor population.
+        # Median-cell fillers would therefore materialize millions of
+        # Python/Torch rows on XCVU19P.  Treat this as a preferred row limit,
+        # then raise the count as needed to keep each logic sample within half
+        # an analytical density bin.  The finer field sampling avoids a false
+        # overflow plateau while retaining far fewer rows than natural sizing.
         "gp_max_fillers_per_area_type": {
             resource: (
                 _LOGIC_FILLER_LIMIT if resource in {"LUT", "FF"} else 1
             )
             for resource in sorted(demand, key=_resource_sort_key)
         },
+        "gp_max_logic_filler_bin_span": 0.5,
         "gp_resource2area_types_map": resource_map,
         "resource_categories": resource_categories,
         "CLB_capacity": 16, "BLE_capacity": 2,
@@ -4642,6 +4679,10 @@ def export_xilinx_openparf_atomic(
             coordinate_system["super_logic_regions"] is not None
             and len(coordinate_system["super_logic_regions"]["regions"]) > 1
         ),
+        # LEAPS Equation (23) applies this as a fixed Adam step.  It must not
+        # be exponentiated by the absolute SLL-count delta.
+        "wlw_psi_step_size": _SLL_ADAM_STEP_SIZE,
+        "wlw_delta_sll_ema_weight": _SLL_DELTA_EMA_WEIGHT,
         "result_dir": str((output_dir / "results").resolve()),
     }
     if has_carry8:
@@ -5115,11 +5156,17 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-stable-feasible-v4",
+            "provider": "openparf-rudy-pin-stable-feasible-v7",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW
             ),
+            "diagnostic_legalization_handoff": {
+                "maximum_logic_overflow": _DIAGNOSTIC_HANDOFF_OVERFLOW,
+                "hpwl_patience": _DIAGNOSTIC_HANDOFF_PATIENCE,
+                "requires_exact_legalization_evidence": True,
+                "authorizes_routing_release": False,
+            },
             "adjustment_overflow_threshold": (
                 _ROUTABILITY_ADJUSTMENT_OVERFLOW_THRESHOLD
             ),
@@ -5128,6 +5175,17 @@ def export_xilinx_openparf_atomic(
             "maximum_route_adjustment_rate": _MAX_ROUTE_AREA_ADJUSTMENT_RATE,
             "maximum_pin_adjustment_rate": _MAX_PIN_AREA_ADJUSTMENT_RATE,
             "resource_area_adjustment": False,
+            "density_filler_sampling": {
+                "provider": "density-bin-bounded-fillers-v2",
+                "preferred_maximum_rows_per_area_type": _LOGIC_FILLER_LIMIT,
+                "maximum_bin_span": [0.5, 0.5],
+            },
+            "sll_weighting": {
+                "provider": "leaps-fixed-adam-step-v2",
+                "step_size": _SLL_ADAM_STEP_SIZE,
+                "delta_sll_ema_weight": _SLL_DELTA_EMA_WEIGHT,
+                "accepted_range": [0.0, 1000.0],
+            },
             "convergence": {
                 "provider": "best-feasible-hpwl-patience-v1",
                 "minimum_feasible_iterations": 96,
