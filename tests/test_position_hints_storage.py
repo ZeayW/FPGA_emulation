@@ -12,7 +12,6 @@ from emuflow.position_hints_storage import (
     read_position_hints,
     write_position_hints_storage,
 )
-from emuflow.pin_planning import build_signal_position_hints
 
 
 def _positions():
@@ -157,51 +156,3 @@ def test_position_hints_manifest_record_seal_is_bound_to_store(tmp_path):
     path.write_text(json.dumps(selector), encoding="utf-8")
     with pytest.raises(ValidationError, match="metadata disagrees"):
         read_position_hints(path)
-
-
-def test_position_hint_producer_streams_same_logical_records(tmp_path):
-    ir = {
-        "nets": [
-            {
-                "id": "net0",
-                "drivers": [{"instance": "source"}],
-                "sinks": [{"instance": "sink"}],
-            }
-        ]
-    }
-    schedule = {
-        "design": "producer",
-        "platform": "board",
-        "entries": [
-            {
-                "id": "entry0",
-                "net": "net0",
-                "from": "fpga0",
-                "to": "fpga1",
-            }
-        ],
-    }
-    placements = {
-        "fpga0": {
-            "schema": "emuflow.placement/v1",
-            "cells": [
-                {"instance": "source", "x": 0, "y": 0},
-                {"instance": "other0", "x": 0, "y": 10},
-            ],
-        },
-        "fpga1": {
-            "schema": "emuflow.placement/v1",
-            "cells": [
-                {"instance": "other1", "x": 0, "y": 0},
-                {"instance": "sink", "x": 0, "y": 10},
-            ],
-        },
-    }
-    expected = build_signal_position_hints(ir, schedule, placements)
-    indexed = build_signal_position_hints(
-        ir,
-        schedule,
-        placements,
-        output_path=tmp_path / "positions.json",
-    )
-    assert indexed.materialize() == expected

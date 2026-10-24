@@ -194,7 +194,6 @@
       "id": "netlist-transport-pin-generation",
       "stage": "Phase 6",
       "source_paths": [
-        "src/native/placement_aware_pin_planner.cpp",
         "src/native/bsp_pin_solver.cpp",
         "src/emuflow/pin_planning.py",
         "src/emuflow/physical_pins.py",
@@ -215,12 +214,10 @@
         "schemas/serial-wrapper-v1.schema.json"
       ],
       "build_targets": [
-        "emuflow_pin_planner",
         "emuflow_bsp_pin_solver",
         "emuflow_python"
       ],
       "runtime_products": [
-        "emuflow_pin_planner",
         "emuflow_bsp_pin_solver",
         "emuflow"
       ],

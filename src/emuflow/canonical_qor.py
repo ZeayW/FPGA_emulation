@@ -20,7 +20,7 @@ CANONICAL_QOR_COMPARISON_SCHEMA = "emuflow.canonical-qor-comparison/v2"
 LEGACY_EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v1"
 EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v2"
 PHASE7_QOR_PROJECTION_SCHEMA = "emuflow.phase7-qor-projection/v1"
-_PROVIDERS = ("baseline", "placement-aware", "chimew")
+_PROVIDERS = ("baseline", "chimew")
 _METRICS = (
     "global_target_clock_wns_ns",
     "global_target_clock_tns_ns",
@@ -503,7 +503,7 @@ def build_canonical_qor_comparison(
         },
         "comparisons": {
             provider: _comparison(provider, by_key, seeds)
-            for provider in ("placement-aware", "chimew")
+            for provider in ("chimew",)
         },
     }
 

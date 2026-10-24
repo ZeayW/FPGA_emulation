@@ -44,7 +44,6 @@ from .phase7c import run_phase7c
 from .physical_summary_storage import read_physical_summary
 from .pin_planning import (
     SIGNAL_POSITION_HINTS_SCHEMA,
-    build_pin_plan,
     validate_pin_plan,
 )
 from .platform import Platform
@@ -60,7 +59,7 @@ LEGACY_EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v1"
 EXPERIMENT_PHASE7_SCHEMA = "emuflow.experiment-phase7-checkpoint/v2"
 PHASE7_QOR_PROJECTION_SCHEMA = "emuflow.phase7-qor-projection/v1"
 MANAGED_DAG_VALIDATION_MODE = "managed-independent-publish-v1"
-_PROVIDERS = {"baseline", "placement-aware", "chimew"}
+_PROVIDERS = {"baseline", "chimew"}
 _PHASE6_VALIDATION_MODES = {
     "full-replay",
     "producer-self-check",
@@ -458,98 +457,6 @@ def _prepare_empty_output(output_dir: Path, label: str) -> Path:
         raise EmuFlowError(f"{label} output must be an empty directory")
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
-
-
-def _placement_aware_positions(
-    ir_path: Path,
-    schedule_path: Path,
-    placement_source_path: Path,
-    *,
-    region_count: int,
-) -> Dict[str, Any]:
-    schedule = read_json(schedule_path)
-    placement_source = read_json(placement_source_path)
-    locations = {
-        fpga["fpga"]: {
-            instance["id"]: float(instance["normalised_y"])
-            for instance in fpga.get("instances", [])
-        }
-        for fpga in placement_source.get("fpgas", [])
-    }
-    scheduled_net_ids = [
-        entry.get("net") for entry in schedule.get("entries", [])
-        if isinstance(entry.get("net"), str)
-    ]
-    if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path):
-        connection = open_emuir_sqlite_read_only(ir_path)
-        try:
-            net_instances = selected_net_instance_endpoints(
-                connection, scheduled_net_ids
-            )
-        finally:
-            connection.close()
-    else:
-        ir = EmuIR.load(ir_path).value
-        net_instances = {
-            net["id"]: {
-                "drivers": [
-                    endpoint["instance"]
-                    for endpoint in net.get("drivers", [])
-                    if endpoint.get("instance") is not None
-                ],
-                "sinks": [
-                    endpoint["instance"]
-                    for endpoint in net.get("sinks", [])
-                    if endpoint.get("instance") is not None
-                ],
-            }
-            for net in ir.get("nets", [])
-        }
-
-    def centroid(fpga: str, instances: list[str]) -> tuple[float, bool]:
-        values = [
-            locations[fpga][instance]
-            for instance in instances
-            if instance in locations.get(fpga, {})
-        ]
-        return ((sum(values) / len(values), False) if values else (0.5, True))
-
-    hints = []
-    fallbacks = 0
-    for entry in sorted(schedule.get("entries", []), key=lambda item: item["id"]):
-        net = net_instances.get(entry.get("net"))
-        if net is None:
-            raise ValidationError(
-                f"placement-aware entry {entry.get('id')!r} references an unknown net"
-            )
-        drivers = net["drivers"]
-        sinks = net["sinks"]
-        source_y, source_fallback = centroid(entry["from"], drivers)
-        sink_y, sink_fallback = centroid(entry["to"], sinks)
-        fallbacks += int(source_fallback) + int(sink_fallback)
-        hints.append(
-            {
-                "schedule_entry": entry["id"],
-                "source_y": source_y,
-                "sink_y": sink_y,
-                "source_region": min(region_count - 1, int(source_y * region_count)),
-                "sink_region": min(region_count - 1, int(sink_y * region_count)),
-                "source_fallback": source_fallback,
-                "sink_fallback": sink_fallback,
-            }
-        )
-    return {
-        "schema": SIGNAL_POSITION_HINTS_SCHEMA,
-        "design": schedule["design"],
-        "platform": schedule["platform"],
-        "provider": "openparf-lookahead-centroid-v1",
-        "region_count": region_count,
-        "metrics": {
-            "signals": len(hints),
-            "endpoint_centroid_fallbacks": fallbacks,
-        },
-        "entries": hints,
-    }
 
 
 def validate_shared_phase1_5(
@@ -1184,7 +1091,6 @@ def run_phase6_checkpoint(
     provider: str,
     equivalence_cycles: int = 1,
     equivalence_seed: int = 20260727,
-    pin_planner: str | None = None,
     chimew_grouper: str | None = None,
     chimew_refiner: str | None = None,
     chimew_rudy: str | None = None,
@@ -1238,30 +1144,7 @@ def run_phase6_checkpoint(
     pin_plan_path = None
     position_hints_path = None
     electrical_binding_path = None
-    if provider == "placement-aware":
-        assert lookahead_root is not None
-        region_count = int(
-            read_json(lookahead_root / "experiment-lookahead-report.json")[
-                "region_count"
-            ]
-        )
-        positions = _placement_aware_positions(
-            paths["ir"],
-            schedule_path,
-            lookahead_root / "lookahead/sources/placement.json",
-            region_count=region_count,
-        )
-        position_hints_path = output_dir / "placement-aware-position-hints.json"
-        write_json(position_hints_path, positions)
-        plan = build_pin_plan(
-            read_json(schedule_path),
-            Platform.load(platform_path),
-            positions,
-            executable=pin_planner,
-        )
-        pin_plan_path = output_dir / "placement-aware-pin-plan.json"
-        write_json(pin_plan_path, plan)
-    elif provider == "chimew":
+    if provider == "chimew":
         assert lookahead_root is not None
         inputs = lookahead_root / "lookahead/inputs"
         sources = lookahead_root / "lookahead/sources"
@@ -1499,14 +1382,7 @@ def validate_phase6_checkpoint(
         replay_equivalence=validation_mode == "full-replay",
         schedule_value=schedule_value,
     )
-    if provider == "placement-aware":
-        validate_pin_plan(
-            schedule_value,
-            Platform.load(platform_path),
-            read_json(root / "placement-aware-position-hints.json"),
-            read_json(root / "placement-aware-pin-plan.json"),
-        )
-    elif provider == "chimew":
+    if provider == "chimew":
         validate_chimew_phase6_pipeline(root / "chimew-pipeline")
     if not managed_dag_node and (
         report.get("schedule_sha256") != _sha256(schedule_path)

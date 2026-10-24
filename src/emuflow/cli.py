@@ -84,7 +84,6 @@ from .contest_eda2023 import (
     import_eda2023_case,
     materialize_eda2023_rtl_boarddb,
 )
-from .contest_eda2023_chimew import run_eda2023_contest_chimew_ab
 from .contest_iccad2019 import (
     evaluate_iccad2019_solution,
     import_iccad2019_instance,
@@ -257,8 +256,6 @@ from .physical_regions import (
 from .placement import Placement
 from .platform import Platform
 from .pin_planning import (
-    build_pin_plan,
-    build_signal_position_hints,
     validate_pin_plan,
 )
 from .pin_plan_storage import read_pin_plan
@@ -948,7 +945,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6_run.add_argument("--platform", type=Path, required=True)
     phase6_run.add_argument(
         "--provider",
-        choices=("baseline", "placement-aware", "chimew"),
+        choices=("baseline", "chimew"),
         required=True,
     )
     phase6_run.add_argument("--equivalence-cycles", type=int, default=1)
@@ -960,7 +957,6 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="CLOCK=PERIOD_NS",
         help="required for multi-clock Phase 6; repeat once per DUT clock",
     )
-    phase6_run.add_argument("--pin-planner")
     phase6_run.add_argument("--chimew-grouper")
     phase6_run.add_argument("--chimew-refiner")
     phase6_run.add_argument("--chimew-rudy")
@@ -976,7 +972,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase6_validate.add_argument("--lookahead", type=Path)
     phase6_validate.add_argument("--platform", type=Path, required=True)
     phase6_validate.add_argument(
-        "--provider", choices=("baseline", "placement-aware", "chimew")
+        "--provider", choices=("baseline", "chimew")
     )
     phase6_validate.add_argument("--managed-dag-node", action="store_true")
     phase7_run = experiment_stage_subparsers.add_parser(
@@ -1430,22 +1426,6 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2023_evaluate.add_argument("--routes", type=Path, required=True)
     eda2023_evaluate.add_argument("--tdm-plan", type=Path, required=True)
     eda2023_evaluate.add_argument("--output", "-o", type=Path)
-    eda2023_chimew = contest_subparsers.add_parser(
-        "eda2023-chimew-ab",
-        help=(
-            "compare Chimew with the previous placement-aware Phase 6 baseline "
-            "on a frozen EDA 2023 routed-die result"
-        ),
-    )
-    eda2023_chimew.add_argument("--import-dir", type=Path, required=True)
-    eda2023_chimew.add_argument("--routes", type=Path, required=True)
-    eda2023_chimew.add_argument("--tdm-plan", type=Path, required=True)
-    eda2023_chimew.add_argument("--grouper")
-    eda2023_chimew.add_argument("--refiner")
-    eda2023_chimew.add_argument("--rudy")
-    eda2023_chimew.add_argument("--assigner")
-    eda2023_chimew.add_argument("--pin-planner")
-    eda2023_chimew.add_argument("--out", type=Path, required=True)
     iccad2019_import = contest_subparsers.add_parser(
         "iccad2019-import",
         help="normalize an official ICCAD 2019 Problem B instance",
@@ -3240,33 +3220,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     pin_plan_parser = subparsers.add_parser(
         "pin-plan",
-        help="placement-aware TDM grouping and virtual pin planning",
+        help="Chimew pin planning and independent physical contract checks",
     )
     pin_plan_subparsers = pin_plan_parser.add_subparsers(
         dest="pin_plan_command", required=True
     )
-    pin_plan_build = pin_plan_subparsers.add_parser(
-        "build", help="build a plan from OpenPARF lookahead placements"
-    )
-    pin_plan_build.add_argument("--ir", type=Path, required=True)
-    pin_plan_build.add_argument("--schedule", type=Path, required=True)
-    pin_plan_build.add_argument("--platform", type=Path, required=True)
-    pin_plan_build.add_argument(
-        "--placement",
-        action="append",
-        default=[],
-        required=True,
-        metavar="FPGA=PATH",
-    )
-    pin_plan_build.add_argument("--positions-out", type=Path, required=True)
-    pin_plan_build.add_argument("--output", "-o", type=Path, required=True)
-    pin_plan_build.add_argument("--planner")
-    pin_plan_build.add_argument("--region-count", type=int, default=3)
-    pin_plan_build.add_argument(
-        "--refinement-iterations", type=int, default=100
-    )
-    pin_plan_build.add_argument("--crossing-weight", type=float, default=1.0)
-    pin_plan_build.add_argument("--position-weight", type=float, default=1.0)
     pin_plan_chimew = pin_plan_subparsers.add_parser(
         "chimew-build",
         help="bind certified Chimew banks/channels to electrical concrete lanes",
@@ -3887,7 +3845,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                     provider=args.provider,
                     equivalence_cycles=args.equivalence_cycles,
                     equivalence_seed=args.equivalence_seed,
-                    pin_planner=args.pin_planner,
                     chimew_grouper=args.chimew_grouper,
                     chimew_refiner=args.chimew_refiner,
                     chimew_rudy=args.chimew_rudy,
@@ -4353,18 +4310,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             if args.output is not None:
                 write_json(args.output, report)
-        elif args.contest_command == "eda2023-chimew-ab":
-            report = run_eda2023_contest_chimew_ab(
-                import_dir=args.import_dir,
-                routes_path=args.routes,
-                tdm_plan_path=args.tdm_plan,
-                output_dir=args.out,
-                grouper=args.grouper,
-                refiner=args.refiner,
-                rudy=args.rudy,
-                assigner=args.assigner,
-                pin_planner=args.pin_planner,
-            )
         elif args.contest_command == "eda2024-evaluate":
             solution = args.solution or args.case_dir / "design.fpga.out"
             report = evaluate_eda2024_solution(
@@ -5572,46 +5517,13 @@ def _dispatch(args: argparse.Namespace) -> int:
             return 0
         schedule = read_tdm_schedule(args.schedule)
         platform = Platform.load(args.platform)
-        if args.pin_plan_command == "build":
-            ir = EmuIR.load(args.ir)
-            placements = {
-                fpga: read_json(path)
-                for fpga, path in _keyed_paths(
-                    args.placement, "--placement"
-                ).items()
-            }
-            positions = build_signal_position_hints(
-                ir.value,
-                schedule,
-                placements,
-                region_count=args.region_count,
-                output_path=args.positions_out,
-            )
-            plan = build_pin_plan(
-                schedule,
-                platform,
-                positions,
-                executable=args.planner,
-                refinement_iterations=args.refinement_iterations,
-                crossing_weight=args.crossing_weight,
-                position_weight=args.position_weight,
-                output_path=args.output,
-            )
-            _print_json(
-                {
-                    "status": "pass",
-                    "positions": positions["metrics"],
-                    "plan": plan["metrics"],
-                }
-            )
-        else:
-            report = validate_pin_plan(
-                schedule,
-                platform,
-                read_position_hints(args.positions),
-                read_pin_plan(args.plan),
-            )
-            _print_json(report)
+        report = validate_pin_plan(
+            schedule,
+            platform,
+            read_position_hints(args.positions),
+            read_pin_plan(args.plan),
+        )
+        _print_json(report)
         return 0
 
     if args.command == "split":

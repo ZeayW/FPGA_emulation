@@ -1465,6 +1465,8 @@ def write_transport_storage(
     if pin_plan is not None:
         if pin_plan.get("schema") != "emuflow.placement-aware-pin-plan/v1":
             raise ValidationError("pin plan has an unsupported schema")
+        if pin_plan.get("provider") != "chimew-paper-plus-emuflow-electrical-slot-v1":
+            raise ValidationError("pin plan has a retired or unsupported provider")
         lane_records = getattr(pin_plan, "iter_lane_records", None)
         if lane_records is not None:
             pin_lane_iterator = iter(lane_records())

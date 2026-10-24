@@ -113,6 +113,10 @@ Phase 5 exposes only the Static Exact dependency scheduler. Independent
 ratio/KKT, timing-DAG and slot optimizers, the old cross-stage feedback flow,
 and their CLI/build entries are retired. The shared solver, hardware ratio
 constraints, independent validators and optional Phase 6 Chimew remain.
+Phase 6 maintains baseline transport and optional Chimew. The independent
+placement-aware planner, its executable/CLI and its comparison arm are retired;
+shared pin/electrical validation remains. `EMUFLOW_BUILD_CHIMEW` builds the four
+Chimew kernels. See the [Phase 6 interface](docs/USER_GUIDE.md#phase-6-providers).
 These production outputs stay compact without requiring a managed-storage flag;
 Python still publishes the compact manifest.
 The shared core also supervises external tools with process-group cancellation,

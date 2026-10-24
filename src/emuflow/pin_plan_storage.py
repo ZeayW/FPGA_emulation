@@ -1,4 +1,4 @@
-"""Indexed Phase 6 placement-aware pin-plan storage.
+"""Indexed Phase 6 Chimew pin-plan storage.
 
 The logical v1 pin-plan contract remains unchanged.  Production Phase 6
 publishes its hop-sized records once in SQLite and keeps only the small header

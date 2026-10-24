@@ -298,7 +298,6 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/chimew_qualification.py",
         "src/emuflow/native_tools.py",
         "rtl/transport",
-        "src/native/placement_aware_pin_planner.cpp",
         "src/native/chimew_bank_channel_assigner.cpp",
         "src/native/emuflow_native.cpp",
         "src/native/emuflow_core/hash.hpp",
@@ -509,7 +508,6 @@ def compile_canonical_experiment_spec(
         "hop_refiner",
         "patron_refiner",
         "router",
-        "pin_planner",
         "chimew_grouper",
         "chimew_refiner",
         "chimew_rudy",
@@ -602,14 +600,14 @@ def compile_canonical_experiment_spec(
     )
     region_count = _positive_integer(config.get("region_count", 4), "region_count")
     phase6_providers = config.get(
-        "phase6_providers", ["baseline", "placement-aware", "chimew"]
+        "phase6_providers", ["baseline", "chimew"]
     )
     if (
         not isinstance(phase6_providers, list)
         or not phase6_providers
         or len(phase6_providers) != len(set(phase6_providers))
         or any(
-            provider not in {"baseline", "placement-aware", "chimew"}
+            provider not in {"baseline", "chimew"}
             for provider in phase6_providers
         )
     ):
@@ -1260,25 +1258,17 @@ def compile_canonical_experiment_spec(
     )
     for provider in phase6_research_providers:
         phase6_id = f"phase6-{provider}"
-        extra_artifacts = (
-            [_artifact("placement-aware-position-hints.json", "consumer-checkpoint"), _artifact("placement-aware-pin-plan.json", "consumer-checkpoint")]
-            if provider == "placement-aware"
-            else [_artifact("chimew-pipeline", "consumer-checkpoint")]
-        )
+        extra_artifacts = [_artifact("chimew-pipeline", "consumer-checkpoint")]
         phase6_command = [executable, "experiment-stage", "phase6-run", "--shared", "{dependency:shared-phase1-5}", "--lookahead", "{dependency:physical-lookahead}", "--platform", str(platform), "--provider", provider, *phase6_clock_arguments, "--managed-storage", "--managed-dag-node"]
         phase6_inputs = ["platform", "tool.emuflow"]
-        if provider == "placement-aware":
-            phase6_command.extend(("--pin-planner", str(tools["pin_planner"])))
-            phase6_inputs.append("tool.pin_planner")
-        else:
-            for argument, label in (
-                ("--chimew-grouper", "chimew_grouper"),
-                ("--chimew-refiner", "chimew_refiner"),
-                ("--chimew-rudy", "chimew_rudy"),
-                ("--chimew-assigner", "chimew_assigner"),
-            ):
-                phase6_command.extend((argument, str(tools[label])))
-                phase6_inputs.append(f"tool.{label}")
+        for argument, label in (
+            ("--chimew-grouper", "chimew_grouper"),
+            ("--chimew-refiner", "chimew_refiner"),
+            ("--chimew-rudy", "chimew_rudy"),
+            ("--chimew-assigner", "chimew_assigner"),
+        ):
+            phase6_command.extend((argument, str(tools[label])))
+            phase6_inputs.append(f"tool.{label}")
         phase6_command.extend(("--out", "{output_dir}"))
         node(
             phase6_id, "phase6", ["shared-phase1-5", "physical-lookahead"],
@@ -1327,7 +1317,7 @@ def compile_canonical_experiment_spec(
         for provider in phase7_providers
         for seed in physical_seeds
     ]
-    if set(phase7_providers) != {"baseline", "placement-aware", "chimew"}:
+    if set(phase7_providers) != {"baseline", "chimew"}:
         # Restricted provider sets are the supported incremental path for
         # computing only missing physical arms.  The canonical QoR comparison
         # deliberately accepts only a complete, paired provider matrix, so do

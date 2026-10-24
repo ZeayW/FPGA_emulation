@@ -32,7 +32,7 @@ The default remains `python-control-v1`, with the same provider, algorithm,
 seed and physical-policy defaults in both modes.
 
 The native controller supports the ordinary baseline split path, optional physical
-implementation and global timing. Cross-stage feedback, frame-length search,
+implementation and global timing. Frame-length search,
 Chimew comparison and serial-BSP continuation currently reject before synthesis;
 they remain available through the Python controller. No rejected or failed native
 run retries through Python or changes providers. This entry does not establish
@@ -325,6 +325,31 @@ logic/interface evidence cannot be replaced by a guessed delay.
 Bitstreams and board deployment additionally require concrete package pins,
 bank/electrical constraints, clock/reset interfaces, transport hardware, and a
 board support package. A virtual platform does not supply those facts.
+
+## Phase 6 providers
+
+The maintained providers are `baseline` and `chimew`. Baseline consumes the
+concrete Phase 5 lane/slot assignment. Chimew adds source-bound grouping and
+bank/channel assignment, followed by independent electrical, direction-bank,
+physical-lane/slot and transport validation. Its current integrated lookahead
+requirements remain those described under physical execution.
+
+The standalone placement-aware planner, `pin-plan build`, the old contest
+planner-versus-Chimew comparison, and `--pin-planner` are removed. Old planner
+providers are rejected rather than reinterpreted as Chimew. Qualified Chimew
+adapters remain available through `pin-plan chimew-run` and `chimew-build`;
+`pin-plan validate` checks the current pin contract.
+
+Build Chimew's grouping, position-refinement, RUDY and bank/channel kernels
+with `EMUFLOW_BUILD_CHIMEW=ON` (the default). The old
+`EMUFLOW_BUILD_PIN_PLANNER` cache entry must be removed; configuring with that
+retired option fails explicitly. The logical pin-plan schema retains its v1
+identifier for current Chimew records; this does not retain the old planner.
+
+Canonical provider comparisons now require baseline and Chimew under identical
+upstream, backend, seed and clock contracts. Both arms must reach complete
+Phase 7/7C and full original-path timing coverage before a QoR claim. Removing
+an abandoned arm does not qualify either retained arm or a backend.
 
 ## Output interpretation
 

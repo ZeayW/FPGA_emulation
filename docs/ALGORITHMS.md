@@ -189,9 +189,9 @@ and records `emuflow.frame-search/v5`, without optimizer-selection parameters.
 ## Phase 6: pin planning, netlist splitting, and transport
 
 The **baseline** consumes the Phase 5 lane/slot assignment directly. The
-optional **placement-aware** provider adds compatible signal grouping,
-placement-proximity refinement, and minimum-cost group-to-virtual-pin matching.
-Its normalized region model is an EmuFlow baseline.
+maintained optional provider is **Chimew**. The independent region-based
+placement-aware planner, its native executable and its comparison arm are
+retired; necessary pin-plan, direction, electrical and slot validators remain.
 
 The optional **Chimew** provider implements methods from *TDM Signal Grouping
 and Package Pin Assignment for 2.5D Multi-FPGA Systems with Lookahead Placement*
@@ -248,7 +248,6 @@ adapter.
 | Static Exact semantic analysis | EmuFlow structural dependency/capture traversal with a Python reference and native large-design implementation | [static_exact_analyzer.cpp](../src/native/static_exact_analyzer.cpp) |
 | System router | EmuFlow implementation drawing on DAC 2025 delay-demand balancing and ASP-DAC 2026 timing-aware routing, with additional candidate trees | [tlr_router.cpp](../src/native/tlr_router.cpp) |
 | Static Exact TDM scheduler | EmuFlow deterministic dependency ordering, earliest legal TX events, and independent readiness validation | [tdm_exact_scheduler.cpp](../src/native/tdm_exact_scheduler.cpp) |
-| Placement-aware pin baseline | EmuFlow region grouping, proximity costs, and minimum-cost assignment | [placement_aware_pin_planner.cpp](../src/native/placement_aware_pin_planner.cpp) |
 | Chimew initial grouping | Paper Algorithm 1 crossing-encoding grouping | [chimew_signal_grouper.cpp](../src/native/chimew_signal_grouper.cpp) |
 | Chimew position refinement | Paper Section 3.3.2 with explicitly documented implementation choices | [chimew_refinement.py](../src/emuflow/chimew_refinement.py) |
 | Chimew bank/channel assignment | Paper Section 3.4 two-stage min-cost-flow kernel | [chimew_bank_channel_assigner.cpp](../src/native/chimew_bank_channel_assigner.cpp) |

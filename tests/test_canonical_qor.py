@@ -63,8 +63,8 @@ class CanonicalQorTest(unittest.TestCase):
         ).hexdigest()
         roots = {}
         records = []
-        offsets = {"baseline": 0.0, "placement-aware": 0.1, "chimew": 0.2}
-        for provider in ("baseline", "placement-aware", "chimew"):
+        offsets = {"baseline": 0.0, "chimew": 0.2}
+        for provider in ("baseline", "chimew"):
             for seed in (1, 2, 3):
                 arm = root / f"{provider}-{seed}"
                 (arm / "physical").mkdir(parents=True)
@@ -137,7 +137,7 @@ class CanonicalQorTest(unittest.TestCase):
         "emuflow.canonical_qor.validate_multi_fpga_physical_report",
         return_value={"status": "pass"},
     )
-    def test_nine_arm_comparison_is_paired_and_replayable(self, _validate):
+    def test_six_arm_comparison_is_paired_and_replayable(self, _validate):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             shared, arms, records = self._fixture(root)
@@ -147,7 +147,7 @@ class CanonicalQorTest(unittest.TestCase):
             )
             output = root / "comparison"
             report = run_canonical_qor_comparison(shared, arms, output)
-            self.assertEqual(len(report["arms"]), 9)
+            self.assertEqual(len(report["arms"]), 6)
             self.assertEqual(report["physical_seeds"], [1, 2, 3])
             self.assertEqual(
                 report["qualification"],
@@ -179,7 +179,7 @@ class CanonicalQorTest(unittest.TestCase):
             )
             self.assertEqual(
                 validate_canonical_qor_comparison(output, shared, arms)["arms"],
-                9,
+                6,
             )
 
             mixed_schedule = read_json(
@@ -230,14 +230,14 @@ class CanonicalQorTest(unittest.TestCase):
             output = root / "single-seed-comparison"
             report = run_canonical_qor_comparison(shared, arms, output)
             self.assertEqual(report["physical_seeds"], [1])
-            self.assertEqual(len(report["arms"]), 3)
+            self.assertEqual(len(report["arms"]), 2)
             self.assertEqual(
                 report["qualification"],
                 "single-seed-complete-phase7c-system-timing",
             )
             self.assertEqual(
                 validate_canonical_qor_comparison(output, shared, arms)["arms"],
-                3,
+                2,
             )
 
     def test_arm_parser_rejects_incomplete_matrix(self):

@@ -35,7 +35,7 @@ EXPERIMENT_VALIDATION_SCHEMA = "emuflow.experiment-validation/v1"
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]*")
-_PROVIDERS = ("baseline", "placement-aware", "chimew")
+_PROVIDERS = ("baseline", "chimew")
 _ARTIFACT_RETENTION = {
     "consumer-checkpoint": "required",
     "evidence-critical": "required",

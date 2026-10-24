@@ -42,7 +42,6 @@ from .chimew_rudy import CHIMEW_RUDY_INPUT_PROVIDER, CHIMEW_RUDY_INPUT_SCHEMA
 from .errors import ValidationError
 from .io import read_json, write_json
 from .pin_plan_storage import read_pin_plan
-from .pin_planning import build_pin_plan
 from .platform import Platform
 from .position_hints_storage import read_position_hints
 from .routing import SYSTEM_ROUTES_SCHEMA
@@ -52,7 +51,6 @@ from .tdm import TDM_SCHEDULE_SCHEMA
 EDA2023_CONTEST_CHIMEW_MATERIALIZATION_SCHEMA = (
     "emuflow.eda2023-contest-chimew-materialization/v2"
 )
-EDA2023_CONTEST_CHIMEW_AB_SCHEMA = "emuflow.eda2023-contest-chimew-ab/v2"
 EDA2023_CONTEST_CHIMEW_PROVIDER = (
     "eda2023-route-local-sll-lookahead+synthetic-electrical-map-v2"
 )
@@ -766,161 +764,4 @@ def materialize_eda2023_contest_chimew_inputs(
         },
     }
     write_json(output_dir / "materialization_report.json", report)
-    return report
-
-
-def _routed_group_metrics(
-    plan: Mapping[str, Any],
-    crossings: Mapping[str, Any],
-    positions: Mapping[str, Any],
-) -> Dict[str, float]:
-    group_by_entry = {
-        record["schedule_entry"]: record["group"] for record in plan["entries"]
-    }
-    encoding_by_entry = {
-        record["schedule_entry"]: record["encoding"]
-        for record in crossings["entries"]
-    }
-    position_by_entry = {
-        record["schedule_entry"]: float(record["source_y"])
-        for record in positions["entries"]
-    }
-    if set(group_by_entry) != set(encoding_by_entry) or set(group_by_entry) != set(
-        position_by_entry
-    ):
-        raise ValidationError("EDA 2023 A/B plans do not cover routed signals")
-    encodings: Dict[int, int] = defaultdict(int)
-    grouped_positions: Dict[int, list[float]] = defaultdict(list)
-    for entry_id, group in group_by_entry.items():
-        encodings[group] |= encoding_by_entry[entry_id]
-        grouped_positions[group].append(position_by_entry[entry_id])
-    pairwise_y = 0.0
-    for values in grouped_positions.values():
-        prefix = 0.0
-        for index, value in enumerate(sorted(values)):
-            pairwise_y += value * index - prefix
-            prefix += value
-    return {
-        "routed_sll_crossing_bits": float(
-            sum(bin(encoding).count("1") for encoding in encodings.values())
-        ),
-        "routed_source_pairwise_y": pairwise_y,
-    }
-
-
-def run_eda2023_contest_chimew_ab(
-    *,
-    import_dir: Path,
-    routes_path: Path,
-    tdm_plan_path: Path,
-    output_dir: Path,
-    grouper: Optional[str] = None,
-    refiner: Optional[str] = None,
-    rudy: Optional[str] = None,
-    assigner: Optional[str] = None,
-    pin_planner: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Run source-bound Chimew and the previous placement-aware baseline."""
-
-    materialization = materialize_eda2023_contest_chimew_inputs(
-        import_dir=import_dir,
-        routes_path=routes_path,
-        tdm_plan_path=tdm_plan_path,
-        output_dir=output_dir / "materialized",
-        grouper=grouper,
-        refiner=refiner,
-    )
-    artifacts = materialization["artifacts"]
-    sources = materialization["sources"]
-    pipeline_root = output_dir / "chimew"
-    pipeline = run_chimew_phase6_pipeline(
-        Path(artifacts["schedule"]["path"]),
-        Path(sources["platform"]),
-        Path(artifacts["crossings"]["path"]),
-        Path(artifacts["positions"]["path"]),
-        Path(artifacts["rudy_input"]["path"]),
-        Path(artifacts["bank_channel_input"]["path"]),
-        Path(artifacts["electrical_map"]["path"]),
-        pipeline_root,
-        source_paths={
-            label: Path(sources[label])
-            for label in ("routing", "placement", "netlist", "architecture", "package_pins")
-        },
-        grouper=grouper,
-        refiner=refiner,
-        rudy=rudy,
-        assigner=assigner,
-        region_count=4,
-    )
-    schedule = read_json(Path(artifacts["schedule"]["path"]))
-    platform = Platform.load(Path(sources["platform"]))
-    with read_chimew_phase6_pipeline(pipeline_root) as (
-        leased_pipeline,
-        _pipeline_validation,
-    ):
-        pipeline = dict(leased_pipeline)
-        position_hints = read_position_hints(
-            pipeline_root
-            / pipeline["artifacts"]["adapter_position_hints"]["path"]
-        )
-        baseline = build_pin_plan(
-            schedule,
-            platform,
-            position_hints,
-            executable=pin_planner,
-        )
-        chimew_plan = read_pin_plan(
-            pipeline_root / pipeline["artifacts"]["adapter_pin_plan"]["path"],
-            materialize=True,
-        )
-    baseline_path = output_dir / "baseline_pin_plan.json"
-    write_json(baseline_path, baseline)
-    crossings = read_json(Path(artifacts["crossings"]["path"]))
-    positions = read_json(Path(artifacts["positions"]["path"]))
-    metric_fields = ("objective", "crossing_bits", "position_sse", "pin_distance")
-    baseline_metrics = {field: baseline["metrics"][field] for field in metric_fields}
-    chimew_metrics = {field: chimew_plan["metrics"][field] for field in metric_fields}
-    baseline_metrics.update(_routed_group_metrics(baseline, crossings, positions))
-    chimew_metrics.update(_routed_group_metrics(chimew_plan, crossings, positions))
-    comparison_fields = (
-        *metric_fields,
-        "routed_sll_crossing_bits",
-        "routed_source_pairwise_y",
-    )
-    improvements = {
-        f"{field}_improvement_percent": (
-            100.0 * (baseline_metrics[field] - chimew_metrics[field]) / baseline_metrics[field]
-            if baseline_metrics[field]
-            else 0.0
-        )
-        for field in comparison_fields
-    }
-    report = {
-        "schema": EDA2023_CONTEST_CHIMEW_AB_SCHEMA,
-        "status": "pass",
-        "provider": EDA2023_CONTEST_CHIMEW_PROVIDER,
-        "qualification": EDA2023_CONTEST_CHIMEW_QUALIFICATION,
-        "claim_boundary": materialization["claim_boundary"],
-        "design": materialization["design"],
-        "platform": materialization["platform"],
-        "metrics": {
-            **materialization["metrics"],
-            "baseline": baseline_metrics,
-            "chimew": chimew_metrics,
-            **improvements,
-        },
-        "artifacts": {
-            "materialization_report": str(
-                output_dir / "materialized" / "materialization_report.json"
-            ),
-            "pipeline_report": str(pipeline_root / "pipeline_report.json"),
-            "baseline_pin_plan": str(baseline_path),
-            "chimew_pin_plan": str(
-                pipeline_root
-                / pipeline["artifacts"]["adapter_pin_plan"]["path"]
-            ),
-        },
-        "pipeline_qualification_sha256": pipeline["qualification_sha256"],
-    }
-    write_json(output_dir / "ab_report.json", report)
     return report

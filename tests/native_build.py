@@ -27,10 +27,6 @@ def _standalone_fixture_program(name: str) -> Path:
     return executable
 
 
-def placement_aware_pin_planner() -> Path:
-    return _standalone_fixture_program("placement_aware_pin_planner")
-
-
 def chimew_bank_channel_assigner() -> Path:
     return _standalone_fixture_program("chimew_bank_channel_assigner")
 

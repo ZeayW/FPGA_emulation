@@ -170,7 +170,6 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/emuflow/partition_hops.py",
 
 
-    "src/native/placement_aware_pin_planner.cpp",
     "src/native/chimew_signal_grouper.cpp",
     "src/native/chimew_position_refiner.cpp",
     "src/native/chimew_rudy.cpp",

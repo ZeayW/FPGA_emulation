@@ -41,9 +41,13 @@ option(
   ON
 )
 
+if(DEFINED EMUFLOW_BUILD_PIN_PLANNER)
+  message(FATAL_ERROR "EMUFLOW_BUILD_PIN_PLANNER is retired; configure EMUFLOW_BUILD_CHIMEW explicitly and remove the old cache entry")
+endif()
+
 option(
-  EMUFLOW_BUILD_PIN_PLANNER
-  "Build the in-tree placement-aware TDM grouping and pin planner"
+  EMUFLOW_BUILD_CHIMEW
+  "Build Chimew grouping, refinement, RUDY and bank/channel kernels"
   ON
 )
 option(
@@ -659,19 +663,7 @@ if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
 endif()
 
 
-if(EMUFLOW_BUILD_PIN_PLANNER)
-  add_executable(
-    emuflow_pin_planner
-    "${CMAKE_SOURCE_DIR}/src/native/placement_aware_pin_planner.cpp"
-  )
-  target_compile_features(emuflow_pin_planner PRIVATE cxx_std_17)
-  target_compile_options(emuflow_pin_planner PRIVATE -O3)
-  target_link_libraries(emuflow_pin_planner PRIVATE Threads::Threads)
-  set_target_properties(
-    emuflow_pin_planner
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
+if(EMUFLOW_BUILD_CHIMEW)
   add_executable(
     emuflow_chimew_signal_grouper
     "${CMAKE_SOURCE_DIR}/src/native/chimew_signal_grouper.cpp"
@@ -1180,15 +1172,7 @@ if(BUILD_TESTING)
   endif()
 
 
-  if(EMUFLOW_BUILD_PIN_PLANNER)
-    add_test(
-      NAME emuflow_pin_planner_cli
-      COMMAND "$<TARGET_FILE:emuflow_pin_planner>"
-    )
-    set_tests_properties(
-      emuflow_pin_planner_cli
-      PROPERTIES WILL_FAIL TRUE
-    )
+  if(EMUFLOW_BUILD_CHIMEW)
     add_test(
       NAME emuflow_chimew_signal_grouper_cli
       COMMAND "$<TARGET_FILE:emuflow_chimew_signal_grouper>" --help

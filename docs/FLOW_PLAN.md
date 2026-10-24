@@ -39,6 +39,12 @@ search varies the frame bound using that same engine; it is not another TDM
 provider. Hardware ratio/bank constraints and Chimew's lane/slot consumption
 remain part of the supported contracts.
 
+Phase 6 exposes baseline transport and optional Chimew. The Chimew adapter
+shares the typed pin-plan, electrical-binding and transport contracts; shared
+validators and fixed wiring constraints remain authoritative. Retired
+placement-aware planner providers cannot enter either split producer. The
+baseline/Chimew comparison preserves complete physical/global timing gates.
+
 One owner supplies each large population; reports summarize it rather than
 embedding duplicate netlists, maps, or timing-path trees.
 

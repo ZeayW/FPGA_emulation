@@ -20,7 +20,7 @@ from emuflow.physical_pins import (
     validate_serial_transceiver_binding,
 )
 from emuflow.io import read_json, write_json
-from emuflow.pin_planning import build_pin_plan
+from tests.pin_plan_fixture import make_pin_plan_fixture
 from emuflow.platform import Platform
 
 
@@ -32,10 +32,8 @@ class PhysicalPinBindingTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.temporary_directory = tempfile.TemporaryDirectory()
         root = Path(cls.temporary_directory.name)
-        cls.pin_planner = root / "emuflow_pin_planner"
         cls.bsp_solver = root / "emuflow_bsp_pin_solver"
         for source, output in (
-            ("placement_aware_pin_planner.cpp", cls.pin_planner),
             ("bsp_pin_solver.cpp", cls.bsp_solver),
         ):
             subprocess.run(
@@ -124,12 +122,10 @@ class PhysicalPinBindingTest(unittest.TestCase):
                 for index in range(4)
             ],
         }
-        self.plan = build_pin_plan(
+        self.plan = make_pin_plan_fixture(
             self.schedule,
             self.platform,
             self.positions,
-            executable=str(self.pin_planner),
-            refinement_iterations=8,
         )
         self.anchors = {
             fpga: {
@@ -393,12 +389,11 @@ class PhysicalPinBindingTest(unittest.TestCase):
                 for entry in schedule["entries"]
             ],
         }
-        plan = build_pin_plan(
+        plan = make_pin_plan_fixture(
             schedule,
             platform,
             positions,
-            executable=str(self.pin_planner),
-            refinement_iterations=4,
+            assignments={entry["id"]: (0, 0) for entry in schedule["entries"]},
         )
         endpoints = {fpga.id: [] for fpga in platform.fpgas}
         for item in plan["entries"]:

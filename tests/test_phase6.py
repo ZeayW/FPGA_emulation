@@ -1,3 +1,4 @@
+from tests.pin_plan_fixture import make_pin_plan_fixture
 from contextlib import closing
 import copy
 import hashlib
@@ -52,7 +53,6 @@ from emuflow.pin_planning import (
     CHIMEW_PIN_PLAN_PROVIDER,
     SIGNAL_POSITION_HINTS_SCHEMA,
     _assignment_metrics,
-    build_pin_plan,
 )
 from emuflow.pin_plan_storage import (
     PIN_PLAN_STORAGE_SCHEMA,
@@ -456,6 +456,7 @@ class Phase6Test(unittest.TestCase):
                 root / "pin-plan.json",
                 {
                     "schema": "emuflow.placement-aware-pin-plan/v1",
+                    "provider": CHIMEW_PIN_PLAN_PROVIDER,
                     "design": self.ir.value["design"],
                     "platform": self.platform.name,
                     "entries": [
@@ -1244,7 +1245,7 @@ class Phase6Test(unittest.TestCase):
             )
             self.assertEqual(replay["transport_cost_prediction"], prediction)
 
-    def test_phase6_materializes_validated_placement_aware_pin_plan(
+    def test_phase6_materializes_validated_chimew_pin_contract(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1252,8 +1253,6 @@ class Phase6Test(unittest.TestCase):
             schedule = copy.deepcopy(self.schedule)
             for entry in schedule["entries"]:
                 entry["tdm_ratio"] = schedule["metrics"]["frame_slots"]
-            from tests.native_build import placement_aware_pin_planner
-            executable = placement_aware_pin_planner()
             positions = {
                 "schema": SIGNAL_POSITION_HINTS_SCHEMA,
                 "design": schedule["design"],
@@ -1277,12 +1276,10 @@ class Phase6Test(unittest.TestCase):
                     for entry in schedule["entries"]
                 ],
             }
-            plan = build_pin_plan(
+            plan = make_pin_plan_fixture(
                 schedule,
                 self.platform,
                 positions,
-                executable=str(executable),
-                refinement_iterations=4,
             )
             paths = {
                 "ir": root / "design.emuir.sqlite",
@@ -1307,21 +1304,17 @@ class Phase6Test(unittest.TestCase):
                 path.write_text(
                     json.dumps(documents[name]), encoding="utf-8"
                 )
+            plan, binding = self._chimew_certificate(schedule, positions, plan)
+            write_json(paths["plan"], plan)
+            binding_path = root / "initial-electrical-binding.json"
+            write_json(binding_path, binding)
             output = root / "phase6"
             report = run_phase6(
-                paths["ir"],
-                paths["assignment"],
-                paths["schedule"],
-                PLATFORM_PATH,
-                output,
-                equivalence_cycles=4,
-                pin_plan_path=paths["plan"],
-                position_hints_path=paths["positions"],
+                paths["ir"], paths["assignment"], paths["schedule"], PLATFORM_PATH, output,
+                equivalence_cycles=4, pin_plan_path=paths["plan"],
+                position_hints_path=paths["positions"], electrical_binding_path=binding_path,
             )
-            self.assertEqual(
-                report["provider"],
-                "placement-aware-pin-split-v1",
-            )
+            self.assertEqual(report["provider"], "chimew-electrical-pin-split-v1")
             self.assertEqual(
                 report["pin_plan_validation"]["status"], "pass"
             )

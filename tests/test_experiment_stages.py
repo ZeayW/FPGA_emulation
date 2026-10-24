@@ -15,7 +15,6 @@ from emuflow.experiment_stages import (
     _link_tree,
     _phase7_qor_projection,
     _physical_timing_databases,
-    _placement_aware_positions,
     _preflight_academic_chimew_lookahead_tools,
     _prepare_empty_output,
     _validate_managed_phase6_checkpoint,
@@ -533,90 +532,6 @@ class ExperimentStagesTest(unittest.TestCase):
             with self.assertRaisesRegex(Exception, "path is invalid"):
                 validate_frontend_checkpoint(output, platform)
 
-    def test_placement_aware_positions_reuse_frozen_open_placement(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            ir = root / "ir.json"
-            schedule = root / "schedule.json"
-            placement = root / "placement.json"
-            write_json(
-                ir,
-                {
-                    "schema": "emuflow.emuir/v1",
-                    "design": {
-                        "name": "d",
-                        "top": "d",
-                        "source_format": "test",
-                    },
-                    "ports": [],
-                    "instances": [
-                        {
-                            "id": name,
-                            "type": "LUT1",
-                            "resources": {"lut": 1},
-                            "constant_connections": [],
-                        }
-                        for name in ("a", "b")
-                    ],
-                    "nets": [
-                        {
-                            "id": "n0",
-                            "cut_class": "combinational",
-                            "drivers": [
-                                {"instance": "a", "port": "O", "bit": 0}
-                            ],
-                            "sinks": [
-                                {"instance": "b", "port": "I", "bit": 0}
-                            ],
-                        }
-                    ],
-                    "clocks": [],
-                    "warnings": [],
-                },
-            )
-            write_json(
-                schedule,
-                {
-                    "design": "d",
-                    "platform": "p",
-                    "entries": [
-                        {"id": "e0", "net": "n0", "from": "f0", "to": "f1"}
-                    ],
-                },
-            )
-            write_json(
-                placement,
-                {
-                    "fpgas": [
-                        {
-                            "fpga": "f0",
-                            "instances": [{"id": "a", "normalised_y": 0.2}],
-                        },
-                        {
-                            "fpga": "f1",
-                            "instances": [{"id": "b", "normalised_y": 0.9}],
-                        },
-                    ]
-                },
-            )
-            positions = _placement_aware_positions(
-                ir, schedule, placement, region_count=4
-            )
-            self.assertEqual(positions["schema"], SIGNAL_POSITION_HINTS_SCHEMA)
-            self.assertEqual(
-                positions["entries"],
-                [
-                    {
-                        "schedule_entry": "e0",
-                        "source_y": 0.2,
-                        "sink_y": 0.9,
-                        "source_region": 0,
-                        "sink_region": 3,
-                        "source_fallback": False,
-                        "sink_fallback": False,
-                    }
-                ],
-            )
 
     def test_cli_exposes_provider_seed_checkpoint_commands(self) -> None:
         args = _build_parser().parse_args(

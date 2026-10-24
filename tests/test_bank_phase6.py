@@ -14,7 +14,7 @@ from emuflow.errors import ValidationError
 from emuflow.netlist import build_split_artifacts
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.pin_planning import (
-    CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA, PIN_PLAN_PROVIDER,
+    CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA,
     SIGNAL_POSITION_HINTS_SCHEMA, _assignment_metrics, _baseline_assignment,
     validate_bank_pin_assignment, validate_pin_plan,
 )
@@ -60,7 +60,7 @@ def fixture():
                                    _baseline_assignment(schedule), 1, 1)
     plan = {
         "schema": PIN_PLAN_SCHEMA, "design": "banks", "platform": platform.name,
-        "provider": PIN_PLAN_PROVIDER, "configuration": {"refinement_iterations": 0},
+        "provider": CHIMEW_PIN_PLAN_PROVIDER, "configuration": {"refinement_iterations": 0},
         "weights": {"crossing": 1, "position": 1},
         "metrics": {"signals": 2, "groups": 2, **metrics,
                     **{f"baseline_logical_lane_{key}": value for key, value in baseline.items()}},

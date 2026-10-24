@@ -702,7 +702,7 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   providers, physical seeds, gates, global timing metrics, DRC, and unrouted-net
   checks. Persistent replay checkpoints are not required. Repository
   configuration must never contain transient server paths.
-- Baseline, placement-aware, and Chimew Phase 6 arms must use identical frozen
+- Baseline and Chimew Phase 6 arms must use identical frozen
   source, BoardDB, Phase 1/3/4/5 artifacts, physical backend/options, worker
   count, and physical seed.  The default acceptance seed is fixed to 1; seeds
   2/3 are an explicit statistical-robustness opt-in and are not a routine
@@ -718,7 +718,7 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   diagnostics and must not be substituted for the primary metrics.
 - Canonical provider studies finish at a terminal `qor-comparison` certificate,
   not at an individual Phase 7 arm. It compares every
-  baseline/placement-aware/Chimew arm for the configured physical seed set,
+  baseline/Chimew arm for the configured physical seed set,
   rechecks their common frozen Phase 1/3/4/5 hashes, and preserves paired
   target-clock WNS/TNS deltas and per-provider statistics in final evidence.
   Use seed 1 alone by default; request multiple seeds only when measuring
@@ -734,8 +734,8 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   removes its Phase 1→7 intermediates after terminal validation. Arms may share
   immutable source inputs during the active comparison, but must not publish a
   persistent intermediate DAG. Baseline Phase 6 consumes Phase 5 directly. The
-  fixed physical lookahead consumes baseline Phase 6; placement-aware and
-  Chimew consume Phase 5 plus that lookahead. Never coerce an incompatible
+  fixed physical lookahead consumes baseline Phase 6; Chimew consumes Phase 5
+  plus that lookahead. Never coerce an incompatible
   communication-only artifact into a fake physical netlist.
 - Run canonical validation through the one-command full-flow interface in an
   isolated directory; do not decompose an ordinary run into published

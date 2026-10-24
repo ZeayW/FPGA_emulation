@@ -6,7 +6,6 @@
     "platform_contract": "contest-derived-boarddb",
     "phase6_providers": [
       "baseline",
-      "placement-aware",
       "chimew"
     ],
     "physical_seeds": [

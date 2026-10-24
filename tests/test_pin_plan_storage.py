@@ -14,7 +14,7 @@ from emuflow.pin_plan_storage import (
     read_pin_plan,
     write_pin_plan_storage,
 )
-from emuflow.pin_planning import PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA
+from emuflow.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA
 
 
 def _plan():
@@ -22,7 +22,7 @@ def _plan():
         "schema": PIN_PLAN_SCHEMA,
         "design": "indexed-pin-plan",
         "platform": "test-platform",
-        "provider": PIN_PLAN_PROVIDER,
+        "provider": CHIMEW_PIN_PLAN_PROVIDER,
         "configuration": {"refinement_iterations": 4},
         "weights": {"crossing": 1.0, "position": 2.0},
         "metrics": {"signals": 2, "groups": 2},

@@ -391,12 +391,7 @@ def run_phase6(
         "design": design_name,
         "platform": platform.name,
         "provider": (
-            (
-                "chimew-electrical-pin-split-v1"
-                if pin_plan.get("provider")
-                == "chimew-paper-plus-emuflow-electrical-slot-v1"
-                else "placement-aware-pin-split-v1"
-            )
+            "chimew-electrical-pin-split-v1"
             if pin_plan is not None
             else "sqlite-streaming-cut-shadow-split-v1"
         ),

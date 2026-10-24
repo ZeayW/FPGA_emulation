@@ -47,7 +47,6 @@ class CanonicalExperimentTest(unittest.TestCase):
             "hop_refiner",
             "patron_refiner",
             "router",
-            "pin_planner",
             "chimew_grouper",
             "chimew_refiner",
             "chimew_rudy",
@@ -481,7 +480,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                     "shared-phase1-5",
                     *[
                         f"phase7-{provider}-seed{seed}"
-                        for provider in ("baseline", "placement-aware", "chimew")
+                        for provider in ("baseline", "chimew")
                         for seed in (1,)
                     ],
                 ],
@@ -556,7 +555,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                     "nodes"
                 ]
             }
-            for provider in ("placement-aware", "chimew"):
+            for provider in ("chimew",):
                 node = nodes[f"phase6-{provider}"]
                 self.assertEqual(
                     node["configuration"]["phase6_candidate_peak_gib"], 4
@@ -653,7 +652,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             report = compile_canonical_experiment_spec(
                 config_path, REPOSITORY, output
             )
-            self.assertEqual(report["physical_terminal_nodes"], 3)
+            self.assertEqual(report["physical_terminal_nodes"], 2)
             self.assertEqual(report["terminal_nodes"], 1)
             self.assertEqual(
                 report["cut_mode"], "static-exact-combinational"
@@ -664,7 +663,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                     json.loads(output.read_text())
                 )["nodes"]
             }
-            self.assertIn("phase6-placement-aware", nodes)
+            self.assertNotIn("phase6-placement-aware", nodes)
             self.assertIn("phase6-chimew", nodes)
             self.assertIn("qor-comparison", nodes)
             partition = nodes["partition"]
@@ -749,7 +748,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             report = compile_canonical_experiment_spec(
                 config_path, REPOSITORY, output
             )
-            self.assertEqual(report["physical_terminal_nodes"], 9)
+            self.assertEqual(report["physical_terminal_nodes"], 6)
             spec = validate_experiment_spec(json.loads(output.read_text()))
             self.assertEqual(
                 {
@@ -759,7 +758,7 @@ class CanonicalExperimentTest(unittest.TestCase):
                 },
                 {
                     (provider, seed)
-                    for provider in ("baseline", "placement-aware", "chimew")
+                    for provider in ("baseline", "chimew")
                     for seed in (1, 2, 3)
                 },
             )
@@ -1016,8 +1015,8 @@ class CanonicalExperimentTest(unittest.TestCase):
             report = compile_canonical_experiment_spec(
                 config_path, REPOSITORY, output
             )
-            self.assertEqual(report["nodes"], 15)
-            self.assertEqual(report["physical_terminal_nodes"], 3)
+            self.assertEqual(report["nodes"], 13)
+            self.assertEqual(report["physical_terminal_nodes"], 2)
             self.assertEqual(report["terminal_nodes"], 1)
             spec = validate_experiment_spec(json.loads(output.read_text()))
             nodes = {item["id"]: item for item in spec["nodes"]}
@@ -1153,9 +1152,6 @@ class CanonicalExperimentTest(unittest.TestCase):
             )
             self.assertNotIn("ratio_quantum", nodes["tdm"]["configuration"])
             self.assertNotIn("max_ratio", nodes["tdm"]["configuration"])
-            self.assertIn(
-                "--pin-planner", nodes["phase6-placement-aware"]["command"]
-            )
             for argument in (
                 "--chimew-grouper",
                 "--chimew-refiner",
@@ -1174,7 +1170,7 @@ class CanonicalExperimentTest(unittest.TestCase):
             terminals = [item for item in spec["nodes"] if item["stage"] == "phase7"]
             self.assertEqual(
                 {(item["provider"], item["physical_seed"]) for item in terminals},
-                {(provider, 1) for provider in ("baseline", "placement-aware", "chimew")},
+                {(provider, 1) for provider in ("baseline", "chimew")},
             )
             self.assertTrue(all(item["configuration"]["physical_workers"] == 8 for item in terminals))
             for terminal in terminals:
@@ -1270,7 +1266,6 @@ class CanonicalExperimentTest(unittest.TestCase):
                 {(item["provider"], item["physical_seed"]) for item in terminals},
                 {
                     ("baseline", 1),
-                    ("placement-aware", 1),
                     ("chimew", 1),
                 },
             )

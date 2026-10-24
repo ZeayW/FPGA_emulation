@@ -1,3 +1,4 @@
+from tests.pin_plan_fixture import make_pin_plan_fixture
 import copy
 import os
 import tempfile
@@ -5,7 +6,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.native_build import placement_aware_pin_planner
 
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.pin_plan_storage import (
@@ -17,10 +17,7 @@ from emuflow.position_hints_storage import (
     write_position_hints_storage,
 )
 from emuflow.pin_planning import (
-    LEGACY_PIN_PLAN_PROVIDERS,
-    PIN_PLAN_PROVIDER,
     SIGNAL_POSITION_HINTS_SCHEMA,
-    build_pin_plan,
     validate_pin_plan,
 )
 from emuflow.platform import Platform
@@ -36,10 +33,7 @@ from emuflow.tdm_schedule_storage import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class PlacementAwarePinPlanningTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.executable = placement_aware_pin_planner()
+class ChimewPinContractTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.platform = Platform.from_dict(
@@ -108,83 +102,31 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
             ],
         }
 
-    def test_grouping_and_exact_pin_assignment_are_reproducible(self) -> None:
-        first = build_pin_plan(
-            self.schedule,
-            self.platform,
-            self.positions,
-            executable=str(self.executable),
-            refinement_iterations=20,
-        )
-        previous_workers = os.environ.get("EMUFLOW_PIN_PLANNER_WORKERS")
-        os.environ["EMUFLOW_PIN_PLANNER_WORKERS"] = "2"
-        try:
-            second = build_pin_plan(
-                self.schedule,
-                self.platform,
-                self.positions,
-                executable=str(self.executable),
-                refinement_iterations=20,
-            )
-        finally:
-            if previous_workers is None:
-                os.environ.pop("EMUFLOW_PIN_PLANNER_WORKERS", None)
-            else:
-                os.environ["EMUFLOW_PIN_PLANNER_WORKERS"] = previous_workers
-        self.assertEqual(first, second)
-        self.assertEqual(first["provider"], PIN_PLAN_PROVIDER)
-        self.assertEqual(first["metrics"]["groups"], 2)
-        validation = validate_pin_plan(
-            self.schedule, self.platform, self.positions, first
-        )
-        self.assertEqual(validation["status"], "pass")
-        self.assertEqual(
-            validation["physical_lane_slot_collisions"], 0
-        )
-        self.assertGreater(
-            validation["objective_improvement_percent"], 0.0
-        )
-        self.assertGreater(
-            validation["pin_distance_improvement_percent"], 0.0
-        )
-        self.assertGreater(
-            validation["baseline_logical_lane_objective"],
-            validation["objective"],
-        )
-        low_pins = {
-            item["physical_lane"]
-            for item in first["entries"]
-            if int(item["schedule_entry"][5:]) < 3
-        }
-        high_pins = {
-            item["physical_lane"]
-            for item in first["entries"]
-            if int(item["schedule_entry"][5:]) >= 3
-        }
-        self.assertEqual(low_pins, {0})
-        self.assertEqual(high_pins, {1})
 
-    def test_legacy_provider_remains_readable_but_is_not_emitted(self) -> None:
-        plan = build_pin_plan(
-            self.schedule,
-            self.platform,
-            self.positions,
-            executable=str(self.executable),
-        )
-        self.assertNotIn(plan["provider"], LEGACY_PIN_PLAN_PROVIDERS)
-        legacy = copy.deepcopy(plan)
-        legacy["provider"] = next(iter(LEGACY_PIN_PLAN_PROVIDERS))
-        validation = validate_pin_plan(
-            self.schedule, self.platform, self.positions, legacy
-        )
-        self.assertEqual(validation["status"], "pass")
+    def test_retired_planner_entrypoints_are_rejected_before_loading_inputs(self):
+        from emuflow.cli import _build_parser
+        from emuflow.experiment_stages import run_phase6_checkpoint
+        parser = _build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["pin-plan", "build"])
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["contest", "eda2023-chimew-ab"])
+        with self.assertRaisesRegex(ValidationError, "Phase 6 provider"):
+            run_phase6_checkpoint(Path("missing"), None, Path("missing"), Path("unused"), provider="placement-aware")
+
+    def test_retired_provider_is_rejected(self):
+        plan = make_pin_plan_fixture(self.schedule, self.platform, self.positions)
+        for provider in ("placement-aware-region-grouping-mcf-v1", "chimew-placement-aware-grouping-mcf-v1"):
+            with self.subTest(provider=provider):
+                plan["provider"] = provider
+                with self.assertRaisesRegex(ValidationError, "provider"):
+                    validate_pin_plan(self.schedule, self.platform, self.positions, plan)
 
     def test_lane_slot_collision_is_rejected(self) -> None:
-        plan = build_pin_plan(
+        plan = make_pin_plan_fixture(
             self.schedule,
             self.platform,
             self.positions,
-            executable=str(self.executable),
         )
         broken = copy.deepcopy(plan)
         by_id = {
@@ -199,11 +141,10 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
             )
 
     def test_indexed_validation_uses_bounded_relations(self) -> None:
-        plan = build_pin_plan(
+        plan = make_pin_plan_fixture(
             self.schedule,
             self.platform,
             self.positions,
-            executable=str(self.executable),
         )
         legacy_validation = validate_pin_plan(
             self.schedule, self.platform, self.positions, plan
@@ -225,21 +166,6 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
             indexed_positions = write_position_hints_storage(
                 root / "positions.json", self.positions
             )
-            with mock.patch.object(
-                PositionHintEntrySequence,
-                "__iter__",
-                side_effect=AssertionError(
-                    "pin-plan producer rebuilt indexed position hints"
-                ),
-            ):
-                produced_plan = build_pin_plan(
-                    indexed_schedule,
-                    self.platform,
-                    indexed_positions,
-                    executable=str(self.executable),
-                    output_path=root / "produced-plan.json",
-                )
-            self.assertEqual(produced_plan.materialize(), plan)
             with mock.patch.object(
                 ScheduleRecordSequence,
                 "__iter__",
@@ -358,11 +284,10 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
                 )
 
     def test_static_exact_v3_validation_reads_typed_entry_relation(self) -> None:
-        plan = build_pin_plan(
+        plan = make_pin_plan_fixture(
             self.schedule,
             self.platform,
             self.positions,
-            executable=str(self.executable),
         )
         entries = [
             {
@@ -417,48 +342,6 @@ class PlacementAwarePinPlanningTest(unittest.TestCase):
                 )
             self.assertEqual(validation["status"], "pass")
             self.assertEqual(validation["signals"], len(entries))
-
-    def test_minimum_legal_group_count_exceeding_lanes_is_rejected(
-        self,
-    ) -> None:
-        constrained = Platform.from_dict(
-            {
-                "schema": "emuflow.boarddb/v1",
-                "platform": {
-                    "name": "pin_fixture",
-                    "kind": "virtual",
-                },
-                "fpgas": [
-                    {
-                        "id": fpga,
-                        "part": "test",
-                        "utilization_limit": 1.0,
-                        "capacity": {"lut": 100, "ff": 100},
-                    }
-                    for fpga in ("fpga0", "fpga1")
-                ],
-                "links": [
-                    {
-                        "id": "link0",
-                        "endpoints": ["fpga0", "fpga1"],
-                        "direction": "full_duplex",
-                        "mode": "abstract",
-                        "data_lanes_per_direction": 1,
-                        "fabric_clock_mhz": 250,
-                        "latency_cycles": 1,
-                    }
-                ],
-            }
-        )
-        with self.assertRaisesRegex(
-            EmuFlowError, "minimum legal TDM grouping"
-        ):
-            build_pin_plan(
-                self.schedule,
-                constrained,
-                self.positions,
-                executable=str(self.executable),
-            )
 
 
 if __name__ == "__main__":
