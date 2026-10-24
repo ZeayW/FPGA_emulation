@@ -106,15 +106,17 @@ rm -f "$unified"
 object_dir="$runtime_dir/tmp/core-objects"
 mkdir -p "$object_dir" "$runtime_dir/lib"
 core_sources=()
+core_seen=" "
 while IFS= read -r source || test -n "$source"; do
   case "$source" in ''|\#*) continue ;; esac
   case "$source" in /*|*..*|*[!a-zA-Z0-9_/.-]*) echo "invalid shared native source: $source" >&2; exit 2 ;; esac
   test -f "$source_dir/src/native/$source"
-  for previous in "${core_sources[@]}"; do
-    test "$source" != "$previous" || { echo "repeated shared native source: $source" >&2; exit 2; }
-  done
+  # Bash 3/4 can treat an empty array as unset under `set -u`.
+  case "$core_seen" in *" $source "*) echo "repeated shared native source: $source" >&2; exit 2 ;; esac
+  core_seen="$core_seen$source "
   core_sources+=("$source")
 done < "$source_dir/src/native/emuflow_core/sources.txt"
+test "$core_seen" != " " || { echo "empty shared native source manifest" >&2; exit 2; }
 objects=()
 for source in "${core_sources[@]}"; do
   object="$object_dir/${source//\//_}.o"

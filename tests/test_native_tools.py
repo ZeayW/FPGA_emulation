@@ -166,6 +166,25 @@ class NativeToolsTest(unittest.TestCase):
         self.assertIn('add_library(emuflow_core STATIC ${EMUFLOW_CORE_SOURCE_FILES})', cmake)
         self.assertNotIn('target_sources(emuflow_core', cmake)
 
+    def test_actual_deployment_manifest_reader_under_strict_bash(self) -> None:
+        import subprocess
+        from tests.native_build import _NATIVE_STAGE_SOURCES
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "scripts/validation/deploy_stream_runtime.sh").read_text()
+        block = script[script.index("core_sources=()"):script.index("objects=()")]
+        command = 'set -eu\nsource_dir=$1\n' + block + '\nprintf "%s\\n" "${core_sources[@]}"\n'
+        result = subprocess.run(['/bin/bash', '-c', command, 'manifest-reader', str(root)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), list(_NATIVE_STAGE_SOURCES))
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp); manifest = source / 'src/native/emuflow_core/sources.txt'
+            manifest.parent.mkdir(parents=True); (source / 'src/native/demo.cpp').write_text('')
+            for invalid in ('demo.cpp\ndemo.cpp\n', '../escape.cpp\n', 'missing.cpp\n', '# no sources\n'):
+                with self.subTest(manifest=invalid):
+                    manifest.write_text(invalid)
+                    failed = subprocess.run(['/bin/bash', '-c', command, 'manifest-reader', str(source)], capture_output=True, text=True)
+                    self.assertNotEqual(failed.returncode, 0)
+
     def test_relative_override_is_bound_before_backend_changes_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
