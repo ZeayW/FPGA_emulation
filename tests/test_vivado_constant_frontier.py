@@ -69,7 +69,7 @@ def test_selected_native_observations_use_indexed_source_driver_identity(tmp_pat
     with pytest.raises(ValidationError,match="input coverage"): compare()
 
 
-def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False, dependent=False, state_chain=None):
+def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False, dependent=False, state_chain=None, dependency_output=False):
     import csv
     import json
     from emuflow.yosys import import_yosys_json
@@ -107,7 +107,7 @@ def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False,
     source=tmp_path/"source.json"
     source.write_text(json.dumps({"modules":{"dut":{"attributes":{"top":"1"},"cells":cells,
         "ports":{"clk":{"direction":"input","bits":[2]},"d":{"direction":"input","bits":[3]},
-                 "q":{"direction":"output","bits":[6,5] if expose_state else [6]}},"netnames":{}}}}))
+                 "q":{"direction":"output","bits":[6,7] if dependency_output else [6,5] if expose_state else [6]}},"netnames":{}}}}))
     ir=tmp_path/"ir.emuir.sqlite";import_yosys_json(source).save(ir)
     report=emit_vivado_mapped_verilog(ir,tmp_path/"dut.v")
     mapped=Path(report["mapped_index"]["path"]);functions=Path(report["source_functions"]["path"])
@@ -248,9 +248,18 @@ def test_constant_proof_does_not_borrow_unselected_initialization_hypotheses(tmp
     result=compare_selected_constant_frontiers(mapped,functions,proof,observed,mapped_sha256=digest,
         expected_objects=[{"source_origin":f"s{origins['front']}","name":"p/front"}])
     assert result["status"] == "pass"
-    with pytest.raises(ValidationError,match="not independently inductive"):
-        confirm_selected_constant_sources(mapped,functions,proof,observed,inventory,mapped_sha256=digest,
-            candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
+    import sqlite3
+    from emuflow.vivado_constant_frontier import _require_inductive_selected_states, _UnconfirmedStateDependencies
+    with sqlite3.connect(mapped) as db:
+        db.execute("ATTACH DATABASE ? AS proofs",(str(proof),))
+        with pytest.raises(_UnconfirmedStateDependencies) as error:
+            _require_inductive_selected_states(db,mapped,{origins['conditional']:0})
+        assert error.value.dependencies == (origins['upstream'],)
+    # Closure may refine both states, but the extra choice must be explicit
+    # in the complete source record set and have all its fanouts checked.
+    confirmed=confirm_selected_constant_sources(mapped,functions,proof,observed,inventory,mapped_sha256=digest,
+        candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
+    assert {row['source'] for row in confirmed['sources']} == {f"s{origins['conditional']}",f"s{origins['upstream']}"}
 
 
 def test_functional_equivalence_alone_is_not_a_synthesis_pin_projection(tmp_path):
@@ -315,6 +324,16 @@ def test_internal_state_must_be_absent_from_the_native_snapshot(tmp_path):
     with sqlite3.connect(proof) as db:
         db.execute("UPDATE metadata SET value=? WHERE key='stage_inventory_sha256'",(json.dumps(file_sha256(inventory)),))
     with pytest.raises(ValidationError,match="still implemented"):
+        prepare_constant_frontier_query(mapped,proof,inventory,mapped_sha256=digest,
+            candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,
+            fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
+
+
+def test_required_initialization_dependency_cannot_hide_an_unchecked_output(tmp_path):
+    from emuflow.vivado_constant_frontier import prepare_constant_frontier_query
+    from emuflow.io import file_sha256
+    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,dependent=True,dependency_output=True)
+    with pytest.raises(ValidationError,match="output port"):
         prepare_constant_frontier_query(mapped,proof,inventory,mapped_sha256=digest,
             candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,
             fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])

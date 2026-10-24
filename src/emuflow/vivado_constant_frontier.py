@@ -257,6 +257,14 @@ def compare_selected_constant_frontiers(mapped_path: Path, functions_path: Path,
         db.close()
 
 
+class _UnconfirmedStateDependencies(ValidationError):
+    def __init__(self, source, dependencies):
+        self.source = source
+        self.dependencies = tuple(sorted(dependencies))
+        super().__init__(f"selected source s{source} is not independently inductive; "
+                         f"{len(self.dependencies)} unconfirmed state dependencies remain")
+
+
 def _require_inductive_selected_states(db, mapped_path: Path, values: Mapping[int, int]):
     """Prove the selected joint states without assuming other INIT choices."""
     from .vivado_optimization import _RESET, _parameter_bit, _lut_value
@@ -267,19 +275,24 @@ def _require_inductive_selected_states(db, mapped_path: Path, values: Mapping[in
             return mapped.cells[name]
 
         visiting = set()
+        evaluation_steps = 0
 
         @lru_cache(maxsize=4096)
         def evaluate(bit, depth=0):
+            nonlocal evaluation_steps
+            evaluation_steps += 1
+            if evaluation_steps > 65536:
+                raise ValidationError("constant confirmation induction exceeds bounded expression scope")
             if isinstance(bit,str) and bit in {"0","1"}:
-                return int(bit)
+                return int(bit), frozenset()
             if not isinstance(bit,int) or depth >= 64 or bit in visiting:
-                return None
+                return None, frozenset()
             drivers = db.execute("SELECT cell_seq,cell_id,port FROM cell_pins WHERE net_bit=? AND direction=1 AND value_kind=0 LIMIT 2", (bit,)).fetchall()
             if len(drivers) != 1:
-                return None
+                return None, frozenset()
             origin, name, output = drivers[0]
             if origin in values and output == "Q":
-                return values[origin]
+                return values[origin], frozenset()
             strict = db.execute("SELECT constant_value FROM proofs.eliminated_sources WHERE origin=? AND reason='constant-state' AND initialization='specified'", (origin,)).fetchone()
             cell = primitive(name)
             if strict is not None and output == "Q":
@@ -288,17 +301,23 @@ def _require_inductive_selected_states(db, mapped_path: Path, values: Mapping[in
                 initial = cell.get("parameters",{}).get("INIT",str(_RESET[cell["type"]][1]))
                 if initial not in {"0","1"} or int(initial) != strict[0]:
                     raise ValidationError("strict source initial value differs from its constant proof")
-                return int(strict[0])
+                return int(strict[0]), frozenset()
+            if output == "Q" and db.execute("SELECT 1 FROM proofs.constant_candidates WHERE origin=?",(origin,)).fetchone():
+                return None, frozenset({origin})
             if not (cell["type"].startswith("LUT") or cell["type"] in {"MUXF7","MUXF8","MUXF9"}):
-                return None
+                return None, frozenset()
             visiting.add(bit)
             try:
-                pins = {pin:evaluate(bits[0],depth+1) for pin,bits in cell["connections"].items()
-                        if cell["port_directions"][pin] == "input" and len(bits)==1}
+                inputs = {pin:evaluate(bits[0],depth+1) for pin,bits in cell["connections"].items()
+                          if cell["port_directions"][pin] == "input" and len(bits)==1}
+                pins = {pin:result[0] for pin,result in inputs.items()}
                 if cell["type"].startswith("LUT"):
-                    return _lut_value(cell,output,pins)
-                select = pins.get("S")
-                return pins.get("I"+str(select)) if select is not None else pins.get("I0") if pins.get("I0") == pins.get("I1") else None
+                    result = _lut_value(cell,output,pins)
+                else:
+                    select = pins.get("S")
+                    result = pins.get("I"+str(select)) if select is not None else pins.get("I0") if pins.get("I0") == pins.get("I1") else None
+                dependencies = frozenset().union(*(value[1] for value in inputs.values())) if result is None else frozenset()
+                return result, dependencies
             finally:
                 visiting.remove(bit)
 
@@ -315,8 +334,9 @@ def _require_inductive_selected_states(db, mapped_path: Path, values: Mapping[in
                 raise ValidationError("selected constant source initial value is not a legal choice")
             def pin_value(pin):
                 bits = cell["connections"].get(pin,[])
-                return evaluate(bits[0]) if len(bits)==1 else None
-            data, enable, control = pin_value("D"), pin_value("CE"), pin_value(reset)
+                return evaluate(bits[0]) if len(bits)==1 else (None,frozenset())
+            evaluated = [pin_value(pin) for pin in ("D","CE",reset)]
+            data, enable, control = (value[0] for value in evaluated)
             inversions = [_parameter_bit(cell,"IS_"+pin+"_INVERTED") for pin in ("D","CE",reset)]
             if any(v is None for v in inversions):
                 stable = False
@@ -327,10 +347,41 @@ def _require_inductive_selected_states(db, mapped_path: Path, values: Mapping[in
                 stable = ((value == reset_value) if control == 1 else
                           (control == 0 or value == reset_value) and (enable == 0 or data == value))
             if not stable:
-                raise ValidationError("selected source states are not independently inductive; unconfirmed state assumptions remain")
+                dependencies = frozenset().union(*(value[1] for value in evaluated))
+                if dependencies:
+                    raise _UnconfirmedStateDependencies(origin,dependencies)
+                raise ValidationError(f"selected source s{origin} is not independently inductive")
 
 
 def prepare_constant_frontier_query(mapped_path: Path, candidates_path: Path,
+                                    inventory_path: Path, *, mapped_sha256: str,
+                                    candidate_proofs_sha256: str, checkpoint_sha256: str,
+                                    fpga: str, selected_sources) -> dict[str, Any]:
+    """Close required state dependencies and fanouts before native inspection.
+
+    Additional INIT choices become explicit source records with complete fanout
+    coverage. They are never silently borrowed from the hypothetical model.
+    """
+    if not isinstance(selected_sources,Sequence) or isinstance(selected_sources,(str,bytes)):
+        raise ValidationError("constant confirmation needs bounded unique source identities and an FPGA")
+    requested = list(selected_sources)
+    selected = list(requested)
+    while True:
+        try:
+            plan = _prepare_constant_frontier_query_once(mapped_path,candidates_path,inventory_path,
+                mapped_sha256=mapped_sha256,candidate_proofs_sha256=candidate_proofs_sha256,
+                checkpoint_sha256=checkpoint_sha256,fpga=fpga,selected_sources=selected)
+        except _UnconfirmedStateDependencies as error:
+            additional = [f"s{i}" for i in error.dependencies if f"s{i}" not in selected]
+            if not additional or len(selected)+len(additional)>4096:
+                raise ValidationError("constant confirmation state dependencies exceed bounded scope") from error
+            selected.extend(additional)
+            continue
+        plan["requested_sources"] = requested
+        return plan
+
+
+def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Path,
                                     inventory_path: Path, *, mapped_sha256: str,
                                     candidate_proofs_sha256: str, checkpoint_sha256: str,
                                     fpga: str, selected_sources) -> dict[str, Any]:

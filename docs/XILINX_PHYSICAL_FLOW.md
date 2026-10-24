@@ -286,10 +286,14 @@ values remain hypotheses in this comparison and still need complete fanout
 coverage before they can become elimination proofs.
 
 `prepare_constant_frontier_query` follows state-to-state fanouts through
-conditional candidates to construct a bounded closed component, proves its
-joint state values inductively, and returns the complete native LUT inspection
+conditional candidates to construct a bounded closed component. If induction
+requires other conditional state values, it expands the component and checks
+all their fanouts too; it never borrows their hypothetical values silently.
+It proves the expanded joint state values inductively and returns the native LUT inspection
 query. It closes the source databases before the native checkpoint is opened;
 the plan has `status: inspection-required` and is not an elimination proof.
+`requested_sources` identifies the input roots; `sources` explicitly lists
+every state in the expanded component.
 The component is limited to 4096 states, 4096 retained LUT objects, 65536 fanout
 uses and frontier references, and a bounded closure traversal.
 
