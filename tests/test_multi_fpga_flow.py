@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from tests.partition_fixture import run_multi_fpga_flow_fixture
 import copy
 import hashlib
@@ -57,6 +58,15 @@ STATIC_EXACT_PLATFORM = (
     ROOT / "platforms/virtual/static_exact_acceptance_2fpga.json"
 )
 FAKE_OPENSTA = ROOT / "tests/fixtures/fake_opensta_paths.py"
+
+
+@contextmanager
+def _catalog_source_fixture():
+    """Only path resolution is tested here; the compiler is always mocked."""
+    with tempfile.TemporaryDirectory(prefix="catalog-path-fixture-") as temporary:
+        root = Path(temporary)
+        (root / "picorv32.v").write_text("// Directory-resolution fixture; no synthesis.\n")
+        yield root
 
 
 class MultiFpgaFlowTest(unittest.TestCase):
@@ -150,19 +160,20 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     self.assertFalse(out.exists())
 
     def test_checked_benchmark_can_select_mapper_without_overriding_rtl(self):
-        for strategy in ("hierarchical-classic-v1", "hierarchical-abc9-v1"):
-            args = _build_parser().parse_args([
-                "multi-fpga", "compile", "--benchmark-run",
-                str(ROOT / "benchmarks/runs/picorv32_l2.json"), "--source-root",
-                str(ROOT / "third_party/rtl/picorv32"), "--platform", "platform.json",
-                "--xilinx-mapping-strategy", strategy, "--out", "unused",
-            ])
-            with patch("emuflow.cli.run_multi_fpga_flow") as run, patch("emuflow.cli._print_json"):
-                run.return_value = {"status": "pass"}
-                self.assertEqual(_dispatch(args), 0)
-                self.assertEqual(run.call_args.kwargs["xilinx_mapping_strategy"], strategy)
-                self.assertEqual(run.call_args.kwargs["top"], "picorv32")
-                self.assertEqual(run.call_args.kwargs["clock_periods"], {"clk": 10.0})
+        with _catalog_source_fixture() as source_root:
+            for strategy in ("hierarchical-classic-v1", "hierarchical-abc9-v1"):
+                args = _build_parser().parse_args([
+                    "multi-fpga", "compile", "--benchmark-run",
+                    str(ROOT / "benchmarks/runs/picorv32_l2.json"), "--source-root",
+                    str(source_root), "--platform", "platform.json",
+                    "--xilinx-mapping-strategy", strategy, "--out", "unused",
+                ])
+                with patch("emuflow.cli.run_multi_fpga_flow") as run, patch("emuflow.cli._print_json"):
+                    run.return_value = {"status": "pass"}
+                    self.assertEqual(_dispatch(args), 0)
+                    self.assertEqual(run.call_args.kwargs["xilinx_mapping_strategy"], strategy)
+                    self.assertEqual(run.call_args.kwargs["top"], "picorv32")
+                    self.assertEqual(run.call_args.kwargs["clock_periods"], {"clk": 10.0})
 
     def test_partition_engine_is_resolved_before_flow_execution(self) -> None:
         with patch(
@@ -653,41 +664,41 @@ class MultiFpgaFlowTest(unittest.TestCase):
             )
 
     def test_cli_checked_benchmark_owns_native_frontend_contract(self):
-        root = Path(__file__).resolve().parents[1]
-        benchmark = root / "benchmarks/runs/picorv32_l2.json"
-        source_root = root / "third_party/rtl/picorv32"
-        args = _build_parser().parse_args(
-            [
-                "multi-fpga",
-                "compile",
-                "--benchmark-run",
-                str(benchmark),
-                "--source-root",
-                str(source_root),
-                "--platform",
-                "platform.json",
-                "--out",
-                "unused",
-            ]
-        )
-        with (
-            patch("emuflow.cli.run_multi_fpga_flow") as run,
-            patch("emuflow.cli._print_json"),
-        ):
-            run.return_value = {"status": "pass"}
-            self.assertEqual(_dispatch(args), 0)
-        kwargs = run.call_args.kwargs
-        self.assertEqual(kwargs["top"], "picorv32")
-        self.assertEqual(kwargs["clocks"], ["clk"])
-        self.assertEqual(kwargs["clock_periods"], {"clk": 10.0})
-        self.assertEqual(
-            kwargs["mapping_profile"], "xilinx-ultrascaleplus-open-v1"
-        )
-        self.assertEqual(
-            kwargs["timing_io"],
-            json.loads(benchmark.read_text(encoding="utf-8"))["timing_io"],
-        )
-        self.assertEqual([path.name for path in kwargs["sources"]], ["picorv32.v"])
+        with _catalog_source_fixture() as source_root:
+            root = Path(__file__).resolve().parents[1]
+            benchmark = root / "benchmarks/runs/picorv32_l2.json"
+            args = _build_parser().parse_args(
+                [
+                    "multi-fpga",
+                    "compile",
+                    "--benchmark-run",
+                    str(benchmark),
+                    "--source-root",
+                    str(source_root),
+                    "--platform",
+                    "platform.json",
+                    "--out",
+                    "unused",
+                ]
+            )
+            with (
+                patch("emuflow.cli.run_multi_fpga_flow") as run,
+                patch("emuflow.cli._print_json"),
+            ):
+                run.return_value = {"status": "pass"}
+                self.assertEqual(_dispatch(args), 0)
+            kwargs = run.call_args.kwargs
+            self.assertEqual(kwargs["top"], "picorv32")
+            self.assertEqual(kwargs["clocks"], ["clk"])
+            self.assertEqual(kwargs["clock_periods"], {"clk": 10.0})
+            self.assertEqual(
+                kwargs["mapping_profile"], "xilinx-ultrascaleplus-open-v1"
+            )
+            self.assertEqual(
+                kwargs["timing_io"],
+                json.loads(benchmark.read_text(encoding="utf-8"))["timing_io"],
+            )
+            self.assertEqual([path.name for path in kwargs["sources"]], ["picorv32.v"])
 
     def test_cli_checked_benchmark_rejects_manual_frontend_override(self):
         root = Path(__file__).resolve().parents[1]
