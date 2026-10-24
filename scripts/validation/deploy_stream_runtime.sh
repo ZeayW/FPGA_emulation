@@ -81,13 +81,14 @@ trap - EXIT
 echo "RUNTIME_CXX=$selected_cxx"
 "$selected_cxx" --version
 
+# Borrow only dependencies of the maintained runtime. An old installation is
+# not an inventory of current providers; unknown/retired programs stay out.
 for binary in "$native_base"/bin/*; do
   test -e "$binary" || continue
-  # Retired provider binaries must not leak in through an older native base.
   case "$(basename "$binary")" in
-    emuflow_pin_planner|emuflow_tritonpart_balance_legalizer|emuflow_xilinx_bookshelf_exporter|emuflow_tdm_exact_scheduler|emuflow_tdm_ratio_optimizer|emuflow_tdm_slot_optimizer|emuflow_tdm_timing_dag_optimizer|emuflow_tdm_partition_feedback|emuflow_tlr_router|emuflow_patron_refiner|repart|emuflow_mfspart_*) continue ;;
+    openroad|sta|yosys|yosys-abc|emuflow_hop_partition_refiner|emuflow_bsp_pin_solver|emuflow_fpgaif_arch_importer|emuflow_eda2025_topology_optimizer)
+      ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")" ;;
   esac
-  ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")"
 done
 sqlite_flags=()
 if test -n "${SQLITE3_PREFIX:-}"; then

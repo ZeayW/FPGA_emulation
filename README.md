@@ -120,6 +120,8 @@ publication or temporary-file retirement, including borrowed native cursors and
 lazy physical and timing-store queries.
 The shared native store API covers EmuIR v1/v2, assignment v1–v4 and split v2;
 artifact-scoped identities and one build manifest bind its readers and writers.
+Thin deployments borrow only maintained tool dependencies; old installations
+cannot reintroduce retired provider programs or replace the rebuilt native entry.
 Native clustering and PATRON joins share the live EmuIR reader's store.
 See the [W0 contract and acceptance gates](docs/FLOW_PLAN.md#shared-native-core-w0).
 Production native stages require `emuflow-native`; an incomplete installation

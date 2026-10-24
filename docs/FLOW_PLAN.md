@@ -197,6 +197,12 @@ the prior implementation; the permitted regression is at most 5%. Keep hashes
 and measurements outside production handoffs. Fixture/API gates alone cannot
 establish the large-design performance gate.
 
+Thin runtime deployment borrows only the named maintained synthesis, timing,
+partition and board-helper dependencies. It does not copy every executable from
+an older installation. The unified entry and shared core are rebuilt from the
+exact deployed source; retired and unknown programs cannot re-enter through
+that dependency prefix. Borrowed tools retain their separate base identity.
+
 W0/W7 closure also requires retirement of superseded execution paths. Once the
 replacement has passed the required equivalence and performance gates, remove
 the old production entry, configuration switches, deploy/build targets and
