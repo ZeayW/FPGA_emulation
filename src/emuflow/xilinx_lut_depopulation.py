@@ -17,6 +17,39 @@ from .xilinx_openparf_atomic import load_xilinx_openparf_atomic_sites
 from .xilinx_openparf_name_map_storage import read_xilinx_openparf_atomic_name_map
 
 
+def _hot_region_boxes(name_map, hot):
+    """Use the sealed dense-grid region contract, not per-site metadata.
+
+    The normalized site database intentionally stores geometry/resources only.
+    Source names survive region reindexing as ``source_name`` in this contract.
+    """
+    contract = name_map.get("coordinate_system", {}).get("clock_regions")
+    regions = contract.get("regions") if isinstance(contract, dict) else None
+    if not isinstance(regions, list) or not regions:
+        raise ValidationError("LUT depopulation requires sealed clock-region geometry")
+    boxes, names = [], set()
+    for region in regions:
+        if not isinstance(region, dict):
+            raise ValidationError("invalid sealed clock-region geometry")
+        name = region.get("source_name", region.get("name"))
+        box = region.get("bbox")
+        if (not isinstance(name, str) or not name or name in names
+                or not isinstance(box, list) or len(box) != 4
+                or any(isinstance(v, bool) or not isinstance(v, int) for v in box)
+                or not 0 <= box[0] <= box[2] or not 0 <= box[1] <= box[3]):
+            raise ValidationError("invalid sealed clock-region geometry")
+        names.add(name)
+        if name in hot:
+            boxes.append((name, box))
+    if not hot <= names:
+        raise ValidationError("hot region is absent from sealed clock-region geometry")
+    for i, (_, a) in enumerate(boxes):
+        for _, b in boxes[:i]:
+            if max(a[0], b[0]) <= min(a[2], b[2]) and max(a[1], b[1]) <= min(a[3], b[3]):
+                raise ValidationError("overlapping sealed hot clock-region geometry")
+    return boxes
+
+
 def depopulate_hot_lut_sites(
     placement: Path, name_map_path: Path, output: Path, *,
     mapped_sha256: str, packed_sha256: str, hot_clock_regions,
@@ -39,6 +72,7 @@ def depopulate_hot_lut_sites(
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
+        boxes = _hot_region_boxes(name_map, hot)
         with tempfile.TemporaryDirectory(prefix=".lut-depopulation-", dir=output.parent) as temp:
             root = Path(temp)
             atom_path, site_path = root / "atoms.tsv", root / "sites.tsv"
@@ -58,10 +92,11 @@ def depopulate_hot_lut_sites(
                     if (site.get("resources", {}).get("LUT", 0) < 8
                             or len(site.get("physical_sites", {}).get("LUT", [])) != 1):
                         continue
-                    cr = (site.get("physical_region") or {}).get("clock_region")
-                    if cr in hot:
-                        matched.add(cr)
-                    f.write(f"{site['dense_x']} {site['dense_y']} {int(cr in hot)}\n")
+                    x, y = site["dense_x"], site["dense_y"]
+                    regions = [name for name, (xl, yl, xh, yh) in boxes
+                               if xl <= x <= xh and yl <= y <= yh]
+                    matched.update(regions)
+                    f.write(f"{x} {y} {int(bool(regions))}\n")
             if matched != hot:
                 raise ValidationError("hot region is absent from qualified LUT site domain")
             candidate = root / "candidate.pl"

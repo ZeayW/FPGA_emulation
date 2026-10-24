@@ -113,6 +113,8 @@ Independent circuit comparison checks the rewired candidate before publication.
 An explicit native LUT depopulation experiment can move singleton LUTs out of
 selected hot clock regions after detailed placement. Its candidate requires
 fresh exact placement validation and routing before any acceptance claim.
+Hot regions use the sealed placement-coordinate contract, including source
+region names when the solver grid is reindexed.
 Typed placement export checks its required C++ exporter before full-design
 preparation; external native installs must be selected with `EMUFLOW_NATIVE_ROOT`.
 Its output requires remapping and a new placement/routing validation; see

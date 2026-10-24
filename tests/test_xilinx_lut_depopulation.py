@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+
+from emuflow.errors import ValidationError
+from emuflow.xilinx_lut_depopulation import _hot_region_boxes, depopulate_hot_lut_sites
 
 
 class NativeLutDepopulationTest(unittest.TestCase):
@@ -88,6 +92,39 @@ class NativeLutDepopulationTest(unittest.TestCase):
                 completed, output = self.run_case(Path(d), corrupt=corrupt)
                 self.assertNotEqual(completed.returncode, 0)
                 self.assertFalse(output.exists())
+
+    def test_wrapper_reads_regions_from_contract_without_per_site_metadata(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.run_case(root)
+            atoms = [dict(zip(("openparf", "source_cluster", "resource", "cell_type"),
+                              line.split())) for line in (root/"atoms.tsv").read_text().splitlines()]
+            name_map = {"atoms": atoms, "coordinate_system": {"clock_regions": {"regions": [
+                {"name": "X0Y0", "source_name": "X6Y9", "bbox": [0, 0, 0, 0]},
+                {"name": "X1Y0", "source_name": "X7Y9", "bbox": [1, 0, 2, 0]},
+            ]}}}
+            sites = [dict(dense_x=x, dense_y=0, resources={"LUT": 8},
+                          physical_sites={"LUT": [f"SLICE_X{x}Y0"]}) for x in range(3)]
+            module = "emuflow.xilinx_lut_depopulation"
+            with patch(module+".resolve_native_executable", return_value=str(self.exe)), \
+                 patch(module+".read_xilinx_openparf_atomic_name_map", return_value=name_map), \
+                 patch(module+".load_xilinx_openparf_atomic_sites", return_value=sites):
+                report = depopulate_hot_lut_sites(
+                    root/"input.pl", root/"name_map.json", root/"candidate.pl",
+                    mapped_sha256="mapped", packed_sha256="packed", hot_clock_regions=["X6Y9"],
+                )
+            self.assertEqual(report["counters"]["moved_luts"], 2)
+            self.assertTrue(report["requires_exact_placement_validation"])
+
+    def test_invalid_or_missing_region_contract_is_rejected(self):
+        def contract(regions):
+            return {"coordinate_system": {"clock_regions": {"regions": regions}}}
+        for name_map in ({}, contract([None]), contract([
+            {"name": "X0Y0", "bbox": [0, 0, 2, 2]},
+            {"name": "X1Y0", "bbox": [2, 0, 3, 2]},
+        ]), contract([{"name": "X0Y0", "bbox": [True, 0, 2, 2]}])):
+            with self.subTest(name_map=name_map), self.assertRaises(ValidationError):
+                _hot_region_boxes(name_map, {"X0Y0", "X1Y0"})
 
 
 if __name__ == "__main__":
