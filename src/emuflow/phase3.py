@@ -30,10 +30,6 @@ from .partition_pressure import (
     run_partition_pressure_native,
     validate_partition_pressure_native_bundle,
 )
-from .partition_physical_feedback import (
-    build_partition_physical_feedback,
-    validate_partition_physical_feedback,
-)
 from .platform import Platform
 from .partition_limits import planning_resource_capacities, strict_balance_limits
 from .resource_budget import validate_device_resource_usage
@@ -371,8 +367,6 @@ def run_phase3(
     patron_algorithm_version: int = DEFAULT_PATRON_ALGORITHM_VERSION,
     patron_initial_assignment_path: Optional[Path] = None,
     patron_initial_clusters_path: Optional[Path] = None,
-    patron_physical_system_timing_path: Optional[Path] = None,
-    patron_physical_feedback_scale: float = 0.0,
     retain_diagnostics: bool = False,
     retain_patron_baseline: bool = False,
 ) -> Dict[str, Any]:
@@ -399,7 +393,7 @@ def run_phase3(
     if (
         isinstance(patron_algorithm_version, bool)
         or not isinstance(patron_algorithm_version, int)
-        or patron_algorithm_version not in {6, 9, 10, 11, 14}
+        or patron_algorithm_version not in {6, 9, 10, 14}
     ):
         raise ValidationError("PATRON algorithm version is invalid")
     patron_flow_refinement = provider == "patron" and patron_algorithm_version != 6
@@ -411,28 +405,6 @@ def run_phase3(
     ):
         raise ValidationError(
             "PATRON v14 requires generalized Static Exact mode"
-        )
-    if patron_physical_system_timing_path is not None and (
-        provider != "patron"
-        or patron_algorithm_version != 11
-        or patron_initial_assignment_path is None
-        or patron_physical_feedback_scale <= 0.0
-    ):
-        raise ValidationError(
-            "PATRON physical feedback requires provider='patron', algorithm "
-            "v11, a frozen initial assignment, and a positive scale"
-        )
-    if (
-        patron_algorithm_version == 11
-        and patron_physical_system_timing_path is None
-    ):
-        raise ValidationError("PATRON v11 requires physical system timing")
-    if (
-        patron_physical_system_timing_path is None
-        and patron_physical_feedback_scale != 0.0
-    ):
-        raise ValidationError(
-            "PATRON physical feedback scale has no system timing source"
         )
     # Explicit qualification mode may request full canonical source seals and
     # replay artifacts.  Production keeps only the partition facts resident.
@@ -626,7 +598,6 @@ def run_phase3(
                 read_json(patron_initial_assignment_path),
                 include_semantic_contract=(patron_algorithm_version != 14),
             )
-        patron_feedback_source_assignment = initial
         phase3_runtime_observe(
             patron_initial_derived_records_deferred=int(
                 patron_initial_derived_records_deferred
@@ -666,7 +637,6 @@ def run_phase3(
         native_store_model = (
             not retain_diagnostics and patron_initial_clusters_path is None
             and patron_algorithm_version == 14
-            and patron_physical_system_timing_path is None
             and (patron_refiner is None or is_unified_native_executable(patron_refiner))
             and not os.environ.get("EMUFLOW_PATRON_INPUT_COPY")
             and supports_native_pressure_model(ir, clusters, timing_database)
@@ -720,29 +690,6 @@ def run_phase3(
                     )
                 ),
             )
-        patron_physical_feedback = None
-        patron_physical_feedback_validation = None
-        if patron_physical_system_timing_path is not None:
-            patron_physical_system_timing = phase3_runtime_call(
-                "patron.load_physical_feedback",
-                read_json,
-                patron_physical_system_timing_path,
-            )
-            patron_physical_feedback = phase3_runtime_call(
-                "patron.build_physical_feedback",
-                build_partition_physical_feedback,
-                model,
-                patron_feedback_source_assignment,
-                patron_physical_system_timing,
-            )
-            patron_physical_feedback_validation = phase3_runtime_call(
-                "patron.validate_physical_feedback",
-                validate_partition_physical_feedback,
-                model,
-                patron_feedback_source_assignment,
-                patron_physical_system_timing,
-                patron_physical_feedback,
-            )
         assignment, patron_trace = phase3_runtime_call(
             "patron.native_refinement",
             run_partition_pressure_native,
@@ -756,8 +703,6 @@ def run_phase3(
             executable=patron_refiner,
             max_moves=patron_max_moves,
             algorithm_version=patron_algorithm_version,
-            physical_feedback=patron_physical_feedback,
-            physical_feedback_scale=patron_physical_feedback_scale,
             output_validation=("full" if retain_diagnostics else "caller"),
             retain_trace_seals=retain_diagnostics,
             stream_semantic_records=not retain_diagnostics,
@@ -790,17 +735,6 @@ def run_phase3(
                 output_dir / "patron" / "initial_hop_refinement.json",
                 patron_initial_hop,
             )
-            if patron_physical_feedback is not None:
-                write_json(
-                    output_dir / "patron" / "physical_feedback.json",
-                    patron_physical_feedback,
-                )
-                write_json(
-                    output_dir
-                    / "patron"
-                    / "physical_feedback_source_assignment.json",
-                    patron_feedback_source_assignment,
-                )
             patron_validation = phase3_runtime_call(
                 "patron.validate_diagnostic_bundle",
                 validate_partition_pressure_native_bundle,
@@ -814,8 +748,6 @@ def run_phase3(
                 initial,
                 assignment,
                 patron_trace,
-                patron_physical_feedback,
-                patron_physical_feedback_scale,
                 timing_database_path=timing_database_path,
             )
         else:
@@ -896,10 +828,6 @@ def run_phase3(
             if native_store_model:
                 patron_validation["model_implementation_id"] = patron_trace["model_implementation_id"]
                 patron_validation["native_model_metrics"] = patron_trace["native_model_metrics"]
-        if patron_physical_feedback_validation is not None:
-            patron_validation["physical_feedback"] = (
-                patron_physical_feedback_validation
-            )
         if patron_algorithm_version == 14:
             assignment, candidate_selection = phase3_runtime_call(
                 "patron.select_candidate",
@@ -919,8 +847,6 @@ def run_phase3(
             del model
             del timing_database
             del patron_trace
-            del patron_physical_feedback
-            del patron_feedback_source_assignment
             if not retain_patron_baseline:
                 del initial
                 del patron_initial_hop
@@ -1137,16 +1063,6 @@ def run_phase3(
                     "available-via-partition-pressure-reference"
                 ),
             }
-        if (
-            patron_physical_system_timing_path is not None
-            and retain_diagnostics
-        ):
-            report["artifacts"]["patron_physical_feedback"] = (
-                "patron/physical_feedback.json"
-            )
-            report["artifacts"][
-                "patron_physical_feedback_source_assignment"
-            ] = "patron/physical_feedback_source_assignment.json"
         if patron_initial_assignment_path is None and retain_diagnostics:
             report["artifacts"]["tritonpart"] = (
                 "patron/tritonpart/tritonpart_input.json"

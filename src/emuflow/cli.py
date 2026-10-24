@@ -888,7 +888,7 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--patron-algorithm-version",
         type=int,
-        choices=(6, 9, 10, 11, 14),
+        choices=(6, 9, 10, 14),
         default=DEFAULT_PATRON_ALGORITHM_VERSION,
     )
     multi_fpga_compile.add_argument(
@@ -1830,15 +1830,11 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--patron-algorithm-version",
         type=int,
-        choices=(6, 9, 10, 11, 14),
+        choices=(6, 9, 10, 14),
         default=DEFAULT_PATRON_ALGORITHM_VERSION,
     )
     phase3.add_argument("--patron-initial-assignment", type=Path)
     phase3.add_argument("--patron-initial-clusters", type=Path)
-    phase3.add_argument("--patron-physical-system-timing", type=Path)
-    phase3.add_argument(
-        "--patron-physical-feedback-scale", type=float, default=0.0
-    )
 
     sta_parser = subparsers.add_parser(
         "sta", help="STA path extraction artifact operations"
@@ -3376,12 +3372,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.patron_initial_assignment
             ),
             patron_initial_clusters_path=args.patron_initial_clusters,
-            patron_physical_system_timing_path=(
-                args.patron_physical_system_timing
-            ),
-            patron_physical_feedback_scale=(
-                args.patron_physical_feedback_scale
-            ),
             static_exact_candidate_policy=(
                 args.static_exact_candidate_policy
             ),

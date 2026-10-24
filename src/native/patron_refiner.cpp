@@ -820,14 +820,12 @@ Model read_typed_model(const std::string& path) {
   const int flow_version =
       typed_count(reader.u32("flow version"), "flow version", true);
   require(flow_version == 6 || flow_version == 9 || flow_version == 10 ||
-              flow_version == 11 || flow_version == 14,
+              flow_version == 14,
           "invalid PATRON typed input flow version");
   const std::uint32_t flags = reader.u32("flags");
   const bool flow_refinement = flow_version != 6;
-  const bool physical_feedback = flow_version == 11;
   const std::uint32_t expected_flags =
-      1U | (flow_refinement ? 2U : 0U) |
-      (physical_feedback ? 4U : 0U);
+      1U | (flow_refinement ? 2U : 0U);
   require(flags == expected_flags, "invalid PATRON typed input flags");
 
   Model model;
@@ -1067,24 +1065,7 @@ Model read_typed_model(const std::string& path) {
       model.path_nets.push_back(net);
     }
     path_record.nets.set_offsets(path_net_begin, model.path_nets.size());
-    if (physical_feedback) {
-      path_record.feedback_source = reader.i32("feedback source");
-      path_record.feedback_sink = reader.i32("feedback sink");
-      path_record.feedback_residual_ns =
-          reader.finite_double("feedback residual");
-      const bool no_feedback = path_record.feedback_source == -1 &&
-                               path_record.feedback_sink == -1;
-      const bool valid_feedback =
-          path_record.feedback_source >= 0 &&
-          path_record.feedback_source < model.parts &&
-          path_record.feedback_sink >= 0 &&
-          path_record.feedback_sink < model.parts &&
-          path_record.feedback_source != path_record.feedback_sink;
-      require((no_feedback || valid_feedback) &&
-                  path_record.feedback_residual_ns >= 0.0 &&
-                  (!no_feedback || path_record.feedback_residual_ns == 0.0),
-              "invalid PATRON typed physical feedback");
-    }
+
   }
 
   std::array<unsigned char, 8> trailer{};
@@ -1287,11 +1268,6 @@ Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
         ++total_snaking;
       }
       seen.insert(part);
-    }
-    if (sequence.size() > 1
-        && sequence.front() == path.feedback_source
-        && sequence.back() == path.feedback_sink) {
-      transport += path.feedback_residual_ns;
     }
     const double predicted = path.slack_ns - transport;
     const double normalized = normalized_slack(
@@ -1519,11 +1495,6 @@ ProxyPathState build_proxy_path(
   dependency_domains.erase(
       std::unique(dependency_domains.begin(), dependency_domains.end()),
       dependency_domains.end());
-  if (sequence.size() > 1
-      && sequence.front() == path.feedback_source
-      && sequence.back() == path.feedback_sink) {
-    transport += path.feedback_residual_ns;
-  }
   const double predicted = path.slack_ns - transport;
   const double slack = normalized_slack(model, path.period_ns, predicted);
   return ProxyPathState{
@@ -4096,8 +4067,6 @@ void write_output(const std::string& output_path,
   const char* header = "EMUFLOW_PATRON_OUTPUT_V6\n";
   if (flow_output_version == 14) {
     header = "EMUFLOW_PATRON_OUTPUT_V14\n";
-  } else if (flow_output_version == 11) {
-    header = "EMUFLOW_PATRON_OUTPUT_V11\n";
   } else if (flow_output_version == 10) {
     header = "EMUFLOW_PATRON_OUTPUT_V10\n";
   } else if (flow_output_version == 9) {
@@ -5594,8 +5563,6 @@ void run_scalable(const Model& model,
   std::string mode = "endpoint-exact-critical-ejection-v6";
   if (model.flow_version == 14) {
     mode = "endpoint-exact-critical-flow-v14";
-  } else if (model.flow_version == 11) {
-    mode = "endpoint-exact-critical-flow-v11";
   } else if (model.flow_version == 10) {
     mode = "endpoint-exact-critical-flow-v10";
   } else if (model.flow_version == 9) {
@@ -5621,6 +5588,7 @@ void run(const Model& model,
          const std::string& output_path,
          bool emit_trace,
          bool typed_output) {
+  require(model.flow_version != 11, "PATRON v11 is retired");
   if (model.clusters <= 256 && !model.flow_refinement) {
     run_exact(model, output_path, emit_trace, typed_output);
   } else {

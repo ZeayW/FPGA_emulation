@@ -46,10 +46,6 @@ from .partition import (
 from .platform import Platform
 from .bank_allocation import apply_bank_domain_ratios
 from .native_tools import is_unified_native_executable, resolve_native_stage_command
-from .partition_physical_feedback import (
-    PARTITION_PHYSICAL_FEEDBACK_SCHEMA,
-    validate_partition_physical_feedback_seal,
-)
 from .partition_limits import planning_resource_capacities
 from .phase3_runtime import phase3_runtime_call
 from .resources import RESOURCE_FIELDS
@@ -83,9 +79,6 @@ PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9 = (
     "emuflow.partition-pressure-trace/v9"
 )
 PARTITION_PRESSURE_FLOW_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v10"
-PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V11 = (
-    "emuflow.partition-pressure-trace/v11"
-)
 PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14 = (
     "emuflow.partition-pressure-trace/v14"
 )
@@ -100,9 +93,6 @@ PATRON_FLOW_REFINEMENT_ALGORITHM_V2 = (
 )
 PATRON_FLOW_REFINEMENT_ALGORITHM = (
     "flowcutter-bidirectional-piercing-physical-hop-guard-v4"
-)
-PATRON_FLOW_REFINEMENT_ALGORITHM_V5 = (
-    "flowcutter-bidirectional-piercing-endpoint-residual-v5"
 )
 PATRON_FLOW_REFINEMENT_ALGORITHM_V8 = (
     "flowcutter-ranked-frontier-predictive-timing-v8"
@@ -132,9 +122,6 @@ PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9 = (
 )
 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER = (
     "patron-endpoint-exact-flow-native-v10"
-)
-PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11 = (
-    "patron-endpoint-exact-flow-native-v11"
 )
 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14 = (
     "patron-predictive-timing-flow-native-v14"
@@ -928,17 +915,16 @@ class _NativeBinaryPipeWriter:
         self,
         *,
         flow_version: int,
-        use_physical_feedback: bool,
         counts: Tuple[int, int, int, int, int, int],
         integers: Tuple[int, int, int, int, int, int, int, int, int, int],
         scalars: Tuple[float, float, float, float, float],
         flow_configuration: Tuple[int, int, int, int, int, int, int],
     ) -> None:
+        if flow_version not in {6, 9, 10, 14}:
+            raise ValidationError("native PATRON algorithm version is invalid")
         flags = 1
         if flow_version != 6:
             flags |= 2
-        if use_physical_feedback:
-            flags |= 4
         self._emit(
             "<8sIIII6Q10i5d7i",
             _PATRON_TYPED_INPUT_MAGIC,
@@ -1055,7 +1041,6 @@ class _NativeBinaryPipeWriter:
         start_cluster: int,
         end_cluster: int,
         nets: Sequence[int],
-        feedback: Optional[Tuple[int, int, float]],
     ) -> None:
         self._emit(
             "<BI2diiQ",
@@ -1069,8 +1054,6 @@ class _NativeBinaryPipeWriter:
         )
         if self._emit_u32_values(nets) != len(nets):
             raise ValidationError("native PATRON path-net count disagrees")
-        if feedback is not None:
-            self._emit("<iid", *feedback)
         self._records += 1
 
     def _finish_payload(self) -> None:
@@ -1243,38 +1226,14 @@ def _flow_refinement_configuration(
     cluster_count: int,
     *,
     version: int = 4,
-    physical_feedback_sha256: Optional[str] = None,
-    physical_feedback_scale: float = 0.0,
 ) -> Dict[str, Any]:
-    if version not in (1, 2, 3, 4, 5, 8):
+    if version not in (1, 2, 3, 4, 8):
         raise ValidationError("native PATRON flow version is invalid")
-    if (
-        isinstance(physical_feedback_scale, bool)
-        or not isinstance(physical_feedback_scale, (int, float))
-        or not math.isfinite(float(physical_feedback_scale))
-        or float(physical_feedback_scale) < 0.0
-    ):
-        raise ValidationError("native PATRON physical feedback scale is invalid")
-    if version == 5 and (
-        not enabled
-        or not isinstance(physical_feedback_sha256, str)
-        or len(physical_feedback_sha256) != 64
-        or any(character not in "0123456789abcdef" for character in physical_feedback_sha256)
-        or float(physical_feedback_scale) <= 0.0
-    ):
-        raise ValidationError("native PATRON physical feedback seal is invalid")
-    if version != 5 and (
-        physical_feedback_sha256 is not None
-        or float(physical_feedback_scale) != 0.0
-    ):
-        raise ValidationError("legacy PATRON flow cannot consume physical feedback")
     result = {
         "enabled": enabled,
         "algorithm": (
             PATRON_FLOW_REFINEMENT_ALGORITHM_V8
             if version == 8
-            else PATRON_FLOW_REFINEMENT_ALGORITHM_V5
-            if version == 5
             else (
                 PATRON_FLOW_REFINEMENT_ALGORITHM
                 if version == 4
@@ -1331,21 +1290,6 @@ def _flow_refinement_configuration(
                     if enabled
                     else 0.0
                 ),
-            }
-        )
-    if version == 5:
-        result.update(
-            {
-                "physical_hop_guard": "disabled-by-endpoint-feedback",
-                "physical_hop_guard_scale_ns": 0.0,
-                "physical_feedback_schema": (
-                    PARTITION_PHYSICAL_FEEDBACK_SCHEMA
-                ),
-                "physical_feedback_matching": (
-                    "exact-current-endpoint-pair-v1"
-                ),
-                "physical_feedback_sha256": physical_feedback_sha256,
-                "physical_feedback_scale": float(physical_feedback_scale),
             }
         )
     if version == 8:
@@ -2663,8 +2607,6 @@ def evaluate_partition_pressure(
     *,
     include_tdm_wait: bool = True,
     physical_hop_guard_scale_ns: float = 0.0,
-    physical_feedback: Optional[Mapping[str, Any]] = None,
-    physical_feedback_scale: float = 0.0,
     path_transition_objective: bool = False,
 ) -> Dict[str, Any]:
     """Fully recompute the PATRON objective for one compact assignment."""
@@ -2692,37 +2634,6 @@ def evaluate_partition_pressure(
         raise ValidationError(
             "partition pressure physical hop guard scale must be non-negative"
         )
-    physical_feedback_scale = _require_finite(
-        physical_feedback_scale,
-        "partition pressure physical feedback scale",
-    )
-    if physical_feedback_scale < 0.0:
-        raise ValidationError(
-            "partition pressure physical feedback scale must be non-negative"
-        )
-    if physical_feedback is None:
-        if physical_feedback_scale != 0.0:
-            raise ValidationError(
-                "partition pressure physical feedback scale has no artifact"
-            )
-        feedback_by_path: Dict[str, Mapping[str, Any]] = {}
-    else:
-        if (
-            physical_feedback.get("schema")
-            != PARTITION_PHYSICAL_FEEDBACK_SCHEMA
-            or physical_feedback_scale <= 0.0
-            or not isinstance(physical_feedback.get("paths"), list)
-        ):
-            raise ValidationError(
-                "partition pressure physical feedback configuration is invalid"
-            )
-        feedback_by_path = {
-            record["path"]: record for record in physical_feedback["paths"]
-        }
-        if len(feedback_by_path) != len(physical_feedback["paths"]):
-            raise ValidationError(
-                "partition pressure physical feedback paths are duplicated"
-            )
     cluster_parts = dict(cluster_assignment)
     domain_by_arc = _capacity_key_by_arc(model)
     capacity_by_key = {record["key"]: record for record in model["capacities"]}
@@ -2902,24 +2813,6 @@ def evaluate_partition_pressure(
                     ):
                         partition_sequence.append(part)
             transitions = max(0, len(partition_sequence) - 1)
-        feedback_record = feedback_by_path.get(path["path"])
-        feedback_delay = 0.0
-        if (
-            feedback_record is not None
-            and len(partition_sequence) > 1
-            and partition_sequence[0]
-            == feedback_record["observed_source_fpga"]
-            and partition_sequence[-1]
-            == feedback_record["observed_sink_fpga"]
-        ):
-            feedback_delay = (
-                _require_finite(
-                    feedback_record["positive_residual_ns"],
-                    "partition pressure physical feedback residual",
-                )
-                * physical_feedback_scale
-            )
-            transport += feedback_delay
         predicted_slack = path["base_slack_ns"] - transport
         normalized = _normalized_slack(
             path["clock_period_ns"], predicted_slack, normalization
@@ -2935,7 +2828,6 @@ def evaluate_partition_pressure(
                 "path": path["path"],
                 "transition_model": path["transition_model"],
                 "transport_delay_ns": transport,
-                "physical_feedback_delay_ns": feedback_delay,
                 "predicted_slack_ns": predicted_slack,
                 "normalized_slack": normalized,
                 "partition_transitions": transitions,
@@ -3359,14 +3251,11 @@ def _write_patron_native_input(
     initial_assignment: Mapping[str, Any],
     max_moves: int,
     flow_version: int,
-    physical_feedback: Optional[Mapping[str, Any]] = None,
-    physical_feedback_scale: float = 0.0,
     _writer: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    if flow_version not in {6, 9, 10, 11, 14}:
+    if flow_version not in {6, 9, 10, 14}:
         raise ValidationError("native PATRON algorithm version is invalid")
     flow_refinement = flow_version != 6
-    use_physical_feedback = physical_feedback is not None
     if flow_version == 14 and (
         clusters_artifact.get("policy", {}).get("cut_mode")
         != CUT_MODE_STATIC_EXACT
@@ -3374,35 +3263,6 @@ def _write_patron_native_input(
         raise ValidationError(
             "native PATRON v14 requires generalized Static Exact clusters"
         )
-    if use_physical_feedback:
-        if flow_version != 11:
-            raise ValidationError(
-                "native PATRON physical feedback requires algorithm v11"
-            )
-        validate_partition_physical_feedback_seal(
-            model, physical_feedback
-        )
-        physical_feedback_scale = _require_finite(
-            physical_feedback_scale,
-            "native PATRON physical feedback scale",
-        )
-        if physical_feedback_scale <= 0.0:
-            raise ValidationError(
-                "native PATRON physical feedback scale must be positive"
-            )
-        feedback_by_index = {
-            record["index"]: record for record in physical_feedback["paths"]
-        }
-    else:
-        if flow_version == 11:
-            raise ValidationError(
-                "native PATRON v11 requires physical feedback"
-            )
-        if physical_feedback_scale != 0.0:
-            raise ValidationError(
-                "native PATRON physical feedback scale has no artifact"
-            )
-        feedback_by_index = {}
     parts = sorted(record["fpga"] for record in model["fpgas"])
     part_index = {part: index for index, part in enumerate(parts)}
     packed_nets = (
@@ -3488,7 +3348,6 @@ def _write_patron_native_input(
         )
         lines.header(
             flow_version=flow_version,
-            use_physical_feedback=use_physical_feedback,
             counts=(
                 len(parts),
                 len(clusters),
@@ -3679,22 +3538,6 @@ def _write_patron_native_input(
                     for net in timing_path["path_nets"]
                     if net in net_index
                 ]
-            feedback: Optional[Tuple[int, int, float]] = None
-            if use_physical_feedback:
-                feedback_record = feedback_by_index.get(index)
-                if feedback_record is None:
-                    feedback = (-1, -1, 0.0)
-                else:
-                    feedback = (
-                        part_index[
-                            feedback_record["observed_source_fpga"]
-                        ],
-                        part_index[
-                            feedback_record["observed_sink_fpga"]
-                        ],
-                        float(feedback_record["positive_residual_ns"])
-                        * physical_feedback_scale,
-                    )
             lines.path(
                 index,
                 clock_period_ns,
@@ -3702,7 +3545,6 @@ def _write_patron_native_input(
                 start_cluster_index,
                 end_cluster_index,
                 path_nets,
-                feedback,
             )
         lines.publish()
         published = True
@@ -3790,7 +3632,7 @@ def _parse_patron_typed_output(
             if (
                 magic != _PATRON_TYPED_OUTPUT_MAGIC
                 or version != _PATRON_TYPED_OUTPUT_VERSION
-                or output_version not in {6, 7, 8, 9, 10, 11, 14}
+                or output_version not in {6, 7, 8, 9, 10, 14}
                 or mode_size > 256
                 or offset + mode_size > len(data)
             ):
@@ -3966,7 +3808,6 @@ def _parse_patron_native_output_text(
         "EMUFLOW_PATRON_OUTPUT_V8",
         "EMUFLOW_PATRON_OUTPUT_V9",
         "EMUFLOW_PATRON_OUTPUT_V10",
-        "EMUFLOW_PATRON_OUTPUT_V11",
         "EMUFLOW_PATRON_OUTPUT_V14",
     )
     stream = path.open("r", encoding="utf-8")
@@ -4102,7 +3943,6 @@ def _parse_patron_native_output_text(
                     "EMUFLOW_PATRON_OUTPUT_V8",
                     "EMUFLOW_PATRON_OUTPUT_V9",
                     "EMUFLOW_PATRON_OUTPUT_V10",
-                    "EMUFLOW_PATRON_OUTPUT_V11",
                     "EMUFLOW_PATRON_OUTPUT_V14",
                 ):
                     raise ValidationError(
@@ -4135,7 +3975,6 @@ def _parse_patron_native_output_text(
                     "EMUFLOW_PATRON_OUTPUT_V8",
                     "EMUFLOW_PATRON_OUTPUT_V9",
                     "EMUFLOW_PATRON_OUTPUT_V10",
-                    "EMUFLOW_PATRON_OUTPUT_V11",
                     "EMUFLOW_PATRON_OUTPUT_V14",
                 ):
                     raise ValidationError(
@@ -4392,8 +4231,6 @@ def run_partition_pressure_native(
     executable: Optional[str] = None,
     max_moves: Optional[int] = None,
     algorithm_version: int = DEFAULT_PATRON_ALGORITHM_VERSION,
-    physical_feedback: Optional[Mapping[str, Any]] = None,
-    physical_feedback_scale: float = 0.0,
     output_validation: str = "full",
     retain_trace_seals: bool = True,
     stream_semantic_records: bool = False,
@@ -4455,42 +4292,14 @@ def run_partition_pressure_native(
     if (
         isinstance(algorithm_version, bool)
         or not isinstance(algorithm_version, int)
-        or algorithm_version not in {6, 9, 10, 11, 14}
+        or algorithm_version not in {6, 9, 10, 14}
     ):
         raise ValidationError("native PATRON algorithm version is invalid")
     flow_refinement = algorithm_version != 6
-    use_physical_feedback = physical_feedback is not None
-    if store_model and (algorithm_version != 14 or retain_trace_seals or physical_feedback is not None
+    if store_model and (algorithm_version != 14 or retain_trace_seals
                         or (executable is not None and not is_unified_native_executable(executable))
                         or not stream_semantic_records):
         raise ValidationError("native store model requires unified v14 summary production")
-    if use_physical_feedback:
-        if algorithm_version != 11:
-            raise ValidationError(
-                "native PATRON physical feedback requires algorithm v11"
-            )
-        validate_partition_physical_feedback_seal(
-            model, physical_feedback
-        )
-        physical_feedback_scale = _require_finite(
-            physical_feedback_scale,
-            "native PATRON physical feedback scale",
-        )
-        if physical_feedback_scale <= 0.0:
-            raise ValidationError(
-                "native PATRON physical feedback scale must be positive"
-            )
-        feedback_sha256 = _canonical_digest(physical_feedback)
-    else:
-        if algorithm_version == 11:
-            raise ValidationError(
-                "native PATRON v11 requires physical feedback"
-            )
-        if physical_feedback_scale != 0.0:
-            raise ValidationError(
-                "native PATRON physical feedback scale has no artifact"
-            )
-        feedback_sha256 = None
     native_command = ([] if store_model else resolve_native_stage_command(
         "phase3", "refine-patron", executable
     ))
@@ -4531,8 +4340,6 @@ def run_partition_pressure_native(
                 initial_assignment,
                 limit,
                 algorithm_version,
-                physical_feedback,
-                physical_feedback_scale,
             )
             command.extend(
                 ("--typed-input", str(copy_path), str(native_output))
@@ -4587,8 +4394,6 @@ def run_partition_pressure_native(
                         initial_assignment,
                         limit,
                         algorithm_version,
-                        physical_feedback,
-                        physical_feedback_scale,
                         _writer=_NativeBinaryPipeWriter(process.stdin),
                     )
                 except (BrokenPipeError, OSError) as error:
@@ -4686,7 +4491,6 @@ def run_partition_pressure_native(
                 6: PARTITION_PRESSURE_NATIVE_PROVIDER,
                 9: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9,
                 10: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
-                11: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11,
                 14: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14,
             }[algorithm_version]
         ),
@@ -4706,7 +4510,6 @@ def run_partition_pressure_native(
                 6: PARTITION_PRESSURE_TRACE_SCHEMA,
                 9: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9,
                 10: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
-                11: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V11,
                 14: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14,
             }[algorithm_version]
         ),
@@ -4717,7 +4520,6 @@ def run_partition_pressure_native(
                 6: PARTITION_PRESSURE_NATIVE_PROVIDER,
                 9: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9,
                 10: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
-                11: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11,
                 14: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14,
             }[algorithm_version]
         ),
@@ -4741,23 +4543,12 @@ def run_partition_pressure_native(
                 flow_refinement,
                 trace_model["clusters"],
                 version=(
-                    {6: 1, 9: 3, 10: 4, 11: 5, 14: 8}[
+                    {6: 1, 9: 3, 10: 4, 14: 8}[
                         algorithm_version
                     ]
                 ),
-                physical_feedback_sha256=feedback_sha256,
-                physical_feedback_scale=(
-                    physical_feedback_scale
-                    if use_physical_feedback
-                    else 0.0
-                ),
             ),
         },
-        **(
-            {"physical_feedback_sha256": feedback_sha256}
-            if use_physical_feedback
-            else {}
-        ),
         "initial_metrics": initial_metrics,
         "move_count": output_summary["moves"],
         "batch_count": output_summary["batches"],
@@ -4880,8 +4671,6 @@ def validate_partition_pressure_native_bundle(
     initial_assignment: Mapping[str, Any],
     native_assignment: Mapping[str, Any],
     native_trace: Mapping[str, Any],
-    physical_feedback: Optional[Mapping[str, Any]] = None,
-    physical_feedback_scale: float = 0.0,
     *,
     timing_database_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -4909,7 +4698,6 @@ def validate_partition_pressure_native_bundle(
         trace_schema
         not in (
             PARTITION_PRESSURE_TRACE_SCHEMA,
-            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V11,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
             PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9,
@@ -4919,7 +4707,6 @@ def validate_partition_pressure_native_bundle(
         or native_trace.get("provider")
         not in (
             PARTITION_PRESSURE_NATIVE_PROVIDER,
-            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
             PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9,
@@ -4973,7 +4760,6 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-flow-v8",
         "endpoint-exact-critical-flow-v9",
         "endpoint-exact-critical-flow-v10",
-        "endpoint-exact-critical-flow-v11",
         "endpoint-exact-critical-flow-v14",
     ):
         raise ValidationError("native PATRON trace mode is invalid")
@@ -4991,9 +4777,6 @@ def validate_partition_pressure_native_bundle(
             "endpoint-exact-critical-flow-v10": (
                 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER
             ),
-            "endpoint-exact-critical-flow-v11": (
-                PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V11
-            ),
             "endpoint-exact-critical-flow-v14": (
                 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14
             ),
@@ -5003,7 +4786,6 @@ def validate_partition_pressure_native_bundle(
             "endpoint-exact-critical-flow-v8",
             "endpoint-exact-critical-flow-v9",
             "endpoint-exact-critical-flow-v10",
-            "endpoint-exact-critical-flow-v11",
             "endpoint-exact-critical-flow-v14",
         )
         else PARTITION_PRESSURE_NATIVE_PROVIDER
@@ -5034,7 +4816,6 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-flow-v8",
         "endpoint-exact-critical-flow-v9",
         "endpoint-exact-critical-flow-v10",
-        "endpoint-exact-critical-flow-v11",
         "endpoint-exact-critical-flow-v14",
     )
     flow_version = {
@@ -5042,7 +4823,6 @@ def validate_partition_pressure_native_bundle(
         "endpoint-exact-critical-flow-v8": 2,
         "endpoint-exact-critical-flow-v9": 3,
         "endpoint-exact-critical-flow-v10": 4,
-        "endpoint-exact-critical-flow-v11": 5,
         "endpoint-exact-critical-flow-v14": 8,
     }.get(mode, 1)
     expected_algorithm_version = (
@@ -5051,7 +4831,6 @@ def validate_partition_pressure_native_bundle(
             2: 8,
             3: 9,
             4: 10,
-            5: 11,
             8: 14,
         }[flow_version]
         if flow_enabled
@@ -5064,35 +4843,10 @@ def validate_partition_pressure_native_bundle(
         raise ValidationError(
             "native PATRON algorithm-version certificate is invalid"
         )
-    if flow_version == 5:
-        if physical_feedback is None:
-            raise ValidationError(
-                "native PATRON v11 lacks physical feedback evidence"
-            )
-        validate_partition_physical_feedback_seal(
-            model, physical_feedback
-        )
-        expected_feedback_sha256 = _canonical_digest(physical_feedback)
-        if native_trace.get("physical_feedback_sha256") != (
-            expected_feedback_sha256
-        ):
-            raise ValidationError(
-                "native PATRON physical feedback seal is invalid"
-            )
-    else:
-        if physical_feedback is not None or physical_feedback_scale != 0.0:
-            raise ValidationError(
-                "native PATRON trace has unexpected physical feedback"
-            )
-        expected_feedback_sha256 = None
     expected_flow_configuration = _flow_refinement_configuration(
         flow_enabled,
         len(model["clusters"]),
         version=flow_version,
-        physical_feedback_sha256=expected_feedback_sha256,
-        physical_feedback_scale=(
-            physical_feedback_scale if flow_version == 5 else 0.0
-        ),
     )
     if flow_configuration is None and not flow_enabled:
         # V6 artifacts predate the explicit disabled-flow certificate.
@@ -5107,7 +4861,6 @@ def validate_partition_pressure_native_bundle(
                 "endpoint-exact-critical-flow-v8",
                 "endpoint-exact-critical-flow-v9",
                 "endpoint-exact-critical-flow-v10",
-                "endpoint-exact-critical-flow-v11",
                 "endpoint-exact-critical-flow-v14",
             )
             and (
@@ -5118,7 +4871,6 @@ def validate_partition_pressure_native_bundle(
                         2: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V8,
                         3: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9,
                         4: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
-                        5: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V11,
                         8: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14,
                     }[flow_version]
                 )
@@ -5205,8 +4957,6 @@ def validate_partition_pressure_native_bundle(
         current,
         include_tdm_wait=True,
         physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
-        physical_feedback=physical_feedback,
-        physical_feedback_scale=physical_feedback_scale,
         path_transition_objective=(flow_version == 8),
     )
     previous_rank = _ranked_key(initial_evaluation)
@@ -5352,8 +5102,6 @@ def validate_partition_pressure_native_bundle(
             current,
             include_tdm_wait=True,
             physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
-            physical_feedback=physical_feedback,
-            physical_feedback_scale=physical_feedback_scale,
             path_transition_objective=(flow_version == 8),
         )
         before_expected = before_evaluation["metrics"]["objective_key"]
@@ -5395,8 +5143,6 @@ def validate_partition_pressure_native_bundle(
             trial,
             include_tdm_wait=True,
             physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
-            physical_feedback=physical_feedback,
-            physical_feedback_scale=physical_feedback_scale,
             path_transition_objective=(flow_version == 8),
         )
         after_expected = after_evaluation["metrics"]["objective_key"]
@@ -5477,8 +5223,6 @@ def validate_partition_pressure_native_bundle(
         native_assignment["cluster_assignment"],
         include_tdm_wait=True,
         physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
-        physical_feedback=physical_feedback,
-        physical_feedback_scale=physical_feedback_scale,
         path_transition_objective=(flow_version == 8),
     )
     maximum_endpoint_error = 0.0

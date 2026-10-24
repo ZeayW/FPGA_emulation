@@ -41,6 +41,8 @@ def _request(args, kwargs):
     signature = inspect.signature(run_multi_fpga_flow)
     bound = signature.bind(*args, **kwargs)
     bound.apply_defaults()
+    if bound.arguments["patron_algorithm_version"] == 11:
+        raise EmuFlowError("PATRON v11 is retired")
     for name, value in list(bound.arguments.items()):
         annotation = str(signature.parameters[name].annotation)
         if value is not None and "Path" in annotation:

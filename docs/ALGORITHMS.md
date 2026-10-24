@@ -59,6 +59,12 @@ There is no external balance legalizer. EmuFlow checks
 and repairs configured hop constraints before handing the initial assignment
 to PATRON. See the [TritonPart project and publication](https://github.com/ABKGroup/TritonPart).
 
+The v11 physical-residual feedback route is retired with its source owner,
+CLI/API inputs, typed path extensions and feedback certificates. Old v11 results
+require their matching Git revision; the current v14 predictive objective does
+not consume measured physical residuals. This removal does not qualify a new
+partition algorithm or replace complete physical/global timing acceptance.
+
 **PATRON is EmuFlow's communication-aware post-processing algorithm.** Its
 native C++ local search starts from that assignment and considers single
 atomic-cluster moves and bounded paired moves, including moving another

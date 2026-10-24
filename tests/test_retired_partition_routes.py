@@ -50,3 +50,35 @@ def test_chimew_and_fixed_binding_entry_remain_available():
     from emuflow.phase6 import run_phase6
     from emuflow.chimew_phase6 import run_chimew_phase6_adapter
     assert callable(run_phase6) and callable(run_chimew_phase6_adapter)
+
+
+@pytest.mark.parametrize("entry", ["phase3", "compile", "native-request"])
+def test_v11_is_rejected_before_any_frontend_or_graph_loading(tmp_path, entry):
+    from emuflow.native_compile import _request
+    with patch("emuflow.phase3.load_partition_ir", side_effect=AssertionError("graph loaded")), patch(
+        "emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend entered")
+    ), pytest.raises(EmuFlowError, match="version|v11"):
+        if entry == "phase3":
+            run_phase3(tmp_path / "missing.ir", tmp_path / "missing.platform",
+                       tmp_path / "partition", patron_algorithm_version=11)
+        elif entry == "compile":
+            run_multi_fpga_flow(output_dir=tmp_path / "flow", patron_algorithm_version=11)
+        else:
+            _request((), {"output_dir": tmp_path / "flow", "patron_algorithm_version": 11})
+    assert not (tmp_path / "flow").exists()
+
+
+@pytest.mark.parametrize("version,flags,message", [(11, 7, "flow version"), (14, 7, "flags")])
+def test_native_rejects_feedback_protocol_before_reading_a_graph(tmp_path, version, flags, message):
+    import struct
+    import subprocess
+    from tests.native_build import emuflow_native
+    source = tmp_path / "input.bin"
+    source.write_bytes(struct.pack("<8sIIII", b"EMPATRN1", 1, 0x01020304, version, flags))
+    output = tmp_path / "published.bin"
+    output.write_bytes(b"previous published result")
+    result = subprocess.run([str(emuflow_native()), "phase3", "refine-patron", "--summary-output",
+                             "--typed-output", "--typed-input", str(source), str(output)],
+                            text=True, capture_output=True, timeout=10)
+    assert result.returncode != 0 and message in result.stderr
+    assert output.read_bytes() == b"previous published result"

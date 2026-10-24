@@ -100,9 +100,6 @@ struct Path {
   int start_cluster = -1;
   int end_cluster = -1;
   PackedIndexRange nets;
-  int feedback_source = -1;
-  int feedback_sink = -1;
-  double feedback_residual_ns = 0.0;
 };
 
 struct Model {

@@ -42,7 +42,6 @@ std::array<unsigned char,32> Signature(const Model& m) {
   for (const auto& path:m.path) {
     put(path.period_ns); put(path.slack_ns); put(path.start_cluster); put(path.end_cluster);
     put(path.nets.size()); for (int net:path.nets) put(net);
-    put(path.feedback_source); put(path.feedback_sink); put(path.feedback_residual_ns);
   }
   return hash.finish();
 }
