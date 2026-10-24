@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import time
-from typing import Any, Dict, Mapping, Optional, Union
+from typing import Any, Dict, Mapping, Optional
 
 from .cross_layer_timing import (
     build_cross_layer_timing_contract,
@@ -15,32 +15,18 @@ from .cross_layer_timing import (
 )
 from .errors import TDMScheduleInfeasibleError, ValidationError
 from .io import read_json, write_json
-from .managed_json_storage import pack_managed_json
+
 from .phase3_storage import read_phase3_assignment_view
 from .platform import Platform
 from .routing import semantic_contract_for_routes
 from .tdm import (
-    TDM_BASELINE_PROVIDER,
     TDM_EXACT_DEPENDENCY_PROVIDER,
     NativeExactScheduleRequest,
     build_native_exact_schedule_request,
-    build_tdm_schedule,
-    build_transport_manifest,
     reconstruct_tdm_schedule_timing,
-    schedule_to_systemverilog_testbench,
-    write_schedule_tsv,
-    simulate_tdm_schedule,
     validate_tdm_schedule,
 )
-from .tdm_ratio import (
-    DEFAULT_EXACT_DOMAIN_LIMIT,
-    TDM_RATIO_PROVIDER,
-    TDM_TIMING_DAG_RATIO_PROVIDER,
-    _prepare_model,
-    build_tdm_ratio_plan,
-    validate_tdm_ratio_plan,
-)
-from .tdm_slot import refine_tdm_schedule_native
+
 from .tdm_schedule_storage import (
     FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
     TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
@@ -48,14 +34,11 @@ from .tdm_schedule_storage import (
     tdm_schedule_store_path,
     write_tdm_schedule_storage,
 )
-from .tdm_timing_dag import build_timing_dag_ratio_plan
-from .tdm_feedback import build_tdm_feedback, validate_tdm_feedback
-from .system_route_storage import read_system_routes
 
+from .system_route_storage import read_system_routes
 
 PHASE5_REPORT_SCHEMA = "emuflow.phase5-report/v1"
 PHASE5_GENERATION_SCHEMA = "emuflow.phase5-generation/v1"
-
 
 def _canonical_phase5_report_identity(report: Mapping[str, Any]) -> str:
     value = dict(report)
@@ -73,14 +56,12 @@ def _canonical_phase5_report_identity(report: Mapping[str, Any]) -> str:
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
-
 def _phase5_file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
-
 
 def validate_phase5_generation(
     phase5_report_path: Path,
@@ -207,12 +188,10 @@ def validate_phase5_generation(
         raise ValidationError("Phase 5 schedule selector generation disagrees")
     return {"status": "pass", "report": report}
 
-
 def _replace_phase5_generation_file(source: Path, destination: Path) -> None:
     """Atomic replacement hook kept separate for failure-injection tests."""
 
     os.replace(source, destination)
-
 
 def _fsync_phase5_file(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY)
@@ -220,7 +199,6 @@ def _fsync_phase5_file(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-
 
 def _fsync_phase5_directory(path: Path) -> None:
     descriptor = os.open(
@@ -231,7 +209,6 @@ def _fsync_phase5_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-
 
 def _commit_phase5_generation(
     staging: Path,
@@ -294,7 +271,6 @@ def _commit_phase5_generation(
         _fsync_phase5_directory(output_dir)
         raise
 
-
 def _load_phase3_semantics(
     routes: Dict[str, Any], assignment_path: Optional[Path]
 ) -> tuple[Dict[str, Any], Optional[Mapping[str, Any]]]:
@@ -327,331 +303,36 @@ def _load_phase3_semantics(
         raise ValidationError("Phase 3 semantic contract is missing")
     return {**routes, "semantic_contract": contract}, contract
 
-
 def run_phase5(
-    routes_path: Path,
-    platform_path: Path,
-    output_dir: Path,
+    routes_path: Path, platform_path: Path, output_dir: Path,
     assignment_path: Optional[Path] = None,
-    simulation_frames: int = 16,
-    provider: Optional[str] = None,
-    ratio_optimizer: Optional[str] = None,
-    timing_dag_optimizer: Optional[str] = None,
-    slot_optimizer: Optional[str] = None,
-    ratio_max_iterations: int = 500,
-    max_ratio: Optional[int] = None,
-    ratio_quantum: Optional[int] = None,
-    post_refinement_iterations: int = 200,
-    slot_refinement_iterations: int = 0,
-    convergence: float = 1.0e-9,
-    managed_storage: bool = False,
+    provider: str = TDM_EXACT_DEPENDENCY_PROVIDER,
 ) -> Dict[str, Any]:
-    if (
-        isinstance(slot_refinement_iterations, bool)
-        or not isinstance(slot_refinement_iterations, int)
-        or slot_refinement_iterations < 0
-    ):
-        raise ValueError(
-            "slot_refinement_iterations must be a non-negative integer"
-        )
-    persisted_routes = read_system_routes(routes_path)
-    routes, semantic_contract = _load_phase3_semantics(
-        persisted_routes, assignment_path
-    )
-    platform = Platform.load(platform_path)
-    exact_mode = semantic_contract is not None
-    if provider is None:
-        provider = (
-            TDM_EXACT_DEPENDENCY_PROVIDER
-            if exact_mode
-            else (
-                TDM_TIMING_DAG_RATIO_PROVIDER
-                if isinstance(routes.get("timing"), dict)
-                else TDM_BASELINE_PROVIDER
-            )
-        )
-    if exact_mode and provider == TDM_BASELINE_PROVIDER:
-        raise ValueError(
-            f"{TDM_BASELINE_PROVIDER} is the explicit registered-boundary "
-            "legacy provider and is incompatible with Static Exact; use "
-            f"{TDM_EXACT_DEPENDENCY_PROVIDER}"
-        )
-    ratio_plan = None
-    ratio_validation = None
-    schedule = None
-    validation = None
-    timing_validation = None
-    candidate_selection = None
-    prepared_ratio_model = None
-    if provider in {
-        TDM_BASELINE_PROVIDER,
-        TDM_EXACT_DEPENDENCY_PROVIDER,
-    }:
-        if provider == TDM_EXACT_DEPENDENCY_PROVIDER and not exact_mode:
-            raise ValueError(
-                "dependency TDM scheduling requires a Static Exact contract"
-            )
-        if (
-            ratio_optimizer is not None
-            or timing_dag_optimizer is not None
-            or slot_optimizer is not None
-        ):
-            raise ValueError(
-                "native TDM optimizers require the academic Phase 5 provider"
-            )
-    elif provider in {TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER}:
-        prepared_ratio_model = _prepare_model(routes, platform)
-        if (
-            provider == TDM_RATIO_PROVIDER
-            and timing_dag_optimizer is not None
-        ):
-            raise ValueError(
-                "timing_dag_optimizer requires the timing-DAG Phase 5 "
-                "provider"
-            )
-        candidates = []
-        rejected_candidates = []
-        for strategy, exact_domain_limit in (
-            ("exact-displacement-dp", DEFAULT_EXACT_DOMAIN_LIMIT),
-            ("scalable-minimum-wire", 0),
-        ):
-            if provider == TDM_RATIO_PROVIDER:
-                candidate_plan = build_tdm_ratio_plan(
-                    routes,
-                    platform,
-                    executable=ratio_optimizer,
-                    max_iterations=ratio_max_iterations,
-                    max_ratio=max_ratio,
-                    ratio_quantum=ratio_quantum,
-                    post_refinement_iterations=post_refinement_iterations,
-                    exact_domain_limit=exact_domain_limit,
-                    convergence=convergence,
-                    prepared_model=prepared_ratio_model,
-                )
-            else:
-                candidate_plan = build_timing_dag_ratio_plan(
-                    routes,
-                    platform,
-                    dag_executable=timing_dag_optimizer,
-                    legalization_executable=ratio_optimizer,
-                    max_iterations=ratio_max_iterations,
-                    max_ratio=max_ratio,
-                    ratio_quantum=ratio_quantum,
-                    post_refinement_iterations=(
-                        post_refinement_iterations
-                    ),
-                    exact_domain_limit=exact_domain_limit,
-                    convergence=convergence,
-                    prepared_model=prepared_ratio_model,
-                )
-            candidate_ratio_validation = validate_tdm_ratio_plan(
-                routes,
-                platform,
-                candidate_plan,
-                prepared_model=prepared_ratio_model,
-            )
-            try:
-                candidate_schedule = build_tdm_schedule(
-                    routes,
-                    platform,
-                    candidate_plan,
-                    prepared_ratio_model=prepared_ratio_model,
-                )
-            except TDMScheduleInfeasibleError as error:
-                rejected_candidates.append(
-                    {
-                        "strategy": strategy,
-                        "status": "infeasible",
-                        "reason": str(error),
-                    }
-                )
-                continue
-            if slot_refinement_iterations > 0:
-                candidate_schedule = refine_tdm_schedule_native(
-                    routes,
-                    platform,
-                    candidate_plan,
-                    candidate_schedule,
-                    executable=slot_optimizer,
-                    max_iterations=slot_refinement_iterations,
-                    prepared_ratio_model=prepared_ratio_model,
-                )
-            candidate_validation = validate_tdm_schedule(
-                routes,
-                platform,
-                candidate_schedule,
-                candidate_plan,
-                prepared_ratio_model=prepared_ratio_model,
-            )
-            candidate_timing = reconstruct_tdm_schedule_timing(
-                routes,
-                platform,
-                candidate_schedule,
-                model=prepared_ratio_model,
-            )
-            score = (
-                candidate_timing["worst_normalized_slack"],
-                candidate_timing[
-                    "total_negative_normalized_slack"
-                ],
-                -candidate_timing["negative_slack_paths"],
-                candidate_timing["p01_normalized_slack"],
-                candidate_timing["median_normalized_slack"],
-                -candidate_schedule["metrics"]["completion_slot"],
-                candidate_plan["metrics"][
-                    "discrete_worst_normalized_slack"
-                ],
-                1 if strategy == "exact-displacement-dp" else 0,
-            )
-            candidates.append(
-                {
-                    "strategy": strategy,
-                    "score": score,
-                    "ratio_plan": candidate_plan,
-                    "ratio_validation": candidate_ratio_validation,
-                    "schedule": candidate_schedule,
-                    "validation": candidate_validation,
-                    "timing_validation": candidate_timing,
-                }
-            )
-        if not candidates:
-            reasons = "; ".join(
-                f"{candidate['strategy']}: {candidate['reason']}"
-                for candidate in rejected_candidates
-            )
-            raise TDMScheduleInfeasibleError(
-                "all academic Phase 5 candidates are infeasible: "
-                f"{reasons}"
-            )
-        selected = max(candidates, key=lambda candidate: candidate["score"])
-        ratio_plan = selected["ratio_plan"]
-        ratio_validation = selected["ratio_validation"]
-        schedule = selected["schedule"]
-        validation = selected["validation"]
-        timing_validation = selected["timing_validation"]
-        candidate_selection = {
-            "objective": (
-                "lexicographic realized worst and total negative normalized "
-                "slack; negative path count; p01 and median normalized "
-                "slack; completion slot; analytical discrete slack"
-            ),
-            "selected": selected["strategy"],
-            **(
-                {"rejected_candidates": rejected_candidates}
-                if rejected_candidates
-                else {}
-            ),
-            "candidates": [
-                {
-                    "strategy": candidate["strategy"],
-                    "realized_worst_normalized_slack": candidate[
-                        "timing_validation"
-                    ]["worst_normalized_slack"],
-                    "realized_total_negative_normalized_slack": candidate[
-                        "timing_validation"
-                    ]["total_negative_normalized_slack"],
-                    "realized_negative_slack_paths": candidate[
-                        "timing_validation"
-                    ]["negative_slack_paths"],
-                    "realized_p01_normalized_slack": candidate[
-                        "timing_validation"
-                    ]["p01_normalized_slack"],
-                    "realized_median_normalized_slack": candidate[
-                        "timing_validation"
-                    ]["median_normalized_slack"],
-                    "completion_slot": candidate["schedule"]["metrics"][
-                        "completion_slot"
-                    ],
-                    "analytical_worst_normalized_slack": candidate[
-                        "ratio_plan"
-                    ]["metrics"]["discrete_worst_normalized_slack"],
-                    "dp_legalized_domains": candidate["ratio_plan"][
-                        "metrics"
-                    ]["dp_legalized_domains"],
-                    "greedy_legalized_domains": candidate["ratio_plan"][
-                        "metrics"
-                    ]["greedy_legalized_domains"],
-                    **(
-                        {
-                            "slot_accepted_moves": candidate["schedule"][
-                                "slot_optimization"
-                            ]["metrics"]["accepted_moves"],
-                            "slot_evaluated_moves": candidate["schedule"][
-                                "slot_optimization"
-                            ]["metrics"]["evaluated_moves"],
-                        }
-                        if "slot_optimization" in candidate["schedule"]
-                        else {}
-                    ),
-                }
-                for candidate in candidates
-            ],
-        }
-    else:
+    if provider not in {None, TDM_EXACT_DEPENDENCY_PROVIDER}:
         raise ValueError(f"unsupported Phase 5 provider {provider!r}")
+    persisted_routes = read_system_routes(routes_path)
+    routes, semantic_contract = _load_phase3_semantics(persisted_routes, assignment_path)
+    if semantic_contract is None:
+        raise ValidationError("Phase 5 requires the Static Exact dependency contract")
+    platform = Platform.load(platform_path)
+    schedule = build_native_exact_schedule_request(routes, platform)
     if schedule is None:
-        schedule = (
-            build_native_exact_schedule_request(routes, platform)
-            if provider == TDM_EXACT_DEPENDENCY_PROVIDER and ratio_plan is None else None
-        )
-        if schedule is None:
-            schedule = build_tdm_schedule(routes, platform, ratio_plan)
-        native_generation = isinstance(schedule, NativeExactScheduleRequest)
-        validation = (
-            None if native_generation else validate_tdm_schedule(routes, platform, schedule, ratio_plan)
-        )
-        timing_validation = (
-            reconstruct_tdm_schedule_timing(
-                routes,
-                platform,
-                schedule,
-                model=prepared_ratio_model,
-            )
-            if not native_generation and isinstance(routes.get("timing"), dict)
-            else None
-        )
+        raise ValidationError("Phase 5 requires the current typed RouteStore and indexed Static Exact contract")
     return _finish_phase5_generation(
-        persisted_routes=persisted_routes,
-        routes=routes,
-        semantic_contract=semantic_contract,
-        schedule=schedule,
-        validation=validation,
-        timing_validation=timing_validation,
-        candidate_selection=candidate_selection,
-        ratio_plan=ratio_plan,
-        ratio_validation=ratio_validation,
-        exact_mode=exact_mode,
-        platform=platform,
-        output_dir=output_dir,
-        managed_storage=managed_storage,
-        simulation_frames=simulation_frames,
-        prepared_ratio_model=prepared_ratio_model,
+        persisted_routes=persisted_routes, routes=routes,
+        semantic_contract=semantic_contract, schedule=schedule,
+        platform=platform, output_dir=output_dir,
     )
-
 
 def _finish_phase5_generation(
-    *,
-    persisted_routes: Mapping[str, Any],
-    routes: Mapping[str, Any],
-    semantic_contract: Optional[Mapping[str, Any]],
-    schedule: Union[Mapping[str, Any], NativeExactScheduleRequest],
-    validation: Optional[Mapping[str, Any]],
-    timing_validation: Optional[Mapping[str, Any]],
-    candidate_selection: Optional[Mapping[str, Any]],
-    ratio_plan: Optional[Mapping[str, Any]],
-    ratio_validation: Optional[Mapping[str, Any]],
-    exact_mode: bool,
-    platform: Platform,
-    output_dir: Path,
-    managed_storage: bool,
-    simulation_frames: int,
-    prepared_ratio_model: Optional[Mapping[str, Any]],
+    *, persisted_routes: Mapping[str, Any], routes: Mapping[str, Any],
+    semantic_contract: Mapping[str, Any], schedule: NativeExactScheduleRequest,
+    platform: Platform, output_dir: Path,
 ) -> Dict[str, Any]:
     """Build every Phase 5 artifact in staging and commit the report last."""
 
-    native_generation = isinstance(schedule, NativeExactScheduleRequest)
-    native_production = native_generation
-    emit_compatibility_exports = not managed_storage and not native_production
+    validation = None
+    timing_validation = None
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=".phase5-generation-", dir=output_dir
@@ -666,19 +347,15 @@ def _finish_phase5_generation(
             time.monotonic() - schedule_storage_started
         )
         persisted_schedule = read_tdm_schedule(staged_schedule_path, verify_store_hash=False)
-        if validation is None:
-            if not exact_mode or ratio_plan is not None or not native_production:
-                raise ValidationError("Phase 5 validation is missing")
-            # Independently reconstruct from typed cursor/join relations before
-            # committing the report; never inflate a private native result into
-            # the generic validator's full hop dictionaries.
-            validation = validate_tdm_schedule(routes, platform, persisted_schedule)
-        if native_generation:
-            schedule = persisted_schedule
-            if isinstance(routes.get("timing"), dict):
-                timing_validation = reconstruct_tdm_schedule_timing(
-                    routes, platform, persisted_schedule, model=prepared_ratio_model,
-                )
+        # Independently reconstruct from typed cursor/join relations before
+        # committing the report; never inflate a private native result into
+        # the generic validator's full hop dictionaries.
+        validation = validate_tdm_schedule(routes, platform, persisted_schedule)
+        schedule = persisted_schedule
+        if isinstance(routes.get("timing"), dict):
+            timing_validation = reconstruct_tdm_schedule_timing(
+                routes, platform, persisted_schedule,
+            )
         cross_layer_timing = build_cross_layer_timing_contract(
             persisted_routes, persisted_schedule, semantic_contract
         )
@@ -690,34 +367,6 @@ def _finish_phase5_generation(
             "status": "pass",
             **cross_layer_timing.get("metrics", {}),
         }
-        simulation = None
-        manifest = None
-        feedback = None
-        feedback_validation = None
-        if emit_compatibility_exports:
-            simulation = simulate_tdm_schedule(
-                routes,
-                schedule,
-                frames=simulation_frames,
-            )
-            manifest = build_transport_manifest(
-                routes, schedule, platform
-            )
-            feedback = build_tdm_feedback(
-                routes,
-                platform,
-                schedule,
-                ratio_plan,
-                prepared_ratio_model=prepared_ratio_model,
-            )
-            feedback_validation = validate_tdm_feedback(
-                routes,
-                platform,
-                schedule,
-                feedback,
-                ratio_plan,
-                prepared_ratio_model=prepared_ratio_model,
-            )
 
         report: Dict[str, Any] = {
             "schema": PHASE5_REPORT_SCHEMA,
@@ -726,24 +375,11 @@ def _finish_phase5_generation(
             "design": schedule["design"],
             "platform": platform.name,
             "provider": schedule["provider"],
-            **(
-                {
-                    "optimization_provider": ratio_plan["provider"],
-                    "ratio_validation": ratio_validation,
-                }
-                if ratio_plan is not None
-                else {}
-            ),
             "validation": validation,
             "cross_layer_timing_validation": cross_layer_validation,
             **(
                 {"timing_validation": timing_validation}
                 if timing_validation is not None
-                else {}
-            ),
-            **(
-                {"candidate_selection": candidate_selection}
-                if candidate_selection is not None
                 else {}
             ),
             "artifacts": {
@@ -752,45 +388,17 @@ def _finish_phase5_generation(
                 "report": "phase5_report.json",
             },
         }
-        if emit_compatibility_exports:
-            report.update(
-                {
-                    "simulation": simulation,
-                    "tdm_feedback_validation": feedback_validation,
-                }
-            )
-            report["artifacts"].update(
-                {
-                    "schedule_tsv": "schedule.tsv",
-                    "transport_manifest": "transport_manifest.json",
-                    "rtl_testbench": "transport_schedule_tb.sv",
-                    "tdm_feedback": "tdm_feedback.json",
-                }
-            )
-        if exact_mode:
-            report["cut_mode"] = "static-exact-combinational"
-            report["qualification"] = "dependency-schedule-readiness-pass"
-        if ratio_plan is not None:
-            report["artifacts"]["ratio_plan"] = "ratio_plan.json"
-            write_json(
-                staging / "ratio_plan.json",
-                pack_managed_json(ratio_plan)
-                if managed_storage
-                else dict(ratio_plan),
-                compact=True,
-            )
+        report["cut_mode"] = "static-exact-combinational"
+        report["qualification"] = "dependency-schedule-readiness-pass"
 
         report["artifacts"]["schedule_store"] = schedule_storage["artifact"]
         report["schedule_storage"] = {
             "schema": schedule_storage["schema"],
             "implementation_id": (
                 "native-exact-schedule-store-v1"
-                if native_production
-                else "python-reference-schedule-store-v1"
             ),
             "producer_implementation_id": (
-                "native-exact-phase5-producer-v1" if native_generation
-                else "compatibility-schedule-producer-v1"
+                "native-exact-phase5-producer-v1"
             ),
             "dataflow": (
                 "typed-sqlite-route-entry-completion-relations-v1"
@@ -806,7 +414,6 @@ def _finish_phase5_generation(
             "wall_seconds": schedule_storage_wall_seconds,
             "wall_scope": (
                 "native-model-schedule-certificate-publication-and-store-seal"
-                if native_generation else "store-publication-and-store-seal"
             ),
             "bytes": schedule_storage["store_bytes"],
             "logical_sha256": schedule_storage["logical_sha256"],
@@ -820,41 +427,8 @@ def _finish_phase5_generation(
             cross_layer_timing,
             compact=True,
         )
-        if emit_compatibility_exports:
-            assert manifest is not None and feedback is not None
-            write_schedule_tsv(staging / "schedule.tsv", schedule)
-            write_json(
-                staging / "transport_manifest.json",
-                manifest,
-                compact=True,
-            )
-            write_json(
-                staging / "tdm_feedback.json",
-                feedback,
-                compact=True,
-            )
-            (staging / "transport_schedule_tb.sv").write_text(
-                schedule_to_systemverilog_testbench(
-                    routes,
-                    schedule,
-                    platform,
-                    frames=simulation_frames,
-                ),
-                encoding="utf-8",
-            )
 
         generation_member_paths = [schedule_storage["artifact"]]
-        if ratio_plan is not None:
-            generation_member_paths.append("ratio_plan.json")
-        if emit_compatibility_exports:
-            generation_member_paths.extend(
-                (
-                    "schedule.tsv",
-                    "transport_manifest.json",
-                    "tdm_feedback.json",
-                    "transport_schedule_tb.sv",
-                )
-            )
         generation_member_paths.extend(
             (
                 "schedule.json",
@@ -896,85 +470,34 @@ def _finish_phase5_generation(
         return report
 
 def validate_phase5(
-    routes_path: Path,
-    platform_path: Path,
-    schedule_path: Path,
-    ratio_plan_path: Optional[Path] = None,
-    assignment_path: Optional[Path] = None,
-    *,
-    managed_root_sealed: bool = False,
+    routes_path: Path, platform_path: Path, schedule_path: Path,
+    assignment_path: Optional[Path] = None, *, managed_root_sealed: bool = False,
     allow_legacy_generation: bool = False,
 ) -> Dict[str, Any]:
-    generation_validation = validate_phase5_generation(
+    generation = validate_phase5_generation(
         schedule_path.parent / "phase5_report.json",
-        managed_root_sealed=managed_root_sealed,
-        allow_legacy=allow_legacy_generation,
+        managed_root_sealed=managed_root_sealed, allow_legacy=allow_legacy_generation,
     )
-    generation_report = generation_validation.get("report")
-    if isinstance(generation_report, dict):
-        expected_schedule = schedule_path.parent / "schedule.json"
-        if Path(os.path.abspath(schedule_path)) != Path(
-            os.path.abspath(expected_schedule)
-        ):
-            raise ValidationError(
-                "Phase 5 schedule path disagrees with generation report"
-            )
-        artifacts = generation_report["artifacts"]
-        sealed_ratio_name = artifacts.get("ratio_plan")
-        if sealed_ratio_name is not None:
-            sealed_ratio_path = schedule_path.parent / sealed_ratio_name
-            if ratio_plan_path is None:
-                ratio_plan_path = sealed_ratio_path
-            elif Path(os.path.abspath(ratio_plan_path)) != Path(
-                os.path.abspath(sealed_ratio_path)
-            ):
-                raise ValidationError(
-                    "Phase 5 ratio-plan path disagrees with generation report"
-                )
-        elif ratio_plan_path is not None:
-            raise ValidationError(
-                "Phase 5 generation does not contain a ratio plan"
-            )
+    report = generation.get("report")
+    if isinstance(report, dict):
+        if report.get("provider") != TDM_EXACT_DEPENDENCY_PROVIDER:
+            raise ValidationError("unsupported Phase 5 generation provider")
+        if report["artifacts"].get("ratio_plan") is not None:
+            raise ValidationError("retired ratio-plan generation is not supported")
+        if Path(os.path.abspath(schedule_path)) != Path(os.path.abspath(schedule_path.parent / "schedule.json")):
+            raise ValidationError("Phase 5 schedule path disagrees with generation report")
     persisted_routes = read_system_routes(routes_path)
-    routes, semantic_contract = _load_phase3_semantics(
-        persisted_routes, assignment_path
-    )
+    routes, semantic_contract = _load_phase3_semantics(persisted_routes, assignment_path)
     platform = Platform.load(platform_path)
     schedule = read_tdm_schedule(schedule_path)
-    ratio_plan = (
-        read_json(ratio_plan_path)
-        if ratio_plan_path is not None
-        else None
-    )
-    # Academic schedules are constructed and certified against the canonical
-    # dense ratio model.  Rebuild that model once for standalone validation as
-    # well; otherwise the schedule validator compares the native certificate
-    # with the sparse baseline reconstruction, which is intentionally used
-    # only for ratio-free baseline scale runs and may use a different path
-    # representation.  Sharing one model also avoids rebuilding a large
-    # TimingPathDB for the subsequent timing report.
-    prepared_ratio_model = (
-        _prepare_model(routes, platform) if ratio_plan is not None else None
-    )
-    validation = validate_tdm_schedule(
-        routes,
-        platform,
-        schedule,
-        ratio_plan,
-        prepared_ratio_model=prepared_ratio_model,
-    )
+    if schedule.get("provider") != TDM_EXACT_DEPENDENCY_PROVIDER or semantic_contract is None:
+        raise ValidationError("Phase 5 requires a Static Exact dependency schedule")
+    validation = validate_tdm_schedule(routes, platform, schedule)
     if isinstance(routes.get("timing"), dict):
-        validation["timing"] = reconstruct_tdm_schedule_timing(
-            routes, platform, schedule, model=prepared_ratio_model
-        )
+        validation["timing"] = reconstruct_tdm_schedule_timing(routes, platform, schedule)
     cross_layer_path = schedule_path.parent / "cross_layer_timing.json"
     if cross_layer_path.is_file():
-        validation["cross_layer_timing"] = (
-            validate_cross_layer_timing_contract(
-                persisted_routes,
-                read_json(cross_layer_path),
-                schedule,
-                semantic_contract,
-            )
+        validation["cross_layer_timing"] = validate_cross_layer_timing_contract(
+            persisted_routes, read_json(cross_layer_path), schedule, semantic_contract,
         )
     return validation

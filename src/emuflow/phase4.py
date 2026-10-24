@@ -46,7 +46,6 @@ def run_phase4(
     tdm_feedback_path: Optional[Path] = None,
     tdm_feedback_routes_path: Optional[Path] = None,
     tdm_feedback_schedule_path: Optional[Path] = None,
-    tdm_feedback_ratio_plan_path: Optional[Path] = None,
     physical_feedback_path: Optional[Path] = None,
     physical_feedback_runtime_path: Optional[Path] = None,
     physical_feedback_summary_path: Optional[Path] = None,
@@ -83,7 +82,6 @@ def run_phase4(
     feedback_source_paths = (
         tdm_feedback_routes_path,
         tdm_feedback_schedule_path,
-        tdm_feedback_ratio_plan_path,
     )
     if tdm_feedback_path is None and any(
         path is not None for path in feedback_source_paths
@@ -106,17 +104,11 @@ def run_phase4(
         tdm_feedback = read_json(tdm_feedback_path)
         feedback_routes = read_system_routes(tdm_feedback_routes_path)
         feedback_schedule = read_json(tdm_feedback_schedule_path)
-        feedback_ratio_plan = (
-            read_json(tdm_feedback_ratio_plan_path)
-            if tdm_feedback_ratio_plan_path is not None
-            else None
-        )
         tdm_feedback_validation = validate_tdm_feedback(
             feedback_routes,
             platform,
             feedback_schedule,
             tdm_feedback,
-            feedback_ratio_plan,
         )
         physical_feedback_validation = None
         if physical_feedback_path is not None:
@@ -140,8 +132,7 @@ def run_phase4(
                     feedback_schedule,
                     feedback_summary,
                     physical_feedback,
-                    feedback_ratio_plan,
-                )
+                        )
             tdm_feedback = combine_tdm_and_physical_feedback(
                 tdm_feedback,
                 physical_feedback,

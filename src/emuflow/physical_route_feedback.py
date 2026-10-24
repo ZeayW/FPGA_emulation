@@ -54,10 +54,9 @@ def _reconstruct_physical_route_feedback(
     platform: Platform,
     schedule: Mapping[str, Any],
     physical_summary: Mapping[str, Any],
-    ratio_plan: Optional[Mapping[str, Any]],
 ) -> Dict[str, Any]:
     validate_physical_summary(physical_summary, runtime, platform)
-    validate_tdm_schedule(routes, platform, schedule, ratio_plan)
+    validate_tdm_schedule(routes, platform, schedule)
     delays = _boundary_delays(physical_summary)
     timing_paths = reconstruct_tdm_schedule_timing_paths(
         routes, platform, schedule
@@ -170,10 +169,9 @@ def build_physical_route_feedback(
     platform: Platform,
     schedule: Mapping[str, Any],
     physical_summary: Mapping[str, Any],
-    ratio_plan: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     return _reconstruct_physical_route_feedback(
-        runtime, routes, platform, schedule, physical_summary, ratio_plan
+        runtime, routes, platform, schedule, physical_summary
     )
 
 
@@ -184,10 +182,9 @@ def validate_physical_route_feedback(
     schedule: Mapping[str, Any],
     physical_summary: Mapping[str, Any],
     feedback: Mapping[str, Any],
-    ratio_plan: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     expected = _reconstruct_physical_route_feedback(
-        runtime, routes, platform, schedule, physical_summary, ratio_plan
+        runtime, routes, platform, schedule, physical_summary
     )
     if feedback != expected:
         raise ValidationError(

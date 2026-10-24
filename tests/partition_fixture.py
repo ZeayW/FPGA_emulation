@@ -65,14 +65,7 @@ def run_multi_fpga_flow_fixture(*args, **kwargs):
     assert kwargs["partition_provider"] == "tritonpart"
     # The .part file is generated at the phase boundary from the actual
     # frontend artifact. This unit fixture never starts OpenROAD.
-    with _fixture_initializer("emuflow.multi_fpga_flow"), _fixture_initializer("emuflow.cross_stage"), patch(
+    with _fixture_initializer("emuflow.multi_fpga_flow"), patch(
         "emuflow.multi_fpga_flow._resolve_partition_openroad", return_value=None
     ):
         return run_multi_fpga_flow(*args, **kwargs)
-
-
-def run_cross_stage_fixture(*args, **kwargs):
-    from emuflow.cross_stage import run_cross_stage_optimization
-    assert kwargs["phase3_provider"] == "tritonpart"
-    with _fixture_initializer("emuflow.cross_stage"):
-        return run_cross_stage_optimization(*args, **kwargs)

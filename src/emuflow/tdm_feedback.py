@@ -32,27 +32,16 @@ def _reconstruct_tdm_feedback(
     routes: Mapping[str, Any],
     platform: Platform,
     schedule: Mapping[str, Any],
-    ratio_plan: Optional[Mapping[str, Any]],
-    prepared_ratio_model: Optional[Mapping[str, Any]],
 ) -> Dict[str, Any]:
     validation = validate_tdm_schedule(
         routes,
         platform,
         schedule,
-        ratio_plan,
-        prepared_ratio_model=prepared_ratio_model,
     )
     timing_paths = []
     if isinstance(routes.get("timing"), dict):
         timing_paths = (
-            reconstruct_tdm_schedule_timing_paths(
-                routes,
-                platform,
-                schedule,
-                model=prepared_ratio_model,
-            )
-            if prepared_ratio_model is not None
-            else reconstruct_tdm_schedule_timing_paths_from_routes(
+            reconstruct_tdm_schedule_timing_paths_from_routes(
                 routes, platform, schedule
             )
         )
@@ -171,16 +160,11 @@ def build_tdm_feedback(
     routes: Mapping[str, Any],
     platform: Platform,
     schedule: Mapping[str, Any],
-    ratio_plan: Optional[Mapping[str, Any]] = None,
-    *,
-    prepared_ratio_model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     return _reconstruct_tdm_feedback(
         routes,
         platform,
         schedule,
-        ratio_plan,
-        prepared_ratio_model,
     )
 
 
@@ -189,16 +173,11 @@ def validate_tdm_feedback(
     platform: Platform,
     schedule: Mapping[str, Any],
     feedback: Mapping[str, Any],
-    ratio_plan: Optional[Mapping[str, Any]] = None,
-    *,
-    prepared_ratio_model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     expected = _reconstruct_tdm_feedback(
         routes,
         platform,
         schedule,
-        ratio_plan,
-        prepared_ratio_model,
     )
     if feedback != expected:
         raise ValidationError(

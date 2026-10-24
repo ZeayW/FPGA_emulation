@@ -343,15 +343,24 @@ route count and requires the unified `emuflow-native` scheduler; a missing unifi
 entry does not silently select the reference producer. The old numeric
 model/result scheduling and separate publication commands are retired, along
 with the standalone Exact scheduler and its build option. Use the complete
-`emuflow-native phase5 build-schedule` operation. The common Python schedule
-builder still serves registered-boundary/ratio providers and small semantic
-differentials; it no longer selects a second native chain by input size.
-Native production does not implicitly emit the reference `schedule.tsv`,
-`transport_manifest.json`, testbench or feedback JSON, or run reference signal
-simulation. Those are explicit qualification/export functions; small reference
-and legacy comparison paths retain their compatibility outputs. The report's
-store implementation identifier distinguishes these paths from the algorithm
-provider.
+`emuflow-native phase5 build-schedule` operation. Production Phase 5 accepts only `deterministic-dependency-earliest-slot-v1`
+and requires a current typed RouteStore plus its Phase 3 Static Exact binding.
+The Python schedule oracle is test-only and bounded to 4096 routes. Explicit
+legacy artifact legality checks do not restore a legacy production scheduler.
+
+The independent ratio/KKT, timing-DAG and slot optimizers, their tuning flags,
+`ratio_plan.json`, and the cross-stage/partition-feedback commands are retired.
+The sequential-versus-Static-Exact comparison compiler is also removed because
+its registered-boundary arm no longer has a production scheduler. Full compile
+requires `static-exact-combinational`. Minimum-frame search uses the same
+scheduler and emits `emuflow.frame-search/v5`. Platform-owned ratio quantization,
+bank direction and physical delay constraints remain authoritative.
+
+Native production does not emit `schedule.tsv`, `transport_manifest.json`,
+testbench or feedback JSON, or run reference signal simulation implicitly.
+These remain explicit qualification/export operations when needed. Compact
+production outputs are independent of a managed-storage flag. Existing physical
+backends and optional Phase 6 Chimew have not been removed by this change.
 
 - Intermediate cut, congestion, TDM, pin-distance, and placement objectives
   are diagnostics.

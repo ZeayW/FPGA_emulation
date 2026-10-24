@@ -30,6 +30,15 @@ RTL + constraints + mapping profile
 | Splitting -> physical implementation | Per-FPGA netlists, constraints, device/architecture inputs | Account for every cell and enforce physical resource/ownership legality |
 | Physical implementation -> global STA | Logic/interface delays, original-path bindings, concrete schedule, link timing | Check event readiness and launch-to-capture timing for the declared population |
 
+Phase 5 has one production provider, the native Static Exact dependency
+scheduler. It consumes the typed RouteStore and the Phase 3 semantic binding,
+writes one typed ScheduleStore, and publishes its compact selector and report
+only after independent validation. Full compilation rejects retired TDM
+providers and registered-boundary mode before frontend work. Minimum-frame
+search varies the frame bound using that same engine; it is not another TDM
+provider. Hardware ratio/bank constraints and Chimew's lane/slot consumption
+remain part of the supported contracts.
+
 One owner supplies each large population; reports summarize it rather than
 embedding duplicate netlists, maps, or timing-path trees.
 

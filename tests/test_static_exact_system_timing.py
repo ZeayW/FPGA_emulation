@@ -24,11 +24,8 @@ from emuflow.system_timing import (
     _fixed_slot_transport_path_delay,
     build_system_timing,
 )
-from emuflow.tdm import (
-    build_tdm_schedule,
-    reconstruct_tdm_schedule_timing,
-    validate_tdm_schedule,
-)
+from emuflow.tdm import reconstruct_tdm_schedule_timing, validate_tdm_schedule
+from tests.schedule_reference import build_tdm_schedule
 from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
     TypedScheduleEntrySequence,

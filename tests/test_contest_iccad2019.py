@@ -2,17 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.contest_iccad2019 import (
-    evaluate_iccad2019_solution,
-    import_iccad2019_instance,
-    materialize_iccad2019_rtl_boarddb,
-    optimize_iccad2019_ratios,
-)
+from emuflow.contest_iccad2019 import evaluate_iccad2019_solution, import_iccad2019_instance, materialize_iccad2019_rtl_boarddb
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.phase4 import run_phase4
 from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
-from tests.native_build import tdm_ratio_optimizer, tlr_router
+from tests.native_build import tlr_router
 
 
 SAMPLE_INPUT = """\
@@ -152,37 +147,6 @@ class Iccad2019ContestAdapterTest(unittest.TestCase):
                     lane_scale=0,
                 )
 
-    def test_official_sample_runs_through_cpp_router_and_ratio_optimizer(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            _, normalized, _ = self._files(root)
-            routed = root / "routed"
-            phase4 = run_phase4(
-                assignment_path=normalized / "partition_assignment.json",
-                platform_path=normalized / "boarddb.json",
-                output_dir=routed,
-                constraints_path=normalized / "route_constraints.json",
-                timing_paths_path=normalized / "contest_timing_paths.json",
-                router=str(tlr_router()),
-            )
-            self.assertEqual(phase4["status"], "pass")
-            self.assertEqual(
-                phase4["provider"], GLOBAL_CANDIDATE_PROVIDER
-            )
-            solution = root / "cpp-solution.out"
-            optimized = optimize_iccad2019_ratios(
-                normalized / "contest_instance.json",
-                routed / "routes.json",
-                solution,
-                optimizer=str(tdm_ratio_optimizer()),
-            )
-            self.assertEqual(optimized["status"], "pass")
-            self.assertEqual(optimized["maximum_total_tdm_ratio"], 6)
-            self.assertLessEqual(optimized["maximum_edge_harmonic_use"], 1.0)
-            checked = evaluate_iccad2019_solution(
-                normalized / "contest_instance.json", solution
-            )
-            self.assertEqual(checked["status"], "pass")
 
     def test_checker_rejects_combined_bidirectional_overload(self):
         with tempfile.TemporaryDirectory() as temporary:

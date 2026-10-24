@@ -71,7 +71,7 @@ from emuflow.open_transport_characterization import (
     OPEN_TRANSPORT_PROVENANCE,
 )
 from emuflow.routing import normalize_route_constraints
-from emuflow.tdm import build_tdm_schedule
+from tests.schedule_reference import build_tdm_schedule
 from emuflow.tdm_schedule_storage import (
     open_tdm_schedule_view,
     write_tdm_schedule_storage,

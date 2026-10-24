@@ -20,7 +20,7 @@ from tests.native_build import emuflow_native
 def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch):
     from tests.test_combinational_cut import StaticExactCombinationalCutPartitionTest
     from emuflow.system_route_storage import write_system_route_storage,read_system_routes
-    from emuflow.tdm import build_tdm_schedule
+    from tests.schedule_reference import build_tdm_schedule
     case=StaticExactCombinationalCutPartitionTest();case.setUp()
     _,assignment=case._exact_artifacts(dependent_return=True)
     routes=case._exact_routes(assignment)
@@ -42,12 +42,9 @@ def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch)
     output=tmp_path/"phase5"
     # Production must select the complete native producer from its indexed contract.
     with patch("emuflow.tdm_schedule_storage._publish_logical_schedule",side_effect=AssertionError("Python publisher used")), \
-         patch("emuflow.phase5.build_tdm_schedule",side_effect=AssertionError("Python schedule/result import used")), \
          patch("emuflow.tdm._indexed_certificate",side_effect=AssertionError("Python producer certificate used")), \
-         patch("emuflow.tdm._baseline_ratio_hops",side_effect=AssertionError("Python hop map rebuilt before validation")), \
-         patch("emuflow.phase5.simulate_tdm_schedule",side_effect=AssertionError("graph simulation export in production")), \
-         patch("emuflow.phase5.build_transport_manifest",side_effect=AssertionError("duplicate transport JSON in production")):
-        report=run_phase5(route_path,PLATFORM_PATH,output,assignment_path,managed_storage=False)
+         patch("emuflow.tdm._baseline_ratio_hops",side_effect=AssertionError("Python hop map rebuilt before validation")):
+        report=run_phase5(route_path,PLATFORM_PATH,output,assignment_path)
     assert report["status"]=="pass"
     assert "simulation" not in report
     assert "transport_manifest" not in report["artifacts"]
@@ -59,7 +56,7 @@ def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch)
     old_manifest=(output/"schedule.json").read_bytes()
     with patch("emuflow.tdm._validate_indexed_exact_tdm_schedule",side_effect=ValidationError("independent validator rejected")):
         with pytest.raises(ValidationError,match="independent validator rejected"):
-            run_phase5(route_path,PLATFORM_PATH,output,assignment_path,managed_storage=True)
+            run_phase5(route_path,PLATFORM_PATH,output,assignment_path)
     assert (output/"phase5_report.json").read_bytes()==old_report
     assert (output/"schedule.json").read_bytes()==old_manifest
     assert not list(output.glob(".phase5-generation-*"))

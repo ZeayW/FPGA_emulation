@@ -19,7 +19,7 @@ from tests.partition_reference import assign_clusters
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
-from emuflow.tdm import build_tdm_schedule
+from tests.schedule_reference import build_tdm_schedule
 from emuflow.timing_routing import route_system_native
 from emuflow.transport_storage import (
     VIRTUAL_BINDING_STORAGE_SCHEMA,

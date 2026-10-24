@@ -160,25 +160,31 @@ routing/TDM baseline-versus-upgrade comparison commands are retired.
 
 ## Phase 5: TDM ratio, lane, and slot assignment
 
-The native ratio optimizer uses **Lagrangian relaxation/KKT updates**, followed
-by discrete ratio legalization and local refinement. Its foundations are
-Pui and Young's TODAES 2020 TDM method and the ASP-DAC 2026 timing-aware method.
-The implementation includes a timing-DAG continuous optimizer and a separate
-concrete slot optimizer; a continuous ratio alone is not an executable
-communication assignment.
+The production algorithm is `deterministic-dependency-earliest-slot-v1`, an
+EmuFlow scheduler for the Static Exact cut-dependency DAG. It processes ready
+cuts in deterministic dependency order, assigns a legal lane and earliest TX
+slot, and propagates actual RX arrival before releasing dependent transfers.
+It preserves relay latency, sampled virtual-wire settle/commit constraints,
+and absolute TX events used by downstream timing analysis.
 
-EmuFlow then materializes legal lanes and slots under the platform's ratio,
-direction, compatibility, and shared-capacity rules. Slot refinement evaluates
-concrete transmission events. For supported combinational cuts, the binding
-also records when upstream values become available and when downstream
-transmissions consume them. Those runtime bindings are EmuFlow integration
-work, distinct from the cited ratio-optimization algorithms.
+The shared native `build-schedule` operation consumes the current typed
+RouteStore and the Phase 3 source-bound contract. It constructs the schedule
+and readiness certificate directly in ScheduleStore. Independent cursor/join
+validation completes before atomic report-last publication; there is no
+Python result import or size-dependent reference fallback.
 
-For the default research platform, Phase 5 allocates whole communication
-banks between the two directions of each connected FPGA pair according to
-directional communication load, then optimizes TDM ratios and slots within
-that allocation. Each bank serves one direction for the schedule. See the
-[hardware platform and link model](HARDWARE_PLATFORM.md).
+Whole communication banks are allocated between directions using directional
+load. Hardware ratio limits, compatibility, shared capacity and the calibrated
+per-hop delay model remain constraints even though independent ratio/KKT,
+timing-DAG and slot-refinement providers are retired. Chimew consumes these
+concrete lane/slot/ratio facts and does not depend on the retired optimizers.
+See the [hardware platform and link model](HARDWARE_PLATFORM.md).
+
+The old registered-boundary producer, split scheduling/publication protocol,
+and cross-stage ratio-feedback optimizer are removed. A bounded earliest-slot
+oracle lives in tests only; supported explicit artifacts retain independent
+legality checks. Minimum-frame search reruns the same production scheduler
+and records `emuflow.frame-search/v5`, without optimizer-selection parameters.
 
 ## Phase 6: pin planning, netlist splitting, and transport
 
@@ -241,9 +247,7 @@ adapter.
 | PATRON | EmuFlow path-aware K-way refinement initialized by TritonPart; not an external paper implementation | [patron_refiner.cpp](../src/native/patron_refiner.cpp) |
 | Static Exact semantic analysis | EmuFlow structural dependency/capture traversal with a Python reference and native large-design implementation | [static_exact_analyzer.cpp](../src/native/static_exact_analyzer.cpp) |
 | System router | EmuFlow implementation drawing on DAC 2025 delay-demand balancing and ASP-DAC 2026 timing-aware routing, with additional candidate trees | [tlr_router.cpp](../src/native/tlr_router.cpp) |
-| TDM ratios | Published Lagrangian/KKT methods, discrete legalization, and EmuFlow platform constraints | [tdm_ratio_optimizer.cpp](../src/native/tdm_ratio_optimizer.cpp) |
-| Timing-DAG ratio solver | ASP-DAC 2026 equation-based continuous optimizer; distinct from runtime dependency/event binding | [tdm_timing_dag_optimizer.cpp](../src/native/tdm_timing_dag_optimizer.cpp) |
-| Concrete slot refinement | EmuFlow event-based local optimization after ratio assignment | [tdm_slot_optimizer.cpp](../src/native/tdm_slot_optimizer.cpp) |
+| Static Exact TDM scheduler | EmuFlow deterministic dependency ordering, earliest legal TX events, and independent readiness validation | [tdm_exact_scheduler.cpp](../src/native/tdm_exact_scheduler.cpp) |
 | Placement-aware pin baseline | EmuFlow region grouping, proximity costs, and minimum-cost assignment | [placement_aware_pin_planner.cpp](../src/native/placement_aware_pin_planner.cpp) |
 | Chimew initial grouping | Paper Algorithm 1 crossing-encoding grouping | [chimew_signal_grouper.cpp](../src/native/chimew_signal_grouper.cpp) |
 | Chimew position refinement | Paper Section 3.3.2 with explicitly documented implementation choices | [chimew_refinement.py](../src/emuflow/chimew_refinement.py) |
@@ -271,9 +275,6 @@ points are mapped in [implementation and reference map](#implementation-and-refe
 - **Synergistic Die-Level Router for Multi-FPGA System with Time-Division
   Multiplexing Optimization** — Wang et al., DAC 2025.
   [Author manuscript](https://yibolin.com/publications/papers/ROUTE_DAC2025_Wang.pdf).
-- **Lagrangian Relaxation-Based Time-Division Multiplexing Optimization for
-  Multi-FPGA Systems** — Pui and Young, TODAES 2020.
-  [Paper](https://cwpui.com/doc/j4.pdf), [DOI](https://doi.org/10.1145/3377551).
 - **Timing-Aware Optimization of Die-Level Routing and TDM Assignment for
   Multi-FPGA Systems** — Chen et al., ASP-DAC 2026.
   [Author manuscript](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf).

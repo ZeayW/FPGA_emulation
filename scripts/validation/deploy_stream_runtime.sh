@@ -85,7 +85,7 @@ for binary in "$native_base"/bin/*; do
   test -e "$binary" || continue
   # Retired provider binaries must not leak in through an older native base.
   case "$(basename "$binary")" in
-    emuflow_tritonpart_balance_legalizer|emuflow_xilinx_bookshelf_exporter|emuflow_tdm_exact_scheduler|emuflow_tlr_router|emuflow_patron_refiner|repart|emuflow_mfspart_*) continue ;;
+    emuflow_tritonpart_balance_legalizer|emuflow_xilinx_bookshelf_exporter|emuflow_tdm_exact_scheduler|emuflow_tdm_ratio_optimizer|emuflow_tdm_slot_optimizer|emuflow_tdm_timing_dag_optimizer|emuflow_tdm_partition_feedback|emuflow_tlr_router|emuflow_patron_refiner|repart|emuflow_mfspart_*) continue ;;
   esac
   ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")"
 done
@@ -94,7 +94,7 @@ if test -n "${SQLITE3_PREFIX:-}"; then
   sqlite_flags=("-I$SQLITE3_PREFIX/include" "-L$SQLITE3_PREFIX/lib"
     "-Wl,-rpath,$SQLITE3_PREFIX/lib")
 fi
-# Production adapters prefer the unified sibling whenever it exists.  A thin
+# Production adapters require the unified entry. A thin
 # runtime must therefore rebuild that entry from the same exact source commit;
 # retaining the native base's older emuflow-native while refreshing only the
 # standalone binaries would silently execute stale stage code.
@@ -132,10 +132,7 @@ archive="$runtime_dir/lib/libemuflow_core.a"
 "$("$selected_cxx" -print-prog-name=ar)" rcs "$archive" "${objects[@]}"
 for tool in \
   hop_partition_refiner \
-  static_exact_analyzer \
-  tdm_ratio_optimizer \
-  tdm_slot_optimizer \
-  tdm_timing_dag_optimizer
+  static_exact_analyzer
 do
   target="$runtime_dir/bin/emuflow_$tool"
   rm -f "$target"

@@ -55,7 +55,7 @@ def test_adapter_uses_actual_compile_defaults_and_rejects_relative_bindings(tmp_
     from emuflow.multi_fpga_flow import run_multi_fpga_flow
     context = _initial_context({"options": {"output_dir": str(tmp_path / "out")}})
     defaults = inspect.signature(run_multi_fpga_flow).parameters
-    for key in ("partition_provider", "seed", "cut_mode", "physical_seed", "slot_refinement_iterations"):
+    for key in ("partition_provider", "seed", "cut_mode", "physical_seed"):
         assert getattr(context, key) == defaults[key].default
     with pytest.raises(EmuFlowError, match="absolute"):
         _initial_context({"options": {"output_dir": "relative"}})
@@ -102,7 +102,7 @@ def test_bridge_preserves_invocation_directory_defaults_and_path_bindings(tmp_pa
     assert options["working_directory"] == str(tmp_path)
     assert options["options"]["sources"] == [str(tmp_path / "rtl.v")]
     assert options["options"]["router"] == "relative/bin/router"
-    assert options["options"]["slot_refinement_iterations"] == 200
+    assert "slot_refinement_iterations" not in options["options"]
     assert options["options"]["physical_seed"] == 1
     _initial_context(options)
 
@@ -115,7 +115,7 @@ def test_cli_selects_native_control_without_calling_python_compiler():
           patch("emuflow.cli.run_multi_fpga_flow", side_effect=AssertionError("Python compiler called")),
           patch("emuflow.cli._print_json")):
         assert _dispatch(args) == 0
-    assert native.call_args.kwargs["slot_refinement_iterations"] == 200
+    assert "slot_refinement_iterations" not in native.call_args.kwargs
     assert native.call_args.kwargs["partition_provider"] == "patron"
 
 

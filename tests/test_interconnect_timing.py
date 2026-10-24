@@ -8,7 +8,6 @@ from emuflow.board_link_timing import (
     directed_route_link_delays,
     validate_board_link_timing,
 )
-from emuflow.cross_stage import _scheduled_transport_delay_by_net
 from emuflow.errors import ValidationError
 from emuflow.global_sta import bind_physical_checks
 from emuflow.platform import Platform
@@ -68,18 +67,6 @@ def two_hop_case():
     routes = {"constraints": constraints, "routes":[{"id":"d","net":"n",
               "source":"fpga0","sinks":["fpga1"],"tree_edges":edges}]}
     return platform, routes, {"entries": entries}
-
-
-def test_cross_stage_uses_each_hops_ratio_without_another_slot_wait():
-    platform, routes, schedule = two_hop_case()
-    assert _scheduled_transport_delay_by_net(routes,schedule,platform) == {"n":72.0}
-    schedule["entries"][1]["slot"] += 9
-    assert _scheduled_transport_delay_by_net(routes,schedule,platform) == {"n":72.0}
-    schedule["entries"][1]["tdm_ratio"] = 24
-    assert _scheduled_transport_delay_by_net(routes,schedule,platform) == {"n":76.0}
-    del schedule["entries"][1]["tdm_ratio"]
-    with pytest.raises(ValidationError, match="TDM ratio"):
-        _scheduled_transport_delay_by_net(routes,schedule,platform)
 
 
 @pytest.mark.parametrize("missing_tx_time", [False, True])

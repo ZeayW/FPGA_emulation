@@ -12,13 +12,7 @@ from emuflow.platform import Platform
 from emuflow.vtr_architecture import run_vtr_architecture_import
 from emuflow.vtr_netlist import normalize_vtr_hard_block_json
 from emuflow.yosys import import_yosys_json
-from tests.native_build import (
-    tdm_ratio_optimizer,
-    tdm_slot_optimizer,
-    tdm_timing_dag_optimizer,
-    tlr_router,
-    vtr_architecture_importer,
-)
+from tests.native_build import tlr_router, vtr_architecture_importer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -316,20 +310,30 @@ class VtrNetlistTest(unittest.TestCase):
                 clocks=["clk"],
                 partition_constraints=constraints,
                 partition_provider="tritonpart",
-                cut_mode="sequential-only",
+                cut_mode="static-exact-combinational",
                 clock_periods={"clk": 10.0},
                 opensta=str(FAKE_OPENSTA),
                 architecture_timing_db=timing_db,
                 min_used_fpgas=2,
                 router=str(tlr_router()),
-                ratio_optimizer=str(tdm_ratio_optimizer()),
-                slot_optimizer=str(tdm_slot_optimizer()),
-                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
+
+
                 frame_slots=32,
                 equivalence_cycles=4,
                 mapping_profile="vtr-hard-blocks",
             )
-            equivalence = report["stages"]["split"]["equivalence"]
+            # Exercise the explicit small behavioral oracle as well as the
+            # production lossless split certificate; these are different gates.
+            from emuflow.equivalence import simulate_static_exact_partition_equivalence
+            from emuflow.tdm_schedule_storage import read_tdm_schedule
+            flow = root / "flow"
+            self.assertEqual(report["stages"]["split"]["equivalence"]["mismatches"], 0)
+            equivalence = simulate_static_exact_partition_equivalence(
+                EmuIR.load(flow / "frontend/phase1/design.emuir.sqlite"),
+                read_json(flow / "partition/assignment.json"),
+                read_tdm_schedule(flow / "tdm/schedule.json", materialize=True),
+                cycles=4, clock_periods={"clk": 10.0},
+            )
             self.assertEqual(report["status"], "pass")
             self.assertEqual(equivalence["multipliers"], 1)
             self.assertEqual(equivalence["memory_macros"], 1)

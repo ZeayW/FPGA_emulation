@@ -90,20 +90,12 @@ from emuflow.routing import (
     validate_system_routes,
 )
 from emuflow.resources import ResourceVector
-from emuflow.tdm import (
-    TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER,
-    TDM_BASELINE_PROVIDER,
-    TDM_EXACT_DEPENDENCY_PROVIDER,
-    SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
-    build_tdm_schedule,
-    validate_tdm_schedule,
-)
+from emuflow.tdm import TDM_EXACT_DEPENDENCY_PROVIDER, SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA, validate_tdm_schedule
+from tests.schedule_reference import REFERENCE_TDM_PROVIDER as TDM_BASELINE_PROVIDER, build_tdm_schedule
 from emuflow.tdm_schedule_storage import (
     read_tdm_schedule,
     write_tdm_schedule_storage,
 )
-from emuflow.tdm_ratio import build_tdm_ratio_plan
-from emuflow.tdm_slot import refine_tdm_schedule_native
 from emuflow.timing_routing import route_system_native
 from emuflow.transport_storage import write_transport_storage
 from emuflow.system_route_storage import (
@@ -111,13 +103,7 @@ from emuflow.system_route_storage import (
     read_system_routes,
     write_system_route_storage,
 )
-from tests.native_build import (
-    emuflow_native,
-    static_exact_analyzer,
-    tdm_ratio_optimizer,
-    tdm_slot_optimizer,
-    tlr_router,
-)
+from tests.native_build import emuflow_native, static_exact_analyzer, tlr_router
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -3153,66 +3139,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         # binding and are hydrated by run_phase5 from assignment.json.
         return {**routes, "semantic_contract": assignment["semantic_contract"]}
 
-    def test_exact_routing_uses_dependency_dag_not_global_round_windows(self):
-        _, assignment = self._exact_artifacts(dependent_return=True)
-        constraints = normalize_route_constraints(
-            None, self.platform, frame_slots=16
-        )
-        routes = route_system_native(
-            assignment,
-            self.platform,
-            constraints,
-            executable=str(tlr_router()),
-        )
-        self.assertNotIn("round_capacity_contract", routes)
-        self.assertEqual(
-            {
-                item["capacity_bits"]
-                for item in routes["link_utilization"]
-            },
-            {32 * 8},
-        )
-
-        checked = validate_system_routes(assignment, self.platform, routes)
-        self.assertEqual(checked["status"], "pass")
-        hydrated = {
-            **routes,
-            "semantic_contract": assignment["semantic_contract"],
-        }
-        hydrated["timing"] = {
-            "schema": "emuflow.sta-paths/v1",
-            "normalization": {
-                "positive_slack_scale_ns": 100.0,
-                "negative_slack_scale_ns": 100.0,
-                "max_clock_period_ns": 100.0,
-            },
-            "compression": {"original_paths": 1, "compressed_paths": 1},
-            "paths": [
-                {
-                    "path": "cross-layer-path",
-                    "clock_domain": "clk",
-                    "clock_period_ns": 100.0,
-                    "fixed_delay_ns": 1.0,
-                    "cut_nets": ["n0", "d"],
-                    "cut_transitions": [
-                        {"net": "n0", "from": "fpga0", "to": "fpga1"},
-                        {"net": "d", "from": "fpga1", "to": "fpga0"},
-                    ],
-                }
-            ],
-        }
-        plan = build_tdm_ratio_plan(
-            hydrated,
-            self.platform,
-            executable=str(tdm_ratio_optimizer()),
-        )
-        self.assertEqual(
-            plan["round_barrier_legalization"]["source_ready_semantics"],
-            "dependency-dag-only",
-        )
-        self.assertIsNone(
-            plan["round_barrier_legalization"]["source_ready_slot"]
-        )
 
     def test_phase4_indexed_contract_view_matches_full_demands(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
@@ -4367,65 +4293,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "certificate"):
             validate_tdm_schedule(routes, self.platform, tampered)
 
-    def test_static_exact_uses_the_same_ratio_aware_tdm_solver(self):
-        _, assignment = self._exact_artifacts(dependent_return=True)
-        routes = self._exact_routes(assignment)
-        routes["timing"] = {
-            "schema": "emuflow.sta-paths/v1",
-            "normalization": {
-                "positive_slack_scale_ns": 100.0,
-                "negative_slack_scale_ns": 100.0,
-                "max_clock_period_ns": 100.0,
-            },
-            "compression": {"original_paths": 1, "compressed_paths": 1},
-            "paths": [
-                {
-                    "path": "cross-layer-path",
-                    "clock_domain": "clk",
-                    "clock_period_ns": 100.0,
-                    "fixed_delay_ns": 1.0,
-                    "cut_nets": ["n0", "d"],
-                    "cut_transitions": [
-                        {"net": "n0", "from": "fpga0", "to": "fpga1"},
-                        {"net": "d", "from": "fpga1", "to": "fpga0"},
-                    ],
-                }
-            ],
-        }
-        plan = build_tdm_ratio_plan(
-            routes,
-            self.platform,
-            executable=str(tdm_ratio_optimizer()),
-            max_ratio=16,
-            post_refinement_iterations=0,
-        )
-        schedule = build_tdm_schedule(routes, self.platform, plan)
-        self.assertEqual(
-            schedule["provider"], TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER
-        )
-        self.assertEqual(
-            schedule["transport_semantics"], "sampled-virtual-wire"
-        )
-        self.assertEqual(
-            validate_tdm_schedule(routes, self.platform, schedule, plan)[
-                "qualification"
-            ],
-            "dependency-schedule-readiness-pass",
-        )
-        refined = refine_tdm_schedule_native(
-            routes,
-            self.platform,
-            plan,
-            schedule,
-            executable=str(tdm_slot_optimizer()),
-            max_iterations=8,
-        )
-        self.assertEqual(
-            validate_tdm_schedule(routes, self.platform, refined, plan)[
-                "qualification"
-            ],
-            "dependency-schedule-readiness-pass",
-        )
 
     def test_register_output_launch_reserves_configured_settle_budget(self):
         """A cross-FPGA FF output cannot be sampled by TX in slot zero."""
@@ -4575,7 +4442,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             routes_path = root / "routes.json"
             assignment_path = root / "assignment.json"
             output = root / "phase5"
-            routes_path.write_text(json.dumps(routes), encoding="utf-8")
+            from emuflow.system_route_storage import write_system_route_storage
+            write_system_route_storage(routes_path, routes)
             assignment_path.write_text(
                 json.dumps(assignment), encoding="utf-8"
             )
@@ -4937,6 +4805,37 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     0,
                     msg=completed.stdout + completed.stderr,
                 )
+
+    def test_exact_routing_uses_dependency_dag_not_global_round_windows(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        constraints = normalize_route_constraints(
+            None, self.platform, frame_slots=16
+        )
+        routes = route_system_native(
+            assignment,
+            self.platform,
+            constraints,
+            executable=str(tlr_router()),
+        )
+        self.assertNotIn("round_capacity_contract", routes)
+        self.assertEqual(
+            {
+                item["capacity_bits"]
+                for item in routes["link_utilization"]
+            },
+            {32 * 8},
+        )
+
+        checked = validate_system_routes(assignment, self.platform, routes)
+        self.assertEqual(checked["status"], "pass")
+        hydrated = {
+            **routes,
+            "semantic_contract": assignment["semantic_contract"],
+        }
+        schedule = build_tdm_schedule(hydrated, self.platform)
+        self.assertEqual(schedule["transport_semantics"], "sampled-virtual-wire")
+        self.assertNotIn("round_realization", schedule)
+        self.assertEqual(validate_tdm_schedule(hydrated, self.platform, schedule)["status"], "pass")
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from emuflow.phase4 import run_phase4
 from emuflow.phase5 import run_phase5
 from emuflow.platform import Platform
 from emuflow.routing import demands_from_assignment, normalize_route_constraints
-from emuflow.tdm import build_tdm_schedule
+from tests.schedule_reference import build_tdm_schedule
 from emuflow.tdm_feedback import (
     build_tdm_feedback,
     validate_tdm_feedback,
@@ -381,35 +381,23 @@ class TdmFeedbackTest(unittest.TestCase):
             feedback["source_schedule_sha256"],
         )
 
-    def test_phase5_writes_checked_feedback_artifact(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        platform_path = root / "platforms/virtual/xcvu3p_2fpga_p2p.json"
-        platform = Platform.load(platform_path)
-        assignment = _assignment(platform, [("n0", "fpga0", ["fpga1"])])
-        routes = route_system_native(
-            assignment,
-            platform,
-            normalize_route_constraints(None, platform, frame_slots=8),
-            executable=str(tlr_router()),
-        )
+    def test_feedback_is_explicit_and_not_a_phase5_side_effect(self):
+        from emuflow.system_route_storage import read_system_routes
+        from emuflow.tdm_schedule_storage import read_tdm_schedule
+        from tests.phase5_fixture import write_native_phase5_fixture
         with tempfile.TemporaryDirectory() as temporary:
-            temporary_root = Path(temporary)
-            routes_path = temporary_root / "routes.json"
-            routes_path.write_text(json.dumps(routes), encoding="utf-8")
-            report = run_phase5(
-                routes_path,
-                platform_path,
-                temporary_root / "phase5",
-                simulation_frames=2,
-            )
-            feedback_path = temporary_root / "phase5/tdm_feedback.json"
-            self.assertTrue(feedback_path.is_file())
-            self.assertEqual(
-                report["artifacts"]["tdm_feedback"], "tdm_feedback.json"
-            )
-            self.assertEqual(
-                report["tdm_feedback_validation"]["status"], "pass"
-            )
+            root = Path(temporary)
+            routes_path, platform_path, assignment_path = write_native_phase5_fixture(root)
+            output = root / "phase5"
+            report = run_phase5(routes_path, platform_path, output, assignment_path)
+            self.assertNotIn("tdm_feedback", report["artifacts"])
+            self.assertFalse((output / "tdm_feedback.json").exists())
+            platform = Platform.load(platform_path)
+            from emuflow.phase5 import _load_phase3_semantics
+            routes, _ = _load_phase3_semantics(read_system_routes(routes_path), assignment_path)
+            schedule = read_tdm_schedule(output / "schedule.json", materialize=True)
+            feedback = build_tdm_feedback(routes, platform, schedule)
+            self.assertEqual(validate_tdm_feedback(routes, platform, schedule, feedback)["status"], "pass")
 
 
 if __name__ == "__main__":

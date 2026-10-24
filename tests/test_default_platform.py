@@ -15,7 +15,6 @@ from emuflow.io import read_json
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
 from emuflow.phase3 import run_phase3
 from emuflow.tritonpart import run_tritonpart
-from emuflow.cross_stage import run_cross_stage_optimization
 from emuflow.experiment_partition import run_partition_checkpoint
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
@@ -108,36 +107,6 @@ class DefaultPlatformTest(unittest.TestCase):
                 for board_unit, provider_unit in mapping.items():
                     self.assertEqual(fpga.capacity[board_unit], resources[provider_unit])
 
-    def test_cli_and_python_default_select_same_installed_resource(self):
-        parser = _build_parser()
-        args = parser.parse_args([
-            "multi-fpga", "compile", "design.v", "--top", "top",
-            "--clock", "clk", "--clock-period", "clk=10", "--out", "unused",
-        ])
-        self.assertEqual(args.platform, DEFAULT_PLATFORM_PATH)
-        self.assertTrue(args.partition_repair_min_used_fpgas)
-        disabled = parser.parse_args([
-            "multi-fpga", "compile", "design.v", "--top", "top",
-            "--clock", "clk", "--clock-period", "clk=10", "--out", "unused",
-            "--no-partition-repair-min-used-fpgas",
-        ])
-        self.assertFalse(disabled.partition_repair_min_used_fpgas)
-        for function, prefix in ((run_multi_fpga_flow, "partition_"),
-                                 (run_phase3, "tritonpart_"),
-                                 (run_tritonpart, ""), (run_partition_checkpoint, ""),
-                                 (run_cross_stage_optimization, "partition_")):
-            for suffix in ("repair_min_used_fpgas",):
-                self.assertIs(inspect.signature(function).parameters[prefix + suffix].default, True)
-        self.assertEqual(
-            inspect.signature(run_multi_fpga_flow).parameters["platform_path"].default,
-            DEFAULT_PLATFORM_PATH,
-        )
-        self.assertTrue(DEFAULT_PLATFORM_PATH.is_file())
-        self.assertEqual(DEFAULT_PLATFORM_PATH.parent.parent.name, "data")
-        with patch("emuflow.cli.run_multi_fpga_flow") as run, patch("emuflow.cli._print_json"):
-            run.return_value = {"status": "pass"}
-            self.assertEqual(_dispatch(args), 0)
-            self.assertEqual(run.call_args.kwargs["platform_path"], DEFAULT_PLATFORM_PATH)
 
     def test_python_omitted_platform_reaches_frontend_with_bundled_model(self):
         class FrontendReached(Exception):
@@ -209,3 +178,33 @@ class DefaultPlatformTest(unittest.TestCase):
                 with self.subTest(width=width), self.assertRaises(ValidationError):
                     materialize_research_platform(output, wires_per_bank=width)
                 self.assertFalse(output.exists())
+
+    def test_cli_and_python_default_select_same_installed_resource(self):
+        parser = _build_parser()
+        args = parser.parse_args([
+            "multi-fpga", "compile", "design.v", "--top", "top",
+            "--clock", "clk", "--clock-period", "clk=10", "--out", "unused",
+        ])
+        self.assertEqual(args.platform, DEFAULT_PLATFORM_PATH)
+        self.assertTrue(args.partition_repair_min_used_fpgas)
+        disabled = parser.parse_args([
+            "multi-fpga", "compile", "design.v", "--top", "top",
+            "--clock", "clk", "--clock-period", "clk=10", "--out", "unused",
+            "--no-partition-repair-min-used-fpgas",
+        ])
+        self.assertFalse(disabled.partition_repair_min_used_fpgas)
+        for function, prefix in ((run_multi_fpga_flow, "partition_"),
+                                 (run_phase3, "tritonpart_"),
+                                 (run_tritonpart, ""), (run_partition_checkpoint, "")):
+            for suffix in ("repair_min_used_fpgas",):
+                self.assertIs(inspect.signature(function).parameters[prefix + suffix].default, True)
+        self.assertEqual(
+            inspect.signature(run_multi_fpga_flow).parameters["platform_path"].default,
+            DEFAULT_PLATFORM_PATH,
+        )
+        self.assertTrue(DEFAULT_PLATFORM_PATH.is_file())
+        self.assertEqual(DEFAULT_PLATFORM_PATH.parent.parent.name, "data")
+        with patch("emuflow.cli.run_multi_fpga_flow") as run, patch("emuflow.cli._print_json"):
+            run.return_value = {"status": "pass"}
+            self.assertEqual(_dispatch(args), 0)
+            self.assertEqual(run.call_args.kwargs["platform_path"], DEFAULT_PLATFORM_PATH)

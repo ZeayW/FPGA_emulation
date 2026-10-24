@@ -26,28 +26,8 @@ option(
 )
 
 option(
-  EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER
-  "Build the in-tree Lagrangian/KKT TDM ratio optimizer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_TDM_SLOT_OPTIMIZER
-  "Build the in-tree timing-path-guided TDM slot optimizer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_TDM_TIMING_DAG_OPTIMIZER
-  "Build the in-tree ASP-DAC 2026 timing-DAG TDM optimizer"
-  ON
-)
-option(
   EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER
   "Build the in-tree quantized-delay topology optimizer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_TDM_PARTITION_FEEDBACK
-  "Build the in-tree channel-usage partition feedback optimizer"
   ON
 )
 option(
@@ -631,49 +611,6 @@ if(EMUFLOW_BUILD_VPR_ROUTE_CHECKER)
   )
 endif()
 
-if(EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER)
-  add_executable(
-    emuflow_tdm_ratio_optimizer
-    "${CMAKE_SOURCE_DIR}/src/native/tdm_ratio_optimizer.cpp"
-  )
-  target_compile_features(emuflow_tdm_ratio_optimizer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_tdm_ratio_optimizer PRIVATE -O3)
-  set_target_properties(
-    emuflow_tdm_ratio_optimizer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_TDM_SLOT_OPTIMIZER)
-  add_executable(
-    emuflow_tdm_slot_optimizer
-    "${CMAKE_SOURCE_DIR}/src/native/tdm_slot_optimizer.cpp"
-  )
-  target_compile_features(emuflow_tdm_slot_optimizer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_tdm_slot_optimizer PRIVATE -O3)
-  set_target_properties(
-    emuflow_tdm_slot_optimizer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_TDM_TIMING_DAG_OPTIMIZER)
-  add_executable(
-    emuflow_tdm_timing_dag_optimizer
-    "${CMAKE_SOURCE_DIR}/src/native/tdm_timing_dag_optimizer.cpp"
-  )
-  target_compile_features(
-    emuflow_tdm_timing_dag_optimizer PRIVATE cxx_std_17
-  )
-  target_compile_options(emuflow_tdm_timing_dag_optimizer PRIVATE -O3)
-  set_target_properties(
-    emuflow_tdm_timing_dag_optimizer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
 if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
   add_executable(
@@ -689,19 +626,6 @@ if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
   )
 endif()
 
-if(EMUFLOW_BUILD_TDM_PARTITION_FEEDBACK)
-  add_executable(
-    emuflow_tdm_partition_feedback
-    "${CMAKE_SOURCE_DIR}/src/native/tdm_partition_feedback.cpp"
-  )
-  target_compile_features(emuflow_tdm_partition_feedback PRIVATE cxx_std_17)
-  target_compile_options(emuflow_tdm_partition_feedback PRIVATE -O3)
-  set_target_properties(
-    emuflow_tdm_partition_feedback
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
 if(EMUFLOW_BUILD_HOP_PARTITION_REFINER)
   add_executable(
@@ -733,8 +657,6 @@ if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
 endif()
-
-
 
 
 if(EMUFLOW_BUILD_PIN_PLANNER)
@@ -1235,27 +1157,6 @@ if(BUILD_TESTING)
   endforeach()
 
 
-  if(EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER)
-    add_test(
-      NAME emuflow_tdm_ratio_optimizer_cli
-      COMMAND "$<TARGET_FILE:emuflow_tdm_ratio_optimizer>" --help
-    )
-  endif()
-
-  if(EMUFLOW_BUILD_TDM_SLOT_OPTIMIZER)
-    add_test(
-      NAME emuflow_tdm_slot_optimizer_cli
-      COMMAND "$<TARGET_FILE:emuflow_tdm_slot_optimizer>" --help
-    )
-  endif()
-
-  if(EMUFLOW_BUILD_TDM_TIMING_DAG_OPTIMIZER)
-    add_test(
-      NAME emuflow_tdm_timing_dag_optimizer_cli
-      COMMAND "$<TARGET_FILE:emuflow_tdm_timing_dag_optimizer>" --help
-    )
-  endif()
-
   if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
     add_test(
       NAME emuflow_eda2025_topology_optimizer_cli
@@ -1263,12 +1164,6 @@ if(BUILD_TESTING)
     )
   endif()
 
-  if(EMUFLOW_BUILD_TDM_PARTITION_FEEDBACK)
-    add_test(
-      NAME emuflow_tdm_partition_feedback_cli
-      COMMAND "$<TARGET_FILE:emuflow_tdm_partition_feedback>" --help
-    )
-  endif()
 
   if(EMUFLOW_BUILD_HOP_PARTITION_REFINER)
     add_test(
@@ -1283,7 +1178,6 @@ if(BUILD_TESTING)
       COMMAND "$<TARGET_FILE:emuflow_static_exact_analyzer>" --help
     )
   endif()
-
 
 
   if(EMUFLOW_BUILD_PIN_PLANNER)

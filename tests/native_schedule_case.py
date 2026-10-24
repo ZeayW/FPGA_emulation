@@ -14,7 +14,8 @@ from emuflow.errors import ValidationError
 from emuflow.native_tools import native_file_generation
 from emuflow.platform import RatioDelayModel
 from emuflow.system_route_storage import read_system_routes,write_system_route_storage,_demand_from_route
-from emuflow.tdm import build_tdm_schedule, _write_native_schedule_board_request
+from emuflow.tdm import _write_native_schedule_board_request
+from tests.schedule_reference import build_tdm_schedule
 from tests.native_build import emuflow_native
 
 

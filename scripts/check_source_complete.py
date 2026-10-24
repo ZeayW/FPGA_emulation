@@ -170,16 +170,6 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/emuflow/partition_hops.py",
 
 
-
-
-
-
-
-
-
-
-    "src/native/tdm_ratio_optimizer.cpp",
-    "src/native/tdm_partition_feedback.cpp",
     "src/native/placement_aware_pin_planner.cpp",
     "src/native/chimew_signal_grouper.cpp",
     "src/native/chimew_position_refiner.cpp",
@@ -190,7 +180,6 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/emuflow/chimew_rudy.py",
     "src/emuflow/chimew_bank_channel.py",
     "src/native/bsp_pin_solver.cpp",
-    "schemas/tdm-ratio-plan-v1.schema.json",
     "schemas/sta-path-database-v1.schema.json",
     "schemas/fpga-timing-model-v1.schema.json",
     "schemas/fpga-timing-model-v2.schema.json",

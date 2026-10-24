@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import math
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
@@ -24,7 +22,6 @@ from .experiment_identity import (
 )
 from .io import read_json, write_json
 from .partition import (
-    CUT_MODE_SEQUENTIAL_ONLY,
     CUT_MODE_STATIC_EXACT,
     DEFAULT_PARTITION_CUT_MODE,
     DEFAULT_PATRON_ALGORITHM_VERSION,
@@ -37,12 +34,11 @@ from .combinational_cut import (
 )
 from .platform import Platform
 from .routing import load_route_constraints
-from .tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
+from .tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
 )
 CANONICAL_EXPERIMENT_CONFIG_SCHEMA = "emuflow.canonical-experiment-config/v1"
-
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -50,7 +46,6 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
-
 
 def _file(value: Any, label: str) -> Path:
     if not isinstance(value, str) or not value:
@@ -60,7 +55,6 @@ def _file(value: Any, label: str) -> Path:
         raise ValidationError(f"canonical experiment {label} is not a regular file")
     return path
 
-
 def _directory(value: Any, label: str) -> Path:
     if not isinstance(value, str) or not value:
         raise ValidationError(f"canonical experiment {label} must be a directory path")
@@ -69,17 +63,14 @@ def _directory(value: Any, label: str) -> Path:
         raise ValidationError(f"canonical experiment {label} is not a directory")
     return path
 
-
 def _positive_integer(value: Any, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValidationError(f"canonical experiment {label} must be positive")
     return value
 
-
 def _append_option(command: list[str], option: str, value: Any) -> None:
     if value is not None:
         command.extend((option, str(value)))
-
 
 def _identity_argv(
     arguments: Sequence[str], bindings: Mapping[str, str]
@@ -92,7 +83,6 @@ def _identity_argv(
         f"{{input:{reverse[argument]}}}" if argument in reverse else argument
         for argument in arguments
     ]
-
 
 def _canonical_case_contract(
     repository_root: Path,
@@ -195,7 +185,6 @@ def _canonical_case_contract(
         "physical_mapping_profile": run_spec["physical_mapping_profile"],
     }
 
-
 _COMPONENTS: Dict[str, Sequence[str]] = {
     "frontend": (
         "src/emuflow/experiment_upstream.py::run_frontend_checkpoint,validate_frontend_checkpoint",
@@ -276,16 +265,9 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
         "src/emuflow/routing.py",
         "src/emuflow/tdm.py",
         "src/emuflow/combinational_cut.py",
-        "src/emuflow/tdm_ratio.py",
-        "src/emuflow/tdm_timing_dag.py",
-        "src/emuflow/tdm_slot.py",
         "src/emuflow/tdm_compatibility.py",
-        "src/emuflow/tdm_cp_sat.py",
         "src/emuflow/tdm_feedback.py",
         "src/emuflow/native_tools.py",
-        "src/native/tdm_ratio_optimizer.cpp",
-        "src/native/tdm_timing_dag_optimizer.cpp",
-        "src/native/tdm_slot_optimizer.cpp",
         "src/native/tdm_exact_scheduler.cpp",
         "src/native/emuflow_native.cpp",
         "src/native/emuflow_core/artifact_io.cpp",
@@ -401,10 +383,8 @@ _COMPONENTS: Dict[str, Sequence[str]] = {
     ),
 }
 
-
 def _closure(repository_root: Path, stage: str) -> Dict[str, Any]:
     return build_implementation_closure(repository_root, _COMPONENTS[stage])
-
 
 def _artifact(path: str, role: str) -> Dict[str, str]:
     retention = {
@@ -414,7 +394,6 @@ def _artifact(path: str, role: str) -> Dict[str, str]:
         "diagnostic": "optional",
     }[role]
     return {"path": path, "role": role, "retention": retention}
-
 
 def compile_canonical_experiment_spec(
     config_path: Path, repository_root: Path, output_path: Path
@@ -429,6 +408,16 @@ def compile_canonical_experiment_spec(
     )
     if retired:
         raise ValidationError("retired partition configuration: " + ", ".join(retired))
+    retired_tdm = sorted(set(config) & {
+        "ratio_optimizer", "timing_dag_optimizer", "slot_optimizer", "ratio_max_iterations",
+        "max_ratio", "ratio_quantum", "post_refinement_iterations", "slot_refinement_iterations",
+        "ratio_convergence", "cross_stage_iterations", "cross_stage_feedback_optimizer",
+        "cross_stage_pair_pressure_weight",
+    })
+    if retired_tdm:
+        raise ValidationError("retired TDM configuration: " + ", ".join(retired_tdm))
+    if config.get("tdm_provider", TDM_EXACT_DEPENDENCY_PROVIDER) != TDM_EXACT_DEPENDENCY_PROVIDER:
+        raise ValidationError("canonical experiment requires the Static Exact dependency scheduler")
     repository_root = _directory(str(repository_root), "repository_root")
     case_id = config.get("case_id")
     source_commit = config.get("source_commit")
@@ -520,9 +509,6 @@ def compile_canonical_experiment_spec(
         "hop_refiner",
         "patron_refiner",
         "router",
-        "ratio_optimizer",
-        "timing_dag_optimizer",
-        "slot_optimizer",
         "pin_planner",
         "chimew_grouper",
         "chimew_refiner",
@@ -579,8 +565,8 @@ def compile_canonical_experiment_spec(
         raise ValidationError(
             "canonical PATRON v14 requires generalized Static Exact mode"
         )
-    if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
-        raise ValidationError("canonical experiment cut_mode is invalid")
+    if cut_mode != CUT_MODE_STATIC_EXACT:
+        raise ValidationError("canonical experiment requires static-exact-combinational")
     contract = _canonical_case_contract(
         repository_root,
         case_id,
@@ -1219,40 +1205,14 @@ def compile_canonical_experiment_spec(
         configuration={"provider": route_provider, "candidate_workers": effective_candidate_workers, "route_constraints": contract["route_constraints"], "cut_mode": cut_mode},
         peak_gib=12, retained_gib=3,
     )
-    tdm_provider = TDM_TIMING_DAG_RATIO_PROVIDER
-    tdm_command = [
-        executable, "experiment-stage", "tdm-run", "--route",
-        "{dependency:route}", "--partition", "{dependency:partition}",
-        "--platform", str(platform), "--provider",
-        tdm_provider,
-        "--managed-storage",
-        "--managed-dag-node",
-    ]
-    tdm_inputs = ["platform", "route_constraints", "tool.emuflow"]
-    tdm_artifacts = [
-        _artifact(".", "consumer-checkpoint"),
-    ]
-    tdm_command.extend((
-        "--ratio-quantum", str(contract["route_constraints"]["tdm_ratio_quantum"]),
-        "--max-ratio", str(contract["route_constraints"]["tdm_max_ratio"]),
-        "--ratio-optimizer", str(tools["ratio_optimizer"]),
-        "--timing-dag-optimizer", str(tools["timing_dag_optimizer"]),
-        "--slot-optimizer", str(tools["slot_optimizer"]),
-        "--slot-refinement-iterations", "200",
-    ))
-    tdm_inputs.extend((
-        "tool.ratio_optimizer",
-        "tool.timing_dag_optimizer",
-        "tool.slot_optimizer",
-    ))
-    tdm_command.extend(("--out", "{output_dir}"))
+    tdm_provider = TDM_EXACT_DEPENDENCY_PROVIDER
     node(
         "tdm", "tdm", ["route", "partition"],
-        tdm_command,
+        [executable, "experiment-stage", "tdm-run", "--route", "{dependency:route}", "--partition", "{dependency:partition}", "--platform", str(platform), "--provider", tdm_provider, "--managed-dag-node", "--out", "{output_dir}"],
         [executable, "experiment-stage", "tdm-validate", "{artifact_root}", "--route", "{dependency:route}", "--partition", "{dependency:partition}", "--platform", str(platform), "--constraints", str(route_constraints), "--provider", tdm_provider, "--managed-dag-node"],
-        tdm_artifacts,
-        inputs=tuple(tdm_inputs),
-        configuration={"provider": tdm_provider, "simulation_frames": 16, "ratio_max_iterations": 500, "ratio_quantum": contract["route_constraints"]["tdm_ratio_quantum"], "max_ratio": contract["route_constraints"]["tdm_max_ratio"], "post_refinement_iterations": 200, "slot_refinement_iterations": 200, "cut_mode": cut_mode},
+        [_artifact(".", "consumer-checkpoint")],
+        inputs=("platform", "tool.emuflow"),
+        configuration={"provider": tdm_provider, "cut_mode": cut_mode},
         peak_gib=12, retained_gib=3,
     )
     shared_dependencies = ["frontend", "timing", "partition", "cut-timing", "route", "tdm"]
@@ -1451,296 +1411,5 @@ def compile_canonical_experiment_spec(
         "cut_mode": cut_mode,
         "static_exact_candidate_policy": static_exact_candidate_policy,
         "max_cross_fpga_dependency_depth": max_cross_fpga_dependency_depth,
-        "output": str(output_path.resolve()),
-    }
-
-
-def _static_exact_prefixed_node(
-    raw: Mapping[str, Any], prefix: str
-) -> Dict[str, Any]:
-    """Namespace one canonical arm while retaining common frontend/timing."""
-
-    common = {"frontend", "timing"}
-
-    def mapped(node_id: str) -> str:
-        return node_id if node_id in common else f"{prefix}-{node_id}"
-
-    def rewrite(value: Any) -> Any:
-        if isinstance(value, str):
-            for dependency in raw.get("dependencies", []):
-                value = value.replace(
-                    f"{{dependency:{dependency}}}",
-                    f"{{dependency:{mapped(dependency)}}}",
-                )
-            return value
-        if isinstance(value, list):
-            return [rewrite(item) for item in value]
-        if isinstance(value, dict):
-            return {key: rewrite(item) for key, item in value.items()}
-        return value
-
-    result = rewrite(copy.deepcopy(dict(raw)))
-    result["id"] = mapped(raw["id"])
-    result["dependencies"] = [
-        mapped(dependency) for dependency in raw.get("dependencies", [])
-    ]
-    return result
-
-
-def compile_static_exact_ab_experiment_spec(
-    config_path: Path,
-    repository_root: Path,
-    output_path: Path,
-    *,
-    generalized_max_depth: int = 8,
-    minimum_combinational_cut_nets: int = 1,
-    partition_seed: int | None = None,
-) -> Dict[str, Any]:
-    """Compile one cache DAG with paired Phase 3--7 cut-policy branches.
-
-    The canonical frontend and complete TimingPathDB are emitted once.  Each
-    policy then owns its assignment, routing, schedule, lookahead, split, and
-    physical terminal.  The final node independently rebuilds the complete
-    Phase 7 comparison rather than comparing Phase 3 or Phase 6 proxies.
-    """
-
-    output_path = validate_experiment_write_path(output_path)
-    repository_root = _directory(str(repository_root), "repository_root")
-    config = read_json(config_path)
-    if config.get("schema") != CANONICAL_EXPERIMENT_CONFIG_SCHEMA:
-        raise ValidationError("canonical experiment config schema is invalid")
-    if config.get("tritonpart_solution") is not None:
-        raise ValidationError(
-            "Static Exact A/B requires policy-specific partition searches; "
-            "use a single-arm canonical experiment for a precomputed solution"
-        )
-    for name, value in (
-        ("generalized_max_depth", generalized_max_depth),
-        ("minimum_combinational_cut_nets", minimum_combinational_cut_nets),
-    ):
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValidationError(f"Static Exact A/B {name} must be positive")
-    controlled_partition_seed = (
-        config.get("partition_seed", 0)
-        if partition_seed is None
-        else partition_seed
-    )
-    if (
-        isinstance(controlled_partition_seed, bool)
-        or not isinstance(controlled_partition_seed, int)
-        or controlled_partition_seed < 0
-    ):
-        raise ValidationError("Static Exact A/B partition seed is invalid")
-    physical_seeds = config.get("physical_seeds", [1])
-    if (
-        not isinstance(physical_seeds, list)
-        or not physical_seeds
-        or any(
-            isinstance(seed, bool) or not isinstance(seed, int) or seed < 1
-            for seed in physical_seeds
-        )
-        or physical_seeds != sorted(set(physical_seeds))
-    ):
-        raise ValidationError("Static Exact A/B physical seeds are invalid")
-    arm_configs = {
-        "seq": {
-            "label": "sequential-only",
-            "cut_mode": CUT_MODE_SEQUENTIAL_ONLY,
-            "patron_algorithm_version": 6,
-            "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
-            "max_cross_fpga_dependency_depth": 1,
-            "minimum_combinational_cut_nets": 0,
-        },
-        "v2": {
-            "label": "generalized-static-exact-v2",
-            "cut_mode": CUT_MODE_STATIC_EXACT,
-            "patron_algorithm_version": 14,
-            "static_exact_candidate_policy": STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
-            "max_cross_fpga_dependency_depth": generalized_max_depth,
-            "minimum_combinational_cut_nets": minimum_combinational_cut_nets,
-        },
-    }
-    compiled: Dict[str, Dict[str, Any]] = {}
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        dir=output_path.parent, prefix=".static-exact-ab-compile-"
-    ) as temporary:
-        temporary_root = Path(temporary)
-        for prefix, arm in arm_configs.items():
-            arm_config = dict(config)
-            arm_config.update(
-                {
-                    key: value
-                    for key, value in arm.items()
-                    if key != "label"
-                }
-            )
-            # A policy comparison must not let each arm search a different
-            # random-seed portfolio and then compare unrelated winners.  One
-            # explicit partition seed is shared by all arms; physical-tool
-            # seeds remain a separate paired axis below.
-            arm_config["partition_seed"] = controlled_partition_seed
-            arm_config["partition_seed_attempts"] = 1
-            arm_config["phase6_providers"] = ["baseline"]
-            arm_config_path = temporary_root / f"{prefix}-config.json"
-            arm_spec_path = temporary_root / f"{prefix}-spec.json"
-            write_json(arm_config_path, arm_config)
-            compile_canonical_experiment_spec(
-                arm_config_path, repository_root, arm_spec_path
-            )
-            compiled[prefix] = read_json(arm_spec_path)
-
-    common_ids = {"frontend", "timing"}
-    sequential_keep = {
-        *common_ids,
-        "patron-initial-partition",
-        "partition",
-        "cut-timing",
-        "route",
-        "tdm",
-        "shared-phase1-5",
-        "phase6-baseline",
-        "physical-lookahead",
-        *{
-            f"phase7-baseline-seed{seed}" for seed in physical_seeds
-        },
-    }
-    reference_common = [
-        node
-        for node in compiled["seq"]["nodes"]
-        if node["id"] in common_ids
-    ]
-    for prefix in ("v2",):
-        candidate_common = [
-            node
-            for node in compiled[prefix]["nodes"]
-            if node["id"] in common_ids
-        ]
-        if candidate_common != reference_common:
-            raise ValidationError(
-                "Static Exact A/B frontend/timing branches are not identical"
-            )
-    nodes = copy.deepcopy(reference_common)
-    for prefix in ("seq", "v2"):
-        arm_nodes = compiled[prefix]["nodes"]
-        for raw in arm_nodes:
-            if raw["id"] in common_ids:
-                continue
-            if prefix == "seq" and raw["id"] not in sequential_keep:
-                continue
-            nodes.append(_static_exact_prefixed_node(raw, prefix))
-
-    executable = str(_file(config["tools"]["emuflow"], "tool emuflow"))
-    platform = _file(config.get("platform"), "platform")
-    dependencies: list[str] = []
-    command = [
-        executable,
-        "experiment-stage",
-        "static-exact-qor-compare-run",
-        "--platform",
-        str(platform),
-        "--reuse-validated-phase6-equivalence",
-    ]
-    validator = [
-        executable,
-        "experiment-stage",
-        "static-exact-qor-compare-validate",
-        "{artifact_root}",
-        "--platform",
-        str(platform),
-        "--reuse-validated-phase6-equivalence",
-    ]
-    for prefix, arm in arm_configs.items():
-        shared_id = f"{prefix}-shared-phase1-5"
-        lookahead_id = f"{prefix}-physical-lookahead"
-        phase6_id = f"{prefix}-phase6-baseline"
-        for seed in physical_seeds:
-            phase7_id = f"{prefix}-phase7-baseline-seed{seed}"
-            for dependency in (
-                shared_id,
-                lookahead_id,
-                phase6_id,
-                phase7_id,
-            ):
-                if dependency not in dependencies:
-                    dependencies.append(dependency)
-            arguments = [
-                "--arm",
-                arm["label"],
-                str(seed),
-                f"{{dependency:{shared_id}}}",
-                f"{{dependency:{lookahead_id}}}",
-                f"{{dependency:{phase6_id}}}",
-                f"{{dependency:{phase7_id}}}",
-            ]
-            command.extend(arguments)
-            validator.extend(arguments)
-    command.extend(("--out", "{output_dir}"))
-    input_hashes = {
-        "platform": _sha256(platform),
-        "tool.emuflow": _sha256(Path(executable)),
-    }
-    bindings = {"platform": str(platform), "tool.emuflow": executable}
-    closure = _closure(repository_root, "static-exact-qor-compare")
-    nodes.append(
-        {
-            "id": "static-exact-qor-comparison",
-            "stage": "static-exact-qor-compare",
-            "dependencies": dependencies,
-            "inputs": input_hashes,
-            "configuration": {
-                "labels": [
-                    arm_configs[prefix]["label"]
-                    for prefix in ("seq", "v2")
-                ],
-                "physical_seeds": physical_seeds,
-                "generalized_max_depth": generalized_max_depth,
-                "generalized_minimum_combinational_cut_nets": (
-                    minimum_combinational_cut_nets
-                ),
-                "partition_seed": controlled_partition_seed,
-                "partition_seed_attempts": 1,
-                "primary_metrics": [
-                    "global_target_clock_wns_ns",
-                    "global_target_clock_tns_ns",
-                ],
-            },
-            "implementation": closure,
-            "execution_bindings": bindings,
-            "command": command,
-            "command_identity": _identity_argv(command, bindings),
-            "validator_implementation": closure,
-            "validator": validator,
-            "validator_identity": _identity_argv(validator, bindings),
-            "environment": {
-                "EMUFLOW_EXPERIMENT_POLICY": "static-exact-ab-v2"
-            },
-            "storage_estimate": {
-                "peak_bytes": 2 * 1024**3,
-                "retained_bytes": 1024**3,
-            },
-            "artifacts": [
-                _artifact(
-                    "static-exact-qor-comparison.json", "evidence-critical"
-                )
-            ],
-        }
-    )
-    case_id = config.get("case_id")
-    spec = {
-        "schema": EXPERIMENT_SPEC_V2_SCHEMA,
-        "experiment_id": f"{case_id}-static-exact-ab",
-        "source_commit": config.get("source_commit"),
-        "nodes": nodes,
-    }
-    validated = validate_experiment_spec(spec)
-    write_json(output_path, spec)
-    return {
-        "status": "pass",
-        "experiment_id": spec["experiment_id"],
-        "nodes": len(validated["nodes"]),
-        "physical_terminal_nodes": 2 * len(physical_seeds),
-        "terminal_nodes": 1,
-        "physical_seeds": physical_seeds,
         "output": str(output_path.resolve()),
     }

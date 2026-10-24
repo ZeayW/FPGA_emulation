@@ -155,29 +155,6 @@
       "integration": "default-in-tree-build"
     },
     {
-      "id": "partition-tdm-feedback",
-      "stage": "Phase 3/4/5 joint optimization",
-      "source_paths": [
-        "src/native/tdm_partition_feedback.cpp",
-        "src/emuflow/partition_feedback.py",
-        "src/emuflow/cross_stage.py",
-        "src/emuflow/frame_search.py",
-        "schemas/partition-net-weights-v1.schema.json",
-        "schemas/frame-search-v2.schema.json",
-        "schemas/cross-stage-candidate-v2.schema.json",
-        "schemas/cross-stage-report-v2.schema.json"
-      ],
-      "build_targets": [
-        "emuflow_tdm_partition_feedback",
-        "emuflow_python"
-      ],
-      "runtime_products": [
-        "emuflow_tdm_partition_feedback",
-        "emuflow"
-      ],
-      "integration": "default-in-tree-build"
-    },
-    {
       "id": "system-routing",
       "stage": "Phase 4/5 route-TDM co-optimization",
       "source_paths": [
@@ -185,10 +162,10 @@
         "src/emuflow/timing_routing.py"
       ],
       "build_targets": [
-        "emuflow_tlr_router"
+        "emuflow_native"
       ],
       "runtime_products": [
-        "emuflow_tlr_router"
+        "emuflow-native"
       ],
       "integration": "default-in-tree-build"
     },
@@ -196,18 +173,19 @@
       "id": "tdm-assignment",
       "stage": "Phase 5",
       "source_paths": [
-        "src/native/tdm_ratio_optimizer.cpp",
-        "src/emuflow/tdm_ratio.py",
+        "src/native/tdm_exact_scheduler.cpp",
         "src/emuflow/tdm.py",
         "src/emuflow/phase5.py",
-        "schemas/tdm-ratio-plan-v1.schema.json"
+        "src/emuflow/tdm_schedule_storage.py",
+        "src/emuflow/frame_search.py",
+        "schemas/frame-search-v5.schema.json"
       ],
       "build_targets": [
-        "emuflow_tdm_ratio_optimizer",
+        "emuflow_native",
         "emuflow_python"
       ],
       "runtime_products": [
-        "emuflow_tdm_ratio_optimizer",
+        "emuflow-native",
         "emuflow"
       ],
       "integration": "default-in-tree-build"

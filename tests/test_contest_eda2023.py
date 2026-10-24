@@ -3,21 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.contest_eda2023 import (
-    _timing_weight_for_fpga_diameter,
-    evaluate_eda2023_solution,
-    import_eda2023_case,
-    materialize_eda2023_rtl_boarddb,
-    optimize_eda2023_tdm,
-)
+from emuflow.contest_eda2023 import _timing_weight_for_fpga_diameter, evaluate_eda2023_solution, import_eda2023_case, materialize_eda2023_rtl_boarddb
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.phase4 import run_phase4
-from tests.native_build import (
-    tdm_ratio_optimizer,
-    tdm_timing_dag_optimizer,
-    tlr_router,
-)
+from tests.native_build import tlr_router
 
 
 FPGA_DIE = """\
@@ -70,84 +60,6 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
         report = import_eda2023_case(case, normalized, "eda2023_sample")
         return report, normalized
 
-    def test_die_route_and_direction_separated_tdm_run_end_to_end(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            imported, normalized = self._import(root)
-            self.assertEqual(imported["physical_fpgas"], 2)
-            self.assertEqual(imported["physical_fpga_diameter"], 1)
-            self.assertEqual(imported["dies"], 4)
-            self.assertEqual(imported["routed_nets"], 3)
-            constraints = read_json(normalized / "route_constraints.json")
-            instance = read_json(normalized / "contest_instance.json")
-            self.assertEqual(
-                instance["parameters"]["physical_fpga_diameter"], 1
-            )
-            self.assertEqual(constraints["tdm_min_ratio"], 4)
-            self.assertEqual(constraints["lambda_load"], 68.0)
-            self.assertEqual(constraints["lambda_timing"], 0.0)
-            self.assertEqual(constraints["lambda_tdm"], 1.0)
-            self.assertTrue(constraints["hard_sll_capacity"])
-            self.assertEqual(len(constraints["sll_links"]), 2)
-
-            routed = root / "routed"
-            route_report = run_phase4(
-                assignment_path=normalized / "partition_assignment.json",
-                platform_path=normalized / "boarddb.json",
-                output_dir=routed,
-                constraints_path=normalized / "route_constraints.json",
-                timing_paths_path=normalized / "contest_timing_paths.json",
-                router=str(tlr_router()),
-            )
-            self.assertEqual(route_report["status"], "pass")
-
-            optimized = optimize_eda2023_tdm(
-                normalized / "contest_instance.json",
-                routed / "routes.json",
-                root / "solution",
-                optimizer=str(tdm_ratio_optimizer()),
-                post_refinement_iterations=20,
-            )
-            self.assertEqual(optimized["status"], "pass")
-            self.assertEqual(optimized["max_routing_weight"], 6.5)
-            self.assertEqual(optimized["native_metrics"]["iterations"], 100)
-            self.assertIn(
-                "global_minimax_improvements", optimized["native_metrics"]
-            )
-            self.assertIn(
-                "global_minimax_weight_exponent", optimized["native_metrics"]
-            )
-            evaluation = evaluate_eda2023_solution(
-                normalized / "contest_instance.json",
-                routed / "routes.json",
-                root / "solution" / "tdm_plan.json",
-            )
-            self.assertEqual(evaluation["metrics"]["max_tdm_ratio"], 4)
-            self.assertEqual(evaluation["metrics"]["used_wires"], 2)
-            self.assertTrue((root / "solution" / "design.route.out").is_file())
-            self.assertTrue((root / "solution" / "design.tdm.out").is_file())
-
-            timing_dag = optimize_eda2023_tdm(
-                normalized / "contest_instance.json",
-                routed / "routes.json",
-                root / "timing-dag-solution",
-                optimizer=str(tdm_ratio_optimizer()),
-                timing_dag_optimizer=str(tdm_timing_dag_optimizer()),
-                provider="aspdac26-timing-dag-lagrangian-v1",
-                post_refinement_iterations=20,
-            )
-            self.assertEqual(timing_dag["status"], "pass")
-            self.assertLessEqual(
-                timing_dag["max_routing_weight"],
-                optimized["max_routing_weight"],
-            )
-            timing_dag_plan = read_json(
-                root / "timing-dag-solution" / "tdm_plan.json"
-            )
-            self.assertEqual(
-                timing_dag_plan["algorithm"]["validation"]["status"],
-                "pass",
-            )
 
     def test_physical_fpga_projection_preserves_wire_banks(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -220,38 +132,6 @@ class Eda2023ContestAdapterTest(unittest.TestCase):
                     lane_scale=0,
                 )
 
-    def test_checker_rejects_opposing_signals_on_one_wire(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            _, normalized = self._import(root)
-            routed = root / "routed"
-            run_phase4(
-                assignment_path=normalized / "partition_assignment.json",
-                platform_path=normalized / "boarddb.json",
-                output_dir=routed,
-                constraints_path=normalized / "route_constraints.json",
-                timing_paths_path=normalized / "contest_timing_paths.json",
-                router=str(tlr_router()),
-            )
-            solution = root / "solution"
-            optimize_eda2023_tdm(
-                normalized / "contest_instance.json",
-                routed / "routes.json",
-                solution,
-                optimizer=str(tdm_ratio_optimizer()),
-                post_refinement_iterations=0,
-            )
-            plan = read_json(solution / "tdm_plan.json")
-            for hop in plan["hops"]:
-                hop["lane"] = 0
-            bad = root / "bad.json"
-            bad.write_text(json.dumps(plan), encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "mixed direction"):
-                evaluate_eda2023_solution(
-                    normalized / "contest_instance.json",
-                    routed / "routes.json",
-                    bad,
-                )
 
     def test_import_rejects_asymmetric_network(self):
         with tempfile.TemporaryDirectory() as temporary:

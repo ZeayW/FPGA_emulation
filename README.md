@@ -109,8 +109,10 @@ construction, scheduling, readiness certificates and ScheduleStore publication,
 without Python result import or numeric intermediate files. Independent indexed
 validation precedes report publication. Selection depends on the input contract,
 not its route count; this path requires the unified native scheduler.
-The old split model/result publication chain and standalone Exact scheduler
-entry have been removed; the shared solver and independent validators remain.
+Phase 5 exposes only the Static Exact dependency scheduler. Independent
+ratio/KKT, timing-DAG and slot optimizers, the old cross-stage feedback flow,
+and their CLI/build entries are retired. The shared solver, hardware ratio
+constraints, independent validators and optional Phase 6 Chimew remain.
 These production outputs stay compact without requiring a managed-storage flag;
 Python still publishes the compact manifest.
 The shared core also supervises external tools with process-group cancellation,
@@ -135,7 +137,7 @@ execution and handoff validation; published artifacts remain in the flow directo
 | 2 | Extract timing paths and derive optimization weights | [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA); optional Vivado timing provider; EmuFlow TimingPathDB export |
 | 3 | Cluster and partition against resource and topology constraints | [TritonPart](https://github.com/ABKGroup/TritonPart) initialization → [PATRON](docs/ALGORITHMS.md#phase-3-initial-partitioning-and-post-processing) post-processing |
 | 4 | Route cross-FPGA multicast communication | EmuFlow global-candidate C++ router, informed by the [DAC 2025 synergistic router](https://yibolin.com/publications/papers/ROUTE_DAC2025_Wang.pdf) and [ASP-DAC 2026 timing-aware routing](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf) |
-| 5 | Assign TDM ratios, lanes, and slots to routed communication | Lagrangian/KKT optimization from [Pui and Young, TODAES 2020](https://doi.org/10.1145/3377551) and the [ASP-DAC 2026 timing-DAG method](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf), followed by EmuFlow legalization and event binding |
+| 5 | Assign concrete TDM lanes, slots, and dependency events | EmuFlow [Static Exact dependency scheduler](docs/ALGORITHMS.md#phase-5-tdm-ratio-lane-and-slot-assignment), integrated with [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) path identities and platform bank/ratio constraints |
 | 6 | Plan pins/lanes, split the netlist, and generate transport RTL | EmuFlow baseline pin/transport flow; optional [Chimew, FPGA 2026](https://doi.org/10.1145/3748173.3779199) provider; static transport, shadow registers, and frame-barrier synchronization |
 | 7 | Implement each FPGA and analyze whole-design timing | [RapidWright](https://github.com/Xilinx/RapidWright), [OpenPARF](https://github.com/PKU-IDEA/OpenPARF), and [RWRoute](https://www.rapidwright.io/docs/RWRoute_timing_driven_routing.html); alternative [VTR/VPR](https://github.com/verilog-to-routing/vtr-verilog-to-routing) or Vivado backends; [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) global timing |
 

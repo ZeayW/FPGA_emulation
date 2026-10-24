@@ -13,7 +13,8 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
-from emuflow.tdm import build_native_exact_schedule_request, build_tdm_schedule
+from emuflow.tdm import build_native_exact_schedule_request
+from tests.schedule_reference import build_tdm_schedule
 from emuflow.tdm_schedule_storage import read_tdm_schedule, write_tdm_schedule_storage
 from emuflow.system_route_storage import read_system_routes, write_system_route_storage
 from tests.native_build import emuflow_native, native_json_record

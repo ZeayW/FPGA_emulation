@@ -27,9 +27,7 @@ from .routing import (
     route_link_delay_coefficients_ns,
 )
 
-
 TDM_SCHEDULE_SCHEMA = "emuflow.tdm-schedule/v1"
-TDM_BASELINE_PROVIDER = "deterministic-round-barrier-earliest-slot-v2"
 TDM_EXACT_DEPENDENCY_PROVIDER = "deterministic-dependency-earliest-slot-v1"
 SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA = (
     "emuflow.sampled-virtual-wire-schedule-certificate/v1"
@@ -40,16 +38,9 @@ INDEXED_SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA = (
 SAMPLED_VIRTUAL_WIRE_CONSTRAINTS_SCHEMA = (
     "emuflow.sampled-virtual-wire-timing-constraints/v1"
 )
-TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER = (
-    "lagrangian-kkt-ratio-aware-list-schedule-v1"
-)
-TDM_ACADEMIC_SCHEDULE_PROVIDER = (
-    "lagrangian-kkt-ratio-aware-path-local-search-v2"
-)
 COMBINATIONAL_SETTLE_SLOTS = 1
 _MISSING_ROUTE_RANK = (1 << 32) - 1
 HopKey = Tuple[str, str, str, str]
-
 
 class _ScheduleRouteProjection(list):
     """Lazy Phase-5 route metadata projected from a typed Phase-4 store."""
@@ -90,7 +81,6 @@ class _ScheduleRouteProjection(list):
     def __ne__(self, other: object) -> bool:
         return not self == other
 
-
 def sampled_virtual_wire_timing_constraints(
     frame_slots: int,
 ) -> Dict[str, Any]:
@@ -110,7 +100,6 @@ def sampled_virtual_wire_timing_constraints(
         "slot_edge_convention": "tx-sample-before-rx-shadow-update-v1",
     }
 
-
 def sampled_logic_segment_budget_slots(
     segment: Mapping[str, Any],
     timing_constraints: Mapping[str, Any],
@@ -124,7 +113,6 @@ def sampled_logic_segment_budget_slots(
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValidationError("sampled virtual-wire settle slots are invalid")
     return value
-
 
 def is_sampled_virtual_wire_schedule(schedule: Mapping[str, Any]) -> bool:
     """Return whether transport semantics require readiness/capture checks.
@@ -140,7 +128,6 @@ def is_sampled_virtual_wire_schedule(schedule: Mapping[str, Any]) -> bool:
         and isinstance(schedule.get("schedule_dependency_certificate"), dict)
     )
 
-
 def is_fixed_slot_transport_schedule(schedule: Mapping[str, Any]) -> bool:
     """Return whether concrete TX events exist for physical readiness checks.
 
@@ -153,7 +140,6 @@ def is_fixed_slot_transport_schedule(schedule: Mapping[str, Any]) -> bool:
         "registered-boundary",
         "sampled-virtual-wire",
     }
-
 
 def _static_exact_contract_from_routes(
     routes: Mapping[str, Any],
@@ -286,7 +272,6 @@ def _static_exact_contract_from_routes(
                 )
     return contract
 
-
 def _indexed_exact_nodes(
     routes: Sequence[Mapping[str, Any]],
 ) -> Dict[str, Mapping[str, Any]]:
@@ -298,7 +283,6 @@ def _indexed_exact_nodes(
     ):
         raise ValidationError("indexed exact route identities are invalid")
     return nodes  # type: ignore[return-value]
-
 
 def _indexed_source_readiness(
     route: Mapping[str, Any],
@@ -341,7 +325,6 @@ def _indexed_source_readiness(
         evidence,
     )
 
-
 def _digest_record(digest: Any, value: Any) -> None:
     digest.update(
         json.dumps(value, separators=(",", ":"), sort_keys=True).encode(
@@ -349,7 +332,6 @@ def _digest_record(digest: Any, value: Any) -> None:
         )
     )
     digest.update(b"\n")
-
 
 def _indexed_certificate(
     ordered_routes: Sequence[Mapping[str, Any]],
@@ -436,12 +418,10 @@ def _indexed_certificate(
         "minimum_sink_slack_slots": minimum_sink_slack,
     }
 
-
 def _hop_key(
     demand_id: str, link_id: str, source: str, sink: str
 ) -> HopKey:
     return (demand_id, link_id, source, sink)
-
 
 def _route_hops(
     route: Mapping[str, Any],
@@ -477,10 +457,8 @@ def _route_hops(
         )
     return result
 
-
 def _link_by_id(platform: Platform):
     return {link.id: link for link in platform.links}
-
 
 def _round_order(
     routes: Sequence[Mapping[str, Any]],
@@ -526,7 +504,6 @@ def _round_order(
         {route.get("transport_round", 0) for route in routes}
     )
     return ordered, active_rounds
-
 
 def _exact_dependency_order(
     exact_nodes: Mapping[str, Mapping[str, Any]],
@@ -621,7 +598,6 @@ def _exact_dependency_order(
     if len(ordered) != len(routes):
         raise ValidationError("cross-layer timing dependency graph is cyclic")
     return ordered
-
 
 def _packed_indexed_exact_dependency_order(
     routes: Sequence[Mapping[str, Any]],
@@ -759,7 +735,6 @@ def _packed_indexed_exact_dependency_order(
         raise ValidationError("cross-layer timing dependency graph is cyclic")
     return order
 
-
 def _round_barrier_realization(
     active_rounds: Sequence[int],
     completion_by_round: Mapping[int, int],
@@ -794,7 +769,6 @@ def _round_barrier_realization(
         ),
     }
 
-
 def _exact_route_metadata(route: Mapping[str, Any]) -> Dict[str, Any]:
     record = {
         "id": route["id"],
@@ -812,7 +786,6 @@ def _exact_route_metadata(route: Mapping[str, Any]) -> Dict[str, Any]:
     if "transport_round" in route:
         record["transport_round"] = route["transport_round"]
     return record
-
 
 def _exact_contract_indexes(
     contract: Mapping[str, Any],
@@ -857,7 +830,6 @@ def _exact_contract_indexes(
     ):
         raise ValidationError("exact semantic contract identities are not unique")
     return nodes, segments, captures
-
 
 def _exact_source_readiness(
     node: Mapping[str, Any],
@@ -939,7 +911,6 @@ def _exact_source_readiness(
         )
     return max(item["ready_slot"] for item in evidence), evidence
 
-
 def _exact_capture_certificate(
     segments: Mapping[str, Mapping[str, Any]],
     captures: Mapping[str, Mapping[str, Any]],
@@ -1003,7 +974,6 @@ def _exact_capture_certificate(
     minimum = min((item["slack_slots"] for item in records), default=None)
     return records, minimum
 
-
 def _bank_direction_allocations(
     routes: Mapping[str, Any], platform: Platform,
     constraints: Mapping[str, Any],
@@ -1056,7 +1026,6 @@ def _bank_direction_allocations(
             }
     return result
 
-
 def _bank_allocation_records(
     allocations: Mapping[Tuple[str, str, str], Mapping[str, int]],
 ) -> List[Dict[str, Any]]:
@@ -1064,7 +1033,6 @@ def _bank_allocation_records(
         {"link": key[0], "from": key[1], "to": key[2], **value}
         for key, value in sorted(allocations.items())
     ]
-
 
 def tdm_hop_latency_cycles(
     link: Any, ratio: int, *, base_delay_ns: Optional[float] = None,
@@ -1078,7 +1046,6 @@ def tdm_hop_latency_cycles(
     if base_delay_ns is not None:
         delay = base_delay_ns + link.tdm_delay_model.ratio_coefficient_ns * (ratio - 1)
     return math.ceil(delay / (1000.0 / link.fabric_clock_mhz))
-
 
 def _baseline_ratio_hops(
     routes: Mapping[str, Any], platform: Platform,
@@ -1120,7 +1087,6 @@ def _baseline_ratio_hops(
             result[key] = {"lane": offset + local_lane, "discrete_ratio": ratio}
     return result
 
-
 def _write_native_schedule_board_request(
     path: Path, generation: Sequence[int], platform: Platform,
     constraints: Mapping[str, Any], arcs: Mapping[Any, Any],
@@ -1152,7 +1118,6 @@ def _write_native_schedule_board_request(
                 capacity_index[arc["capacity_key"]],offset,lanes,int(link.tdm_delay_model is not None),
                 link.latency_cycles,base,slope,1000.0/link.fabric_clock_mhz))
 
-
 def _run_native_exact_schedule(command: Sequence[str]) -> None:
     completed = subprocess.run(list(command),capture_output=True,text=True,check=False)
     if completed.returncode:
@@ -1161,7 +1126,6 @@ def _run_native_exact_schedule(command: Sequence[str]) -> None:
             raise TDMScheduleInfeasibleError(detail)
         raise ValidationError("native Static Exact scheduling failed with exit code "
                               f"{completed.returncode}: {detail}")
-
 
 def _entry_ratio_delay(
     link: Any, entry: Mapping[str, Any], base: float, slope: float,
@@ -1178,7 +1142,6 @@ def _entry_ratio_delay(
         return hop_delay, prior_arrival + hop_delay, tx_time
     wait = entry["slot"] - entry["ready_slot"]
     return base + slot_period * wait, max(prior_arrival, tx_time) + base, tx_time
-
 
 @dataclass(frozen=True)
 class NativeExactScheduleRequest:
@@ -1201,7 +1164,6 @@ class NativeExactScheduleRequest:
             path, self.route_generation, self.platform, self.constraints,
             self.arcs, self.bank_allocations, *self.catalogs,
         )
-
 
 def build_native_exact_schedule_request(
     routes: Mapping[str, Any], platform: Platform,
@@ -1255,494 +1217,6 @@ def build_native_exact_schedule_request(
         (tuple(sorted(fpga.id for fpga in platform.fpgas)), tuple(sorted(links)), tuple(sorted(capacities))),
     )
 
-
-def build_tdm_schedule(
-    routes: Mapping[str, Any],
-    platform: Platform,
-    ratio_plan: Optional[Mapping[str, Any]] = None,
-    *,
-    prepared_ratio_model: Optional[Mapping[str, Any]] = None,
-) -> Dict[str, Any]:
-    if routes.get("schema") != SYSTEM_ROUTES_SCHEMA:
-        raise ValidationError(
-            f"routes.schema: expected {SYSTEM_ROUTES_SCHEMA!r}, "
-            f"got {routes.get('schema')!r}"
-        )
-    exact_contract = _static_exact_contract_from_routes(routes)
-    constraints = normalize_route_constraints(
-        routes.get("constraints"),
-        platform,
-    )
-    frame_slots = constraints["frame_slots"]
-    sampled_timing_constraints = (
-        sampled_virtual_wire_timing_constraints(frame_slots)
-        if exact_contract is not None
-        else None
-    )
-    _, arcs, capacity_records = build_directed_graph(platform, constraints)
-    links = _link_by_id(platform)
-    bank_allocations = _bank_direction_allocations(routes, platform, constraints)
-    planned_hops = None
-    planned_round_one_ready = None
-    if ratio_plan is not None:
-        from .tdm_ratio import (
-            ratio_plan_by_hop,
-            validate_tdm_ratio_plan,
-        )
-
-        validate_tdm_ratio_plan(
-            routes,
-            platform,
-            ratio_plan,
-            prepared_model=prepared_ratio_model,
-        )
-        planned_hops = ratio_plan_by_hop(ratio_plan)
-        planned_round_one_ready = ratio_plan[
-            "round_barrier_legalization"
-        ]["source_ready_slot"]
-    slot_fill: Dict[str, List[int]] = {
-        key: [0] * frame_slots for key in capacity_records
-    }
-    next_available: Dict[str, List[int]] = {
-        key: list(range(frame_slots + 1)) for key in capacity_records
-    }
-    planned_occupancy: Dict[str, Set[Tuple[int, int]]] = defaultdict(set)
-    baseline_hops = {}
-
-    def first_available_slot(capacity_key: str, start: int) -> int:
-        parents = next_available[capacity_key]
-        slot = start
-        while parents[slot] != slot:
-            parents[slot] = parents[parents[slot]]
-            slot = parents[slot]
-        root = slot
-        slot = start
-        while parents[slot] != slot:
-            successor = parents[slot]
-            parents[slot] = root
-            slot = successor
-        return root
-
-    entries: List[Dict[str, Any]] = []
-    demand_completions: List[Dict[str, Any]] = []
-
-    raw_routes = routes.get("routes")
-    if not isinstance(raw_routes, list):
-        raise ValidationError("routes.routes: expected an array")
-    exact_nodes = None
-    exact_segments = None
-    exact_captures = None
-    exact_arrivals: Dict[Tuple[str, str], int] = {}
-    exact_readiness_records: List[Dict[str, Any]] = []
-    indexed_exact = bool(
-        exact_contract is not None and exact_contract.get("indexed") is True
-    )
-    if ratio_plan is None:
-        baseline_hops = _baseline_ratio_hops(routes,platform,arcs,bank_allocations,constraints)
-    if exact_contract is None:
-        ordered_routes, active_rounds = _round_order(raw_routes, planned_hops)
-    else:
-        if indexed_exact:
-            exact_nodes = _indexed_exact_nodes(raw_routes)
-        else:
-            exact_nodes, exact_segments, exact_captures = _exact_contract_indexes(exact_contract)
-        ordered_routes = _exact_dependency_order(exact_nodes, raw_routes, planned_hops)
-        # Sampled virtual wires use path-local readiness, not transport rounds.
-        active_rounds = [0]
-    completion_by_round: Dict[int, int] = {}
-    prior_round_completion = -1
-    active_round = None
-    entry_index = 0
-    for route in ordered_routes:
-        transport_round = route.get("transport_round", 0)
-        if transport_round != active_round:
-            if active_round is not None:
-                prior_round_completion = max(
-                    prior_round_completion,
-                    completion_by_round[active_round],
-                )
-            active_round = transport_round
-        if exact_contract is None:
-            source_ready_slot = (
-                prior_round_completion + COMBINATIONAL_SETTLE_SLOTS
-                if prior_round_completion >= 0
-                else 0
-            )
-        else:
-            node = exact_nodes[route["net"]]
-            if indexed_exact:
-                source_ready_slot, _source_evidence = (
-                    _indexed_source_readiness(
-                        route,
-                        exact_arrivals,
-                        sampled_timing_constraints,
-                    )
-                )
-            else:
-                source_ready_slot, source_evidence = _exact_source_readiness(
-                    node,
-                    exact_segments,
-                    exact_arrivals,
-                    sampled_timing_constraints,
-                )
-                exact_readiness_records.append(
-                    {
-                        "demand": route["id"],
-                        "net": route["net"],
-                        "source": route["source"],
-                        "source_ready_slot": source_ready_slot,
-                        "evidence": source_evidence,
-                    }
-                )
-        arrival_by_node = {route["source"]: source_ready_slot - 1}
-        for depth, edge in _route_hops(route):
-            arc_key = (edge["link"], edge["from"], edge["to"])
-            if arc_key not in arcs:
-                raise ValidationError(
-                    f"TDM route {route['id']!r} uses illegal edge {arc_key}"
-                )
-            arc = arcs[arc_key]
-            link = links[edge["link"]]
-            bank_budget = bank_allocations.get(arc_key)
-            lane_offset = bank_budget["lane_offset"] if bank_budget else 0
-            lane_budget = bank_budget["lanes"] if bank_budget else link.transport_bits_per_cycle_per_direction
-            ready_slot = (
-                source_ready_slot
-                if edge["from"] == route["source"]
-                else arrival_by_node[edge["from"]] + 1
-            )
-            plan_hop = (
-                planned_hops.get(
-                    _hop_key(
-                        route["id"],
-                        edge["link"],
-                        edge["from"],
-                        edge["to"],
-                    )
-                )
-                if planned_hops is not None
-                else None
-            )
-            if planned_hops is not None and plan_hop is None:
-                raise ValidationError(
-                    f"TDM ratio plan is missing demand {route['id']!r} "
-                    f"edge {arc_key}"
-                )
-            baseline_hop = baseline_hops.get(_hop_key(
-                route["id"], edge["link"], edge["from"], edge["to"]))
-            assigned_hop = plan_hop or baseline_hop
-            ratio = assigned_hop["discrete_ratio"] if assigned_hop else 1
-            base, _slope = route_link_delay_coefficients_ns(
-                platform, edge["link"], edge["from"], edge["to"], constraints)
-            latency_cycles = tdm_hop_latency_cycles(link, ratio, base_delay_ns=base)
-            latest_exclusive = frame_slots - RUNTIME_BARRIER_SLOTS - latency_cycles
-            if assigned_hop is None:
-                slot = (
-                    frame_slots
-                    if ready_slot >= frame_slots
-                    else first_available_slot(
-                        arc["capacity_key"],
-                        ready_slot,
-                    )
-                )
-                lane = (
-                    lane_offset + slot_fill[arc["capacity_key"]][slot]
-                    if slot < frame_slots
-                    else 0
-                )
-            else:
-                lane = assigned_hop["lane"]
-                ratio_window_end = min(
-                    latest_exclusive,
-                    ready_slot + ratio,
-                )
-                slot = ready_slot
-                while (
-                    slot < ratio_window_end
-                    and (slot, lane)
-                    in planned_occupancy[arc["capacity_key"]]
-                ):
-                    slot += 1
-            if slot >= latest_exclusive:
-                raise TDMScheduleInfeasibleError(
-                    f"TDM scheduling is infeasible for demand {route['id']!r} "
-                    f"edge {arc_key}: ready={ready_slot}, "
-                    f"frame_slots={frame_slots}, "
-                    f"latency={latency_cycles}"
-                )
-            if assigned_hop is not None and slot >= ready_slot + ratio:
-                raise TDMScheduleInfeasibleError(
-                    f"TDM ratio schedule is infeasible for demand "
-                    f"{route['id']!r} edge {arc_key}: ready={ready_slot}, "
-                    f"ratio={ratio}, lane={lane}"
-                )
-            if assigned_hop is None:
-                slot_fill[arc["capacity_key"]][slot] += 1
-                if (
-                    slot_fill[arc["capacity_key"]][slot]
-                    == lane_budget
-                ):
-                    next_available[arc["capacity_key"]][slot] = (
-                        first_available_slot(
-                            arc["capacity_key"],
-                            slot + 1,
-                        )
-                    )
-            else:
-                planned_occupancy[arc["capacity_key"]].add(
-                    (slot, lane)
-                )
-            arrival_slot = slot + latency_cycles
-            arrival_by_node[edge["to"]] = arrival_slot
-            entry = {
-                    "id": f"s{entry_index:06d}",
-                    "demand": route["id"],
-                    "net": route["net"],
-                    "hop": depth,
-                    "link": edge["link"],
-                    "from": edge["from"],
-                    "to": edge["to"],
-                    "capacity_key": arc["capacity_key"],
-                    "slot": slot,
-                    "lane": lane,
-                    "ready_slot": ready_slot,
-                    "arrival_slot": arrival_slot,
-                }
-            if plan_hop is not None:
-                entry.update(
-                    {
-                        "ratio_plan_hop": plan_hop["index"],
-                        "continuous_ratio": plan_hop[
-                            "continuous_ratio"
-                        ],
-                        "tdm_ratio": plan_hop["discrete_ratio"],
-                        "ratio_wait_slots": slot - ready_slot,
-                    }
-                )
-            if baseline_hop is not None:
-                entry["tdm_ratio"] = ratio
-            entries.append(entry)
-            entry_index += 1
-
-        missing = sorted(set(route["sinks"]) - set(arrival_by_node))
-        if missing:
-            raise ValidationError(
-                f"TDM route {route['id']!r} did not schedule sinks {missing}"
-            )
-        completion_slot = max(
-            arrival_by_node[sink] for sink in route["sinks"]
-        )
-        completion_by_round[transport_round] = max(
-            completion_slot,
-            completion_by_round.get(transport_round, completion_slot),
-        )
-        completion = {
-            "demand": route["id"],
-            "net": route["net"],
-            "source_ready_slot": source_ready_slot,
-            "completion_slot": completion_slot,
-        }
-        if exact_contract is None:
-            completion["transport_round"] = transport_round
-        if exact_contract is not None:
-            sink_arrivals = {
-                sink: arrival_by_node[sink] for sink in sorted(route["sinks"])
-            }
-            completion["sink_arrival_slots"] = sink_arrivals
-            for sink, arrival in sink_arrivals.items():
-                exact_arrivals[(route["net"], sink)] = arrival
-        demand_completions.append(completion)
-
-    entries.sort(key=lambda entry: (entry["slot"], entry["capacity_key"], entry["lane"], entry["demand"]))
-    domain_schedules = _domain_schedule_records(
-        platform,
-        constraints,
-        entries,
-    )
-    metrics = {
-        "demands": len(raw_routes),
-        "scheduled_bit_hops": len(entries),
-        "frame_slots": frame_slots,
-        "completion_slot": max(
-            (
-                completion["completion_slot"]
-                for completion in demand_completions
-            ),
-            default=0,
-        ),
-        "max_domain_utilization": max(
-            (domain["utilization"] for domain in domain_schedules),
-            default=0.0,
-        ),
-        "collisions": 0,
-    }
-    if exact_contract is None:
-        metrics.update(
-            {
-                "transport_rounds": len(active_rounds),
-                "round_barriers": max(0, len(active_rounds) - 1),
-                "max_transport_round": max(active_rounds, default=0),
-                "combinational_settle_slots": COMBINATIONAL_SETTLE_SLOTS,
-            }
-        )
-    else:
-        metrics["transport_ordering_policy"] = (
-            "path-local-dependency-dag-v1"
-        )
-    if ratio_plan is not None:
-        metrics.update(
-            {
-                "ratio_constrained_hops": len(entries),
-                "max_tdm_ratio": max(
-                    entry["tdm_ratio"] for entry in entries
-                ),
-                "maximum_ratio_wait_slots": max(
-                    entry["ratio_wait_slots"] for entry in entries
-                ),
-            }
-        )
-    exact_certificate = None
-    if exact_contract is not None:
-        if indexed_exact:
-            exact_certificate = _indexed_certificate(
-                ordered_routes,
-                exact_arrivals,
-                sampled_timing_constraints,
-            )
-            metrics.update(
-                {
-                    "commit_slot": sampled_timing_constraints["commit_slot"],
-                    "dependency_edges": exact_certificate[
-                        "dependency_edges"
-                    ],
-                    "maximum_combinational_dependency_depth": max(
-                        (
-                            route["combinational_dependency_depth"]
-                            for route in ordered_routes
-                        ),
-                        default=0,
-                    ),
-                    "conservative_sink_readiness_checks": exact_certificate[
-                        "sink_readiness_checks"
-                    ],
-                    "minimum_capture_slack_slots": exact_certificate[
-                        "minimum_sink_slack_slots"
-                    ],
-                }
-            )
-        else:
-            capture_records, minimum_capture_slack = _exact_capture_certificate(
-                exact_segments,
-                exact_captures,
-                exact_arrivals,
-                sampled_timing_constraints,
-            )
-            exact_certificate = {
-                "schema": SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
-                "provider": "independent-readiness-certificate-v1",
-                "topological_cut_order": [
-                    route["net"] for route in ordered_routes
-                ],
-                "demand_readiness": exact_readiness_records,
-                "capture_readiness": capture_records,
-                "minimum_capture_slack_slots": minimum_capture_slack,
-            }
-            metrics.update(
-                {
-                    "commit_slot": sampled_timing_constraints["commit_slot"],
-                    "dependency_edges": len(exact_contract["dependency_edges"]),
-                    "maximum_combinational_dependency_depth": exact_contract[
-                        "metrics"
-                    ]["maximum_combinational_dependency_depth"],
-                    "capture_requirements": len(capture_records),
-                    "minimum_capture_slack_slots": minimum_capture_slack,
-                }
-            )
-    result = {
-        "schema": TDM_SCHEDULE_SCHEMA,
-        "design": routes.get("design"),
-        "platform": platform.name,
-        "provider": (
-            TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER
-            if ratio_plan is not None
-            else (
-                TDM_EXACT_DEPENDENCY_PROVIDER
-                if exact_contract is not None
-                else TDM_BASELINE_PROVIDER
-            )
-        ),
-        "transport_semantics": (
-            "sampled-virtual-wire"
-            if exact_contract is not None
-            else "registered-boundary"
-        ),
-        **(
-            {
-                "ratio_assignment": {
-                    "schema": ratio_plan["schema"],
-                    "provider": ratio_plan["provider"],
-                    "configuration": ratio_plan["configuration"],
-                    "metrics": ratio_plan["metrics"],
-                    "round_barrier_legalization": ratio_plan[
-                        "round_barrier_legalization"
-                    ],
-                }
-            }
-            if ratio_plan is not None
-            else {}
-        ),
-        "route_constraints": constraints,
-        **({"bank_allocations": _bank_allocation_records(bank_allocations)} if bank_allocations else {}),
-        "routes": (
-            _ScheduleRouteProjection(raw_routes.ordered("demand"))
-            if exact_contract is not None
-            and callable(getattr(raw_routes, "ordered", None))
-            else [
-                {
-                    "id": route["id"],
-                    "net": route["net"],
-                    "source": route["source"],
-                    "sinks": list(route["sinks"]),
-                    "tree_edges": list(route["tree_edges"]),
-                    **(
-                        {"transport_round": route.get("transport_round", 0)}
-                        if exact_contract is None
-                        else {}
-                    ),
-                }
-                for route in sorted(raw_routes, key=lambda item: item["id"])
-            ]
-        ),
-        "entries": entries,
-        "demand_completions": (
-            demand_completions
-            if getattr(demand_completions, "demand_ordered", False)
-            else sorted(demand_completions, key=lambda item: item["demand"])
-        ),
-        "domain_schedules": domain_schedules,
-        "metrics": metrics,
-    }
-    if exact_contract is not None:
-        result.update(
-            {
-                "qualification": "dependency-schedule-readiness-pass",
-                "timing_constraints": sampled_timing_constraints,
-                "semantic_contract_schema": exact_contract["schema"],
-                "semantic_contract_sha256": routes[
-                    "semantic_contract_sha256"
-                ],
-                "schedule_dependency_certificate": exact_certificate,
-            }
-        )
-    if ratio_plan is not None:
-        result["round_barrier_realization"] = _round_barrier_realization(
-            active_rounds,
-            completion_by_round,
-            planned_round_one_ready,
-        )
-    return result
-
-
 def _domain_schedule_records(
     platform: Platform,
     constraints: Mapping[str, Any],
@@ -1780,7 +1254,6 @@ def _domain_schedule_records(
         )
     return records
 
-
 def _expected_hops(
     routes: Mapping[str, Any],
 ) -> Dict[HopKey, Tuple[Mapping[str, Any], int]]:
@@ -1792,7 +1265,6 @@ def _expected_hops(
             )
             expected[key] = (route, depth)
     return expected
-
 
 def _independently_reconstruct_exact_source_readiness(
     node: Mapping[str, Any],
@@ -1891,7 +1363,6 @@ def _independently_reconstruct_exact_source_readiness(
         )
     return max(item["ready_slot"] for item in evidence), evidence
 
-
 def _independently_reconstruct_exact_captures(
     segments: Mapping[str, Mapping[str, Any]],
     captures: Mapping[str, Mapping[str, Any]],
@@ -1964,7 +1435,6 @@ def _independently_reconstruct_exact_captures(
     minimum = min((item["slack_slots"] for item in records), default=None)
     return records, minimum
 
-
 def _validate_indexed_schedule_section(
     schedule: Mapping[str, Any],
     section: str,
@@ -2000,7 +1470,6 @@ def _validate_indexed_schedule_section(
             )
         index += 1
 
-
 def _domain_schedule_records_from_counts(
     platform: Platform,
     constraints: Mapping[str, Any],
@@ -2035,7 +1504,6 @@ def _domain_schedule_records_from_counts(
             }
         )
     return records
-
 
 def _validate_indexed_exact_tdm_schedule(
     routes: Mapping[str, Any],
@@ -2610,15 +2078,15 @@ def _validate_indexed_exact_tdm_schedule(
         "routed_sinks": routed_sinks,
     }
 
-
 def validate_tdm_schedule(
     routes: Mapping[str, Any],
     platform: Platform,
     schedule: Mapping[str, Any],
-    ratio_plan: Optional[Mapping[str, Any]] = None,
-    *,
-    prepared_ratio_model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
+    if schedule.get("provider") not in {
+        TDM_EXACT_DEPENDENCY_PROVIDER, "deterministic-round-barrier-earliest-slot-v2",
+    }:
+        raise ValidationError("unsupported TDM schedule artifact provider")
     exact_contract = _static_exact_contract_from_routes(routes)
     if schedule.get("schema") != TDM_SCHEDULE_SCHEMA:
         raise ValidationError(
@@ -2668,7 +2136,6 @@ def validate_tdm_schedule(
         and exact_contract is not None
         and exact_contract.get("indexed") is True
         and schedule.get("provider") == TDM_EXACT_DEPENDENCY_PROVIDER
-        and ratio_plan is None
     )
     if indexed_exact_store:
         return _validate_indexed_exact_tdm_schedule(
@@ -2692,56 +2159,10 @@ def validate_tdm_schedule(
             routes,
             platform,
             materialize(),
-            ratio_plan,
-            prepared_ratio_model=prepared_ratio_model,
         )
     bank_directions: Dict[Tuple[str, int], Tuple[str, str]] = {}
     expected = _expected_hops(routes)
-    academic_schedule = schedule.get("provider") in {
-        TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER,
-        TDM_ACADEMIC_SCHEDULE_PROVIDER,
-    }
-    extended_schedule = schedule.get("provider") in {
-        TDM_BASELINE_PROVIDER,
-        TDM_EXACT_DEPENDENCY_PROVIDER,
-        TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER,
-        TDM_ACADEMIC_SCHEDULE_PROVIDER,
-    }
-    planned_hops = None
-    if academic_schedule:
-        if ratio_plan is None:
-            raise ValidationError(
-                "academic TDM schedule validation requires ratio_plan"
-            )
-        from .tdm_ratio import (
-            ratio_plan_by_hop,
-            validate_tdm_ratio_plan,
-        )
-
-        validate_tdm_ratio_plan(
-            routes,
-            platform,
-            ratio_plan,
-            prepared_model=prepared_ratio_model,
-        )
-        expected_ratio_assignment = {
-            "schema": ratio_plan["schema"],
-            "provider": ratio_plan["provider"],
-            "configuration": ratio_plan["configuration"],
-            "metrics": ratio_plan["metrics"],
-            "round_barrier_legalization": ratio_plan[
-                "round_barrier_legalization"
-            ],
-        }
-        if schedule.get("ratio_assignment") != expected_ratio_assignment:
-            raise ValidationError(
-                "schedule.ratio_assignment does not match ratio plan"
-            )
-        planned_hops = ratio_plan_by_hop(ratio_plan)
-    elif ratio_plan is not None:
-        raise ValidationError(
-            "ratio_plan was supplied for a non-academic TDM schedule"
-        )
+    extended_schedule = True
     expected_route_metadata = []
     for route in sorted(routes["routes"], key=lambda item: item["id"]):
         record = {
@@ -2757,8 +2178,7 @@ def validate_tdm_schedule(
     if schedule.get("routes") != expected_route_metadata:
         raise ValidationError("schedule.routes does not match system routes")
 
-    baseline_hops = (_baseline_ratio_hops(routes, platform, arcs, bank_allocations, constraints)
-                     if not academic_schedule else {})
+    baseline_hops = (_baseline_ratio_hops(routes, platform, arcs, bank_allocations, constraints))
     raw_entries = schedule.get("entries")
     if not isinstance(raw_entries, list):
         raise ValidationError("schedule.entries: expected an array")
@@ -2837,39 +2257,6 @@ def validate_tdm_schedule(
                 f"slot={slot}, lane={lane}"
             )
         occupancy[arc["capacity_key"]].add(collision)
-        if academic_schedule:
-            planned = planned_hops[key]
-            ready_value = entry.get("ready_slot")
-            if (
-                isinstance(ready_value, bool)
-                or not isinstance(ready_value, int)
-            ):
-                raise ValidationError(
-                    f"schedule.entries[{index}].ready_slot: "
-                    "expected an integer"
-                )
-            expected_ratio_fields = {
-                "ratio_plan_hop": planned["index"],
-                "continuous_ratio": planned["continuous_ratio"],
-                "tdm_ratio": planned["discrete_ratio"],
-                "ratio_wait_slots": slot - ready_value,
-            }
-            for field, value in expected_ratio_fields.items():
-                if entry.get(field) != value:
-                    raise ValidationError(
-                        f"schedule.entries[{index}].{field}: "
-                        "does not match ratio plan"
-                    )
-            if lane != planned["lane"]:
-                raise ValidationError(
-                    f"schedule.entries[{index}].lane: "
-                    "does not match ratio plan"
-                )
-            if entry["ratio_wait_slots"] >= entry["tdm_ratio"]:
-                raise ValidationError(
-                    f"schedule.entries[{index}]: "
-                    "wait exceeds TDM ratio window"
-                )
         if key in baseline_hops:
             baseline = baseline_hops[key]
             if lane != baseline["lane"] or entry.get("tdm_ratio") != baseline["discrete_ratio"]:
@@ -2914,7 +2301,7 @@ def validate_tdm_schedule(
                 _exact_contract_indexes(exact_contract)
             )
         ordered_routes = _exact_dependency_order(
-            exact_nodes, routes["routes"], planned_hops
+            exact_nodes, routes["routes"]
         )
         active_rounds = [0]
     completion_by_round: Dict[int, int] = {}
@@ -3006,10 +2393,9 @@ def validate_tdm_schedule(
             "net": route["net"],
             "completion_slot": completion_slot,
         }
-        if extended_schedule:
-            completion["source_ready_slot"] = source_ready_slot
-            if exact_contract is None:
-                completion["transport_round"] = transport_round
+        completion["source_ready_slot"] = source_ready_slot
+        if exact_contract is None:
+            completion["transport_round"] = transport_round
         if exact_contract is not None:
             sink_arrivals = {
                 sink: arrival_by_node[sink] for sink in sorted(route["sinks"])
@@ -3023,19 +2409,6 @@ def validate_tdm_schedule(
         raise ValidationError(
             "schedule.demand_completions does not match recomputed values"
         )
-    if academic_schedule:
-        expected_realization = _round_barrier_realization(
-            active_rounds,
-            completion_by_round,
-            ratio_plan["round_barrier_legalization"].get(
-                "source_ready_slot"
-            ),
-        )
-        if schedule.get("round_barrier_realization") != expected_realization:
-            raise ValidationError(
-                "schedule.round_barrier_realization does not match "
-                "recomputed values"
-            )
 
     expected_domains = _domain_schedule_records(
         platform, constraints, raw_entries
@@ -3152,144 +2525,10 @@ def validate_tdm_schedule(
                     "minimum_capture_slack_slots": minimum_capture_slack,
                 }
             )
-    if academic_schedule:
-        expected_metrics.update(
-            {
-                "ratio_constrained_hops": len(expected),
-                "max_tdm_ratio": max(
-                    entry["tdm_ratio"] for entry in raw_entries
-                ),
-                "maximum_ratio_wait_slots": max(
-                    entry["ratio_wait_slots"] for entry in raw_entries
-                ),
-            }
-        )
     if schedule.get("metrics") != expected_metrics:
         raise ValidationError(
             "schedule.metrics does not match independently recomputed metrics"
         )
-    if schedule.get("provider") == TDM_ACADEMIC_SCHEDULE_PROVIDER:
-        optimization = schedule.get("slot_optimization")
-        optimization_provider = (
-            optimization.get("provider")
-            if isinstance(optimization, dict)
-            else None
-        )
-        if (
-            not isinstance(optimization, dict)
-            or optimization_provider
-            not in {
-                "timing-path-guided-local-search-v1",
-                "timing-path-guided-lns-v2",
-                "fixed-slot-event-guided-lns-v3",
-                "fixed-slot-event-guided-lns-v4",
-            }
-        ):
-            raise ValidationError(
-                "native TDM slot optimization metadata is invalid"
-            )
-        configuration = optimization.get("configuration")
-        maximum_iterations = (
-            configuration.get("max_iterations")
-            if isinstance(configuration, dict)
-            else None
-        )
-        metrics = optimization.get("metrics")
-        if (
-            isinstance(maximum_iterations, bool)
-            or not isinstance(maximum_iterations, int)
-            or maximum_iterations < 0
-            or not isinstance(metrics, dict)
-        ):
-            raise ValidationError(
-                "native TDM slot optimization configuration is invalid"
-            )
-        expected_metric_keys = {
-            "iterations",
-            "accepted_moves",
-            "evaluated_moves",
-            "worst_normalized_slack",
-            "completion_slot",
-            "total_wait_slots",
-            "baseline_worst_normalized_slack",
-        }
-        if optimization_provider in {
-            "timing-path-guided-lns-v2",
-            "fixed-slot-event-guided-lns-v3",
-            "fixed-slot-event-guided-lns-v4",
-        }:
-            expected_metric_keys.update(
-                {"lns_neighborhoods", "lns_evaluated_orders"}
-            )
-        if set(metrics) != expected_metric_keys:
-            raise ValidationError(
-                "native TDM slot optimization metric coverage is invalid"
-            )
-        count_keys = [
-            "iterations",
-            "accepted_moves",
-            "evaluated_moves",
-        ]
-        if optimization_provider in {
-            "timing-path-guided-lns-v2",
-            "fixed-slot-event-guided-lns-v3",
-            "fixed-slot-event-guided-lns-v4",
-        }:
-            count_keys.extend(
-                ["lns_neighborhoods", "lns_evaluated_orders"]
-            )
-        for key in count_keys:
-            value = metrics[key]
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, int)
-                or value < 0
-            ):
-                raise ValidationError(
-                    f"native TDM slot optimization {key} is invalid"
-                )
-        if (
-            metrics["iterations"] > maximum_iterations
-            or metrics["accepted_moves"] > metrics["iterations"]
-            or metrics["completion_slot"]
-            != expected_metrics["completion_slot"]
-            or metrics["total_wait_slots"]
-            != sum(entry["ratio_wait_slots"] for entry in raw_entries)
-        ):
-            raise ValidationError(
-                "native TDM slot optimization metrics are inconsistent"
-            )
-        timing = reconstruct_tdm_schedule_timing(
-            routes,
-            platform,
-            schedule,
-            model=prepared_ratio_model,
-        )
-        for key in (
-            "worst_normalized_slack",
-            "baseline_worst_normalized_slack",
-        ):
-            if (
-                isinstance(metrics[key], bool)
-                or not isinstance(metrics[key], (int, float))
-                or not math.isfinite(float(metrics[key]))
-            ):
-                raise ValidationError(
-                    f"native TDM slot optimization {key} is invalid"
-                )
-        if (
-            not math.isclose(
-                metrics["worst_normalized_slack"],
-                timing["worst_normalized_slack"],
-                rel_tol=1.0e-10,
-                abs_tol=1.0e-10,
-            )
-            or metrics["worst_normalized_slack"] + 1.0e-12
-            < metrics["baseline_worst_normalized_slack"]
-        ):
-            raise ValidationError(
-                "native TDM slot optimization timing metrics are inconsistent"
-            )
     return {
         "status": "pass",
         **(
@@ -3303,13 +2542,32 @@ def validate_tdm_schedule(
         ),
     }
 
+def _normalized_slack(
+    period: float,
+    slack: float,
+    normalization: Mapping[str, float],
+) -> float:
+    if slack >= 0.0:
+        return (
+            slack
+            * period
+            / (
+                normalization["positive_slack_scale_ns"]
+                * normalization["max_clock_period_ns"]
+            )
+        )
+    return (
+        slack
+        / (
+            normalization["negative_slack_scale_ns"]
+            * period
+        )
+    )
 
 def reconstruct_tdm_schedule_timing(
     routes: Mapping[str, Any],
     platform: Platform,
     schedule: Mapping[str, Any],
-    *,
-    model: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Reconstruct delay on every imported STA path.
 
@@ -3317,28 +2575,7 @@ def reconstruct_tdm_schedule_timing(
     Legacy links retain their projected fixed-slot event semantics. Physical
     readiness and arrival slots are checked separately by schedule validation.
     """
-    if model is None:
-        records = reconstruct_tdm_schedule_timing_paths_from_routes(
-            routes, platform, schedule
-        )
-    else:
-        entries = {}
-        for entry in schedule["entries"]:
-            key = _hop_key(
-                entry["demand"],
-                entry["link"],
-                entry["from"],
-                entry["to"],
-            )
-            if key in entries:
-                raise ValidationError(
-                    "schedule timing reconstruction found duplicate hop "
-                    f"{key}"
-                )
-            entries[key] = entry
-        records = reconstruct_tdm_schedule_timing_paths(
-            routes, platform, schedule, model=model, entries=entries
-        )
+    records = reconstruct_tdm_schedule_timing_paths_from_routes(routes, platform, schedule)
     if not records:
         raise ValidationError(
             "schedule timing reconstruction has no timing paths"
@@ -3374,142 +2611,14 @@ def reconstruct_tdm_schedule_timing(
         "median_normalized_slack": normalized[len(normalized) // 2],
     }
 
-
 def reconstruct_tdm_schedule_timing_paths(
-    routes: Mapping[str, Any],
-    platform: Platform,
-    schedule: Mapping[str, Any],
-    *,
-    model: Optional[Mapping[str, Any]] = None,
-    entries: Optional[Mapping[HopKey, Mapping[str, Any]]] = None,
+    routes: Mapping[str, Any], platform: Platform, schedule: Mapping[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Return independently reconstructed, traceable timing-path records."""
-    from .tdm_ratio import _normalized_slack, _prepare_model
-
-    if model is None and entries is None:
-        if (
-            routes.get("routes") == []
-            and schedule.get("entries") == []
-            and system_route_timing_paths(routes) == []
-        ):
-            return []
-        return reconstruct_tdm_schedule_timing_paths_from_routes(routes, platform, schedule)
-    if model is None:
-        # A canonical packed single-FPGA run has neither inter-FPGA routes nor
-        # transport schedule entries, so there is no TDM timing model to
-        # reconstruct.  Do not force such a run through the timing-aware ratio
-        # model: that model intentionally requires routes.timing.paths and is
-        # defined only for actual inter-FPGA demands.
-        if (
-            routes.get("routes") == []
-            and schedule.get("entries") == []
-            and system_route_timing_paths(routes) == []
-        ):
-            return []
-        model = _prepare_model(routes, platform)
-    if entries is None:
-        entries = {}
-        for entry in schedule["entries"]:
-            key = _hop_key(
-                entry["demand"],
-                entry["link"],
-                entry["from"],
-                entry["to"],
-            )
-            if key in entries:
-                raise ValidationError(
-                    f"schedule timing reconstruction found duplicate hop {key}"
-                )
-            entries[key] = entry
-
-    records: List[Dict[str, Any]] = []
-    for timing_path in model["timing_paths"]:
-        fixed_delay_ns = timing_path["fixed_delay_ns"]
-        required_time_ns = timing_path.get(
-            "required_time_ns", timing_path["clock_period_ns"]
-        )
-        transport_arrival_ns = 0.0
-        scheduled_hops = []
-        for hop_index in timing_path["hops"]:
-            hop = model["hops"][hop_index]
-            key = _hop_key(
-                hop["demand"],
-                hop["link"],
-                hop["from"],
-                hop["to"],
-            )
-            if key not in entries:
-                raise ValidationError(
-                    "schedule timing reconstruction is missing routed hop "
-                    f"{key}"
-                )
-            entry = entries[key]
-            wait_slots = entry["slot"] - entry["ready_slot"]
-            if wait_slots < 0:
-                raise ValidationError(
-                    "schedule timing reconstruction found a negative wait "
-                    f"for hop {key}"
-                )
-            link = next(link for link in platform.links if link.id == hop["link"])
-            hop_delay_ns, transport_arrival_ns, tx_time_ns = _entry_ratio_delay(
-                link, entry, hop["base_delay_ns"], hop["beta_ns"], transport_arrival_ns
-            )
-            scheduled_hops.append(
-                {
-                    "schedule_entry": entry["id"],
-                    "demand": hop["demand"],
-                    "link": hop["link"],
-                    "from": hop["from"],
-                    "to": hop["to"],
-                    "tx_endpoint": f"__emuflow_tx_{entry['id']}",
-                    "rx_endpoint": f"__emuflow_rx_{entry['id']}",
-                    "base_link_delay_ns": hop["base_delay_ns"],
-                    "tdm_wait_slots": wait_slots,
-                    "tdm_slot_ns": 1000.0 / link.fabric_clock_mhz,
-                    **({"tdm_ratio": entry["tdm_ratio"],
-                        "ratio_delay_slope_ns": hop["beta_ns"],
-                        "timing_model": "per-hop-ratio-delay-v1"}
-                       if link.tdm_delay_model is not None else {}),
-                    "link_tdm_delay_ns": hop_delay_ns,
-                    "fixed_slot_tx_time_ns": tx_time_ns,
-                    "projected_arrival_ns": transport_arrival_ns,
-                }
-            )
-        transport_delay_ns = transport_arrival_ns
-        delay_ns = fixed_delay_ns + transport_delay_ns
-        slack_ns = required_time_ns - delay_ns
-        normalized_slack = _normalized_slack(
-            timing_path["clock_period_ns"],
-            slack_ns,
-            model["normalization"],
-        )
-        records.append(
-            {
-                "path": timing_path["id"],
-                "clock_domain": timing_path["clock_domain"],
-                "clock_period_ns": timing_path["clock_period_ns"],
-                "required_time_ns": required_time_ns,
-                "preplacement_fixed_delay_ns": fixed_delay_ns,
-                "transport_delay_ns": transport_delay_ns,
-                "delay_ns": delay_ns,
-                "slack_ns": slack_ns,
-                "normalized_slack": normalized_slack,
-                "cut_nets": list(timing_path["cut_nets"]),
-                "compressed_path_ids": list(
-                    timing_path.get(
-                        "compressed_path_ids", [timing_path["id"]]
-                    )
-                ),
-                "cut_transitions": [
-                    dict(item)
-                    for item in timing_path.get("cut_transitions", [])
-                ],
-                "routed_hops": len(timing_path["hops"]),
-                "scheduled_hops": scheduled_hops,
-            }
-        )
-    return records
-
+    """Reconstruct every imported path directly from canonical route records."""
+    if (routes.get("routes") == [] and schedule.get("entries") == []
+            and system_route_timing_paths(routes) == []):
+        return []
+    return reconstruct_tdm_schedule_timing_paths_from_routes(routes, platform, schedule)
 
 @contextmanager
 def open_tdm_schedule_timing_path_stream(
@@ -3604,7 +2713,6 @@ def open_tdm_schedule_timing_path_stream(
             entries,
         )
 
-
 def _iter_tdm_schedule_timing_paths_from_routes(
     timing_paths: Sequence[Mapping[str, Any]],
     normalization: Mapping[str, Any],
@@ -3615,7 +2723,6 @@ def _iter_tdm_schedule_timing_paths_from_routes(
 ) -> Iterator[Dict[str, Any]]:
     """Yield path records while retaining at most a bounded route working set."""
 
-    from .tdm_ratio import _normalized_slack
     from .routing import normalize_route_constraints, route_link_delay_ns
 
     constraints = normalize_route_constraints(raw_constraints, platform)
@@ -3889,7 +2996,6 @@ def _iter_tdm_schedule_timing_paths_from_routes(
             "scheduled_hops": scheduled_hops,
         }
 
-
 def reconstruct_tdm_schedule_timing_paths_from_routes(
     routes: Mapping[str, Any],
     platform: Platform,
@@ -3910,7 +3016,6 @@ def reconstruct_tdm_schedule_timing_paths_from_routes(
             record.pop("_cut_demands", None)
             materialized.append(record)
         return materialized
-
 
 def simulate_tdm_schedule(
     routes: Mapping[str, Any],
@@ -3982,7 +3087,6 @@ def simulate_tdm_schedule(
         "trace_sha256": trace.hexdigest(),
     }
 
-
 def iter_schedule_tsv_lines(schedule: Mapping[str, Any]) -> Iterator[str]:
     """Yield a schedule TSV without constructing a second hop-sized string."""
 
@@ -4007,12 +3111,10 @@ def iter_schedule_tsv_lines(schedule: Mapping[str, Any]) -> Iterator[str]:
             + "\n"
         )
 
-
 def schedule_to_tsv(schedule: Mapping[str, Any]) -> str:
     """Compatibility helper for callers that explicitly need TSV in memory."""
 
     return "".join(iter_schedule_tsv_lines(schedule))
-
 
 def write_schedule_tsv(path: Path, schedule: Mapping[str, Any]) -> None:
     """Stream and atomically publish the optional schedule diagnostic."""
@@ -4035,7 +3137,6 @@ def write_schedule_tsv(path: Path, schedule: Mapping[str, Any]) -> None:
         os.replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)
-
 
 def build_transport_manifest(
     routes: Mapping[str, Any],
@@ -4079,7 +3180,6 @@ def build_transport_manifest(
             "rtl/transport/emuflow_frame_barrier.sv",
         ],
     }
-
 
 def schedule_to_systemverilog_testbench(
     routes: Mapping[str, Any],

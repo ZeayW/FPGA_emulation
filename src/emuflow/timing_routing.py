@@ -2437,7 +2437,10 @@ def route_system_native(
     )
     _validate_single_node_cut_capacity(nodes, model)
     if not model["demands"]:
-        _, _, capacities = build_directed_graph(platform, constraints)
+        _, _, capacities = build_directed_graph(
+            platform, constraints,
+            reserve_arrival_and_commit=assignment_has_static_exact_contract(assignment),
+        )
         utilization = [
             {
                 **capacities[key],

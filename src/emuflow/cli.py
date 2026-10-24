@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
-
 class _Python38BooleanOptionalAction(argparse.Action):
     """Python 3.8 equivalent of :class:`argparse.BooleanOptionalAction`."""
 
@@ -27,11 +26,9 @@ class _Python38BooleanOptionalAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, not option_string.startswith("--no-"))
 
-
 _BooleanOptionalAction = getattr(
     argparse, "BooleanOptionalAction", _Python38BooleanOptionalAction
 )
-
 
 from .partition import DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION
 
@@ -55,12 +52,6 @@ from .default_platform import (
     materialize_research_platform,
 )
 from .bsp import run_phase8a
-from .cross_stage import (
-    evaluate_cross_stage_candidate,
-    run_cross_stage_optimization,
-    validate_cross_stage_candidate,
-    validate_cross_stage_report,
-)
 from .chimew_phase6 import run_chimew_phase6_adapter
 from .chimew_bank_channel_storage import read_chimew_bank_channel_input
 from .chimew_bank_channel_report_storage import (
@@ -92,14 +83,12 @@ from .contest_eda2023 import (
     evaluate_eda2023_solution,
     import_eda2023_case,
     materialize_eda2023_rtl_boarddb,
-    optimize_eda2023_tdm,
 )
 from .contest_eda2023_chimew import run_eda2023_contest_chimew_ab
 from .contest_iccad2019 import (
     evaluate_iccad2019_solution,
     import_iccad2019_instance,
     materialize_iccad2019_rtl_boarddb,
-    optimize_iccad2019_ratios,
 )
 from .contest_public import (
     build_contest_boarddb_farm_spec,
@@ -116,7 +105,6 @@ from .contest_validation_matrix import load_contest_validation_matrix
 from .end_to_end_validation_matrix import load_end_to_end_validation_matrix
 from .canonical_experiment import (
     compile_canonical_experiment_spec,
-    compile_static_exact_ab_experiment_spec,
 )
 from .canonical_qor import (
     parse_canonical_qor_arms,
@@ -254,7 +242,6 @@ from .packed_netlist import (
     validate_packed_netlist_file,
 )
 from .packed_placement import run_packed_openparf_placement
-from .partition_feedback import run_partition_feedback
 from .partition_pressure import run_partition_pressure_reference
 from .physical_pins import (
     SERIAL_TRANSCEIVER_PROVIDER,
@@ -303,9 +290,8 @@ from .serial_wrapper import run_phase6c
 from .serial_phy_provider import validate_serial_phy_provider_file
 from .serial_phy_elaboration import run_serial_phy_elaboration
 from .serial_phy_recipe import materialize_serial_phy_recipe
-from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
+from .tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from .tdm_schedule_storage import read_tdm_schedule
-from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from .yosys import import_yosys_json
 from .verilog import emit_mapped_verilog
@@ -333,10 +319,8 @@ from .validation_farm import (
     validate_validation_farm,
 )
 
-
 def _print_json(value: Dict[str, Any]) -> None:
     print(json.dumps(value, indent=2, sort_keys=True))
-
 
 def _keyed_paths(values: Sequence[str], option: str) -> Dict[str, Path]:
     result: Dict[str, Path] = {}
@@ -349,7 +333,6 @@ def _keyed_paths(values: Sequence[str], option: str) -> Dict[str, Path]:
         result[key] = Path(raw_path)
     return result
 
-
 def _keyed_values(values: Sequence[str], option: str) -> Dict[str, str]:
     result: Dict[str, str] = {}
     for value in values:
@@ -360,7 +343,6 @@ def _keyed_values(values: Sequence[str], option: str) -> Dict[str, str]:
             raise ValueError(f"{option}: duplicate key {key!r}")
         result[key] = item
     return result
-
 
 def _jsonable_cli_configuration(args: argparse.Namespace) -> Dict[str, Any]:
     def normalize(value: Any) -> Any:
@@ -379,7 +361,6 @@ def _jsonable_cli_configuration(args: argparse.Namespace) -> Dict[str, Any]:
         key: normalize(value)
         for key, value in sorted(vars(args).items())
     }
-
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -861,24 +842,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tdm_run.add_argument("--route", type=Path, required=True)
     tdm_run.add_argument("--partition", type=Path, required=True)
     tdm_run.add_argument("--platform", type=Path, required=True)
-    tdm_run.add_argument("--simulation-frames", type=int, default=16)
     tdm_run.add_argument("--provider")
-    tdm_run.add_argument("--ratio-max-iterations", type=int, default=500)
-    tdm_run.add_argument("--max-ratio", type=int)
-    tdm_run.add_argument(
-        "--ratio-quantum",
-        type=int,
-        help=(
-            "explicit comparison override; defaults to the frozen Phase 4 "
-            "route constraint"
-        ),
-    )
-    tdm_run.add_argument("--post-refinement-iterations", type=int, default=200)
-    tdm_run.add_argument("--slot-refinement-iterations", type=int, default=200)
-    tdm_run.add_argument("--ratio-optimizer")
-    tdm_run.add_argument("--timing-dag-optimizer")
-    tdm_run.add_argument("--slot-optimizer")
-    tdm_run.add_argument("--managed-storage", action="store_true")
     tdm_run.add_argument("--managed-dag-node", action="store_true")
     tdm_run.add_argument("--out", type=Path, required=True)
     tdm_validate = experiment_stage_subparsers.add_parser(
@@ -1458,19 +1422,6 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("abstract", "parallel", "serial", "source_synchronous"),
         default="abstract",
     )
-    eda2023_optimize = contest_subparsers.add_parser(
-        "eda2023-optimize",
-        help="assign legal per-Wire TDM ratios to routed die trees",
-    )
-    eda2023_optimize.add_argument("--instance", type=Path, required=True)
-    eda2023_optimize.add_argument("--routes", type=Path, required=True)
-    eda2023_optimize.add_argument("--out", type=Path, required=True)
-    eda2023_optimize.add_argument("--optimizer")
-    eda2023_optimize.add_argument("--max-iterations", type=int, default=100)
-    eda2023_optimize.add_argument(
-        "--post-refinement-iterations", type=int, default=2000
-    )
-    eda2023_optimize.add_argument("--exact-domain-limit", type=int, default=2048)
     eda2023_evaluate = contest_subparsers.add_parser(
         "eda2023-evaluate",
         help="independently check routed trees and a per-Wire TDM plan",
@@ -1519,18 +1470,6 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("abstract", "parallel", "serial", "source_synchronous"),
         default="abstract",
     )
-    iccad2019_optimize = contest_subparsers.add_parser(
-        "iccad2019-optimize",
-        help="assign exact-harmonic TDM ratios to EmuFlow routes",
-    )
-    iccad2019_optimize.add_argument("--instance", type=Path, required=True)
-    iccad2019_optimize.add_argument("--routes", type=Path, required=True)
-    iccad2019_optimize.add_argument("--output", "-o", type=Path, required=True)
-    iccad2019_optimize.add_argument("--optimizer")
-    iccad2019_optimize.add_argument("--max-iterations", type=int, default=500)
-    iccad2019_optimize.add_argument(
-        "--post-refinement-iterations", type=int, default=20000
-    )
     iccad2019_evaluate = contest_subparsers.add_parser(
         "iccad2019-evaluate",
         help="independently check an official-format ICCAD 2019 solution",
@@ -1551,8 +1490,6 @@ def _build_parser() -> argparse.ArgumentParser:
     eda2025_import.add_argument("--out", type=Path, required=True)
     eda2025_import.add_argument("--alpha-ns", type=float, default=0.7)
     eda2025_import.add_argument("--beta-ns", type=float, default=30.0)
-    eda2025_import.add_argument("--ratio-quantum", type=int, default=8)
-    eda2025_import.add_argument("--max-ratio", type=int, default=512)
     eda2025_import.add_argument(
         "--topology-change-fraction", type=float, default=0.3
     )
@@ -1961,7 +1898,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument(
         "--cut-mode",
-        choices=("sequential-only", "static-exact-combinational"),
+        choices=("static-exact-combinational",),
         default=DEFAULT_PARTITION_CUT_MODE,
         help=(
             "partition boundary semantics; generalized Static Exact is the default"
@@ -2092,59 +2029,11 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--tdm-provider",
         choices=(
-            TDM_RATIO_PROVIDER,
-            TDM_TIMING_DAG_RATIO_PROVIDER,
-            TDM_BASELINE_PROVIDER,
             TDM_EXACT_DEPENDENCY_PROVIDER,
         ),
         help=(
-            f"explicit Phase 5 provider; Static Exact defaults to "
-            f"{TDM_EXACT_DEPENDENCY_PROVIDER}, other timing-enabled flows "
-            f"default to {TDM_TIMING_DAG_RATIO_PROVIDER}"
+            f"Phase 5 dependency scheduler (default: {TDM_EXACT_DEPENDENCY_PROVIDER})"
         ),
-    )
-    multi_fpga_compile.add_argument("--ratio-optimizer")
-    multi_fpga_compile.add_argument("--timing-dag-optimizer")
-    multi_fpga_compile.add_argument("--slot-optimizer")
-    multi_fpga_compile.add_argument(
-        "--ratio-max-iterations", type=int, default=500
-    )
-    multi_fpga_compile.add_argument("--max-ratio", type=int)
-    multi_fpga_compile.add_argument(
-        "--ratio-quantum",
-        type=int,
-        help=(
-            "explicit comparison override; defaults to the frozen Phase 4 "
-            "route constraint"
-        ),
-    )
-    multi_fpga_compile.add_argument(
-        "--post-refinement-iterations", type=int, default=200
-    )
-    multi_fpga_compile.add_argument(
-        "--slot-refinement-iterations",
-        type=int,
-        default=None,
-        help=(
-            "slot-refinement iteration count; defaults to 200 for both "
-            "sequential and sampled-virtual-wire transport"
-        ),
-    )
-    multi_fpga_compile.add_argument(
-        "--cross-stage-iterations",
-        type=int,
-        default=0,
-        help=(
-            "run checked Phase 3--5 TDM-feedback optimization and continue "
-            "its selected candidate through split, physical, and runtime; "
-            "each outer iteration may rerun Phase 3 once per feedback line-"
-            "search step (four steps by default), so 1 does not mean one "
-            "additional partition invocation"
-        ),
-    )
-    multi_fpga_compile.add_argument("--cross-stage-feedback-optimizer")
-    multi_fpga_compile.add_argument(
-        "--cross-stage-pair-pressure-weight", type=float, default=1.0
     )
     multi_fpga_compile.add_argument("--simulation-frames", type=int, default=16)
     multi_fpga_compile.add_argument("--equivalence-cycles", type=int, default=1)
@@ -2541,33 +2430,6 @@ def _build_parser() -> argparse.ArgumentParser:
     benchmark_experiment.add_argument("--config", type=Path, required=True)
     benchmark_experiment.add_argument("--repository-root", type=Path, required=True)
     benchmark_experiment.add_argument("--out", type=Path, required=True)
-    static_exact_experiment = subparsers.add_parser(
-        "benchmark-static-exact-ab-compile",
-        help=(
-            "compile one content-addressed sequential/generalized Static Exact "
-            "Phase 1-7 comparison DAG"
-        ),
-    )
-    static_exact_experiment.add_argument("--config", type=Path, required=True)
-    static_exact_experiment.add_argument(
-        "--repository-root", type=Path, required=True
-    )
-    static_exact_experiment.add_argument(
-        "--generalized-max-depth", type=int, default=8
-    )
-    static_exact_experiment.add_argument(
-        "--minimum-combinational-cut-nets", type=int, default=1
-    )
-    static_exact_experiment.add_argument(
-        "--partition-seed",
-        type=int,
-        help=(
-            "single controlled Phase 3 seed shared by all A/B arms; "
-            "defaults to partition_seed in the canonical config"
-        ),
-    )
-    static_exact_experiment.add_argument("--out", type=Path, required=True)
-
     phase1 = subparsers.add_parser(
         "phase1", help="run the board-independent Phase 1 pipeline"
     )
@@ -3276,11 +3138,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="source schedule used to independently reconstruct feedback",
     )
     phase4.add_argument(
-        "--tdm-feedback-ratio-plan",
-        type=Path,
-        help="optional source ratio plan used by the feedback schedule",
-    )
-    phase4.add_argument(
         "--physical-feedback",
         type=Path,
         help="checked Phase 7 boundary-domain feedback to add to TDM prices",
@@ -3340,7 +3197,6 @@ def _build_parser() -> argparse.ArgumentParser:
     schedule_validate.add_argument("schedule", type=Path)
     schedule_validate.add_argument("--routes", type=Path, required=True)
     schedule_validate.add_argument("--platform", type=Path, required=True)
-    schedule_validate.add_argument("--ratio-plan", type=Path)
     schedule_validate.add_argument("--assignment", type=Path)
 
     phase5 = subparsers.add_parser(
@@ -3354,76 +3210,12 @@ def _build_parser() -> argparse.ArgumentParser:
     phase5.add_argument(
         "--provider",
         choices=(
-            TDM_RATIO_PROVIDER,
-            TDM_TIMING_DAG_RATIO_PROVIDER,
-            TDM_BASELINE_PROVIDER,
             TDM_EXACT_DEPENDENCY_PROVIDER,
         ),
         default=None,
         help=(
-            f"defaults to {TDM_EXACT_DEPENDENCY_PROVIDER} for Static Exact, "
-            f"{TDM_TIMING_DAG_RATIO_PROVIDER} for other timing-aware routes, "
-            "otherwise the deterministic baseline"
+            f"Phase 5 dependency scheduler (default: {TDM_EXACT_DEPENDENCY_PROVIDER})"
         ),
-    )
-    phase5.add_argument(
-        "--ratio-optimizer",
-        help=(
-            "explicit comparison override; defaults to the in-tree "
-            "emuflow_tdm_ratio_optimizer build"
-        ),
-    )
-    phase5.add_argument(
-        "--timing-dag-optimizer",
-        help=(
-            "explicit comparison override; defaults to the in-tree "
-            "emuflow_tdm_timing_dag_optimizer build"
-        ),
-    )
-    phase5.add_argument("--ratio-max-iterations", type=int, default=500)
-    phase5.add_argument(
-        "--slot-optimizer",
-        help=(
-            "explicit comparison override; defaults to the in-tree "
-            "emuflow_tdm_slot_optimizer build"
-        ),
-    )
-    phase5.add_argument("--max-ratio", type=int)
-    phase5.add_argument(
-        "--ratio-quantum",
-        type=int,
-        help=(
-            "explicit comparison override; defaults to the frozen Phase 4 "
-            "route constraint"
-        ),
-    )
-    phase5.add_argument(
-        "--post-refinement-iterations", type=int, default=200
-    )
-    phase5.add_argument(
-        "--slot-refinement-iterations", type=int, default=200
-    )
-    phase5.add_argument("--ratio-convergence", type=float, default=1.0e-9)
-
-    partition_feedback = subparsers.add_parser(
-        "partition-feedback",
-        help="derive channel-usage partition weights from routed TDM results",
-    )
-    partition_feedback.add_argument("--routes", type=Path, required=True)
-    partition_feedback.add_argument("--ratio-plan", type=Path, required=True)
-    partition_feedback.add_argument(
-        "--assignment",
-        type=Path,
-        help=(
-            "Phase 3 assignment required when routes bind a Static Exact "
-            "semantic contract"
-        ),
-    )
-    partition_feedback.add_argument("--platform", type=Path, required=True)
-    partition_feedback.add_argument("--output", "-o", type=Path, required=True)
-    partition_feedback.add_argument("--optimizer")
-    partition_feedback.add_argument(
-        "--pair-pressure-weight", type=float, default=1.0
     )
 
     partition_pressure = subparsers.add_parser(
@@ -3445,250 +3237,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     partition_pressure.add_argument("--out", type=Path, required=True)
     partition_pressure.add_argument("--max-moves", type=int)
-
-    cross_stage = subparsers.add_parser(
-        "cross-stage",
-        help="checked Phase 3--5 feedback optimization operations",
-    )
-    cross_stage_subparsers = cross_stage.add_subparsers(
-        dest="cross_stage_command", required=True
-    )
-    cross_stage_evaluate = cross_stage_subparsers.add_parser(
-        "evaluate", help="score one partition/route/schedule candidate"
-    )
-    cross_stage_evaluate.add_argument(
-        "--database", type=Path, required=True
-    )
-    cross_stage_evaluate.add_argument(
-        "--assignment", type=Path, required=True
-    )
-    cross_stage_evaluate.add_argument("--routes", type=Path, required=True)
-    cross_stage_evaluate.add_argument("--schedule", type=Path, required=True)
-    cross_stage_evaluate.add_argument(
-        "--ratio-plan", type=Path, required=True
-    )
-    cross_stage_evaluate.add_argument(
-        "--platform", type=Path, required=True
-    )
-    cross_stage_evaluate.add_argument(
-        "--output", "-o", type=Path, required=True
-    )
-    cross_stage_validate = cross_stage_subparsers.add_parser(
-        "validate-candidate",
-        help="independently reconstruct one candidate score",
-    )
-    cross_stage_validate.add_argument("candidate", type=Path)
-    cross_stage_validate.add_argument(
-        "--database", type=Path, required=True
-    )
-    cross_stage_validate.add_argument(
-        "--assignment", type=Path, required=True
-    )
-    cross_stage_validate.add_argument(
-        "--routes", type=Path, required=True
-    )
-    cross_stage_validate.add_argument(
-        "--schedule", type=Path, required=True
-    )
-    cross_stage_validate.add_argument(
-        "--ratio-plan", type=Path, required=True
-    )
-    cross_stage_validate.add_argument(
-        "--platform", type=Path, required=True
-    )
-    cross_stage_report_validate = cross_stage_subparsers.add_parser(
-        "validate-report",
-        help="independently reconstruct all successful candidates",
-    )
-    cross_stage_report_validate.add_argument("report", type=Path)
-    cross_stage_report_validate.add_argument(
-        "--ir", type=Path, required=True
-    )
-    cross_stage_report_validate.add_argument(
-        "--database", type=Path, required=True
-    )
-    cross_stage_report_validate.add_argument(
-        "--platform", type=Path, required=True
-    )
-    cross_stage_optimize = cross_stage_subparsers.add_parser(
-        "optimize",
-        help="iterate TDM feedback through partition, routing, and scheduling",
-    )
-    cross_stage_optimize.add_argument("--ir", type=Path, required=True)
-    cross_stage_optimize.add_argument(
-        "--platform", type=Path, required=True
-    )
-    cross_stage_optimize.add_argument(
-        "--database", type=Path, required=True
-    )
-    cross_stage_optimize.add_argument(
-        "--initial-assignment", type=Path, required=True
-    )
-    cross_stage_optimize.add_argument(
-        "--seed-candidate-phase3-root", type=Path
-    )
-    cross_stage_optimize.add_argument("--out", type=Path, required=True)
-    cross_stage_optimize.add_argument(
-        "--phase3-constraints", type=Path
-    )
-    cross_stage_optimize.add_argument(
-        "--route-constraints", type=Path
-    )
-    cross_stage_optimize.add_argument(
-        "--board-link-timing-db",
-        type=Path,
-        help=(
-            "apply direction-exact BoardLinkTimingDB bounds to every "
-            "routing, TDM, and feedback candidate"
-        ),
-    )
-    cross_stage_optimize.add_argument(
-        "--phase3-provider",
-        choices=(
-            "tritonpart",
-            "patron",
-        ),
-        default="patron",
-    )
-    cross_stage_optimize.add_argument(
-        "--cut-mode",
-        choices=("sequential-only", "static-exact-combinational"),
-        default=DEFAULT_PARTITION_CUT_MODE,
-        help=(
-            "partition boundary semantics used by the initial assignment and "
-            "every feedback Phase 3 candidate"
-        ),
-    )
-    cross_stage_optimize.add_argument(
-        "--max-cross-fpga-dependency-depth",
-        type=int,
-        default=STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
-        help=(
-            "optional Static Exact policy guard; zero (the default) leaves "
-            "depth to schedule feasibility and final timing"
-        ),
-    )
-    cross_stage_optimize.add_argument(
-        "--static-exact-candidate-policy",
-        choices=(STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,),
-        default=STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
-    )
-    cross_stage_optimize.add_argument(
-        "--max-outer-iterations", type=int, default=1
-    )
-    cross_stage_optimize.add_argument("--seed", type=int, default=0)
-    cross_stage_optimize.add_argument("--min-used-fpgas", type=int)
-    cross_stage_optimize.add_argument(
-        "--balance-tolerance", type=float,
-        help=("Relative tolerance for configured balance_dimensions (default: "
-              "cells, LUT, and FF); omitted dimensions impose only device "
-              "capacity limits"),
-    )
-    cross_stage_optimize.add_argument("--openroad")
-    cross_stage_optimize.add_argument("--patron-refiner")
-    cross_stage_optimize.add_argument("--patron-max-moves", type=int)
-    cross_stage_optimize.add_argument(
-        "--patron-algorithm-version",
-        type=int,
-        choices=(6, 9, 10, 11, 14),
-        default=DEFAULT_PATRON_ALGORITHM_VERSION,
-    )
-    cross_stage_optimize.add_argument(
-        "--partition-timeout-seconds", type=int, default=3600
-    )
-    cross_stage_optimize.add_argument(
-        "--partition-seed-attempts", type=int, default=1
-    )
-    cross_stage_optimize.add_argument(
-        "--partition-num-initial-solutions", type=int, default=50
-    )
-    cross_stage_optimize.add_argument(
-        "--partition-num-best-initial-solutions", type=int, default=10
-    )
-    cross_stage_optimize.add_argument(
-        "--partition-repair-min-used-fpgas", action=_BooleanOptionalAction, default=True
-    )
-    cross_stage_optimize.add_argument("--router")
-    cross_stage_optimize.add_argument(
-        "--route-provider",
-        choices=(
-            GLOBAL_CANDIDATE_PROVIDER,
-        ),
-        help=(
-            f"system routing provider (default: {GLOBAL_CANDIDATE_PROVIDER})"
-        ),
-    )
-    cross_stage_optimize.add_argument(
-        "--route-candidate-workers",
-        type=int,
-        default=1,
-        help="parallel deterministic candidate generators for global routing",
-    )
-    cross_stage_optimize.add_argument("--frame-slots", type=int)
-    cross_stage_optimize.add_argument(
-        "--optimize-frame-slots",
-        action="store_true",
-        help=(
-            "treat --frame-slots as an upper bound and minimize the exact "
-            "feasible frame for every partition candidate"
-        ),
-    )
-    cross_stage_optimize.add_argument(
-        "--route-max-iterations", type=int
-    )
-    cross_stage_optimize.add_argument(
-        "--tdm-provider",
-        choices=(
-            TDM_RATIO_PROVIDER,
-            TDM_TIMING_DAG_RATIO_PROVIDER,
-        ),
-        help=(
-            "cross-stage feedback consumes an explicit academic ratio plan; "
-            f"Static Exact's default {TDM_EXACT_DEPENDENCY_PROVIDER} "
-            "scheduler is intentionally outside this optional study"
-        ),
-    )
-    cross_stage_optimize.add_argument("--ratio-optimizer")
-    cross_stage_optimize.add_argument("--timing-dag-optimizer")
-    cross_stage_optimize.add_argument("--slot-optimizer")
-    cross_stage_optimize.add_argument("--feedback-optimizer")
-    cross_stage_optimize.add_argument(
-        "--simulation-frames", type=int, default=4
-    )
-    cross_stage_optimize.add_argument(
-        "--ratio-max-iterations", type=int, default=500
-    )
-    cross_stage_optimize.add_argument("--max-ratio", type=int)
-    cross_stage_optimize.add_argument(
-        "--ratio-quantum",
-        type=int,
-        help=(
-            "explicit comparison override; defaults to the frozen Phase 4 "
-            "route constraint"
-        ),
-    )
-    cross_stage_optimize.add_argument(
-        "--post-refinement-iterations", type=int, default=200
-    )
-    cross_stage_optimize.add_argument(
-        "--slot-refinement-iterations", type=int, default=200
-    )
-    cross_stage_optimize.add_argument(
-        "--ratio-convergence", type=float, default=1.0e-9
-    )
-    cross_stage_optimize.add_argument(
-        "--pair-pressure-weight", type=float, default=1.0
-    )
-    cross_stage_optimize.add_argument(
-        "--feedback-step",
-        type=float,
-        action="append",
-        default=[],
-        help=(
-            "strictly decreasing proximal line-search step in (0,1]; "
-            "repeat to override the default 1,0.5,0.25,0.125 sequence"
-        ),
-    )
 
     pin_plan_parser = subparsers.add_parser(
         "pin-plan",
@@ -4042,7 +3590,6 @@ def _build_parser() -> argparse.ArgumentParser:
     phase8a.add_argument("--out", type=Path, required=True)
     return parser
 
-
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "experiment-stage":
         if args.experiment_stage_command == "frontend-run":
@@ -4237,17 +3784,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                     args.partition,
                     args.platform,
                     args.out,
-                    simulation_frames=args.simulation_frames,
+
                     provider=args.provider,
-                    ratio_max_iterations=args.ratio_max_iterations,
-                    max_ratio=args.max_ratio,
-                    ratio_quantum=args.ratio_quantum,
-                    post_refinement_iterations=args.post_refinement_iterations,
-                    slot_refinement_iterations=args.slot_refinement_iterations,
-                    ratio_optimizer=args.ratio_optimizer,
-                    timing_dag_optimizer=args.timing_dag_optimizer,
-                    slot_optimizer=args.slot_optimizer,
-                    managed_storage=args.managed_storage,
+
                     managed_dag_node=args.managed_dag_node,
                 )
         elif args.experiment_stage_command == "tdm-validate":
@@ -4806,16 +4345,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 link_mode=args.link_mode,
                 route_constraints_path=args.route_constraints_output,
             )
-        elif args.contest_command == "eda2023-optimize":
-            report = optimize_eda2023_tdm(
-                instance_path=args.instance,
-                routes_path=args.routes,
-                output_dir=args.out,
-                optimizer=args.optimizer,
-                max_iterations=args.max_iterations,
-                post_refinement_iterations=args.post_refinement_iterations,
-                exact_domain_limit=args.exact_domain_limit,
-            )
         elif args.contest_command == "eda2023-evaluate":
             report = evaluate_eda2023_solution(
                 instance_path=args.instance,
@@ -4878,15 +4407,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 latency_cycles=args.latency_cycles,
                 link_mode=args.link_mode,
             )
-        elif args.contest_command == "iccad2019-optimize":
-            report = optimize_iccad2019_ratios(
-                instance_path=args.instance,
-                routes_path=args.routes,
-                output_path=args.output,
-                optimizer=args.optimizer,
-                max_iterations=args.max_iterations,
-                post_refinement_iterations=args.post_refinement_iterations,
-            )
         elif args.contest_command == "iccad2019-evaluate":
             report = evaluate_iccad2019_solution(
                 instance_path=args.instance,
@@ -4904,8 +4424,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 name=args.name,
                 alpha_ns=args.alpha_ns,
                 beta_ns=args.beta_ns,
-                ratio_quantum=args.ratio_quantum,
-                max_ratio=args.max_ratio,
+
+
                 topology_change_fraction=args.topology_change_fraction,
             )
         elif args.contest_command == "eda2025-evaluate":
@@ -5141,20 +4661,6 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "benchmark-experiment-compile":
         report = compile_canonical_experiment_spec(
             args.config, args.repository_root, args.out
-        )
-        _print_json(report)
-        return 0
-
-    if args.command == "benchmark-static-exact-ab-compile":
-        report = compile_static_exact_ab_experiment_spec(
-            args.config,
-            args.repository_root,
-            args.out,
-            generalized_max_depth=args.generalized_max_depth,
-            minimum_combinational_cut_nets=(
-                args.minimum_combinational_cut_nets
-            ),
-            partition_seed=args.partition_seed,
         )
         _print_json(report)
         return 0
@@ -5614,8 +5120,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             timing_io = None
         if args.archive_cleanup and args.archive_out is None:
             raise EmuFlowError("--archive-cleanup requires --archive-out")
-        if args.slot_refinement_iterations is None:
-            args.slot_refinement_iterations = 200
         compiler = run_multi_fpga_flow
         if args.compile_implementation == "native-control-v1":
             from .native_compile import run_native_multi_fpga_flow
@@ -5686,23 +5190,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             optimize_frame_slots=args.optimize_frame_slots,
             route_max_iterations=args.route_max_iterations,
             tdm_provider=args.tdm_provider,
-            ratio_optimizer=args.ratio_optimizer,
-            timing_dag_optimizer=args.timing_dag_optimizer,
-            slot_optimizer=args.slot_optimizer,
-            ratio_max_iterations=args.ratio_max_iterations,
-            max_ratio=args.max_ratio,
-            ratio_quantum=args.ratio_quantum,
-            post_refinement_iterations=(
-                args.post_refinement_iterations
-            ),
-            slot_refinement_iterations=args.slot_refinement_iterations,
-            cross_stage_iterations=args.cross_stage_iterations,
-            cross_stage_feedback_optimizer=(
-                args.cross_stage_feedback_optimizer
-            ),
-            cross_stage_pair_pressure_weight=(
-                args.cross_stage_pair_pressure_weight
-            ),
+
+
             simulation_frames=args.simulation_frames,
             equivalence_cycles=args.equivalence_cycles,
             equivalence_seed=args.equivalence_seed,
@@ -5934,9 +5423,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             tdm_feedback_path=args.tdm_feedback,
             tdm_feedback_routes_path=args.tdm_feedback_routes,
             tdm_feedback_schedule_path=args.tdm_feedback_schedule,
-            tdm_feedback_ratio_plan_path=(
-                args.tdm_feedback_ratio_plan
-            ),
+
             physical_feedback_path=args.physical_feedback,
             physical_feedback_runtime_path=(
                 args.physical_feedback_runtime
@@ -5956,7 +5443,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             routes_path=args.routes,
             platform_path=args.platform,
             schedule_path=args.schedule,
-            ratio_plan_path=args.ratio_plan,
+
             assignment_path=args.assignment,
         )
         _print_json(report)
@@ -5968,33 +5455,12 @@ def _dispatch(args: argparse.Namespace) -> int:
             platform_path=args.platform,
             output_dir=args.out,
             assignment_path=args.assignment,
-            simulation_frames=args.simulation_frames,
+
             provider=args.provider,
-            ratio_optimizer=args.ratio_optimizer,
-            timing_dag_optimizer=args.timing_dag_optimizer,
-            slot_optimizer=args.slot_optimizer,
-            ratio_max_iterations=args.ratio_max_iterations,
-            max_ratio=args.max_ratio,
-            ratio_quantum=args.ratio_quantum,
-            post_refinement_iterations=args.post_refinement_iterations,
-            slot_refinement_iterations=args.slot_refinement_iterations,
-            convergence=args.ratio_convergence,
+
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
-
-    if args.command == "partition-feedback":
-        report = run_partition_feedback(
-            routes_path=args.routes,
-            ratio_plan_path=args.ratio_plan,
-            platform_path=args.platform,
-            output_path=args.output,
-            assignment_path=args.assignment,
-            executable=args.optimizer,
-            pair_pressure_weight=args.pair_pressure_weight,
-        )
-        _print_json(report)
-        return 0
 
     if args.command == "partition-pressure-reference":
         report = run_partition_pressure_reference(
@@ -6008,108 +5474,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             args.out,
             max_moves=args.max_moves,
         )
-        _print_json(report)
-        return 0
-
-    if args.command == "cross-stage":
-        if args.cross_stage_command == "evaluate":
-            report = evaluate_cross_stage_candidate(
-                args.database,
-                args.assignment,
-                args.routes,
-                args.schedule,
-                args.ratio_plan,
-                args.platform,
-                args.output,
-            )
-        elif args.cross_stage_command == "validate-candidate":
-            report = validate_cross_stage_candidate(
-                args.candidate,
-                args.database,
-                args.assignment,
-                args.routes,
-                args.schedule,
-                args.ratio_plan,
-                args.platform,
-            )
-        elif args.cross_stage_command == "validate-report":
-            report = validate_cross_stage_report(
-                args.report,
-                args.ir,
-                args.database,
-                args.platform,
-            )
-        else:
-            report = run_cross_stage_optimization(
-                ir_path=args.ir,
-                platform_path=args.platform,
-                database_path=args.database,
-                initial_assignment_path=args.initial_assignment,
-                output_dir=args.out,
-                seed_candidate_phase3_root=(
-                    args.seed_candidate_phase3_root
-                ),
-                phase3_constraints_path=args.phase3_constraints,
-                route_constraints_path=args.route_constraints,
-                board_link_timing_path=args.board_link_timing_db,
-                phase3_provider=args.phase3_provider,
-                cut_mode=args.cut_mode,
-                max_cross_fpga_dependency_depth=(
-                    args.max_cross_fpga_dependency_depth
-                ),
-                static_exact_candidate_policy=(
-                    args.static_exact_candidate_policy
-                ),
-                max_outer_iterations=args.max_outer_iterations,
-                seed=args.seed,
-                min_used_fpgas=args.min_used_fpgas,
-                balance_tolerance=args.balance_tolerance,
-                openroad=args.openroad,
-                patron_refiner=args.patron_refiner,
-                patron_max_moves=args.patron_max_moves,
-                patron_algorithm_version=args.patron_algorithm_version,
-                partition_timeout_seconds=(
-                    args.partition_timeout_seconds
-                ),
-                partition_seed_attempts=args.partition_seed_attempts,
-                partition_num_initial_solutions=(
-                    args.partition_num_initial_solutions
-                ),
-                partition_num_best_initial_solutions=(
-                    args.partition_num_best_initial_solutions
-                ),
-                partition_repair_min_used_fpgas=(
-                    args.partition_repair_min_used_fpgas
-                ),
-                router=args.router,
-                route_provider=args.route_provider,
-                route_candidate_workers=args.route_candidate_workers,
-                frame_slots=args.frame_slots,
-                optimize_frame_slots=args.optimize_frame_slots,
-                route_max_iterations=args.route_max_iterations,
-                tdm_provider=args.tdm_provider,
-                ratio_optimizer=args.ratio_optimizer,
-                timing_dag_optimizer=args.timing_dag_optimizer,
-                slot_optimizer=args.slot_optimizer,
-                feedback_optimizer=args.feedback_optimizer,
-                simulation_frames=args.simulation_frames,
-                ratio_max_iterations=args.ratio_max_iterations,
-                max_ratio=args.max_ratio,
-                ratio_quantum=args.ratio_quantum,
-                post_refinement_iterations=(
-                    args.post_refinement_iterations
-                ),
-                slot_refinement_iterations=(
-                    args.slot_refinement_iterations
-                ),
-                ratio_convergence=args.ratio_convergence,
-                pair_pressure_weight=args.pair_pressure_weight,
-                feedback_steps=(
-                    tuple(args.feedback_step)
-                    if args.feedback_step
-                    else None
-                ),
-            )
         _print_json(report)
         return 0
 
@@ -6444,7 +5808,6 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     raise AssertionError(f"unhandled command {args.command!r}")
-
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = _build_parser()

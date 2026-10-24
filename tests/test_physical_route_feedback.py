@@ -13,7 +13,7 @@ from emuflow.physical_route_feedback import (
 from emuflow.runtime import build_virtual_runtime
 from emuflow.phase4 import run_phase4
 from emuflow.io import write_json
-from emuflow.tdm import build_tdm_schedule
+from tests.schedule_reference import build_tdm_schedule
 from emuflow.tdm_feedback import build_tdm_feedback
 from emuflow.timing_routing import compress_sta_paths, normalize_sta_paths
 from emuflow.routing import demands_from_assignment

@@ -89,7 +89,6 @@ from .synthesis import (
     run_xilinx_ultrascaleplus_yosys_stream,
 )
 from .tdm import (
-    TDM_BASELINE_PROVIDER,
     TDM_EXACT_DEPENDENCY_PROVIDER,
     is_sampled_virtual_wire_schedule,
 )
@@ -121,7 +120,6 @@ from .xilinx_primitives import (
     normalize_xilinx_indexed_staging,
 )
 
-
 EXPERIMENT_FRONTEND_SCHEMA = "emuflow.experiment-frontend-checkpoint/v2"
 EXPERIMENT_TIMING_SCHEMA = "emuflow.experiment-timing-checkpoint/v1"
 EXPERIMENT_PARTITION_SCHEMA = "emuflow.experiment-partition-checkpoint/v1"
@@ -146,13 +144,11 @@ _SHARED_REQUIRED_ARTIFACTS = {
     "timing/cut-segment-qualification.json",
 }
 _SHARED_OPTIONAL_ARTIFACTS = {
-    "tdm/ratio_plan.json",
     "tdm/schedule.sqlite",
     "timing/path-database.json.paths.sqlite",
     "timing/partition-net-weights.json.weights.sqlite",
 }
 MANAGED_DAG_VALIDATION_MODE = "managed-independent-publish-v1"
-
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -161,20 +157,17 @@ def _sha256(path: Path) -> str:
             digest.update(chunk)
     return digest.hexdigest()
 
-
 def _require(root: Path, relative: str) -> Path:
     path = root.resolve() / relative
     if not path.is_file() or path.is_symlink():
         raise ValidationError(f"upstream experiment artifact is missing: {relative}")
     return path
 
-
 def _selector_digest(value: Any) -> bool:
     return (
         isinstance(value, str)
         and re.fullmatch(r"[0-9a-f]{64}", value) is not None
     )
-
 
 def _read_selector_envelope(path: Path, label: str) -> Dict[str, Any]:
     try:
@@ -185,7 +178,6 @@ def _read_selector_envelope(path: Path, label: str) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise ValidationError(f"managed {label} selector envelope is invalid")
     return value
-
 
 def _trusted_selector_store(
     selector: Path,
@@ -217,7 +209,6 @@ def _trusted_selector_store(
     if not valid_store:
         raise ValidationError(f"managed {label} selector sidecar is missing")
     return store
-
 
 def _trusted_route_store_path(selector: Path) -> Optional[Path]:
     """Resolve a sealed managed RouteStore without opening or rehashing it."""
@@ -304,7 +295,6 @@ def _trusted_route_store_path(selector: Path) -> Optional[Path]:
         label="system-route",
     )
 
-
 def _trusted_cluster_store_path(selector: Path) -> Optional[Path]:
     """Resolve a sealed managed cluster owner without opening or rehashing it."""
 
@@ -359,7 +349,6 @@ def _trusted_cluster_store_path(selector: Path) -> Optional[Path]:
         expected_bytes=value.get("store_bytes"),
         label="Phase 3 clusters",
     )
-
 
 def _trusted_schedule_store_path(selector: Path) -> Optional[Path]:
     """Resolve a sealed managed ScheduleStore without opening or rehashing it."""
@@ -490,7 +479,6 @@ def _trusted_schedule_store_path(selector: Path) -> Optional[Path]:
         label="TDM schedule",
     )
 
-
 def _shared_indexed_sidecars(
     root: Path,
     *,
@@ -525,10 +513,8 @@ def _shared_indexed_sidecars(
         sidecars.add(f"tdm/{schedule_store.name}")
     return sidecars
 
-
 def _float_equal(left: float, right: float) -> bool:
     return math.isclose(float(left), float(right), rel_tol=1.0e-12, abs_tol=1.0e-12)
-
 
 def _managed_artifact_sha256(
     root: Path,
@@ -546,7 +532,6 @@ def _managed_artifact_sha256(
             f"managed dependency artifact seal is invalid: {relative}"
         )
     return digest
-
 
 def _portable_cut_timing_projection(
     artifact: Mapping[str, Any],
@@ -587,7 +572,6 @@ def _portable_cut_timing_projection(
     portable = dict(artifact)
     portable["source"] = {**source, "input": database_name}
     return portable
-
 
 def run_frontend_checkpoint(
     platform_path: Path,
@@ -772,7 +756,6 @@ def run_frontend_checkpoint(
     write_json(output_dir / "experiment-frontend-report.json", report)
     return report
 
-
 def validate_frontend_checkpoint(
     root: Path,
     platform_path: Path,
@@ -872,7 +855,6 @@ def validate_frontend_checkpoint(
         "nets": nets,
     }
 
-
 def run_timing_checkpoint(
     frontend_root: Path,
     output_dir: Path,
@@ -940,7 +922,6 @@ def run_timing_checkpoint(
     write_json(output_dir / "experiment-timing-report.json", report)
     return report
 
-
 def validate_timing_checkpoint(
     frontend_root: Path,
     root: Path,
@@ -975,7 +956,6 @@ def validate_timing_checkpoint(
         "weighted_nets": weights_checked["weighted_nets"],
     }
 
-
 def run_partition_checkpoint(
     *args: Any,
     **kwargs: Any,
@@ -985,7 +965,6 @@ def run_partition_checkpoint(
     from .experiment_partition import run_partition_checkpoint as implementation
 
     return implementation(*args, **kwargs)
-
 
 def validate_partition_checkpoint(
     *args: Any,
@@ -998,7 +977,6 @@ def validate_partition_checkpoint(
     )
 
     return implementation(*args, **kwargs)
-
 
 def run_cut_timing_checkpoint(
     frontend_root: Path,
@@ -1108,7 +1086,6 @@ def run_cut_timing_checkpoint(
         )
     write_json(output_dir / "experiment-cut-timing-report.json", report)
     return report
-
 
 def validate_cut_timing_checkpoint(
     frontend_root: Path,
@@ -1243,7 +1220,6 @@ def validate_cut_timing_checkpoint(
         "untimed_nets": expected_qualification["summary"]["no_timed_endpoint_nets"],
     }
 
-
 def run_route_checkpoint(
     partition_root: Path,
     cut_timing_root: Path,
@@ -1301,7 +1277,6 @@ def run_route_checkpoint(
         )
     write_json(output_dir / "experiment-route-report.json", report)
     return report
-
 
 def validate_route_checkpoint(
     partition_root: Path,
@@ -1369,24 +1344,15 @@ def validate_route_checkpoint(
             raise ValidationError("route checkpoint constraints contract disagrees")
     return {"status": "pass", **validate_phase4(assignment, platform_path, routes, timing_paths_path=timing_paths)}
 
-
 def run_tdm_checkpoint(
     route_root: Path,
     partition_root: Path,
     platform_path: Path,
     output_dir: Path,
     *,
-    simulation_frames: int = 16,
+
     provider: Optional[str] = None,
-    ratio_max_iterations: int = 500,
-    max_ratio: Optional[int] = None,
-    ratio_quantum: Optional[int] = None,
-    post_refinement_iterations: int = 200,
-    slot_refinement_iterations: int = 200,
-    ratio_optimizer: Optional[str] = None,
-    timing_dag_optimizer: Optional[str] = None,
-    slot_optimizer: Optional[str] = None,
-    managed_storage: bool = False,
+
     managed_dag_node: bool = False,
 ) -> Dict[str, Any]:
     routes = _require(route_root, "routes.json")
@@ -1397,17 +1363,9 @@ def run_tdm_checkpoint(
         platform_path,
         output_dir,
         assignment_path=assignment,
-        simulation_frames=simulation_frames,
+
         provider=provider,
-        ratio_optimizer=ratio_optimizer,
-        timing_dag_optimizer=timing_dag_optimizer,
-        slot_optimizer=slot_optimizer,
-        ratio_max_iterations=ratio_max_iterations,
-        max_ratio=max_ratio,
-        ratio_quantum=ratio_quantum,
-        post_refinement_iterations=post_refinement_iterations,
-        slot_refinement_iterations=slot_refinement_iterations,
-        managed_storage=managed_storage,
+
     )
     report = {
         "schema": EXPERIMENT_TDM_SCHEMA,
@@ -1436,7 +1394,6 @@ def run_tdm_checkpoint(
     write_json(output_dir / "experiment-tdm-report.json", report)
     return report
 
-
 def validate_tdm_checkpoint(
     route_root: Path,
     partition_root: Path,
@@ -1451,7 +1408,6 @@ def validate_tdm_checkpoint(
     assignment = _require(partition_root, "assignment.json")
     schedule = _require(root, "schedule.json")
     cross_layer_timing = _require(root, "cross_layer_timing.json")
-    ratio_plan = root / "ratio_plan.json"
     report = read_json(_require(root, "experiment-tdm-report.json"))
     if report.get("schema") != EXPERIMENT_TDM_SCHEMA or report.get("status") != "pass":
         raise ValidationError("TDM checkpoint report is invalid")
@@ -1497,24 +1453,6 @@ def validate_tdm_checkpoint(
         )
         if route_document.get("constraints") != constraints:
             raise ValidationError("TDM route-constraints contract disagrees")
-        if actual_provider not in {
-            TDM_BASELINE_PROVIDER,
-            TDM_EXACT_DEPENDENCY_PROVIDER,
-        }:
-            if not ratio_plan.is_file():
-                raise ValidationError(
-                    "TDM contest constraints require a ratio plan"
-                )
-            configuration = read_json(ratio_plan).get("configuration", {})
-            if (
-                configuration.get("ratio_quantum")
-                != constraints["tdm_ratio_quantum"]
-                or configuration.get("max_ratio")
-                != constraints["tdm_max_ratio"]
-            ):
-                raise ValidationError(
-                    "TDM ratio constraints contract disagrees"
-                )
     if not managed_dag_node:
         for label, path in {
             "routes_sha256": routes,
@@ -1547,7 +1485,6 @@ def validate_tdm_checkpoint(
         routes,
         platform_path,
         schedule,
-        ratio_plan_path=ratio_plan if ratio_plan.is_file() else None,
         assignment_path=assignment,
         managed_root_sealed=managed_dag_node,
     )
@@ -1557,7 +1494,6 @@ def validate_tdm_checkpoint(
         "cross_layer_timing": cross_layer_validation,
     }
 
-
 def _link_or_copy(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -1566,7 +1502,6 @@ def _link_or_copy(source: Path, destination: Path) -> None:
         if error.errno not in {errno.EXDEV, errno.EPERM, errno.EACCES}:
             raise
         shutil.copy2(source, destination)
-
 
 def materialize_shared_phase1_5(
     frontend_root: Path,
@@ -1693,9 +1628,6 @@ def materialize_shared_phase1_5(
             weights_payload,
             "timing",
         )
-    ratio_plan = tdm_root / "ratio_plan.json"
-    if ratio_plan.is_file():
-        mapping["tdm/ratio_plan.json"] = (ratio_plan, "tdm")
     route_selector = route_root / "routes.json"
     if route_selector.is_file():
         route_store = (
@@ -1814,7 +1746,6 @@ def materialize_shared_phase1_5(
         managed_dag_node=managed_dag_node,
     )
     return report
-
 
 def validate_materialized_shared_phase1_5(
     root: Path,

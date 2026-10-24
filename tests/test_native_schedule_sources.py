@@ -11,7 +11,8 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.native_tools import native_file_generation
-from emuflow.tdm import build_native_exact_schedule_request, build_tdm_schedule
+from emuflow.tdm import build_native_exact_schedule_request
+from tests.schedule_reference import build_tdm_schedule
 from emuflow.tdm_schedule_storage import read_tdm_schedule, write_tdm_schedule_storage
 from tests.native_build import emuflow_native
 from tests.native_schedule_case import _case

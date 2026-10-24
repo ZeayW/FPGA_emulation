@@ -20,7 +20,6 @@ from .chimew_pipeline import (
     read_chimew_phase6_pipeline,
     run_chimew_phase6_pipeline,
 )
-from .cross_stage import run_cross_stage_optimization
 from .cut_segment_qualification import build_cut_segment_qualification
 from .default_platform import DEFAULT_PLATFORM_PATH
 from .errors import EmuFlowError, ValidationError
@@ -72,10 +71,9 @@ from .platform import Platform
 from .ppro_calibrated_platform import validate_transport_cost_database
 from .runtime import validate_virtual_runtime
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
-from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
+from .tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from .tdm_schedule_storage import read_tdm_schedule, tdm_schedule_store_path
 from .system_route_storage import read_system_routes, system_route_store_path
-from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from .sta import (
     derive_partition_net_weights,
@@ -100,7 +98,6 @@ from .xilinx_primitives import (
     normalize_xilinx_indexed_staging,
 )
 
-
 MULTI_FPGA_FLOW_SCHEMA = "emuflow.multi-fpga-flow/v2"
 MULTI_FPGA_FLOW_PROVIDER = (
     "profiled-yosys+partition+system-route+tdm+split-transport+runtime"
@@ -114,7 +111,6 @@ MULTI_FPGA_PHASE6_PROVIDERS = ("auto", "chimew", "baseline")
 PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v2"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
 
-
 def _schedule_has_entries(schedule_path: Path) -> bool:
     """Answer the Phase 6 dispatch question without decoding hop records."""
 
@@ -124,7 +120,6 @@ def _schedule_has_entries(schedule_path: Path) -> bool:
         return len(entries) > 0
     except TypeError as error:
         raise ValidationError("TDM schedule entries are not sized") from error
-
 
 def _validate_mapping_timing_contract(
     mapping_profile: str,
@@ -158,7 +153,6 @@ def _validate_mapping_timing_contract(
             f"TimingDB schema {expected_schema!r}, got {observed_schema!r}"
         )
 
-
 def _resolve_partition_openroad(
     partition_provider: str,
     executable: Optional[str],
@@ -171,7 +165,6 @@ def _resolve_partition_openroad(
     if partition_provider in {"tritonpart", "patron"}:
         return resolve_native_executable("openroad", executable)
     return executable
-
 
 _STAGE_SUMMARY_FIELDS = {
     "frontend": ("schema", "phase", "status", "design", "platform", "synthesis"),
@@ -225,13 +218,11 @@ _STAGE_SUMMARY_FIELDS = {
     ),
 }
 
-
 def _stage_summary(name: str, report: Dict[str, Any]) -> Dict[str, Any]:
     """Project a canonical stage report to its bounded orchestration view."""
 
     fields = _STAGE_SUMMARY_FIELDS[name]
     return {field: report[field] for field in fields if field in report}
-
 
 def _timing_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
     """Return timing orchestration metadata without canonical path payloads."""
@@ -254,7 +245,6 @@ def _timing_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
         if field in report
     }
 
-
 def _physical_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
     """Return a bounded physical-flow projection for the parent report."""
 
@@ -275,7 +265,6 @@ def _physical_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
         if field in report
     }
 
-
 def _validate_physical_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
     """Validate the bounded parent projection without reparsing FPGA records."""
 
@@ -291,7 +280,6 @@ def _validate_physical_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
     ):
         raise ValidationError("multi-FPGA physical-flow summary is invalid")
     return report["summary"]
-
 
 def _checked_flow_member(root: Path, path: Path, label: str) -> Path:
     """Check a flow member, including its explicitly bound prepared EmuIR."""
@@ -318,7 +306,6 @@ def _checked_flow_member(root: Path, path: Path, label: str) -> Path:
     if resolved.parent != root and root not in resolved.parents:
         raise ValidationError(f"multi-FPGA checkpoint {label} escapes its flow")
     return resolved
-
 
 def finalize_multi_fpga_physical_checkpoint(
     flow_root: Path,
@@ -446,7 +433,6 @@ def finalize_multi_fpga_physical_checkpoint(
     write_json(root / "multi-fpga-flow-report.json", report)
     return report
 
-
 def _phase6_physical_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
     records = value["fpgas"]
     return {
@@ -487,7 +473,6 @@ def _phase6_physical_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
         ),
     }
 
-
 def _phase6_system_timing_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
     timing = value.get("system_timing_summary", value.get("system_timing"))
     if not isinstance(timing, dict) or timing.get("status") not in {
@@ -518,7 +503,6 @@ def _phase6_system_timing_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
                 )
             metrics[f"{clock}_{field}"] = metric
     return metrics
-
 
 def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
     if (
@@ -659,14 +643,12 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         ],
     }
 
-
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
-
 
 def validate_multi_fpga_flow_report(
     report: Dict[str, Any],
@@ -724,12 +706,7 @@ def validate_multi_fpga_flow_report(
                 "timing-driven report is missing partition weights"
             )
         if not timing_optimization:
-            expected_tdm_provider = (
-                TDM_EXACT_DEPENDENCY_PROVIDER
-                if partition_validation.get("cut_mode")
-                == CUT_MODE_STATIC_EXACT
-                else TDM_BASELINE_PROVIDER
-            )
+            expected_tdm_provider = TDM_EXACT_DEPENDENCY_PROVIDER
             if (
                 stages["system_route"].get("provider")
                 != GLOBAL_CANDIDATE_PROVIDER
@@ -882,47 +859,8 @@ def validate_multi_fpga_flow_report(
             raise ValidationError(
                 "frame-search selection disagrees with TDM/runtime"
             )
-    cross_stage = report.get("cross_stage")
-    cross_stage_iteration = None
-    if cross_stage is not None:
-        if (
-            not isinstance(cross_stage, dict)
-            or cross_stage.get("status") != "pass"
-            or cross_stage.get("design") != design
-            or cross_stage.get("platform") != platform
-        ):
-            raise ValidationError(
-                "multi-FPGA cross-stage identity disagrees"
-            )
-        candidates = cross_stage.get("candidates")
-        selected_iteration = cross_stage.get("selected_iteration")
-        if (
-            not isinstance(candidates, list)
-            or isinstance(selected_iteration, bool)
-            or not isinstance(selected_iteration, int)
-            or selected_iteration < 0
-            or selected_iteration >= len(candidates)
-        ):
-            raise ValidationError(
-                "multi-FPGA cross-stage selection is invalid"
-            )
-        selected = candidates[selected_iteration]
-        if (
-            not isinstance(selected, dict)
-            or selected.get("status") != "pass"
-            or selected.get("iteration") != selected_iteration
-            or selected.get("candidate_id")
-            != cross_stage.get("selected_candidate_id")
-            or selected.get("phase3_validation")
-            != partition_validation
-            or selected.get("phase4_validation") != route_validation
-            or selected.get("phase5_validation") != tdm_validation
-        ):
-            raise ValidationError(
-                "selected cross-stage candidate disagrees with canonical "
-                "Phase 3--5 stages"
-            )
-        cross_stage_iteration = selected_iteration
+    if report.get("cross_stage") is not None:
+        raise ValidationError("retired cross-stage ratio-feedback flow is not supported")
     if any(
         item.get("status") != "pass"
         for item in (
@@ -947,7 +885,6 @@ def validate_multi_fpga_flow_report(
         "scheduled_hops": split_validation.get("scheduled_hops"),
         "equivalence_mismatches": equivalence.get("mismatches"),
         "frame_slots": runtime["validation"].get("frame_slots"),
-        "cross_stage_iteration": cross_stage_iteration,
         "timing_optimization": (
             "enabled"
             if timing_optimization
@@ -975,7 +912,6 @@ def validate_multi_fpga_flow_report(
             else "not-requested"
         ),
     }
-
 
 def validate_multi_fpga_flow_bundle(
     flow_root: Path,
@@ -1106,12 +1042,10 @@ def validate_multi_fpga_flow_bundle(
     if phase4_validation != report["stages"]["system_route"]["validation"]:
         raise ValidationError("independent Phase 4 replay disagrees")
 
-    ratio_plan_path = flow_root / "tdm/ratio_plan.json"
     phase5_validation = validate_phase5(
         routes_path,
         platform_path,
         schedule_path,
-        ratio_plan_path=ratio_plan_path if ratio_plan_path.is_file() else None,
         assignment_path=assignment_path,
     )
     timing_validation = phase5_validation.pop("timing", None)
@@ -1294,7 +1228,6 @@ def validate_multi_fpga_flow_bundle(
         "physical_required": require_physical,
     }
 
-
 class _CompileContext:
     """Execution-scoped configuration and bounded inter-stage state.
 
@@ -1310,18 +1243,17 @@ class _CompileContext:
         from .stage_metrics import measure_stage
         return measure_stage(self.output_dir, stage, function, *args, **kwargs)
 
-
 def _compile_preflight(ctx: _CompileContext):
     if ctx.partition_provider not in {"patron", "tritonpart"}:
         raise EmuFlowError(f"unsupported Phase 3 provider {ctx.partition_provider!r}")
     if ctx._native_mode and (
-        ctx.cross_stage_iterations or ctx.optimize_frame_slots or
+        ctx.optimize_frame_slots or
         ctx.phase6_provider == "chimew" or
         (ctx.phase6_provider == "auto" and ctx.physical and ctx.physical_backend == "open") or
         ctx.serial_bsp_phy_provider is not None
     ):
         raise EmuFlowError(
-            "native compile does not yet support cross-stage/frame search, "
+            "native compile does not yet support frame search, "
             "Chimew comparison or serial BSP continuation"
         )
     if ctx.output_dir is None:
@@ -1355,6 +1287,10 @@ def _compile_preflight(ctx: _CompileContext):
             "physical-backend=rapidwright requires "
             "mapping-profile=xilinx-ultrascaleplus-open-v1"
         )
+    if ctx.tdm_provider not in {None, TDM_EXACT_DEPENDENCY_PROVIDER}:
+        raise EmuFlowError(f"unsupported Phase 5 provider {ctx.tdm_provider!r}")
+    if ctx.cut_mode != CUT_MODE_STATIC_EXACT:
+        raise EmuFlowError("multi-FPGA compilation requires static-exact-combinational")
     if ctx.route_provider not in {None, GLOBAL_CANDIDATE_PROVIDER}:
         raise EmuFlowError("unsupported Phase 4 routing provider; use " + GLOBAL_CANDIDATE_PROVIDER)
     if ctx.phase6_provider not in MULTI_FPGA_PHASE6_PROVIDERS:
@@ -1424,28 +1360,6 @@ def _compile_preflight(ctx: _CompileContext):
             "physical Phase 7C requires an internally generated complete "
             "TimingPathDB; externally projected --timing-paths are only "
             "supported by non-physical algorithm tests"
-        )
-    if (
-        isinstance(ctx.cross_stage_iterations, bool)
-        or not isinstance(ctx.cross_stage_iterations, int)
-        or ctx.cross_stage_iterations < 0
-    ):
-        raise EmuFlowError("--cross-stage-iterations must be non-negative")
-    if ctx.cross_stage_iterations and not ctx.timing_driven:
-        raise EmuFlowError(
-            "--cross-stage-iterations requires --timing-driven"
-        )
-    if (
-        ctx.exact_cut_mode
-        and ctx.cross_stage_iterations
-        and ctx.tdm_provider
-        not in {TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER}
-    ):
-        raise EmuFlowError(
-            "Static Exact cross-stage ratio feedback requires an explicit "
-            f"--tdm-provider {TDM_TIMING_DAG_RATIO_PROVIDER}; the default "
-            f"{TDM_EXACT_DEPENDENCY_PROVIDER} scheduler deliberately has "
-            "no ratio-plan or global transport-round barrier"
         )
     if ctx.optimize_frame_slots and not ctx.timing_driven:
         raise EmuFlowError(
@@ -1544,7 +1458,6 @@ def _compile_preflight(ctx: _CompileContext):
         ctx.partition_provider, ctx.openroad, ctx.tritonpart_solution
     )
     ctx.output_dir.mkdir(parents=True, exist_ok=True)
-
 
 def _compile_frontend(ctx: _CompileContext):
     source_list = [path.resolve() for path in ctx.sources]
@@ -1738,7 +1651,6 @@ def _compile_frontend(ctx: _CompileContext):
         }
     ctx.ir_path = ctx.phase1_root / "design.emuir.sqlite"
 
-
 def _compile_timing(ctx: _CompileContext):
     ctx.timing_root = ctx.output_dir / "timing"
     ctx.path_database_path = ctx.timing_root / "path-database.json"
@@ -1890,7 +1802,6 @@ def _compile_timing(ctx: _CompileContext):
             }
         )
 
-
 def _compile_partition(ctx: _CompileContext):
     ctx.phase3_root = ctx.output_dir / "partition"
     ctx.phase3_report = ctx.measured("phase3", run_phase3,
@@ -1928,9 +1839,7 @@ def _compile_partition(ctx: _CompileContext):
         patron_max_moves=ctx.patron_max_moves,
         patron_algorithm_version=ctx.patron_algorithm_version,
         static_exact_candidate_policy=ctx.static_exact_candidate_policy,
-        retain_patron_baseline=(
-            ctx.partition_provider == "patron" and bool(ctx.cross_stage_iterations)
-        ),
+        retain_patron_baseline=False,
     )
     ctx.assignment_path = ctx.phase3_root / "assignment.json"
     phase3_validation = ctx.phase3_report.get("validation")
@@ -1948,27 +1857,13 @@ def _compile_partition(ctx: _CompileContext):
             "Phase 3 report has an invalid inter-FPGA cut-net count"
         )
     ctx.has_inter_fpga_cuts = inter_fpga_cut_count > 0
-    ctx.effective_cross_stage_iterations = (
-        ctx.cross_stage_iterations if ctx.has_inter_fpga_cuts else 0
-    )
     ctx.effective_optimize_frame_slots = (
         ctx.optimize_frame_slots if ctx.has_inter_fpga_cuts else False
     )
-    ctx.patron_initial_assignment_path = None
-    if ctx.partition_provider == "patron" and ctx.effective_cross_stage_iterations:
-        initial_artifact = ctx.phase3_report.get("artifacts", {}).get(
-            "patron_initial_assignment"
-        )
-        if not isinstance(initial_artifact, str):
-            raise ValidationError(
-                "PATRON cross-stage baseline assignment is unavailable"
-            )
-        ctx.patron_initial_assignment_path = ctx.phase3_root / initial_artifact
-
 
 def _compile_route_policy(ctx: _CompileContext):
     ctx.projected_timing_paths = ctx.timing_paths
-    if ctx.internal_timing_database and not ctx.effective_cross_stage_iterations:
+    if ctx.internal_timing_database:
         ctx.cut_segment_qualification_path = (
             ctx.timing_root / "cut-segment-qualification.json"
         )
@@ -2013,170 +1908,14 @@ def _compile_route_policy(ctx: _CompileContext):
             }
         ctx.timing_report["cut_path_projection"] = projection_report
 
-    ctx.effective_route_provider = ctx.route_provider
-    ctx.effective_tdm_provider = ctx.tdm_provider
-    if ctx.effective_tdm_provider is None:
-        ctx.effective_tdm_provider = (
-            TDM_EXACT_DEPENDENCY_PROVIDER
-            if ctx.exact_cut_mode
-            else (
-                TDM_TIMING_DAG_RATIO_PROVIDER
-                if ctx.timing_driven
-                else TDM_BASELINE_PROVIDER
-            )
-        )
-    if ctx.internal_timing_database and not ctx.timing_driven:
-        no_timing_tdm_provider = (
-            TDM_EXACT_DEPENDENCY_PROVIDER
-            if ctx.exact_cut_mode
-            else TDM_BASELINE_PROVIDER
-        )
-        if ctx.tdm_provider not in {None, no_timing_tdm_provider}:
-            raise EmuFlowError(
-                "--no-timing-driven requires the provider-neutral Phase 5 "
-                f"correctness path {no_timing_tdm_provider!r}; remove or "
-                "correct --tdm-provider"
-            )
-        ctx.effective_route_provider = GLOBAL_CANDIDATE_PROVIDER
-        ctx.effective_tdm_provider = no_timing_tdm_provider
-    if not ctx.has_inter_fpga_cuts:
-        # Timing-aware interconnect optimization is vacuous for a packed
-        # single-FPGA solution.  Keep Phase 4/5 artifacts explicit and
-        # independently replayable with the ordinary zero-demand providers.
-        ctx.effective_route_provider = GLOBAL_CANDIDATE_PROVIDER
-        ctx.effective_tdm_provider = (
-            TDM_EXACT_DEPENDENCY_PROVIDER
-            if ctx.exact_cut_mode
-            else TDM_BASELINE_PROVIDER
-        )
-
-    ctx.academic_tdm_provider = ctx.effective_tdm_provider in {
-        TDM_RATIO_PROVIDER,
-        TDM_TIMING_DAG_RATIO_PROVIDER,
-    }
-
+    ctx.effective_route_provider = ctx.route_provider or GLOBAL_CANDIDATE_PROVIDER
+    ctx.effective_tdm_provider = TDM_EXACT_DEPENDENCY_PROVIDER
     ctx.phase4_root = ctx.output_dir / "system-route"
     ctx.phase5_root = ctx.output_dir / "tdm"
     ctx.frame_search_report = None
-    ctx.cross_stage_report = None
-
 
 def _compile_routing_schedule(ctx: _CompileContext):
-    if ctx.effective_cross_stage_iterations:
-        cross_stage_root = ctx.output_dir / "cross-stage"
-        ctx.cross_stage_report = run_cross_stage_optimization(
-            ir_path=ctx.ir_path,
-            platform_path=ctx.platform_path,
-            database_path=ctx.path_database_path,
-            initial_assignment_path=(
-                ctx.patron_initial_assignment_path
-                if ctx.partition_provider == "patron"
-                else ctx.assignment_path
-            ),
-            output_dir=cross_stage_root,
-            seed_candidate_phase3_root=(
-                ctx.phase3_root if ctx.partition_provider == "patron" else None
-            ),
-            phase3_constraints_path=(
-                ctx.phase3_root / "constraints.normalized.json"
-            ),
-            route_constraints_path=ctx.effective_route_constraints,
-            board_link_timing_path=ctx.board_link_timing_db,
-            phase3_provider=ctx.partition_provider,
-            cut_mode=ctx.cut_mode,
-            max_cross_fpga_dependency_depth=(
-                ctx.max_cross_fpga_dependency_depth
-            ),
-            static_exact_candidate_policy=(
-                ctx.static_exact_candidate_policy
-            ),
-            max_outer_iterations=ctx.effective_cross_stage_iterations,
-            seed=ctx.seed,
-            min_used_fpgas=ctx.min_used_fpgas,
-            balance_tolerance=ctx.balance_tolerance,
-            openroad=ctx.openroad,
-            patron_refiner=ctx.patron_refiner,
-            patron_max_moves=ctx.patron_max_moves,
-            patron_algorithm_version=ctx.patron_algorithm_version,
-            partition_timeout_seconds=ctx.partition_timeout_seconds,
-            partition_seed_attempts=ctx.partition_seed_attempts,
-            partition_num_initial_solutions=ctx.partition_num_initial_solutions,
-            partition_num_best_initial_solutions=(
-                ctx.partition_num_best_initial_solutions
-            ),
-            partition_repair_min_used_fpgas=(
-                ctx.partition_repair_min_used_fpgas
-            ),
-            router=ctx.router,
-            route_provider=ctx.route_provider,
-            route_candidate_workers=ctx.route_candidate_workers,
-            frame_slots=ctx.frame_slots,
-            optimize_frame_slots=ctx.optimize_frame_slots,
-            route_max_iterations=ctx.route_max_iterations,
-            tdm_provider=ctx.effective_tdm_provider,
-            ratio_optimizer=(
-                ctx.ratio_optimizer if ctx.academic_tdm_provider else None
-            ),
-            timing_dag_optimizer=(
-                ctx.timing_dag_optimizer if ctx.academic_tdm_provider else None
-            ),
-            slot_optimizer=(
-                ctx.slot_optimizer if ctx.academic_tdm_provider else None
-            ),
-            ratio_max_iterations=ctx.ratio_max_iterations,
-            max_ratio=ctx.max_ratio,
-            ratio_quantum=ctx.ratio_quantum,
-            post_refinement_iterations=ctx.post_refinement_iterations,
-            slot_refinement_iterations=ctx.slot_refinement_iterations,
-            ratio_convergence=ctx.ratio_convergence,
-            feedback_optimizer=ctx.cross_stage_feedback_optimizer,
-            simulation_frames=ctx.simulation_frames,
-            pair_pressure_weight=ctx.cross_stage_pair_pressure_weight,
-        )
-        selected = ctx.cross_stage_report["candidates"][
-            ctx.cross_stage_report["selected_iteration"]
-        ]
-        if ctx.cross_stage_report["selected_iteration"] != 0:
-            selected_phase3_root = (
-                cross_stage_root / selected["assignment"]
-            ).parent
-            shutil.rmtree(ctx.phase3_root)
-            shutil.copytree(selected_phase3_root, ctx.phase3_root)
-            ctx.phase3_report = read_json(ctx.phase3_root / "phase3_report.json")
-            ctx.assignment_path = ctx.phase3_root / "assignment.json"
-        elif ctx.partition_provider == "patron":
-            ctx.phase3_report = promote_patron_baseline(
-                ctx.ir_path, ctx.platform_path, ctx.phase3_root
-            )
-            ctx.assignment_path = ctx.phase3_root / "assignment.json"
-        ctx.projected_timing_paths = ctx.timing_root / "cut-timing-paths.json"
-        shutil.copy2(
-            cross_stage_root / selected["timing_paths"],
-            ctx.projected_timing_paths,
-        )
-        ctx.timing_report["cut_path_projection"] = selected["projection"]
-        shutil.copytree(
-            (cross_stage_root / selected["routes"]).parent,
-            ctx.phase4_root,
-        )
-        shutil.copytree(
-            (cross_stage_root / selected["schedule"]).parent,
-            ctx.phase5_root,
-        )
-        ctx.phase4_report = read_json(ctx.phase4_root / "phase4_report.json")
-        ctx.phase5_report = read_json(ctx.phase5_root / "phase5_report.json")
-        if ctx.optimize_frame_slots:
-            selected_frame_search = cross_stage_root / selected[
-                "frame_search"
-            ]
-            shutil.copytree(
-                selected_frame_search.parent,
-                ctx.output_dir / "frame-search",
-            )
-            ctx.frame_search_report = read_json(
-                ctx.output_dir / "frame-search/frame-search-report.json"
-            )
-    elif ctx.effective_optimize_frame_slots:
+    if ctx.effective_optimize_frame_slots:
         if ctx.frame_slots is None:
             raise EmuFlowError(
                 "--optimize-frame-slots requires --frame-slots as its "
@@ -2196,23 +1935,13 @@ def _compile_routing_schedule(ctx: _CompileContext):
             route_provider=ctx.route_provider,
             candidate_workers=ctx.route_candidate_workers,
             tdm_provider=ctx.tdm_provider,
-            ratio_optimizer=ctx.ratio_optimizer,
-            timing_dag_optimizer=ctx.timing_dag_optimizer,
-            slot_optimizer=ctx.slot_optimizer,
-            ratio_max_iterations=ctx.ratio_max_iterations,
-            max_ratio=ctx.max_ratio,
-            ratio_quantum=ctx.ratio_quantum,
-            post_refinement_iterations=ctx.post_refinement_iterations,
-            slot_refinement_iterations=ctx.slot_refinement_iterations,
-            ratio_convergence=ctx.ratio_convergence,
-            simulation_frames=ctx.simulation_frames,
+
         )
         ctx.phase4_report = read_json(ctx.phase4_root / "phase4_report.json")
         ctx.phase5_report = read_json(ctx.phase5_root / "phase5_report.json")
     else:
         _compile_route(ctx)
         _compile_schedule(ctx)
-
 
 def _compile_split(ctx: _CompileContext):
     ctx.routes_path = ctx.phase4_root / "routes.json"
@@ -2426,7 +2155,6 @@ def _compile_split(ctx: _CompileContext):
             clock_periods=ctx.clock_periods,
         )
 
-
 def _compile_physical(ctx: _CompileContext):
     ctx.physical_report = None
     ctx.physical_summary_path = None
@@ -2528,7 +2256,6 @@ def _compile_physical(ctx: _CompileContext):
                 }
             )
 
-
 def _compile_signoff(ctx: _CompileContext):
     ctx.runtime_root = ctx.output_dir / "runtime"
     ctx.runtime_report = ctx.measured("phase7c", run_phase7c,
@@ -2576,7 +2303,6 @@ def _compile_signoff(ctx: _CompileContext):
             ctx.phase6_comparison,
         )
 
-
 def _compile_finalize(ctx: _CompileContext):
     resolved_schedule_store = tdm_schedule_store_path(ctx.schedule_path)
     if resolved_schedule_store is None:
@@ -2603,11 +2329,6 @@ def _compile_finalize(ctx: _CompileContext):
         **(
             {"frame_search": ctx.frame_search_report}
             if ctx.frame_search_report is not None
-            else {}
-        ),
-        **(
-            {"cross_stage": ctx.cross_stage_report}
-            if ctx.cross_stage_report is not None
             else {}
         ),
         "runtime": ctx.runtime_report,
@@ -2699,19 +2420,6 @@ def _compile_finalize(ctx: _CompileContext):
                 "path": "runtime/qor_report.json",
                 "sha256": _sha256(ctx.runtime_root / "qor_report.json"),
             },
-            **(
-                {
-                    "cross_stage_report": {
-                        "path": "cross-stage/cross_stage_report.json",
-                        "sha256": _sha256(
-                            ctx.output_dir
-                            / "cross-stage/cross_stage_report.json"
-                        ),
-                    }
-                }
-                if ctx.cross_stage_report is not None
-                else {}
-            ),
             **(
                 {
                     "physical_flow_report": {
@@ -2875,7 +2583,6 @@ def _compile_finalize(ctx: _CompileContext):
     write_json(ctx.output_dir / "multi-fpga-flow-report.json", ctx.report)
     return ctx.report
 
-
 def _compile_route(ctx: _CompileContext):
     ctx.phase4_report = ctx.measured("phase4", run_phase4,
         ctx.assignment_path,
@@ -2893,38 +2600,16 @@ def _compile_route(ctx: _CompileContext):
         ),
     )
 
-
 def _compile_schedule(ctx: _CompileContext):
     ctx.phase5_report = ctx.measured("phase5", run_phase5,
         ctx.phase4_root / "routes.json",
         ctx.platform_path,
         ctx.phase5_root,
         assignment_path=ctx.assignment_path,
-        simulation_frames=ctx.simulation_frames,
-        provider=ctx.effective_tdm_provider,
-        ratio_optimizer=(
-            ctx.ratio_optimizer
-            if ctx.has_inter_fpga_cuts and ctx.academic_tdm_provider
-            else None
-        ),
-        timing_dag_optimizer=(
-            ctx.timing_dag_optimizer
-            if ctx.has_inter_fpga_cuts and ctx.academic_tdm_provider
-            else None
-        ),
-        slot_optimizer=(
-            ctx.slot_optimizer
-            if ctx.has_inter_fpga_cuts and ctx.academic_tdm_provider
-            else None
-        ),
-        ratio_max_iterations=ctx.ratio_max_iterations,
-        max_ratio=ctx.max_ratio,
-        ratio_quantum=ctx.ratio_quantum,
-        post_refinement_iterations=ctx.post_refinement_iterations,
-        slot_refinement_iterations=ctx.slot_refinement_iterations,
-        convergence=ctx.ratio_convergence,
-    )
 
+        provider=ctx.effective_tdm_provider,
+
+    )
 
 def run_multi_fpga_flow(
     platform_path: Path = DEFAULT_PLATFORM_PATH,
@@ -2983,18 +2668,7 @@ def run_multi_fpga_flow(
     optimize_frame_slots: bool = False,
     route_max_iterations: Optional[int] = None,
     tdm_provider: Optional[str] = None,
-    ratio_optimizer: Optional[str] = None,
-    timing_dag_optimizer: Optional[str] = None,
-    slot_optimizer: Optional[str] = None,
-    ratio_max_iterations: int = 500,
-    max_ratio: Optional[int] = None,
-    ratio_quantum: Optional[int] = None,
-    post_refinement_iterations: int = 200,
-    slot_refinement_iterations: int = 200,
-    ratio_convergence: float = 1.0e-9,
-    cross_stage_iterations: int = 0,
-    cross_stage_feedback_optimizer: Optional[str] = None,
-    cross_stage_pair_pressure_weight: float = 1.0,
+
     simulation_frames: int = 16,
     equivalence_cycles: int = 1,
     equivalence_seed: int = 20260727,

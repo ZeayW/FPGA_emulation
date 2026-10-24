@@ -16,7 +16,6 @@ from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 
-
 ICCAD2019_INSTANCE_SCHEMA = "emuflow.contest-iccad2019-instance/v1"
 ICCAD2019_EVALUATION_SCHEMA = "emuflow.contest-iccad2019-evaluation/v1"
 ICCAD2019_BOARDDB_MATERIALIZATION_SCHEMA = (
@@ -27,14 +26,12 @@ ICCAD2019_SOURCE_URL = (
     "1aJkaKgjJ56lWehHR_K9Lm8T-SFal00pU/view"
 )
 
-
 def _lines(path: Path) -> Iterator[Tuple[int, str]]:
     with path.open("r", encoding="utf-8") as stream:
         for number, raw in enumerate(stream, 1):
             line = raw.strip()
             if line:
                 yield number, line
-
 
 def _integers(path: Path, number: int, line: str) -> List[int]:
     try:
@@ -43,7 +40,6 @@ def _integers(path: Path, number: int, line: str) -> List[int]:
         raise ValidationError(
             f"{path}:{number}: expected whitespace-separated integers"
         ) from error
-
 
 def parse_iccad2019_instance(path: Path, name: str) -> Dict[str, Any]:
     records = iter(_lines(path))
@@ -160,7 +156,6 @@ def parse_iccad2019_instance(path: Path, name: str) -> Dict[str, Any]:
         "nets": nets,
         "net_groups": groups,
     }
-
 
 def import_iccad2019_instance(
     input_path: Path, output_dir: Path, name: str
@@ -280,7 +275,6 @@ def import_iccad2019_instance(
         },
     }
 
-
 def materialize_iccad2019_rtl_boarddb(
     instance_path: Path,
     device_template_path: Path,
@@ -382,7 +376,6 @@ def materialize_iccad2019_rtl_boarddb(
         "output": str(output_path),
     }
 
-
 def _route_hops(
     instance: Mapping[str, Any], routes: Mapping[str, Any]
 ) -> Tuple[List[Dict[str, int]], List[List[int]]]:
@@ -420,103 +413,6 @@ def _route_hops(
             raise ValidationError(f"net {net['id']}: route has no physical edge")
         hops_by_net.append(net_hops)
     return hops, hops_by_net
-
-
-def optimize_iccad2019_ratios(
-    instance_path: Path,
-    routes_path: Path,
-    output_path: Path,
-    *,
-    optimizer: Optional[str] = None,
-    max_iterations: int = 500,
-    post_refinement_iterations: int = 20000,
-) -> Dict[str, Any]:
-    """Assign legal even ratios to routed trees with the in-tree C++ KKT core."""
-
-    instance = read_json(instance_path)
-    if instance.get("schema") != ICCAD2019_INSTANCE_SCHEMA:
-        raise ValidationError(
-            f"instance.schema: expected {ICCAD2019_INSTANCE_SCHEMA!r}"
-        )
-    routes = read_json(routes_path)
-    hops, hops_by_net = _route_hops(instance, routes)
-    max_ratio = max(2, 2 * math.ceil(len(instance["nets"]) / 2))
-    common_period = float(max_ratio * max(1, len(hops)))
-    lines = ["EMUFLOW_TDM_RATIO_INPUT_V3"]
-    lines.append(
-        "PARAM "
-        f"{max_iterations} {max_ratio} 2 2 1 "
-        f"{post_refinement_iterations} 0 1e-9 1 1 {common_period:.17g}"
-    )
-    for edge in instance["edges"]:
-        lines.append(f"DOMAIN {edge['id']} 1")
-    for index, hop in enumerate(hops):
-        lines.append(f"HOP {index} {hop['edge']} 0 1 1")
-    for group in instance["net_groups"]:
-        group_hops = [
-            hop
-            for net in group["nets"]
-            for hop in hops_by_net[net]
-        ]
-        lines.append(
-            f"PATH {group['id']} {common_period:.17g} 0 "
-            + ",".join(str(hop) for hop in group_hops)
-        )
-    resolved = resolve_native_executable(
-        "emuflow_tdm_ratio_optimizer", optimizer
-    )
-    with tempfile.TemporaryDirectory(
-        prefix="emuflow-iccad2019-ratio-"
-    ) as temporary:
-        root = Path(temporary)
-        native_input = root / "ratio.in"
-        native_output = root / "ratio.out"
-        native_input.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        completed = subprocess.run(
-            [resolved, str(native_input), str(native_output)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if completed.returncode:
-            detail = completed.stderr.strip() or completed.stdout.strip()
-            raise EmuFlowError(
-                "ICCAD 2019 ratio optimizer failed with exit code "
-                f"{completed.returncode}: {detail}"
-            )
-        ratios: Dict[int, int] = {}
-        metrics: Dict[str, Any] = {}
-        for line in native_output.read_text(encoding="utf-8").splitlines()[1:]:
-            fields = line.split()
-            if fields[:1] == ["HOP"] and len(fields) == 5:
-                ratios[int(fields[1])] = int(fields[3])
-            elif fields[:1] == ["METRIC"] and len(fields) == 3:
-                metrics[fields[1]] = float(fields[2])
-        if len(ratios) != len(hops):
-            raise EmuFlowError("ICCAD 2019 ratio optimizer omitted hop records")
-    solution_lines = []
-    for net_hops in hops_by_net:
-        solution_lines.append(str(len(net_hops)))
-        for hop in net_hops:
-            solution_lines.append(f"{hops[hop]['edge']} {ratios[hop]}")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("\n".join(solution_lines) + "\n", encoding="utf-8")
-    evaluation = evaluate_iccad2019_solution(instance_path, output_path)
-    return {
-        "status": "pass",
-        "provider": (
-            "cpp-lagrangian-kkt-exact-harmonic-lexicographic-v2"
-        ),
-        "routed_tree_edges": len(hops),
-        "maximum_total_tdm_ratio": evaluation["metrics"][
-            "maximum_total_tdm_ratio"
-        ],
-        "maximum_edge_harmonic_use": evaluation["metrics"][
-            "maximum_edge_harmonic_use"
-        ],
-        "native_metrics": metrics,
-        "output": str(output_path),
-    }
 
 
 def parse_iccad2019_solution(
@@ -565,7 +461,6 @@ def parse_iccad2019_solution(
     if number is not None:
         raise ValidationError(f"{path}:{number}: unexpected trailing solution record")
     return result
-
 
 def evaluate_iccad2019_solution(
     instance_path: Path,
