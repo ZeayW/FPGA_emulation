@@ -412,22 +412,6 @@ class MultiFpgaFlowTest(unittest.TestCase):
         )
         self.assertEqual(phase3.provider, "patron")
         self.assertEqual(phase3.cut_mode, "static-exact-combinational")
-        checkpoint = _build_parser().parse_args(
-            [
-                "experiment-stage",
-                "partition-run",
-                "--frontend",
-                "frontend",
-                "--timing",
-                "timing",
-                "--platform",
-                "platform.json",
-                "--out",
-                "partition",
-            ]
-        )
-        self.assertEqual(checkpoint.provider, "patron")
-        self.assertEqual(checkpoint.cut_mode, "static-exact-combinational")
         with self.assertRaises(SystemExit):
             _build_parser().parse_args(["cross-stage", "optimize"])
 

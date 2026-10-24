@@ -378,7 +378,6 @@ set(
   EMUFLOW_PUBLIC_CONTEST_DATA
   "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
   "${CMAKE_SOURCE_DIR}/benchmarks/end_to_end_validation_matrix.json"
-  "${CMAKE_SOURCE_DIR}/benchmarks/experiment_dag.schema.example.json"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_repart_benchmarks.py"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2025_benchmarks.py"
@@ -508,8 +507,7 @@ add_custom_command(
     "${CMAKE_SOURCE_DIR}/benchmarks/end_to_end_validation_matrix.json"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/end_to_end_validation_matrix.json"
   COMMAND
-    "${CMAKE_COMMAND}" -E copy
-    "${CMAKE_SOURCE_DIR}/benchmarks/experiment_dag.schema.example.json"
+    "${CMAKE_COMMAND}" -E rm -f
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/experiment_dag.schema.example.json"
   COMMAND
     "${CMAKE_COMMAND}" -E copy

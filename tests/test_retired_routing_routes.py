@@ -43,8 +43,6 @@ def test_retired_routing_choices_removed_at_every_cli_entry(provider):
     for args in (
         ["phase4", "--assignment", "a", "--platform", "b", "--out", "out", "--provider", provider],
         ["multi-fpga", "compile", "--out", "out", "--route-provider", provider],
-        ["cross-stage", "optimize", "--ir", "a", "--platform", "b", "--database", "t", "--initial-assignment", "a", "--out", "out", "--route-provider", provider],
-        ["experiment-stage", "route-run", "--partition", "p", "--cut-timing", "t", "--platform", "b", "--out", "out", "--provider", provider],
     ):
         # Establish a valid command before testing the retired choice.
         parser.parse_args([GLOBAL_CANDIDATE_PROVIDER if a == provider else a for a in args])

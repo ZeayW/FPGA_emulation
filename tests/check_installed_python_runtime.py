@@ -24,6 +24,7 @@ def main(source_root: Path, install_root: Path) -> None:
         raise AssertionError(f"installed module inventory differs: missing={sorted(expected-actual)}, stale={sorted(actual-expected)}")
     for name in sorted(expected):
         assert digest(package / name) == digest(source / name), f"installed module changed: {name}"
+    assert not (install_root / "share/emuflow/benchmarks/experiment_dag.schema.example.json").exists(), "retired DAG example remains installed"
     # The package import is forced to the installed prefix even when CTest
     # inherits a developer PYTHONPATH or the repository has an editable install.
     sys.path.insert(0, str(install_root / "lib"))

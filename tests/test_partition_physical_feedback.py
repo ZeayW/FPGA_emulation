@@ -24,10 +24,6 @@ from emuflow.partition_pressure import (
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
 from emuflow.io import read_json, write_json
-from emuflow.experiment_partition import (
-    run_partition_checkpoint,
-    validate_partition_checkpoint,
-)
 from emuflow.phase3 import run_phase3
 from tests.native_build import hop_partition_refiner, emuflow_native
 from tests.test_partition_pressure import _endpoint, _ir
@@ -352,97 +348,6 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
                 ).is_file()
             )
 
-    def test_partition_checkpoint_seals_v11_physical_source(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            frontend = root / "frontend"
-            timing_root = root / "timing"
-            (frontend / "phase1").mkdir(parents=True)
-            timing_root.mkdir()
-            platform_path = root / "platform.json"
-            routes_path = root / "route-constraints.json"
-            initial_path = root / "initial.json"
-            system_timing_path = root / "system-timing.json"
-            self.ir.save(frontend / "phase1/design.emuir.sqlite")
-            write_json(platform_path, self.platform.to_dict())
-            write_json(timing_root / "path-database.json", self.timing)
-            write_json(
-                timing_root / "partition-net-weights.json",
-                {
-                    "schema": "emuflow.partition-net-weights/v1",
-                    "weights": {},
-                },
-            )
-            write_json(routes_path, self.route_constraints)
-            write_json(initial_path, self.assignment)
-            write_json(system_timing_path, self.system_timing)
-            output = root / "partition"
-
-            with patch(
-                "emuflow.experiment_partition.validate_timing_checkpoint",
-                return_value={"status": "pass"},
-            ):
-                report = run_partition_checkpoint(
-                    frontend,
-                    timing_root,
-                    platform_path,
-                    output,
-                    provider="patron",
-                    cut_mode="sequential-only",
-                    patron_algorithm_version=11,
-                    seed=1,
-                    route_constraints_path=routes_path,
-                    min_used_fpgas=2,
-                    balance_tolerance=1.0,
-                    hop_refiner=str(hop_partition_refiner()),
-                    patron_refiner=str(emuflow_native()),
-                    patron_max_moves=8,
-                    patron_initial_assignment_path=initial_path,
-                    patron_physical_system_timing_path=system_timing_path,
-                    patron_physical_feedback_scale=0.25,
-                )
-                checked = validate_partition_checkpoint(
-                    frontend,
-                    timing_root,
-                    platform_path,
-                    output,
-                    route_constraints_path=routes_path,
-                    expected_provider="patron",
-                    expected_seed=1,
-                    patron_initial_assignment_path=initial_path,
-                    expected_patron_max_moves=8,
-                    patron_physical_system_timing_path=system_timing_path,
-                    expected_patron_physical_feedback_scale=0.25,
-                )
-            self.assertEqual(report["status"], "pass")
-            self.assertEqual(report["patron_max_moves"], 8)
-            self.assertEqual(checked["status"], "pass")
-            self.assertEqual(
-                checked["algorithm_validation"]["physical_feedback"][
-                    "positive_residual_paths"
-                ],
-                2,
-            )
-
-            changed = copy.deepcopy(self.system_timing)
-            changed["paths"][0]["physical_logic_delay_bound_ns"] += 0.1
-            write_json(system_timing_path, changed)
-            with patch(
-                "emuflow.experiment_partition.validate_timing_checkpoint",
-                return_value={"status": "pass"},
-            ), self.assertRaisesRegex(
-                ValidationError, "system-timing seal"
-            ):
-                validate_partition_checkpoint(
-                    frontend,
-                    timing_root,
-                    platform_path,
-                    output,
-                    route_constraints_path=routes_path,
-                    patron_initial_assignment_path=initial_path,
-                    patron_physical_system_timing_path=system_timing_path,
-                    expected_patron_physical_feedback_scale=0.25,
-                )
 
 
 if __name__ == "__main__":

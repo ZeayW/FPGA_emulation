@@ -12,6 +12,28 @@ publication regression runs the real producer and SQL publisher in an isolated
 process configured without the URI default; it also rejects Python route-tree
 materialization during publication.
 
+## Experiment lifecycle
+
+Run the selected complete flow in one isolated directory through the current
+compile interface. Phase intermediates exist only while the run is active.
+After all owned processes have exited, retain compact source/config/tool and
+logical identities, correctness/physical/timing seals and wall/RSS/disk metrics;
+retire replay-only payloads. A failed run retains a compact failure record and
+cannot publish passing acceptance. An explicitly requested debugging continuation
+may read a completed input without making a persistent checkpoint cache.
+
+The old `experiment-cache`, `experiment-stage`, `validation-farm`, `archive`,
+`benchmark-experiment-compile` and contest `matrix-*-farm-spec` commands are
+removed with their DAG/cache, stage replay, GC, archive and farm implementations.
+Their checkpoint-only QoR aggregators are also removed; old bundles require the
+matching Git revision. The current complete-flow validators, original-path
+timing coverage checks, Chimew pipeline, contest import/materialization and both
+benchmark registries remain. A future terminal provider comparison must consume
+compact evidence from complete isolated arms; it must not recreate the retired
+checkpoint/DAG protocol. Removing that protocol is not physical or timing
+qualification, and neither a unit fixture nor a partial run promotes a planned
+registry entry.
+
 ## Functional and structural gates
 
 - Preserve circuit connectivity, primitive parameters, clock/reset semantics,

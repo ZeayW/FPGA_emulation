@@ -6,7 +6,6 @@ import pytest
 
 from emuflow.cli import _build_parser
 from emuflow.errors import ValidationError
-from emuflow.experiment_partition import run_partition_checkpoint
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
 from emuflow.native_compile import _request
 from emuflow.partition import (
@@ -19,22 +18,24 @@ from emuflow.phase3 import run_phase3
 @pytest.mark.parametrize("command", [
     ["phase3", "--ir", "ir", "--platform", "board", "--out", "out"],
     ["multi-fpga", "compile", "design.v", "--out", "out"],
-    ["experiment-stage", "partition-run", "--frontend", "front", "--timing", "timing", "--platform", "board", "--out", "out"],
-    ["cross-stage", "optimize", "--ir", "ir", "--platform", "board", "--database", "timing", "--initial-assignment", "initial", "--out", "out"],
 ])
 def test_cli_default_and_explicit_cut_do_not_choose_different_versions(command):
     parser = _build_parser()
     default = parser.parse_args(command)
     assert (default.patron_algorithm_version, default.cut_mode) == (14, "static-exact-combinational")
-    old_cut = parser.parse_args([*command, "--cut-mode", "sequential-only"])
-    assert old_cut.patron_algorithm_version == 14
+    if command[:2] == ["multi-fpga", "compile"]:
+        with pytest.raises(SystemExit):
+            parser.parse_args([*command, "--cut-mode", "sequential-only"])
+    else:
+        old_cut = parser.parse_args([*command, "--cut-mode", "sequential-only"])
+        assert old_cut.patron_algorithm_version == 14
     with pytest.raises(SystemExit) as error:
         parser.parse_args([*command, "--patron-flow-refinement"])
     assert error.value.code == 2
 
 
 def test_api_and_native_request_share_the_same_defaults(tmp_path):
-    for function in (run_phase3, run_multi_fpga_flow, run_partition_checkpoint):
+    for function in (run_phase3, run_multi_fpga_flow):
         parameters = inspect.signature(function).parameters
         assert parameters["cut_mode"].default == DEFAULT_PARTITION_CUT_MODE
         assert parameters["patron_algorithm_version"].default == DEFAULT_PATRON_ALGORITHM_VERSION

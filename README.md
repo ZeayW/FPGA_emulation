@@ -62,12 +62,11 @@ The native SLL weight update follows LEAPS' fixed-step Adam equation with
 `t_psi=0.002` and the paper's current-delta EMA weight `rho=0.9`. Absolute
 SLL-count changes feed the EMA and moments once; the update no longer depends
 exponentially on the absolute change in SLL count.
-When driving the reusable stage commands directly, pass
-`experiment-stage cut-timing-run --prepared-timing-boundary` (and the same flag
-plus the expected `--clock-period` values to `cut-timing-validate`) to consume a
-saved indexed Phase 2 publication. This mode validates the native SQLite
-version, clocks, row counts, and design identity without rerunning OpenSTA or
-converting the database to whole-graph JSON.
+Validation uses an isolated one-shot compile and compact terminal evidence.
+The persistent `experiment-cache`/`experiment-stage`, `validation-farm`, archive
+and checkpoint-only QoR comparison chains are retired. Current flow validators,
+benchmark matrices and Chimew remain; see the
+[validation lifecycle](docs/VALIDATION.md#experiment-lifecycle).
 
 The native migration keeps the large Phase 3–7 relations in typed, indexed
 storage and streams them through unified native entry points. Phase 6 publishes
@@ -356,7 +355,7 @@ therefore uses native semantic validation from the same exact source revision
 as the refiner. Deployment selects the native compiler only after compiling and
 running a C++17 `<filesystem>` probe with the same statically linked C++ runtime
 used by the deployed tools; an explicit `CXX` override fails closed when it
-cannot satisfy that probe. This prevents validation-farm login defaults such as
+cannot satisfy that probe. This prevents launcher environment defaults such as
 GCC 7, or an older compute-node `libstdc++`, from producing a partial runtime.
 The compact bridge also derives dense native endpoint coordinates from stored
 endpoint order, so filtered legacy artifacts with sparse endpoint ordinals keep

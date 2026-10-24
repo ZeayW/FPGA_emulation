@@ -105,15 +105,11 @@ class ChimewPinContractTest(unittest.TestCase):
 
     def test_retired_planner_entrypoints_are_rejected_before_loading_inputs(self):
         from emuflow.cli import _build_parser
-        from emuflow.experiment_stages import run_phase6_checkpoint
         parser = _build_parser()
         with self.assertRaises(SystemExit):
             parser.parse_args(["pin-plan", "build"])
         with self.assertRaises(SystemExit):
             parser.parse_args(["contest", "eda2023-chimew-ab"])
-        with self.assertRaisesRegex(ValidationError, "Phase 6 provider"):
-            run_phase6_checkpoint(Path("missing"), None, Path("missing"), Path("unused"), provider="placement-aware")
-
     def test_retired_provider_is_rejected(self):
         plan = make_pin_plan_fixture(self.schedule, self.platform, self.positions)
         for provider in ("placement-aware-region-grouping-mcf-v1", "chimew-placement-aware-grouping-mcf-v1"):

@@ -289,21 +289,6 @@
       "integration": "default-in-tree-build"
     },
     {
-      "id": "parallel-validation-orchestration",
-      "stage": "Cross-stage validation infrastructure",
-      "source_paths": [
-        "src/emuflow/validation_farm.py",
-        "schemas/validation-farm-v1.schema.json"
-      ],
-      "build_targets": [
-        "emuflow_python"
-      ],
-      "runtime_products": [
-        "emuflow"
-      ],
-      "integration": "in-tree-python"
-    },
-    {
       "id": "optional-vivado-physical-provider",
       "stage": "Phase 7 indexed Xilinx physical backend",
       "source_paths": [

@@ -118,21 +118,3 @@ def test_qor_writer_rejects_duplicate_or_unsorted_paths(tmp_path):
     report["timing"]["paths"].reverse()
     with pytest.raises(ValidationError, match="strictly ordered"):
         write_qor_report(tmp_path / "qor_report.json", report)
-
-
-def test_qor_selector_and_generation_form_one_archive_group(tmp_path):
-    import emuflow.archive as archive_module
-
-    flow = tmp_path / "flow"
-    path = flow / "runtime/qor_report.json"
-    owner = write_qor_report(path, _report())
-    store = owner.store_path
-    owner.close()
-    candidates = {
-        path.relative_to(flow): {"qor"},
-        store.relative_to(flow): {"qor-store"},
-    }
-
-    groups = archive_module._atomic_retention_groups(flow, candidates)
-
-    assert groups[path.relative_to(flow)] == frozenset(candidates)

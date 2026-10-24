@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from emuflow.cli import _build_parser, _dispatch
 from emuflow.errors import EmuFlowError, ValidationError
-from emuflow.experiment_upstream import run_frontend_checkpoint
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
 from emuflow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
 
@@ -18,7 +17,7 @@ XILINX_PROFILE = "xilinx-ultrascaleplus-open-v1"
 
 
 class ResearchBackendDefaultsTest(unittest.TestCase):
-    def test_cli_defaults_reach_compile_physical_and_frontend_dispatch(self):
+    def test_cli_defaults_reach_compile_and_physical_dispatch(self):
         cases = [
             (
                 ["multi-fpga", "compile", "design.v", "--platform", "board.json", "--out", "out"],
@@ -30,12 +29,6 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
                  "--schedule", "schedule.json", "--out", "out"],
                 "run_multi_fpga_physical_flow",
                 {"backend": "rapidwright"},
-            ),
-            (
-                ["experiment-stage", "frontend-run", "--source", "design.v",
-                 "--platform", "board.json", "--out", "out"],
-                "run_frontend_checkpoint",
-                {"mapping_profile": XILINX_PROFILE},
             ),
         ]
         for command, target, expected in cases:
@@ -81,7 +74,6 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
         for function, parameter, expected in [
             (run_multi_fpga_flow, "mapping_profile", XILINX_PROFILE),
             (run_multi_fpga_flow, "physical_backend", "rapidwright"),
-            (run_frontend_checkpoint, "mapping_profile", XILINX_PROFILE),
             (run_multi_fpga_physical_flow, "backend", "rapidwright"),
         ]:
             with self.subTest(function=function.__name__, parameter=parameter):
@@ -105,19 +97,6 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
             vtr.assert_not_called()
             generic.assert_not_called()
 
-    def test_frontend_uses_xilinx_synthesis_without_profile_override(self):
-        with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.experiment_upstream.run_xilinx_ultrascaleplus_yosys_stream",
-            side_effect=EmuFlowError("selected Xilinx synthesis"),
-        ) as xilinx, patch("emuflow.experiment_upstream.run_vtr_yosys") as vtr:
-            with self.assertRaisesRegex(EmuFlowError, "selected Xilinx synthesis"):
-                run_frontend_checkpoint(
-                    ROOT / "platforms/virtual/academic_vtr_2fpga_p2p.json",
-                    Path(temporary) / "frontend",
-                    sources=[ROOT / "examples/rtl/counter.v"], top="counter",
-                )
-            xilinx.assert_called_once()
-            vtr.assert_not_called()
 
     def test_default_physical_requires_rapidwright_inputs_without_fallback(self):
         with tempfile.TemporaryDirectory() as temporary, patch(
