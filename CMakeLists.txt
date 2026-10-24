@@ -377,7 +377,6 @@ file(
 set(
   EMUFLOW_PUBLIC_CONTEST_DATA
   "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
-  "${CMAKE_SOURCE_DIR}/benchmarks/end_to_end_validation_matrix.json"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_repart_benchmarks.py"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2025_benchmarks.py"
@@ -455,6 +454,9 @@ add_custom_command(
     "${CMAKE_SOURCE_DIR}/scripts/opensta"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/opensta"
   COMMAND
+    "${CMAKE_COMMAND}" -E rm -rf
+    "${EMUFLOW_INSTALL_ROOT}/scripts/yosys"
+  COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/scripts/yosys"
     "${EMUFLOW_INSTALL_ROOT}/scripts/yosys"
@@ -485,6 +487,9 @@ add_custom_command(
     "${CMAKE_SOURCE_DIR}/scripts/benchmarks/fetch.py"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/benchmarks/fetch.py"
   COMMAND
+    "${CMAKE_COMMAND}" -E rm -rf
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/runs"
+  COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/benchmarks/runs"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/runs"
@@ -503,11 +508,8 @@ add_custom_command(
     "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/contest_validation_matrix.json"
   COMMAND
-    "${CMAKE_COMMAND}" -E copy
-    "${CMAKE_SOURCE_DIR}/benchmarks/end_to_end_validation_matrix.json"
-    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/end_to_end_validation_matrix.json"
-  COMMAND
     "${CMAKE_COMMAND}" -E rm -f
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/end_to_end_validation_matrix.json"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/experiment_dag.schema.example.json"
   COMMAND
     "${CMAKE_COMMAND}" -E copy
@@ -1164,24 +1166,6 @@ if(BUILD_TESTING)
       "${EMUFLOW_INSTALL_ROOT}/scripts/yosys/logic_only_map.v"
   )
 
-  foreach(
-    EMUFLOW_VTR_MAP_FILE
-    IN ITEMS
-      vtr_models.v
-      vtr_multiply_map.v
-      vtr_memories.txt
-      vtr_memory_map.v
-  )
-    add_test(
-      NAME "emuflow_${EMUFLOW_VTR_MAP_FILE}_installed"
-      COMMAND
-        "${CMAKE_COMMAND}" -E compare_files
-        "${CMAKE_SOURCE_DIR}/scripts/yosys/${EMUFLOW_VTR_MAP_FILE}"
-        "${EMUFLOW_INSTALL_ROOT}/scripts/yosys/${EMUFLOW_VTR_MAP_FILE}"
-    )
-  endforeach()
-
-
   if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
     add_test(
       NAME emuflow_eda2025_topology_optimizer_cli
@@ -1293,17 +1277,6 @@ if(BUILD_TESTING)
     add_test(
       NAME yosys_version
       COMMAND "${EMUFLOW_INSTALL_BINDIR}/yosys" -V
-    )
-    add_test(
-      NAME emuflow_vtr_hard_block_synthesis
-      COMMAND
-        "${CMAKE_COMMAND}" -E env
-        "PYTHONPATH=${CMAKE_SOURCE_DIR}/src"
-        "${Python3_EXECUTABLE}"
-        "${CMAKE_SOURCE_DIR}/tests/check_vtr_hard_block_synthesis.py"
-        --yosys "${EMUFLOW_INSTALL_BINDIR}/yosys"
-        --rtl "${CMAKE_SOURCE_DIR}/examples/rtl/vtr_hard_blocks.v"
-        --output "${CMAKE_BINARY_DIR}/vtr_hard_blocks.eblif"
     )
   endif()
 

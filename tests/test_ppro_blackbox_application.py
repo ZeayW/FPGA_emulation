@@ -175,7 +175,7 @@ class PProBlackboxApplicationTest(unittest.TestCase):
             )
             benchmark.write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(
-                ValidationError, "calibrated Xilinx frontend contract"
+                ValidationError, "physical_mapping_profile"
             ):
                 generate_application_holdout_bundle(root / "vtr", **kwargs)
             self.assertFalse((root / "vtr").exists())

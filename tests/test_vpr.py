@@ -9,8 +9,6 @@ from unittest.mock import patch
 
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.vpr import (
-    build_vtr_yosys_script,
-    run_vtr_yosys,
     run_vpr_pack_place,
     run_vpr_route_packed,
     validate_vpr_pack_place_checkpoint,
@@ -21,27 +19,6 @@ from emuflow.vpr import (
 
 
 class VprTest(unittest.TestCase):
-    def test_production_vtr_yosys_invocation_is_quiet(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            source = root / "design.v"
-            output = root / "design.eblif"
-            source.write_text("module design; endmodule\n", encoding="utf-8")
-            captured = []
-
-            def complete(command):
-                captured.append(command)
-                output.write_text(".model design\n.end\n", encoding="utf-8")
-                return subprocess.CompletedProcess(command, 0, stdout="")
-
-            with patch(
-                "emuflow.vpr.resolve_native_executable", return_value="yosys"
-            ), patch(
-                "emuflow.vpr.run_with_bounded_output", side_effect=complete
-            ):
-                run_vtr_yosys([source], "design", output)
-
-        self.assertEqual(captured[0][1:3], ["-q", "-p"])
 
     def test_vtr_rr_edge_ids_cover_graphs_larger_than_uint32(self) -> None:
         compiler = (
@@ -290,61 +267,9 @@ int main() {
                 ),
             )
 
-    def test_logic_only_script_lowers_ff_variants_to_latches(self) -> None:
-        script = build_vtr_yosys_script(
-            [Path("rtl/cpu.v")],
-            "cpu",
-            Path("build/cpu.eblif"),
-            include_dirs=[Path("rtl/include")],
-            defines=["SYNTHESIS"],
-        )
-        self.assertIn("synth -top cpu -noabc", script)
-        self.assertIn("async2sync", script)
-        self.assertLess(script.index("async2sync"), script.index("dffunmap"))
-        self.assertEqual(script.count("dffunmap"), 2)
-        self.assertIn("abc -lut 6", script)
-        self.assertIn('write_blif -attr -cname "build/cpu.eblif"', script)
-        self.assertIn("-Irtl/include", script)
-        self.assertNotIn('-I"rtl/include"', script)
-        self.assertIn("-DSYNTHESIS", script)
 
-    def test_hard_block_script_uses_the_pinned_vtr_profile(self) -> None:
-        script = build_vtr_yosys_script(
-            [Path("examples/rtl/vtr_hard_blocks.v")],
-            "vtr_hard_blocks",
-            Path("build/vtr_hard_blocks.eblif"),
-            hard_blocks=True,
-        )
-        self.assertIn("synth -top vtr_hard_blocks -run begin:fine", script)
-        self.assertIn("-noalumacc", script)
-        self.assertNotIn("-noalumacc -flatten", script)
-        self.assertIn("vtr_multiply_map.v", script)
-        self.assertIn("memory_libmap -lib", script)
-        self.assertIn("vtr_memories.txt", script)
-        self.assertIn("vtr_memory_map.v", script)
-        self.assertEqual(script.count("flatten"), 1)
-        self.assertLess(script.index("memory_map"), script.index("flatten"))
-        self.assertLess(script.index("flatten"), script.index("opt -full"))
-        self.assertIn("chtype -set multiply", script)
-        self.assertIn("chtype -set single_port_ram", script)
-        self.assertIn("async2sync", script)
-        self.assertLess(script.index("async2sync"), script.index("dffunmap"))
-        self.assertEqual(script.count("dffunmap"), 2)
 
-    def test_script_can_emit_json_and_eblif_from_same_mapping(self) -> None:
-        script = build_vtr_yosys_script(
-            [Path("rtl/cpu.v")],
-            "cpu",
-            Path("build/cpu.eblif"),
-            hard_blocks=True,
-            json_output=Path("build/cpu.json"),
-        )
-        self.assertIn('write_json "build/cpu.json"', script)
-        self.assertLess(script.index("write_json"), script.index("write_blif"))
 
-    def test_empty_source_list_is_rejected(self) -> None:
-        with self.assertRaisesRegex(EmuFlowError, "at least one RTL source"):
-            build_vtr_yosys_script([], "cpu", Path("cpu.eblif"))
 
     def test_route_report_requires_success_and_all_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

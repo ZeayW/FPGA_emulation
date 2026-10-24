@@ -85,9 +85,6 @@ from .synthesis import (
     VALID_XILINX_MAPPING_STRATEGIES,
     run_xilinx_ultrascaleplus_yosys_stream,
 )
-from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
-from .vtr_architecture import ARCHITECTURE_TIMING_DB_SCHEMA
-from .vtr_netlist import normalize_vtr_hard_block_json
 from .xilinx_preplacement_timing import XILINX_PREPLACEMENT_TIMING_SCHEMA
 from .xilinx_primitives import (
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
@@ -100,7 +97,6 @@ MULTI_FPGA_FLOW_PROVIDER = (
     "profiled-yosys+partition+system-route+tdm+split-transport+runtime"
 )
 MULTI_FPGA_MAPPING_PROFILES = (
-    "vtr-hard-blocks",
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
 )
 MULTI_FPGA_PHASE6_PROVIDERS = ("chimew", "baseline")
@@ -121,26 +117,15 @@ def _validate_mapping_timing_contract(
     mapping_profile: str,
     timing_db_path: Optional[Path],
 ) -> None:
-    """Reject a provider-mismatched timing model before RTL synthesis.
-
-    Provider dispatch inside OpenSTA remains fail-closed, but discovering a
-    VTR/Xilinx mismatch after a large Yosys run wastes substantial compute.
-    The Xilinx mapping profile therefore requires its source-sealed
-    RapidWright pre-placement contract up front.  A supplied VTR hard-block
-    contract must likewise carry the VTR schema.
-    """
-
-    if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
-        if timing_db_path is None:
-            raise EmuFlowError(
-                "xilinx-ultrascaleplus-open-v1 requires a source-sealed "
-                "Xilinx pre-placement --architecture-timing-db"
-            )
-        expected_schema = XILINX_PREPLACEMENT_TIMING_SCHEMA
-    elif mapping_profile == VTR_HARD_BLOCK_PROFILE and timing_db_path is not None:
-        expected_schema = ARCHITECTURE_TIMING_DB_SCHEMA
-    else:
-        return
+    """Require the maintained Xilinx pre-placement contract before synthesis."""
+    if mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+        raise EmuFlowError(f"unsupported multi-FPGA mapping profile {mapping_profile!r}")
+    if timing_db_path is None:
+        raise EmuFlowError(
+            "xilinx-ultrascaleplus-open-v1 requires a source-sealed "
+            "Xilinx pre-placement --architecture-timing-db"
+        )
+    expected_schema = XILINX_PREPLACEMENT_TIMING_SCHEMA
 
     observed_schema = read_json(timing_db_path).get("schema")
     if observed_schema != expected_schema:
@@ -1461,27 +1446,7 @@ def _compile_frontend(ctx: _CompileContext):
                 )
             if ctx.top is None:
                 raise EmuFlowError("--top is required when compiling RTL sources")
-            if ctx.mapping_profile == "vtr-hard-blocks":
-                raw_json = frontend_root / "vtr-hard-block-atoms.json"
-                eblif = frontend_root / "design.eblif"
-                synthesis_report = run_vtr_yosys(
-                    source_list,
-                    ctx.top,
-                    eblif,
-                    executable=ctx.yosys,
-                    log_path=frontend_root / "yosys.log",
-                    hard_blocks=True,
-                    json_output=raw_json,
-                    include_dirs=include_dir_list,
-                    defines=define_list,
-                )
-                normalization_report = normalize_vtr_hard_block_json(
-                    raw_json,
-                    synthesized_json,
-                    top=ctx.top,
-                )
-                synthesis_mode = "vtr-lut6-ff-hard-blocks"
-            elif ctx.mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+            if ctx.mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
                 indexed_staging_transform = normalize_xilinx_indexed_staging
                 synthesis_report, ctx.frontend_report = (
                     run_xilinx_ultrascaleplus_yosys_stream(
@@ -1513,9 +1478,8 @@ def _compile_frontend(ctx: _CompileContext):
             else:
                 raise ValidationError("frontend mapping profile is invalid")
 
-        # Non-Xilinx frontends still use a transient interchange file. The Xilinx
-        # production path has already piped Yosys stdout directly into indexed
-        # Phase 1 above and therefore never materializes a graph JSON artifact.
+        # Explicit user-supplied JSON is imported once and its staging copy is
+        # removed. RTL synthesis above streams directly into indexed Phase 1.
         if ctx.frontend_report is None:
             synthesized_json_sha256 = _sha256(synthesized_json)
             try:
@@ -1546,13 +1510,9 @@ def _compile_frontend(ctx: _CompileContext):
                 "provider": "yosys",
                 "mode": synthesis_mode,
                 "mapping_profile": (
-                    VTR_HARD_BLOCK_PROFILE
-                    if synthesis_mode == "vtr-lut6-ff-hard-blocks"
-                    else (
-                        "provided-yosys-json"
-                        if synthesis_mode == "provided-yosys-json"
-                        else ctx.mapping_profile
-                    )
+                    "provided-yosys-json"
+                    if synthesis_mode == "provided-yosys-json"
+                    else ctx.mapping_profile
                 ),
                 "sources": [str(path) for path in source_list],
                 "include_dirs": [str(path) for path in include_dir_list],
@@ -2553,7 +2513,7 @@ def run_multi_fpga_flow(
     physical: bool = False,
     physical_backend: str = "rapidwright",
     physical_architecture: Optional[Path] = None,
-    physical_architecture_id: str = VTR_HARD_BLOCK_PROFILE,
+    physical_architecture_id: str = "vtr-flagship-k6-n10-40nm",
     physical_vpr: Optional[str] = None,
     physical_architecture_importer: Optional[str] = None,
     physical_packed_importer: Optional[str] = None,

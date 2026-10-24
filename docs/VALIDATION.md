@@ -209,8 +209,9 @@ defined. Keep regressions in secondary metrics visible.
 
 ## Workload and platform identity
 
-[The full-flow registry](../benchmarks/end_to_end_validation_matrix.json)
-identifies real workloads and platforms separately.
+Every full-flow experiment must declare its exact workload and platform
+separately. The VTR-only planned KOIOS matrix and its validator are retired;
+its IDs cannot be reused for runs with a different mapping profile.
 [The contest registry](../benchmarks/contest_validation_matrix.json) covers
 communication inputs only. Raw contest topology combined with a VTR device
 template is a derived academic platform, not the original contest's physical

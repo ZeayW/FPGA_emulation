@@ -22,7 +22,6 @@ from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 BENCHMARK_RUN_SCHEMA = "emuflow.benchmark-run/v1"
 BENCHMARK_REPORT_SCHEMA = "emuflow.benchmark-report/v1"
 VALID_PHYSICAL_MAPPING_PROFILES = {
-    "vtr-hard-blocks",
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
 }
 VALID_CALIBRATION_HOLDOUT_CLASSES = {

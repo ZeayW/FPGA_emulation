@@ -76,9 +76,11 @@ def test_adapter_rejects_mixed_state_before_calling_phase(tmp_path):
 def test_shared_preflight_publishes_effective_configuration_and_restores_next_context(tmp_path):
     from emuflow.multi_fpga_flow import run_multi_fpga_flow
     request = tmp_path / "request.json"
-    options = {"output_dir": str(tmp_path / "out"), "mapping_profile": "vtr-hard-blocks",
+    options = {"output_dir": str(tmp_path / "out"), "mapping_profile": "xilinx-ultrascaleplus-open-v1",
                "partition_provider": "tritonpart", "clock_periods": {"clk": 10.0}, "opensta": sys.executable,
                "openroad": sys.executable}
+    from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
+    options["architecture_timing_db"] = str(write_mock_xilinx_timing_contract(tmp_path / "mock-timing.json"))
     request.write_text(json.dumps({"options": options}))
     previous = tmp_path / "preflight.json"
     with patch("emuflow.multi_fpga_flow.check_opensta_engine_version"):
@@ -261,6 +263,7 @@ def test_actual_shared_phase_adapters_complete_existing_nonphysical_contract_fix
         cut_mode="static-exact-combinational", balance_tolerance=1.0,
         max_cross_fpga_dependency_depth=2,
     )
+    from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
     report = run_native_multi_fpga_flow(
         tritonpart_solution=solution,
         platform_path=root / "platforms/virtual/static_exact_acceptance_2fpga.json",
@@ -269,7 +272,8 @@ def test_actual_shared_phase_adapters_complete_existing_nonphysical_contract_fix
         timing_driven=False, clock_periods={"clk": 10.0},
         opensta=str(root / "tests/fixtures/fake_opensta_paths.py"), router=str(tlr_router()),
         frame_slots=32, equivalence_cycles=2, cut_mode="static-exact-combinational",
-        max_cross_fpga_dependency_depth=2, mapping_profile="vtr-hard-blocks",
+        max_cross_fpga_dependency_depth=2, mapping_profile="xilinx-ultrascaleplus-open-v1",
+        architecture_timing_db=write_mock_xilinx_timing_contract(tmp_path / "mock-timing.json"),
     )
     assert report["status"] == "pass"
     assert validate_multi_fpga_flow_bundle(output, minimum_combinational_cut_nets=1)["status"] == "pass"

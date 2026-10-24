@@ -11,9 +11,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SERV_SPEC = ROOT / "benchmarks" / "runs" / "serv_l1.json"
 PICORV32_SPEC = ROOT / "benchmarks" / "runs" / "picorv32_l2.json"
 SECWORKS_AES_SPEC = ROOT / "benchmarks" / "runs" / "secworks_aes_l3.json"
-KOIOS_DLA_MEDIUM_SPEC = (
-    ROOT / "benchmarks" / "runs" / "koios_dla_medium_l5.json"
-)
 KOIOS_DLA_SMALL_SPEC = (
     ROOT / "benchmarks" / "runs" / "koios_dla_small_l5.json"
 )
@@ -98,30 +95,6 @@ class BenchmarkRunTest(unittest.TestCase):
                 ],
             )
 
-    def test_koios_dla_medium_spec_and_source(self) -> None:
-        spec = BenchmarkRun.load(KOIOS_DLA_MEDIUM_SPEC)
-        self.assertEqual(spec.value["top"], "DLA")
-        self.assertEqual(spec.value["synthesis"]["policy"], "logic-only")
-        self.assertEqual(spec.value["clock_periods_ns"], {"clk": 10.0})
-        self.assertEqual(
-            spec.value["physical_mapping_profile"], "vtr-hard-blocks"
-        )
-        source_root = (
-            ROOT
-            / "third_party"
-            / "rtl"
-            / "koios"
-            / "vtr_flow"
-            / "benchmarks"
-            / "verilog"
-            / "koios"
-        )
-        if source_root.is_dir():
-            sources = spec.resolve_sources(source_root)
-            self.assertEqual(
-                [path.name for path in sources],
-                ["dla_like.medium.v"],
-            )
 
     def test_koios_dla_small_spec_and_source(self) -> None:
         spec = BenchmarkRun.load(KOIOS_DLA_SMALL_SPEC)
@@ -327,7 +300,7 @@ class BenchmarkRunTest(unittest.TestCase):
             BenchmarkRun(value)
 
     def test_clock_period_contract_must_cover_declared_clocks(self) -> None:
-        value = json.loads(KOIOS_DLA_MEDIUM_SPEC.read_text(encoding="utf-8"))
+        value = json.loads(PICORV32_SPEC.read_text(encoding="utf-8"))
         value["clock_periods_ns"] = {"other": 10.0}
         with self.assertRaisesRegex(ValidationError, "clock_periods_ns"):
             BenchmarkRun(value)
@@ -355,7 +328,7 @@ class BenchmarkRunTest(unittest.TestCase):
             BenchmarkRun(value)
 
     def test_unknown_physical_mapping_profile_is_rejected(self) -> None:
-        value = json.loads(KOIOS_DLA_MEDIUM_SPEC.read_text(encoding="utf-8"))
+        value = json.loads(PICORV32_SPEC.read_text(encoding="utf-8"))
         value["physical_mapping_profile"] = "implicit"
         with self.assertRaisesRegex(ValidationError, "physical_mapping_profile"):
             BenchmarkRun(value)

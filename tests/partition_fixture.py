@@ -65,7 +65,12 @@ def run_multi_fpga_flow_fixture(*args, **kwargs):
     assert kwargs["partition_provider"] == "tritonpart"
     # The .part file is generated at the phase boundary from the actual
     # frontend artifact. This unit fixture never starts OpenROAD.
-    with _fixture_initializer("emuflow.multi_fpga_flow"), patch(
+    from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
+    with tempfile.TemporaryDirectory(prefix="mock-xilinx-timing-") as timing_root, _fixture_initializer("emuflow.multi_fpga_flow"), patch(
         "emuflow.multi_fpga_flow._resolve_partition_openroad", return_value=None
     ):
+        if kwargs.get("architecture_timing_db") is None:
+            kwargs["architecture_timing_db"] = write_mock_xilinx_timing_contract(
+                Path(timing_root) / "mock-timing.json"
+            )
         return run_multi_fpga_flow(*args, **kwargs)

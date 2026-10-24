@@ -40,23 +40,26 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
                 for name, value in expected.items():
                     self.assertEqual(run.call_args.kwargs[name], value)
 
-    def test_vtr_requires_and_preserves_explicit_selection(self):
-        args = _build_parser().parse_args([
-            "multi-fpga", "compile", "design.v", "--platform", "board.json",
-            "--out", "out", "--physical-backend", "open",
-            "--mapping-profile", "vtr-hard-blocks",
-        ])
-        with patch("emuflow.cli.run_multi_fpga_flow", return_value={"status": "pass"}) as run, patch(
-            "emuflow.cli._print_json"
+    def test_retired_vtr_profile_and_synthesis_command_are_rejected(self):
+        from contextlib import redirect_stderr
+        import io
+        for command in (
+            ["multi-fpga", "compile", "design.v", "--out", "unused",
+             "--mapping-profile", "vtr-hard-blocks"],
+            ["vpr", "synth", "design.v", "--top", "design", "-o", "unused"],
+            ["benchmark-matrix-validate", "retired.json"],
         ):
-            self.assertEqual(_dispatch(args), 0)
-            self.assertEqual(run.call_args.kwargs["physical_backend"], "open")
-            self.assertEqual(run.call_args.kwargs["mapping_profile"], "vtr-hard-blocks")
-        physical = _build_parser().parse_args([
-            "multi-fpga", "physical", "--split", "split", "--platform", "board.json",
-            "--schedule", "schedule.json", "--out", "out", "--backend", "open",
-        ])
-        self.assertEqual(physical.backend, "open")
+            with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                _build_parser().parse_args(command)
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "emuflow.multi_fpga_flow.run_phase1"
+        ) as frontend, patch("emuflow.multi_fpga_flow.resolve_native_executable") as tool:
+            out = Path(temporary) / "flow"
+            with self.assertRaisesRegex(EmuFlowError, "unsupported multi-FPGA mapping profile"):
+                run_multi_fpga_flow(output_dir=out, mapping_profile="vtr-hard-blocks")
+            frontend.assert_not_called()
+            tool.assert_not_called()
+            self.assertFalse(out.exists())
 
     def test_explicit_physical_worker_selection_reaches_dispatch(self):
         args = _build_parser().parse_args([
@@ -83,7 +86,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, patch(
             "emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream",
             side_effect=EmuFlowError("selected Xilinx synthesis"),
-        ) as xilinx, patch("emuflow.multi_fpga_flow.run_vtr_yosys") as vtr, patch("emuflow.multi_fpga_flow._validate_mapping_timing_contract"), patch("emuflow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"):
+        ) as xilinx, patch("emuflow.multi_fpga_flow._validate_mapping_timing_contract"), patch("emuflow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"):
             with self.assertRaisesRegex(EmuFlowError, "selected Xilinx synthesis"):
                 run_multi_fpga_flow(
                     ROOT / "platforms/virtual/academic_vtr_2fpga_p2p.json",
@@ -92,7 +95,6 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
                     top="counter", clocks=["clk"], clock_periods={"clk": 10.0},
                 )
             xilinx.assert_called_once()
-            vtr.assert_not_called()
 
 
     def test_retired_generic_upstream_is_rejected_before_any_work(self):
@@ -117,7 +119,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
             frontend.assert_not_called()
             tool.assert_not_called()
             self.assertFalse(out.exists())
-            value = json.loads((ROOT / "benchmarks/runs/koios_dla_medium_l5.json").read_text())
+            value = json.loads((ROOT / "benchmarks/runs/picorv32_l2.json").read_text())
             value["physical_mapping_profile"] = "generic-soft"
             spec = Path(temporary) / "retired.json"
             spec.write_text(json.dumps(value))

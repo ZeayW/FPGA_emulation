@@ -238,31 +238,11 @@ The small counter is a smoke input; it is not a representative multi-FPGA QoR
 workload. A successful `multi-fpga-flow-report.json` without physical results
 does not establish routed timing closure.
 
-Select another BoardDB with `--platform`. The alternative VTR flow must be
-requested consistently rather than mixed with the Xilinx default:
-
-```bash
-emuflow arch fetch-default-vtr \
-  --output build/architectures/vtr-flagship.xml
-
-emuflow multi-fpga compile examples/rtl/counter.v \
-  --top counter --clock clk --clock-period clk=10 \
-  --mapping-profile vtr-hard-blocks \
-  --physical-backend open \
-  --platform platforms/virtual/academic_vtr_2fpga_p2p.json \
-  --out build/counter-vtr-flow
-```
-
-Mapping profiles are explicit:
-
-| Profile | Purpose |
-| --- | --- |
-| `vtr-hard-blocks` | Public VTR LUT/FF, RAM, and multiplier mapping |
-| `xilinx-ultrascaleplus-open-v1` | Supported Xilinx UltraScale+ primitive namespace for the corresponding device backend |
-
-The standalone `generic-soft` upstream and its file-based synthesis API are
-retired. The internal streaming LUT6/FF helper remains only for the still-used
-VTR transport adapter; it is not another compile profile.
+Select another BoardDB with `--platform`. The only supported compile mapping
+profile is `xilinx-ultrascaleplus-open-v1`; `generic-soft`, `vtr-hard-blocks`,
+and the standalone VTR synthesis API/command are retired. The private streaming
+LUT6/FF helper is still used for transport synthesis inside physical adapters;
+it is not another upstream flow.
 
 Do not change mapping profiles silently to make a capacity failure disappear.
 Match resource units, device geometry, and physical architecture to the selected
@@ -339,12 +319,10 @@ options and packed-cluster pack/guide/place commands are removed. Independent
   constraints, architecture/timing data, and runtime paths listed by
   `multi-fpga compile --help`. This path has external RapidWright API/device
   licensing conditions; it is not the fully open VTR route.
-- `--physical-backend open`: alternative VTR/VPR packing and routing with
-  OpenPARF placement and `--mapping-profile vtr-hard-blocks`. Fetch the public
-  architecture using `arch fetch-default-vtr`, bind it with
-  `--physical-architecture`, and configure the compiled OpenPARF
-  installation/interpreter using `--physical-openparf-install` and
-  `--physical-openparf-python`.
+The standalone `multi-fpga physical --backend open` adapter remains pending
+retirement for explicit pre-existing VTR inputs. It is not a supported compile
+upstream and cannot regenerate a retired VTR mapped design.
+
 - `--physical-backend vivado`: optional proprietary device implementation.
   It requires the matching Vivado installation, device support, and licenses.
 

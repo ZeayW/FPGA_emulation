@@ -90,7 +90,6 @@ from .contest_public import (
     validate_public_contest_evaluation,
 )
 from .contest_validation_matrix import load_contest_validation_matrix
-from .end_to_end_validation_matrix import load_end_to_end_validation_matrix
 from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
@@ -211,7 +210,7 @@ from .vtr_architecture import (
     validate_vtr_architecture_db,
     validate_vtr_timing_db_file,
 )
-from .vpr import run_vpr, run_vpr_route_packed, run_vtr_yosys
+from .vpr import run_vpr, run_vpr_route_packed
 from .vivado_board_flow import (
     run_vivado_board_flow,
     validate_vivado_board_flow_bundle,
@@ -730,26 +729,7 @@ def _build_parser() -> argparse.ArgumentParser:
     vpr_subparsers = vpr_parser.add_subparsers(
         dest="vpr_command", required=True
     )
-    vpr_synth = vpr_subparsers.add_parser(
-        "synth",
-        help="map RTL to VTR-compatible eBLIF for VPR",
-    )
-    vpr_synth.add_argument("sources", nargs="+", type=Path)
-    vpr_synth.add_argument("--top", required=True)
-    vpr_synth.add_argument("--output", "-o", type=Path, required=True)
-    vpr_synth.add_argument(
-        "--yosys",
-        help="explicit comparison override; defaults to the in-tree build",
-    )
-    vpr_synth.add_argument("--log", type=Path)
-    vpr_synth.add_argument(
-        "--hard-blocks",
-        action="store_true",
-        help=(
-            "map multipliers and RAMs to the public VTR flagship "
-            "architecture modes"
-        ),
-    )
+
     multi_fpga = subparsers.add_parser(
         "multi-fpga",
         help="board-independent multi-FPGA compilation",
@@ -839,15 +819,11 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--mapping-profile",
         choices=(
-            "vtr-hard-blocks",
             "xilinx-ultrascaleplus-open-v1",
         ),
         default=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
         help=(
-            "RTL mapping profile (default: xilinx-ultrascaleplus-open-v1); "
-            "vtr-hard-blocks preserves public VTR "
-            "multiplier/RAM blocks, while xilinx-ultrascaleplus-open-v1 "
-            "uses the fail-closed Route A primitive namespace"
+            "Xilinx UltraScale+ primitive mapping; the only supported compile profile"
         ),
     )
     multi_fpga_compile.add_argument("--partition-constraints", type=Path)
@@ -1401,13 +1377,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--yosys",
         help="explicit comparison override; defaults to the in-tree build",
     )
-    benchmark_matrix = subparsers.add_parser(
-        "benchmark-matrix-validate",
-        help=(
-            "validate canonical real-RTL x contest-BoardDB Phase 1-7 cases"
-        ),
-    )
-    benchmark_matrix.add_argument("matrix", type=Path)
     phase1 = subparsers.add_parser(
         "phase1", help="run the board-independent Phase 1 pipeline"
     )
@@ -2718,16 +2687,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "vpr":
-        if args.vpr_command == "synth":
-            report = run_vtr_yosys(
-                sources=args.sources,
-                top=args.top,
-                output=args.output,
-                executable=args.yosys,
-                log_path=args.log,
-                hard_blocks=args.hard_blocks,
-            )
-        elif args.vpr_command == "run":
+        if args.vpr_command == "run":
             report = run_vpr(
                 architecture=args.architecture,
                 circuit=args.circuit,
@@ -2792,12 +2752,6 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
-
-    if args.command == "benchmark-matrix-validate":
-        _, report = load_end_to_end_validation_matrix(args.matrix)
-        _print_json(report)
-        return 0
-
 
     if args.command == "phase1":
         report = run_phase1(

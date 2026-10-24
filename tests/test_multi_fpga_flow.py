@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from tests.partition_fixture import run_multi_fpga_flow_fixture
+from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
 import copy
 import hashlib
 import json
@@ -131,7 +132,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
 
     def test_mapper_override_rejects_invalid_context_before_frontend(self):
         for profile, supplied, strategy, message in (
-            ("vtr-hard-blocks", None, "hierarchical-classic-v1", "requires native Xilinx"),
+            ("vtr-hard-blocks", None, "hierarchical-classic-v1", "unsupported multi-FPGA mapping profile"),
             ("xilinx-ultrascaleplus-open-v1", ROOT / "examples/yosys/counter.json",
              "hierarchical-abc9-v1", "requires native Xilinx"),
             ("xilinx-ultrascaleplus-open-v1", None, "unknown", "unsupported Xilinx"),
@@ -199,9 +200,8 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 {"schema": "emuflow.xilinx-preplacement-timing-db/v1"},
             )
 
-            _validate_mapping_timing_contract(
-                "vtr-hard-blocks", vtr_timing
-            )
+            with self.assertRaisesRegex(EmuFlowError, "unsupported multi-FPGA mapping profile"):
+                _validate_mapping_timing_contract("vtr-hard-blocks", vtr_timing)
             _validate_mapping_timing_contract(
                 "xilinx-ultrascaleplus-open-v1", xilinx_timing
             )
@@ -223,7 +223,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             output = Path(temporary_directory) / "flow"
             with self.assertRaisesRegex(
                 EmuFlowError,
-                "physical-backend=rapidwright requires",
+                "unsupported multi-FPGA mapping profile",
             ):
                 run_multi_fpga_flow(
                     platform_path=PLATFORM,
@@ -256,7 +256,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     opensta=str(FAKE_OPENSTA),
                     frame_slots=32,
                     equivalence_cycles=2,
-                    mapping_profile="vtr-hard-blocks",
+                    mapping_profile="xilinx-ultrascaleplus-open-v1",
                 )
 
     def test_one_command_static_exact_flow_reaches_phase7c_generation(self) -> None:
@@ -282,7 +282,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 static_exact_candidate_policy=(
                     "assignment-derived-acyclic-v2"
                 ),
-                mapping_profile="vtr-hard-blocks",
+                mapping_profile="xilinx-ultrascaleplus-open-v1",
             )
             self.assertEqual(report["status"], "pass")
             self.assertEqual(
@@ -502,7 +502,8 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     clocks=["clk"],
                     cut_mode="static-exact-combinational",
 
-                    mapping_profile="vtr-hard-blocks",
+                    mapping_profile="xilinx-ultrascaleplus-open-v1",
+                    architecture_timing_db=write_mock_xilinx_timing_contract(Path(temporary_directory) / "mock-timing.json"),
                 )
 
     def test_compile_rejects_retired_cut_mode_before_frontend(self):
@@ -642,7 +643,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     phase6_provider="baseline",
                     physical=True,
                     equivalence_cycles=2,
-                    mapping_profile="vtr-hard-blocks",
+                    mapping_profile="xilinx-ultrascaleplus-open-v1",
                     physical_backend="open",
                 )
             self.assertFalse(report["timing"]["optimization_enabled"])
@@ -688,7 +689,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                         router=str(tlr_router()),
                         frame_slots=32,
                         physical=True,
-                        mapping_profile="vtr-hard-blocks",
+                        mapping_profile="xilinx-ultrascaleplus-open-v1",
                         physical_backend="open",
                     )
             self.assertFalse(root.exists())
@@ -748,7 +749,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 path = root / "board-link-timing.json"
                 write_json(path, database)
                 output = root / "flow"
-                with patch("emuflow.multi_fpga_flow.run_vtr_yosys") as synthesis, patch(
+                with patch("emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as synthesis, patch(
                     "emuflow.multi_fpga_flow.check_opensta_engine_version"
                 ) as engine_check:
                     with self.assertRaisesRegex(ValidationError, "board link timing"):
@@ -757,7 +758,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                             output_dir=output,
                             sources=[ROOT / "examples/rtl/counter.v"],
                             top="counter",
-                            mapping_profile="vtr-hard-blocks",
+                            mapping_profile="xilinx-ultrascaleplus-open-v1",
                             partition_provider="tritonpart",
                             cut_mode="static-exact-combinational",
                             timing_driven=False,
@@ -785,7 +786,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 "provenance": {"class": OPEN_TRANSPORT_PROVENANCE, "fit_sha256": "1" * 64},
             })
             output = root / "flow"
-            with patch("emuflow.multi_fpga_flow.run_vtr_yosys") as synthesis, patch(
+            with patch("emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as synthesis, patch(
                 "emuflow.multi_fpga_flow.check_opensta_engine_version"
             ) as engine_check:
                 with self.assertRaisesRegex(ValidationError, "transport cost platform disagrees"):
@@ -794,7 +795,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                         output_dir=output,
                         sources=[ROOT / "examples/rtl/counter.v"],
                         top="counter",
-                        mapping_profile="vtr-hard-blocks",
+                        mapping_profile="xilinx-ultrascaleplus-open-v1",
                         partition_provider="tritonpart",
                         cut_mode="static-exact-combinational",
                         timing_driven=False,
@@ -815,7 +816,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 ValidationError, "requires 3.1.0 or newer"
             ):
                 run_multi_fpga_flow_fixture(
-                    platform_path=PLATFORM, mapping_profile="vtr-hard-blocks",
+                    platform_path=PLATFORM, mapping_profile="xilinx-ultrascaleplus-open-v1",
                     output_dir=root,
                     yosys_json=ROOT / "examples/yosys/counter.json",
                     top="counter",
@@ -847,7 +848,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 router=str(tlr_router()),
                 frame_slots=32,
                 equivalence_cycles=2,
-                mapping_profile="vtr-hard-blocks",
+                mapping_profile="xilinx-ultrascaleplus-open-v1",
             )
             physical_root = root / "physical-resumed"
             physical_root.mkdir()
@@ -903,24 +904,6 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             output = root / "global-route"
-            timing_paths = root / "paths.json"
-            write_json(
-                timing_paths,
-                {
-                    "schema": "emuflow.sta-paths/v1",
-                    "design": "counter",
-                    "paths": [
-                        {
-                            "id": "counter-cut",
-                            "clock_domain": "clk",
-                            "clock_period_ns": 20.0,
-                            "slack_ns": 1.0,
-                            "fixed_delay_ns": 0.0,
-                            "cut_nets": ["q[0]", "q[2]"],
-                        }
-                    ],
-                },
-            )
             report = run_multi_fpga_flow_fixture(
                 platform_path=PLATFORM,
                 output_dir=output,
@@ -933,11 +916,12 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 router=str(tlr_router()),
                 route_provider=GLOBAL_CANDIDATE_PROVIDER,
                 route_candidate_workers=2,
-                timing_paths=timing_paths,
+                clock_periods={"clk": 20.0},
+                opensta=str(FAKE_OPENSTA),
                 frame_slots=32,
                 tdm_provider=TDM_EXACT_DEPENDENCY_PROVIDER,
                 equivalence_cycles=2,
-                mapping_profile="vtr-hard-blocks",
+                mapping_profile="xilinx-ultrascaleplus-open-v1",
             )
             phase4 = report["stages"]["system_route"]
             self.assertEqual(phase4["provider"], GLOBAL_CANDIDATE_PROVIDER)
@@ -997,7 +981,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 router=str(tlr_router()),
                 frame_slots=16,
                 equivalence_cycles=8,
-                mapping_profile="vtr-hard-blocks",
+                mapping_profile="xilinx-ultrascaleplus-open-v1",
             )
             self.assertEqual(report["summary"]["used_fpgas"], 2)
             self.assertEqual(report["summary"]["instances"], 8)
@@ -1095,7 +1079,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 router=str(tlr_router()),
                 frame_slots=32,
                 equivalence_cycles=2,
-                mapping_profile="vtr-hard-blocks",
+                mapping_profile="xilinx-ultrascaleplus-open-v1",
             )
             broken = copy.deepcopy(report)
             broken["stages"]["tdm"]["platform"] = "different"
@@ -1130,7 +1114,8 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     timing_driven=False,
                     clock_periods={"clk": 10.0},
                     opensta=str(FAKE_OPENSTA),
-                    mapping_profile="vtr-hard-blocks",
+                    mapping_profile="xilinx-ultrascaleplus-open-v1",
+                    architecture_timing_db=write_mock_xilinx_timing_contract(Path(temporary_directory) / "mock-timing.json"),
                 )
 
     def test_compile_can_continue_into_checked_serial_bsp(self) -> None:
@@ -1210,7 +1195,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     serial_bsp_phy_provider=Path("provider.json"),
                     serial_bsp_runtime_sync_provider=Path("runtime.json"),
                     serial_bsp_yosys=Path("yosys"),
-                    mapping_profile="vtr-hard-blocks",
+                    mapping_profile="xilinx-ultrascaleplus-open-v1",
                 )
             self.assertEqual(report["summary"]["hardware_bsp_status"], "pass")
             self.assertTrue(
@@ -1233,7 +1218,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             )
             output = root / "flow"
             report = run_multi_fpga_flow_fixture(
-                platform_path=PLATFORM, mapping_profile="vtr-hard-blocks",
+                platform_path=PLATFORM, mapping_profile="xilinx-ultrascaleplus-open-v1",
                 output_dir=output,
                 yosys_json=ROOT / "examples/yosys/counter.json",
                 top="counter",
@@ -1361,7 +1346,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 partition_seed_attempts=1,
                 partition_repair_min_used_fpgas=True,
                 equivalence_cycles=2,
-                mapping_profile="vtr-hard-blocks",
+                mapping_profile="xilinx-ultrascaleplus-open-v1",
             )
             self.assertEqual(report["timing"]["status"], "pass")
             self.assertEqual(
@@ -1474,7 +1459,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
 
 
                 equivalence_cycles=2,
-                mapping_profile="vtr-hard-blocks",
+                mapping_profile="xilinx-ultrascaleplus-open-v1",
             )
             direct_projection = direct_report["timing"][
                 "cut_path_projection"

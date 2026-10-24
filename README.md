@@ -326,12 +326,11 @@ device/provider, architecture, timing, and runtime
 inputs described in the [user guide](docs/USER_GUIDE.md#physical-implementation).
 Add `--physical` to execute placement and routing.
 
-To use the alternative VTR route, explicitly select
-`--physical-backend open --mapping-profile vtr-hard-blocks`. Standalone
-`multi-fpga physical` also defaults to RapidWright; use `--backend open` for VTR.
-Missing RapidWright inputs do not trigger an automatic VTR fallback.
-The independent `generic-soft` compile profile and file-based generic frontend
-are retired. Remaining VTR/open entries await separate removal.
+The compile upstream supports only Xilinx UltraScale+ mapping; the independent
+`generic-soft` and `vtr-hard-blocks` profiles and VTR synthesis entry are retired.
+Standalone `multi-fpga physical` also defaults to RapidWright. The separate
+VTR/open physical adapter remains pending retirement; it is not another
+supported compile upstream. Missing inputs never select another toolchain.
 
 Other CLI defaults are TritonPart initial partitioning followed by
 timing-driven PATRON v14 post-processing, `static-exact-combinational` cuts,
@@ -402,10 +401,10 @@ substitute a different architecture, mapping, or timing engine.
 
 The [RTL catalog](benchmarks/rtl_catalog.json) identifies upstream designs,
 licenses, and pinned source revisions. The
-[full-flow matrix](benchmarks/end_to_end_validation_matrix.json) pairs real RTL
-workloads with platform configurations; the
 [contest matrix](benchmarks/contest_validation_matrix.json) separately covers
-communication-algorithm inputs.
+communication-algorithm inputs. The VTR-only KOIOS medium run specification and
+its unexecuted full-flow matrix are retired; their workload identities are not
+reassigned to Xilinx runs.
 
 See [benchmark usage](docs/RTL_BENCHMARKS.md). Raw logs, experiment histories,
 machine-specific paths, and temporary results are not project documentation.
