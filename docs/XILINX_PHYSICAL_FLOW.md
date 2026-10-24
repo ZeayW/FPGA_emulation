@@ -153,7 +153,11 @@ all required connections are routed, no capacity overlap remains between
 different nets, and the independent route certificate can resolve every
 covered logical net to its physical nodes and PIPs. Iteration diagnostics
 include congested connections, overused-node counts, excess users, maximum
-occupancy, and SLR distribution.
+occupancy, and SLR distribution. Mutually exclusive fanout buckets count each
+overused node once according to the largest fanout among its users. This
+distinguishes congestion involving high-fanout nets from congestion contested
+entirely by small nets; top-net rankings alone cannot establish the dominant
+population. Bucket counts must sum to the complete overused-node count.
 
 Clock-region capacity, clock-tree legality, ordinary-net legality, and route
 coverage are separate checks. Passing a coarse clock-region capacity audit is

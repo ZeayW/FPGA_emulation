@@ -676,8 +676,9 @@ public final class EmuFlowRWRoute {
             int maximumOccupancy = 0;
             Map<String, Long> byIntent = new HashMap<>();
             Map<Integer, Long> bySLR = new HashMap<>();
+            long[] byMaximumUserFanout = new long[5];
             // [overused nodes, routed connection uses, shared excess exposure,
-            // local, short, pin access, SLR0, SLR1, SLR2, SLR3]
+            // local, short, pin access, SLR0, SLR1, SLR2, SLR3, physical fanout]
             Map<NetWrapper, long[]> byNet = new HashMap<>();
             for (com.xilinx.rapidwright.rwroute.RouteNode node
                 : routingGraph.getRnodes()) {
@@ -690,10 +691,18 @@ public final class EmuFlowRWRoute {
                 int slr = node.getSLRIndex(routingGraph);
                 byIntent.merge(intent, 1L, Long::sum);
                 bySLR.merge(slr, 1L, Long::sum);
+                int maximumUserFanout = 0;
                 for (Map.Entry<NetWrapper, Integer> user
                     : node.getUsersConnectionCounts().entrySet()) {
                     long[] contribution = byNet.computeIfAbsent(
-                        user.getKey(), ignored -> new long[10]
+                        user.getKey(), wrapper -> {
+                            long[] values = new long[11];
+                            values[10] = wrapper.getConnections().size();
+                            return values;
+                        }
+                    );
+                    maximumUserFanout = Math.max(
+                        maximumUserFanout, (int)contribution[10]
                     );
                     contribution[0]++;
                     contribution[1] += user.getValue();
@@ -705,6 +714,20 @@ public final class EmuFlowRWRoute {
                         || intent.equals("NODE_PINFEED")) contribution[5]++;
                     if (slr >= 0 && slr < 4) contribution[6 + slr]++;
                 }
+                // Count each node exactly once. The largest user's fanout
+                // distinguishes nodes involving a high-fanout net from nodes
+                // contested entirely by small nets. Top-net rankings alone
+                // cannot establish which population dominates congestion.
+                int bucket = maximumUserFanout <= 4 ? 0
+                    : maximumUserFanout <= 16 ? 1
+                    : maximumUserFanout <= 64 ? 2
+                    : maximumUserFanout <= 256 ? 3 : 4;
+                byMaximumUserFanout[bucket]++;
+            }
+            long bucketTotal = 0;
+            for (long count : byMaximumUserFanout) bucketTotal += count;
+            if (bucketTotal != overusedNodes) {
+                throw new IllegalStateException("congestion fanout buckets lost node coverage");
             }
             List<Map.Entry<String, Long>> intents = new ArrayList<>(
                 byIntent.entrySet()
@@ -737,6 +760,11 @@ public final class EmuFlowRWRoute {
                 + " maximum_occupancy=" + maximumOccupancy
                 + " slr_overused_nodes=" + slrCounts
                 + " top_intents=" + topIntents
+                + " overused_nodes_by_max_user_fanout=le4:" + byMaximumUserFanout[0]
+                + ",5to16:" + byMaximumUserFanout[1]
+                + ",17to64:" + byMaximumUserFanout[2]
+                + ",65to256:" + byMaximumUserFanout[3]
+                + ",gt256:" + byMaximumUserFanout[4]
             );
             PriorityQueue<Map.Entry<NetWrapper, long[]>> topNets =
                 new PriorityQueue<>(17, (left, right) -> {
