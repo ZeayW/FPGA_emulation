@@ -14,6 +14,15 @@ different device models and implementation engines:
 | VTR | VTR architecture XML, VPR packing and routing-resource graph, and either OpenPARF or VPR placement |
 | Vivado | Optional vendor synthesis and implementation integration for supported inputs |
 
+The maintained Xilinx implementation routes are OpenPARF/RWRoute and Vivado.
+The unused AMF and DREAMPlaceFPGA feasibility adapters, candidate runners and
+AMF certificate policy and unused multi-candidate comparator are removed.
+Retired placer certificates are not
+accepted by Xilinx placement validation. Common packing, capability reporting,
+site/BEL ownership, cascade and typed physical-handoff validation remain part
+of the retained routes. The VTR/open backend is still needed by the current
+Chimew lookahead integration; this retirement does not remove that dependency.
+
 RapidWright device data describes a device, not the multi-FPGA board around it.
 Board topology, fixed package-pin connections, link capacity, and inter-FPGA
 latency come from the separate [hardware platform model](HARDWARE_PLATFORM.md).

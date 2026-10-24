@@ -112,6 +112,21 @@ class XilinxPlacementTest(unittest.TestCase):
         }), encoding="utf-8")
         return arch, packed, guidance, constraints
 
+    def test_retired_placer_certificates_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch, packed, guidance, constraints = self._write_inputs(root)
+            output = root / "placement.json"
+            result = place_xilinx_clusters(packed, arch, output,
+                guidance_path=guidance, constraints_path=constraints)
+            for provider in ("amf-placer-public-basic-2.0-native-bridge-v1",
+                             "dreamplacefpga-interchange-candidate-v1"):
+                with self.subTest(provider=provider):
+                    result["provider"] = provider
+                    output.write_text(json.dumps(result), encoding="utf-8")
+                    with self.assertRaisesRegex(ValidationError, "provider is invalid"):
+                        validate_xilinx_placement(packed, arch, output, constraints_path=constraints)
+
     def test_exact_legalizer_and_checker_are_deterministic(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -95,6 +95,11 @@ authoritative installation. Bookshelf export uses only the unified command.
 Phase 4 supports only `timing-aware-global-candidate-v1` through the unified
 entry. Retired routing providers, their standalone executable and dedicated
 comparison commands are removed; candidate-generation kernels remain shared.
+AMF and DREAMPlaceFPGA feasibility adapters, native runners and the unused
+candidate comparator are retired. The maintained Xilinx implementations are
+OpenPARF/RWRoute and Vivado; VTR/open remains while Chimew lookahead depends on
+it. Shared site/BEL and handoff validation remain. See the
+[backend contract](docs/XILINX_PHYSICAL_FLOW.md#backend-contract).
 The typed mapped/physical handoff also feeds a shared-core RWRoute exporter;
 Python sends file references and board I/O configuration. Native export uses a
 compact cell catalog, sparse clock-net reductions and one live net of endpoints.
@@ -111,7 +116,8 @@ validation precedes report publication. Selection depends on the input contract,
 not its route count; this path requires the unified native scheduler.
 Phase 5 exposes only the Static Exact dependency scheduler. Independent
 ratio/KKT, timing-DAG and slot optimizers, the old cross-stage feedback flow,
-and their CLI/build entries are retired. The shared solver, hardware ratio
+and their CLI/build entries and the unused Python `cp-sat` extra are retired.
+The shared solver, hardware ratio
 constraints, independent validators and optional Phase 6 Chimew remain.
 Phase 6 maintains baseline transport and optional Chimew. The independent
 placement-aware planner, its executable/CLI and its comparison arm are retired;
@@ -211,7 +217,9 @@ cmake --build --preset release --parallel 2
 ctest --preset release
 ```
 
-Build products are installed under `build/native/install/`.
+Build products are installed under `build/native/install/`, including the
+default Xilinx primitive library and bundled BoardDB/I/O/schema data.
+The installed-runtime CTest checks package inventory and default resources.
 For dependency-prefix configuration and partial development builds, see the
 [user guide](docs/USER_GUIDE.md).
 Before an expensive run, execute `emuflow-native check-runtime` in the selected

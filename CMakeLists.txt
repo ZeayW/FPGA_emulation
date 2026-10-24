@@ -365,6 +365,7 @@ file(
   "${CMAKE_SOURCE_DIR}/resources/architectures/*"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/platforms/*.json"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/io/*.json"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/rapidwright/*.json"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/*.sql"
   "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
   "${CMAKE_SOURCE_DIR}/scripts/yosys/*"
@@ -426,6 +427,10 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/src/emuflow/data/io"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/io"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/src/emuflow/data/rapidwright"
+    "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/rapidwright"
   COMMAND
     "${CMAKE_COMMAND}" -E copy
     "${CMAKE_BINARY_DIR}/emuflow"
@@ -1101,6 +1106,13 @@ if(EMUFLOW_BUILD_OPENPARF)
 endif()
 
 if(BUILD_TESTING)
+  add_test(
+    NAME emuflow_installed_python_runtime
+    COMMAND "${Python3_EXECUTABLE}" -I
+      "${CMAKE_SOURCE_DIR}/tests/check_installed_python_runtime.py"
+      "${CMAKE_SOURCE_DIR}" "${EMUFLOW_INSTALL_ROOT}"
+  )
+
   add_test(
     NAME emuflow_python_tests
     COMMAND

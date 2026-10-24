@@ -20,6 +20,17 @@ accepts the EmuIR symlink only when it resolves to the input declared in the
 passing Phase 1 continuation report, and hashes those original bytes as part
 of the flow artifact seal. Other flow artifacts still reject symlinks.
 
+## Installed runtime data
+
+The root CMake `emuflow_python` target installs a complete current Python
+package, replacing its prior module inventory so deleted adapters do not remain
+importable. It bundles the default Xilinx primitive library together with
+BoardDB, I/O inventory and SQL schemas; resource changes invalidate the install
+stamp. The `emuflow_installed_python_runtime` CTest imports only the installed
+package and verifies its module/data inventory and default profile resources.
+It requires the Python install target to have been built, as in the normal
+root build. This check does not execute synthesis or physical implementation.
+
 ## Native compile control
 
 Add `--compile-implementation native-control-v1` to the normal

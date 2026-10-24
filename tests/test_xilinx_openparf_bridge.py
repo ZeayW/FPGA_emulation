@@ -514,6 +514,20 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             import_yosys_json(mapped).save(mapped_ir)
             emit_xilinx_mapped_index(mapped_ir, mapped_index)
             with open_xilinx_mapped_index(mapped_index) as indexed:
+                # This fixture derives the index from the certified JSON owner.
+                # A fabricated source seal must still fail before publication.
+                bad_output = root / "rwroute-wrong-source.tsv"
+                with self.assertRaisesRegex(ValidationError, "mapped identity disagrees"):
+                    export_rwroute_input(
+                        mapped_index, handoff, handoff, bad_output,
+                        mapped_value=indexed, packed_value=packed, placement_value=placement,
+                        source_sha256={
+                            "mapped_sha256": "0" * 64,
+                            "packed_sha256": report["physical_handoff_sha256"],
+                            "placement_sha256": report["physical_handoff_sha256"],
+                        },
+                    )
+                self.assertFalse(bad_output.exists())
                 indexed_export = export_rwroute_input(
                     mapped_index, handoff, handoff,
                     root / "rwroute-indexed.tsv",
@@ -521,7 +535,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                     packed_value=packed,
                     placement_value=placement,
                     source_sha256={
-                        "mapped_sha256": "0" * 64,
+                        "mapped_sha256": packed["source"]["mapped_json_sha256"],
                         "packed_sha256": report["physical_handoff_sha256"],
                         "placement_sha256": report["physical_handoff_sha256"],
                     },
@@ -532,10 +546,11 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             self.assertEqual(
                 indexed_export["runtime_breakdown"]["dataflow"],
                 {
-                    "route_cells": "generated-from-physical-binding",
-                    "physical_bindings": "typed-mapped-physical-join",
-                    "safe_names": "typed-ordinal-cursor",
-                    "endpoints": "typed-mapped-physical-join",
+                    "route_cells": "native-mapped-physical-cursor",
+                    "physical_bindings": "native-mapped-physical-join",
+                    "safe_names": "native-ordinal-cursor",
+                    "endpoints": "native-integer-cell-catalog",
+                    "clock_gates": "native-sparse-net-reduction",
                     "tsv": "streamed-atomic-spool",
                 },
             )

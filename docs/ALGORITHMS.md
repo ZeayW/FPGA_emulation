@@ -219,6 +219,10 @@ RapidWright device data, native OpenPARF placement, validated site/BEL binding,
 and RWRoute detailed routing. VTR is the alternative academic backend, and
 Vivado is an optional proprietary integration.
 
+AMF and DREAMPlaceFPGA feasibility routes are retired, including their native
+runners and adapter-specific validation. Shared physical contracts continue to
+serve the maintained Xilinx routes; upstream code used by OpenPARF is retained.
+
 See the [Xilinx physical-flow contract](XILINX_PHYSICAL_FLOW.md) for placement,
 routing, fixed differential I/O, and timing acceptance criteria. Board topology,
 link capacity, fixed package-pin wiring, and the TDM delay formula belong to the
