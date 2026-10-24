@@ -274,3 +274,11 @@ for one source/native LUT pair, allowing pin permutations and reduced LUTs only
 when their complete functions agree. Matching a pin name or observing a GND pin
 alone is insufficient. These diagnostic facts do not automatically promote an
 unknown-initialization candidate to a routed elimination proof.
+
+`compare_selected_constant_frontiers` joins these observations to the mapped
+source and its primitive-signature index. It checks every selected object and
+input pin, identifies live variables by source output provenance, and rejects
+unsupported sequential transformations. Selection is capped at 4096 objects;
+the diagnostic reconstructs only one LUT pair at a time. Conditional candidate
+values remain hypotheses in this comparison and still need complete fanout
+coverage before they can become elimination proofs.

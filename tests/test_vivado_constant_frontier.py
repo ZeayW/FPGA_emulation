@@ -36,3 +36,32 @@ def test_incomplete_or_unknown_primitive_facts_fail_closed(mutation):
     original = {"type":"LUT2","init":"0110","inputs":{"I0":0,"I1":"s7/Q"}}
     with pytest.raises(ValidationError):
         require_equal_frontier_functions(original,{**original,**mutation})
+
+
+def test_selected_native_observations_use_indexed_source_driver_identity(tmp_path):
+    import csv
+    from tests.test_vivado_optimization import VivadoOptimizationTests
+    from emuflow.vivado_optimization import build_optimization_proofs
+    from emuflow.vivado_constant_frontier import compare_selected_constant_frontiers
+    mapped,lineage,digest,origins = VivadoOptimizationTests().prepare(tmp_path)
+    proofs = tmp_path/"proofs.sqlite"
+    build_optimization_proofs(mapped,lineage,proofs,mapped_sha256=digest,fpga="fpga0")
+    observed = tmp_path/"frontiers.tsv"
+    headers = ["source_origin","native_cell_hex","ref","init","pin","driver_kind","driver_source","driver_ref","driver_pin","driver_name_hex","driver_transformations_hex","transformations_hex"]
+    row = [f"s{origins['dead_feedback']}","partition/dead_feedback".encode().hex(),"LUT1","2'h2","I0","source",
+           f"s{origins['dead']}","FDRE","Q","partition/dead/Q".encode().hex(),"",""]
+    def write():
+        with observed.open("w") as stream:
+            writer = csv.writer(stream,delimiter="\t",lineterminator="\n");writer.writerow(headers);writer.writerow(row)
+    write()
+    expected = [{"source_origin":row[0],"name":"partition/dead_feedback"}]
+    def compare():
+        return compare_selected_constant_frontiers(mapped,mapped.with_name("dut.functions.sqlite"),proofs,observed,
+                                                   mapped_sha256=digest,expected_objects=expected)
+    assert compare()["frontiers"][0]["variables"] == 1
+    row[6] = f"s{origins['kept']}";write()
+    with pytest.raises(ValidationError,match="does not confirm"): compare()
+    row[6] = f"s{origins['dead']}";row[10] = "RETIMED".encode().hex();write()
+    with pytest.raises(ValidationError,match="unsupported transformation"): compare()
+    row[10] = "";row[4] = "I1";write()
+    with pytest.raises(ValidationError,match="input coverage"): compare()

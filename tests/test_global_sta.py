@@ -1181,3 +1181,41 @@ def test_cross_member_elimination_requires_proof_and_complete_structural_chain(t
         segment["replace_tx_endpoint"] = "wrong"
         with pytest.raises(ValidationError,match="binding disagrees"):
             bind_physical_checks(runtime,routes,fixture.schedule,physical,fixture.platform)
+
+
+def test_eliminated_shadow_interface_is_a_proved_disposition_not_a_zero_arc(tmp_path):
+    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
+    from tests.test_vivado_optimization import VivadoOptimizationTests
+    from emuflow.board_link_timing import build_board_link_timing_model
+    from emuflow.runtime import build_virtual_runtime
+    from emuflow.vivado_optimization import build_optimization_proofs, OptimizationProofView
+    from emuflow.cross_layer_timing import build_cross_layer_physical_binding, build_cross_layer_timing_contract
+    fixture = StaticExactSystemTimingTest(); fixture.setUp()
+    _,routes,_ = fixture._system_inputs()
+    runtime = build_virtual_runtime(fixture.schedule,fixture.platform)
+    physical = fixture._system_physical()
+    physical["board_link_timing"] = build_board_link_timing_model(fixture.platform)
+    fpga,database = next((fpga,db) for fpga,db in physical["boundary_timing"].items()
+                         if any(r["kind"] == "rx" for r in db["endpoints"]))
+    endpoint = next(r for r in database["endpoints"] if r["kind"] == "rx")
+    identity = next(r for r in physical["boundary_identities"][fpga]["endpoints"] if r["id"] == endpoint["id"])
+    mapped,lineage,digest,origins = VivadoOptimizationTests().prepare(tmp_path)
+    proof_path = tmp_path/"proof.sqlite"
+    build_optimization_proofs(mapped,lineage,proof_path,mapped_sha256=digest,fpga=fpga)
+    endpoint.update(measurement="optimized-away",delay_ns=None,start_object=None,end_object=None,
+                    optimization_source=f"s{origins['dead']}")
+    identity.setdefault("merged_ir", {})["boundary_register_instances"] = ["dead"]
+    with OptimizationProofView(proof_path,expected_fpga=fpga) as view:
+        physical["optimization_proofs"] = {fpga:view}
+        metadata = {}
+        assert not bind_physical_checks(runtime,routes,fixture.schedule,physical,fixture.platform,metadata=metadata)
+        timing = build_opensta_timing(runtime,metadata,())
+        assert timing["summary"]["optimized_away_paths"] == 1
+        assert timing["summary"]["maximum_system_delay_bound_ns"] is None
+        contract = build_cross_layer_timing_contract(routes,fixture.schedule,fixture.assignment["semantic_contract"])
+        binding = build_cross_layer_physical_binding(contract,fixture.schedule,physical,fixture.platform)
+        assert binding["status"] == "pass"
+        assert binding["metrics"]["optimized_away_endpoints"] == 1
+        assert binding["metrics"]["measured_endpoints"] == binding["metrics"]["required_endpoints"]-1
+        bound_endpoint = next(r for r in binding["endpoint_bindings"] if r["endpoint"] == endpoint["id"])
+        assert bound_endpoint["measured_max_delay_ns"] is None

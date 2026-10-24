@@ -24,7 +24,7 @@ contract requires an explicit measured or proven optimized-away disposition for
 every original path; WNS/TNS use surviving implemented paths. Local paths,
 cross-FPGA logic segments, and shadow interfaces can retain eliminated records
 with null delays and checked source-proof references. Complete physical coverage
-and global timing remain required qualification gates. Explicit checkpoint I/O and selected LUT-function
+and global timing remain required qualification gates. Explicit checkpoint I/O and selected source-bound LUT-function
 diagnostics are documented with the provider. See the
 [Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider) and
 [user guide](docs/USER_GUIDE.md#physical-implementation).
