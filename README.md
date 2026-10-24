@@ -117,7 +117,7 @@ Hot-region selection joins qualified physical site identities to the
 source-sealed ArchitectureDB, independent of solver region reindexing.
 A separate native spreading experiment moves ordinary occupied slices as
 rigid LUT/FF groups and preserves their internal BEL assignments.
-Device-backed clock audits check region membership and ordinary leaf-domain demand.
+Device-backed clock audits check region membership, local leaf demand, and source entry paths.
 An explicit native repair experiment relocates rigid slices from overfull leaf
 domains; it can reserve FF loads of explicitly declared ideal boundary clocks.
 Those reservations do not claim physical clock routes. Fresh placement
