@@ -217,6 +217,9 @@ For the same host ABI issue with OpenSTA, set `EMUFLOW_OPENSTA_CONTAINER_BINARY`
 and pass `scripts/opensta/container_runtime.sh` to `--global-sta-executable`.
 It shares the container configuration and selects OpenSTA independently of
 Yosys, so both launchers can be used in one compile invocation.
+Native install aliases resolve to their actual executable, so launchers find
+their sibling runtime files. When the repository OpenSTA container launcher is
+selected, timing evidence seals both its delegated engine and the launcher.
 
 Supply the exact paths from the source run, including `--logic-path-database`
 when required by its timing contract. `--fpga fpgaN` selects a representative

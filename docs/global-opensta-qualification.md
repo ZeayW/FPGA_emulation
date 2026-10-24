@@ -6,6 +6,10 @@ transport-event constraints. It does not implicitly run the separate Python
 timing composer. Select that engine explicitly with
 `--global-timing-engine python`.
 
+With the repository OpenSTA container launcher, `executable_sha256` identifies
+the delegated native OpenSTA engine, while `launcher_sha256` separately seals
+the launcher. Engine identity must not be inferred from the wrapper alone.
+
 ## Fixed events and original logical paths
 
 Transport registers split ordinary STA paths. Register-to-register setup slack

@@ -55,7 +55,7 @@ def resolve_native_executable(
     candidates = tuple(root / "bin" / name for root in native_install_roots())
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+            return str(candidate.resolve())
 
     searched = ", ".join(str(candidate) for candidate in candidates)
     raise EmuFlowError(

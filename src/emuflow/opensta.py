@@ -16,7 +16,7 @@ from typing import Any, DefaultDict, Dict, Iterable, Mapping, Optional, Sequence
 
 from .benchmark import timing_io_sha256
 from .errors import EmuFlowError, ValidationError
-from .io import read_json, write_json
+from .io import file_sha256, read_json, write_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .sta import (
@@ -160,15 +160,30 @@ def check_opensta_engine_version(executable: str) -> str:
 def require_opensta_engine(executable: str) -> Dict[str, str]:
     """Validate and content-seal the OpenSTA engine used for evidence."""
     version = check_opensta_engine_version(executable)
-    executable_digest = hashlib.sha256()
-    with Path(executable).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            executable_digest.update(chunk)
-    return {
+    selected = Path(executable).resolve()
+    selected_digest = file_sha256(selected)
+    identity = {
         "name": "OpenSTA",
         "version": version,
-        "executable_sha256": executable_digest.hexdigest(),
+        "executable_sha256": selected_digest,
     }
+    launcher = _runtime_data_path(Path("scripts/opensta/container_runtime.sh")).resolve()
+    # CMake and wheel installs can expose identical repository launchers at
+    # different paths. Recognize their exact bytes, never an ambient variable
+    # alone or a merely similar shell-script filename.
+    launcher_digest = selected_digest if selected == launcher else (
+        file_sha256(launcher) if launcher.is_file() else None
+    )
+    if selected == launcher or selected_digest == launcher_digest:
+        binding = os.environ.get("EMUFLOW_OPENSTA_CONTAINER_BINARY")
+        if not binding:
+            raise ValidationError("OpenSTA container engine identity lacks an explicit binary")
+        binary = Path(binding).expanduser().resolve()
+        if not binary.is_file() or not os.access(binary, os.X_OK):
+            raise ValidationError("OpenSTA container engine identity is not executable")
+        identity["executable_sha256"] = file_sha256(binary)
+        identity["launcher_sha256"] = selected_digest
+    return identity
 
 
 def _runtime_data_path(relative: Path) -> Path:

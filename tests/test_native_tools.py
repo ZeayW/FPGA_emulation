@@ -1,5 +1,6 @@
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,22 @@ from emuflow.native_tools import (
 
 
 class NativeToolsTest(unittest.TestCase):
+    def test_default_symlink_executes_beside_its_runtime_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root/"runtime/sta"
+            target.parent.mkdir()
+            target.write_text('#!/bin/sh\ncat "$(dirname "$0")/marker"\n')
+            target.chmod(0o755)
+            (target.parent/"marker").write_text("correct-runtime\n")
+            install = root/"install/bin"
+            install.mkdir(parents=True)
+            (install/"sta").symlink_to(target)
+            with patch.dict(os.environ, {"EMUFLOW_NATIVE_ROOT":str(install.parent)}):
+                resolved = resolve_native_executable("sta")
+                completed = subprocess.run([resolved],capture_output=True,text=True,check=True)
+            self.assertEqual(completed.stdout,"correct-runtime\n")
+
     def test_yosys_build_does_not_depend_on_ambient_tcl(self) -> None:
         cmake = (Path(__file__).resolve().parents[1] / "CMakeLists.txt").read_text(
             encoding="utf-8"

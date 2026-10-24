@@ -103,6 +103,17 @@ def test_engine_identity_uses_executable_seal_for_archive_build(tmp_path):
     }
 
 
+def test_engine_identity_retains_distinct_container_launcher_seal(tmp_path):
+    log = tmp_path/"opensta.log"
+    for revision in ("abcdef123456", "GITDIR-NOT"):
+        log.write_text(f"EmuFlow OpenSTA executable SHA256 {'a'*64}\n"
+                       f"EmuFlow OpenSTA launcher SHA256 {'b'*64}\n"
+                       f"OpenSTA 3.1.0 {revision} Copyright\n")
+        identity = read_engine_identity(log)
+        assert identity["executable_sha256"] == "a"*64
+        assert identity["launcher_sha256"] == "b"*64
+
+
 @pytest.mark.parametrize("field", [0, 1, 2])
 def test_measurement_rejects_corrupt_event_scalars(tmp_path, field):
     rows = example()
