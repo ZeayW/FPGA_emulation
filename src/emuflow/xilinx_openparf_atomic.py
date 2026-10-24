@@ -1655,9 +1655,21 @@ def _materialize_site_database(
     with _DEVICE_STATIC_CACHE_LOCK:
         source = device_static.get("site_database")
         if isinstance(source, Path) and source.is_file():
+            from .native_tools import native_file_generation
+            before = native_file_generation(source)
+            expected = device_static["site_database_generation"]
+            if before != expected:
+                if (before[:5] != expected[:5]
+                        or _sha256(source) != device_static["site_database_sha256"]
+                        or native_file_generation(source) != before):
+                    raise ValidationError("OpenPARF immutable device site map changed after publication")
+            if path.exists() and os.path.samefile(source,path):
+                device_static["site_database_generation"] = before
+                return int(device_static["site_count"])
             path.unlink(missing_ok=True)
             try:
                 os.link(source, path)
+                device_static["site_database_generation"] = native_file_generation(source)
                 return int(device_static["site_count"])
             except OSError:
                 # A different filesystem cannot share an inode. Preserve the
@@ -1665,6 +1677,14 @@ def _materialize_site_database(
                 # mutable SQLite file behind the cache's back.
                 pass
         count = _write_site_database(path, device_static["coordinate_system"])
+        # Seal this immutable device generation once, before publishing any
+        # hard links. Later users reuse this seal instead of hashing per FPGA.
+        from .native_tools import native_file_generation
+        generation = native_file_generation(path)
+        device_static["site_database_sha256"] = _sha256(path)
+        if native_file_generation(path) != generation:
+            raise ValidationError("OpenPARF device site map changed while sealing")
+        device_static["site_database_generation"] = generation
         device_static["site_database"] = path
         device_static["site_count"] = count
         return count
@@ -5083,6 +5103,7 @@ def export_xilinx_openparf_atomic(
         "schema": XILINX_OPENPARF_SITE_DATABASE_SCHEMA,
         "file": site_database_path.name,
         "sites": site_count,
+        "sha256": device_static["site_database_sha256"],
     }
     if hardblock_groups:
         constraint_path = output_dir / "physical-macro-groups.json"
@@ -5157,6 +5178,7 @@ def export_xilinx_openparf_atomic(
         "schema": OPENPARF_ATOMIC_MANIFEST_SCHEMA,
         "status": "pass", "mode": "native-atomic-mixed-resource-qualification",
         "part": architecture.part, "atoms": len(atoms), "nets": net_count,
+        "site_database": dict(site_database_descriptor),
         "net_export": {
             "emitted": net_count,
             "dropped_single_endpoint": dropped_single_endpoint_nets,

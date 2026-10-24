@@ -164,7 +164,9 @@ Phase 6 maintains baseline transport and optional Chimew. The independent
 placement-aware planner, its executable/CLI and its comparison arm are retired;
 shared pin/electrical validation remains. `EMUFLOW_BUILD_CHIMEW` builds the four
 Chimew kernels. Fixed-board adapters support sealed LVDS P/N channels; the
-lookahead uses the selected Xilinx backend and source-qualified package geometry. See the
+lookahead uses the selected Xilinx backend and source-qualified package geometry.
+Shared device site maps carry a producer content seal; legitimate hard-link
+publication is distinguished from changed content. See the
 [Phase 6 interface](docs/USER_GUIDE.md#phase-6-providers).
 These production outputs stay compact without requiring a managed-storage flag;
 Python still publishes the compact manifest.

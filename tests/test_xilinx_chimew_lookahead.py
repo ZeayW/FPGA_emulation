@@ -86,7 +86,7 @@ def case(tmp_path, fixed_case, request):
             from emuflow.native_tools import native_file_generation
             stages['rapidwright_implementation']={
                 'placement':{'site_database':{'schema':'emuflow.openparf-atomic-site-database/v1',
-                    'path':str(sites),'generation':list(native_file_generation(sites))}},
+                    'path':str(sites),'generation':list(native_file_generation(sites)),'sha256':file_sha256(sites)}},
                 'result':{'artifacts':{'mapped':report['mapped_index'],
                     'physical_handoff':{'path':str(handoff),'sha256':file_sha256(handoff)}}}}
         records.append({'fpga':fpga.id,'status':'pass','active':True,'stages':stages})
@@ -289,3 +289,71 @@ def test_preflight_catalog_is_reused_without_rescanning_the_device_graph(case):
     with patch('emuflow.xilinx_chimew_geometry.read_xilinx_package_geometry',side_effect=AssertionError('device graph reread')):
         with XilinxChimewGeometry(source,platform,report,architecture,package_geometry=catalog) as geometry:
             geometry.point(platform.fpgas[0].id,'n5','s0','tx')
+
+
+@pytest.mark.parametrize("case",["rapidwright"],indirect=True)
+def test_shared_site_map_seal_is_published_once_and_survives_later_hardlinks(case, tmp_path):
+    import os
+    from emuflow.native_tools import native_file_generation
+    from emuflow.xilinx_openparf_atomic import _materialize_site_database
+    platform,source,architecture,report,*_=case
+    device={'coordinate_system':{'coordinate_system':PLACEMENT_COORDINATE_SYSTEM,
+        'architecture_sha256':file_sha256(architecture),'sites':[
+            {'dense_x':index,'dense_y':0,'physical_x':3+index*10,'physical_y':4+index*10,
+             'placement_x':9999,'placement_y':8888,'site':f'S{index}',
+             'resources':{'FF':16},'physical_sites':{'FF':[f'S{index}']}} for index in range(2)]}}
+    with patch('emuflow.xilinx_openparf_atomic._sha256',wraps=file_sha256) as producer_hash:
+        for index,record in enumerate(report['fpgas']):
+            stage=record['stages']['rapidwright_implementation']
+            ref=stage['placement']['site_database']; path=Path(ref['path'])
+            _materialize_site_database(path,device)
+            _materialize_site_database(path,device)  # Idempotent publication keeps the inode.
+            ref.update(generation=list(native_file_generation(path)),sha256=device['site_database_sha256'])
+            handoff=Path(stage['result']['artifacts']['physical_handoff']['path'])
+            with closing(sqlite3.connect(handoff)) as db,db:
+                db.execute('UPDATE cluster SET site=?',(f'S{index}',))
+            stage['result']['artifacts']['physical_handoff']['sha256']=file_sha256(handoff)
+    assert producer_hash.call_count==1
+    first=Path(report['fpgas'][0]['stages']['rapidwright_implementation']['placement']['site_database']['path'])
+    os.link(first,tmp_path/'later-reader.sqlite')
+    reads=[]
+    def checked_hash(path):
+        if Path(path).samefile(first): reads.append(path)
+        return file_sha256(path)
+    with patch('emuflow.xilinx_chimew_geometry.file_sha256',side_effect=checked_hash):
+        with XilinxChimewGeometry(source,platform,report,architecture) as geometry:
+            assert geometry.point(platform.fpgas[0].id,'n5','s0','tx')[:2]==(3,4)
+            assert geometry.point(platform.fpgas[1].id,'n5','s0','rx')[:2]==(13,14)
+    assert len(reads)==1
+
+
+@pytest.mark.parametrize("case",["rapidwright"],indirect=True)
+def test_site_map_edit_cannot_hide_behind_restored_mtime(case):
+    import os
+    platform,source,architecture,report,*_=case
+    ref=report['fpgas'][0]['stages']['rapidwright_implementation']['placement']['site_database']
+    path=Path(ref['path']); before=path.stat()
+    with closing(sqlite3.connect(path)) as db,db:
+        db.execute('UPDATE sites SET physical_x=99')
+    os.utime(path,ns=(before.st_atime_ns,before.st_mtime_ns))
+    with pytest.raises(ValidationError,match='content seal disagrees'):
+        XilinxChimewGeometry(source,platform,report,architecture)
+
+
+@pytest.mark.parametrize('case',['rapidwright'],indirect=True)
+def test_site_map_publisher_rejects_a_changed_shared_generation(case, tmp_path):
+    import os
+    from emuflow.xilinx_openparf_atomic import _materialize_site_database
+    from emuflow.native_tools import native_file_generation
+    platform,source,architecture,report,*_=case
+    path=Path(report['fpgas'][0]['stages']['rapidwright_implementation']['placement']['site_database']['path'])
+    device={'site_database':path,'site_count':1,'site_database_sha256':file_sha256(path),
+            'site_database_generation':native_file_generation(path)}
+    before=path.stat()
+    with closing(sqlite3.connect(path)) as db,db:
+        db.execute('UPDATE sites SET physical_y=99')
+    os.utime(path,ns=(before.st_atime_ns,before.st_mtime_ns))
+    destination=tmp_path/'must-not-publish.sqlite'
+    with pytest.raises(ValidationError,match='changed after publication'):
+        _materialize_site_database(destination,device)
+    assert not destination.exists()

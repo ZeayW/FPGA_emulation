@@ -131,6 +131,7 @@ class XilinxChimewGeometry:
         self.pins = {}
         self.forwarded = 0
         self.source_points = OrderedDict()
+        self.site_seals = {}
         try:
             parts = {f.part for f in platform.fpgas}
             if len(parts) != 1:
@@ -211,9 +212,27 @@ class XilinxChimewGeometry:
                         raise ValidationError("Chimew OpenPARF placement/source identity disagrees")
                     site_ref = producer["placement"]["site_database"]
                     site_path = Path(site_ref["path"])
+                    now = native_file_generation(site_path)
+                    expected_generation = site_ref.get("generation")
+                    digest = site_ref.get("sha256")
                     if (site_ref.get("schema") != "emuflow.openparf-atomic-site-database/v1"
-                            or site_ref.get("generation") != list(native_file_generation(site_path))):
+                            or not isinstance(expected_generation,list) or len(expected_generation)!=7
+                            or any(isinstance(v,bool) or not isinstance(v,int) for v in expected_generation)
+                            or expected_generation[:5] != list(now[:5])
+                            or not isinstance(digest,str) or len(digest)!=64
+                            or any(c not in "0123456789abcdef" for c in digest)):
                         raise ValidationError("Chimew OpenPARF site map generation differs from its producer")
+                    if expected_generation != list(now):
+                        # Managed hard-link publication legitimately changes
+                        # ctime. Require the producer's original byte seal,
+                        # checking each current inode generation only once.
+                        if now not in self.site_seals:
+                            actual = file_sha256(site_path)
+                            if native_file_generation(site_path) != now:
+                                raise ValidationError("Chimew site map changed while checking its content seal")
+                            self.site_seals[now] = actual
+                        if self.site_seals[now] != digest:
+                            raise ValidationError("Chimew OpenPARF site map content seal disagrees")
                     self._attach(db, site_path, "geometry")
                     site_metadata = dict(db.execute("SELECT key,value FROM geometry.metadata"))
                     if (site_metadata.get("coordinate_system") != PLACEMENT_COORDINATE_SYSTEM

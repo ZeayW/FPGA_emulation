@@ -271,8 +271,11 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     "sites":[{"dense_x":0,"dense_y":0,"physical_x":0,"physical_y":0,
                         "placement_x":0.5,"placement_y":0.5,"site":"S0",
                         "resources":{"FF":16},"physical_sites":{"FF":["S0"]}}]})
+                from emuflow.io import file_sha256
                 return {
                     "status": "pass",
+                    "manifest":{"site_database":{"sha256":file_sha256(
+                        certificate_path.with_name("site-map.sqlite3"))}},
                     "certificate": {
                         "schema": "emuflow.openparf-atomic-placement/v2",
                         "status": "pass",

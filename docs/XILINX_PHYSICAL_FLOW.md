@@ -367,6 +367,10 @@ normalized lineage/site tables. OpenPARF/RWRoute locations come from the typed
 physical handoff and `site-map.sqlite3`, whose native tile coordinates and
 architecture seal are explicit. Named-site lookups use the site-name index;
 OpenPARF dense/site-stride coordinates are not substituted for native geometry.
+The device site-map publisher hashes each immutable generation once and reuses
+that seal for later hard links. Routine consumers check the published file
+generation. If only ctime changed, they verify the original byte seal once per
+current shared inode generation; restored mtime cannot hide changed content.
 Original instances are matched by ID, never by equal ordinals in two artifacts.
 Forwarded endpoints use placed boundary registers, with complete register
 coverage. No instance-order alias map or full placement JSON is produced.

@@ -883,6 +883,7 @@ def run_rapidwright_openparf_native_candidate_backend(
                 "path": str((qualification_root / "site-map.sqlite3").resolve()),
                 "generation": list(native_file_generation(
                     qualification_root / "site-map.sqlite3")),
+                "sha256": compact_qualification["manifest"]["site_database"]["sha256"],
             },
             "region": {
                 "scope": "full-device",
