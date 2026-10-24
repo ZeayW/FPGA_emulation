@@ -136,6 +136,18 @@ the dilation ratio. The caller must measure actual HPWL, independently certify
 the candidate, and trial-route it before acceptance. Neither experiment is
 automatically enabled in the production flow.
 
+The read-only `EmuFlowClockPathProbe --audit-site-clocks DEVICE INPUT OUTPUT`
+mode independently compares placement region metadata with RapidWright's
+device-backed site and tile regions. Input rows contain five tab-separated
+fields: case, declared clock region, declared SLR, physical site, and clock
+identity. The output seals the input SHA-256, reports mismatched relations,
+and counts distinct clocks by declared, actual-site, and actual-tile region.
+Its pass status certifies membership agreement only, not clock-routing legality.
+The configured OpenPARF clock limit and raw regional clock counts remain
+diagnostics: the [UltraScale clock structure](https://docs.amd.com/r/en-US/ug572-ultrascale-clocking/Clock-Structure)
+contains segmented routing/distribution tracks, so exact device resources and
+completed routing must establish physical acceptance.
+
 The academic literature reaches the same conclusion through different
 algorithms:
 

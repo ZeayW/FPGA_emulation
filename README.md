@@ -117,6 +117,7 @@ Hot-region selection joins qualified physical site identities to the
 source-sealed ArchitectureDB, independent of solver region reindexing.
 A separate native spreading experiment moves ordinary occupied slices as
 rigid LUT/FF groups and preserves their internal BEL assignments.
+A device-backed clock-site audit checks region membership and reports clock counts.
 Typed placement export checks its required C++ exporter before full-design
 preparation; external native installs must be selected with `EMUFLOW_NATIVE_ROOT`.
 Its output requires remapping and a new placement/routing validation; see
