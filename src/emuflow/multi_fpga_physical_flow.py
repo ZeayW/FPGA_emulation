@@ -111,7 +111,7 @@ from .virtual_board import (
     validate_virtual_binding,
     validate_virtual_board,
 )
-from .vivado_backend import run_vivado_partition_backend
+from .vivado_physical import run_indexed_vivado_partition
 from .vivado_netlist import emit_vivado_mapped_verilog
 from .yosys import import_yosys_json_indexed
 from .xilinx_physical_backend import (
@@ -873,7 +873,6 @@ def run_multi_fpga_physical_flow(
     seed: int = 1,
     route_channel_width: int = 300,
     vivado: Optional[str] = None,
-    vivado_max_timing_paths: int = 10000,
     vivado_place_directive: str = "Default",
     vivado_route_directive: str = "Default",
     rapidwright_jar: Optional[Path] = None,
@@ -2089,7 +2088,7 @@ def run_multi_fpga_physical_flow(
                     merged_ir, fpga_id, local_query_path, local_identity_path,
                     prepared_local_inputs,
                 )
-            vivado_report = run_vivado_partition_backend(
+            vivado_report = run_indexed_vivado_partition(
                 fpga=fpga_id,
                 part=fpga_part,
                 ir_path=merged_ir,
@@ -2104,7 +2103,6 @@ def run_multi_fpga_physical_flow(
                 logic_identity_path=logic_identity_path,
                 logic_query_path=logic_query_path,
                 executable=vivado,
-                max_timing_paths=vivado_max_timing_paths,
                 place_directive=vivado_place_directive,
                 route_directive=vivado_route_directive,
                 mapped_report=mapped_report,

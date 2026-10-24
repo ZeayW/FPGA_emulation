@@ -468,6 +468,9 @@ add_custom_command(
     "${CMAKE_SOURCE_DIR}/scripts/patron"
     "${EMUFLOW_INSTALL_ROOT}/scripts/patron"
   COMMAND
+    "${CMAKE_COMMAND}" -E rm -rf
+    "${EMUFLOW_INSTALL_ROOT}/scripts/vivado"
+  COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/scripts/vivado"
     "${EMUFLOW_INSTALL_ROOT}/scripts/vivado"

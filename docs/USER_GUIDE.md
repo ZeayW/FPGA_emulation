@@ -376,7 +376,13 @@ Supply the exact paths from the source run, including `--logic-path-database`
 when required by its timing contract. `--fpga fpgaN` selects a representative
 partition diagnostic and does not constitute a complete global run. The
 indexed adapter uses complete timing queries; `--vivado-max-timing-paths` is a
-legacy sampled-export option. See the [provider contract](XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider)
+retired sampled-export option, as is `--physical-vivado-max-timing-paths`.
+The independent `--timing-backend`/`--timing-vivado` selectors are removed;
+the upstream Phase 2 always uses OpenSTA, including with physical Vivado.
+The old standalone Vivado `sta` map/import commands and provider policy are
+also retired; post-route physical measurement uses the indexed Phase 7 owners.
+Vivado export and implementation require current indexed EmuIR; a whole-graph
+JSON input is rejected before tool execution. See the [provider contract](XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider)
 for current qualification and optimization limits.
 
 Standalone `multi-fpga physical` uses `--backend` for the same selection and

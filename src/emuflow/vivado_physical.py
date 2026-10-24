@@ -100,6 +100,11 @@ def run_indexed_vivado_partition(
     from .vivado_physical_timing import import_indexed_vivado_boundary, import_vivado_local_timing
     from .logic_segment_timing import import_vivado_logic_segment_timing
 
+    from .emuir_storage import is_emuir_sqlite
+    from .emuir_compact import is_compact_emuir
+
+    if not is_emuir_sqlite(ir_path) or not is_compact_emuir(ir_path):
+        raise ValidationError("Vivado physical implementation requires current indexed EmuIR")
     if not re.fullmatch(r"xc[a-z0-9-]+", part):
         raise ValidationError("Vivado requires a concrete Xilinx part")
     for kind, identity, query in (("logic", logic_identity_path, logic_query_path),

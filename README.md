@@ -123,6 +123,10 @@ it. Shared site/BEL and handoff validation remain. See the
 [backend contract](docs/XILINX_PHYSICAL_FLOW.md#backend-contract).
 RapidWright uses only native OpenPARF placement. The legacy placer selector,
 packed-cluster guidance flow and single-SLR planner are removed.
+The multi-FPGA upstream uses OpenSTA for Phase 2. The independent Vivado timing
+producer and old whole-EmuIR physical flow are retired; Vivado implementation
+consumes the current indexed Xilinx input and complete timing queries. Old
+standalone vendor STA map/import commands and provider policy are also removed.
 The typed mapped/physical handoff also feeds a shared-core RWRoute exporter;
 Python sends file references and board I/O configuration. Native export uses a
 compact cell catalog, sparse clock-net reductions and one live net of endpoints.
@@ -167,7 +171,7 @@ execution and handoff validation; published artifacts remain in the flow directo
 | Phase | Responsibility | Algorithms and tools |
 | --- | --- | --- |
 | 1 | Synthesize and map RTL; preserve connectivity, primitive parameters, and resource demand in EmuIR | [Yosys/ABC](https://github.com/YosysHQ/yosys); EmuFlow mapping profiles for VTR hard blocks, generic soft logic, and Xilinx UltraScale+ |
-| 2 | Extract timing paths and derive optimization weights | [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA); optional Vivado timing provider; EmuFlow TimingPathDB export |
+| 2 | Extract timing paths and derive optimization weights | [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA); EmuFlow TimingPathDB export |
 | 3 | Cluster and partition against resource and topology constraints | [TritonPart](https://github.com/ABKGroup/TritonPart) initialization → [PATRON](docs/ALGORITHMS.md#phase-3-initial-partitioning-and-post-processing) post-processing |
 | 4 | Route cross-FPGA multicast communication | EmuFlow global-candidate C++ router, informed by the [DAC 2025 synergistic router](https://yibolin.com/publications/papers/ROUTE_DAC2025_Wang.pdf) and [ASP-DAC 2026 timing-aware routing](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf) |
 | 5 | Assign concrete TDM lanes, slots, and dependency events | EmuFlow [Static Exact dependency scheduler](docs/ALGORITHMS.md#phase-5-tdm-ratio-lane-and-slot-assignment), integrated with [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) path identities and platform bank/ratio constraints |

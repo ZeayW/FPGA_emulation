@@ -30,10 +30,10 @@ from .physical_summary_storage import read_physical_summary
 from .vivado_backend import (
     _BOUNDARY_TIMING_SCRIPT,
     _LOGIC_TIMING_SCRIPT,
-    _run_vivado,
-    import_vivado_boundary_timing,
     write_vivado_boundary_timing_query,
 )
+from .vivado_physical import execute_vivado
+from .vivado_physical_timing import import_indexed_vivado_boundary
 from .vivado_board_flow import (
     VIVADO_BOARD_FLOW_SCHEMA,
     VIVADO_BOARD_FLOW_SCHEMA_V2,
@@ -343,14 +343,14 @@ def run_vivado_board_timing(
                 merged_ir, identity_path, boundary_query
             )
             boundary_tsv = fpga_out / "boundary-timing.tsv"
-            boundary_export = _run_vivado(
+            boundary_export = execute_vivado(
                 vivado_executable,
                 _BOUNDARY_TIMING_SCRIPT,
                 [str(dcp), str(boundary_query), str(boundary_tsv), hierarchy_prefix],
                 fpga_out,
                 "vivado-boundary-timing-export.log",
             )
-            boundary_import = import_vivado_boundary_timing(
+            boundary_import = import_indexed_vivado_boundary(
                 boundary_tsv,
                 identity_path,
                 boundary_database,
@@ -378,7 +378,7 @@ def run_vivado_board_timing(
                 logic_identity,
             )
             logic_tsv = fpga_out / "logic-segment-timing.tsv"
-            logic_export = _run_vivado(
+            logic_export = execute_vivado(
                 vivado_executable,
                 _LOGIC_TIMING_SCRIPT,
                 [

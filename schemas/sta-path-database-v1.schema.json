@@ -18,7 +18,6 @@
       "properties": {
         "provider": {
           "enum": [
-            "vivado-get-timing-path-database-v1",
             "opensta-fpga-path-database-v1"
           ]
         },

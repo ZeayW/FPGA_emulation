@@ -135,10 +135,6 @@
         "engines/openroad/src/sta",
         "engines/cudd",
         "scripts/opensta/export_timing_path_database.tcl",
-        "scripts/vivado/export_timing_path_database.tcl",
-        "scripts/vivado/analyze_timing.tcl",
-        "src/emuflow/vivado_backend.py",
-        "src/emuflow/vivado_netlist.py",
         "schemas/sta-path-database-v1.schema.json",
         "schemas/fpga-timing-model-v1.schema.json",
         "resources/timing/ultrascaleplus-softlogic-v1.json"
@@ -310,16 +306,24 @@
     },
     {
       "id": "optional-vivado-physical-provider",
-      "stage": "Phase 3 timing / Phase 7 per-FPGA physical backend",
+      "stage": "Phase 7 indexed Xilinx physical backend",
       "source_paths": [
         "src/emuflow/physical_backend.py",
         "src/emuflow/vivado_backend.py",
         "src/emuflow/vivado_netlist.py",
-        "scripts/vivado/analyze_timing.tcl",
-        "scripts/vivado/implement_partition.tcl",
-        "scripts/vivado/export_timing_path_database.tcl",
         "schemas/physical-backend-v1.schema.json",
-        "schemas/physical-partition-result-v1.schema.json"
+        "schemas/physical-partition-result-v1.schema.json",
+        "src/emuflow/vivado_physical.py",
+        "src/emuflow/vivado_indexed_netlist.py",
+        "src/emuflow/vivado_lineage.py",
+        "src/emuflow/vivado_optimization.py",
+        "src/emuflow/vivado_physical_timing.py",
+        "src/emuflow/vivado_physical_top.py",
+        "src/emuflow/vivado_source.py",
+        "scripts/vivado/implement_indexed_partition.tcl",
+        "scripts/vivado/source_inventory.tcl",
+        "scripts/vivado/resource_inventory.tcl",
+        "scripts/vivado/timing_contract.tcl"
       ],
       "build_targets": [
         "emuflow_python"

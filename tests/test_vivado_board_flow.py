@@ -261,6 +261,10 @@ for name in ('synthesized.dcp', 'placed.dcp', 'routed.dcp',
             )
             with (
                 patch(
+                    "emuflow.vivado_board_flow.EmuIR.load",
+                    side_effect=AssertionError("board wrapper loaded a complete graph"),
+                ),
+                patch(
                     "emuflow.vivado_board_flow.validate_multi_fpga_flow_report",
                     return_value={
                         "design": "counter",

@@ -86,7 +86,6 @@ from .synthesis import (
     run_generic_yosys,
     run_xilinx_ultrascaleplus_yosys_stream,
 )
-from .vivado_backend import run_vivado_timing_path_database
 from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
 from .vtr_architecture import ARCHITECTURE_TIMING_DB_SCHEMA
 from .vtr_netlist import normalize_vtr_hard_block_json
@@ -1319,28 +1318,9 @@ def _compile_preflight(ctx: _CompileContext):
             "--phase6-provider chimew requires --physical with "
             "--physical-backend open"
         )
-    if ctx.timing_backend not in {"opensta", "vivado"}:
-        raise EmuFlowError(
-            "timing backend must be 'opensta' or 'vivado'"
-        )
-    if ctx.timing_backend == "vivado" and ctx.architecture_timing_db is not None:
-        raise EmuFlowError(
-            "--architecture-timing-db applies only to timing-backend=opensta"
-        )
-    if ctx.timing_backend == "vivado" and ctx.opensta is not None:
-        raise EmuFlowError("--opensta applies only to timing-backend=opensta")
-    if ctx.timing_backend != "opensta" and ctx.timing_io is not None:
-        raise EmuFlowError(
-            "benchmark timing_io currently requires timing-backend=opensta"
-        )
-    if ctx.timing_backend == "opensta" and ctx.timing_vivado is not None:
-        raise EmuFlowError(
-            "--timing-vivado applies only to timing-backend=vivado"
-        )
-    if ctx.timing_backend == "opensta":
-        _validate_mapping_timing_contract(
-            ctx.mapping_profile, ctx.architecture_timing_db
-        )
+    _validate_mapping_timing_contract(
+        ctx.mapping_profile, ctx.architecture_timing_db
+    )
     ctx.internal_timing_database = ctx.timing_paths is None
     if ctx.partition_provider == "patron" and not ctx.internal_timing_database:
         raise EmuFlowError(
@@ -1426,7 +1406,7 @@ def _compile_preflight(ctx: _CompileContext):
             install_root=ctx.physical_openparf_install,
             python_executable=ctx.physical_openparf_python,
         )
-    if ctx.timing_backend == "opensta" and ctx.internal_timing_database:
+    if ctx.internal_timing_database:
         ctx.opensta = resolve_native_executable("sta", ctx.opensta)
         check_opensta_engine_version(ctx.opensta)
     if ctx.physical and ctx.global_timing_engine == "opensta":
@@ -1649,36 +1629,19 @@ def _compile_timing(ctx: _CompileContext):
         ctx.timing_report = None
     if ctx.internal_timing_database and ctx.prepared_timing is None:
         ctx.timing_root.mkdir(parents=True, exist_ok=True)
-        if ctx.timing_backend == "opensta":
-            sta_report = run_opensta_path_database(
-                ir_path=ctx.ir_path,
-                output_path=ctx.path_database_path,
-                clocks=ctx.clock_periods,
-                timing_io=ctx.timing_io,
-                timing_model_path=ctx.timing_model,
-                architecture_timing_db_path=ctx.architecture_timing_db,
-                executable=ctx.opensta,
-                max_paths=ctx.sta_max_paths,
-                log_path=ctx.timing_root / "opensta.log",
-                _stream_output=True,
-            )
-            timing_mode = "opensta-preplacement"
-        else:
-            platform = Platform.load(ctx.platform_path)
-            parts = {fpga.part for fpga in platform.fpgas}
-            if len(parts) != 1:
-                raise EmuFlowError(
-                    "Vivado timing backend requires one common FPGA part"
-                )
-            sta_report = run_vivado_timing_path_database(
-                ir_path=ctx.ir_path,
-                output_path=ctx.path_database_path,
-                clocks=ctx.clock_periods,
-                part=next(iter(parts)),
-                executable=ctx.timing_vivado,
-                max_paths=ctx.sta_max_paths,
-            )
-            timing_mode = "vivado-post-synthesis"
+        sta_report = run_opensta_path_database(
+            ir_path=ctx.ir_path,
+            output_path=ctx.path_database_path,
+            clocks=ctx.clock_periods,
+            timing_io=ctx.timing_io,
+            timing_model_path=ctx.timing_model,
+            architecture_timing_db_path=ctx.architecture_timing_db,
+            executable=ctx.opensta,
+            max_paths=ctx.sta_max_paths,
+            log_path=ctx.timing_root / "opensta.log",
+            _stream_output=True,
+        )
+        timing_mode = "opensta-preplacement"
         weights_report = None
         if ctx.timing_driven:
             weights_report = derive_partition_net_weights(
@@ -1692,7 +1655,7 @@ def _compile_timing(ctx: _CompileContext):
         ctx.timing_report = {
             "status": "pass",
             "mode": timing_mode,
-            "backend": ctx.timing_backend,
+            "backend": "opensta",
             "sta": sta_report,
             "optimization_enabled": ctx.timing_driven,
             **(
@@ -2167,7 +2130,6 @@ def _compile_physical(ctx: _CompileContext):
             seed=ctx.physical_seed,
             route_channel_width=ctx.physical_route_channel_width,
             vivado=ctx.physical_vivado,
-            vivado_max_timing_paths=ctx.physical_vivado_max_timing_paths,
             vivado_place_directive=ctx.physical_vivado_place_directive,
             vivado_route_directive=ctx.physical_vivado_route_directive,
             rapidwright_jar=ctx.physical_rapidwright_jar,
@@ -2635,13 +2597,11 @@ def run_multi_fpga_flow(
     ),
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     timing_driven: bool = True,
-    timing_backend: str = "opensta",
     clock_periods: Optional[Dict[str, float]] = None,
     timing_io: Optional[Mapping[str, Any]] = None,
     timing_model: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db: Optional[Path] = None,
     opensta: Optional[str] = None,
-    timing_vivado: Optional[str] = None,
     sta_max_paths: int = 200000,
     timing_criticality_scale: float = 9.0,
     timing_criticality_exponent: float = 2.0,
@@ -2679,7 +2639,6 @@ def run_multi_fpga_flow(
     physical_seed: int = 1,
     physical_route_channel_width: int = 300,
     physical_vivado: Optional[str] = None,
-    physical_vivado_max_timing_paths: int = 10000,
     physical_vivado_place_directive: str = "Default",
     physical_vivado_route_directive: str = "Default",
     physical_rapidwright_jar: Optional[Path] = None,

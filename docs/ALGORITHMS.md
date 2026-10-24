@@ -26,7 +26,9 @@ different target models, not interchangeable LUT-capacity units.
 netlist under the declared timing model and clock constraints. EmuFlow exports
 the resulting path population, endpoint identities, and slack into
 TimingPathDB, then derives criticality information for partitioning, routing,
-and TDM optimization. A Vivado adapter is available for supported vendor flows.
+and TDM optimization. This upstream producer is shared by both maintained
+Xilinx physical backends. The independent Vivado timing producer is retired;
+vendor post-route measurement belongs to Phase 7.
 
 This is pre-physical timing: inter-FPGA route, TDM events, and routed FPGA delays
 are resolved later. Phase 7 performs the final global analysis.

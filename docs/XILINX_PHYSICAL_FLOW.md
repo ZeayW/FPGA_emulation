@@ -240,10 +240,27 @@ Fixed data pads are implemented, while external clock sources remain abstract;
 absolute clock insertion/skew and board signoff are not qualified. This scope
 is retained in each physical result and its summary projection. The common
 physical-result schema accepts the native resource dimensions, resource-budget
-evidence, and explicit OOC analysis scope. The retired whole-EmuIR adapter
-remains only for explicit legacy inputs. This integration is undergoing
+evidence, and explicit OOC analysis scope. The whole-EmuIR execution adapter,
+independent pre-placement Vivado TimingPathDB producer, and sampled-export
+controls are removed. Current Vivado export and physical execution reject JSON
+EmuIR inputs; there is one indexed implementation chain. Shared primitive
+conversion remains for explicit Xilinx reference exports, and the board timing
+consumer uses the current streaming log and indexed boundary owners.
+Board-top generation reads only indexed design metadata and ports, releasing
+the view before implementation; it does not load a circuit merely to connect
+the already mapped partition.
+CMake replaces its managed Vivado script directory so deleted scripts cannot
+remain executable in an updated install. This integration is undergoing
 real-device qualification; unit tests alone do not establish routed or global
 STA success.
+
+The standalone `sta emit-vivado-cut-map`, `import-vivado-tsv`,
+`emit-vivado-net-map` and `import-vivado-path-database` commands, their vendor
+path-provider policy and cut-path script are removed with the old timing
+producer. Current OpenSTA net maps, path import/projection and original-path
+validation remain; Phase 7 vendor boundary, local and logic measurements use
+their dedicated indexed owners. Historical vendor TimingPathDB artifacts must
+be examined with the matching Git version.
 
 The exporter declares actual SQL net ordinals, including one-based or sparse
 keys. Disconnected input identities start beyond the maximum source ordinal,

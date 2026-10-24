@@ -270,12 +270,8 @@ from .synthesis import (
 )
 from .sta import (
     derive_partition_net_weights,
-    import_vivado_path_database_tsv,
-    import_vivado_sta_tsv,
     project_sta_path_database,
     validate_sta_path_database,
-    write_vivado_cut_net_map,
-    write_vivado_net_map,
 )
 from .serial_wrapper import run_phase6c
 from .serial_phy_provider import validate_serial_phy_provider_file
@@ -1903,12 +1899,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "WNS/TNS but uses timing-oblivious Phase 3-5 baselines"
         ),
     )
-    multi_fpga_compile.add_argument(
-        "--timing-backend",
-        choices=("opensta", "vivado"),
-        default="opensta",
-        help="produce the common TimingPathDB with OpenSTA or Vivado",
-    )
+
     multi_fpga_compile.add_argument(
         "--clock-period",
         action="append",
@@ -1938,7 +1929,6 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="opensta",
         help="explicit OpenSTA executable override",
     )
-    multi_fpga_compile.add_argument("--timing-vivado")
     multi_fpga_compile.add_argument(
         "--sta-max-paths", type=int, default=200000
     )
@@ -2060,9 +2050,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--physical-route-channel-width", type=int, default=300
     )
     multi_fpga_compile.add_argument("--physical-vivado")
-    multi_fpga_compile.add_argument(
-        "--physical-vivado-max-timing-paths", type=int, default=10000
-    )
+
     multi_fpga_compile.add_argument(
         "--physical-vivado-place-directive", default="Default"
     )
@@ -2187,9 +2175,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--route-channel-width", type=int, default=300
     )
     multi_fpga_physical.add_argument("--vivado")
-    multi_fpga_physical.add_argument(
-        "--vivado-max-timing-paths", type=int, default=10000
-    )
+
     multi_fpga_physical.add_argument(
         "--vivado-place-directive", default="Default"
     )
@@ -2896,35 +2882,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sta_subparsers = sta_parser.add_subparsers(
         dest="sta_command", required=True
-    )
-    sta_map = sta_subparsers.add_parser(
-        "emit-vivado-cut-map",
-        help="map stable EmuIR cut nets to mapped-Verilog net names",
-    )
-    sta_map.add_argument("--ir", type=Path, required=True)
-    sta_map.add_argument("--assignment", type=Path, required=True)
-    sta_map.add_argument("--output", "-o", type=Path, required=True)
-    sta_import = sta_subparsers.add_parser(
-        "import-vivado-tsv",
-        help="import export_cut_timing_paths.tcl output",
-    )
-    sta_import.add_argument("--input", type=Path, required=True)
-    sta_import.add_argument("--assignment", type=Path, required=True)
-    sta_import.add_argument("--output", "-o", type=Path, required=True)
-    sta_net_map = sta_subparsers.add_parser(
-        "emit-vivado-net-map",
-        help="map every stable EmuIR net to its mapped-Verilog name",
-    )
-    sta_net_map.add_argument("--ir", type=Path, required=True)
-    sta_net_map.add_argument("--output", "-o", type=Path, required=True)
-    sta_database_import = sta_subparsers.add_parser(
-        "import-vivado-path-database",
-        help="import export_timing_path_database.tcl output",
-    )
-    sta_database_import.add_argument("--input", type=Path, required=True)
-    sta_database_import.add_argument("--ir", type=Path, required=True)
-    sta_database_import.add_argument(
-        "--output", "-o", type=Path, required=True
     )
     sta_database_project = sta_subparsers.add_parser(
         "project-path-database",
@@ -4844,7 +4801,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 seed=args.seed,
                 route_channel_width=args.route_channel_width,
                 vivado=args.vivado,
-                vivado_max_timing_paths=args.vivado_max_timing_paths,
                 vivado_place_directive=args.vivado_place_directive,
                 vivado_route_directive=args.vivado_route_directive,
                 rapidwright_jar=args.rapidwright_jar,
@@ -4981,13 +4937,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.static_exact_candidate_policy
             ),
             timing_driven=args.timing_driven,
-            timing_backend=args.timing_backend,
             clock_periods=clock_periods,
             timing_io=timing_io,
             timing_model=args.timing_model,
             architecture_timing_db=args.architecture_timing_db,
             opensta=args.opensta,
-            timing_vivado=args.timing_vivado,
             sta_max_paths=args.sta_max_paths,
             timing_criticality_scale=args.timing_criticality_scale,
             timing_criticality_exponent=(
@@ -5032,9 +4986,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.physical_route_channel_width
             ),
             physical_vivado=args.physical_vivado,
-            physical_vivado_max_timing_paths=(
-                args.physical_vivado_max_timing_paths
-            ),
             physical_vivado_place_directive=(
                 args.physical_vivado_place_directive
             ),
@@ -5165,21 +5116,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0 if report["status"] == "pass" else 2
 
     if args.command == "sta":
-        if args.sta_command == "emit-vivado-cut-map":
-            report = write_vivado_cut_net_map(
-                args.ir, args.assignment, args.output
-            )
-        elif args.sta_command == "import-vivado-tsv":
-            report = import_vivado_sta_tsv(
-                args.input, args.assignment, args.output
-            )
-        elif args.sta_command == "emit-vivado-net-map":
-            report = write_vivado_net_map(args.ir, args.output)
-        elif args.sta_command == "import-vivado-path-database":
-            report = import_vivado_path_database_tsv(
-                args.input, args.ir, args.output
-            )
-        elif args.sta_command == "project-path-database":
+        if args.sta_command == "project-path-database":
             report = project_sta_path_database(
                 args.database, args.assignment, args.output
             )

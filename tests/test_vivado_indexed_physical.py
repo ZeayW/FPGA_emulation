@@ -213,10 +213,23 @@ puts pass
             rows = ["\t".join((h(kind), kind, "1.25", h("start"), h("end"))) + "\n" for kind in ("tx", "rx")]
             measured.write_text(header + "".join(rows))
             output = root / "timing.json"
-            report = import_indexed_vivado_boundary(measured, identity, output, measurement_scope="board-integrated-interface")
+            original_read_text = Path.read_text
+            def reject_whole_measurement_read(path, *args, **kwargs):
+                if path == measured:
+                    raise AssertionError("boundary timing TSV was materialized")
+                return original_read_text(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", reject_whole_measurement_read):
+                report = import_indexed_vivado_boundary(
+                    measured, identity, output, measurement_scope="board-integrated-interface",
+                    provider="vivado-board-integrated-interface-path-v1",
+                    qualification="routed-board-integrated-interface-path",
+                )
             self.assertEqual(report["endpoints"], 2)
             with read_boundary_timing_storage(output) as view:
                 self.assertEqual(view["measurement_scope"], "board-integrated-interface")
+                self.assertEqual(view["provider"], "vivado-board-integrated-interface-path-v1")
+                self.assertEqual(view["qualification"], "routed-board-integrated-interface-path")
                 self.assertEqual(view["endpoints"][0]["measurement"],
                                  "interface-startpoint-through-rx-boundary-to-shadow-capture")
             for bad in (rows[:1], rows + rows[:1], [rows[0].replace("1.25", "nan"), rows[1]],

@@ -11,17 +11,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class VivadoBoardTimingTest(unittest.TestCase):
-    def test_hierarchical_exporters_preserve_legacy_and_board_modes(self):
+    def test_hierarchical_exporters_preserve_partition_board_and_fixed_pad_modes(self):
         boundary = (ROOT / "scripts/vivado/export_boundary_timing.tcl").read_text(
             encoding="utf-8"
         )
         logic = (
             ROOT / "scripts/vivado/export_logic_segment_timing.tcl"
         ).read_text(encoding="utf-8")
-        self.assertIn("$argc != 3 && $argc != 4", boundary)
+        self.assertIn("$argc < 3 || $argc > 5", boundary)
         self.assertIn("$argc < 3 || $argc > 5", logic)
         for script in (boundary, logic):
             self.assertIn("hierarchy_prefix", script)
+            self.assertIn("emuflow_load_fixed_io_map", script)
         self.assertIn("get_pins -quiet -hier [list $port_bit]", boundary)
         self.assertIn(
             "emuflow_resolve_object $start_kind $start_name $hierarchy_prefix",
