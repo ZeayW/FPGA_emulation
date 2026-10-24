@@ -260,3 +260,8 @@ four-differential-pair implementation on XCVU19P. Its default `Quick` placement
 directive is specific to this smoke test; the production provider remains
 `Default`. Its result explicitly covers
 synthetic physical/provider qualification only.
+
+An explicit checkpoint I/O diagnostic is available as
+`scripts/vivado/inspect_checkpoint_io.tcl INPUT_DCP OUTPUT_DIRECTORY EXPECTED_PART`.
+It opens and writes a temporary checkpoint and checks its part; this is an I/O
+check and does not qualify placement, routing, or numerical timing.
