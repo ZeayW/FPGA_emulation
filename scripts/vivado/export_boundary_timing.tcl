@@ -58,7 +58,10 @@ if {[gets $input header] < 0 || $header ni [list $legacy_header "$legacy_header\
 }
 
 set output [open $output_path w]
-puts $output "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
+set disposition_format [expr {[llength [split $header "\t"]] == 7}]
+set output_header "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
+if {$disposition_format} {append output_header "\tmeasurement"}
+puts $output $output_header
 set emitted 0
 while {[gets $input line] >= 0} {
   if {$line eq ""} {
@@ -75,6 +78,14 @@ while {[gets $input line] >= 0} {
   set logical_net [emuflow_hex_decode [lindex $fields 4]]
   set boundary_cell [emuflow_hex_decode [lindex $fields 5]]
   set boundary_hint [lindex $fields 6]
+  if {[string match "optimized-away:*" $boundary_hint]} {
+    if {![regexp {^optimized-away:s(0|[1-9][0-9]*)$} $boundary_hint] || !$disposition_format} {
+      error "invalid boundary elimination proof reference"
+    }
+    puts $output "$endpoint_hex\t$kind\t\t\t\t$boundary_hint"
+    incr emitted
+    continue
+  }
   set port_bit [format {%s[%d]} $port $bit]
   if {[dict exists $fixed_io_map $port_bit]} {
     set port_bit [dict get $fixed_io_map $port_bit]
@@ -186,7 +197,9 @@ while {[gets $input line] >= 0} {
     set start_object [get_property STARTPOINT_PIN [lindex $paths 0]]
     set end_object [get_property ENDPOINT_PIN [lindex $paths 0]]
   }
-  puts $output "$endpoint_hex\t$kind\t$delay\t[emuflow_hex_encode $start_object]\t[emuflow_hex_encode $end_object]"
+  set output_row "$endpoint_hex\t$kind\t$delay\t[emuflow_hex_encode $start_object]\t[emuflow_hex_encode $end_object]"
+  if {$disposition_format} {append output_row "\tendpoint-exact"}
+  puts $output $output_row
   incr emitted
 }
 close $output

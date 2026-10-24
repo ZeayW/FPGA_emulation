@@ -188,12 +188,15 @@ def run_indexed_vivado_partition(
         query = output_dir / "boundary-query.tsv"
         query_report = write_vivado_boundary_timing_query(ir_path, boundary_identity_path, query)
         resolved = output_dir / "boundary-query-resolved.tsv"
-        resolution = resolve_timing_query(index_path, functions_path, lineage_path, query, resolved, boundary=True)
+        resolution = resolve_timing_query(index_path, functions_path, lineage_path, query, resolved, boundary=True,
+                                          optimization_proofs=proof_path, allow_eliminated=True)
         measured = output_dir / "boundary-timing.tsv"
         export = execute_vivado(executable, _vivado_script("export_boundary_timing.tcl"),
                                 [str(output_dir / "routed.dcp"), str(resolved), str(measured), *timing_arguments], output_dir, "boundary-export.log")
-        imported = import_indexed_vivado_boundary(measured, boundary_identity_path, output_dir / "boundary-timing.json",
-            measurement_scope="board-integrated-interface" if virtual_io_contract is not None else "partition-boundary")
+        with OptimizationProofView(proof_path, expected_fpga=fpga) as proof_reader:
+            imported = import_indexed_vivado_boundary(measured, boundary_identity_path, output_dir / "boundary-timing.json",
+                measurement_scope="board-integrated-interface" if virtual_io_contract is not None else "partition-boundary",
+                optimization_proofs=proof_reader)
         stages["boundary_timing"] = {"status": "pass", "query": query_report, "resolution": resolution, "export": export, "import": imported}
     for kind, identity, query, importer in (
         ("logic_segment_timing", logic_identity_path, logic_query_path, import_vivado_logic_segment_timing),
@@ -205,17 +208,12 @@ def run_indexed_vivado_partition(
             continue
         measured = output_dir / f"{kind}.tsv"
         resolved = output_dir / f"{kind}-resolved.tsv"
-        local = kind == "local_path_timing"
         resolution = resolve_timing_query(index_path, functions_path, lineage_path, query, resolved,
-                                         optimization_proofs=proof_path if local else None,
-                                         allow_eliminated=local)
+                                         optimization_proofs=proof_path, allow_eliminated=True)
         export = execute_vivado(executable, _vivado_script("export_logic_segment_timing.tcl"),
                                 [str(output_dir / "routed.dcp"), str(resolved), str(measured), *timing_arguments], output_dir, f"{kind}-export.log")
-        if local:
-            with OptimizationProofView(proof_path, expected_fpga=fpga) as proof_reader:
-                imported = importer(measured, identity, output_dir / f"{kind}.json", optimization_proofs=proof_reader)
-        else:
-            imported = importer(measured, identity, output_dir / f"{kind}.json")
+        with OptimizationProofView(proof_path, expected_fpga=fpga) as proof_reader:
+            imported = importer(measured, identity, output_dir / f"{kind}.json", optimization_proofs=proof_reader)
         stages[kind] = {"status": "pass", "resolution": resolution, "export": export, "import": imported}
     virtual_io = None
     if virtual_io_contract is not None:

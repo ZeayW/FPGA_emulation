@@ -26,14 +26,14 @@ import weakref
 
 from .errors import ValidationError
 from .io import file_sha256, read_json, write_json
+from .timing_disposition import OPTIMIZED_AWAY, validate_optimization_record
 
 
 LOGIC_SEGMENT_TIMING_SCHEMA = "emuflow.logic-segment-timing/v1"
-LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA = (
-    "emuflow.logic-segment-timing-storage/v1"
-)
+LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA_V1 = "emuflow.logic-segment-timing-storage/v1"
+LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA = "emuflow.logic-segment-timing-storage/v2"
 LOGIC_SEGMENT_TIMING_APPLICATION_ID = 0x454D5547  # ASCII "EMUG"
-LOGIC_SEGMENT_TIMING_USER_VERSION = 1
+LOGIC_SEGMENT_TIMING_USER_VERSION = 2
 _STORE_SUFFIX = ".sqlite"
 _SELECTOR_KEYS = {
     "schema", "logical_schema", "application_id", "user_version",
@@ -61,14 +61,14 @@ _SEGMENT_REQUIRED = {
 _SEGMENT_OPTIONAL = {
     "static_exact_segment_id", "start_object_kind", "end_object_kind",
     "cone_anchor_object_kind", "cone_anchor_pin", "measurement",
-    "actual_start_object", "actual_end_object",
+    "actual_start_object", "actual_end_object", "optimization_source",
 }
 _UNMEASURED_KEYS = {
     "id", "kind", "system_path", "member_path", "reason",
 }
 _UNSUPPORTED_KEYS = {"path", "reason"}
 
-_DDL = """
+_DDL_V1 = """
 CREATE TABLE metadata(
   key TEXT PRIMARY KEY NOT NULL,
   value TEXT NOT NULL
@@ -117,6 +117,21 @@ CREATE TABLE unmeasured_segments(
 CREATE UNIQUE INDEX unmeasured_segments_id_unique
   ON unmeasured_segments(segment_id);
 """
+
+
+_DDL = _DDL_V1.replace(
+    "delay_ns REAL NOT NULL CHECK(delay_ns >= 0.0)",
+    "delay_ns REAL CHECK(delay_ns >= 0.0)"
+).replace(
+    "'optimized-endpoint-collection-upper-bound'))",
+    "'optimized-endpoint-collection-upper-bound','optimized-away'))"
+).replace(
+    "actual_end_object TEXT\n)",
+    "actual_end_object TEXT, optimization_source TEXT, "
+    "CHECK((measurement='optimized-away' AND delay_ns IS NULL AND optimization_source IS NOT NULL "
+    "AND actual_start_object IS NULL AND actual_end_object IS NULL) OR "
+    "(measurement!='optimized-away' AND delay_ns IS NOT NULL AND optimization_source IS NULL))\n)"
+)
 
 _EXPECTED_COLUMNS = {
     "metadata": (
@@ -264,11 +279,11 @@ def _normalized_sql(value: Any) -> str:
     return " ".join(str(value).split())
 
 
-@lru_cache(maxsize=1)
-def _expected_sqlite_objects() -> tuple[tuple[str, str, str, str], ...]:
+@lru_cache(maxsize=2)
+def _expected_sqlite_objects(version: int = LOGIC_SEGMENT_TIMING_USER_VERSION) -> tuple[tuple[str, str, str, str], ...]:
     connection = sqlite3.connect(":memory:")
     try:
-        connection.executescript(_DDL)
+        connection.executescript(_DDL_V1 if version == 1 else _DDL)
         return tuple(
             (str(row[0]), str(row[1]), str(row[2]), _normalized_sql(row[3]))
             for row in connection.execute(
@@ -325,11 +340,11 @@ def _validate_selector(value: Any) -> dict[str, Any]:
     if (
         not isinstance(value, dict)
         or set(value) != _SELECTOR_KEYS
-        or value.get("schema") != LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA
+        or value.get("schema") not in {LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA_V1, LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA}
         or value.get("logical_schema") != LOGIC_SEGMENT_TIMING_SCHEMA
         or value.get("application_id") != LOGIC_SEGMENT_TIMING_APPLICATION_ID
         or isinstance(value.get("application_id"), bool)
-        or value.get("user_version") != LOGIC_SEGMENT_TIMING_USER_VERSION
+        or value.get("user_version") != (1 if value.get("schema") == LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA_V1 else LOGIC_SEGMENT_TIMING_USER_VERSION)
         or isinstance(value.get("user_version"), bool)
     ):
         raise ValidationError("logic segment timing selector is malformed")
@@ -389,7 +404,7 @@ def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
     user_version = connection.execute("PRAGMA user_version").fetchone()[0]
     if (
         application_id != LOGIC_SEGMENT_TIMING_APPLICATION_ID
-        or user_version != LOGIC_SEGMENT_TIMING_USER_VERSION
+        or user_version not in {1, LOGIC_SEGMENT_TIMING_USER_VERSION}
     ):
         raise ValidationError("unsupported logic segment timing store")
     objects = tuple(
@@ -399,9 +414,12 @@ def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
             "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
         )
     )
-    if objects != _expected_sqlite_objects():
+    if objects != _expected_sqlite_objects(user_version):
         raise ValidationError("logic segment timing store objects are invalid")
     for table, expected in _EXPECTED_COLUMNS.items():
+        if user_version == 2 and table == "segments":
+            expected = tuple((item[:3] + (0,) + item[4:]) if item[1] == "delay_ns" else item for item in expected)
+            expected += ((19, "optimization_source", "TEXT", 0, None, 0, 0),)
         actual = tuple(tuple(row) for row in connection.execute(
             f"PRAGMA table_xinfo({table})"
         ))
@@ -430,6 +448,7 @@ def _validate_segment(raw: Mapping[str, Any], header: Mapping[str, Any]) -> dict
     ):
         raise ValidationError("logic segment timing record is malformed")
     record = dict(raw)
+    eliminated = validate_optimization_record(record)
     strings = ("id", "system_path", "member_path", "fpga", "start_pin", "end_pin")
     delay = record.get("delay_ns")
     cut_index = record.get("cut_index")
@@ -439,11 +458,10 @@ def _validate_segment(raw: Mapping[str, Any], header: Mapping[str, Any]) -> dict
         or record["fpga"] != header["fpga"]
         or record.get("kind") not in {"launch", "transition", "capture"}
         or not _strict_nonnegative_int(cut_index)
-        or isinstance(delay, bool)
-        or not isinstance(delay, (int, float))
-        or not math.isfinite(float(delay))
-        or float(delay) < 0.0
-        or measurement not in {"endpoint-exact", "cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}
+        or (not eliminated and (isinstance(delay, bool)
+            or not isinstance(delay, (int, float))
+            or not math.isfinite(float(delay)) or float(delay) < 0.0))
+        or measurement not in {"endpoint-exact", "cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound", OPTIMIZED_AWAY}
     ):
         raise ValidationError("logic segment timing record is malformed")
     replacement = record.get("replace_tx_endpoint")
@@ -480,7 +498,7 @@ def _validate_segment(raw: Mapping[str, Any], header: Mapping[str, Any]) -> dict
             not isinstance(record[key], str) or not record[key]
         ):
             raise ValidationError("logic segment timing object trace is invalid")
-    record["delay_ns"] = float(delay)
+    record["delay_ns"] = None if eliminated else float(delay)
     record["measurement"] = measurement
     return record
 
@@ -494,7 +512,7 @@ def _segment_tuple(seq: int, record: Mapping[str, Any]) -> tuple[Any, ...]:
         record.get("start_object_kind"), record.get("end_object_kind"),
         record.get("cone_anchor_object_kind"), record.get("cone_anchor_pin"),
         record["measurement"], record.get("actual_start_object"),
-        record.get("actual_end_object"),
+        record.get("actual_end_object"), record.get("optimization_source"),
     )
 
 
@@ -506,7 +524,7 @@ def _segment_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "cut_index": int(row["cut_index"]), "fpga": str(row["fpga"]),
         "replace_tx_endpoint": row["replace_tx_endpoint"],
         "start_pin": str(row["start_pin"]), "end_pin": str(row["end_pin"]),
-        "delay_ns": float(row["delay_ns"]),
+        "delay_ns": None if row["delay_ns"] is None else float(row["delay_ns"]),
     }
     optional = {
         "static_exact_segment_id": row["static_exact_segment_id"],
@@ -518,6 +536,8 @@ def _segment_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "actual_end_object": row["actual_end_object"],
     }
     record.update({key: value for key, value in optional.items() if value is not None})
+    if "optimization_source" in row.keys() and row["optimization_source"] is not None:
+        record["optimization_source"] = str(row["optimization_source"])
     record["measurement"] = str(row["measurement"])
     return record
 
@@ -704,6 +724,8 @@ class LogicSegmentTimingView(Mapping[str, Any]):
         try:
             with _connect(self.store_path) as connection:
                 _exact_sqlite_envelope(connection)
+                if connection.execute("PRAGMA user_version").fetchone()[0] != selector["user_version"]:
+                    raise ValidationError("logic timing selector/store version disagrees")
                 metadata_rows = list(connection.execute(
                     "SELECT key,value FROM metadata ORDER BY key"
                 ))
@@ -825,7 +847,8 @@ class LogicSegmentTimingView(Mapping[str, Any]):
             "endpoint_exact_segments": counts["endpoint_exact_segments"],
             "cone_bound_segments": counts["cone_bound_segments"],
             "endpoint_collection_bound_segments": counts.get("endpoint_collection_bound_segments", 0),
-            "maximum_delay_ns": float(maximum),
+            "maximum_delay_ns": None if counts["segments"] and not (counts["endpoint_exact_segments"]+counts["cone_bound_segments"]+counts.get("endpoint_collection_bound_segments",0)) else float(maximum),
+            "optimized_away_segments": counts["segments"] - counts["endpoint_exact_segments"] - counts["cone_bound_segments"] - counts.get("endpoint_collection_bound_segments", 0),
         }
 
     def iter_segment_ids(self) -> Iterator[str]:
@@ -944,14 +967,14 @@ def write_logic_segment_timing_storage(
             batch.append(_segment_tuple(seq, record))
             if len(batch) >= 8192:
                 connection.executemany(
-                    "INSERT INTO segments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO segments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     batch,
                 )
                 batch.clear()
             segment_count += 1
         if batch:
             connection.executemany(
-                "INSERT INTO segments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO segments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 batch,
             )
         unsupported_digest = hashlib.sha256()
@@ -1149,7 +1172,7 @@ def read_logic_segment_timing_storage(
     lease: Optional[_Lease] = _Lease(path, exclusive=False)
     try:
         value = read_json(path)
-        if value.get("schema") == LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA:
+        if value.get("schema") in {LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA_V1, LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA}:
             view = LogicSegmentTimingView(
                 path,
                 expected_design=expected_design,

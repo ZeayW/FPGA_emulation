@@ -123,7 +123,7 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
         connection.execute("ATTACH DATABASE ? AS mapped", (f"file:{mapped.resolve()}?mode=ro&immutable=1",))
         connection.execute("ATTACH DATABASE ? AS functions", (f"file:{functions.resolve()}?mode=ro&immutable=1",))
         if allow_eliminated:
-            if boundary or optimization_proofs is None:
+            if optimization_proofs is None:
                 raise ValidationError("eliminated endpoint queries require a supported source proof owner")
             connection.execute("ATTACH DATABASE ? AS proofs", (f"file:{optimization_proofs.resolve()}?mode=ro&immutable=1",))
             owner = {key:json.loads(value) for key,value in connection.execute("SELECT key,value FROM proofs.metadata")}

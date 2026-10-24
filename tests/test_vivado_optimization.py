@@ -250,3 +250,110 @@ proc get_timing_paths {args} {error "eliminated path was numerically measured"}
             query.write_text(query.read_text().replace("dead/D".encode().hex(),"zero/D".encode().hex()))
             with self.assertRaisesRegex(ValidationError,"no proven endpoint"):
                 resolve_timing_query(mapped,functions,lineage,query,root/"conditional.tsv",optimization_proofs=proofs,allow_eliminated=True)
+
+    def test_indexed_logic_import_conserves_eliminated_and_measured_members(self):
+        from emuflow.logic_segment_identity_storage import write_logic_segment_identity_storage
+        from emuflow.logic_segment_timing import import_vivado_logic_segment_timing, VIVADO_LOGIC_SEGMENT_TIMING_HEADER
+        from emuflow.logic_segment_timing_storage import read_logic_segment_timing_storage
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mapped,lineage,digest,origins = self.prepare(root)
+            proofs = root/"proofs.sqlite"
+            build_optimization_proofs(mapped,lineage,proofs,mapped_sha256=digest,fpga="fpga0")
+            identity = root/"identity.json"
+            header = {"schema":"emuflow.logic-segment-identity/v1","status":"pass","design":"dut",
+                      "platform":"board","fpga":"fpga0","provider":"test","coverage":{},
+                      "system_routes_sha256":"a"*64,"tdm_schedule_sha256":"b"*64}
+            records = [{"id":f"l{i}","kind":"launch","system_path":f"p{i}","member_path":f"m{i}",
+                        "cut_index":0,"fpga":"fpga0","replace_tx_endpoint":f"tx{i}",
+                        "start_pin":"kept/Q","end_pin":"dead/D" if i == 0 else "kept/D"} for i in range(2)]
+            with write_logic_segment_identity_storage(identity,header=header,segments=records): pass
+            raw = root/"timing.tsv"
+            rows = [[r["id"].encode().hex(),r["kind"],"" if i == 0 else "2.5",
+                     r["start_pin"].encode().hex(),r["end_pin"].encode().hex(),
+                     f"optimized-away:s{origins['dead']}" if i == 0 else "endpoint-exact",
+                     "" if i == 0 else "physical/Q".encode().hex(),"" if i == 0 else "physical/D".encode().hex()]
+                    for i,r in enumerate(records)]
+            def write(): raw.write_text(VIVADO_LOGIC_SEGMENT_TIMING_HEADER+"\n"+"".join("\t".join(row)+"\n" for row in rows))
+            write()
+            with self.assertRaisesRegex(ValidationError,"proof owner"):
+                import_vivado_logic_segment_timing(raw,identity,root/"rejected.json")
+            with OptimizationProofView(proofs,expected_fpga="fpga0") as proof:
+                result = import_vivado_logic_segment_timing(raw,identity,root/"timing.json",optimization_proofs=proof)
+                self.assertEqual(result["optimized_away_segments"],1)
+                self.assertEqual(result["endpoint_exact_segments"],1)
+                with read_logic_segment_timing_storage(root/"timing.json") as view:
+                    self.assertEqual(view.selector["user_version"],2)
+                    self.assertEqual(len(view["segments"]),2)
+                    self.assertIsNone(view["segments"][0]["delay_ns"])
+                    self.assertNotIn("actual_end_object",view["segments"][0])
+                    self.assertEqual(view["segments"][1]["delay_ns"],2.5)
+                    # Removing the nullable SQL guard is rejected even with a
+                    # refreshed byte seal; it is part of the typed contract.
+                    import emuflow.logic_segment_timing_storage as store
+                    with sqlite3.connect(view.store_path) as db:
+                        with self.assertRaises(sqlite3.IntegrityError):
+                            db.execute("UPDATE segments SET delay_ns=0 WHERE measurement='optimized-away'")
+                rows[0][2] = "0"; write()
+                with self.assertRaises(ValidationError):
+                    import_vivado_logic_segment_timing(raw,identity,root/"fake.json",optimization_proofs=proof)
+                rows[0][2] = ""; rows[0][5] = f"optimized-away:s{origins['one']}"; write()
+                with self.assertRaisesRegex(ValidationError,"different source endpoint"):
+                    import_vivado_logic_segment_timing(raw,identity,root/"borrowed.json",optimization_proofs=proof)
+
+    @unittest.skipUnless(shutil.which("tclsh"), "requires Tcl interpreter")
+    def test_boundary_elimination_tcl_import_and_global_owner_validation(self):
+        from emuflow.boundary_identity_storage import write_boundary_identity_storage
+        from emuflow.boundary_timing_storage import read_boundary_timing_storage
+        from emuflow.vivado_physical_timing import import_indexed_vivado_boundary
+        from emuflow.system_timing import _endpoint_delay_database
+        from tests.test_boundary_identity_storage import _header, _record
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mapped,lineage,digest,origins = self.prepare(root)
+            proofs = root/"proof.sqlite"
+            build_optimization_proofs(mapped,lineage,proofs,mapped_sha256=digest,fpga="fpga0")
+            identity = _record("rx-0","rx",0)
+            identity["merged_ir"]["boundary_register_instances"] = ["dead"]
+            path = root/"identity.json"
+            with write_boundary_identity_storage(path,_header(),[identity]): pass
+            query,resolved,measured = root/"query.tsv",root/"resolved.tsv",root/"timing.tsv"
+            query.write_text("endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex\n"+
+                             "\t".join(["rx-0".encode().hex(),"rx","input".encode().hex(),"0","n".encode().hex(),"dead".encode().hex()])+"\n")
+            resolve_timing_query(mapped,mapped.with_name("dut.functions.sqlite"),lineage,query,resolved,
+                                 boundary=True,optimization_proofs=proofs,allow_eliminated=True)
+            wrapper = root/"run.tcl"
+            helper = Path(__file__).resolve().parents[1]/"scripts/vivado/export_boundary_timing.tcl"
+            mock = '''
+if {[catch {binary decode hex 61}]} {
+ rename binary native_binary
+ proc binary {operation format value} {
+  if {$operation eq "decode"} {return [native_binary format H* $value]}
+  native_binary scan $value H* result; return $result
+ }
+}
+proc open_checkpoint {args} {}
+proc get_clocks {args} {return {}}
+proc get_ports {args} {error "removed interface must not invent a physical port"}
+proc get_timing_paths {args} {error "removed interface must not have a numerical delay"}
+'''
+            wrapper.write_text(mock+f"\nset argv [list fake.dcp {{{resolved}}} {{{measured}}}]\nset argc 3\nsource {{{helper}}}\n")
+            result = subprocess.run([shutil.which("tclsh"),str(wrapper)],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            with self.assertRaisesRegex(ValidationError,"proof owner"):
+                import_indexed_vivado_boundary(measured,path,root/"no-owner.json")
+            with OptimizationProofView(proofs,expected_fpga="fpga0") as proof:
+                report = import_indexed_vivado_boundary(measured,path,root/"timing.json",optimization_proofs=proof)
+                self.assertIsNone(report["maximum_delay_ns"])
+                self.assertEqual(report["optimized_away_endpoints"],1)
+                from emuflow.boundary_identity_storage import read_boundary_identity_storage
+                with read_boundary_timing_storage(root/"timing.json") as timing, read_boundary_identity_storage(path) as identities:
+                    physical = {"boundary_timing":{"fpga0":timing},"boundary_identities":{"fpga0":identities},
+                                "optimization_proofs":{"fpga0":proof}}
+                    endpoints = _endpoint_delay_database(physical)
+                    self.assertIsNone(endpoints["rx-0"]["delay_ns"])
+                    self.assertIsNone(endpoints["rx-0"]["start_object"])
+                    identity["merged_ir"]["boundary_register_instances"] = ["one"]
+                    physical["boundary_identities"] = {"fpga0":{**_header(),"endpoints":[identity]}}
+                    with self.assertRaisesRegex(ValidationError,"different source endpoint"):
+                        _endpoint_delay_database(physical)

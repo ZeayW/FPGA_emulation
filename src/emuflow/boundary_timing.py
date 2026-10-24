@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .timing_disposition import OPTIMIZED_AWAY, validate_optimization_record
+
 from collections.abc import Sequence
 from itertools import zip_longest
 import math
@@ -519,6 +521,10 @@ def boundary_timing_record(
         raise ValidationError(
             f"boundary timing {endpoint_id!r} schedule entry is invalid"
         )
+    if validate_optimization_record(measurement):
+        return {"id": endpoint_id, "kind": identity["kind"], "schedule_entry": schedule_entry,
+                "delay_ns": None, "start_object": None, "end_object": None,
+                "measurement": OPTIMIZED_AWAY, "optimization_source": measurement["optimization_source"]}
     delay = measurement.get("delay_ns")
     if (
         isinstance(delay, bool)
@@ -598,6 +604,7 @@ def validate_boundary_timing_database(
     tx_count = 0
     rx_count = 0
     maximum_delay = 0.0
+    optimized_count = 0
     for identity, item in zip_longest(
         _ordered_endpoint_records(
             identities.get("endpoints"), "boundary identity"
@@ -610,23 +617,21 @@ def validate_boundary_timing_database(
         endpoint_id = item["id"]
         if item.get("kind") not in {"tx", "rx"}:
             raise ValidationError("boundary timing endpoint identity is invalid")
+        eliminated = validate_optimization_record(item)
+        optimized_count += int(eliminated)
         delay = item.get("delay_ns")
         if (
-            isinstance(delay, bool)
+            not eliminated and (isinstance(delay, bool)
             or not isinstance(delay, (int, float))
-            or not math.isfinite(float(delay))
-            or float(delay) < 0.0
+            or not math.isfinite(float(delay)) or float(delay) < 0.0)
         ):
             raise ValidationError("boundary timing endpoint delay is invalid")
         if (
             item["kind"] != identity["kind"]
             or item.get("schedule_entry") != identity.get("schedule_entry")
-            or item.get("measurement")
-            != _MEASUREMENTS_BY_SCOPE[measurement_scope][item["kind"]]
-            or not isinstance(item.get("start_object"), str)
-            or not item["start_object"]
-            or not isinstance(item.get("end_object"), str)
-            or not item["end_object"]
+            or (not eliminated and (item.get("measurement") != _MEASUREMENTS_BY_SCOPE[measurement_scope][item["kind"]]
+                or not isinstance(item.get("start_object"), str) or not item["start_object"]
+                or not isinstance(item.get("end_object"), str) or not item["end_object"]))
         ):
             raise ValidationError(
                 "boundary timing endpoint traceability is invalid"
@@ -636,7 +641,8 @@ def validate_boundary_timing_database(
             tx_count += 1
         else:
             rx_count += 1
-        maximum_delay = max(maximum_delay, float(delay))
+        if not eliminated:
+            maximum_delay = max(maximum_delay, float(delay))
     coverage = database.get("coverage")
     expected_coverage = {
         "endpoints": endpoint_count,
@@ -649,5 +655,7 @@ def validate_boundary_timing_database(
         "status": "pass",
         "fpga": database["fpga"],
         "endpoints": endpoint_count,
-        "maximum_delay_ns": maximum_delay,
+        "maximum_delay_ns": None if endpoint_count and endpoint_count == optimized_count else maximum_delay,
+        "implemented_endpoints": endpoint_count - optimized_count,
+        "optimized_away_endpoints": optimized_count,
     }

@@ -1147,3 +1147,37 @@ def test_real_opentimer_from_physical_binding(tmp_path):
                                     fixture.platform,
                                     semantic_contract=fixture.assignment["semantic_contract"])
     assert compare_system_timing(measured, reference)["status"] == "pass"
+
+
+def test_cross_member_elimination_requires_proof_and_complete_structural_chain(tmp_path):
+    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
+    from tests.test_vivado_optimization import VivadoOptimizationTests
+    from emuflow.board_link_timing import build_board_link_timing_model
+    from emuflow.runtime import build_virtual_runtime
+    from emuflow.vivado_optimization import build_optimization_proofs, OptimizationProofView
+    fixture = StaticExactSystemTimingTest(); fixture.setUp()
+    _,routes,_ = fixture._system_inputs()
+    runtime = build_virtual_runtime(fixture.schedule,fixture.platform)
+    physical = fixture._system_physical()
+    physical["board_link_timing"] = build_board_link_timing_model(fixture.platform)
+    fpga,database = next(iter(physical["logic_segment_timing"].items()))
+    segment = database["segments"][0]
+    mapped,lineage,digest,origins = VivadoOptimizationTests().prepare(tmp_path)
+    proof_path = tmp_path/"proof.sqlite"
+    build_optimization_proofs(mapped,lineage,proof_path,mapped_sha256=digest,fpga=fpga)
+    segment.update(measurement="optimized-away",delay_ns=None,optimization_source=f"s{origins['dead']}",end_pin="dead/D")
+    with pytest.raises(ValidationError,match="proof owner"):
+        bind_physical_checks(runtime,routes,fixture.schedule,physical,fixture.platform)
+    with OptimizationProofView(proof_path,expected_fpga=fpga) as view:
+        physical["optimization_proofs"] = {fpga:view}
+        metadata = {}
+        checks = bind_physical_checks(runtime,routes,fixture.schedule,physical,fixture.platform,metadata=metadata)
+        assert len(checks) == 0
+        assert len(metadata["paths"]) == 1
+        timing = build_opensta_timing(runtime,metadata,())
+        assert timing["summary"]["optimized_away_paths"] == 1
+        assert timing["target_clock"]["worst_slack_bound_ns"] is None
+        assert timing["target_clock"]["tns_bound_ns"] == 0
+        segment["replace_tx_endpoint"] = "wrong"
+        with pytest.raises(ValidationError,match="binding disagrees"):
+            bind_physical_checks(runtime,routes,fixture.schedule,physical,fixture.platform)

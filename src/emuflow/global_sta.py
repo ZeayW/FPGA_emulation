@@ -1542,6 +1542,42 @@ the Python event propagator or consume its per-path numerical results.
                 )
                 if [s["cut_index"] for s in chain] != list(range(len(record["cut_nets"])+1)):
                     raise ValidationError("global STA missing original-member logic segments")
+                eliminated_segments = [s for s in chain if validate_optimization_record(s)]
+                eliminated_interfaces = []
+                for hop in record["scheduled_hops"]:
+                    for key in ("tx_endpoint", "rx_endpoint"):
+                        endpoint = endpoints.get(hop[key])
+                        if isinstance(endpoint, Mapping) and validate_optimization_record(endpoint):
+                            require_optimization_proof(physical, endpoint["optimization_fpga"], endpoint["optimization_source"])
+                            eliminated_interfaces.append(endpoint)
+                for segment in eliminated_segments:
+                    require_optimization_proof(physical, segment["fpga"], segment["optimization_source"], segment)
+                if eliminated_segments or eliminated_interfaces:
+                    # Consume and validate the complete original chain even when
+                    # a proven absent dependency makes numerical checks inapplicable.
+                    seen_entries = set()
+                    periods = set()
+                    for k, net in enumerate(record["cut_nets"]):
+                        hops = by_demand.get(demand_by_net[net], [])
+                        if (not hops or chain[k]["replace_tx_endpoint"] != hops[0]["tx_endpoint"]
+                                or chain[k]["kind"] != ("launch" if k == 0 else "transition")):
+                            raise ValidationError("global STA eliminated cut/segment binding disagrees")
+                        for hop in hops:
+                            eid = hop["schedule_entry"]
+                            if eid in seen_entries or hop["tx_endpoint"] not in endpoints or hop["rx_endpoint"] not in endpoints:
+                                raise ValidationError("global STA eliminated path has incomplete endpoint/event coverage")
+                            seen_entries.add(eid)
+                            periods.add(float(hop["tdm_slot_ns"]))
+                    if (chain[-1]["kind"] != "capture" or chain[-1]["replace_tx_endpoint"] is not None
+                            or len(periods) != 1 or len(seen_entries) != len(record["scheduled_hops"])):
+                        raise ValidationError("global STA eliminated path has incomplete segment/event coverage")
+                    proof_segment = eliminated_segments[0] if eliminated_segments else eliminated_interfaces[0]
+                    proof_fpga = proof_segment.get("fpga",proof_segment.get("optimization_fpga"))
+                    path_metadata.append(member, representative_path=record["path"], path_scope="cross-fpga",
+                        clock_domain=record.get("clock_domain"), target_period_ns=record["clock_period_ns"],
+                        physical_logic_segments_cone_bound=False, interconnect_delay_model=None,
+                        optimization_source=proof_segment["optimization_source"], optimization_fpga=proof_fpga)
+                    continue
                 origin = 0.0
                 trailing = ()
                 ratio_mode = any(board_links[h["link"]].tdm_delay_model is not None

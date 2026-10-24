@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .timing_disposition import is_optimized_away, require_boundary_optimization_proof
+
 import math
 import heapq
 from typing import Any, Dict, List, Mapping, Optional, Sequence
@@ -166,7 +168,7 @@ def _logic_partition_sequence(
 
 def _endpoint_delay_database(
     physical_summary: Mapping[str, Any],
-) -> Optional[Dict[str, float]]:
+) -> Optional[Dict[str, Any]]:
     raw_timing = physical_summary.get("boundary_timing")
     if raw_timing is None:
         return None
@@ -175,19 +177,23 @@ def _endpoint_delay_database(
         raise ValidationError("physical boundary timing/identity maps are invalid")
     if set(raw_timing) != set(identities):
         raise ValidationError("physical boundary timing FPGA coverage disagrees")
-    result: Dict[str, float] = {}
+    result: Dict[str, Any] = {}
     for fpga, database in raw_timing.items():
         validate_boundary_timing_database(database, identities[fpga])
-        for endpoint in database["endpoints"]:
+        from .boundary_timing import _ordered_endpoint_records
+        for endpoint,identity in zip(
+                _ordered_endpoint_records(database["endpoints"], "boundary timing"),
+                _ordered_endpoint_records(identities[fpga]["endpoints"], "boundary identity")) :
             endpoint_id = endpoint["id"]
             if endpoint_id in result:
                 raise ValidationError(
                     f"duplicate physical boundary timing endpoint {endpoint_id!r}"
                 )
-            result[endpoint_id] = _finite_number(
-                endpoint["delay_ns"],
-                f"physical boundary endpoint {endpoint_id}",
-            )
+            if is_optimized_away(endpoint):
+                require_boundary_optimization_proof(physical_summary,fpga,endpoint,identity)
+                result[endpoint_id] = {**endpoint,"optimization_fpga":fpga}
+            else:
+                result[endpoint_id] = _finite_number(endpoint["delay_ns"], f"physical boundary endpoint {endpoint_id}")
     return result
 
 
@@ -533,6 +539,8 @@ def _local_path_database(
                     f"duplicate physical local timing path {path_id!r}"
                 )
             ids.add(path_id)
+            if is_optimized_away(item):
+                raise ValidationError("explicit optimization dispositions require the global OpenSTA timing engine")
             delay = float(item["delay_ns"])
             period = float(item["clock_period_ns"])
             virtual_period = _runtime_clock_period_ns(
@@ -659,6 +667,8 @@ def build_system_timing(
 
     delays = _physical_delay_database(physical_summary)
     endpoint_delays = _endpoint_delay_database(physical_summary)
+    if endpoint_delays is not None and any(isinstance(v, Mapping) for v in endpoint_delays.values()):
+        raise ValidationError("explicit optimization dispositions require the global OpenSTA timing engine")
     logic_segments = _logic_segment_database(physical_summary)
     board_link_delays = _board_link_delay_database(
         physical_summary, platform
@@ -829,9 +839,9 @@ def build_system_timing(
                             "endpoint replacement accounting"
                         )
                     unreplaced_interface = max(0.0, unreplaced_interface)
-                    segment_delay = sum(
-                        float(segment["delay_ns"]) for segment in segments
-                    )
+                    if any(is_optimized_away(segment) for segment in segments):
+                        raise ValidationError("explicit optimization dispositions require the global OpenSTA timing engine")
+                    segment_delay = sum(float(segment["delay_ns"]) for segment in segments)
                     cone_bound_segments = sum(
                         segment.get("measurement", "endpoint-exact")
                         in {"cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}

@@ -42,6 +42,12 @@ optimized-away counts separately. If every member is eliminated, WNS is N/A,
 TNS is zero, and there is no synthetic worst path. Missing or unproved members
 still make qualification incomplete.
 
+Cross-FPGA elimination uses the source-bound disposition of a required logic
+segment or shadow interface, after validating the complete segment and schedule
+chain. It does not remove scheduled events or original members from structural
+coverage. Interface and segment summaries distinguish measured and eliminated
+records; only implemented original members produce numerical event checks.
+
 The report identifies
 `implemented-original-paths-with-explicit-optimization-dispositions-v1`.
 Its original-path count and ID seal include optimized-away records, while its

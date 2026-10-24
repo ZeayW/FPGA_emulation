@@ -24,6 +24,7 @@ from .board_link_timing import (
 )
 from .boundary_timing import validate_boundary_timing_database
 from .logic_segment_timing import validate_logic_segment_timing
+from .timing_disposition import OPTIMIZED_AWAY, validate_optimization_record, require_optimization_proof, require_boundary_optimization_proof
 from .phase3_assignment_index import read_phase3_exact_semantic_partition
 from .platform import Platform
 from .routing import SYSTEM_ROUTES_SCHEMA
@@ -622,7 +623,9 @@ def _build_physical_binding(
         for fpga in sorted(raw_boundary):
             database = raw_boundary[fpga]
             validate_boundary_timing_database(database, identities[fpga])
-            for item in database["endpoints"]:
+            from .boundary_timing import _ordered_endpoint_records
+            for item, identity in zip(_ordered_endpoint_records(database["endpoints"], "boundary timing"),
+                                      _ordered_endpoint_records(identities[fpga]["endpoints"], "boundary identity")):
                 endpoint = item["id"]
                 if endpoint in endpoint_records:
                     raise ValidationError(
@@ -633,6 +636,11 @@ def _build_physical_binding(
                     raise ValidationError(
                         f"unexpected physical endpoint evidence {endpoint!r}"
                     )
+                if validate_optimization_record(item):
+                    require_boundary_optimization_proof(physical_summary,fpga,item,identity)
+                    endpoint_records[endpoint] = {**expected,"measured_min_delay_ns":None,"measured_max_delay_ns":None,
+                                                  "measurement":OPTIMIZED_AWAY,"optimization_source":item["optimization_source"]}
+                    continue
                 endpoint_records[endpoint] = {
                     **expected,
                     "measured_min_delay_ns": _non_negative_delay(
@@ -725,13 +733,14 @@ def _build_physical_binding(
                     raise ValidationError(
                         f"unexpected physical logic segment {segment_id!r}"
                     )
-                _non_negative_delay(
-                    item["delay_ns"], f"physical logic segment {segment_id}"
-                )
+                if validate_optimization_record(item):
+                    require_optimization_proof(physical_summary, fpga, item["optimization_source"], item)
+                else:
+                    _non_negative_delay(item["delay_ns"], f"physical logic segment {segment_id}")
                 logic_measurements[segment_id].append(item)
     logic_records: Dict[str, Dict[str, Any]] = {}
     for segment_id, measurements in sorted(logic_measurements.items()):
-        delays = [float(item["delay_ns"]) for item in measurements]
+        delays = [float(item["delay_ns"]) for item in measurements if item["delay_ns"] is not None]
         cone_bound = any(
             item.get("measurement", "endpoint-exact")
             in {"cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}
@@ -740,12 +749,13 @@ def _build_physical_binding(
         logic_records[segment_id] = {
             "segment": segment_id,
             "fpga": expected_logic[segment_id].get("fpga"),
-            "measured_min_delay_ns": min(delays),
-            "measured_max_delay_ns": max(delays),
+            "measured_min_delay_ns": min(delays, default=None),
+            "measured_max_delay_ns": max(delays, default=None),
+            **({"optimized_away_records": len(measurements)-len(delays)} if len(delays) != len(measurements) else {}),
             "measurement": (
-                "routed-cone-upper-bound"
-                if cone_bound
-                else "routed-endpoint-exact"
+                OPTIMIZED_AWAY if not delays else (
+                    "routed-cone-upper-bound" if cone_bound else "routed-endpoint-exact"
+                )
             ),
         }
     for segment_id, segment in expected_logic.items():
@@ -839,9 +849,11 @@ def _build_physical_binding(
         },
         "metrics": {
             "required_endpoints": len(expected_endpoints),
-            "measured_endpoints": len(endpoint_records),
+            "measured_endpoints": sum(r["measurement"] != OPTIMIZED_AWAY for r in endpoint_records.values()),
+            "optimized_away_endpoints": sum(r["measurement"] == OPTIMIZED_AWAY for r in endpoint_records.values()),
             "required_logic_segments": len(expected_logic),
-            "measured_logic_segments": len(logic_records),
+            "measured_logic_segments": sum(r["measurement"] != OPTIMIZED_AWAY for r in logic_records.values()),
+            "optimized_away_logic_segments": sum(r["measurement"] == OPTIMIZED_AWAY for r in logic_records.values()),
             "routed_board_hops": len(board_records),
             "model_only_board_hops": sum(
                 item["measurement"] == "model-only" for item in board_records

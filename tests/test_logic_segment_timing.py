@@ -774,6 +774,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
                     {
                         "explicit-routed-path-chain": 1,
                         "endpoint-longest-path-fallback": 0,
+                        "optimized-away": 0,
                     },
                 )
 
@@ -879,7 +880,10 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 "measurement_counts": {
                     "explicit-routed-path-chain": 0,
                     "endpoint-longest-path-fallback": 1,
+                    "optimized-away": 0,
                 },
+                "implemented_paths": 1,
+                "optimized_away_paths": 0,
             },
         )
 

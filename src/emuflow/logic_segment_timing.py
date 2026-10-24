@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 from .boundary_timing import BOUNDARY_IDENTITY_SCHEMA
 from .equivalence import _lut_definition
 from .errors import ValidationError
+from .timing_disposition import OPTIMIZED_AWAY, is_optimized_away, validate_optimization_record, require_optimization_proof
 from .io import read_json, write_json
 from .ir import EmuIR
 from .emuir_compact import is_compact_emuir, selected_net_records
@@ -2080,6 +2081,7 @@ def _indexed_logic_measurement_import(
     qualification: str,
     allow_missing: bool,
     allow_legacy_timing_format: bool,
+    optimization_proofs=None,
 ) -> Dict[str, Any]:
     """Join a routed TSV to a typed identity without graph-sized dictionaries."""
     from .logic_segment_identity_storage import segment_from_row
@@ -2098,8 +2100,8 @@ def _indexed_logic_measurement_import(
             "CREATE TABLE measurements("
             "ordinal INTEGER PRIMARY KEY,segment_id TEXT UNIQUE NOT NULL,"
             "kind TEXT NOT NULL,start_object TEXT NOT NULL,end_object TEXT NOT NULL,"
-            "delay_ns REAL NOT NULL,measurement TEXT NOT NULL,"
-            "actual_start_object TEXT,actual_end_object TEXT)"
+            "delay_ns REAL,measurement TEXT NOT NULL,"
+            "actual_start_object TEXT,actual_end_object TEXT,optimization_source TEXT)"
         )
         connection.execute(
             "ATTACH DATABASE ? AS identity", (str(identity.store_path),)
@@ -2161,7 +2163,14 @@ def _indexed_logic_measurement_import(
                             actual_start = None
                             actual_end = None
                             expected_fields = 5
-                        delay = float(fields[2])
+                        eliminated = vivado and measurement.startswith(OPTIMIZED_AWAY + ":")
+                        proof_source = measurement.split(":", 1)[1] if eliminated else None
+                        if eliminated:
+                            if fields[2] or actual_start or actual_end:
+                                raise ValueError("eliminated path carries physical scalars")
+                            measurement = OPTIMIZED_AWAY
+                            actual_start = actual_end = None
+                        delay = None if eliminated else float(fields[2])
                     except (IndexError, ValueError, UnicodeDecodeError) as error:
                         label = "Vivado" if vivado else "VPR"
                         raise ValidationError(
@@ -2172,26 +2181,32 @@ def _indexed_logic_measurement_import(
                         and fields[1] in {"launch", "transition", "capture"}
                         and bool(segment_id and start_object and end_object)
                         and measurement in {
-                            "endpoint-exact", "cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"
+                            "endpoint-exact", "cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound", OPTIMIZED_AWAY
                         }
-                        and (not vivado or bool(actual_start and actual_end))
-                        and math.isfinite(delay)
-                        and delay >= 0.0
+                        and (eliminated or ((not vivado or bool(actual_start and actual_end))
+                                            and math.isfinite(delay) and delay >= 0.0))
                     )
                     if not valid:
                         label = "Vivado" if vivado else "VPR"
                         raise ValidationError(
                             f"{label} logic segment timing line {line_number} is invalid"
                         )
+                    if eliminated:
+                        disposition = {"measurement": OPTIMIZED_AWAY, "delay_ns": None,
+                                       "optimization_source": proof_source,
+                                       "start_pin": start_object, "end_pin": end_object}
+                        validate_optimization_record(disposition)
+                        require_optimization_proof({"optimization_proofs": {identity["fpga"]: optimization_proofs}},
+                                                   identity["fpga"], proof_source, disposition)
                     batch.append((
                         inserted + len(batch), segment_id, fields[1],
                         start_object, end_object, delay, measurement,
-                        actual_start, actual_end,
+                        actual_start, actual_end, proof_source,
                     ))
                     if len(batch) >= 8192:
                         try:
                             connection.executemany(
-                                "INSERT INTO measurements VALUES (?,?,?,?,?,?,?,?,?)",
+                                "INSERT INTO measurements VALUES (?,?,?,?,?,?,?,?,?,?)",
                                 batch,
                             )
                         except sqlite3.IntegrityError as error:
@@ -2203,7 +2218,7 @@ def _indexed_logic_measurement_import(
                 if batch:
                     try:
                         connection.executemany(
-                            "INSERT INTO measurements VALUES (?,?,?,?,?,?,?,?,?)",
+                            "INSERT INTO measurements VALUES (?,?,?,?,?,?,?,?,?,?)",
                             batch,
                         )
                     except sqlite3.IntegrityError as error:
@@ -2292,15 +2307,17 @@ def _indexed_logic_measurement_import(
             def measured_records():
                 for row in connection.execute(
                     "SELECT i.*,m.delay_ns,m.measurement,"
-                    "m.actual_start_object,m.actual_end_object "
+                    "m.actual_start_object,m.actual_end_object,m.optimization_source "
                     "FROM identity.segments i JOIN measurements m USING(segment_id) "
                     "ORDER BY i.system_path,i.member_path,i.cut_index,i.segment_id"
                 ):
                     record = segment_from_row(row)
                     record.update({
-                        "delay_ns": float(row["delay_ns"]),
+                        "delay_ns": None if row["delay_ns"] is None else float(row["delay_ns"]),
                         "measurement": str(row["measurement"]),
                     })
+                    if row["optimization_source"] is not None:
+                        record["optimization_source"] = str(row["optimization_source"])
                     if row["actual_start_object"] is not None:
                         record["actual_start_object"] = str(
                             row["actual_start_object"]
@@ -2465,6 +2482,7 @@ def import_vivado_logic_segment_timing(
     allow_missing: bool = False,
     allow_legacy_identity: bool = False,
     allow_legacy_timing_format: bool = False,
+    optimization_proofs=None,
 ) -> Dict[str, Any]:
     from .logic_segment_identity_storage import (
         LogicSegmentIdentityView,
@@ -2485,6 +2503,7 @@ def import_vivado_logic_segment_timing(
                 qualification=qualification,
                 allow_missing=allow_missing,
                 allow_legacy_timing_format=allow_legacy_timing_format,
+                optimization_proofs=optimization_proofs,
             )
         finally:
             identity.close()
@@ -2672,7 +2691,11 @@ def validate_logic_segment_timing(
     endpoint_exact = 0
     cone_bound = 0
     collection_bound = 0
+    optimized_away = 0
     for segment in database["segments"]:
+        if validate_optimization_record(segment):
+            optimized_away += 1
+            continue
         delay = segment.get("delay_ns")
         if (
             isinstance(delay, bool)
@@ -2715,5 +2738,6 @@ def validate_logic_segment_timing(
         "endpoint_exact_segments": endpoint_exact,
         "cone_bound_segments": cone_bound,
         "endpoint_collection_bound_segments": collection_bound,
-        "maximum_delay_ns": maximum,
+        "maximum_delay_ns": None if optimized_away and optimized_away == len(database["segments"]) else maximum,
+        "optimized_away_segments": optimized_away,
     }

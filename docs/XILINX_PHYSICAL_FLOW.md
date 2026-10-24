@@ -222,8 +222,16 @@ not invent a physical endpoint trace. Version 1 measured-only generations remain
 readable. The query resolver, Tcl export, and importer preserve the disposition;
 the physical summary references one compact proof database per FPGA. Unknown
 initialization candidates remain unresolved until the vendor choice is confirmed.
-The same disposition support is required at cross-FPGA logic and interface
-boundaries before a complete optimized whole-design result can be qualified.
+Logic-segment and boundary timing storage version 2 provide the same nullable
+disposition contract and retain measured-only version 1 readers. A removed shadow
+interface must reference its canonical Phase6 boundary register; a different
+cell's proof is rejected. An unassociated DUT net or port is still unresolved.
+Cross-FPGA binding consumes every original logic segment and scheduled boundary,
+then excludes an original member from numerical STA only when a required segment
+or interface has a checked elimination proof. Missing segments, events, interfaces,
+and conditional initialization candidates still make qualification incomplete.
+The explicit Python comparison composer rejects optimization dispositions; this
+population contract currently requires the global OpenSTA engine.
 Whole-device resource budgets also apply to the final physical cell population.
 Resource accounting excludes MACRO wrappers while retaining LEAF and INTERNAL
 implementation components. LUT capacity is counted by occupied site/LUT letter

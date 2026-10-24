@@ -29,7 +29,7 @@ def validate_optimization_record(record: Mapping[str, Any]) -> bool:
     if not isinstance(source, str) or not _SOURCE.fullmatch(source):
         raise ValidationError("optimized-away timing record lacks a valid source proof reference")
     if record.get("delay_ns") is not None or any(record.get(key) is not None for key in (
-        "actual_start_object", "actual_end_object", "arrival_ns", "slack_ns",
+        "actual_start_object", "actual_end_object", "start_object", "end_object", "arrival_ns", "slack_ns",
         "system_delay_bound_ns", "target_clock_slack_bound_ns", "runtime_clock_slack_bound_ns",
     )):
         raise ValidationError("optimized-away timing record must not have numerical delay, slack, or physical endpoints")
@@ -50,4 +50,14 @@ def require_optimization_proof(physical: Mapping[str, Any], fpga: str, source: s
                  for key in ("start_pin", "end_pin")}
         if proof.get("source_cell") not in cells:
             raise ValidationError("timing elimination proof belongs to a different source endpoint")
+    return proof
+
+
+def require_boundary_optimization_proof(physical: Mapping[str, Any], fpga: str,
+                                        record: Mapping[str, Any], identity: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Bind a removed interface to its canonical Phase6 shadow cell."""
+    proof = require_optimization_proof(physical, fpga, record["optimization_source"])
+    cells = identity.get("merged_ir", {}).get("boundary_register_instances", ())
+    if proof["source_cell"] not in cells:
+        raise ValidationError("boundary elimination proof belongs to a different source endpoint")
     return proof
