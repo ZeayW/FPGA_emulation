@@ -69,12 +69,25 @@ strings and arbitrarily large integer parameters retain their exact decimal
 meaning. Large INIT payloads are not exported. DSP physical-count expansion and
 CARRY8 shared-exit conflict checks retain their existing meanings.
 
-Clock qualification derives candidates and the FDRE enable/closed-gate-chain
-relation in private file-backed SQLite tables. The net cursor joins that relation
-and route ordinals directly; no gate or safe-name map returns to Python. Native
-memory retains the fixed I/O catalog and one live net's endpoints, rather than
-the circuit-wide endpoint population. The summary records maximum live net
-endpoints. Top-port direction/width/bit bindings, duplicate physical I/O bits,
+The `native-rwroute-export-v2` implementation builds a source-scoped cell catalog
+during CELL emission: route ordinal, interned site ID and primitive/gate flags
+occupy 16 bytes per source cell. Sparse nonnegative mapped sequences use an
+additional ordered integer ID column; identities never cross artifact boundaries.
+The temporary site-name interner is released before clock and net processing.
+Clock qualification reduces distinct enable nets once, then distinct root/output
+nets once. A reverse-dependency queue computes the existing closed-gate-chain
+policy, including cycles; private SQLite scratch contains selected net IDs rather
+than endpoint copies. There is no full physical-cell window computation or
+candidate-by-candidate fanout scan.
+
+The pin cursor checks source sequence/name agreement and consumes the integer
+catalog directly. Only one live net's endpoints retain port names; cell/site/type
+strings are not copied per pin. Emitted nets restore canonical cell/port/bit and
+driver-first order. CARRY8 exit conflicts use per-cell flags rather than a second
+SQL relation. The summary records catalog bytes, visited pin rows, sparse clock
+work and maximum live net endpoints. These are implementation metrics; the
+logical TSV, clock policy and summary envelope remain unchanged. No gate or
+safe-name map returns to Python. Top-port direction/width/bit bindings, duplicate physical I/O bits,
 source cell/type ownership, schema versions, request CRC and source generations
 are checked before publication. Physical handoff readers use the common escaped
 immutable URI, including paths containing `?`, `#`, `%` or Unicode.

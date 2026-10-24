@@ -76,8 +76,9 @@ SQLite adapters and typed record owners release connections and mappings before
 publication or temporary-file retirement, including borrowed native cursors and
 lazy physical and timing-store queries.
 The typed mapped/physical handoff also feeds a shared-core RWRoute exporter;
-Python sends file references and board I/O configuration, rather than traversing
-placed cells and routed endpoints. See the
+Python sends file references and board I/O configuration. Native export uses a
+compact cell catalog, sparse clock-net reductions and one live net of endpoints.
+See the
 [physical export contract](docs/XILINX_PHYSICAL_FLOW.md#native-rwroute-export).
 The [offline handoff differential](docs/VALIDATION.md#primary-store-handoff-differential)
 can use the normal TritonPart initializer while keeping capacity/balance bounds.

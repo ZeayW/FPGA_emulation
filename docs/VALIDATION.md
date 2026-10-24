@@ -72,7 +72,12 @@ cell/expansion/gate/net count against the separately retained Python reference
 using identical mapped index, physical handoff, I/O, resource limits and source
 digests. Cover LUT6_2 pin expansion, RAM integer/binary parameters, CARRY8 shared
 exits, constants, driverless/sinkless/intra-site nets, Unicode identities, fixed
-I/O direction/bit ownership and transitive clock-gate closure. Poison Python
+I/O direction/bit ownership and transitive clock-gate closure. Include closed
+gate cycles, invalid roots/enables/sinks, mixed input/output/inout directions,
+shuffled source insertion order and sparse nonnegative source sequences. Reject
+orphan pin sequences and sequence/name mismatches. Require complete byte parity
+for these cases; catalog and visited-row counters check the bounded native
+representation without serving as an electrical oracle. Poison Python
 cell/pin/gate cursors on the normal typed entry to prove it uses the native
 owner. Corrupt request CRC/version/length/generation and input relations; reject
 aliased destinations and preserve prior publications. Retained mapper objects

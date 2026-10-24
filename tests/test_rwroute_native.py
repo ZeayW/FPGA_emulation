@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import random
 from pathlib import Path
 import sqlite3
 import struct
@@ -143,9 +144,11 @@ class NativeRwrouteTests(unittest.TestCase):
                             'transformed_dsp48e2_cells','qualified_clock_gates','routable_nets','excluded_nets'):
                     self.assertEqual(actual[key],expected[key],key)
                 self.assertEqual(actual['schema'],'emuflow.rwroute-export-summary/v1')
-                self.assertEqual(actual['implementation_id'],'native-rwroute-export-v1')
+                self.assertEqual(actual['implementation_id'],'native-rwroute-export-v2')
                 self.assertEqual(actual['qualified_clock_gates'],1)
                 self.assertGreater(actual['runtime_breakdown']['maximum_live_net_endpoints'],1)
+                self.assertEqual(actual['runtime_breakdown']['source_cell_catalog_bytes'],16*len(mapped['modules']['top']['cells']))
+                self.assertLessEqual(actual['runtime_breakdown']['clock_pin_rows_visited'],2*actual['runtime_breakdown']['source_pin_rows_visited'])
                 self.assertEqual({p:p.read_bytes() for p in before},before)
                 self.assertFalse(list(root.glob('.emuflow-rwroute-*')))
                 self.assertFalse(list(root.glob('*.tmp.*')))
@@ -172,6 +175,10 @@ class NativeRwrouteTests(unittest.TestCase):
     def test_invalid_source_relations_preserve_prior_output(self):
         mutations={
             'type': "UPDATE cells SET type='LUT3' WHERE id='a_lut'",
+            'source_gap': "UPDATE cells SET seq=seq+1000 WHERE id='z_ff'",
+            'pin_owner': "UPDATE cell_pins SET cell_seq=(SELECT seq FROM cells WHERE id='a_lut') WHERE cell_id='z_ff' AND port='D'",
+            'orphan_seq': "UPDATE cell_pins SET cell_seq=1000000 WHERE cell_id='z_ff' AND port='D'",
+            'orphan_label': "UPDATE cell_pins SET cell_id='missing' WHERE cell_id='z_ff' AND port='D'",
             'schema': "UPDATE metadata SET value='emuflow.xilinx-mapped-index/v99' WHERE key='schema'",
             'direction': "UPDATE cell_pins SET direction=4 WHERE cell_id='z_ff' AND port='D'",
             'width': "UPDATE cell_pins SET port_width=0 WHERE cell_id='z_ff' AND port='D'",
@@ -263,7 +270,7 @@ class NativeRwrouteTests(unittest.TestCase):
                 result=export_rwroute_input(logical_source,values[-1],values[-1],root/'native.tsv',
                     mapped_value=indexed,packed_value=packed_view,placement_value=placement_view,
                     source_sha256=DIGESTS)
-            self.assertEqual(result['implementation_id'],'native-rwroute-export-v1')
+            self.assertEqual(result['implementation_id'],'native-rwroute-export-v2')
             self.assertIn('META\tmapped_sha256\t'+DIGESTS['mapped_sha256'],(root/'native.tsv').read_text())
 
     def test_one_shot_differential_retires_payload_after_workers_exit(self):
@@ -329,3 +336,70 @@ class NativeRwrouteTests(unittest.TestCase):
                     self.assertEqual(actual['qualified_clock_gates'],2)
                     self.assertEqual(actual['qualified_clock_gates'],expected['qualified_clock_gates'])
                     self.assertEqual((root/'native.tsv').read_bytes(),(root/'reference.tsv').read_bytes())
+
+    def test_randomized_sparse_clock_graph_matches_reference_bytes(self):
+        # Contract fixtures only. Real qualification continues to use NVDLA.
+        # No FF clock sinks: invalid clock candidates may still be exported as
+        # ordinary signal logic, exposing the complete closure result in TSV.
+        for seed in range(24):
+            with self.subTest(seed=seed),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);values=fixture(root)
+                mapped,packed,placement,io,mp,handoff=values
+                rng=random.Random(seed);count=12;cells={}
+                def make(kind,connections,outputs,parameters=None):
+                    return {'type':kind,'parameters':parameters or {},'attributes':{},
+                        'connections':connections,'port_directions':{
+                            p:'output' if p in outputs else 'input' for p in connections}}
+                cells['enable']=make('FDRE',{'Q':[50]},['Q'])
+                cells['ordinary']=make('LUT1',{'O':[51]},['O'])
+                for i in range(count):
+                    # Include explicit closed cycles and trees feeding cycles,
+                    # then corrupt roots/enables/sinks to test propagation.
+                    source=(i-1)%count if seed%4==0 else rng.randrange(count+3)
+                    root_bit=1000+source if source<count else 60+source
+                    enable=50 if rng.random()<0.85 else 51
+                    cells[f'g{i:02d}']=make('LUT2',{'I0':[root_bit],'I1':[enable],'O':[1000+i]},['O'],
+                        {'INIT':rng.choice(['1000','8',8])})
+                for i in range(count):
+                    if rng.random()<0.12:
+                        cells[f'bad{i:02d}']=make('LUT1',{'I0':[1000+i],'O':[2000+i]},['O'])
+                # Inout drivers exercise direction-code normalization and
+                # stable driver ordering independently of source insertion.
+                if seed%3==0:
+                    cells['extra']=make('LUT1',{'O':[1000+seed%count]},['O'])
+                    cells['extra']['port_directions']['O']='inout'
+                items=list(cells.items());rng.shuffle(items);cells=dict(items)
+                mapped['modules']['top'].update(cells=cells,ports={})
+                packed['clusters']=[];packed['unplaced_constants']=[];placement['clusters']=[]
+                for i,(name,value) in enumerate(cells.items()):
+                    site=f'SLICE_X0Y{i}';bel='A6LUT' if value['type'].startswith('LUT') else 'AFF'
+                    assignment={'instance':name,'cell_type':value['type'],'bel':bel}
+                    packed['clusters'].append({'id':name,'kind':'slice','site_templates':['SLICEL'],
+                        'control_set':None,'assignments':[assignment]})
+                    placement['clusters'].append({'cluster':name,'site':site,'site_type':'SLICEL',
+                        'x':0,'y':i,'fixed':False,'physical_region':None,
+                        'assignments':[dict(assignment,placement_mode='fixed',site=site)]})
+                mp.unlink();handoff.unlink();write_mapped(mp,mapped)
+                write_xilinx_physical_handoff(handoff,packed,placement)
+                expected=export_rwroute_input(root/'m.json',root/'p.json',root/'l.json',root/'reference.tsv',
+                    mapped_value=mapped,packed_value=packed,placement_value=placement,source_sha256=DIGESTS,
+                    resource_limits={'lut':100,'ff':200,'dsp48':3})
+                actual=native(root,values,contract=False)
+                self.assertEqual(actual['qualified_clock_gates'],expected['qualified_clock_gates'])
+                self.assertEqual((root/'native.tsv').read_bytes(),(root/'reference.tsv').read_bytes())
+
+    def test_sparse_v2_source_sequences_remain_native_and_byte_compatible(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);values=fixture(root)
+            mapped,packed,placement,io,mp,handoff=values
+            with closing(sqlite3.connect(mp)) as db,db:
+                db.execute('UPDATE cells SET seq=1000000000000+seq*7')
+                db.execute('UPDATE cell_pins SET cell_seq=1000000000000+cell_seq*7')
+            expected=export_rwroute_input(root/'m.json',root/'p.json',root/'l.json',root/'reference.tsv',
+                mapped_value=mapped,packed_value=packed,placement_value=placement,source_sha256=DIGESTS,
+                virtual_io_contract=io,resource_limits={'lut':100,'ff':200,'dsp48':3})
+            actual=native(root,values)
+            self.assertEqual(actual['implementation_id'],'native-rwroute-export-v2')
+            self.assertEqual(actual['routable_nets'],expected['routable_nets'])
+            self.assertEqual(actual['runtime_breakdown']['source_cell_catalog_bytes'],24*len(mapped['modules']['top']['cells']))
+            self.assertEqual((root/'native.tsv').read_bytes(),(root/'reference.tsv').read_bytes())

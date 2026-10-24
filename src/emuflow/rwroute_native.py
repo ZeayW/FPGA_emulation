@@ -94,7 +94,7 @@ def export_native_rwroute(mapped_path, handoff_path, output_path, *, top, part,
                   'transformed_dsp48e2_cells', 'qualified_clock_gates', 'physical_cells',
                   'routable_nets', 'excluded_nets')
         if (result.get('schema') != 'emuflow.rwroute-export-summary/v1'
-                or result.get('status') != 'pass' or result.get('implementation_id') != 'native-rwroute-export-v1'
+                or result.get('status') != 'pass' or result.get('implementation_id') != 'native-rwroute-export-v2'
                 or result.get('output') != str(output_path)
                 or common.get('schema') != 'emuflow.native-stage-result/v1'
                 or common.get('stage') != 'phase7.export-rwroute' or common.get('status') != 'pass'

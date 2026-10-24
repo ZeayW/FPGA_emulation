@@ -9,6 +9,8 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <limits>
+#include <unordered_map>
 #include <vector>
 
 namespace emuflow::core {
@@ -135,27 +137,249 @@ std::optional<std::string> Parameter(SqliteDatabase& db, SqliteStatement& query,
   Token(value,true);
   return value;
 }
+constexpr std::uint64_t kNoOrdinal=std::numeric_limits<std::uint64_t>::max();
+constexpr std::uint32_t kNoCell=std::numeric_limits<std::uint32_t>::max();
+constexpr std::uint32_t kDual=1,kCarry=2,kFdre=4,kGate=8;
+struct Cell {
+  std::uint64_t ordinal=kNoOrdinal;
+  std::uint32_t site=0, flags=0;
+};
+static_assert(sizeof(Cell)==16,"RWRoute source catalog must remain compact");
+// Source seq belongs to this mapped artifact. Current producers use dense
+// zero-based seq; older/custom v2 stores may use sparse nonnegative integers.
+// Adapt those coordinates in compact sorted integers, never a name dictionary.
+class CellCatalog {
+ public:
+  explicit CellCatalog(SqliteDatabase& db) {
+    auto shape=db.Prepare("SELECT count(*),coalesce(min(seq),0),coalesce(max(seq),-1) FROM cells");
+    Check(shape.Step(),"mapped cell catalog shape is missing");
+    const auto count=shape.TypedInteger(0),minimum=shape.TypedInteger(1),maximum=shape.TypedInteger(2);
+    Check(count>=0 && static_cast<std::uint64_t>(count)<=kNoCell && minimum>=0,
+          "mapped cell sequence is invalid");
+    entries_.resize(static_cast<std::size_t>(count));
+    if (minimum!=0 || maximum!=count-1) {
+      source_ids_.reserve(entries_.size());
+      auto rows=db.Prepare("SELECT seq FROM cells ORDER BY seq");
+      while (rows.Step()) {
+        const auto value=rows.TypedInteger(0);
+        Check(value>=0 && (source_ids_.empty() || source_ids_.back()<value),"mapped cell sequence repeats");
+        source_ids_.push_back(value);
+      }
+      Check(source_ids_.size()==entries_.size(),"mapped cell source coverage disagrees");
+    }
+  }
+  std::uint32_t Index(Integer value) const {
+    if (source_ids_.empty()) {
+      Check(value>=0 && static_cast<std::uint64_t>(value)<entries_.size(),"mapped cell sequence is invalid");
+      return static_cast<std::uint32_t>(value);
+    }
+    const auto found=std::lower_bound(source_ids_.begin(),source_ids_.end(),value);
+    Check(found!=source_ids_.end() && *found==value,"mapped cell sequence is invalid");
+    return static_cast<std::uint32_t>(found-source_ids_.begin());
+  }
+  Integer Source(std::uint32_t value) const { return source_ids_.empty() ? value : source_ids_.at(value); }
+  Cell& operator[](std::uint32_t value) { return entries_[value]; }
+  const Cell& operator[](std::uint32_t value) const { return entries_[value]; }
+  std::size_t size() const { return entries_.size(); }
+  std::size_t bytes() const { return entries_.size()*sizeof(Cell)+source_ids_.size()*sizeof(Integer); }
+ private:
+  std::vector<Cell> entries_;
+  std::vector<Integer> source_ids_;
+};
+
 struct Io {
   std::string key, id, direction, p_port, n_port, p_pin, n_pin, p_site, n_site, port, standard;
   Integer bit=0,width=0,net=0,ordinal=0;
+  std::uint32_t site=0;
 };
 struct Endpoint {
-  Integer net=0, ordinal=-1;
-  std::string cell,pin,site,route_pin,type;
-  bool driver=false,gate=false,io=false;
+  Integer net=0,bit=0,width=0;
+  std::string port;
+  std::uint32_t source=0;
+  bool driver=false,io=false;
 };
 bool IsClock(const std::string& pin) {
   return pin=="C" || pin=="CLK" || pin=="CLKARDCLK" || pin=="CLKBWRCLK";
 }
-const char* kPhysicalCells=R"SQL(
- WITH physical_cells AS (
-   SELECT a.instance,c.type,a.physical_site,
-     ? + sum(CASE WHEN c.type='LUT6_2' THEN 2 ELSE 1 END) OVER (
-       ORDER BY a.instance ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
-       - CASE WHEN c.type='LUT6_2' THEN 2 ELSE 1 END AS route_ordinal
-   FROM physical.assignment AS a JOIN cells AS c ON c.id=a.instance
- )
-)SQL";
+std::string LogicalPin(const Endpoint& e) {
+  return e.width==1 ? e.port : e.port+"["+std::to_string(e.bit)+"]";
+}
+// Cursor columns: net, source seq, port, bit, width, direction,
+// independently joined source-label agreement, I/O namespace tag.
+std::optional<Endpoint> ReadEndpoint(SqliteStatement& row,const CellCatalog& cells,
+                                     const std::vector<Io>& ios) {
+  Endpoint e;e.net=row.TypedInteger(0);e.io=row.TypedInteger(7)!=0;
+  const auto source=row.TypedInteger(1);
+  Check(!row.IsNull(6) && row.TypedInteger(6)==1,"mapped pin cell sequence/identity disagree");
+  if (e.io) {
+    Check(source>=0 && static_cast<std::uint64_t>(source)<ios.size(),"RWRoute I/O ordinal is invalid");
+    e.source=source;
+  } else {
+    e.source=cells.Index(source);
+    if (cells[e.source].ordinal==kNoOrdinal) return std::nullopt;
+  }
+  e.port=row.TypedText(2);e.bit=row.TypedInteger(3);e.width=row.TypedInteger(4);
+  const auto direction=row.TypedInteger(5);
+  Check(e.width>0 && e.bit>=0 && e.bit<e.width && direction>=0 && direction<=2,
+        "indexed mapped pin row is invalid");
+  Token(e.port);e.driver=direction!=0;
+  return e;
+}
+struct Driver {
+  std::uint64_t count=0;
+  std::uint32_t source=0;
+  bool io=false;
+  // Only exact scalar Q/O matter for the existing qualification policy.
+  char pin=0;
+};
+struct ClockNet {
+  Driver driver;
+  std::uint64_t sinks=0;
+  bool invalid_sink=false;
+  std::vector<std::uint32_t> candidate_sinks;
+};
+using ClockNets=std::unordered_map<Integer,ClockNet>;
+using CandidateIds=std::unordered_map<std::uint32_t,std::uint32_t>;
+struct ClockMetrics {
+  std::uint64_t candidates=0,enabled=0,pin_rows=0,selected_nets=0,dependency_edges=0;
+};
+// Each selected net is reduced once per pass, including its fixed I/O. This
+// replaces candidate-by-candidate correlated rescans of the same fanout.
+void ReduceClockNets(SqliteDatabase& db,ClockNets& nets,const CellCatalog& cells,
+                     const std::vector<Io>& ios,const CandidateIds* candidates,
+                     ClockMetrics& metrics) {
+  if (nets.empty()) return;
+  db.Execute("DELETE FROM rwroute_clock_nets");
+  {
+    SqliteTransaction transaction(db);
+    auto insert=db.Prepare("INSERT INTO rwroute_clock_nets VALUES (?)");
+    for (const auto& item:nets) { insert.BindInteger(1,item.first);insert.Execute(); }
+    transaction.Commit();
+  }
+  metrics.selected_nets+=nets.size();
+  const auto add=[&](const Endpoint& e) {
+    auto& net=nets.at(e.net);
+    if (e.driver) {
+      ++net.driver.count;net.driver.source=e.source;net.driver.io=e.io;
+      net.driver.pin=e.width==1 && e.port=="Q" ? 'Q' : e.width==1 && e.port=="O" ? 'O' : 0;
+    } else {
+      ++net.sinks;
+      if (!candidates || (e.width==1 && IsClock(e.port))) return;
+      if (!e.io && e.width==1 && e.port=="I0") {
+        const auto found=candidates->find(e.source);
+        if (found!=candidates->end()) { net.candidate_sinks.push_back(found->second);return; }
+      }
+      net.invalid_sink=true;
+    }
+  };
+  {
+    auto rows=db.Prepare(R"SQL(
+      SELECT p.net_bit,p.cell_seq,p.port,p.port_bit,p.port_width,p.direction,
+             c.id=p.cell_id,0
+        FROM rwroute_clock_nets n
+       CROSS JOIN cell_pins p ON p.net_bit=n.net_bit
+        LEFT JOIN cells c ON c.seq=p.cell_seq
+       WHERE p.value_kind=0
+    )SQL");
+    while (rows.Step()) {
+      ++metrics.pin_rows;
+      const auto endpoint=ReadEndpoint(rows,cells,ios);
+      if (endpoint) add(*endpoint);
+    }
+  }
+  for (const auto& io:ios) if (nets.find(io.net)!=nets.end()) {
+    ++metrics.pin_rows;
+    Endpoint e;e.net=io.net;e.io=true;e.source=io.ordinal;e.width=1;
+    e.port=io.direction=="rx" ? "O" : "I";e.driver=io.direction=="rx";add(e);
+  }
+}
+struct ClockCandidate {
+  std::uint32_t source;
+  Integer root,enable,output;
+};
+Integer QualifyClocks(SqliteDatabase& db,SqliteStatement& parameters,CellCatalog& cells,
+                       const std::vector<Io>& ios,std::ostream& out,ClockMetrics& metrics) {
+  std::vector<ClockCandidate> candidates;
+  {
+    auto rows=db.Prepare(R"SQL(
+      SELECT c.seq,c.record_json,
+             sum(CASE WHEN p.port='I0' THEN 1 ELSE 0 END),
+             sum(CASE WHEN p.port='I1' THEN 1 ELSE 0 END),
+             sum(CASE WHEN p.port='O' THEN 1 ELSE 0 END),
+             max(CASE WHEN p.port='I0' AND p.port_width=1 AND p.port_bit=0 AND p.value_kind=0 THEN p.net_bit END),
+             max(CASE WHEN p.port='I1' AND p.port_width=1 AND p.port_bit=0 AND p.value_kind=0 THEN p.net_bit END),
+             max(CASE WHEN p.port='O' AND p.port_width=1 AND p.port_bit=0 AND p.value_kind=0 THEN p.net_bit END)
+        FROM cells c LEFT JOIN cell_pins p ON p.cell_id=c.id
+       WHERE c.type='LUT2' GROUP BY c.id ORDER BY c.id
+    )SQL");
+    while (rows.Step()) {
+      const auto value=Parameter(db,parameters,rows.TypedText(1),"INIT");
+      const auto source=cells.Index(rows.TypedInteger(0));
+      if (!value || *value!="8" || cells[source].ordinal==kNoOrdinal ||
+          rows.TypedInteger(2)!=1 || rows.TypedInteger(3)!=1 || rows.TypedInteger(4)!=1 ||
+          rows.IsNull(5) || rows.IsNull(6) || rows.IsNull(7)) continue;
+      candidates.push_back({source,rows.TypedInteger(5),rows.TypedInteger(6),rows.TypedInteger(7)});
+    }
+  }
+  metrics.candidates=candidates.size();
+  db.Execute("CREATE TEMP TABLE rwroute_clock_nets(net_bit INTEGER PRIMARY KEY) WITHOUT ROWID");
+  {
+    ClockNets enable;
+    for (const auto& c:candidates) enable.try_emplace(c.enable);
+    ReduceClockNets(db,enable,cells,ios,nullptr,metrics);
+    candidates.erase(std::remove_if(candidates.begin(),candidates.end(),[&](const auto& c) {
+      const auto& driver=enable.at(c.enable).driver;
+      return driver.count!=1 || driver.io || driver.pin!='Q' || !(cells[driver.source].flags&kFdre);
+    }),candidates.end());
+  }
+  metrics.enabled=candidates.size();
+  CandidateIds identities;
+  for (std::uint32_t i=0;i<candidates.size();++i)
+    Check(identities.emplace(candidates[i].source,i).second,"clock candidate identity repeats");
+  ClockNets nets;
+  for (const auto& c:candidates) { nets.try_emplace(c.root);nets.try_emplace(c.output); }
+  ReduceClockNets(db,nets,cells,ios,&identities,metrics);
+  std::vector<unsigned char> alive(candidates.size());
+  std::vector<std::pair<std::uint32_t,std::uint32_t>> dependencies;
+  for (std::uint32_t i=0;i<candidates.size();++i) {
+    const auto& c=candidates[i];const auto& root=nets.at(c.root);const auto& output=nets.at(c.output);
+    auto source=identities.end();
+    if (root.driver.count==1 && !root.driver.io && root.driver.pin=='O')
+      source=identities.find(root.driver.source);
+    alive[i]=(!root.driver.count || source!=identities.end()) && output.sinks && !output.invalid_sink;
+    if (alive[i]) {
+      if (source!=identities.end()) dependencies.emplace_back(source->second,i);
+      for (auto sink:output.candidate_sinks) dependencies.emplace_back(sink,i);
+    }
+  }
+  metrics.dependency_edges=dependencies.size();
+  // Reverse dependency CSR computes the same greatest closed subset as the
+  // historical repeated SQL deletes, including cycles and one-way constraints.
+  std::vector<std::size_t> offsets(candidates.size()+1);
+  for (const auto& e:dependencies) ++offsets[e.first+1];
+  for (std::size_t i=1;i<offsets.size();++i) offsets[i]+=offsets[i-1];
+  auto cursor=offsets;
+  std::vector<std::uint32_t> dependents(dependencies.size());
+  for (const auto& e:dependencies) dependents[cursor[e.first]++]=e.second;
+  std::vector<std::uint32_t> queue;
+  for (std::uint32_t i=0;i<alive.size();++i) if (!alive[i]) queue.push_back(i);
+  for (std::size_t head=0;head<queue.size();++head) {
+    const auto source=queue[head];
+    for (std::size_t at=offsets[source];at<offsets[source+1];++at) {
+      const auto dependent=dependents[at];
+      if (alive[dependent]) { alive[dependent]=false;queue.push_back(dependent); }
+    }
+  }
+  Integer count=0;
+  // Candidate order is the source's lexical order, independent of map/hash and
+  // work-queue iteration order. No source names need to be retained or resorted.
+  for (std::uint32_t i=0;i<alive.size();++i) if (alive[i]) {
+    auto& cell=cells[candidates[i].source];cell.flags|=kGate;++count;
+    out<<"CLOCK_GATE\tc"<<cell.ordinal<<"\tI0\tI1\tO\tlut2-init-1000-fdre-latched-enable-v1\n";
+  }
+  db.Execute("DROP TABLE rwroute_clock_nets");
+  return count;
+}
 }  // namespace
 
 void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_ref,
@@ -261,15 +485,27 @@ void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_re
   if (!io_digest.empty()) out<<"META\tvirtual_io_contract_sha256\t"<<io_digest<<'\n';
   const auto cell_started=Clock::now();
   Integer ordinal=ios.size(), logical=0, expanded=0, dsps=0;
+  CellCatalog catalog(db);
+  std::unordered_map<std::string,std::uint32_t> sites;
+  const auto site_id=[&](const std::string& name) {
+    Check(sites.size()<kNoCell,"physical site catalog exceeds native identity range");
+    return sites.emplace(name,static_cast<std::uint32_t>(sites.size())).first->second;
+  };
+
   auto parameters=db.Prepare("SELECT json_type(?1,'$.parameters'),json_type(?1,?2),"
       "json_extract(?1,?2),typeof(json_extract(?1,?2)),json_extract(?1,'$.parameters'),json_type(?1)");
   {
     auto cells=db.Prepare("SELECT a.instance,c.type,a.physical_site,a.bel,"
-      "CASE WHEN c.type IN ('RAMB18E2','RAMB36E2') THEN c.record_json END "
+      "CASE WHEN c.type IN ('RAMB18E2','RAMB36E2') THEN c.record_json END,c.seq "
       "FROM physical.assignment a JOIN cells c ON c.id=a.instance ORDER BY a.instance");
     while (cells.Step()) {
       const auto name=cells.TypedText(0), type=cells.TypedText(1),site=cells.TypedText(2),bel=cells.TypedText(3);
       Token(name); Token(type); Token(site); Token(bel); ++logical;
+      auto& cell=catalog[catalog.Index(cells.TypedInteger(5))];
+      Check(cell.ordinal==kNoOrdinal,"physical source cell sequence repeats");
+      cell.ordinal=ordinal;cell.site=site_id(site);
+      cell.flags=type=="LUT6_2" ? kDual : type=="CARRY8" ? kCarry : type=="FDRE" ? kFdre : 0;
+
       if (type=="LUT6_2") {
         Check(bel.size()==5 && bel[0]>='A' && bel[0]<='H' && bel.substr(1)=="6LUT",
               "LUT6_2 cell is not assigned to a 6LUT BEL");
@@ -292,195 +528,39 @@ void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_re
       }
     }
   }
-  for (const auto& io:ios)
+  for (auto& io:ios) {
+    io.site=site_id(io.p_site);
     out<<"IOB\tc"<<io.ordinal<<'\t'<<io.id<<'\t'<<io.direction<<'\t'<<io.p_port<<'\t'<<io.n_port
        <<'\t'<<io.p_pin<<'\t'<<io.n_pin<<'\t'<<io.p_site<<'\t'<<io.n_site<<'\t'<<io.port
        <<'\t'<<io.bit<<'\t'<<io.standard<<'\n';
+  }
+  sites.clear();sites.rehash(0);
   const auto cell_seconds=Seconds(cell_started);
   const auto clock_started=Clock::now();
-  // The clock qualification relations and endpoint cursor below share the
-  // authoritative source stores. No gate, safe-name or endpoint population
-  // crosses back into Python.
-  db.Execute("CREATE TEMP TABLE rwroute_clock_candidates(name TEXT PRIMARY KEY,root_bit INTEGER NOT NULL,"
-             "enable_bit INTEGER NOT NULL,output_bit INTEGER NOT NULL,route_ordinal INTEGER NOT NULL) WITHOUT ROWID");
-  {
-    auto candidates=db.Prepare(R"SQL(
-                WITH physical_cells AS (
-                  SELECT a.instance,c.type,
-                         ? + sum(CASE WHEN c.type='LUT6_2' THEN 2 ELSE 1 END)
-                           OVER (
-                             ORDER BY a.instance
-                             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                           )
-                           - CASE WHEN c.type='LUT6_2' THEN 2 ELSE 1 END
-                           AS route_ordinal
-                    FROM physical.assignment AS a
-                    JOIN cells AS c ON c.id=a.instance
-                )
-                SELECT c.id,c.record_json,r.route_ordinal,
-                       sum(CASE WHEN p.port='I0' THEN 1 ELSE 0 END) AS i0_rows,
-                       sum(CASE WHEN p.port='I1' THEN 1 ELSE 0 END) AS i1_rows,
-                       sum(CASE WHEN p.port='O' THEN 1 ELSE 0 END) AS o_rows,
-                       max(CASE WHEN p.port='I0' AND p.port_width=1
-                                     AND p.port_bit=0 AND p.value_kind=0
-                                THEN p.net_bit END) AS root_bit,
-                       max(CASE WHEN p.port='I1' AND p.port_width=1
-                                     AND p.port_bit=0 AND p.value_kind=0
-                                THEN p.net_bit END) AS enable_bit,
-                       max(CASE WHEN p.port='O' AND p.port_width=1
-                                     AND p.port_bit=0 AND p.value_kind=0
-                                THEN p.net_bit END) AS output_bit
-                  FROM cells AS c
-             LEFT JOIN physical_cells AS r ON r.instance=c.id
-             LEFT JOIN cell_pins AS p ON p.cell_id=c.id
-                 WHERE c.type='LUT2'
-                 GROUP BY c.id,c.record_json,r.route_ordinal
-                 ORDER BY c.id
-                )SQL");
-    candidates.BindInteger(1,ios.size());
-    auto add=db.Prepare("INSERT INTO rwroute_clock_candidates VALUES (?,?,?,?,?)");
-    while (candidates.Step()) {
-      const auto value=Parameter(db,parameters,candidates.TypedText(1),"INIT");
-      if (!value || *value!="8" || candidates.IsNull(2) ||
-          candidates.TypedInteger(3)!=1 || candidates.TypedInteger(4)!=1 || candidates.TypedInteger(5)!=1 ||
-          candidates.IsNull(6) || candidates.IsNull(7) || candidates.IsNull(8)) continue;
-      add.Reset(); add.BindText(1,candidates.TypedText(0));
-      for (int i=0;i<3;++i) add.BindInteger(i+2,candidates.TypedInteger(i+6));
-      add.BindInteger(5,candidates.TypedInteger(2)); add.Execute();
-    }
-  }
-  db.Execute(R"SQL(
-                CREATE TEMP VIEW rwroute_clock_endpoints AS
-                SELECT p.net_bit,p.cell_id,
-                       CASE WHEN p.port_width=1 THEN p.port
-                            ELSE p.port || '[' || p.port_bit || ']' END AS pin,
-                       CASE WHEN p.direction IN (1,2) THEN 0 ELSE 1 END AS role
-                  FROM cell_pins AS p
-                  JOIN physical.assignment AS a ON a.instance=p.cell_id
-                 WHERE p.value_kind=0
-                UNION ALL
-                SELECT net_bit,cell_id,pin,role
-                  FROM rwroute_io_endpoints;
-
-                DELETE FROM rwroute_clock_candidates AS c
-                 WHERE (SELECT count(*) FROM rwroute_clock_endpoints AS e
-                         WHERE e.net_bit=c.enable_bit AND e.role=0) != 1
-                    OR NOT EXISTS (
-                         SELECT 1
-                           FROM rwroute_clock_endpoints AS e
-                           JOIN cells AS d ON d.id=e.cell_id
-                          WHERE e.net_bit=c.enable_bit AND e.role=0
-                            AND d.type='FDRE' AND e.pin='Q'
-                       );
-
-                CREATE TEMP TABLE rwroute_qualified_clock_gates(
-                  name TEXT PRIMARY KEY,
-                  root_bit INTEGER NOT NULL,
-                  output_bit INTEGER NOT NULL,
-                  route_ordinal INTEGER NOT NULL
-                ) WITHOUT ROWID;
-                INSERT INTO rwroute_qualified_clock_gates
-                SELECT c.name,c.root_bit,c.output_bit,c.route_ordinal
-                  FROM rwroute_clock_candidates AS c
-                 WHERE (
-                       NOT EXISTS (
-                         SELECT 1 FROM rwroute_clock_endpoints AS e
-                          WHERE e.net_bit=c.root_bit AND e.role=0
-                       )
-                       OR (
-                         (SELECT count(*) FROM rwroute_clock_endpoints AS e
-                           WHERE e.net_bit=c.root_bit AND e.role=0) = 1
-                         AND EXISTS (
-                           SELECT 1
-                             FROM rwroute_clock_endpoints AS e
-                             JOIN rwroute_clock_candidates AS n
-                               ON n.name=e.cell_id
-                            WHERE e.net_bit=c.root_bit AND e.role=0
-                              AND e.pin='O'
-                         )
-                       )
-                     )
-                   AND EXISTS (
-                         SELECT 1 FROM rwroute_clock_endpoints AS e
-                          WHERE e.net_bit=c.output_bit AND e.role=1
-                       )
-                   AND NOT EXISTS (
-                         SELECT 1
-                           FROM rwroute_clock_endpoints AS e
-                          WHERE e.net_bit=c.output_bit AND e.role=1
-                            AND e.pin NOT IN ('C','CLK','CLKARDCLK','CLKBWRCLK')
-                            AND NOT EXISTS (
-                              SELECT 1
-                                FROM rwroute_clock_candidates AS n
-                               WHERE n.name=e.cell_id AND e.pin='I0'
-                            )
-                       );
-                )SQL");
-  while (true) {
-    db.Execute(R"SQL(
-                    DELETE FROM rwroute_qualified_clock_gates AS q
-                     WHERE EXISTS (
-                           SELECT 1
-                             FROM rwroute_clock_endpoints AS e
-                             JOIN rwroute_clock_candidates AS n
-                               ON n.name=e.cell_id
-                            WHERE e.net_bit=q.root_bit AND e.role=0
-                              AND e.pin='O'
-                              AND NOT EXISTS (
-                                SELECT 1
-                                  FROM rwroute_qualified_clock_gates AS keep
-                                 WHERE keep.name=e.cell_id
-                              )
-                         )
-                        OR EXISTS (
-                           SELECT 1
-                             FROM rwroute_clock_endpoints AS e
-                             JOIN rwroute_clock_candidates AS n
-                               ON n.name=e.cell_id
-                            WHERE e.net_bit=q.output_bit AND e.role=1
-                              AND e.pin='I0'
-                              AND NOT EXISTS (
-                                SELECT 1
-                                  FROM rwroute_qualified_clock_gates AS keep
-                                 WHERE keep.name=e.cell_id
-                              )
-                         )
-                    )SQL");
-    auto changes=db.Prepare("SELECT changes()");
-    Check(changes.Step(),"RWRoute clock closure query failed");
-    if (!changes.TypedInteger(0)) break;
-  }
-  Integer gate_count=0;
-  {
-    auto gates=db.Prepare("SELECT name,route_ordinal FROM rwroute_qualified_clock_gates ORDER BY name");
-    while (gates.Step()) {
-      out<<"CLOCK_GATE\tc"<<gates.TypedInteger(1)<<"\tI0\tI1\tO\tlut2-init-1000-fdre-latched-enable-v1\n";
-      ++gate_count;
-    }
-  }
+  ClockMetrics clock_metrics;
+  const auto gate_count=QualifyClocks(db,parameters,catalog,ios,out,clock_metrics);
   const auto clock_seconds=Seconds(clock_started);
   const auto endpoint_started=Clock::now();
-  db.Execute("CREATE TEMP TABLE rwroute_carry_exits(cell TEXT NOT NULL,bit INTEGER NOT NULL,"
-             "kind TEXT NOT NULL,PRIMARY KEY(cell,bit)) WITHOUT ROWID");
-  auto carry_get=db.Prepare("SELECT kind FROM rwroute_carry_exits WHERE cell=? AND bit=?");
-  auto carry_add=db.Prepare("INSERT OR IGNORE INTO rwroute_carry_exits VALUES (?,?,?)");
-  auto endpoints=db.Prepare(std::string(kPhysicalCells)+R"SQL(
-    SELECT p.net_bit,p.cell_id,r.type,p.port,p.port_bit,p.port_width,p.direction,
-           r.physical_site,r.route_ordinal,q.name IS NOT NULL,0 AS io
-      FROM cell_pins p JOIN physical_cells r ON r.instance=p.cell_id
-      LEFT JOIN rwroute_qualified_clock_gates q ON q.name=p.cell_id
-     WHERE p.value_kind=0
+  auto endpoints=db.Prepare(R"SQL(
+    SELECT p.net_bit,p.cell_seq,p.port,p.port_bit,p.port_width,p.direction,c.id=p.cell_id,0
+      FROM cell_pins p LEFT JOIN cells c ON c.seq=p.cell_seq WHERE p.value_kind=0
     UNION ALL
-    SELECT net_bit,cell_id,'',pin,0,1,CASE WHEN role=0 THEN 1 ELSE 0 END,
-           site,route_ordinal,0,1 FROM rwroute_io_endpoints
-    ORDER BY 1,11,2,4,5
+    SELECT net_bit,route_ordinal,pin,0,1,CASE WHEN role=0 THEN 1 ELSE 0 END,1,1
+      FROM rwroute_io_endpoints
+    ORDER BY 1
   )SQL");
-  endpoints.BindInteger(1,ios.size());
   bool more=endpoints.Step();
   const auto endpoint_seconds=Seconds(endpoint_started);
   const auto net_started=Clock::now();
   Integer included=0,excluded=0,max_fanout=0;
+  std::uint64_t pin_rows=0;
   std::vector<Endpoint> group;
+  const auto route_ordinal=[&](const Endpoint& e) {
+    return e.io ? static_cast<std::uint64_t>(ios[e.source].ordinal) : catalog[e.source].ordinal;
+  };
+  const auto site=[&](const Endpoint& e) { return e.io ? ios[e.source].site : catalog[e.source].site; };
+  const auto gate=[&](const Endpoint& e) { return !e.io && (catalog[e.source].flags&kGate); };
+  auto carry_name=db.Prepare("SELECT id FROM cells WHERE seq=?");
   const auto emit=[&]() {
     if (group.empty()) return;
     max_fanout=std::max(max_fanout,static_cast<Integer>(group.size()));
@@ -490,12 +570,12 @@ void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_re
     bool boundary_clock=false,touches_gate=false,same_site=true;
     for (const auto& e:group) {
       if (e.driver) { ++driver_count; driver=&e; }
-      else { ++sink_count; boundary_clock=boundary_clock || IsClock(e.pin); }
-      touches_gate=touches_gate || e.gate;
-      same_site=same_site && e.site==group.front().site;
+      else { ++sink_count; boundary_clock=boundary_clock || (e.width==1 && IsClock(e.port)); }
+      touches_gate=touches_gate || gate(e);
+      same_site=same_site && site(e)==site(group.front());
     }
     if (boundary_clock && driver_count)
-      Check(driver_count==1 && driver->gate && driver->pin=="O",
+      Check(driver_count==1 && gate(*driver) && driver->width==1 && driver->port=="O",
             "routed clock bit "+std::to_string(bit)+" is not driven by a qualified "
             "LUT2 INIT=1000 gate with an FDRE-latched enable");
     if (driver_count!=1 || !sink_count) {
@@ -507,59 +587,61 @@ void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_re
     if (same_site && !touches_gate) {
       out<<"EXCLUDED\tn"<<bit<<"\tintra_site\n"; ++excluded; return;
     }
-    if (driver->type=="CARRY8") {
-      const auto bracket=driver->pin.find('[');
-      if (bracket!=std::string::npos && driver->pin.back()==']') {
-        const auto kind=driver->pin.substr(0,bracket);
-        auto digits=driver->pin.substr(bracket+1,driver->pin.size()-bracket-2);
+    if (!driver->io && (catalog[driver->source].flags&kCarry)) {
+      const auto pin=LogicalPin(*driver);const auto bracket=pin.find('[');
+      if (bracket!=std::string::npos && pin.back()==']') {
+        const auto kind=pin.substr(0,bracket);
+        auto digits=pin.substr(bracket+1,pin.size()-bracket-2);
         if ((kind=="CO" || kind=="O") && !digits.empty() &&
             digits.find_first_not_of("0123456789")==std::string::npos) {
           const auto first=digits.find_first_not_of('0');
           digits=first==std::string::npos ? "0" : digits.substr(first);
           if (digits.size()==1 && digits[0]<'7') {
             const auto index=digits[0]-'0';
-            carry_get.Reset(); carry_get.BindText(1,driver->cell); carry_get.BindInteger(2,index);
-            Check(!carry_get.Step() || carry_get.Text(0)==kind,
-                  "CARRY8 shared site exit is multiply driven: "+driver->cell);
-            carry_get.Reset();
-            carry_add.Reset(); carry_add.BindText(1,driver->cell); carry_add.BindInteger(2,index);
-            carry_add.BindText(3,kind); carry_add.Execute();
+            const auto own=1U<<((kind=="CO" ? 8 : 15)+index);
+            const auto other=1U<<((kind=="CO" ? 15 : 8)+index);
+            auto& flags=catalog[driver->source].flags;
+            if (flags&other) {
+              carry_name.Reset();carry_name.BindInteger(1,catalog.Source(driver->source));
+              Check(carry_name.Step(),"CARRY8 source identity is missing");
+              throw StageError(ErrorCode::kInvalidArtifact,"CARRY8 shared site exit is multiply driven: "+carry_name.TypedText(0));
+            }
+            flags|=own;
           }
         }
       }
     }
     out<<"NET\tn"<<bit<<'\t'<<(boundary_clock ? "clock" : "signal")<<'\n';
-    // Stable driver-first order matches the legacy contract. Only one live net
-    // is retained; gate/ordinal/cell populations stay in the source relations.
+    // The source net index may group direction codes differently. Restore the
+    // canonical lexical-cell/port/numeric-bit order only for emitted nets.
+    // Base route ordinal is the canonical cell rank, including LUT6_2's pair.
+    std::sort(group.begin(),group.end(),[&](const auto& a,const auto& b) {
+      if (a.io!=b.io) return !a.io;
+      const auto x=route_ordinal(a),y=route_ordinal(b);
+      if (x!=y) return x<y;
+      if (a.port!=b.port) return a.port<b.port;
+      return a.bit<b.bit;
+    });
     for (bool drivers:{true,false}) for (const auto& e:group) if (e.driver==drivers) {
-      Check(e.ordinal>=0,"cell "+e.cell+" pin "+e.pin+" has no RWRoute physical binding");
-      out<<"PIN\tn"<<bit<<"\tc"<<e.ordinal<<'\t'<<e.route_pin<<'\t'<<(drivers ? "driver" : "sink")<<'\n';
+      auto ordinal=route_ordinal(e);auto pin=LogicalPin(e);
+      if (!e.io && (catalog[e.source].flags&kDual)) {
+        if (e.port=="I0") pin="I0";
+        else if (e.port=="O5") pin="O";
+        else if (e.port=="I1") { ++ordinal;pin="I1"; }
+        else if (e.port=="O6") { ++ordinal;pin="O"; }
+        else throw StageError(ErrorCode::kInvalidArtifact,"LUT6_2 pin has no RWRoute physical binding: "+pin);
+      }
+      out<<"PIN\tn"<<bit<<"\tc"<<ordinal<<'\t'<<pin<<'\t'<<(drivers ? "driver" : "sink")<<'\n';
     }
     ++included;
   };
   while (more) {
-    Endpoint e; e.net=endpoints.TypedInteger(0); e.cell=endpoints.TypedText(1); e.type=endpoints.TypedText(2);
-    const auto port=endpoints.TypedText(3);
-    const auto pin_bit=endpoints.TypedInteger(4),width=endpoints.TypedInteger(5),direction=endpoints.TypedInteger(6);
-    Check(width>0 && pin_bit>=0 && pin_bit<width && direction>=0 && direction<=2,
-          "indexed mapped pin row is invalid");
-    e.io=endpoints.TypedInteger(10)!=0;
-    if (!e.io) Token(e.cell);
-    e.pin=width==1 ? port : port+"["+std::to_string(pin_bit)+"]";
-    e.route_pin=e.pin; Token(e.pin);
-    e.site=endpoints.TypedText(7); Token(e.site);
-    e.ordinal=endpoints.TypedInteger(8); e.gate=endpoints.TypedInteger(9)!=0;
-    Check(e.ordinal>=0 && e.ordinal<ordinal,"RWRoute route ordinal is invalid");
-    e.driver=direction!=0;
-    if (e.type=="LUT6_2") {
-      if (port=="I0") e.route_pin="I0";
-      else if (port=="O5") e.route_pin="O";
-      else if (port=="I1") { ++e.ordinal; e.route_pin="I1"; }
-      else if (port=="O6") { ++e.ordinal; e.route_pin="O"; }
-      else e.ordinal=-1;
+    ++pin_rows;
+    const auto endpoint=ReadEndpoint(endpoints,catalog,ios);
+    if (endpoint) {
+      if (!group.empty() && group.front().net!=endpoint->net) { emit();group.clear(); }
+      group.push_back(*endpoint);
     }
-    if (!group.empty() && group.front().net!=e.net) { emit(); group.clear(); }
-    group.push_back(std::move(e));
     more=endpoints.Step();
     Check(static_cast<bool>(out),"cannot write RWRoute input");
   }
@@ -570,7 +652,7 @@ void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_re
   const auto commit_seconds=Seconds(commit_started);
   const JsonRecord value(std::map<std::string,JsonRecord>{
     {"schema","emuflow.rwroute-export-summary/v1"},
-    {"status","pass"},{"implementation_id","native-rwroute-export-v1"},
+    {"status","pass"},{"implementation_id","native-rwroute-export-v2"},
     {"cells",ordinal},{"logical_cells",logical},{"virtual_io_cells",ios.size()},
     {"expanded_lut6_2_cells",expanded},{"transformed_dsp48e2_cells",dsps},
     {"qualified_clock_gates",gate_count},{"physical_cells",ordinal+7*dsps},
@@ -581,10 +663,14 @@ void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_re
       {"clock_validation_seconds",clock_seconds},{"net_rows_seconds",net_seconds},
       {"atomic_commit_seconds",commit_seconds},{"total_seconds",Seconds(started)},
       {"maximum_live_net_endpoints",max_fanout},
+      {"source_cell_catalog_bytes",catalog.bytes()},
+      {"source_pin_rows_visited",pin_rows},{"clock_candidates",clock_metrics.candidates},
+      {"enabled_clock_candidates",clock_metrics.enabled},{"clock_pin_rows_visited",clock_metrics.pin_rows},
+      {"clock_selected_nets",clock_metrics.selected_nets},{"clock_dependency_edges",clock_metrics.dependency_edges},
       {"dataflow",std::map<std::string,JsonRecord>{
         {"route_cells","native-mapped-physical-cursor"},{"physical_bindings","native-mapped-physical-join"},
-        {"safe_names","native-ordinal-cursor"},{"endpoints","native-mapped-physical-join"},
-        {"clock_gates","native-qualified-relation"},{"tsv","streamed-atomic-spool"}}}}}
+        {"safe_names","native-ordinal-cursor"},{"endpoints","native-integer-cell-catalog"},
+        {"clock_gates","native-sparse-net-reduction"},{"tsv","streamed-atomic-spool"}}}}}
   });
   const auto encoded=value.Encode();
   summary_writer.WriteBytes(encoded.data(),encoded.size()); summary_writer.Commit();

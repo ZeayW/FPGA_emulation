@@ -78,7 +78,7 @@ def worker(path):
         result = measure_stage(root, 'rwroute-export', function)
         if result.get('status') != 'pass' or result['logical_cells'] < request['minimum_logical_cells']:
             raise ValidationError('RWRoute differential design scale/status disagrees')
-        if arm == 'native' and result.get('implementation_id') != 'native-rwroute-export-v1':
+        if arm == 'native' and result.get('implementation_id') != 'native-rwroute-export-v2':
             raise ValidationError('RWRoute differential did not execute the native owner')
         require_sources(request)
         # Exact whole output identity, outside the measured exporter interval.
