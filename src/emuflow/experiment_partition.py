@@ -294,6 +294,9 @@ def validate_partition_checkpoint(
         or report.get("status") != "pass"
     ):
         raise ValidationError("partition checkpoint report is invalid")
+    if (report.get("mfspart_post_refinement")
+        or (report.get("phase3") or {}).get("mfspart_post_refinement")):
+        raise ValidationError("retired MFSPart post-refinement evidence is unsupported")
     if report.get("provider") not in {"patron", "tritonpart", "greedy"}:
         raise ValidationError("unsupported partition report provider")
     if expected_provider is not None and report.get("provider") != expected_provider:

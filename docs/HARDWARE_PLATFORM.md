@@ -34,10 +34,8 @@ for a physical resource budget.
 TritonPart initialization uses an envelope derived from these resource and
 logic-balance bounds, including the feasible lower bounds. The native legalizer,
 PATRON refinement, and independent validators enforce the same limits.
-The minimum number of used FPGAs remains mandatory. If optional MFSPart
-post-refinement empties a required FPGA, it retains the legal initialization
-and records why it rejected the candidate; the native candidate certificate
-and the selected assignment remain independently verifiable.
+The minimum number of used FPGAs remains mandatory. PATRON candidate selection
+and independent validators must preserve this requirement.
 
 Balance remains observable in `balance_observation`:
 
@@ -67,8 +65,8 @@ resources such as transport LUTs and FFs. For FPGA `i` and resource `r`, Phase
 3 uses `planning_capacity[i,r] = effective_capacity[i,r] - reservation[i,r]`.
 The capacity-proportional share used by `balance_tolerance` is still computed
 from `effective_capacity`; a reservation can tighten an FPGA's integer upper
-bound but cannot redefine balance. Greedy, TritonPart, MFSPart, RePart, the hop
-refiner, PATRON, indexed terminal validation, and artifact replay all consume
+bound but cannot redefine balance. TritonPart, the hop refiner, PATRON, indexed terminal validation, and
+artifact replay consume
 the same sealed value. Phase 6 copies it into the split manifest. Phase 7
 independently aggregates the synthesized transport resources from compact
 SQLite, requires each total to fit its reservation, and separately requires
