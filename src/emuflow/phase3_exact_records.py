@@ -24,6 +24,7 @@ from json.encoder import encode_basestring_ascii
 from typing import Any
 
 from .errors import ValidationError
+from .native_columns import _ColumnOwner
 
 
 STATIC_EXACT_RECORD_STREAM_SCHEMA = "emuflow.static-exact-record-stream/v1"
@@ -102,14 +103,29 @@ class StaticExactRecordSequence(list):
                 return record
         raise ValidationError("Static Exact record stream ended early")
 
+    def _bind_native_mapping(self, owner) -> None:
+        self._native_mapping_owner = owner
+        self._native_mapping = (owner.data, owner.views)
+        for name in ("_factory", "_indexer", "_binary_decoder", "_binary_factory",
+                     "_binary_indexer", "native_launch_flag", "native_dependency_indices"):
+            function = getattr(self, name, None)
+            if callable(function):
+                setattr(self, name, owner.retain(
+                    function, iterator=name in {"_factory", "_binary_factory"},
+                ))
+
+    def adopt_native_scratch(self, scratch) -> None:
+        """Give the mapping owner sole responsibility for unmap then retirement."""
+        owner = getattr(self, "_native_mapping_owner", None)
+        if owner is None or owner.data.closed or owner.scratch is not None:
+            raise ValidationError("native record scratch ownership disagrees")
+        owner.scratch = scratch
+
     def close(self) -> None:
-        """Release an explicitly owned native mapping before retiring its file."""
-        mapping = getattr(self, "_native_mapping", None)
-        if mapping is not None:
-            data, views = mapping
-            for view in views:
-                view.release()
-            data.close()
+        """Explicit close invalidates borrowed cursors before file retirement."""
+        owner = getattr(self, "_native_mapping_owner", None)
+        if owner is not None:
+            owner.close()
             self._native_mapping = None
 
     def _immutable(self, *args, **kwargs):
@@ -390,12 +406,14 @@ def build_static_exact_cut_node_stream(
 def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSequence:
     """Map final native-owned node bytes without repacking their records."""
 
-    data = None
+    owner = None
     views = []
     result = None
     try:
         with path.open("rb") as stream:
             data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+        owner = _ColumnOwner(data)
+        views = owner.views
         if len(data) < 32:
             raise ValidationError("native semantic node header is truncated")
         magic, version, count, size = struct.unpack_from("<QIIQ", data)
@@ -421,17 +439,15 @@ def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSe
                 return struct.unpack_from(f"<{predecessor_count}I", data, end - 4 * predecessor_count)
             result.native_dependency_indices = dependency_indices
         result.native_semantic_artifact_path = path
-        result._native_mapping = (data, views)
+        result._bind_native_mapping(owner)
         return result
     except (OSError, ValueError, struct.error) as error:
         raise ValidationError("native semantic node artifact is invalid") from error
 
     finally:
         if result is None or getattr(result, "_native_mapping", None) is None:
-            for view in views:
-                view.release()
-            if data is not None:
-                data.close()
+            if owner is not None:
+                owner.close()
 
 
 def _decode_cut_node_stream(encoded, offsets, *, with_flags=False) -> StaticExactCutNodeSequence:
@@ -700,9 +716,12 @@ def build_static_exact_capture_stream(
 def read_native_static_exact_capture_stream(path: Path) -> StaticExactCaptureSequence:
     """Map native canonical captures with direct indexed access for validation."""
 
+    owner = None
+    result = None
     try:
         with path.open("rb") as stream:
             data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+        owner = _ColumnOwner(data)
         if len(data) < 32:
             raise ValidationError("native capture header is truncated")
         magic, version, count, size = struct.unpack_from("<QIIQ", data)
@@ -710,6 +729,7 @@ def read_native_static_exact_capture_stream(path: Path) -> StaticExactCaptureSeq
         if magic != 0x31434553464D5545 or version != 1 or start + size != len(data):
             raise ValidationError("native capture envelope is invalid")
         offsets = memoryview(data)[24:start].cast("Q")
+        owner.views.append(offsets)
         if offsets[0] != 0 or offsets[-1] != size or any(
             offsets[index] >= offsets[index + 1] for index in range(count)
         ):
@@ -760,9 +780,14 @@ def read_native_static_exact_capture_stream(path: Path) -> StaticExactCaptureSeq
         result = StaticExactCaptureSequence(count, records, binaries)
         result._binary_indexer = binary
         result.native_capture_artifact_path = path
+        result._bind_native_mapping(owner)
         return result
     except (OSError, ValueError, struct.error) as error:
         raise ValidationError("native capture artifact is invalid") from error
+
+    finally:
+        if owner is not None and (result is None or not hasattr(result, "_native_mapping_owner")):
+            owner.close()
 
 
 def build_static_exact_record_streams(

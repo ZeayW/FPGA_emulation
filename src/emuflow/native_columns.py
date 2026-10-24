@@ -1,4 +1,4 @@
-"""Borrowed read-only column lifetime shared by thin native adapters."""
+"""Borrowed read-only column/record lifetime shared by thin native adapters."""
 from pathlib import Path
 import shutil
 import struct
@@ -24,7 +24,7 @@ class _ColumnOwner:
     Views are never exported. Explicit release before unmapping also works when
     an exception traceback forms a garbage-collection cycle around consumers.
     """
-    def __init__(self, data, scratch):
+    def __init__(self, data, scratch=None):
         self.data, self.scratch, self.views = data, scratch, []
 
     def close(self):
@@ -32,7 +32,22 @@ class _ColumnOwner:
             view.release()
         self.views.clear()
         self.data.close()
-        self.scratch.cleanup()
+        if self.scratch is not None:
+            self.scratch.cleanup()
+
+    def retain(self, function, *, iterator=False):
+        """Borrow a callable/iterator without an unowned exported mmap view."""
+        if iterator:
+            def rows(*args, **kwargs):
+                if self.data.closed:
+                    raise ValueError("native record mapping is closed")
+                yield from function(*args, **kwargs)
+            return rows
+        def value(*args, **kwargs):
+            if self.data.closed:
+                raise ValueError("native record mapping is closed")
+            return function(*args, **kwargs)
+        return value
 
     def __del__(self):
         self.close()

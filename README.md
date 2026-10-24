@@ -72,8 +72,9 @@ Assignment summaries and independent capacity/balance validation also reduce
 the shared primary columns in C++, without decoding cluster member records.
 Compact exact captures are produced and independently checked in the shared
 core before publication, without Python capture replay or per-record lookups.
-SQLite adapter scopes explicitly close readers and writers before publication
-or temporary-file retirement, including lazy physical and timing-store queries.
+SQLite adapters and typed record owners release connections and mappings before
+publication or temporary-file retirement, including borrowed native cursors and
+lazy physical and timing-store queries.
 The typed mapped/physical handoff also feeds a shared-core RWRoute exporter;
 Python sends file references and board I/O configuration, rather than traversing
 placed cells and routed endpoints. See the

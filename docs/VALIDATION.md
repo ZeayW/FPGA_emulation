@@ -76,7 +76,11 @@ I/O direction/bit ownership and transitive clock-gate closure. Poison Python
 cell/pin/gate cursors on the normal typed entry to prove it uses the native
 owner. Corrupt request CRC/version/length/generation and input relations; reject
 aliased destinations and preserve prior publications. Retained mapper objects
-must be closed before rejected semantic staging is retired, including on NFS.
+must be closed before rejected semantic staging is retired, including on NFS. Borrowed
+native record iterators and decoders must keep their mapping/scratch alive after
+the outer view is dropped; exhausted/closed borrowers release it. Test normal
+release, traceback cycles, malformed readers and idempotent explicit close with
+retained mmap objects, and assert unmapping precedes the retirement callback.
 
 Fixture parity is a contract gate. Performance claims require the same real
 NVDLA input and measured export scopes; routing, physical legality, full original

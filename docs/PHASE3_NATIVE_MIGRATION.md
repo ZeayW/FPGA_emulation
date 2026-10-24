@@ -137,6 +137,13 @@ publication are still separate migration work. Native node-reader rejection
 explicitly releases its mapped views before retiring staging, so NFS cleanup
 cannot mask the original semantic validation error. The reader also releases
 partially constructed mappings on malformed input.
+Native node and capture readers reuse the shared column/record mapping owner.
+It retains registered views and any borrowed record iterator or scalar decoder;
+dropping the outer view cannot retire a live borrower. Producers transfer their
+private scratch to that same owner. There is no independent temporary-directory
+weak-reference finalizer: normal release and exception cycles both release views,
+unmap, then retire scratch in that order. Explicit close invalidates borrowed
+cursors. Readers of external published inputs unmap without deleting those inputs.
 
 Small/inline and explicitly selected legacy tools, retained diagnostic traces,
 physical-feedback algorithms and explicit legacy input copies keep the reference

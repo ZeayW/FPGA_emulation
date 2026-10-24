@@ -27,6 +27,7 @@ from .errors import ValidationError
 from .emuir_storage import open_emuir_sqlite_read_only
 from .ir import EMUIR_SCHEMA, EmuIR, VALID_CUT_CLASSES
 from .native_tools import resolve_native_stage_command
+from .native_columns import _ClusterScratch
 from .phase3_exact_records import (
     StaticExactRecordSequence,
     build_static_exact_capture_stream,
@@ -3015,9 +3016,10 @@ def _produce_native_compact_captures(
 ):
     """Native producer plus independently scanned source/capture coverage."""
 
-    owner = tempfile.TemporaryDirectory(prefix="emuflow-exact-captures-")
+    owner = _ClusterScratch(prefix="emuflow-exact-captures-")
     output = Path(owner.name) / "captures.bin"
     parts_path = root / "capture-parts.bin"
+    result = None
     try:
         with parts_path.open("wb") as stream:
             stream.write(struct.pack("<QII", 0x31504553464D5545, 1, len(part_ids)))
@@ -3053,9 +3055,11 @@ def _produce_native_compact_captures(
         phase3_runtime_observe(native_capture_records=len(result))
         report.unlink()
         parts_path.unlink()
-        result._native_capture_owner = owner
+        result.adopt_native_scratch(owner)
         return result
     except BaseException:
+        if result is not None:
+            result.close()
         owner.cleanup()
         raise
 
@@ -3082,7 +3086,7 @@ def _resolve_native_capture_requests(
 def _build_native_semantic_cut_nodes(ordered_cuts, topology, captures):
     """Native final-record owner; Python supplies bounded identity cursors."""
 
-    owner = tempfile.TemporaryDirectory(prefix="emuflow-exact-semantics-")
+    owner = _ClusterScratch(prefix="emuflow-exact-semantics-")
     root = Path(owner.name)
     metadata = root / "identities.bin"
     output = root / "cut-nodes.bin"
@@ -3128,7 +3132,7 @@ def _build_native_semantic_cut_nodes(ordered_cuts, topology, captures):
         nodes = read_native_static_exact_cut_node_stream(output)
         if nodes.native_semantic_version != 2:
             raise ValidationError("native semantic producer requires record format v2")
-        nodes._native_semantic_owner = owner
+        nodes.adopt_native_scratch(owner)
         if len(nodes) != len(ordered_cuts):
             raise ValidationError("native semantic cut coverage disagrees")
         for index, (node, cut) in enumerate(zip(nodes, ordered_cuts)):
