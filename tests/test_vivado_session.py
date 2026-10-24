@@ -219,7 +219,8 @@ proc get_clocks {args} {
 proc get_property {property object} {
  switch $property {
   PART {return xcpart}
-  NAME {return $object}
+  NAME {return [expr {$object eq "dut" ? "checkpoint_synthesized" : $object}]}
+  TOP {return dut}
   PERIOD {return [expr {$object eq "emuflow_fabric_clk" ? 4.0 : 20.0}]}
   SLACK {return 0.5}
   DATAPATH_DELAY {return 2.5}
@@ -251,3 +252,29 @@ set env(PYTHONPATH) /invalid-vendor-package
     assert ("open" in trace) is resume
     assert "placed.dcp" not in trace and "routed.dcp" not in trace
     assert read_json(out/"routed-query-preparation.json")["status"] == "pass"
+
+
+@pytest.mark.skipif(shutil.which("tclsh") is None, reason="Tcl interpreter required")
+def test_synthesized_module_identity_is_independent_of_checkpoint_container_name():
+    helper = ROOT/"scripts/vivado/native_session.tcl"
+    script = f"source {_tcl_word(helper)}\n"+r'''
+set part xcpart
+set top actual_module
+proc current_design {args} {return checkpoint_renamed_snapshot}
+proc get_property {property object} {
+ if {$property eq "PART"} {return $::part}
+ if {$property eq "TOP"} {return $::top}
+ if {$property eq "NAME"} {return checkpoint_renamed_snapshot}
+ error "unexpected property $property"
+}
+emuflow_validate_synthesized_identity xcpart actual_module
+set top wrong_module
+if {![catch {emuflow_validate_synthesized_identity xcpart actual_module}]} {error "wrong module accepted"}
+set top actual_module
+set part wrong_part
+if {![catch {emuflow_validate_synthesized_identity xcpart actual_module}]} {error "wrong part accepted"}
+puts pass
+'''
+    result = subprocess.run([shutil.which("tclsh")],input=script,text=True,capture_output=True,check=True)
+    assert not result.stderr
+    assert result.stdout.strip() == "pass"

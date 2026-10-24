@@ -286,7 +286,9 @@ Within the same active experiment, `run_indexed_vivado_partition` accepts
 `continuation_source_report` together. Use a fresh native output directory.
 Admission verifies the checkpoint, mapped/function/Verilog identities, frozen
 runtime XDC and fixed-I/O wrapper/query contracts; Vivado additionally checks
-the loaded part/top, clocks and full post-route electrical/coverage gates.
+the loaded part and `TOP` module property, clocks and full post-route
+electrical/coverage gates. The design `NAME` after reopening is a checkpoint
+container label and does not identify the HDL top module.
 Continuation runs opt/place/physical optimization/route from that synthesis
 boundary. This interface does not publish a persistent checkpoint cache.
 

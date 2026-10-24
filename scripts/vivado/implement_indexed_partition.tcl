@@ -34,9 +34,7 @@ if {[catch {
     synth_design -top $top -part $part -flatten_hierarchy none -mode out_of_context
   } else {
     open_checkpoint $emuflow_start_checkpoint
-    if {[get_property PART [current_design]] ne $part || [get_property NAME [current_design]] ne $top} {
-      error "synthesized continuation part/top differs"
-    }
+    emuflow_validate_synthesized_identity $part $top
   }
   if {[llength [get_pblocks -quiet]] != 0} {error "native implementation contains an undeclared placement region"}
   emuflow_validate_clock_contract $emuflow_clock_contract

@@ -1,4 +1,13 @@
 # Small stage plans bridge the native design and source-bound SQLite queries.
+proc emuflow_validate_synthesized_identity {part top} {
+  # NAME is the checkpoint container label after open_checkpoint. TOP is the
+  # HDL module identity and survives changing the checkpoint's filename.
+  set design [current_design]
+  if {[get_property PART $design] ne $part || [get_property TOP $design] ne $top} {
+    error "synthesized continuation part/top differs"
+  }
+}
+
 proc emuflow_session_child {stage} {
   global emuflow_child_command emuflow_session_manifest emuflow_session_out
   set log "$emuflow_session_out/$stage.log"
