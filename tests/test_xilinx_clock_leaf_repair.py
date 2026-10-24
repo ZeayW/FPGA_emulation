@@ -106,6 +106,31 @@ class NativeClockLeafRepairTest(unittest.TestCase):
             self.assertEqual(counters["excess_clocks_before"],0)
             self.assertEqual(counters["moved_slices"],0)
 
+    def test_regional_budget_is_enforced_alongside_leaf_capacity(self):
+        for blocked_target in (False,True):
+            with self.subTest(blocked_target=blocked_target),tempfile.TemporaryDirectory() as d:
+                root=Path(d);self.run_case(root,["a","b","c"],targets=2)
+                text=(root/"domains").read_text().replace("D 0 2", "D 0 16")
+                text+="D 2 2 region\nD 3 2 region\n"
+                for i in range(5):text+=f"R SLICE_X{i}Y0 {2 if i<3 else 3}\n"
+                if blocked_target:text+="P 3 fixed0\nP 3 fixed1\n"
+                (root/"domains").write_text(text)
+                output=root/"regional-output"
+                result=subprocess.run([str(self.exe),*[str(root/n) for n in ["sites","atoms","placement"]],str(output),str(root/"domains"),"20"],text=True,capture_output=True)
+                self.assertEqual(result.returncode,0,result.stderr)
+                counters=json.loads(result.stdout)
+                self.assertEqual(counters["overfull_clock_regions_before"],1)
+                self.assertEqual(counters["overfull_clock_regions_after"],int(blocked_target))
+                self.assertEqual(counters["moved_slices"],0 if blocked_target else 1)
+
+    def test_partial_regional_site_coverage_is_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);self.run_case(root,["a","b","c"])
+            (root/"domains").write_text((root/"domains").read_text()+"D 2 2 region\nR SLICE_X0Y0 2\n")
+            result=subprocess.run([str(self.exe),*[str(root/n) for n in ["sites","atoms","placement"]],str(root/"bad-output"),str(root/"domains"),"20"],text=True,capture_output=True)
+            self.assertNotEqual(result.returncode,0)
+            self.assertFalse((root/"bad-output").exists())
+
     def test_wrapper_binds_domain_payload_route_input_and_source_certificate(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)

@@ -5,7 +5,8 @@ import unittest
 
 from emuflow.errors import ValidationError
 from emuflow.io import file_sha256
-from emuflow.xilinx_clock_leaf_domains import complete_ideal_ff_clock_leaf_loads
+from emuflow.xilinx_clock_leaf_domains import complete_ideal_ff_clock_leaf_loads, add_clock_region_policy
+from tests.test_xilinx_openparf_atomic import _fixture
 from emuflow.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
 from emuflow.yosys import import_yosys_json
 
@@ -51,6 +52,25 @@ class IdealClockLeafDomainTest(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     complete_ideal_ff_clock_leaf_loads(audit,route,mapped,root/"complete.json")
                 self.assertFalse((root/"complete.json").exists())
+
+    def test_region_policy_joins_source_architecture_and_keeps_original_payload(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);audit,route,mapped,payload=self.fixture(root)
+            payload.write_text(payload.read_text().replace("D 0 1", "D 0 16"))
+            doc=json.loads(audit.read_text());doc["placement_domain"]["sha256"]=file_sha256(payload);audit.write_text(json.dumps(doc))
+            complete=root/"complete.json";complete_ideal_ff_clock_leaf_loads(audit,route,mapped,complete)
+            arch_root=root/"arch";arch_root.mkdir();_,_,architecture=_fixture(arch_root,clock_regions=True)
+            report=add_clock_region_policy(complete,route,architecture,root/"regional.json",maximum_clocks_per_region=1)
+            self.assertEqual(report["over_budget_clock_regions"],1)
+            self.assertEqual(report["oversubscribed_domains"],1)
+            self.assertEqual(report["placement_domain"]["schema"],"emuflow.clock-leaf-placement-domain/v2")
+            self.assertEqual(report["clock_region_policy"]["architecture_sha256"],file_sha256(architecture))
+            text=(root/report["placement_domain"]["path"]).read_text()
+            self.assertIn("R\tSLICE_X0Y0\t",text)
+            self.assertIn("R\tSLICE_X1Y0\t",text)
+            self.assertNotIn("R\t",payload.read_text())
+            with self.assertRaisesRegex(ValidationError,"budget"):
+                add_clock_region_policy(complete,route,architecture,root/"bad.json",maximum_clocks_per_region=0)
 
     def test_payload_tampering_and_source_overwrite_are_rejected(self):
         with tempfile.TemporaryDirectory() as d:

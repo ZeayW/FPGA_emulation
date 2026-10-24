@@ -189,6 +189,21 @@ leaf-demand evidence: new exact placement certification, independent device
 reaudit and complete routing/timing are still required. The repair is not
 automatically enabled in the production flow.
 
+`add_clock_region_policy` optionally derives a v2 placement-domain payload with
+an explicit per-region clock budget. Physical site identities join the same
+source-sealed ArchitectureDB used by placement. The payload adds a region domain
+for every qualified slice and fixed regional loads from modeled DSP/BRAM/URAM
+clock sinks; declared ideal FF reservations remain included. Its region budget
+is a conservative qualification policy, not a new claim that all segmented clock
+routes above that count are impossible. It does not enable the incompatible
+native UTPlaceFX clock model or remove sites.
+
+The native rigid-slice mover enforces both leaf and region domains on every
+transaction. Fixed hard-block regional loads prevent a donor-only relocation
+from falsely removing that clock from the region. A candidate is still subject
+to full placement certification, fresh device/domain reconstruction, and routing.
+Legacy v1 leaf-only payloads retain their explicit semantics.
+
 After global-clock routing, the adapter independently counts distinct clock
 nets on each routed PIP endpoint node before starting signal routing. Repeated
 uses by one clock count once. It records shared nodes, maximum distinct users,

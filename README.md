@@ -120,8 +120,9 @@ rigid LUT/FF groups and preserves their internal BEL assignments.
 Device-backed clock audits check region membership, local leaf demand, and source entry paths.
 An explicit native repair experiment relocates rigid slices from overfull leaf
 domains; it can reserve FF loads of explicitly declared ideal boundary clocks.
-Those reservations do not claim physical clock routes. Fresh placement
-certification and clock/routing checks remain required.
+Those reservations do not claim physical clock routes. The experiment can also
+apply an explicit clock-region budget without changing device site capacity.
+Fresh placement certification and clock/routing checks remain required.
 Clock routing negotiates shared clock resources using congestion costs, while
 protecting ordinary signals and foreign clock endpoints. It requires zero
 cross-net node sharing before signal routing.

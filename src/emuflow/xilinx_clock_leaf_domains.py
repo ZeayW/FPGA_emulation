@@ -144,3 +144,136 @@ def complete_ideal_ff_clock_leaf_loads(
     from .io import write_json
     write_json(output_path, result, compact=True)
     return result
+
+
+def add_clock_region_policy(
+    audit_path: Path, route_input_path: Path, architecture_path: Path, output_path: Path,
+    *, maximum_clocks_per_region: int,
+):
+    """Add an explicit region budget to the exact leaf domains for qualification.
+
+    A region budget is a conservative placement policy; exceeding it is not
+    itself proof that every possible segmented clock route is impossible.
+    """
+    from .architecture import ArchitectureDB
+    from .io import write_json
+    from .xilinx_rwroute import _is_clock_sink_pin
+
+    if (isinstance(maximum_clocks_per_region, bool)
+            or not isinstance(maximum_clocks_per_region, int)
+            or not 1 <= maximum_clocks_per_region <= 256):
+        raise ValidationError("invalid explicit clock region budget")
+    audit_path, route_input_path, architecture_path, output_path = map(
+        Path, (audit_path, route_input_path, architecture_path, output_path)
+    )
+    if output_path.resolve() == audit_path.resolve():
+        raise ValidationError("clock region policy must publish separately")
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    payload = audit.get("placement_domain", {})
+    name = payload.get("path")
+    if (audit.get("schema") != "emuflow.clock-leaf-domain-audit/v1"
+            or audit.get("input_sha256") != file_sha256(route_input_path)
+            or payload.get("schema") != "emuflow.clock-leaf-placement-domain/v1"
+            or not isinstance(name, str) or not name or Path(name).name != name):
+        raise ValidationError("clock region policy source identity differs")
+    source_payload = audit_path.parent / name
+    if file_sha256(source_payload) != payload.get("sha256"):
+        raise ValidationError("clock region policy payload hash differs")
+    architecture = ArchitectureDB.load(architecture_path)
+    if architecture.value.get("part") != audit.get("source", {}).get("part"):
+        raise ValidationError("clock region policy architecture part differs")
+    regions_by_site = {
+        site["name"]: (site.get("physical_region") or {}).get("clock_region")
+        for site in architecture.value["sites"]
+    }
+    del architecture
+    sites = {}
+    capacities = {}
+    pins = {}
+    loads = defaultdict(set)
+    with source_payload.open(encoding="utf-8") as stream:
+        for line in stream:
+            row = line.split()
+            if row[0] == "D":
+                capacities[int(row[1])] = int(row[2])
+            elif row[0] == "S":
+                sites[row[1]] = (int(row[2]), int(row[3]))
+            elif row[0] == "C":
+                pins[(row[1], row[2])] = row[3]
+            elif row[0] == "P":
+                loads[int(row[1])].add(row[2])
+    hard_cells = {}
+    physical_clocks = set()
+    fixed_region_loads = set()
+    with route_input_path.open(encoding="utf-8") as stream:
+        for line in stream:
+            row = line.rstrip("\n").split("\t")
+            if row[0] == "CELL" and row[3] in {"DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"}:
+                hard_cells[row[1]] = row[4]
+            elif row[0] == "NET" and row[2] == "clock":
+                physical_clocks.add(row[1])
+            elif (row[0] == "PIN" and row[1] in physical_clocks
+                  and row[2] in hard_cells and row[4] == "sink"
+                  and _is_clock_sink_pin(row[3])):
+                fixed_region_loads.add((hard_cells[row[2]], row[1]))
+    required_sites = set(sites) | {site for site, _clock in fixed_region_loads}
+    if any(not regions_by_site.get(site) for site in required_sites):
+        raise ValidationError("physical clock load has no source architecture region")
+    regions = sorted({regions_by_site[site] for site in required_sites})
+    start = max(capacities, default=-1)+1
+    region_ids = {region: start+i for i, region in enumerate(regions)}
+    for region, domain in region_ids.items():
+        capacities[domain] = maximum_clocks_per_region
+    examples = {}
+    for (site, pin), clock in pins.items():
+        leaf = sites[site][0 if pin == "CLK1" else 1]
+        region = region_ids[regions_by_site[site]]
+        loads[leaf].add(clock)
+        loads[region].add(clock)
+        examples.setdefault(leaf, f"IN {site}.{pin}")
+        examples.setdefault(region, f"IN {site}.{pin}")
+    for site, clock in fixed_region_loads:
+        domain = region_ids[regions_by_site[site]]
+        loads[domain].add(clock)
+        examples.setdefault(domain, f"IN {site}.CLK")
+    overfull = sorted((domain for domain, clocks in loads.items() if len(clocks)>capacities[domain]),
+                      key=lambda domain: (capacities[domain]-len(loads[domain]), domain))
+    regional = set(region_ids.values())
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    target_payload = output_path.with_name(output_path.name + ".domains.tsv")
+    if target_payload.resolve() == source_payload.resolve():
+        raise ValidationError("clock region policy payload must publish separately")
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=output_path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            with source_payload.open(encoding="utf-8") as original:
+                for line in original:
+                    stream.write(line)
+            for region, domain in region_ids.items():
+                stream.write(f"D\t{domain}\t{maximum_clocks_per_region}\tregion\n")
+            for site in sorted(sites):
+                stream.write(f"R\t{site}\t{region_ids[regions_by_site[site]]}\n")
+            for site, clock in sorted(fixed_region_loads):
+                stream.write(f"P\t{region_ids[regions_by_site[site]]}\t{clock}\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.replace(temporary, target_payload)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+    policy = dict(schema="emuflow.clock-region-placement-policy/v1",
+                  maximum_clocks_per_region=maximum_clocks_per_region,
+                  architecture_sha256=file_sha256(architecture_path),
+                  source_audit_sha256=file_sha256(audit_path), region_domains=region_ids)
+    result = dict(audit, qualification="ordinary-leaf-and-configured-clock-region-policy",
+                  clock_region_policy=policy, oversubscribed_domains=len(overfull),
+                  maximum_excess_clocks=max((len(loads[d])-capacities[d] for d in overfull), default=0),
+                  over_budget_clock_regions=sum(d in regional for d in overfull),
+                  examples=[dict(domain=d, clocks=len(loads[d]), local_capacity=capacities[d],
+                                 example_pin=examples.get(d), clock_nets=sorted(loads[d]))
+                            for d in overfull[:16]])
+    result["placement_domain"] = dict(payload, schema="emuflow.clock-leaf-placement-domain/v2",
+        path=target_payload.name, sha256=file_sha256(target_payload),
+        region_domains=len(region_ids), fixed_clock_region_loads=len(fixed_region_loads))
+    write_json(output_path, result, compact=True)
+    return result

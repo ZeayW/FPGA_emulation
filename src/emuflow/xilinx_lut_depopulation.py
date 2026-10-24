@@ -195,10 +195,12 @@ def repair_clock_leaf_domains(
             or audit.get("source") != metadata
             or metadata.get("mapped_sha256") != mapped_sha256
             or metadata.get("part") != certificate.get("part")
-            or payload.get("schema") != "emuflow.clock-leaf-placement-domain/v1"
+            or payload.get("schema") not in {"emuflow.clock-leaf-placement-domain/v1", "emuflow.clock-leaf-placement-domain/v2"}
             or not isinstance(payload_name, str) or not payload_name
             or Path(payload_name).name != payload_name):
         raise ValidationError("clock repair domain source identity differs")
+    if payload["schema"].endswith("/v2") and audit.get("clock_region_policy", {}).get("architecture_sha256") != file_sha256(Path(architecture_path)):
+        raise ValidationError("clock repair regional policy architecture differs")
     domain_path = audit_path.parent / payload_name
     if file_sha256(domain_path) != payload.get("sha256"):
         raise ValidationError("clock repair domain payload hash differs")
@@ -207,7 +209,10 @@ def repair_clock_leaf_domains(
         packed_sha256=packed_sha256, architecture_path=architecture_path,
         hot_clock_regions=hot_clock_regions, executable_name="emuflow_xilinx_clock_leaf_repair",
         native_arguments=[domain_path, maximum_radius],
-        schema="emuflow.xilinx-clock-leaf-repair/v1", provider="native-rigid-slice-clock-domain-repair-v1",
+        schema=("emuflow.xilinx-clock-leaf-repair/v2" if payload["schema"].endswith("/v2")
+                else "emuflow.xilinx-clock-leaf-repair/v1"),
+        provider=("native-rigid-slice-clock-domain-repair-v2" if payload["schema"].endswith("/v2")
+                  else "native-rigid-slice-clock-domain-repair-v1"),
         parameters=dict(maximum_radius=maximum_radius,
                         clock_domain_audit_sha256=file_sha256(audit_path),
                         clock_domain_payload_sha256=payload["sha256"],

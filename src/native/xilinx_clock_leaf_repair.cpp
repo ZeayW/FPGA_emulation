@@ -21,7 +21,7 @@ static Key key(int x, int y) { return (Key(uint32_t(x)) << 32) | uint32_t(y); }
 struct Site {
   int x, y, sx, sy; bool hot, blocked=false;
   unsigned lut=0, ff=0; std::vector<size_t> atoms;
-  std::array<int,2> domain{{-1,-1}}; std::array<std::string,2> clocks;
+  int region=-1; std::array<int,2> domain{{-1,-1}}; std::array<std::string,2> clocks;
 };
 struct Atom {
   std::string name, cluster, resource, type, flag;
@@ -85,7 +85,8 @@ int main(int argc, char** argv) {
     if(!v.flag.empty() || clusterSize[v.cluster]>1 || (v.resource!="FF" && !plainLut(v))) s.blocked=true;
   }
   for(const Atom& v:atoms) if(!v.known) throw std::runtime_error("missing atom placement");
-  struct Bank {int capacity=0; std::map<std::string,int> refs;};
+  struct Bank {int capacity=0;bool regional=false;std::map<std::string,int> refs;};
+  bool regionalPolicy=false;
   std::map<int,Bank> banks;
   std::vector<std::pair<int,std::string>> fixedPins;
   std::unordered_set<std::string> clockPins;
@@ -102,6 +103,11 @@ int main(int argc, char** argv) {
     if(kind=="D") {
       int id,cap;if(!(row>>id>>cap)||id<0||cap<1||cap>256||banks.count(id))throw std::runtime_error("invalid clock domain");
       banks[id].capacity=cap;
+      std::string role;if(row>>role){if(role!="region")throw std::runtime_error("unknown clock domain role");banks[id].regional=true;}
+    } else if(kind=="R") {
+      std::string name;int region;if(!(row>>name>>region))throw std::runtime_error("invalid regional clock domain");
+      int id=siteId(name);if(id>=0){if(sites[id].region>=0)throw std::runtime_error("duplicate regional site domain");sites[id].region=region;}
+      regionalPolicy=true;
     } else if(kind=="S") {
       std::string name;int first,second;if(!(row>>name>>first>>second))throw std::runtime_error("invalid slice domain");
       int id=siteId(name);if(id>=0) {
@@ -129,17 +135,22 @@ int main(int argc, char** argv) {
   auto change=[&](size_t group,size_t where,int delta) {
     const Site& original=sites[groups[group].origin];const Site& at=sites[where];
     for(int half=0;half<2;half++) if(!original.clocks[half].empty()) {
-      auto& refs=banks.at(at.domain[half]).refs;const auto& clock=original.clocks[half];
-      if(delta>0)refs[clock]++;
-      else {
-        auto it=refs.find(clock);if(it==refs.end()||it->second<1)throw std::runtime_error("lost clock domain reference");
-        if(--it->second==0)refs.erase(it);
+      for(int domain : {at.domain[half],at.region}) {
+        if(domain<0)continue;
+        auto& refs=banks.at(domain).refs;const auto& clock=original.clocks[half];
+        if(delta>0)refs[clock]++;
+        else {
+          auto it=refs.find(clock);if(it==refs.end()||it->second<1)throw std::runtime_error("lost clock domain reference");
+          if(--it->second==0)refs.erase(it);
+        }
       }
     }
   };
   for(size_t i=0;i<sites.size();i++) {
     Site& site=sites[i];
     if(!banks.count(site.domain[0])||!banks.count(site.domain[1]))throw std::runtime_error("incomplete qualified slice clock domain");
+    if(regionalPolicy && (site.region<0 || !banks.count(site.region) || !banks.at(site.region).regional
+        || site.region==site.domain[0] || site.region==site.domain[1]))throw std::runtime_error("incomplete regional clock domain");
     for(int half=0;half<2;half++) {
       bool hasFf=(site.ff & (255u<<(half*8)))!=0;
       if(hasFf!=!site.clocks[half].empty())throw std::runtime_error("FF clock pin coverage differs from placement");
@@ -151,6 +162,10 @@ int main(int argc, char** argv) {
     int over=int(item.second.refs.size())-item.second.capacity;
     if(over>0){excess+=over;overfull++;}
   }return std::make_pair(excess,overfull);};
+  auto regionalPressure=[&](){size_t overfull=0;for(const auto& item:banks)
+    if(item.second.regional&&item.second.refs.size()>size_t(item.second.capacity))overfull++;
+    return overfull;};
+  size_t regionalBefore=regionalPressure();
   auto before=pressure();size_t repairs=0,failedTransactions=0;
   std::set<int> stalled;
   while(true) {
@@ -166,7 +181,7 @@ int main(int argc, char** argv) {
       Candidate c{reference.first,{},0};int refs=0;bool locked=false;
       for(size_t g=0;g<groups.size();g++) {
         const Site& original=sites[groups[g].origin];const Site& at=sites[groups[g].where];bool uses=false;
-        for(int h=0;h<2;h++)if(at.domain[h]==problem&&original.clocks[h]==c.clock){uses=true;refs++;}
+        for(int h=0;h<2;h++)if((at.domain[h]==problem||at.region==problem)&&original.clocks[h]==c.clock){uses=true;refs++;}
         if(uses){c.donors.push_back(g);c.atoms+=original.atoms.size();locked|=groups[g].blocked;}
       }
       if(!locked&&!c.donors.empty()&&refs==reference.second)choices.push_back(std::move(c));
@@ -189,7 +204,10 @@ int main(int argc, char** argv) {
             if(px<0||py<0||(dx==0&&sign==1))continue;
             auto it=physical.find(key(px,py));if(it==physical.end()||owner[it->second]>=0)continue;
             const Site& target=sites[it->second];std::map<int,std::set<std::string>> additions;
-            for(int h=0;h<2;h++)if(!original.clocks[h].empty()) additions[target.domain[h]].insert(original.clocks[h]);
+            for(int h=0;h<2;h++)if(!original.clocks[h].empty()) {
+              additions[target.domain[h]].insert(original.clocks[h]);
+              if(target.region>=0)additions[target.region].insert(original.clocks[h]);
+            }
             bool fits=true;
             for(const auto& addition:additions) {
               const Bank& bank=banks.at(addition.first);size_t demand=bank.refs.size();
@@ -229,7 +247,9 @@ int main(int argc, char** argv) {
     <<",\"failed_transactions\":"<<failedTransactions<<",\"total_slice_manhattan_distance\":"<<distance
     <<",\"maximum_slice_manhattan_distance\":"<<maxDistance<<",\"excess_clocks_before\":"<<before.first
     <<",\"excess_clocks_after\":"<<after.first<<",\"overfull_domains_before\":"<<before.second
-    <<",\"overfull_domains_after\":"<<after.second<<"}\n";
+    <<",\"overfull_domains_after\":"<<after.second
+    <<",\"overfull_clock_regions_before\":"<<regionalBefore
+    <<",\"overfull_clock_regions_after\":"<<regionalPressure()<<"}\n";
   return 0;
  }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
