@@ -66,7 +66,7 @@ def test_chimew_and_fixed_binding_entry_remain_available():
 @pytest.mark.parametrize("nested", [False, True])
 def test_old_post_refinement_evidence_cannot_pass_reduced_validator(tmp_path, nested):
     from emuflow.experiment_partition import validate_partition_checkpoint
-    from emuflow.experiment_stages import EXPERIMENT_PARTITION_SCHEMA
+    from emuflow.experiment_upstream import EXPERIMENT_PARTITION_SCHEMA
     frontend, timing, root = (tmp_path / name for name in ("frontend", "timing", "partition"))
     (frontend / "phase1").mkdir(parents=True)
     timing.mkdir()
