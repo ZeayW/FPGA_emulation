@@ -13,6 +13,7 @@ import unittest
 import zlib
 from array import array
 from collections.abc import Sequence
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -960,7 +961,7 @@ class PartitionPressureTest(unittest.TestCase):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "design.emuir.sqlite"
                 write_compact_emuir(path, self.ir.to_dict())
-                with sqlite3.connect(path) as connection:
+                with closing(sqlite3.connect(path)) as connection, connection:
                     mutate(connection)
                 with self.assertRaisesRegex(ValidationError, message):
                     build_partition_pressure_model(
@@ -986,7 +987,7 @@ class PartitionPressureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "design.emuir.sqlite"
             write_compact_emuir(path, self.ir.to_dict())
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute(
                     "UPDATE endpoint_records SET ordinal=ordinal+1000000"
                 )
