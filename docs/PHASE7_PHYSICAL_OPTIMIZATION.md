@@ -229,6 +229,8 @@ readable by the validator.
 cycles, unreachable nearer leaves, occupied sources and bounded sink tails
 without loading a device. `--clock-graph DEVICE SOURCE_NODE SINK_NODE` additionally
 checks a concrete device path and its programmable edge directions.
+`--clock-source-prefix DEVICE BUFGCE_SITE...` prints dedicated successors along
+each source's unique prefix, exposing mandatory shared entry resources.
 
 The academic literature reaches the same conclusion through different
 algorithms:

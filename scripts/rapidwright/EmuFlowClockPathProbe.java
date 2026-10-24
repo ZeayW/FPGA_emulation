@@ -90,6 +90,26 @@ public final class EmuFlowClockPathProbe {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length >= 3 && args[0].equals("--clock-source-prefix")) {
+            Device device=Device.getDevice(args[1]);
+            for (int i=2;i<args.length;i++) {
+                Node node=device.getSite(args[i]).getConnectedNode("CLK_OUT");
+                Set<Node> visited=new HashSet<>();
+                System.out.println("clock-source-site " + args[i]);
+                for (int depth=0;depth<16 && visited.add(node);depth++) {
+                    List<Node> children=new ArrayList<>();
+                    for (Node child : node.getAllDownhillNodes())
+                        if (EmuFlowRWRoute.isDedicatedClockNode(child) && !children.contains(child)) children.add(child);
+                    System.out.println(node + " intent=" + node.getIntentCode() + " clock_children=" + children.size());
+                    if (children.size()!=1) {
+                        for (Node child : children) System.out.println("  child " + child + " " + child.getIntentCode());
+                        break;
+                    }
+                    node=children.get(0);
+                }
+            }
+            return;
+        }
         if (args.length == 4 && args[0].equals("--clock-graph")) {
             Device device = Device.getDevice(args[1]);
             String[] a = args[2].split("/", 2), b = args[3].split("/", 2);
