@@ -36,8 +36,11 @@ def primitive_function_signature(cell: Mapping[str, Any]) -> str:
 
 
 def import_cell_lineage(mapped: Path, functions: Path, inventories: Mapping[str, Path],
-                        output: Path, *, mapped_sha256: str) -> dict[str, Any]:
+                        output: Path, *, mapped_sha256: str,
+                        retain_stage: str = "routed") -> dict[str, Any]:
     """Stream all observed tags, allowing deletion, replication and type changes."""
+    if retain_stage not in inventories:
+        raise ValidationError("Vivado retained lineage stage is absent")
     connection = sqlite3.connect(output, uri=True)
     try:
         connection.execute("ATTACH DATABASE ? AS mapped", (f"file:{mapped.resolve()}?mode=ro&immutable=1",))
@@ -51,14 +54,20 @@ def import_cell_lineage(mapped: Path, functions: Path, inventories: Mapping[str,
         ).fetchone():
             raise ValidationError("Vivado function-signature source coverage disagrees")
         connection.executescript("""
+            CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;
             CREATE TABLE objects(stage TEXT,name TEXT,ref TEXT,origin INTEGER,transformations TEXT,
                                  PRIMARY KEY(stage,name)) WITHOUT ROWID;
             CREATE INDEX objects_origin ON objects(stage,origin);
         """)
         stages = {}
         for stage, path in inventories.items():
-            with path.open(encoding="utf-8", newline="") as stream:
-                rows = csv.reader(stream, delimiter="\t", quoting=csv.QUOTE_NONE)
+            inventory_digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                def inventory_lines():
+                    for raw in stream:
+                        inventory_digest.update(raw)
+                        yield raw.decode("utf-8")
+                rows = csv.reader(inventory_lines(), delimiter="\t", quoting=csv.QUOTE_NONE)
                 if next(rows, None) != INVENTORY_HEADER:
                     raise ValidationError("Vivado lineage inventory header is invalid")
                 for row in rows:
@@ -80,11 +89,17 @@ def import_cell_lineage(mapped: Path, functions: Path, inventories: Mapping[str,
             changed = connection.execute("SELECT count(*) FROM objects a JOIN mapped.cells c ON c.seq=a.origin WHERE a.stage=? AND a.ref!=c.type", (stage,)).fetchone()[0]
             stages[stage] = {"observed_objects": objects, "source_cells_with_lineage": observed,
                              "unretained_source_cells": source_count-observed,
-                             "source_cells_with_multiple_objects": replicated, "changed_type_objects": changed}
+                             "source_cells_with_multiple_objects": replicated, "changed_type_objects": changed,
+                             "inventory_sha256": inventory_digest.hexdigest()}
             # Only routed objects have a downstream name-resolution consumer.
             # Reuse these SQLite pages instead of retaining two full snapshots.
-            if stage != "routed":
+            if stage != retain_stage:
                 connection.execute("DELETE FROM objects WHERE stage=?", (stage,))
+        connection.executemany("INSERT INTO metadata VALUES (?,?)", (
+            ("mapped_index_sha256", mapped_sha256),
+            ("stages_json", json.dumps(stages, sort_keys=True)),
+            ("retained_stage", retain_stage),
+        ))
         connection.commit()
         return {"status": "pass", "provider": LINEAGE_POLICY, "source_cells": source_count,
                 "stages": stages, "output": str(output),

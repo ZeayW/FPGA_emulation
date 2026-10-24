@@ -193,14 +193,24 @@ Timing queries resolve the original source's typed descendants first, without
 broadening a retained source to other equivalent cells. A removed object may
 alias another source only when the primitive, parameters, pin interfaces and
 original input connections are identical. Queries across descendant collections
-take the worst physical endpoint delay. Unsupported transformations or missing
-associations fail timing coverage; they never trigger blanket endpoint locks,
-silently drop original paths, or qualify incomplete global WNS/TNS. Fixed I/O
+take the worst physical endpoint delay. Removed source objects require checked
+elimination proofs before an original path can be marked optimized away.
+Unproved missing associations and unsupported transformations fail timing
+coverage; they never trigger blanket endpoint locks, silently drop original
+paths, or qualify incomplete global WNS/TNS. Fixed I/O
 and the complete original TimingPathDB remain independently checked.
 Collections with multiple physical endpoints are labelled
 `optimized-endpoint-collection-upper-bound`, rather than endpoint-exact.
 Sequential transformations whose cycle correspondence is not established
 are rejected by the timing adapter, without disabling the vendor optimization.
+The indexed elimination-proof owner records closed source regions with no path
+to a retained source or partition output, and inductively constant register
+states with specified initial values. A proof that depends on selecting a
+don't-care initial value remains a conditional candidate until the vendor's
+choice is confirmed; it cannot eliminate a timing record on its own.
+Unknown combinational behavior, changing reset values,
+and unsupported primitives do not establish a constant proof. Timing records
+must reference this canonical source proof rather than invent a zero delay.
 Whole-device resource budgets also apply to the final physical cell population.
 Resource accounting excludes MACRO wrappers while retaining LEAF and INTERNAL
 implementation components. LUT capacity is counted by occupied site/LUT letter
