@@ -31,6 +31,7 @@ _EVIDENCE_FIELDS = {
     "boundary_timing",
     "logic_segment_timing",
     "local_path_timing",
+    "optimization_proofs",
 }
 
 
@@ -254,6 +255,7 @@ def _validate_reference(value: Any) -> Mapping[str, Any]:
             "emuflow.boundary-identity/v1",
             "emuflow.boundary-timing/v1",
             "emuflow.local-path-timing/v1",
+            "emuflow.vivado-optimization-proofs/v1",
         }:
             raise ValidationError(
                 "physical indexed evidence reference is malformed"
@@ -286,6 +288,10 @@ def _read_reference(
     if stat.st_size != reference["bytes"]:
         raise ValidationError("physical evidence byte count disagrees")
     if reference["schema"] == PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA:
+        if reference["logical_schema"] == "emuflow.vivado-optimization-proofs/v1":
+            from .vivado_optimization import OptimizationProofView
+            return OptimizationProofView(resolved_path, expected_fpga=expected_fpga,
+                                         expected_sha256=reference["sha256"])
         if reference["logical_schema"] == "emuflow.local-path-timing/v1":
             from .local_path_timing_storage import read_local_path_timing_storage
 
@@ -352,6 +358,37 @@ def _read_reference(
     if document.get("schema") != reference["logical_schema"]:
         raise ValidationError("physical evidence logical schema disagrees")
     return document
+
+
+def publish_optimization_proofs(source: Path, output_directory: Path, relative_path: Path,
+                                 *, fpga: str, mapped_sha256: str) -> dict[str, Any]:
+    """Publish the compact binary proof owner without serializing its rows."""
+    from .vivado_optimization import OptimizationProofView, OPTIMIZATION_PROOF_SCHEMA
+    if relative_path.is_absolute() or ".." in relative_path.parts or source.is_symlink():
+        raise ValidationError("optimization proof publication path is unsafe")
+    with OptimizationProofView(source, expected_fpga=fpga) as view:
+        if view.header["mapped_index_sha256"] != mapped_sha256:
+            raise ValidationError("optimization proof belongs to a different physical input")
+    target = output_directory / relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        raise ValidationError("optimization proof publication target is invalid")
+    if source.resolve() != target.resolve():
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            try:
+                os.link(source, temporary)
+            except OSError:
+                shutil.copyfile(source, temporary)
+            with temporary.open("rb") as stream:
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    reference = {"schema": PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA,
+                 "logical_schema": OPTIMIZATION_PROOF_SCHEMA, "path": str(relative_path),
+                 "bytes": target.stat().st_size, "sha256": file_sha256(target)}
+    return _validate_reference(reference)
 
 
 class LazyPhysicalEvidenceMap(dict[str, Mapping[str, Any]]):

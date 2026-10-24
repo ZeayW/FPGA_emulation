@@ -18,12 +18,14 @@ import weakref
 
 from .errors import ValidationError
 from .io import file_sha256, read_json, write_json
+from .timing_disposition import OPTIMIZED_AWAY, is_optimized_away, validate_optimization_record
 
 
 LOCAL_PATH_TIMING_SCHEMA = "emuflow.local-path-timing/v1"
-LOCAL_PATH_TIMING_STORAGE_SCHEMA = "emuflow.local-path-timing-storage/v1"
+LOCAL_PATH_TIMING_STORAGE_SCHEMA_V1 = "emuflow.local-path-timing-storage/v1"
+LOCAL_PATH_TIMING_STORAGE_SCHEMA = "emuflow.local-path-timing-storage/v2"
 LOCAL_PATH_TIMING_APPLICATION_ID = 0x454D554C  # ASCII "EMUL"
-LOCAL_PATH_TIMING_USER_VERSION = 1
+LOCAL_PATH_TIMING_USER_VERSION = 2
 
 _HEADER_KEYS = {
     "schema", "status", "design", "fpga", "provider", "qualification",
@@ -39,7 +41,7 @@ _SELECTOR_KEYS = {
     "counts", "logical_sha256", "artifact", "store_bytes", "store_sha256",
 }
 
-_DDL = """
+_DDL_V1 = """
 CREATE TABLE metadata(
   key TEXT PRIMARY KEY NOT NULL,
   value TEXT NOT NULL
@@ -68,6 +70,14 @@ CREATE TABLE path_pins(
 """
 
 
+_DDL = _DDL_V1.replace(
+    "delay_ns REAL NOT NULL CHECK(delay_ns >= 0.0)",
+    "delay_ns REAL CHECK(delay_ns >= 0.0), optimization_source TEXT, "
+    "CHECK((COALESCE(measurement,'')='optimized-away' AND delay_ns IS NULL AND optimization_source IS NOT NULL) OR "
+    "(COALESCE(measurement,'')!='optimized-away' AND delay_ns IS NOT NULL AND optimization_source IS NULL))"
+)
+
+
 def _canonical(value: Any) -> str:
     try:
         return json.dumps(
@@ -94,12 +104,12 @@ def _normalized_sql(value: Any) -> str:
     return " ".join(str(value).split())
 
 
-@lru_cache(maxsize=1)
-def _expected_sqlite_objects() -> tuple[tuple[str, str, str, str], ...]:
+@lru_cache(maxsize=2)
+def _expected_sqlite_objects(version: int = LOCAL_PATH_TIMING_USER_VERSION) -> tuple[tuple[str, str, str, str], ...]:
     connection = sqlite3.connect(":memory:")
     try:
         connection.execute("PRAGMA foreign_keys=ON")
-        connection.executescript(_DDL)
+        connection.executescript(_DDL_V1 if version == 1 else _DDL)
         return tuple(
             (str(row[0]), str(row[1]), str(row[2]), _normalized_sql(row[3]))
             for row in connection.execute(
@@ -116,7 +126,7 @@ def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA application_id").fetchone()[0]
         != LOCAL_PATH_TIMING_APPLICATION_ID
         or connection.execute("PRAGMA user_version").fetchone()[0]
-        != LOCAL_PATH_TIMING_USER_VERSION
+        not in {1, LOCAL_PATH_TIMING_USER_VERSION}
     ):
         raise ValidationError("unsupported local path timing store")
     objects = tuple(
@@ -126,7 +136,7 @@ def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
             "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
         )
     )
-    if objects != _expected_sqlite_objects():
+    if objects != _expected_sqlite_objects(connection.execute("PRAGMA user_version").fetchone()[0]):
         raise ValidationError("local path timing store objects are invalid")
 
 
@@ -181,9 +191,12 @@ def _normalize_record(raw: Any, header: Mapping[str, Any]) -> dict[str, Any]:
         if header["identity_schema"] == "emuflow.local-path-identity/v2"
         else base
     )
+    if isinstance(raw, Mapping) and is_optimized_away(raw):
+        expected = expected | {"optimization_source"}
     if not isinstance(raw, Mapping) or set(raw) != expected:
         raise ValidationError("local path timing path fields are invalid")
     record = dict(raw)
+    eliminated = validate_optimization_record(record)
     period = record.get("clock_period_ns")
     delay = record.get("delay_ns")
     if (
@@ -197,14 +210,13 @@ def _normalize_record(raw: Any, header: Mapping[str, Any]) -> dict[str, Any]:
         or not isinstance(period, (int, float))
         or not math.isfinite(float(period))
         or float(period) <= 0.0
-        or isinstance(delay, bool)
-        or not isinstance(delay, (int, float))
-        or not math.isfinite(float(delay))
-        or float(delay) < 0.0
+        or (not eliminated and (isinstance(delay, bool)
+            or not isinstance(delay, (int, float))
+            or not math.isfinite(float(delay)) or float(delay) < 0.0))
     ):
         raise ValidationError("local path timing path values are invalid")
     record["clock_period_ns"] = float(period)
-    record["delay_ns"] = float(delay)
+    record["delay_ns"] = None if eliminated else float(delay)
     if header["identity_schema"] == "emuflow.local-path-identity/v2":
         required = record.get("required_time_ns")
         pins = record.get("path_pins")
@@ -216,7 +228,7 @@ def _normalize_record(raw: Any, header: Mapping[str, Any]) -> dict[str, Any]:
             or float(required) <= 0.0
             or measurement not in {
                 "explicit-routed-path-chain",
-                "endpoint-longest-path-fallback",
+                "endpoint-longest-path-fallback", OPTIMIZED_AWAY,
             }
             or not isinstance(pins, Sequence)
             or isinstance(pins, (str, bytes, bytearray))
@@ -229,7 +241,7 @@ def _normalize_record(raw: Any, header: Mapping[str, Any]) -> dict[str, Any]:
                     or pins[-1] != record["end_pin"]
                 )
             )
-            or (measurement == "endpoint-longest-path-fallback" and pins)
+            or (measurement in {"endpoint-longest-path-fallback", OPTIMIZED_AWAY} and pins)
         ):
             raise ValidationError("local path timing measurement is invalid")
         record["required_time_ns"] = float(required)
@@ -246,8 +258,10 @@ def _record_from_row(
         "clock_domain": str(row["clock_domain"]),
         "clock_period_ns": float(row["clock_period_ns"]),
         "start_pin": str(row["start_pin"]), "end_pin": str(row["end_pin"]),
-        "delay_ns": float(row["delay_ns"]),
+        "delay_ns": None if row["delay_ns"] is None else float(row["delay_ns"]),
     }
+    if "optimization_source" in row.keys() and row["optimization_source"] is not None:
+        record["optimization_source"] = str(row["optimization_source"])
     if row["required_time_ns"] is not None:
         record.update({
             "required_time_ns": float(row["required_time_ns"]),
@@ -337,10 +351,10 @@ def _validate_selector(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict) or set(raw) != _SELECTOR_KEYS:
         raise ValidationError("local path timing selector is malformed")
     if (
-        raw.get("schema") != LOCAL_PATH_TIMING_STORAGE_SCHEMA
+        raw.get("schema") not in {LOCAL_PATH_TIMING_STORAGE_SCHEMA_V1, LOCAL_PATH_TIMING_STORAGE_SCHEMA}
         or raw.get("logical_schema") != LOCAL_PATH_TIMING_SCHEMA
         or raw.get("application_id") != LOCAL_PATH_TIMING_APPLICATION_ID
-        or raw.get("user_version") != LOCAL_PATH_TIMING_USER_VERSION
+        or raw.get("user_version") != (1 if raw.get("schema")==LOCAL_PATH_TIMING_STORAGE_SCHEMA_V1 else LOCAL_PATH_TIMING_USER_VERSION)
     ):
         raise ValidationError("unsupported local path timing selector")
     counts = raw.get("counts")
@@ -486,6 +500,8 @@ class LocalPathTimingView(Mapping[str, Any]):
         try:
             with _connect(self.store_path) as connection:
                 _exact_sqlite_envelope(connection)
+                if connection.execute("PRAGMA user_version").fetchone()[0] != self.selector["user_version"]:
+                    raise ValidationError("local path timing store version disagrees with selector")
                 metadata_rows = list(connection.execute(
                     "SELECT key,value FROM metadata ORDER BY key"
                 ))
@@ -503,7 +519,7 @@ class LocalPathTimingView(Mapping[str, Any]):
                 maximum = 0.0
                 measurement_counts = {
                     "explicit-routed-path-chain": 0,
-                    "endpoint-longest-path-fallback": 0,
+                    "endpoint-longest-path-fallback": 0, OPTIMIZED_AWAY: 0,
                 }
                 for record in _iter_records(connection):
                     record = _normalize_record(record, self.selector["header"])
@@ -511,7 +527,8 @@ class LocalPathTimingView(Mapping[str, Any]):
                         raise ValidationError("local path timing order is invalid")
                     previous = record["id"]
                     count += 1
-                    maximum = max(maximum, record["delay_ns"])
+                    if record["delay_ns"] is not None:
+                        maximum = max(maximum, record["delay_ns"])
                     if record.get("measurement") in measurement_counts:
                         measurement_counts[record["measurement"]] += 1
                     digest.update(_canonical(record).encode("utf-8"))
@@ -550,6 +567,8 @@ class LocalPathTimingView(Mapping[str, Any]):
             "status": "pass", "fpga": self.selector["header"]["fpga"],
             "local_paths": self.selector["counts"]["local_paths"],
             "maximum_delay_ns": self._maximum_delay_ns,
+            "optimized_away_paths": self._measurement_counts.get(OPTIMIZED_AWAY, 0),
+            "implemented_paths": self.selector["counts"]["local_paths"]-self._measurement_counts.get(OPTIMIZED_AWAY, 0),
             "measurement_counts": dict(self._measurement_counts),
         }
 
@@ -625,7 +644,7 @@ def write_local_path_timing_storage(
         def flush() -> None:
             if timing_rows:
                 connection.executemany(
-                    "INSERT INTO timings VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO timings VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     timing_rows,
                 )
                 timing_rows.clear()
@@ -643,7 +662,7 @@ def write_local_path_timing_storage(
                     record["clock_domain"], record["clock_period_ns"],
                     record.get("required_time_ns"), record["start_pin"],
                     record["end_pin"], record.get("measurement"),
-                    record["delay_ns"],
+                    record["delay_ns"], record.get("optimization_source"),
                 ))
                 pin_rows.extend(
                     (record["id"], ordinal, pin)
@@ -754,7 +773,7 @@ def read_local_path_timing_storage(
     ):
         raise ValidationError("local path timing selector digest disagrees")
     value = read_json(path)
-    if value.get("schema") == LOCAL_PATH_TIMING_STORAGE_SCHEMA:
+    if value.get("schema") in {LOCAL_PATH_TIMING_STORAGE_SCHEMA, LOCAL_PATH_TIMING_STORAGE_SCHEMA_V1}:
         view = LocalPathTimingView(path)
         if any(
             expected is not None and view.get(field) != expected

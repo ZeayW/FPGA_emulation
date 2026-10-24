@@ -25,6 +25,7 @@ from .physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA, validate_physica
 from .resource_budget import validate_device_resource_usage
 from .vivado_physical_top import write_vivado_physical_top
 from .vivado_lineage import LINEAGE_POLICY, import_cell_lineage, resolve_timing_query
+from .vivado_optimization import build_optimization_proofs, OptimizationProofView
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -163,6 +164,9 @@ def run_indexed_vivado_partition(
     coverage = import_cell_lineage(index_path, functions_path, {
         "synthesized": output_dir / "mapped_cells.tsv", "routed": output_dir / "routed_mapped_cells.tsv"},
         lineage_path, mapped_sha256=mapped_report["mapped_index"]["sha256"])
+    proof_path = output_dir / "optimization-proofs.sqlite"
+    proof_report = build_optimization_proofs(index_path, lineage_path, proof_path,
+        mapped_sha256=mapped_report["mapped_index"]["sha256"], fpga=fpga)
     aggregate = parse_timing_summary(output_dir / "timing_summary.rpt")
     if abs(aggregate["wns_ns"] - _number(metrics, "wns_ns")) > 0.002:
         raise ValidationError("Vivado timing aggregate and worst path disagree")
@@ -201,10 +205,17 @@ def run_indexed_vivado_partition(
             continue
         measured = output_dir / f"{kind}.tsv"
         resolved = output_dir / f"{kind}-resolved.tsv"
-        resolution = resolve_timing_query(index_path, functions_path, lineage_path, query, resolved)
+        local = kind == "local_path_timing"
+        resolution = resolve_timing_query(index_path, functions_path, lineage_path, query, resolved,
+                                         optimization_proofs=proof_path if local else None,
+                                         allow_eliminated=local)
         export = execute_vivado(executable, _vivado_script("export_logic_segment_timing.tcl"),
                                 [str(output_dir / "routed.dcp"), str(resolved), str(measured), *timing_arguments], output_dir, f"{kind}-export.log")
-        imported = importer(measured, identity, output_dir / f"{kind}.json")
+        if local:
+            with OptimizationProofView(proof_path, expected_fpga=fpga) as proof_reader:
+                imported = importer(measured, identity, output_dir / f"{kind}.json", optimization_proofs=proof_reader)
+        else:
+            imported = importer(measured, identity, output_dir / f"{kind}.json")
         stages[kind] = {"status": "pass", "resolution": resolution, "export": export, "import": imported}
     virtual_io = None
     if virtual_io_contract is not None:
@@ -242,7 +253,7 @@ def run_indexed_vivado_partition(
     validation = validate_physical_partition_result(result, backend="vivado", fpga=fpga, part=part, original_cells=original_cells, transport_cells=transport_cells)
     report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": "indexed-phase6-vivado-physical-v1",
         "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads},
-        "implementation": implementation, "cell_coverage": coverage, **stages,
+        "implementation": implementation, "cell_coverage": coverage, "optimization_proofs": proof_report, **stages,
         **({"virtual_io_implementation": virtual_io} if virtual_io is not None else {}),
         "result": result, "validation": validation}
     write_json(output_dir / "vivado-partition-report.json", report, compact=True)

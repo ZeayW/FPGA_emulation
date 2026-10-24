@@ -109,7 +109,9 @@ def import_cell_lineage(mapped: Path, functions: Path, inventories: Mapping[str,
 
 
 def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: Path,
-                         output: Path, *, boundary: bool = False) -> dict[str, Any]:
+                         output: Path, *, boundary: bool = False,
+                         optimization_proofs: Path | None = None,
+                         allow_eliminated: bool = False) -> dict[str, Any]:
     """Resolve requested source pins to all typed descendants or identical inputs.
 
     Candidate collections are measured as a worst physical endpoint bound. A
@@ -120,6 +122,14 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
     try:
         connection.execute("ATTACH DATABASE ? AS mapped", (f"file:{mapped.resolve()}?mode=ro&immutable=1",))
         connection.execute("ATTACH DATABASE ? AS functions", (f"file:{functions.resolve()}?mode=ro&immutable=1",))
+        if allow_eliminated:
+            if boundary or optimization_proofs is None:
+                raise ValidationError("eliminated endpoint queries require a supported source proof owner")
+            connection.execute("ATTACH DATABASE ? AS proofs", (f"file:{optimization_proofs.resolve()}?mode=ro&immutable=1",))
+            owner = {key:json.loads(value) for key,value in connection.execute("SELECT key,value FROM proofs.metadata")}
+            lineage_owner = dict(connection.execute("SELECT key,value FROM metadata"))
+            if owner.get("mapped_index_sha256") != lineage_owner.get("mapped_index_sha256") or owner.get("stage") != "routed":
+                raise ValidationError("eliminated timing query proof belongs to a different source or stage")
 
         @lru_cache(maxsize=4096)
         def candidates(name: str, cell_only: bool, required: bool = True) -> str:
@@ -146,6 +156,10 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
                 actual = row[0] if cell_only else row[0]+"/"+pin
                 encoded.append(actual.encode().hex())
             if not encoded and required:
+                if allow_eliminated:
+                    proof = connection.execute("SELECT p.origin FROM mapped.cells c JOIN proofs.eliminated_sources p ON p.origin=c.seq JOIN proofs.source_names n ON n.origin=p.origin AND n.name=c.id WHERE c.id=?", (cell,)).fetchone()
+                    if proof is not None:
+                        return f"optimized-away:s{proof[0]}"
                 raise ValidationError(f"Vivado optimized timing source has no proven endpoint association: {name}")
             return ",".join(encoded)
 

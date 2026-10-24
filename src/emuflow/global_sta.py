@@ -25,6 +25,9 @@ from typing import Iterable
 from .errors import ValidationError
 from .native_tools import resolve_native_executable
 from .opensta import render_opensta_liberty, require_opensta_engine
+from .timing_disposition import (OPTIMIZED_AWAY, PATH_POPULATION_POLICY,
+                                 is_optimized_away, validate_optimization_record,
+                                 require_optimization_proof)
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,8 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
         target_periods: array,
         cone_bounds: array,
         model_indices: array,
+        optimization_sources: array | None = None,
+        optimization_fpgas: array | None = None,
     ):
         count = len(paths)
         if (
@@ -86,6 +91,12 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
         self._target_periods = target_periods
         self._cone_bounds = cone_bounds
         self._model_indices = model_indices
+        if (optimization_sources is None) != (optimization_fpgas is None) or (
+            optimization_sources is not None and (len(optimization_sources) != count or len(optimization_fpgas) != count)
+        ):
+            raise ValidationError("global STA optimization metadata columns disagree")
+        self._optimization_sources = optimization_sources
+        self._optimization_fpgas = optimization_fpgas
 
     def __len__(self) -> int:
         return len(self._paths)
@@ -123,7 +134,7 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
             raise ValidationError(
                 "global STA indexed path metadata period is malformed"
             )
-        return {
+        result = {
             "representative_path": self._strings[representative_index],
             "path_scope": (
                 "same-fpga-local" if self._scopes[index] else "cross-fpga"
@@ -145,6 +156,17 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
                 }
             ),
         }
+        if self._optimization_sources is not None:
+            source = self._optimization_sources[index]
+            fpga = self._optimization_fpgas[index]
+            if (source == _UINT32_MAX) != (fpga == _UINT32_MAX):
+                raise ValidationError("global STA optimization metadata reference disagrees")
+            if source != _UINT32_MAX:
+                if source >= len(self._strings) or fpga >= len(self._strings):
+                    raise ValidationError("global STA optimization metadata string is invalid")
+                result.update(measurement=OPTIMIZED_AWAY, optimization_source=self._strings[source],
+                              optimization_fpga=self._strings[fpga])
+        return result
 
     @property
     def typed_payload_bytes(self) -> int:
@@ -159,7 +181,10 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
                 self._target_periods,
                 self._cone_bounds,
                 self._model_indices,
+                self._optimization_sources,
+                self._optimization_fpgas,
             )
+            if values is not None
         )
 
     def path_id_set_sha256(self) -> str:
@@ -187,6 +212,8 @@ class _PathMetadataBuilder:
         self._target_periods = array("d")
         self._cone_bounds = array("B")
         self._model_indices = array("I")
+        self._optimization_sources = None
+        self._optimization_fpgas = None
 
     def _intern(self, value: str | None) -> int:
         if value is None:
@@ -214,6 +241,8 @@ class _PathMetadataBuilder:
         target_period_ns: float,
         physical_logic_segments_cone_bound: bool,
         interconnect_delay_model: str | None = None,
+        optimization_source: str | None = None,
+        optimization_fpga: str | None = None,
     ) -> None:
         if self._finished:
             raise ValidationError("global STA path metadata builder is sealed")
@@ -236,6 +265,17 @@ class _PathMetadataBuilder:
             or not isinstance(physical_logic_segments_cone_bound, bool)
         ):
             raise ValidationError("global STA path metadata values are invalid")
+        if (optimization_source is None) != (optimization_fpga is None):
+            raise ValidationError("global STA optimization metadata needs source and FPGA together")
+        if optimization_source is not None:
+            validate_optimization_record({"measurement": OPTIMIZED_AWAY,
+                                          "optimization_source": optimization_source, "delay_ns": None})
+            if self._optimization_sources is None:
+                self._optimization_sources = array("I", (_UINT32_MAX for _ in self._paths))
+                self._optimization_fpgas = array("I", (_UINT32_MAX for _ in self._paths))
+        if self._optimization_sources is not None:
+            self._optimization_sources.append(self._intern(optimization_source))
+            self._optimization_fpgas.append(self._intern(optimization_fpga))
         self._paths.append(path)
         self._representative_indices.append(self._intern(representative_path))
         self._scopes.append(path_scope == "same-fpga-local")
@@ -265,6 +305,8 @@ class _PathMetadataBuilder:
             reordered(self._target_periods),
             reordered(self._cone_bounds),
             reordered(self._model_indices),
+            None if self._optimization_sources is None else reordered(self._optimization_sources),
+            None if self._optimization_fpgas is None else reordered(self._optimization_fpgas),
         )
         self._paths = []
         self._strings = []
@@ -1608,6 +1650,9 @@ the Python event propagator or consume its per-path numerical results.
                 raise ValidationError("global STA local source seals disagree")
             source = database["source"]
         for path in database["paths"]:
+            eliminated = validate_optimization_record(path)
+            if eliminated:
+                require_optimization_proof(physical, fpga, path["optimization_source"], path)
             path_metadata.append(
                 path["id"],
                 representative_path=path["id"],
@@ -1615,9 +1660,13 @@ the Python event propagator or consume its per-path numerical results.
                 clock_domain=path.get("clock_domain"),
                 target_period_ns=path["clock_period_ns"],
                 physical_logic_segments_cone_bound=(
-                    path.get("measurement") != "explicit-routed-path-chain"
+                    not eliminated and path.get("measurement") != "explicit-routed-path-chain"
                 ),
+                optimization_source=path["optimization_source"] if eliminated else None,
+                optimization_fpga=fpga if eliminated else None,
             )
+            if eliminated:
+                continue
             required = float(path.get("required_time_ns", path["clock_period_ns"]))
             virtual = runtime_clock_period_ns(
                 runtime, path.get("clock_domain")
@@ -1632,8 +1681,12 @@ the Python event propagator or consume its per-path numerical results.
                     (float(path["delay_ns"]),),
                     deadline,
                 )
-    rows = validate_checks(result.finish())
+    rows = result.finish()
+    if rows:
+        rows = validate_checks(rows)
     indexed_path_metadata = path_metadata.finish()
+    if not rows and (not indexed_path_metadata or any(not is_optimized_away(info) for info in indexed_path_metadata.values())):
+        raise ValidationError("global STA has no checks for an implemented original path")
     if metadata is not None:
         if source is not None and (
             source["routes_sha256"] != routes_artifact_sha256
@@ -1654,6 +1707,9 @@ def build_opensta_timing(runtime, metadata, measurements):
     propagation. Python only aggregates the project's original-path metric.
     """
     metadata_paths = metadata["paths"]
+    if not metadata_paths:
+        raise ValidationError("global STA empty original population")
+    implemented_count = sum(not is_optimized_away(info) for info in metadata_paths.values())
 
     class InterleavedMeasurements(Exception):
         pass
@@ -1697,6 +1753,7 @@ def build_opensta_timing(runtime, metadata, measurements):
             event = row.get("event")
             if (
                 path_id not in metadata_paths
+                or is_optimized_away(metadata_paths[path_id])
                 or role not in {"target", "runtime", "tx", "commit"}
                 or not isinstance(event, str)
                 or not event
@@ -1735,7 +1792,7 @@ def build_opensta_timing(runtime, metadata, measurements):
             elif row["slack_ns"] < -1e-3:
                 failures += 1
         finish_bundle()
-        if not paths or len(paths) != len(metadata_paths):
+        if len(paths) != implemented_count:
             raise ValidationError(
                 "global STA invalid standalone measurement population"
             )
@@ -1754,6 +1811,7 @@ def build_opensta_timing(runtime, metadata, measurements):
             identity = (row.get("path"), row.get("role"), row.get("event"))
             if (
                 row.get("path") not in metadata_paths
+                or is_optimized_away(metadata_paths[row["path"]])
                 or row.get("role") not in {"target", "runtime", "tx", "commit"}
                 or identity in identities
                 or any(
@@ -1778,7 +1836,7 @@ def build_opensta_timing(runtime, metadata, measurements):
                 failures += 1
         expected = {
             (path_id, role)
-            for path_id in metadata_paths
+            for path_id, info in metadata_paths.items() if not is_optimized_away(info)
             for role in ("target", "runtime")
         }
         if set(observed) != expected:
@@ -1787,6 +1845,8 @@ def build_opensta_timing(runtime, metadata, measurements):
             )
         paths = []
         for path_id, info in sorted(metadata_paths.items()):
+            if is_optimized_away(info):
+                continue
             target = observed[path_id, "target"]
             path = {
                 "path": path_id,
@@ -1799,34 +1859,43 @@ def build_opensta_timing(runtime, metadata, measurements):
                 path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
             paths.append(path)
         measurement_count = len(measurements)
-    if not paths:
-        raise ValidationError("global STA empty standalone result")
+    for path_id, info in metadata_paths.items():
+        if is_optimized_away(info):
+            validate_optimization_record(info)
+            paths.append({"path": path_id, **info, "system_delay_bound_ns": None,
+                          "target_required_time_ns": None, "runtime_required_time_ns": None,
+                          "target_clock_slack_bound_ns": None, "runtime_clock_slack_bound_ns": None})
+    paths.sort(key=lambda path: path["path"])
+    def implemented_paths():
+        return (path for path in paths if not is_optimized_away(path))
     source = metadata["source_binding"]
     scope = "whole-original-design" if source is not None else "cross-fpga-path-subset"
     local = sum(p["path_scope"] == "same-fpga-local" for p in paths)
-    bounds = sum(p["physical_logic_segments_cone_bound"] for p in paths)
+    bounds = sum(p["physical_logic_segments_cone_bound"] for p in implemented_paths())
     timing = {"schema": "emuflow.system-timing/v2", "status": "fail" if failures else "pass",
               "qualification": "opensta-fixed-event-physical-bounds", "timing_scope": scope,
-              "source_binding": source, "paths": paths,
+              "source_binding": source, "paths": paths, "path_population_policy": PATH_POPULATION_POLICY,
               "path_exactness": {"physical_model": "routed-staging-chain-upper-bounds",
-                  "endpoint_exact_logic_paths": len(paths)-bounds, "cone_bound_logic_paths": bounds,
+                  "endpoint_exact_logic_paths": implemented_count-bounds, "cone_bound_logic_paths": bounds,
                   "fallback_logic_paths": 0, "discontinuous_compressed_paths": 0,
                   "physical_logic_segment_bounds": True, "fixed_slot_event_failures": failures},
-              "summary": {"timing_paths": len(paths), "original_paths": source["original_paths"] if source else None,
+              "summary": {"timing_paths": len(paths), "implemented_paths": implemented_count, "optimized_away_paths": len(paths)-implemented_count, "original_paths": source["original_paths"] if source else None,
                   "original_local_paths": local, "original_cross_fpga_paths": len(paths)-local,
                   "compressed_representative_paths": metadata["compressed_representative_paths"],
                   "original_path_coverage": 1.0 if source else None,
                   "original_path_ids_sha256": source["original_path_ids_sha256"] if source else None,
-                  "maximum_system_delay_bound_ns": max(p["system_delay_bound_ns"] for p in paths)}}
+                  "maximum_system_delay_bound_ns": max((p["system_delay_bound_ns"] for p in implemented_paths()), default=None)}}
     metrics = {}
     for role in ("target", "runtime"):
-        worst = min(paths, key=lambda p:(p[f"{role}_clock_slack_bound_ns"],p["path"]))
-        slacks = [p[f"{role}_clock_slack_bound_ns"] for p in paths]
-        tns = math.fsum(min(0.0,s) for s in slacks)
-        metrics[role] = {"wns_ns": min(slacks), "original_path_tns_ns": tns,
-                         "negative_paths": sum(s<0 for s in slacks)}
-        timing[f"{role}_clock"] = {"closure_gate": role=="runtime", "worst_path": worst["path"],
-            "worst_slack_bound_ns": min(slacks), "tns_bound_ns": tns,
+        worst = min(implemented_paths(), key=lambda p:(p[f"{role}_clock_slack_bound_ns"],p["path"]), default=None)
+        def slacks():
+            return (p[f"{role}_clock_slack_bound_ns"] for p in implemented_paths())
+        tns = math.fsum(min(0.0, value) for value in slacks())
+        wns = min(slacks(), default=None)
+        metrics[role] = {"wns_ns": wns, "original_path_tns_ns": tns,
+                         "negative_paths": sum(value<0 for value in slacks())}
+        timing[f"{role}_clock"] = {"closure_gate": role=="runtime", "worst_path": None if worst is None else worst["path"],
+            "worst_slack_bound_ns": wns, "tns_bound_ns": tns,
             "total_negative_slack_bound_ns": tns, "negative_slack_paths": metrics[role]["negative_paths"]}
     clock_periods = {
         clock: float(record["nominal_period_ns"])
@@ -1841,14 +1910,16 @@ def build_opensta_timing(runtime, metadata, measurements):
     )
     maximum = timing["summary"]["maximum_system_delay_bound_ns"]
     timing["runtime_clock"].update(minimum_safe_period_bound_ns=maximum,
-        maximum_safe_frequency_bound_mhz=1000.0/maximum if maximum > 0 else None)
-    if metrics["runtime"]["wns_ns"] < 0:
+        maximum_safe_frequency_bound_mhz=1000.0/maximum if maximum is not None and maximum > 0 else None)
+    if metrics["runtime"]["wns_ns"] is not None and metrics["runtime"]["wns_ns"] < 0:
         timing["status"] = "fail"
     timing["global_opensta"] = {"schema": "emuflow.global-opensta-check/v1",
-        "authority": "opensta", "execution": "standalone", "status": timing["status"],
-        "timing_scope": scope, "original_paths": len(paths), "checks": measurement_count,
+        "authority": "opensta" if measurement_count else "no-numerical-checks",
+        "execution": "standalone" if measurement_count else "not-applicable-no-implemented-original-paths", "status": timing["status"],
+        "timing_scope": scope, "original_paths": len(paths), "implemented_paths": implemented_count,
+        "optimized_away_paths": len(paths)-implemented_count, "path_population_policy": PATH_POPULATION_POLICY, "checks": measurement_count,
         "event_failures": failures, "metrics": metrics,
-        "tns_definition": "sum-negative-slack-once-per-original-TimingPathDB-path"}
+        "tns_definition": "sum-negative-slack-once-per-implemented-original-TimingPathDB-path"}
     return timing
 
 
@@ -1864,6 +1935,11 @@ def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
     expected = {p["path"]: p for p in reference["paths"]}
     if not expected or len(expected) != len(reference["paths"]):
         raise ValidationError("global STA reference has empty/duplicate original paths")
+    original_count = len(expected)
+    for path in expected.values():
+        if is_optimized_away(path):
+            validate_optimization_record(path)
+    expected = {key:path for key,path in expected.items() if not is_optimized_away(path)}
     observed = {}
     identities = set()
     max_error = 0.0
@@ -1903,18 +1979,20 @@ def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
     summary = {}
     for role in ("target", "runtime"):
         slacks = [row["slack_ns"] for row in measurements if row["role"] == role]
-        summary[role] = {"wns_ns": min(slacks),
+        summary[role] = {"wns_ns": min(slacks, default=None),
                          "original_path_tns_ns": math.fsum(min(0.0, s) for s in slacks),
                          "negative_paths": sum(s < 0 for s in slacks)}
     return {"schema": "emuflow.global-opensta-check/v1", "status": "fail" if failures else "pass",
             "authority": "qualification-only-pending-full-flow-validation",
-            "timing_scope": reference["timing_scope"], "original_paths": len(expected),
+            "timing_scope": reference["timing_scope"], "original_paths": original_count,
+            "implemented_paths": len(expected), "optimized_away_paths": original_count-len(expected),
+            "path_population_policy": PATH_POPULATION_POLICY,
             "event_failures": failures, "checks": len(measurements),
             "tolerance_ns": tolerance_ns, "maximum_difference_ns": max_error,
             "maximum_comparison_tolerance_ns": max_tolerance,
             "relative_float32_epsilons": 4,
             "metrics": summary,
-            "tns_definition": "sum-negative-slack-once-per-original-TimingPathDB-path"}
+            "tns_definition": "sum-negative-slack-once-per-implemented-original-TimingPathDB-path"}
 
 
 def adopt_opensta_results(timing, measurements):
@@ -1927,30 +2005,32 @@ def adopt_opensta_results(timing, measurements):
     observed = {(r["path"], r["role"]): r for r in measurements
                 if r["role"] in {"target", "runtime"}}
     for path in timing["paths"]:
+        if is_optimized_away(path):
+            continue
         path["system_delay_bound_ns"] = observed[path["path"], "target"]["arrival_ns"]
         for role in ("target", "runtime"):
             row = observed[path["path"], role]
             path[f"{role}_required_time_ns"] = row["required_ns"]
             path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
     for role in ("target", "runtime"):
-        worst = min(timing["paths"], key=lambda p: (
-            p[f"{role}_clock_slack_bound_ns"], p["path"]))
+        worst = min((p for p in timing["paths"] if not is_optimized_away(p)), key=lambda p: (
+            p[f"{role}_clock_slack_bound_ns"], p["path"]), default=None)
         metrics = gate["metrics"][role]
         timing[f"{role}_clock"].update({
-            "worst_path": worst["path"],
+            "worst_path": None if worst is None else worst["path"],
             "worst_slack_bound_ns": metrics["wns_ns"],
             "negative_slack_paths": metrics["negative_paths"],
             "total_negative_slack_bound_ns": metrics["original_path_tns_ns"],
             "tns_bound_ns": metrics["original_path_tns_ns"],
         })
-    maximum = max(p["system_delay_bound_ns"] for p in timing["paths"])
+    maximum = max((p["system_delay_bound_ns"] for p in timing["paths"] if not is_optimized_away(p)), default=None)
     timing["summary"]["maximum_system_delay_bound_ns"] = maximum
     timing["runtime_clock"]["minimum_safe_period_bound_ns"] = maximum
     timing["runtime_clock"]["maximum_safe_frequency_bound_mhz"] = (
-        1000.0 / maximum if maximum > 0 else None)
-    if gate["status"] != "pass" or gate["metrics"]["runtime"]["wns_ns"] < 0:
+        1000.0 / maximum if maximum is not None and maximum > 0 else None)
+    if gate["status"] != "pass" or (gate["metrics"]["runtime"]["wns_ns"] is not None and gate["metrics"]["runtime"]["wns_ns"] < 0):
         timing["status"] = "fail"
-    gate["authority"] = "opensta"
+    gate["authority"] = "opensta" if observed else "no-numerical-checks"
     gate["cross_checker"] = "independent-python-event-composer"
     timing["global_opensta"] = gate
     return gate

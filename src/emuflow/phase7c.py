@@ -49,6 +49,7 @@ def system_timing_summary(timing: Dict[str, Any]) -> Dict[str, Any]:
         "status",
         "qualification",
         "timing_scope",
+        "path_population_policy",
         "path_exactness",
         "summary",
         "target_clock",
@@ -241,7 +242,13 @@ def run_phase7c(
             metadata = {}
             checks = bind_physical_checks(runtime, routes, schedule, physical_summary, platform,
                                           metadata=metadata, routes_artifact_sha256=routes_artifact_sha256)
-            if global_sta_results_dir is None:
+            if not checks:
+                measurements = ()
+                if global_sta_results_dir is not None:
+                    with (global_sta_results_dir / "measurements.tsv").open() as stream:
+                        if next(stream, "").strip() != "endpoint\tarrival_ns\trequired_ns\tslack_ns" or any(line.strip() for line in stream):
+                            raise ValidationError("saved OpenSTA results contain checks for eliminated original paths")
+            elif global_sta_results_dir is None:
                 sta_dir = output_dir / "global-opensta"
                 measurements = run_event_checks(checks, sta_dir, global_sta_executable, verify_arcs=False)
             else:
@@ -250,7 +257,12 @@ def run_phase7c(
                 # former system-timing composer, and never launches STA again.
                 measurements = read_measurements(sta_dir / "measurements.tsv", checks)
             sta_timing = build_opensta_timing(runtime, metadata, measurements)
-            sta_timing["global_opensta"]["engine"] = read_engine_identity(sta_dir / "opensta.log")
+            if checks:
+                sta_timing["global_opensta"]["engine"] = read_engine_identity(sta_dir / "opensta.log")
+            else:
+                sta_timing["global_opensta"].update(authority="no-numerical-checks",
+                    execution="not-applicable-no-implemented-original-paths",
+                    engine={"status":"not-invoked","reason":"no-implemented-original-paths"})
         qor = aggregate_qor(
             runtime,
             read_json(phase3_report_path),

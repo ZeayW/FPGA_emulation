@@ -42,6 +42,16 @@ optimized-away counts separately. If every member is eliminated, WNS is N/A,
 TNS is zero, and there is no synthetic worst path. Missing or unproved members
 still make qualification incomplete.
 
+The report identifies
+`implemented-original-paths-with-explicit-optimization-dispositions-v1`.
+Its original-path count and ID seal include optimized-away records, while its
+implemented count, endpoint-exact/bound counts, and engine-check count exclude
+them. Eliminated records retain the FPGA/source proof reference and null delay
+and slack fields. Global binding checks that the proof belongs to the requested
+source endpoint. Conditional initialization candidates are not elimination
+proofs. When no implemented original members remain, no numerical OpenSTA run
+is claimed; the report identifies the absence of applicable checks.
+
 Coverage means the source TimingPathDB population. It does not prove that
 source extraction enumerated every possible sensitizable path. A reached
 extraction limit must be reported.

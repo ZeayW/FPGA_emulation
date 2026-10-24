@@ -2352,6 +2352,22 @@ def _assemble_multi_fpga_physical_results(
         "fpgas": physical_fpgas,
         "boundary_identities": {},
     }
+    if backend == "vivado":
+        from .physical_summary_storage import publish_optimization_proofs
+        proof_references = {}
+        for record in records:
+            if record.get("active") is False:
+                continue
+            proof = record["stages"]["vivado_implementation"].get("optimization_proofs")
+            if proof is None:
+                # Historical measured-only reports have no elimination owner.
+                # Any eliminated row still fails the global proof requirement.
+                continue
+            proof_references[record["fpga"]] = publish_optimization_proofs(
+                Path(proof["output"]), output_dir, Path(record["fpga"]) / "optimization-proofs.sqlite",
+                fpga=record["fpga"], mapped_sha256=record["stages"]["mapped_verilog"]["mapped_index"]["sha256"])
+        if proof_references:
+            physical_summary["optimization_proofs"] = proof_references
     if requires_virtual_io:
         physical_summary["virtual_io_implementation"] = {
             "status": "pass",

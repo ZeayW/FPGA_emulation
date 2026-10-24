@@ -59,7 +59,8 @@ def _lut_value(cell: Mapping[str, Any], output: str, values: Mapping[str, int | 
 
 
 def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Path, *,
-                              mapped_sha256: str, stage: str = "routed") -> dict[str, Any]:
+                              mapped_sha256: str, stage: str = "routed",
+                              fpga: str | None = None) -> dict[str, Any]:
     """Prove closed unobservable regions and simultaneous constant states.
 
     Graph traversal and state hypotheses live in SQLite. Python reconstructs
@@ -124,7 +125,7 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
             for origin, name in db.execute("SELECT c.seq,c.id FROM absent a JOIN source.cells c ON c.seq=a.origin WHERE c.type IN ('FDRE','FDSE','FDCE','FDPE') AND c.seq NOT IN (SELECT origin FROM eliminated_sources) ORDER BY c.seq"):
                 cell = mapped.cells[name]
                 q = cell["connections"].get("Q", [])
-                initial = cell.get("parameters", {}).get("INIT", "0")
+                initial = cell.get("parameters", {}).get("INIT", str(_RESET[cell["type"]][1]))
                 if len(q) != 1 or not isinstance(q[0], int) or initial not in {"0", "1", "x", "X"}:
                     continue
                 literal_d = _literal(cell["connections"].get("D", [None])[0])
@@ -209,10 +210,16 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
             db.execute("DELETE FROM constant_candidates WHERE origin IN (SELECT origin FROM eliminated_sources)")
         constant = db.execute("SELECT count(*) FROM states").fetchone()[0]
         unretained = db.execute("SELECT count(*) FROM absent").fetchone()[0]
+        db.execute("CREATE TABLE source_names(origin INTEGER PRIMARY KEY,name TEXT NOT NULL)")
+        db.execute("INSERT INTO source_names SELECT seq,id FROM source.cells WHERE seq IN (SELECT origin FROM eliminated_sources UNION SELECT origin FROM constant_candidates)")
+        names_digest = hashlib.sha256()
+        for row in db.execute("SELECT origin,name FROM source_names ORDER BY origin"):
+            names_digest.update((json.dumps(row,separators=(",",":"))+"\n").encode())
         digest = hashlib.sha256()
         for row in db.execute("SELECT origin,reason,constant_value,initialization FROM eliminated_sources ORDER BY origin"):
             digest.update((json.dumps(row,separators=(",",":"))+"\n").encode())
         header = {"schema": OPTIMIZATION_PROOF_SCHEMA, "stage": stage, "mapped_index_sha256": mapped_sha256,
+                  "fpga": fpga,
                   "stage_inventory_sha256": stage_inventory_sha256,
                   "qualification": "source-closure-and-inductive-constant-state; conditional-initialization-candidates-are-not-proofs",
                   "source_cells": db.execute("SELECT count(*) FROM source.cells").fetchone()[0],
@@ -222,6 +229,7 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
                   "strict_constant_refinement_iterations": strict_iterations,
                   "conditional_constant_state_candidates": db.execute("SELECT count(*) FROM constant_candidates").fetchone()[0],
                   "proof_rows_sha256": digest.hexdigest()}
+        header["source_names_sha256"] = names_digest.hexdigest()
         db.executemany("INSERT INTO metadata VALUES (?,?)", ((key,json.dumps(value,separators=(",",":"))) for key,value in header.items()))
         db.commit()
         db.close()
@@ -233,3 +241,81 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
         raise
     finally:
         db.close()
+
+
+class OptimizationProofView(Mapping[str, Any]):
+    """One read-only, source-bound proof owner for a physical partition."""
+
+    def __init__(self, path: Path, *, expected_fpga: str,
+                 expected_sha256: str | None = None, stage: str = "routed"):
+        if not isinstance(expected_fpga,str) or not expected_fpga:
+            raise ValidationError("Vivado optimization proof needs an explicit FPGA identity")
+        if expected_sha256 is not None:
+            from .io import file_sha256
+            if file_sha256(path) != expected_sha256:
+                raise ValidationError("Vivado optimization proof artifact digest disagrees")
+        self.connection = sqlite3.connect(f"file:{path.resolve()}?mode=ro&immutable=1", uri=True)
+        self._closed = False
+        try:
+            self.header = {key:json.loads(value) for key,value in self.connection.execute("SELECT key,value FROM metadata")}
+            if self.header.get("schema") != OPTIMIZATION_PROOF_SCHEMA or self.header.get("stage") != stage or self.header.get("fpga") != expected_fpga:
+                raise ValidationError("Vivado optimization proof partition or stage disagrees")
+            digest = hashlib.sha256()
+            counts = {"unobservable-source-closure":0,"constant-state":0}
+            for row in self.connection.execute("SELECT origin,reason,constant_value,initialization FROM eliminated_sources ORDER BY origin"):
+                origin,reason,value,initialization = row
+                if (not isinstance(origin,int) or origin < 0 or reason not in counts or
+                    (reason == "unobservable-source-closure" and (value is not None or initialization is not None)) or
+                    (reason == "constant-state" and (value not in (0,1) or initialization != "specified"))):
+                    raise ValidationError("Vivado elimination source proof is invalid or conditional")
+                counts[reason] += 1
+                digest.update((json.dumps(row,separators=(",",":"))+"\n").encode())
+            if (digest.hexdigest() != self.header.get("proof_rows_sha256") or
+                counts["unobservable-source-closure"] != self.header.get("unobservable_source_cells") or
+                counts["constant-state"] != self.header.get("constant_state_cells")):
+                raise ValidationError("Vivado optimization proof row seal disagrees")
+            digest = hashlib.sha256()
+            for row in self.connection.execute("SELECT origin,name FROM source_names ORDER BY origin"):
+                if not isinstance(row[1],str) or not row[1]:
+                    raise ValidationError("Vivado optimization proof source name is invalid")
+                digest.update((json.dumps(row,separators=(",",":"))+"\n").encode())
+            if digest.hexdigest() != self.header.get("source_names_sha256"):
+                raise ValidationError("Vivado optimization proof source-name seal disagrees")
+        except BaseException:
+            self.close()
+            raise
+
+    def require_eliminated_source(self, identity: str) -> dict[str, Any]:
+        if self._closed:
+            raise ValidationError("Vivado optimization proof reader is closed")
+        if not isinstance(identity,str) or not identity.startswith("s") or not identity[1:].isdigit():
+            raise ValidationError("unsupported Vivado eliminated-source identity")
+        origin = int(identity[1:])
+        if identity != f"s{origin}" or origin > 2**63-1:
+            raise ValidationError("invalid Vivado eliminated-source identity")
+        row = self.connection.execute("SELECT p.reason,p.constant_value,p.initialization,n.name FROM eliminated_sources p JOIN source_names n USING(origin) WHERE p.origin=?", (origin,)).fetchone()
+        if row is None:
+            raise ValidationError("timing elimination references an unproved or conditional source")
+        return {"source":identity,"reason":row[0],"constant_value":row[1],"initialization":row[2],"source_cell":row[3]}
+
+    def close(self):
+        if not self._closed:
+            self.connection.close()
+            self._closed = True
+
+    def __getitem__(self, key):
+        if self._closed:
+            raise ValidationError("Vivado optimization proof reader is closed")
+        return self.header[key]
+
+    def __iter__(self):
+        return iter(self.header)
+
+    def __len__(self):
+        return len(self.header)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()

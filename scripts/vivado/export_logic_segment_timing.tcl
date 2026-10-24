@@ -139,6 +139,20 @@ while {[gets $input line] >= 0} {
   if {$resolved_queries} {
     lassign [lrange $fields 8 10] start_hint end_hint cone_hint
   }
+  set eliminated ""
+  foreach hint [list $start_hint $end_hint] {
+    if {[string match {optimized-away:*} $hint]} {
+      set eliminated [string range $hint [string length {optimized-away:}] end]
+      if {![regexp {^s(0|[1-9][0-9]*)$} $eliminated]} {error "invalid optimized source reference"}
+      break
+    }
+  }
+  if {$eliminated ne ""} {
+    # This is an explicit source disposition, never a zero-delay measurement.
+    puts $output "$endpoint_hex\t$kind\t\t[emuflow_hex_encode $start_name]\t[emuflow_hex_encode $end_name]\toptimized-away:$eliminated\t\t"
+    incr emitted
+    continue
+  }
   set start_object [emuflow_resolve_object $start_kind $start_name $hierarchy_prefix $start_hint]
   set end_object [emuflow_resolve_object $end_kind $end_name $hierarchy_prefix $end_hint]
   set measurement "endpoint-exact"

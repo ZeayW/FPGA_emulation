@@ -24,6 +24,7 @@ from .logic_segment_timing import (
     _xilinx_object,
 )
 from .local_path_timing_storage import write_local_path_timing_storage
+from .timing_disposition import OPTIMIZED_AWAY, is_optimized_away, validate_optimization_record
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .phase3_storage import read_phase3_assignment_view
 from .routing import system_route_timing_paths
@@ -71,15 +72,17 @@ class _WithoutDelayPath(Mapping[str, Any]):
         self.source = source
 
     def __getitem__(self, key: str) -> Any:
-        if key == "delay_ns":
+        if key in {"delay_ns", "optimization_source"}:
             raise KeyError(key)
+        if key == "measurement" and is_optimized_away(self.source):
+            return "endpoint-longest-path-fallback"
         return self.source[key]
 
     def __iter__(self) -> Iterator[str]:
-        return (key for key in self.source if key != "delay_ns")
+        return (key for key in self.source if key not in {"delay_ns", "optimization_source"})
 
     def __len__(self) -> int:
-        return len(self.source) - ("delay_ns" in self.source)
+        return len(self.source) - sum(key in self.source for key in ("delay_ns", "optimization_source"))
 
 
 class _WithoutDelayPaths(Sequence[Mapping[str, Any]]):
@@ -996,10 +999,14 @@ def validate_local_path_timing(database: Mapping[str, Any]) -> Dict[str, Any]:
     measurement_counts = {
         "explicit-routed-path-chain": 0,
         "endpoint-longest-path-fallback": 0,
+        OPTIMIZED_AWAY: 0,
     }
     for item in paths:
         if not isinstance(item, Mapping):
             raise ValidationError("local path timing record is invalid")
+        if validate_optimization_record(item):
+            measurement_counts[OPTIMIZED_AWAY] += 1
+            continue
         delay = item.get("delay_ns")
         if (
             isinstance(delay, bool)
@@ -1019,4 +1026,6 @@ def validate_local_path_timing(database: Mapping[str, Any]) -> Dict[str, Any]:
         **checked,
         "maximum_delay_ns": maximum,
         "measurement_counts": measurement_counts,
+        "optimized_away_paths": measurement_counts.get(OPTIMIZED_AWAY, 0),
+        "implemented_paths": len(paths)-measurement_counts.get(OPTIMIZED_AWAY, 0),
     }

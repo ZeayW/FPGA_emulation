@@ -211,6 +211,19 @@ choice is confirmed; it cannot eliminate a timing record on its own.
 Unknown combinational behavior, changing reset values,
 and unsupported primitives do not establish a constant proof. Timing records
 must reference this canonical source proof rather than invent a zero delay.
+Source names are sealed with the proof so a timing record cannot borrow an
+unrelated cell's elimination. A routed proof is bound to one FPGA and mapped
+input; a synthesis-stage diagnostic cannot qualify a routed timing disposition.
+
+Local timing storage version 2 retains every original local member, including
+`measurement: optimized-away`, `delay_ns: null`, and an `optimization_source`
+reference when its requested endpoint has a checked elimination proof. It does
+not invent a physical endpoint trace. Version 1 measured-only generations remain
+readable. The query resolver, Tcl export, and importer preserve the disposition;
+the physical summary references one compact proof database per FPGA. Unknown
+initialization candidates remain unresolved until the vendor choice is confirmed.
+The same disposition support is required at cross-FPGA logic and interface
+boundaries before a complete optimized whole-design result can be qualified.
 Whole-device resource budgets also apply to the final physical cell population.
 Resource accounting excludes MACRO wrappers while retaining LEAF and INTERNAL
 implementation components. LUT capacity is counted by occupied site/LUT letter

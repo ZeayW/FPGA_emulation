@@ -707,6 +707,112 @@ def test_standalone_report_preserves_interleaved_measurement_compatibility():
     assert [path["path"] for path in report["paths"]] == ["p", "q"]
 
 
+@pytest.mark.parametrize("all_eliminated", [False, True])
+def test_original_coverage_includes_eliminations_without_fake_slacks(all_eliminated):
+    from emuflow.local_path_timing import path_id_set_sha256
+    from emuflow.timing_disposition import OPTIMIZED_AWAY, PATH_POPULATION_POLICY
+    builder = _PathMetadataBuilder()
+    for path in ("p", "q"):
+        eliminated = path == "q" or all_eliminated
+        builder.append(path, representative_path=path, path_scope="same-fpga-local",
+                       clock_domain="clk", target_period_ns=10.0, physical_logic_segments_cone_bound=False,
+                       optimization_source="s7" if eliminated else None,
+                       optimization_fpga="fpga0" if eliminated else None)
+    metadata = {"paths": builder.finish(), "compressed_representative_paths": 0,
+                "source_binding": {"original_paths": 2, "original_path_ids_sha256": path_id_set_sha256(["p", "q"])}}
+    rows = [] if all_eliminated else [
+        {"path":"p", "role":role, "event":"capture", "arrival_ns":13.0,
+         "required_ns":required, "slack_ns":required-13.0}
+        for role,required in (("target",10.0),("runtime",100.0))]
+    runtime = {"virtual_dut_clocks":{"clk":{"nominal_period_ns":100.0}}}
+    report = build_opensta_timing(runtime, metadata, rows)
+    assert report["summary"]["original_paths"] == 2
+    assert report["summary"]["original_path_coverage"] == 1.0
+    assert report["summary"]["implemented_paths"] == int(not all_eliminated)
+    assert report["summary"]["optimized_away_paths"] == (2 if all_eliminated else 1)
+    assert report["path_population_policy"] == PATH_POPULATION_POLICY
+    assert report["target_clock"]["tns_bound_ns"] == (0.0 if all_eliminated else -3.0)
+    assert report["target_clock"]["worst_slack_bound_ns"] == (None if all_eliminated else -3.0)
+    assert report["target_clock"]["worst_path"] == (None if all_eliminated else "p")
+    q = next(path for path in report["paths"] if path["path"] == "q")
+    assert q["measurement"] == OPTIMIZED_AWAY
+    assert q["optimization_source"] == "s7"
+    assert q["system_delay_bound_ns"] is None
+    assert q["target_clock_slack_bound_ns"] is None
+    assert report["global_opensta"]["checks"] == len(rows)
+    compared = compare_system_timing(rows, report)
+    assert compared["original_paths"] == 2
+    assert compared["optimized_away_paths"] == (2 if all_eliminated else 1)
+    assert compared["metrics"]["target"]["wns_ns"] == (None if all_eliminated else -3.0)
+    adopted = adopt_opensta_results(report, rows)
+    assert adopted["optimized_away_paths"] == (2 if all_eliminated else 1)
+    assert q["system_delay_bound_ns"] is None
+    with pytest.raises(ValidationError, match="measurement population"):
+        build_opensta_timing(runtime, metadata, rows+[
+            {"path":"q","role":"target","event":"capture","arrival_ns":0.0,"required_ns":10.0,"slack_ns":10.0}])
+
+
+def test_indexed_elimination_metadata_is_compact_and_checks_paired_references():
+    builder = _PathMetadataBuilder()
+    for path in ("p", "q"):
+        builder.append(path, representative_path=path, path_scope="same-fpga-local",
+                       clock_domain="clk", target_period_ns=10.0, physical_logic_segments_cone_bound=False,
+                       optimization_source="s7" if path == "q" else None,
+                       optimization_fpga="fpga0" if path == "q" else None)
+    metadata = builder.finish()
+    assert metadata.typed_payload_bytes == 60
+    assert "optimization_source" not in metadata["p"]
+    assert metadata["q"]["optimization_fpga"] == "fpga0"
+    with pytest.raises(ValidationError, match="source and FPGA together"):
+        _PathMetadataBuilder().append("p", representative_path="p", path_scope="same-fpga-local",
+            clock_domain="clk", target_period_ns=10.0, physical_logic_segments_cone_bound=False,
+            optimization_source="s7")
+
+
+def test_local_binding_requires_the_actual_endpoint_proof_and_keeps_full_population(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import emuflow.system_timing as system
+    import emuflow.tdm as tdm
+    from tests.test_local_path_timing_storage import _header, _record
+    from tests.test_vivado_optimization import VivadoOptimizationTests
+    from emuflow.vivado_optimization import build_optimization_proofs, OptimizationProofView
+    from emuflow.timing_disposition import OPTIMIZED_AWAY
+    mapped,lineage,digest,origins = VivadoOptimizationTests().prepare(tmp_path)
+    output = tmp_path / "proofs.sqlite"
+    build_optimization_proofs(mapped,lineage,output,mapped_sha256=digest,fpga="fpga0")
+    monkeypatch.setattr(system,"_endpoint_delay_database",lambda physical: {})
+    monkeypatch.setattr(system,"_logic_segment_database",lambda physical: {})
+    monkeypatch.setattr(system,"_board_link_delay_database",lambda physical,platform: {})
+    monkeypatch.setattr(tdm,"is_fixed_slot_transport_schedule",lambda schedule: True)
+    monkeypatch.setattr(tdm,"reconstruct_tdm_schedule_timing_paths",lambda *args: [])
+    eliminated = {**_record("b",2.0),"end_pin":"dead/D","measurement":OPTIMIZED_AWAY,
+                  "path_pins":[],"delay_ns":None,"optimization_source":f"s{origins['dead']}"}
+    physical = {"local_path_timing":{"fpga0":{**_header(),"paths":[_record("a",13.0),eliminated]}}}
+    runtime = {"virtual_dut_clocks":{"clk":{"nominal_period_ns":100.0}}}
+    def bind():
+        metadata = {}
+        checks = bind_physical_checks(runtime,{"routes":[]},{},physical,SimpleNamespace(links=[]),
+            metadata=metadata,routes_artifact_sha256="d"*64)
+        return checks,metadata
+    with pytest.raises(ValidationError, match="proof owner"):
+        bind()
+    with OptimizationProofView(output,expected_fpga="fpga0") as view:
+        physical["optimization_proofs"] = {"fpga0":view}
+        checks,metadata = bind()
+        assert len(checks) == 2
+        assert {check.path for check in checks} == {"a"}
+        assert set(metadata["paths"]) == {"a","b"}
+        measured = [{"path":c.path,"role":c.role,"event":c.event,"arrival_ns":sum(c.arcs_ns),
+                     "required_ns":c.required_ns,"slack_ns":c.required_ns-sum(c.arcs_ns)} for c in checks]
+        report = build_opensta_timing(runtime,metadata,measured)
+        assert report["target_clock"]["tns_bound_ns"] == -4.0
+        assert report["summary"]["original_path_coverage"] == 1.0
+        assert report["summary"]["optimized_away_paths"] == 1
+        eliminated["end_pin"] = "dynamic/D"
+        with pytest.raises(ValidationError, match="different source endpoint"):
+            bind()
+
+
 def test_engine_defaults_are_uniform_and_python_is_explicit():
     import inspect
     from emuflow.cli import _build_parser

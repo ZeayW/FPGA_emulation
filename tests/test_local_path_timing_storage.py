@@ -16,6 +16,7 @@ from emuflow.local_path_timing_storage import (
     write_local_path_timing_storage,
 )
 from emuflow.physical_summary_storage import LazyPhysicalEvidenceMap
+from emuflow.timing_disposition import OPTIMIZED_AWAY
 
 
 def _header() -> dict[str, object]:
@@ -91,6 +92,69 @@ def test_local_path_typed_rejects_duplicate_identity(tmp_path: Path) -> None:
         write_local_path_timing_storage(
             tmp_path / "local.json", _header(), [record, record]
         )
+
+
+def test_eliminated_local_member_round_trip_and_raw_validation(tmp_path: Path) -> None:
+    measured = _record("a", 1.0)
+    eliminated = {**_record("b", 2.0), "measurement": OPTIMIZED_AWAY,
+                  "path_pins": [], "delay_ns": None, "optimization_source": "s7"}
+    selector = tmp_path / "timing.json"
+    with write_local_path_timing_storage(selector, _header(), [measured, eliminated]) as view:
+        assert list(view["paths"]) == [measured, eliminated]
+        checked = validate_local_path_timing(view)
+        assert checked["local_paths"] == 2
+        assert checked["implemented_paths"] == 1
+        assert checked["optimized_away_paths"] == 1
+        assert checked["maximum_delay_ns"] == 1.0
+        raw = dict(view)
+        raw["paths"] = list(view["paths"])
+        assert validate_local_path_timing(raw) == checked
+    _, ref = publish_local_path_timing_selector(selector, tmp_path / "published", Path("fpga0/local.json"))
+    with read_local_path_timing_storage(tmp_path / "published" / ref["path"]) as view:
+        assert list(view["paths"])[1]["delay_ns"] is None
+
+
+@pytest.mark.parametrize("mutation", [
+    {"delay_ns": 0.0}, {"delay_ns": False}, {"optimization_source": "unknown"},
+    {"optimization_source": None}, {"actual_start_object": "invented/Q"},
+    {"measurement": "endpoint-longest-path-fallback", "delay_ns": 0.0},
+])
+def test_eliminated_local_member_rejects_fake_measurements(tmp_path: Path, mutation) -> None:
+    eliminated = {**_record("b", 2.0), "measurement": OPTIMIZED_AWAY,
+                  "path_pins": [], "delay_ns": None, "optimization_source": "s7", **mutation}
+    with pytest.raises(ValidationError):
+        write_local_path_timing_storage(tmp_path / "timing.json", _header(), [_record("a", 1.0), eliminated])
+
+
+def test_reads_historical_v1_typed_generation(tmp_path: Path) -> None:
+    import sqlite3
+    from emuflow.io import file_sha256
+    from emuflow.local_path_timing_storage import _DDL_V1, _store_name, LOCAL_PATH_TIMING_APPLICATION_ID
+    selector = tmp_path / "current.json"
+    with write_local_path_timing_storage(selector, _header(), [_record("a", 1.0), _record("b", 2.0)]) as view:
+        current = view.store_path
+        raw = dict(view.selector)
+    temporary = tmp_path / "historical.sqlite"
+    db = sqlite3.connect(temporary, uri=True)
+    db.executescript(_DDL_V1)
+    db.execute(f"PRAGMA application_id={LOCAL_PATH_TIMING_APPLICATION_ID}")
+    db.execute("PRAGMA user_version=1")
+    db.execute("ATTACH DATABASE ? AS newer", (f"file:{current}?mode=ro&immutable=1",))
+    db.execute("INSERT INTO timings SELECT seq,id,kind,fpga,clock_domain,clock_period_ns,required_time_ns,start_pin,end_pin,measurement,delay_ns FROM newer.timings")
+    for table in ("metadata", "path_pins"):
+        db.execute(f"INSERT INTO {table} SELECT * FROM newer.{table}")
+    db.commit()
+    db.close()
+    digest = file_sha256(temporary)
+    historical = tmp_path / "historical.json"
+    target = historical.with_name(_store_name(historical, digest))
+    temporary.rename(target)
+    raw.update(schema="emuflow.local-path-timing-storage/v1", user_version=1,
+               artifact=target.name, store_sha256=digest, store_bytes=target.stat().st_size)
+    historical.write_text(json.dumps(raw))
+    with read_local_path_timing_storage(historical) as view:
+        assert list(view["paths"]) == [_record("a", 1.0), _record("b", 2.0)]
+        assert view.validate_timing()["optimized_away_paths"] == 0
 
 
 def test_local_path_typed_rejects_incomplete_coverage(tmp_path: Path) -> None:

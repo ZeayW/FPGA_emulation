@@ -21,7 +21,9 @@ handles native macro expansion and shared LUT halves.
 Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
 constraints; source-bound coverage is checked after optimization. The timing
 contract requires an explicit measured or proven optimized-away disposition for
-every original path; WNS/TNS use surviving implemented paths. See the
+every original path; WNS/TNS use surviving implemented paths. Local timing can
+retain eliminated members with null delays and checked source-proof references.
+Complete cross-FPGA timing remains a separate qualification gate. See the
 [Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider) and
 [user guide](docs/USER_GUIDE.md#physical-implementation).
 The virtual BoardDB is a declared academic platform model rather than evidence
