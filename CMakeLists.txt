@@ -265,6 +265,16 @@ set(EMUFLOW_INSTALL_BINDIR "${EMUFLOW_INSTALL_ROOT}/${CMAKE_INSTALL_BINDIR}")
 file(MAKE_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
 
 find_package(SQLite3 3.22 REQUIRED)
+add_executable(emuflow_xilinx_lut_depopulation
+  "${CMAKE_SOURCE_DIR}/src/native/xilinx_lut_depopulation.cpp")
+target_compile_features(emuflow_xilinx_lut_depopulation PRIVATE cxx_std_17)
+target_compile_options(emuflow_xilinx_lut_depopulation PRIVATE -O3)
+set_target_properties(emuflow_xilinx_lut_depopulation PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
+if(BUILD_TESTING)
+  add_test(NAME emuflow_xilinx_lut_depopulation_cli
+    COMMAND "$<TARGET_FILE:emuflow_xilinx_lut_depopulation>" --help)
+endif()
 add_executable(emuflow_xilinx_bookshelf_exporter
   "${CMAKE_SOURCE_DIR}/src/native/xilinx_bookshelf_exporter.cpp")
 target_compile_features(emuflow_xilinx_bookshelf_exporter PRIVATE cxx_std_17)

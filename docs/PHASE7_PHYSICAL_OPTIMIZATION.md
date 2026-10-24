@@ -99,6 +99,24 @@ in the production flow until a complete physical run qualifies it.
 
 ## Relevant academic results
 
+The explicit `depopulate_hot_lut_sites` API adds a post-DP experiment for
+selective packing depopulation. It streams atom identity and the complete
+qualified LUT site domain to `emuflow_xilinx_lut_depopulation`. The C++ mover
+preserves all FFs, hard blocks, fixed atoms, and macro-bearing sites. Only
+singleton LUT1--LUT6 atoms in caller-selected hot clock regions can move to
+nearby free qualified BELs. The default search target is six LUTs per slice
+with a maximum displacement of 128 native-grid Manhattan units. Both are
+explicit experiment parameters, not device capacities or signoff limits.
+
+The mover records unrelieved excess when the bounded search cannot find a
+destination; it never drops cells or changes nets, and it does not claim
+routability. Publication uses a separate candidate placement. Normal exact
+site/BEL/control-set/carry/macro validation must certify that new placement
+before physical handoff and routing. This experiment is not automatically
+enabled in the production flow. Its nearest-vacancy heuristic is an EmuFlow
+implementation inspired by selective congestion-aware depopulation, not a
+reproduction of the papers below.
+
 The academic literature reaches the same conclusion through different
 algorithms:
 
