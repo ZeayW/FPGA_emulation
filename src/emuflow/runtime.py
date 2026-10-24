@@ -8,7 +8,6 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 from .errors import ValidationError
 from .platform import Platform
-from .system_timing import build_system_timing
 from .tdm import RUNTIME_BARRIER_SLOTS, TDM_SCHEDULE_SCHEMA
 
 
@@ -920,10 +919,6 @@ def aggregate_qor(
     phase6_report: Mapping[str, Any],
     physical_summary: Optional[Mapping[str, Any]],
     platform: Platform,
-    routes: Optional[Mapping[str, Any]] = None,
-    schedule: Optional[Mapping[str, Any]] = None,
-    routes_artifact_sha256: Optional[str] = None,
-    semantic_contract: Optional[Mapping[str, Any]] = None,
     system_timing_result: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     for name, report in (
@@ -954,20 +949,8 @@ def aggregate_qor(
     elif physical_summary is None:
         runtime_timing = estimate_runtime_timing(runtime, phase5_report)
     else:
-        if routes is None or schedule is None:
-            raise ValidationError(
-                "physical Phase 7C closure requires routes and schedule for "
-                "unified system timing"
-            )
-        runtime_timing = build_system_timing(
-            runtime,
-            routes,
-            schedule,
-            phase5_report,
-            physical_summary,
-            platform,
-            routes_artifact_sha256=routes_artifact_sha256,
-            semantic_contract=semantic_contract,
+        raise ValidationError(
+            "physical Phase 7C closure requires standalone OpenSTA timing results"
         )
     physical_closed = (
         physical["status"] == "pass"

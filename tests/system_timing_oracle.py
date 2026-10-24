@@ -1,26 +1,31 @@
-"""Unified timing closure across placed/routed FPGA partitions and links."""
+"""Small-fixture timing oracle; excluded from the installed production runtime.
+
+Use only for independent numerical comparisons in tests. Physical production
+results must come from the OpenSTA event engine, not this reconstruction.
+"""
 
 from __future__ import annotations
 
 import math
-import heapq
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional
 
-from .board_link_timing import validate_board_link_timing
-from .boundary_timing import validate_boundary_timing_database
-from .errors import ValidationError
-from .logic_segment_timing import validate_logic_segment_timing
-from .local_path_timing import (
+from emuflow.errors import ValidationError
+from emuflow.local_path_timing import (
     path_id_set_sha256,
     validate_local_path_timing,
 )
-from .platform import Platform
-from .static_exact_timing import (
+from emuflow.platform import Platform
+from emuflow.static_exact_timing import (
     build_static_exact_segment_deadlines,
     validate_static_exact_segment_deadlines,
 )
-from .tdm import reconstruct_tdm_schedule_timing_paths
+from emuflow.tdm import reconstruct_tdm_schedule_timing_paths
 
+
+from emuflow.physical_timing_inputs import (
+    _finite_number, _endpoint_delay_database, _logic_segment_database,
+    _board_link_delay_database,
+)
 
 SYSTEM_TIMING_SCHEMA = "emuflow.system-timing/v2"
 
@@ -40,14 +45,6 @@ def _runtime_clock_period_ns(
     )
 
 
-def _finite_number(value: Any, context: str) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-    ):
-        raise ValidationError(f"{context} must be a finite number")
-    return float(value)
 
 
 def _physical_delay_database(
@@ -164,174 +161,14 @@ def _logic_partition_sequence(
     return sequence, discontinuities
 
 
-def _endpoint_delay_database(
-    physical_summary: Mapping[str, Any],
-) -> Optional[Dict[str, float]]:
-    raw_timing = physical_summary.get("boundary_timing")
-    if raw_timing is None:
-        return None
-    identities = physical_summary.get("boundary_identities")
-    if not isinstance(raw_timing, dict) or not isinstance(identities, dict):
-        raise ValidationError("physical boundary timing/identity maps are invalid")
-    if set(raw_timing) != set(identities):
-        raise ValidationError("physical boundary timing FPGA coverage disagrees")
-    result: Dict[str, float] = {}
-    for fpga, database in raw_timing.items():
-        validate_boundary_timing_database(database, identities[fpga])
-        for endpoint in database["endpoints"]:
-            endpoint_id = endpoint["id"]
-            if endpoint_id in result:
-                raise ValidationError(
-                    f"duplicate physical boundary timing endpoint {endpoint_id!r}"
-                )
-            result[endpoint_id] = _finite_number(
-                endpoint["delay_ns"],
-                f"physical boundary endpoint {endpoint_id}",
-            )
-    return result
 
 
-class _IndexedLogicSegmentMembers:
-    def __init__(self, owner: "_IndexedLogicSegmentLookup", system_path: str):
-        self.owner = owner
-        self.system_path = system_path
-
-    def get(self, member_path: str, default: Any = None) -> Any:
-        records = self.owner.segments_for(self.system_path, member_path)
-        return records if records else default
-
-    def __getitem__(self, member_path: str) -> List[Mapping[str, Any]]:
-        records = self.owner.segments_for(self.system_path, member_path)
-        if not records:
-            raise KeyError(member_path)
-        return records
 
 
-class _IndexedLogicSegmentLookup:
-    """Small store set with indexed path/member lookup and no graph mirror."""
-
-    def __init__(self, stores: Sequence[Mapping[str, Any]]):
-        self.stores = stores
-
-    def get(self, system_path: str, default: Any = None) -> Any:
-        if not any(
-            store.contains_system_path(system_path)  # type: ignore[attr-defined]
-            for store in self.stores
-        ):
-            return default
-        return _IndexedLogicSegmentMembers(self, system_path)
-
-    def segments_for(
-        self, system_path: str, member_path: str
-    ) -> List[Mapping[str, Any]]:
-        records = [
-            segment
-            for store in self.stores
-            for segment in store.iter_segments_for(  # type: ignore[attr-defined]
-                system_path, member_path
-            )
-        ]
-        records.sort(key=lambda item: (item["cut_index"], item["id"]))
-        return records
 
 
-def _logic_segment_database(
-    physical_summary: Mapping[str, Any],
-) -> Optional[Any]:
-    raw = physical_summary.get("logic_segment_timing")
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        raise ValidationError("physical logic segment timing map is invalid")
-    cached = getattr(raw, "_logic_collection_cache", None)
-    if cached is not None:
-        return cached
-    from .logic_segment_timing_storage import (
-        LogicSegmentTimingCollection,
-        LogicSegmentTimingView,
-    )
-
-    result: Dict[str, Dict[str, List[Mapping[str, Any]]]] = {}
-    segment_ids = set()
-    stores = []
-    representations = set()
-    source_identity = None
-    for fpga, database in raw.items():
-        indexed_view = isinstance(database, LogicSegmentTimingView)
-        if indexed_view:
-            validation_fpga = database.selector["source"]["fpga"]
-        else:
-            validation_fpga = validate_logic_segment_timing(database)["fpga"]
-        if validation_fpga != fpga:
-            raise ValidationError(
-                "physical logic segment timing FPGA identity disagrees"
-            )
-        identity = (
-            database.get("design"),
-            database.get("platform"),
-            database.get("semantic_contract_sha256"),
-        )
-        if source_identity is None:
-            source_identity = identity
-        elif identity != source_identity:
-            raise ValidationError(
-                "physical logic segment timing source seals disagree"
-            )
-        indexed = indexed_view or callable(
-            getattr(database, "iter_segments_for", None)
-        )
-        representations.add(indexed)
-        if indexed:
-            stores.append(database)
-            continue
-        for segment in database["segments"]:
-            segment_id = segment["id"]
-            if segment_id in segment_ids:
-                raise ValidationError(
-                    f"duplicate physical logic segment {segment_id!r}"
-                )
-            segment_ids.add(segment_id)
-            result.setdefault(segment["system_path"], {}).setdefault(
-                segment["member_path"], []
-            ).append(segment)
-    if len(representations) > 1:
-        raise ValidationError(
-            "physical logic segment timing mixes indexed and legacy evidence"
-        )
-    if stores:
-        if all(isinstance(store, LogicSegmentTimingView) for store in stores):
-            collection = LogicSegmentTimingCollection(stores)
-            try:
-                raw._logic_collection_cache = collection
-            except AttributeError:
-                pass
-            return collection
-        previous = None
-        for segment_id in heapq.merge(
-            *(store.iter_segment_ids() for store in stores)  # type: ignore[attr-defined]
-        ):
-            if segment_id == previous:
-                raise ValidationError(
-                    f"duplicate physical logic segment {segment_id!r}"
-                )
-            previous = segment_id
-        return _IndexedLogicSegmentLookup(stores)
-    return result
 
 
-def _board_link_delay_database(
-    physical_summary: Mapping[str, Any], platform: Platform
-) -> Optional[Dict[tuple[str, str, str], float]]:
-    raw = physical_summary.get("board_link_timing")
-    if raw is None:
-        return None
-    validate_board_link_timing(raw, platform)
-    return {
-        (item["link"], item["from"], item["to"]): float(
-            item["delay_bound_ns"]
-        )
-        for item in raw["links"]
-    }
 
 
 def _fixed_slot_transport_path_delay(
@@ -639,6 +476,9 @@ def build_system_timing(
     records = reconstruct_tdm_schedule_timing_paths(
         routes, platform, schedule
     )
+    if (len(records) > 4096 or sum(len(r.get("compressed_path_ids", [r["path"]]))
+                                  for r in records) > 4096):
+        raise ValidationError("timing oracle is limited to small test fixtures")
     if not records:
         raise ValidationError("system timing has no cross-FPGA timing paths")
     reported = phase5_report.get("timing_validation")
@@ -664,7 +504,7 @@ def build_system_timing(
         physical_summary, platform
     )
     exact_deadlines = None
-    from .tdm import (
+    from emuflow.tdm import (
         is_fixed_slot_transport_schedule,
         is_sampled_virtual_wire_schedule,
     )
@@ -1290,3 +1130,70 @@ def build_system_timing(
         },
         "paths": system_paths,
     }
+
+
+def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
+    """Compare every original path, not merely extrema; return a compact gate.
+
+    OpenSTA uses float-based timing internally. The floor is 1 ps, with four
+    float32 relative epsilons on the specific compared value (not the global
+    frame). A near-zero slack retains the strict floor even in a huge frame.
+"""
+    if tolerance_ns <= 0 or not math.isfinite(tolerance_ns):
+        raise ValidationError("invalid global STA comparison tolerance")
+    if len(reference["paths"]) > 4096:
+        raise ValidationError("timing comparator is limited to small test fixtures")
+    expected = {p["path"]: p for p in reference["paths"]}
+    if not expected or len(expected) != len(reference["paths"]):
+        raise ValidationError("global STA reference has empty/duplicate original paths")
+    observed = {}
+    identities = set()
+    max_error = 0.0
+    max_tolerance = tolerance_ns
+    failures = 0
+    for row in measurements:
+        role = row["role"]
+        identity = (row["path"], role, row["event"])
+        if (role not in {"target", "runtime", "tx", "commit"}
+                or row["path"] not in expected or identity in identities):
+            raise ValidationError("global STA invalid/duplicate measurement identity")
+        identities.add(identity)
+        if any(isinstance(row[k], bool) or not math.isfinite(row[k])
+               for k in ("arrival_ns", "required_ns", "slack_ns")):
+            raise ValidationError("global STA nonfinite measurement")
+        if role in {"tx", "commit"}:
+            failures += row["slack_ns"] < -tolerance_ns
+            continue
+        key = (row["path"], role)
+        if key in observed or row["path"] not in expected:
+            raise ValidationError("global OpenSTA original-path population mismatch")
+        observed[key] = row
+        old = expected[row["path"]]
+        for actual, value in ((row["arrival_ns"], old["system_delay_bound_ns"]),
+                              (row["required_ns"], old[f"{role}_required_time_ns"]),
+                              (row["slack_ns"], old[f"{role}_clock_slack_bound_ns"])):
+            if isinstance(value, bool) or not math.isfinite(value):
+                raise ValidationError("global STA nonfinite reference")
+            error = abs(actual-value)
+            max_error = max(max_error, error)
+            allowance = max(tolerance_ns, 4 * 2**-23 * abs(value))
+            max_tolerance = max(max_tolerance, allowance)
+            if error > allowance:
+                raise ValidationError(f"global OpenSTA disagrees at {key}: error {error} ns")
+    if set(observed) != {(p, r) for p in expected for r in ("target", "runtime")}:
+        raise ValidationError("global OpenSTA original-path coverage is incomplete")
+    summary = {}
+    for role in ("target", "runtime"):
+        slacks = [row["slack_ns"] for row in measurements if row["role"] == role]
+        summary[role] = {"wns_ns": min(slacks),
+                         "original_path_tns_ns": math.fsum(min(0.0, s) for s in slacks),
+                         "negative_paths": sum(s < 0 for s in slacks)}
+    return {"schema": "emuflow.global-opensta-check/v1", "status": "fail" if failures else "pass",
+            "authority": "qualification-only-pending-full-flow-validation",
+            "timing_scope": reference["timing_scope"], "original_paths": len(expected),
+            "event_failures": failures, "checks": len(measurements),
+            "tolerance_ns": tolerance_ns, "maximum_difference_ns": max_error,
+            "maximum_comparison_tolerance_ns": max_tolerance,
+            "relative_float32_epsilons": 4,
+            "metrics": summary,
+            "tns_definition": "sum-negative-slack-once-per-original-TimingPathDB-path"}

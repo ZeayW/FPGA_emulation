@@ -1133,7 +1133,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--global-sta-executable",
         help="override the default in-tree OpenSTA executable",
     )
-    multi_fpga_compile.add_argument("--global-timing-engine", choices=("opensta", "python"),
+    multi_fpga_compile.add_argument("--global-timing-engine", choices=("opensta",),
                                    default="opensta", help="global physical timing engine (default: opensta)")
     multi_fpga_compile.add_argument(
         "--serial-bsp-phy-provider",
@@ -2320,7 +2320,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     phase7c.add_argument("--simulation-frames", type=int, default=12)
     phase7c.add_argument("--global-sta-executable", help="override the default in-tree OpenSTA executable")
-    phase7c.add_argument("--global-timing-engine", choices=("opensta", "python"),
+    phase7c.add_argument("--global-timing-engine", choices=("opensta",),
                         default="opensta", help="global physical timing engine (default: opensta)")
     phase7c.add_argument("--out", type=Path, required=True)
 

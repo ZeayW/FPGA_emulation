@@ -1,10 +1,12 @@
 # Global timing model and qualification
 
-Physical flows default to `--global-timing-engine opensta`. OpenSTA computes
-the numeric results from bound physical logic/interface/link arcs and explicit
-transport-event constraints. It does not implicitly run the separate Python
-timing composer. Select that engine explicitly with
-`--global-timing-engine python`.
+OpenSTA is the only production global physical timing engine. It computes
+numeric results from bound physical logic/interface/link arcs and explicit
+transport-event constraints. The Python timing engine and historical
+comparison/adoption replay are retired. Independent numerical oracles are
+bounded test utilities and are not installed with the production package.
+Unsupported physical evidence fails explicitly; no partition-maxima or
+alternative-engine fallback substitutes for missing event/segment coverage.
 
 With the repository OpenSTA container launcher, `executable_sha256` identifies
 the delegated native OpenSTA engine, while `launcher_sha256` separately seals
@@ -90,8 +92,9 @@ short-path mismatch.
 
 A complete real-design gate also needs physical implementation, original-member
 coverage, and delay qualifications. Terminal validation reconstructs raw binding
-and checks saved engine scalars; it does not need to run STA or the alternate
-Python engine again.
+and checks saved engine scalars without running STA again. Historical physical
+reports without standalone OpenSTA evidence require their matching Git version;
+the current terminal validator does not reconstruct them with another engine.
 
 `scripts/opensta/opentimer_event_check.cpp` is an optional offline OpenTimer
 driver for independent model checks. It is not a production dependency or a

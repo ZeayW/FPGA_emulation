@@ -47,6 +47,8 @@ def _request(args, kwargs):
         or bound.arguments['patron_algorithm_version'] != 14
     ):
         raise EmuFlowError("only PATRON v14 is supported")
+    if bound.arguments["global_timing_engine"] != "opensta":
+        raise EmuFlowError("only the OpenSTA global timing engine is supported")
     for name, value in list(bound.arguments.items()):
         annotation = str(signature.parameters[name].annotation)
         if value is not None and "Path" in annotation:

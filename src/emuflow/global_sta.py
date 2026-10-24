@@ -1901,7 +1901,7 @@ def bind_physical_checks(runtime, routes, schedule, physical, platform, *, metad
 Shared database readers validate identities only. This exporter does not call
 the Python event propagator or consume its per-path numerical results.
 """
-    from .system_timing import (
+    from .physical_timing_inputs import (
         _board_link_delay_database, _endpoint_delay_database,
         _logic_segment_database,
     )
@@ -2318,107 +2318,3 @@ def build_opensta_timing(runtime, metadata, measurements):
         "event_failures": failures, "metrics": metrics,
         "tns_definition": "sum-negative-slack-once-per-original-TimingPathDB-path"}
     return timing
-
-
-def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
-    """Compare every original path, not merely extrema; return a compact gate.
-
-    OpenSTA uses float-based timing internally. The floor is 1 ps, with four
-    float32 relative epsilons on the specific compared value (not the global
-    frame). A near-zero slack retains the strict floor even in a huge frame.
-"""
-    if tolerance_ns <= 0 or not math.isfinite(tolerance_ns):
-        raise ValidationError("invalid global STA comparison tolerance")
-    expected = {p["path"]: p for p in reference["paths"]}
-    if not expected or len(expected) != len(reference["paths"]):
-        raise ValidationError("global STA reference has empty/duplicate original paths")
-    observed = {}
-    identities = set()
-    max_error = 0.0
-    max_tolerance = tolerance_ns
-    failures = 0
-    for row in measurements:
-        role = row["role"]
-        identity = (row["path"], role, row["event"])
-        if (role not in {"target", "runtime", "tx", "commit"}
-                or row["path"] not in expected or identity in identities):
-            raise ValidationError("global STA invalid/duplicate measurement identity")
-        identities.add(identity)
-        if any(isinstance(row[k], bool) or not math.isfinite(row[k])
-               for k in ("arrival_ns", "required_ns", "slack_ns")):
-            raise ValidationError("global STA nonfinite measurement")
-        if role in {"tx", "commit"}:
-            failures += row["slack_ns"] < -tolerance_ns
-            continue
-        key = (row["path"], role)
-        if key in observed or row["path"] not in expected:
-            raise ValidationError("global OpenSTA original-path population mismatch")
-        observed[key] = row
-        old = expected[row["path"]]
-        for actual, value in ((row["arrival_ns"], old["system_delay_bound_ns"]),
-                              (row["required_ns"], old[f"{role}_required_time_ns"]),
-                              (row["slack_ns"], old[f"{role}_clock_slack_bound_ns"])):
-            if isinstance(value, bool) or not math.isfinite(value):
-                raise ValidationError("global STA nonfinite reference")
-            error = abs(actual-value)
-            max_error = max(max_error, error)
-            allowance = max(tolerance_ns, 4 * 2**-23 * abs(value))
-            max_tolerance = max(max_tolerance, allowance)
-            if error > allowance:
-                raise ValidationError(f"global OpenSTA disagrees at {key}: error {error} ns")
-    if set(observed) != {(p, r) for p in expected for r in ("target", "runtime")}:
-        raise ValidationError("global OpenSTA original-path coverage is incomplete")
-    summary = {}
-    for role in ("target", "runtime"):
-        slacks = [row["slack_ns"] for row in measurements if row["role"] == role]
-        summary[role] = {"wns_ns": min(slacks),
-                         "original_path_tns_ns": math.fsum(min(0.0, s) for s in slacks),
-                         "negative_paths": sum(s < 0 for s in slacks)}
-    return {"schema": "emuflow.global-opensta-check/v1", "status": "fail" if failures else "pass",
-            "authority": "qualification-only-pending-full-flow-validation",
-            "timing_scope": reference["timing_scope"], "original_paths": len(expected),
-            "event_failures": failures, "checks": len(measurements),
-            "tolerance_ns": tolerance_ns, "maximum_difference_ns": max_error,
-            "maximum_comparison_tolerance_ns": max_tolerance,
-            "relative_float32_epsilons": 4,
-            "metrics": summary,
-            "tns_definition": "sum-negative-slack-once-per-original-TimingPathDB-path"}
-
-
-def adopt_opensta_results(timing, measurements):
-    """Project checked engine values into the canonical report, in place.
-
-    Keep the independent composer as the comparison input, not a second persisted path
-    population. All public scalar aliases are updated together.
-    """
-    gate = compare_system_timing(measurements, timing)
-    observed = {(r["path"], r["role"]): r for r in measurements
-                if r["role"] in {"target", "runtime"}}
-    for path in timing["paths"]:
-        path["system_delay_bound_ns"] = observed[path["path"], "target"]["arrival_ns"]
-        for role in ("target", "runtime"):
-            row = observed[path["path"], role]
-            path[f"{role}_required_time_ns"] = row["required_ns"]
-            path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
-    for role in ("target", "runtime"):
-        worst = min(timing["paths"], key=lambda p: (
-            p[f"{role}_clock_slack_bound_ns"], p["path"]))
-        metrics = gate["metrics"][role]
-        timing[f"{role}_clock"].update({
-            "worst_path": worst["path"],
-            "worst_slack_bound_ns": metrics["wns_ns"],
-            "negative_slack_paths": metrics["negative_paths"],
-            "total_negative_slack_bound_ns": metrics["original_path_tns_ns"],
-            "tns_bound_ns": metrics["original_path_tns_ns"],
-        })
-    maximum = max(p["system_delay_bound_ns"] for p in timing["paths"])
-    timing["summary"]["maximum_system_delay_bound_ns"] = maximum
-    timing["runtime_clock"]["minimum_safe_period_bound_ns"] = maximum
-    timing["runtime_clock"]["maximum_safe_frequency_bound_mhz"] = (
-        1000.0 / maximum if maximum > 0 else None)
-    if gate["status"] != "pass" or gate["metrics"]["runtime"]["wns_ns"] < 0:
-        timing["status"] = "fail"
-    gate["authority"] = "opensta"
-    gate["cross_checker"] = "independent-python-event-composer"
-    timing["global_opensta"] = gate
-    return gate

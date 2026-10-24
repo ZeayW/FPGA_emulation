@@ -11,7 +11,7 @@ from emuflow.board_link_timing import (
 from emuflow.errors import ValidationError
 from emuflow.global_sta import bind_physical_checks
 from emuflow.platform import Platform
-from emuflow.system_timing import _fixed_slot_transport_path_delay
+from tests.system_timing_oracle import _fixed_slot_transport_path_delay
 from emuflow.routing import normalize_route_constraints
 from emuflow.default_platform import research_platform_path
 
@@ -93,7 +93,7 @@ def test_physical_path_keeps_local_delays_and_separate_readiness_gate(monkeypatc
     assert result["system_delay_bound_ns"] == 78.5
     assert result["fixed_slot_event_timing_status"] == "pass"
     # Check independently generated OpenSTA raw arc chains match physical sum.
-    import emuflow.system_timing as st
+    import emuflow.physical_timing_inputs as st
     import emuflow.tdm as tdm
     monkeypatch.setattr(st,"_endpoint_delay_database",lambda _: endpoints)
     monkeypatch.setattr(st,"_logic_segment_database",lambda _: {"p":{"p":segments}})

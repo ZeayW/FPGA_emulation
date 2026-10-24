@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from unittest import mock
 
 import pytest
+from tests.system_timing_oracle import compare_system_timing
 
 from emuflow.errors import ValidationError
 from emuflow.global_sta import (
@@ -12,8 +13,8 @@ from emuflow.global_sta import (
     _IndexedMeasurements, _IndexedPathMetadata, _IndexedSystemTimingPaths,
     _PathMetadataBuilder,
     _compress_path_equivalent_checks, _write_expanded_measurements,
-    adopt_opensta_results, bind_physical_checks, build_opensta_timing,
-    compare_system_timing, export_event_checks, read_engine_identity,
+    bind_physical_checks, build_opensta_timing,
+    export_event_checks, read_engine_identity,
     read_measurements, run_event_checks, validate_checks,
 )
 
@@ -668,37 +669,10 @@ def test_comparison_rejects_corrupt_evidence(damage):
         compare_system_timing(values, reference)
 
 
-@pytest.mark.parametrize("initial_status,late", [("pass", False), ("incomplete", False),
-                                               ("fail", False), ("pass", True)])
-def test_authority_projection_updates_paths_and_every_scalar_alias(initial_status, late):
-    reference = {"status": initial_status, "timing_scope": "cross-fpga-subset",
-        "target_clock": {}, "runtime_clock": {}, "summary": {}, "paths": [{
-        "path": "p", "system_delay_bound_ns": 31.5,
-        "target_required_time_ns": 18, "runtime_required_time_ns": 100,
-        "target_clock_slack_bound_ns": -13.5, "runtime_clock_slack_bound_ns": 68.5}]}
-    measured = [{"path": r.path, "role": r.role, "event": r.event,
-                 "arrival_ns": r.launch_ns+sum(r.arcs_ns), "required_ns": r.required_ns,
-                 "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in example()]
-    for row in measured:
-        if row["role"] in {"target", "runtime"}:
-            row["arrival_ns"] += 1e-5
-            row["slack_ns"] -= 1e-5
-    if late:
-        measured[0]["slack_ns"] = -0.5
-    gate = adopt_opensta_results(reference, measured)
-    assert gate["authority"] == "opensta"
-    assert reference["status"] == ("fail" if late else initial_status)
-    assert reference["paths"][0]["system_delay_bound_ns"] == measured[2]["arrival_ns"]
-    assert reference["summary"]["maximum_system_delay_bound_ns"] == measured[2]["arrival_ns"]
-    for role, row in (("target", measured[2]), ("runtime", measured[3])):
-        group = reference[f"{role}_clock"]
-        assert group["worst_slack_bound_ns"] == row["slack_ns"]
-        assert group["tns_bound_ns"] == group["total_negative_slack_bound_ns"]
-        assert group["tns_bound_ns"] == min(0.0, row["slack_ns"])
-        assert reference["paths"][0][f"{role}_clock_slack_bound_ns"] == row["slack_ns"]
 
 
-def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch):
+@pytest.mark.parametrize("saved", [False, True])
+def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, saved):
     from tests.test_phase7c import Phase7CTest
     from emuflow.cross_layer_timing import build_cross_layer_timing_contract
     from emuflow.io import write_json, read_json
@@ -713,9 +687,9 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch):
                build_cross_layer_timing_contract(f.routes, f.schedule))
     def forbidden(*args, **kwargs):
         raise AssertionError("original Python timing calculator was called")
-    monkeypatch.setattr("emuflow.runtime.build_system_timing", forbidden)
-    monkeypatch.setattr(sta, "compare_system_timing", forbidden)
-    monkeypatch.setattr(sta, "adopt_opensta_results", forbidden)
+    monkeypatch.setattr("tests.system_timing_oracle.build_system_timing", forbidden)
+    monkeypatch.setattr("tests.system_timing_oracle.compare_system_timing", forbidden)
+    assert not hasattr(sta, "adopt_opensta_results")
     def bind(*args, metadata, **kwargs):
         metadata.update(paths={"p": {"path_scope": "cross-fpga",
             "physical_logic_segments_cone_bound": False}}, source_binding=None,
@@ -727,13 +701,30 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch):
         return [{"path": r.path, "role": r.role, "event": r.event,
                  "arrival_ns": r.launch_ns+sum(r.arcs_ns), "required_ns": r.required_ns,
                  "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in checks]
-    monkeypatch.setattr(sta, "run_event_checks", engine)
+    if saved:
+        def read_saved(path, checks):
+            assert path == tmp_path / "saved/measurements.tsv"
+            return engine(checks, None, None, verify_arcs=False)
+        monkeypatch.setattr(sta, "run_event_checks", forbidden)
+        monkeypatch.setattr(sta, "read_measurements", read_saved)
+    else:
+        monkeypatch.setattr(sta, "run_event_checks", engine)
     monkeypatch.setattr(sta, "read_engine_identity", lambda p: {"name": "test-sta"})
     run_phase7c(*(tmp_path / f"{n}.json" for n in
                  ("schedule", "platform", "phase3", "phase4", "phase5", "phase6")),
                 tmp_path / "out", physical_summary_path=tmp_path / "physical.json",
                 routes_path=tmp_path / "routes.json",
+                global_sta_results_dir=tmp_path / "saved" if saved else None,
                 allow_legacy_phase5_generation=True)
+    report = read_json(tmp_path / "out/phase7c_report.json")
+    assert "system_timing" not in report and "system_timing_summary" in report
+    assert not (tmp_path / "out/system_timing.json").exists()
+    assert not (tmp_path / "out/physical_summary.json").exists()
+    import json
+    storage = json.loads((tmp_path / "out/qor_report.json").read_text())
+    assert storage["schema"] == "emuflow.qor-report-storage/v1"
+    assert (tmp_path / "out" / storage["artifact"]).is_file()
+    assert (tmp_path / "out/qor_report.json").stat().st_size < (tmp_path / "out/phase7c_report.json").stat().st_size
     timing = read_json(tmp_path / "out/qor_report.json")["timing"]
     assert timing["global_opensta"]["execution"] == "standalone"
     assert "cross_checker" not in timing["global_opensta"]
@@ -746,7 +737,7 @@ def test_standalone_report_preserves_event_gate_without_comparison(late, monkeyp
     import emuflow.global_sta as sta
     def forbidden(*args, **kwargs):
         raise AssertionError("comparison must not run")
-    monkeypatch.setattr(sta, "compare_system_timing", forbidden)
+    monkeypatch.setattr("tests.system_timing_oracle.compare_system_timing", forbidden)
     rows = [{"path": r.path, "role": r.role, "event": r.event,
              "arrival_ns": r.launch_ns+sum(r.arcs_ns), "required_ns": r.required_ns,
              "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in example()]
@@ -821,7 +812,7 @@ def test_standalone_report_rejects_interleaved_measurements(
         )
 
 
-def test_engine_defaults_are_uniform_and_python_is_explicit():
+def test_only_opensta_engine_is_exposed():
     import inspect
     from emuflow.cli import _build_parser
     from emuflow.phase7c import run_phase7c
@@ -834,7 +825,8 @@ def test_engine_defaults_are_uniform_and_python_is_explicit():
                  "--phase3-report", "a", "--phase4-report", "b", "--phase5-report", "c", "--phase6-report", "d"]]
     for cmd in commands:
         assert parser.parse_args(cmd).global_timing_engine == "opensta"
-        assert parser.parse_args(cmd + ["--global-timing-engine", "python"]).global_timing_engine == "python"
+        with pytest.raises(SystemExit):
+            parser.parse_args(cmd + ["--global-timing-engine", "python"])
 
 
 def test_physical_binding_uses_raw_measurements():
@@ -920,7 +912,7 @@ def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path)
         read_physical_summary,
     )
     from emuflow.runtime import build_virtual_runtime
-    from emuflow.system_timing import build_system_timing
+    from tests.system_timing_oracle import build_system_timing
 
     fixture = StaticExactSystemTimingTest()
     fixture.setUp()
@@ -1293,7 +1285,7 @@ def test_real_opentimer_fixed_events(tmp_path, extra_paths):
 def test_real_opentimer_from_physical_binding(tmp_path):
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow.board_link_timing import build_board_link_timing_model
-    from emuflow.system_timing import build_system_timing
+    from tests.system_timing_oracle import build_system_timing
     fixture = StaticExactSystemTimingTest()
     fixture.setUp()
     runtime, routes, phase5 = fixture._system_inputs()

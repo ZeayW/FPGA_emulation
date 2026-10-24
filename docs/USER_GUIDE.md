@@ -402,11 +402,12 @@ Standalone `multi-fpga physical` uses `--backend` for the same selection and
 also defaults to RapidWright. The integrated Chimew lookahead path currently
 requires explicit `--physical-backend open --mapping-profile vtr-hard-blocks`.
 
-Global physical STA uses OpenSTA by default. `--global-sta-executable` overrides
-the executable; `--global-timing-engine python` explicitly selects the separate
-Python engine. The OpenSTA route does not implicitly run both engines.
-A missing engine or unsupported physical model is an error, not a silent
-fallback.
+Global physical STA supports only OpenSTA. `--global-sta-executable` overrides
+the executable; the optional `--global-timing-engine opensta` records the same
+engine explicitly. The retired Python engine is rejected before frontend work.
+A missing engine or unsupported physical model is an error. Terminal validation
+requires standalone OpenSTA evidence and checks saved measurements without
+relaunching STA or reconstructing a different engine's numerical results.
 
 For independent terminal validation, require the physical endpoint:
 

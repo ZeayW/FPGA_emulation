@@ -1142,6 +1142,10 @@ def validate_multi_fpga_flow_bundle(
         _checked_flow_member(flow_root, Path("runtime/qor_report.json"), "QoR report")
     )
     standalone_sta = stored_qor.get("timing", {}).get("global_opensta", {}).get("execution") == "standalone"
+    if physical_summary_path is not None and not standalone_sta:
+        raise ValidationError(
+            "physical terminal validation requires standalone OpenSTA evidence"
+        )
     if standalone_sta:
         for name in ("measurements.tsv", "opensta.log"):
             _checked_flow_member(flow_root, Path("runtime/global-opensta") / name,
@@ -1160,53 +1164,9 @@ def validate_multi_fpga_flow_bundle(
             routes_path=routes_path if physical_summary_path is not None else None,
             board_link_timing_path=board_link_timing_path,
             global_sta_results_dir=flow_root / "runtime/global-opensta" if standalone_sta else None,
-            global_timing_engine="opensta" if standalone_sta else "python",
+            global_timing_engine="opensta",
         )
         replay_qor = read_json(Path(temporary) / "qor_report.json")
-    if "global_opensta" in stored_qor.get("timing", {}) and not standalone_sta:
-        from .global_sta import adopt_opensta_results, bind_physical_checks, compare_system_timing, read_engine_identity, read_measurements
-        if physical_summary_path is None:
-            raise ValidationError("global OpenSTA qualification lacks physical inputs")
-        terminal_routes = read_system_routes(routes_path)
-        terminal_schedule = read_tdm_schedule(schedule_path)
-        try:
-            with read_physical_summary(physical_summary_path) as physical:
-                if board_link_timing_path is not None:
-                    physical["board_link_timing"] = read_json(
-                        board_link_timing_path
-                    )
-                checks = bind_physical_checks(
-                    read_json(
-                        flow_root / "runtime/runtime_contract.json"
-                    ),
-                    terminal_routes,
-                    terminal_schedule,
-                    physical,
-                    Platform.load(platform_path),
-                )
-        finally:
-            close_schedule = getattr(terminal_schedule, "close", None)
-            if callable(close_schedule):
-                close_schedule()
-        # Explicit terminal validation reconstructs the binding and checks the
-        # raw engine scalars, without running the same external STA twice.
-        measurements = read_measurements(_checked_flow_member(
-            flow_root, Path("runtime/global-opensta/measurements.tsv"),
-            "global OpenSTA measurements"), checks)
-        if stored_qor["timing"]["global_opensta"].get("authority") == "opensta":
-            gate = adopt_opensta_results(replay_qor["timing"], measurements)
-        else:
-            # Read historical qualification artifacts without preserving an
-            # implicit old producer default.
-            gate = compare_system_timing(measurements, replay_qor["timing"])
-        replay_qor["timing"]["global_opensta"] = gate
-        if gate["status"] != "pass" or replay_qor["timing"]["status"] == "fail":
-            replay_qor["status"] = "fail"
-            replay["status"] = "fail"
-        if "engine" in stored_qor["timing"]["global_opensta"]:
-            replay_qor["timing"]["global_opensta"]["engine"] = read_engine_identity(
-                _checked_flow_member(flow_root, Path("runtime/global-opensta/opensta.log"),
-                                     "global OpenSTA engine log"))
     if replay_qor != stored_qor:
         raise ValidationError("independent Phase 7C QoR replay disagrees")
     if replay.get("status") != report["runtime"].get("status"):
@@ -1263,10 +1223,8 @@ def _compile_preflight(ctx: _CompileContext):
     if ctx.output_dir is None:
         raise EmuFlowError("multi-FPGA compilation requires an output directory")
 
-    if ctx.global_timing_engine not in {"opensta", "python"}:
-        raise EmuFlowError("unsupported global timing engine")
-    if ctx.global_timing_engine == "python" and ctx.global_sta_executable is not None:
-        raise EmuFlowError("Python timing cannot accept --global-sta-executable")
+    if ctx.global_timing_engine != "opensta":
+        raise EmuFlowError("only the OpenSTA global timing engine is supported")
     if ctx.global_sta_executable is not None and not ctx.physical:
         raise EmuFlowError("global OpenSTA qualification requires --physical")
     if ctx.mapping_profile not in MULTI_FPGA_MAPPING_PROFILES:
@@ -1415,7 +1373,7 @@ def _compile_preflight(ctx: _CompileContext):
     if ctx.internal_timing_database:
         ctx.opensta = resolve_native_executable("sta", ctx.opensta)
         check_opensta_engine_version(ctx.opensta)
-    if ctx.physical and ctx.global_timing_engine == "opensta":
+    if ctx.physical:
         ctx.global_sta_executable = resolve_native_executable("sta", ctx.global_sta_executable)
         if not Path(ctx.global_sta_executable).is_file() or not os.access(ctx.global_sta_executable, os.X_OK):
             raise EmuFlowError("global OpenSTA executable is unavailable or not executable")

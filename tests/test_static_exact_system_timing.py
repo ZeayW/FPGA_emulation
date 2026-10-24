@@ -20,7 +20,7 @@ from emuflow.static_exact_timing import (
     validate_static_exact_segment_deadlines,
 )
 from emuflow.runtime import build_virtual_runtime
-from emuflow.system_timing import (
+from tests.system_timing_oracle import (
     _fixed_slot_transport_path_delay,
     build_system_timing,
 )
