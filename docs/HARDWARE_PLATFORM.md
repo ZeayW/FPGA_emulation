@@ -290,6 +290,18 @@ bindings, polarity swaps, pin collisions, and modified XDC or adapter RTL. The
 logical netlist/anchor artifacts keep their existing board-independent status;
 the separate virtual-board result records the additional differential binding.
 
+Chimew fixed-board electrical maps and bindings use logical v3. Each selected
+channel is one existing differential wire, identified by its link/lane, HP bank,
+and both endpoints' P/N package pins and sites. The adapter checks these against
+the same fixed wiring and inventory owner as baseline Phase 6. Indexed bindings
+carry fixed-wire references and the source seal; both polarities resolve from
+the unique board inventory instead of being copied into another pin table.
+Accounting counts four package pins per point-to-point channel. Opposite directions cannot share a physical bank, even
+when their TDM slots differ. The Phase 5 direction-bank allocation is checked
+again after channel selection. Single-ended maps cannot stand in for this
+fixed-board contract. The contract does not itself qualify the lookahead's
+placement coordinates or remove its VTR dependency.
+
 The board assumes HP-bank `LVDS` at 1.8 V VCCO and internal 100-ohm receiver
 termination (`IBUFDS.DIFF_TERM=TRUE`), enabled only at the receiving end
 ([AMD UG571, LVDS](https://docs.amd.com/api/khub/documents/kFbaUC5HGcXyGNauhgU6Gw/content)). These are design assumptions, not electrical

@@ -1,6 +1,6 @@
 """Indexed storage for the Chimew Phase 6 electrical binding.
 
-The logical v1/v2 binding remains readable.  Production artifacts keep their
+The logical v1/v2 binding remains readable; v3 seals fixed LVDS P/N wiring.  Production artifacts keep their
 small header in a JSON selector and normalize group records and schedule-entry
 membership into a sealed SQLite sidecar.  A schedule entry is therefore stored
 once instead of being embedded in one graph-sized JSON array.
@@ -28,6 +28,7 @@ CHIMEW_BINDING_USER_VERSION = 1
 _LOGICAL_SCHEMAS = {
     "emuflow.chimew-phase6-electrical-binding/v1",
     "emuflow.chimew-phase6-electrical-binding/v2",
+    "emuflow.chimew-phase6-electrical-binding/v3",
 }
 
 

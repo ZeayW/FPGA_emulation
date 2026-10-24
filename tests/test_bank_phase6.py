@@ -5,9 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from emuflow.chimew_phase6 import (
-    CHIMEW_PHASE6_BINDING_PROVIDER, CHIMEW_PHASE6_BINDING_SCHEMA_V1,
+    CHIMEW_PHASE6_BINDING_PROVIDER,
     _canonical_sha256, validate_chimew_phase6_binding,
 )
+from emuflow.chimew_fixed_wiring import FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels
 from emuflow.default_platform import research_platform_path
 from emuflow.errors import ValidationError
 from emuflow.netlist import build_split_artifacts
@@ -175,7 +176,9 @@ def test_chimew_electrical_validator_rejects_bidirectional_bank_bundle():
     plan["provider"] = CHIMEW_PIN_PLAN_PROVIDER
     plan["configuration"].update(schedule_sha256=digest, electrical_map_sha256="a" * 64)
     binding = {
-        "schema": CHIMEW_PHASE6_BINDING_SCHEMA_V1, "status": "pass",
+        "schema": FIXED_WIRING_BINDING_SCHEMA,
+        "fixed_wiring": FixedWiringChannels(platform).source,
+        "fpga_y_bounds": [{"fpga": f.id, "y_min": 0.0, "y_max": 100.0} for f in platform.fpgas], "status": "pass",
         "integration_status": "phase6-pin-plan", "provider": CHIMEW_PHASE6_BINDING_PROVIDER,
         "design": "banks", "platform": platform.name, "paper_provider": "test",
         "provenance": {"producer": "test", "producer_version": "1",
@@ -209,7 +212,9 @@ def test_indexed_chimew_electrical_validator_preserves_bank_budget(tmp_path):
     plan["entries"][1]["physical_lane"] = 18
     indexed_plan = write_pin_plan_storage(tmp_path / "pin_plan.json", plan)
     binding = {
-        "schema": CHIMEW_PHASE6_BINDING_SCHEMA_V1,
+        "schema": FIXED_WIRING_BINDING_SCHEMA,
+        "fixed_wiring": FixedWiringChannels(platform).source,
+        "fpga_y_bounds": [{"fpga": f.id, "y_min": 0.0, "y_max": 100.0} for f in platform.fpgas],
         "status": "pass",
         "integration_status": "phase6-pin-plan",
         "provider": CHIMEW_PHASE6_BINDING_PROVIDER,

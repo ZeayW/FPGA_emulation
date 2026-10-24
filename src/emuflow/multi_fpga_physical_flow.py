@@ -1696,7 +1696,7 @@ def run_multi_fpga_physical_flow(
                         # Bind the selected Chimew channel's actual physical site
                         # coordinate.  A lane number is only an electrical
                         # identity and cannot be used as a placement coordinate.
-                        if binding_schema.endswith("/v2"):
+                        if binding_schema.endswith(("/v2", "/v3")):
                             endpoint_key = (
                                 "pin_a_point"
                                 if fpga_id == binding["fpga_a"]

@@ -436,6 +436,14 @@ planner-versus-Chimew comparison, and `--pin-planner` are removed. Old planner
 providers are rejected rather than reinterpreted as Chimew. Qualified Chimew
 adapters remain available through `pin-plan chimew-run` and `chimew-build`;
 `pin-plan validate` checks the current pin contract.
+For the fixed HP-bank LVDS BoardDB, these adapters require v3 electrical maps
+and publish v3 fixed-wire bindings resolving both P/N pins from the board owner. The Python helper
+`build_fixed_wiring_chimew_electrical_map` derives pin identities from the
+existing board inventory; the caller supplies only eligible link/lane/direction
+selections and source-qualified lookahead geometry. Single-ended maps are
+rejected for this BoardDB. The automatic Chimew lookahead still requires VTR;
+accepting fixed differential channels does not qualify a new physical backend.
+See the [fixed wiring contract](HARDWARE_PLATFORM.md#fixed-virtual-board-wiring).
 
 Build Chimew's grouping, position-refinement, RUDY and bank/channel kernels
 with `EMUFLOW_BUILD_CHIMEW=ON` (the default). The old

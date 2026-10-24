@@ -222,6 +222,13 @@ For shared-bank platforms, physical lane remapping must remain inside the
 direction banks allocated by Phase 5. Phase 6 rejects mappings that cross those
 bank ranges or combine opposite directions in one bank.
 
+The fixed-board Chimew electrical adapter resolves v3 wire references through
+[the existing HP-bank LVDS inventory](HARDWARE_PLATFORM.md#fixed-virtual-board-wiring),
+including both polarities at both ends. This is an EmuFlow integration contract;
+it does not change the paper-derived grouping or min-cost-flow kernels. Automatic
+lookahead still needs source-bound Xilinx placement geometry before the VTR
+prepass can be retired.
+
 All providers feed the EmuFlow netlist splitter and transport generator.
 Static TDM communication, shadow state, and frame synchronization implement
 the declared virtual-cycle semantics. These runtime mechanisms and their
