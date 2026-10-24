@@ -33,8 +33,7 @@ updates to the net-order index during large physical input generation.
 
 For mapped index v2, `emuflow-native phase7 export-bookshelf` reads the typed
 cell, pin, and validated atom relations directly through `libemuflow_core`.
-The standalone `emuflow_xilinx_bookshelf_exporter` is a compatibility client of
-the same shared operation. C++ checks atom ownership and types,
+C++ checks atom ownership and types,
 contiguous port bits, pin directions, and multiple drivers, then streams nets in
 numeric net order with drivers first. Constants remain in primitive pin
 signatures but do not become net endpoints; single-endpoint nets are omitted.

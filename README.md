@@ -79,6 +79,9 @@ The shared native store API covers EmuIR v1/v2, assignment v1–v4 and split v2;
 artifact-scoped identities and one build manifest bind its readers and writers.
 Native clustering and PATRON joins share the live EmuIR reader's store.
 See the [W0 contract and acceptance gates](docs/FLOW_PLAN.md#shared-native-core-w0).
+Production native stages require `emuflow-native`; an incomplete installation
+does not select an older standalone tool. `EMUFLOW_NATIVE_ROOT` selects one
+authoritative installation. Bookshelf export uses only the unified command.
 The typed mapped/physical handoff also feeds a shared-core RWRoute exporter;
 Python sends file references and board I/O configuration. Native export uses a
 compact cell catalog, sparse clock-net reductions and one live net of endpoints.

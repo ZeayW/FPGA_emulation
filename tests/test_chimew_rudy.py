@@ -134,7 +134,7 @@ class ChimewRudyTest(unittest.TestCase):
         ):
             result = evaluate_chimew_rudy(self.document)
         resolver.assert_called_once_with(
-            "emuflow_chimew_rudy", "phase6", "rudy", explicit=None
+            "phase6", "rudy", explicit=None
         )
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
 

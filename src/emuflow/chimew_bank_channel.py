@@ -823,7 +823,6 @@ def _run_native(
     stderr_stream: Any = None
     try:
         native_command = resolve_native_stage_command(
-            "emuflow_chimew_bank_channel_assigner",
             "phase6",
             "assign-banks",
             explicit=executable,

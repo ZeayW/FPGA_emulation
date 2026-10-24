@@ -127,8 +127,15 @@ net text. Inputs may be file paths or read-only SQLite file URIs. `SPOOL` must
 not exist; the operation removes its owned relation after export or failure.
 `NETS` and the primitive-signature `SUMMARY` are staged and published in that
 order, with the summary last. All destinations must be distinct from the inputs
-and each other. The normal Python adapter selects this shared operation; the
-standalone Bookshelf executable is a compatibility client of the same core.
+and each other. The normal Python adapter selects this shared operation.
+The redundant standalone Bookshelf CLI is no longer built or deployed; use
+`emuflow-native phase7 export-bookshelf` directly.
+
+Native stage resolution requires `emuflow-native` and never falls back to an
+older standalone executable. When `EMUFLOW_NATIVE_ROOT` is set, its installation
+is authoritative: missing or nonexecutable tools reject rather than being
+borrowed from another checkout or installation. Explicit external-engine paths
+remain intentional comparison inputs, not recovery from an incomplete install.
 
 Installed Yosys streaming and OpenSTA extraction use the shared native external
 tool supervisor. It keeps diagnostics bounded and preserves the synthesis stdout

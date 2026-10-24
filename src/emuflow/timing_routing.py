@@ -2703,7 +2703,6 @@ def route_system_native(
                 "TDM feedback capacity-domain coverage is not exact"
             )
     command = resolve_native_stage_command(
-        "emuflow_tlr_router",
         "phase4",
         "route",
         executable,

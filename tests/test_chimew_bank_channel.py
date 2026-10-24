@@ -1098,7 +1098,6 @@ class ChimewBankChannelTest(unittest.TestCase):
             ):
                 pass
         dispatch.assert_called_once_with(
-            "emuflow_chimew_bank_channel_assigner",
             "phase6",
             "assign-banks",
             explicit=None,

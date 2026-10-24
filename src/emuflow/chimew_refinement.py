@@ -591,7 +591,6 @@ def _run_native(
         root = Path(temporary)
         stderr_path = root / "stderr.txt"
         native_command = resolve_native_stage_command(
-            "emuflow_chimew_position_refiner",
             "phase6",
             "refine-groups",
             explicit=executable,

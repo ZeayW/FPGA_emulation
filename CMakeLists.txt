@@ -269,18 +269,6 @@ if(NOT TARGET SQLite3::SQLite3)
   # CMake 3.x exposes the older imported-target spelling.
   add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
 endif()
-add_executable(emuflow_xilinx_bookshelf_exporter
-  "${CMAKE_SOURCE_DIR}/src/native/xilinx_bookshelf_exporter.cpp")
-target_compile_features(emuflow_xilinx_bookshelf_exporter PRIVATE cxx_std_17)
-target_compile_options(emuflow_xilinx_bookshelf_exporter PRIVATE -O3)
-target_link_libraries(emuflow_xilinx_bookshelf_exporter PRIVATE emuflow_core)
-set_target_properties(emuflow_xilinx_bookshelf_exporter PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
-if(BUILD_TESTING)
-  add_test(NAME emuflow_xilinx_bookshelf_exporter_cli
-    COMMAND "$<TARGET_FILE:emuflow_xilinx_bookshelf_exporter>" --help)
-endif()
-
 set(EMUFLOW_CORE_MANIFEST "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/sources.txt")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${EMUFLOW_CORE_MANIFEST}")
 file(STRINGS "${EMUFLOW_CORE_MANIFEST}" EMUFLOW_CORE_SOURCE_NAMES)

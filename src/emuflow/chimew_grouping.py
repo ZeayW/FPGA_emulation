@@ -738,7 +738,6 @@ def _run_native(
             entries, encodings, guarded_lanes
         )
         native_command = resolve_native_stage_command(
-            "emuflow_chimew_signal_grouper",
             "phase6",
             "group-signals",
             explicit=executable,

@@ -2313,7 +2313,7 @@ def _analyze_static_exact_dependencies_native(
         raise ValidationError("exact semantic contract assignment is incomplete")
 
     native_command = resolve_native_stage_command(
-        "emuflow_static_exact_analyzer", "phase3", "analyze"
+        "phase3", "analyze"
     )
     with tempfile.TemporaryDirectory(prefix="emuflow-static-exact-") as temporary:
         root = Path(temporary)
@@ -3118,7 +3118,7 @@ def _build_native_semantic_cut_nodes(ordered_cuts, topology, captures):
             if capture is not None:
                 raise ValidationError("native semantic capture coverage disagrees")
         command = resolve_native_stage_command(
-            "emuflow_static_exact_analyzer", "phase3", "finalize-semantics"
+            "phase3", "finalize-semantics"
         )
         # The standalone analyzer exposes the same operation with a flag.
         if len(command) == 1:

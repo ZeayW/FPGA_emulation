@@ -518,7 +518,6 @@ class ChimewGroupingTest(unittest.TestCase):
             )
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
         dispatch.assert_called_once_with(
-            "emuflow_chimew_signal_grouper",
             "phase6",
             "group-signals",
             explicit=None,

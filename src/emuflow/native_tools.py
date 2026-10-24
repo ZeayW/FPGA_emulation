@@ -17,7 +17,8 @@ def native_install_roots() -> tuple[Path, ...]:
     roots = []
     configured = os.environ.get("EMUFLOW_NATIVE_ROOT")
     if configured:
-        roots.append(Path(configured).expanduser())
+        # An explicit installation is authoritative, including missing tools.
+        return (Path(configured).expanduser().resolve(),)
 
     roots.append(REPO_ROOT / "build" / "native" / "install")
 
@@ -65,51 +66,19 @@ def resolve_native_executable(
     )
 
 
-def native_stage_command(
-    resolved_legacy_executable: str,
-    phase: str,
-    operation: str,
-    *,
-    prefer_unified: bool = True,
-) -> list[str]:
-    """Prefer the unified in-tree entry beside a resolved stage executable.
-
-    Explicit comparison tools and older installs remain usable because the
-    legacy executable is retained when its sibling unified entry is absent.
-    The caller has already applied the no-PATH and source-root policy through
-    :func:`resolve_native_executable`.
-    """
-
-    legacy = Path(resolved_legacy_executable).expanduser().resolve()
-    unified = legacy.parent / "emuflow-native"
-    if prefer_unified and unified.is_file() and os.access(unified, os.X_OK):
-        return [str(unified), phase, operation]
-    return [str(legacy)]
-
-
 def resolve_native_stage_command(
-    legacy_name: str,
     phase: str,
     operation: str,
     explicit: Optional[str] = None,
 ) -> list[str]:
-    """Resolve a unified production stage with an older-install fallback.
+    """Resolve the unified production entry; never select an older install.
 
-    Production does not require the redundant standalone executable when the
-    installed ``emuflow-native`` already owns the stage. An explicit tool is
-    always a differential/compatibility choice and is therefore preserved.
+    Explicit external engines are intentional comparison inputs. They are not
+    selected because a production installation is incomplete.
     """
-
     if explicit is not None:
-        return [resolve_native_executable(legacy_name, explicit)]
-    for root in native_install_roots():
-        unified = root / "bin" / "emuflow-native"
-        if unified.is_file() and os.access(unified, os.X_OK):
-            return [str(unified), phase, operation]
-        legacy = root / "bin" / legacy_name
-        if legacy.is_file() and os.access(legacy, os.X_OK):
-            return [str(legacy)]
-    return [resolve_native_executable(legacy_name)]
+        return [resolve_native_executable("emuflow-native", explicit)]
+    return [resolve_native_executable("emuflow-native"), phase, operation]
 
 
 def native_file_generation(path: Path) -> tuple[int, ...]:

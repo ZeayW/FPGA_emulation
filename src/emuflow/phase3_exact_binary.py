@@ -211,7 +211,7 @@ def _write_native_phase3_exact_binary(path, exact_contract, part_ids, source, na
                     stream.write(_U32.pack(len(raw)))
                     stream.write(raw)
             command = resolve_native_stage_command(
-                "emuflow_static_exact_analyzer", "phase3", "write-exact-sections"
+                "phase3", "write-exact-sections"
             )
             if len(command) == 1:
                 command = [*command, "--write-exact-sections"]

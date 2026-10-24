@@ -11,7 +11,7 @@ from unittest import mock
 from emuflow.errors import ValidationError
 from emuflow.xilinx_netlist import open_xilinx_mapped_index
 from emuflow import xilinx_openparf_atomic as adapter
-from tests.native_build import xilinx_bookshelf_exporter, emuflow_native
+from tests.native_build import emuflow_native
 
 
 def fixture(root):
@@ -77,7 +77,7 @@ def fixture(root):
 class NativeBookshelfTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.executable = xilinx_bookshelf_exporter()
+        cls.command = [str(emuflow_native()), "phase7", "export-bookshelf"]
 
     def test_native_matches_reference_and_does_not_reconstruct_cells(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -89,7 +89,7 @@ class NativeBookshelfTests(unittest.TestCase):
                 cells, atoms, names, platform_mux_types=["MUXF7", "MUXF8", "MUXF9"]
             )
             with open_xilinx_mapped_index(path) as mapped, mock.patch.object(
-                adapter, "resolve_native_stage_command", return_value=[str(self.executable)]
+                adapter, "resolve_native_stage_command", return_value=self.command
             ), mock.patch.object(
                 adapter, "_ordered_cell_items", side_effect=AssertionError("Python cell traversal")
             ), mock.patch.object(
@@ -132,7 +132,7 @@ class NativeBookshelfTests(unittest.TestCase):
                     output = root / "design.nets"
                     output.write_text("previous publication\n")
                     with open_xilinx_mapped_index(path) as mapped, mock.patch.object(
-                        adapter, "resolve_native_stage_command", return_value=[str(self.executable)]
+                        adapter, "resolve_native_stage_command", return_value=self.command
                     ), self.assertRaises(ValidationError):
                         adapter._render_library_and_nets(
                             mapped.cells, atoms, adapter._OrdinalSafeNames(atoms), nets_path=output
@@ -142,43 +142,29 @@ class NativeBookshelfTests(unittest.TestCase):
                 finally:
                     atoms.close()
 
-    def test_unified_and_compatibility_commands_share_artifacts_and_text(self):
+    def test_unified_publishes_report_and_preserves_source_with_special_path(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             cells, path, atoms = fixture(root)
             self.addCleanup(atoms.close)
-            names = adapter._OrdinalSafeNames(atoms)
-            expected = adapter._render_library_and_nets(cells, atoms, names)
+            expected = adapter._render_library_and_nets(cells, atoms, adapter._OrdinalSafeNames(atoms))
             path = path.rename(root / "mapped ?#%中文.sqlite")
             snapshots = {path: path.read_bytes(), atoms.path: atoms.path.read_bytes()}
-            for index, command in enumerate([
-                [str(self.executable)],
-                [str(emuflow_native()), "phase7", "export-bookshelf"],
-            ]):
-                nets, summary, scratch = [root / f"{index}.{suffix}" for suffix in ("nets", "tsv", "sqlite")]
-                report = root / "operation.json"
-                if index:
-                    command[1:1] = ["--report", str(report)]
-                # Compatibility accepts SQLite's encoded URI; the production
-                # command accepts plain paths and owns immutable reads itself.
-                inputs = ([path.as_uri() + "?mode=ro&immutable=1",
-                           atoms.path.as_uri() + "?mode=ro&immutable=1"]
-                          if not index else [str(path), str(atoms.path)])
-                result = subprocess.run([*command, *inputs, str(nets), str(summary), str(scratch)],
-                                        capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(nets.read_text(), expected[1])
-                self.assertFalse(scratch.exists())
-                self.assertFalse(list(root.glob("*.tmp.*")))
-                if index:
-                    value = json.loads(report.read_text())
-                    self.assertEqual(value["stage"], "phase7.export-bookshelf")
-                    self.assertEqual(value["status"], "pass")
-                    self.assertEqual([item["path"] for item in value["inputs"]],
-                                     [str(path.resolve()), str(atoms.path.resolve())])
-                    self.assertEqual(len(value["outputs"]), 2)
-                    self.assertGreater(value["metrics"]["wall_seconds"], 0)
-            self.assertEqual((root / "0.tsv").read_bytes(), (root / "1.tsv").read_bytes())
+            nets, summary, scratch = [root / suffix for suffix in ("nets", "summary", "scratch")]
+            report = root / "operation.json"
+            result = subprocess.run([str(emuflow_native()), "--report", str(report), "phase7", "export-bookshelf",
+                str(path), str(atoms.path), str(nets), str(summary), str(scratch)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(nets.read_text(), expected[1])
+            self.assertFalse(scratch.exists())
+            self.assertFalse(list(root.glob("*.tmp.*")))
+            value = json.loads(report.read_text())
+            self.assertEqual(value["stage"], "phase7.export-bookshelf")
+            self.assertEqual(value["status"], "pass")
+            self.assertEqual([item["path"] for item in value["inputs"]],
+                             [str(path.resolve()), str(atoms.path.resolve())])
+            self.assertEqual(len(value["outputs"]), 2)
+            self.assertGreater(value["metrics"]["wall_seconds"], 0)
             for source, data in snapshots.items():
                 self.assertEqual(source.read_bytes(), data)
 

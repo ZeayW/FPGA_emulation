@@ -3470,7 +3470,7 @@ def _render_indexed_bookshelf(
     """Keep typed pin traversal and net text emission entirely in C++."""
 
     command = resolve_native_stage_command(
-        "emuflow_xilinx_bookshelf_exporter", "phase7", "export-bookshelf"
+        "phase7", "export-bookshelf"
     )
     database = next(
         row[2] for row in cells.connection.execute("PRAGMA database_list")

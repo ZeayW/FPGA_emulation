@@ -4676,7 +4676,7 @@ def run_partition_pressure_native(
             )
         feedback_sha256 = None
     native_command = ([] if store_model else resolve_native_stage_command(
-        "emuflow_patron_refiner", "phase3", "refine-patron", executable
+        "phase3", "refine-patron", executable
     ))
     with tempfile.TemporaryDirectory(prefix="emuflow-patron-") as temporary:
         root = Path(temporary)

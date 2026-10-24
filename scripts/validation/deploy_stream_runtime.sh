@@ -84,9 +84,9 @@ echo "RUNTIME_CXX=$selected_cxx"
 for binary in "$native_base"/bin/*; do
   test -e "$binary" || continue
   # Retired provider binaries must not leak in through an older native base.
-  if test "$(basename "$binary")" = emuflow_tritonpart_balance_legalizer; then
-    continue
-  fi
+  case "$(basename "$binary")" in
+    emuflow_tritonpart_balance_legalizer|emuflow_xilinx_bookshelf_exporter) continue ;;
+  esac
   ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")"
 done
 sqlite_flags=()
@@ -147,24 +147,16 @@ do
     -lsqlite3 -o "$target"
 done
 
-for entry in emuflow_native.cpp xilinx_bookshelf_exporter.cpp; do
-  if test "$entry" = emuflow_native.cpp; then
-    target="$unified"
-  else
-    target="$runtime_dir/bin/emuflow_xilinx_bookshelf_exporter"
-    rm -f "$target"
-  fi
-  "$selected_cxx" -std=c++17 -O3 -pthread -static-libstdc++ -static-libgcc \
-    ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
-    "$source_dir/src/native/$entry" "$archive" -lsqlite3 -o "$target"
-done
+"$selected_cxx" -std=c++17 -O3 -pthread -static-libstdc++ -static-libgcc \
+  ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
+  "$source_dir/src/native/emuflow_native.cpp" "$archive" -lsqlite3 -o "$unified"
 rm -rf "$object_dir"
-# Do not publish a runtime whose unified core or physical bridge cannot even
+# Do not publish a runtime whose unified core cannot even
 # load its linked dependencies in the deployment environment. The run launcher
 # must repeat these probes inside its actual execution environment.
 "$unified" check-runtime >/dev/null
 "$runtime_dir/bin/emuflow_hop_partition_refiner" --help >/dev/null
-"$target" --help >/dev/null
+"$unified" --help >/dev/null
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"
 printf '%s\n' "$source_dir/src" > "$runtime_dir/PYTHON_SOURCE_PATH"

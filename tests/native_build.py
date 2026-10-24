@@ -35,14 +35,6 @@ def chimew_bank_channel_assigner() -> Path:
 
 
 @lru_cache(maxsize=1)
-def xilinx_bookshelf_exporter() -> Path:
-    executable = Path(_BUILD_ROOT.name) / "emuflow_xilinx_bookshelf_exporter"
-    return _build_native_stage_program(
-        ROOT / "src/native/xilinx_bookshelf_exporter.cpp", executable,
-    )
-
-
-@lru_cache(maxsize=1)
 def tlr_router() -> Path:
     compiler = (
         shutil.which("c++")

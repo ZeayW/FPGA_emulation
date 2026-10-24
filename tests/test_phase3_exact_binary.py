@@ -722,7 +722,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                     del streamed["invalid_header"]
                     expected_path, actual_path = root / "expected.bin", root / "native.bin"
                     expected_descriptor = write_phase3_exact_binary(expected_path, contract, ["fpga0", "fpga1"], semantic_digest=expected)
-                    def native_command(legacy, phase, operation):
+                    def native_command(phase, operation):
                         return [str(executable), phase, operation]
                     with patch("emuflow.native_tools.resolve_native_stage_command", side_effect=native_command), patch(
                         "emuflow.phase3_exact_binary._write_raw_string", side_effect=AssertionError("Python must not encode native exact sections")

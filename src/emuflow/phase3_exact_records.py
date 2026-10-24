@@ -1338,7 +1338,7 @@ def _native_semantic_contract_sha256(value, source, keys, special_keys, paths) -
                     formatted.value(value[key], 1)
                     write_string("".join(formatted.parts))
         command = resolve_native_stage_command(
-            "emuflow_static_exact_analyzer", "phase3", "hash-semantics"
+            "phase3", "hash-semantics"
         )
         if len(command) == 1:
             command = [*command, "--hash-semantics"]

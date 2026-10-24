@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 from emuflow.errors import EmuFlowError
 from emuflow.native_tools import (
-    native_stage_command,
     resolve_native_executable,
     resolve_native_stage_command,
 )
@@ -201,29 +200,6 @@ class NativeToolsTest(unittest.TestCase):
                 os.chdir(previous)
         self.assertEqual(resolved, str(executable.resolve()))
 
-    def test_native_stage_prefers_unified_sibling(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            legacy = root / "bin" / "emuflow_static_exact_analyzer"
-            unified = root / "bin" / "emuflow-native"
-            legacy.parent.mkdir()
-            for executable in (legacy, unified):
-                executable.write_text("#!/bin/sh\n", encoding="utf-8")
-                executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
-            self.assertEqual(
-                native_stage_command(str(legacy), "phase3", "analyze"),
-                [str(unified.resolve()), "phase3", "analyze"],
-            )
-
-    def test_native_stage_retains_legacy_without_unified_sibling(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            legacy = Path(temp_dir) / "emuflow_tdm_exact_scheduler"
-            legacy.write_text("#!/bin/sh\n", encoding="utf-8")
-            self.assertEqual(
-                native_stage_command(str(legacy), "phase5", "schedule"),
-                [str(legacy.resolve())],
-            )
-
     def test_resolved_stage_does_not_require_legacy_when_unified_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -236,7 +212,7 @@ class NativeToolsTest(unittest.TestCase):
             ), patch("emuflow.native_tools.REPO_ROOT", root / "missing"):
                 self.assertEqual(
                     resolve_native_stage_command(
-                        "missing-legacy", "phase6", "assign-banks"
+                        "phase6", "assign-banks"
                     ),
                     [str(unified.resolve()), "phase6", "assign-banks"],
                 )
@@ -251,27 +227,45 @@ class NativeToolsTest(unittest.TestCase):
                 executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
             self.assertEqual(
                 resolve_native_stage_command(
-                    "legacy", "phase5", "schedule", str(explicit)
+                    "phase5", "schedule", str(explicit)
                 ),
                 [str(explicit.resolve())],
             )
 
-    def test_resolved_stage_falls_back_to_older_standalone_install(self) -> None:
+    def test_standalone_only_install_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            legacy = root / "bin" / "legacy-stage"
+            legacy = root / "bin/emuflow_static_exact_analyzer"
             legacy.parent.mkdir()
             legacy.write_text("#!/bin/sh\n", encoding="utf-8")
             legacy.chmod(legacy.stat().st_mode | stat.S_IXUSR)
-            with patch.dict(
-                "os.environ", {"EMUFLOW_NATIVE_ROOT": str(root)}, clear=True
-            ), patch("emuflow.native_tools.REPO_ROOT", root / "missing"):
-                self.assertEqual(
-                    resolve_native_stage_command(
-                        "legacy-stage", "phase3", "analyze"
-                    ),
-                    [str(legacy.resolve())],
-                )
+            with patch.dict(os.environ, {"EMUFLOW_NATIVE_ROOT": str(root)}, clear=True):
+                with self.assertRaisesRegex(EmuFlowError, "in-tree emuflow-native build product"):
+                    resolve_native_stage_command("phase3", "analyze")
+
+    def test_configured_install_cannot_borrow_another_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            other = root / "other/build/native/install/bin/emuflow-native"
+            other.parent.mkdir(parents=True)
+            other.write_text("#!/bin/sh\n", encoding="utf-8")
+            other.chmod(other.stat().st_mode | stat.S_IXUSR)
+            with patch.dict(os.environ, {"EMUFLOW_NATIVE_ROOT": str(root / "incomplete")}, clear=True), \
+                    patch("emuflow.native_tools.REPO_ROOT", root / "other"):
+                with self.assertRaisesRegex(EmuFlowError, "in-tree emuflow-native build product"):
+                    resolve_native_stage_command("phase5", "schedule")
+
+    def test_nonexecutable_unified_entry_does_not_select_standalone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "bin").mkdir()
+            (root / "bin/emuflow-native").write_text("not executable")
+            legacy = root / "bin/emuflow_tdm_exact_scheduler"
+            legacy.write_text("#!/bin/sh\n")
+            legacy.chmod(legacy.stat().st_mode | stat.S_IXUSR)
+            with patch.dict(os.environ, {"EMUFLOW_NATIVE_ROOT": str(root)}, clear=True):
+                with self.assertRaisesRegex(EmuFlowError, "in-tree emuflow-native build product"):
+                    resolve_native_stage_command("phase5", "schedule")
 
 
 if __name__ == "__main__":

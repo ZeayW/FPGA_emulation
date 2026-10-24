@@ -149,6 +149,18 @@ the prior implementation; the permitted regression is at most 5%. Keep hashes
 and measurements outside production handoffs. Fixture/API gates alone cannot
 establish the large-design performance gate.
 
+W0/W7 closure also requires retirement of superseded execution paths. Once the
+replacement has passed the required equivalence and performance gates, remove
+the old production entry, configuration switches, deploy/build targets and
+unconsumed protocol readers/writers together. Historical rollback uses the
+matching Git revision. A schema version is retained only for a current producer
+or an identified artifact consumer, not merely because it was once published.
+Keep independent correctness oracles in validation code without preserving a
+second production flow. Migrate remaining consumers before deleting their
+entry; a test of an obsolete wrapper is not a reason to keep that wrapper.
+Native production resolution requires the unified entry and does not recover
+an incomplete selected installation by borrowing another tool installation.
+
 W0 completion does not mean the remaining phase algorithms, Python data planes,
 advanced compile controls or physical/global timing qualification have migrated.
 Those retain the W1–W7 ownership and acceptance requirements. An infrastructure

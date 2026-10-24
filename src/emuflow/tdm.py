@@ -1645,7 +1645,6 @@ def _schedule_indexed_exact_native(
         if native_route_store is not None else None
     )
     native_command = list(resolved_command) if resolved_command is not None else resolve_native_stage_command(
-        "emuflow_tdm_exact_scheduler",
         "phase5",
         "schedule",
         explicit=executable,
@@ -2185,7 +2184,7 @@ def build_native_exact_schedule_request(
         return None
     from .native_tools import native_file_generation, resolve_native_stage_command
 
-    command = resolve_native_stage_command("emuflow_tdm_exact_scheduler", "phase5", "schedule")
+    command = resolve_native_stage_command("phase5", "schedule")
     if len(command) != 3:
         raise ValidationError(
             "indexed Phase 5 production requires the unified emuflow-native scheduler; "
@@ -2311,7 +2310,7 @@ def build_tdm_schedule(
     native_ingress = False
     if use_native_exact_schedule:
         from .native_tools import resolve_native_stage_command
-        native_command = resolve_native_stage_command("emuflow_tdm_exact_scheduler","phase5","schedule")
+        native_command = resolve_native_stage_command("phase5","schedule")
         native_ingress = (len(native_command) > 1 and getattr(raw_routes,"_user_version",None) == 3
                           and callable(getattr(raw_routes,"iter_native_exact_metadata",None)))
     if ratio_plan is None and not native_ingress:

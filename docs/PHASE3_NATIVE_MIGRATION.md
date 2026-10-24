@@ -161,8 +161,8 @@ not checkpoints. Full NVDLA runtime/RSS/disk and terminal Phase 7/7C qualificati
 remain required before declaring the migration complete.
 
 `phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL` is also a shared
-`StageRequest`/`ArtifactRef` operation. The production adapter prefers the unified
-entry, and the standalone compatibility CLI links the same core. The core owns
+`StageRequest`/`ArtifactRef` operation. The production adapter requires the unified
+entry; the redundant standalone Bookshelf CLI has been removed. The core owns
 typed SQLite reads, immutable input paths, ordered atom/pin joins, endpoint
 spooling, degree/driver checks, atomic text publication and scratch lifetime.
 Two ordered cursors preserve numeric net order and stable driver-first endpoint
