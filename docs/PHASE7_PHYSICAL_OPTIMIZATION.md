@@ -86,6 +86,20 @@ physical source.  The data comes from RWRoute's exact route-node user maps; it
 does not infer ownership from a bounding-box congestion proxy.  This is the
 selection input for the structural passes below.
 
+The first bounded NVDLA fpga1 attribution run confirmed three concrete
+physical-synthesis targets.  The largest contributor, `n118481`, is an `FDCE`
+output in CMAC with fanout 8,224; it touched 5,105 overused nodes in iteration
+2.  Three adjacent CMAC registers with fanouts 2,685, 2,269 and 2,017 ranked
+second through fourth.  CVIF/MCIF arbitration LUT outputs with fanout about
+1,054 and an SDP LUT output with fanout 4,488 also ranked near the top.
+
+Several other top-ranked nets have fanout exactly 512 and are outputs of the
+transport `LUT1` trees inserted before placement.  Their sinks are currently
+partitioned by stable endpoint identity, before physical coordinates exist.
+This is direct evidence that a topology-only maximum-fanout tree is
+insufficient: its branches must be rewired or rebuilt from the preliminary
+placement so that each branch owns a physically coherent sink cluster.
+
 ## Relevant academic results
 
 The academic literature reaches the same conclusion through different
