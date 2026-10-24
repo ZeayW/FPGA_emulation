@@ -102,6 +102,16 @@ class StaticExactRecordSequence(list):
                 return record
         raise ValidationError("Static Exact record stream ended early")
 
+    def close(self) -> None:
+        """Release an explicitly owned native mapping before retiring its file."""
+        mapping = getattr(self, "_native_mapping", None)
+        if mapping is not None:
+            data, views = mapping
+            for view in views:
+                view.release()
+            data.close()
+            self._native_mapping = None
+
     def _immutable(self, *args, **kwargs):
         raise TypeError("Static Exact record streams are immutable")
 
@@ -380,6 +390,9 @@ def build_static_exact_cut_node_stream(
 def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSequence:
     """Map final native-owned node bytes without repacking their records."""
 
+    data = None
+    views = []
+    result = None
     try:
         with path.open("rb") as stream:
             data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
@@ -390,11 +403,14 @@ def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSe
         if magic != 0x314E4553464D5545 or version not in (1, 2) or start + size != len(data):
             raise ValidationError("native semantic node envelope is invalid")
         offsets = memoryview(data)[24:start].cast("Q")
+        views.append(offsets)
         if offsets[0] != 0 or offsets[-1] != size or any(
             offsets[index] >= offsets[index + 1] for index in range(count)
         ):
             raise ValidationError("native semantic node offsets are invalid")
-        result = _decode_cut_node_stream(memoryview(data)[start:], offsets[:-1], with_flags=version == 2)
+        encoded, node_offsets = memoryview(data)[start:], offsets[:-1]
+        views.extend((encoded, node_offsets))
+        result = _decode_cut_node_stream(encoded, node_offsets, with_flags=version == 2)
         result.native_semantic_version = version
         if version == 2:
             result.native_launch_flag = lambda index: data[start + offsets[index + 1] - 1]
@@ -405,16 +421,24 @@ def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSe
                 return struct.unpack_from(f"<{predecessor_count}I", data, end - 4 * predecessor_count)
             result.native_dependency_indices = dependency_indices
         result.native_semantic_artifact_path = path
+        result._native_mapping = (data, views)
         return result
     except (OSError, ValueError, struct.error) as error:
         raise ValidationError("native semantic node artifact is invalid") from error
+
+    finally:
+        if result is None or getattr(result, "_native_mapping", None) is None:
+            for view in views:
+                view.release()
+            if data is not None:
+                data.close()
 
 
 def _decode_cut_node_stream(encoded, offsets, *, with_flags=False) -> StaticExactCutNodeSequence:
     count = len(offsets)
 
     def decode_fields(index: int, *, raw: bool) -> tuple[Any, ...]:
-        view = memoryview(encoded)
+        view = encoded
         offset = offsets[index]
         end = offsets[index + 1] if index + 1 < count else len(view)
 

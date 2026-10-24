@@ -74,6 +74,10 @@ Compact exact captures are produced and independently checked in the shared
 core before publication, without Python capture replay or per-record lookups.
 SQLite adapter scopes explicitly close readers and writers before publication
 or temporary-file retirement, including lazy physical and timing-store queries.
+The typed mapped/physical handoff also feeds a shared-core RWRoute exporter;
+Python sends file references and board I/O configuration, rather than traversing
+placed cells and routed endpoints. See the
+[physical export contract](docs/XILINX_PHYSICAL_FLOW.md#native-rwroute-export).
 The [offline handoff differential](docs/VALIDATION.md#primary-store-handoff-differential)
 can use the normal TritonPart initializer while keeping capacity/balance bounds.
 Versioned native runtimes also build the Phase 3 topology hop refiner from the

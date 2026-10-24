@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, Optional
 
 from .errors import ValidationError
 from .io import file_sha256
+from .sqlite_artifacts import immutable_sqlite_uri
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from .xilinx_placement import XILINX_PLACEMENT_SCHEMA
 
@@ -96,7 +97,7 @@ def _decode(value: Optional[str]) -> Any:
 
 def _connect(path: Path) -> sqlite3.Connection:
     try:
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        connection = sqlite3.connect(immutable_sqlite_uri(path), uri=True)
     except sqlite3.Error as error:
         raise ValidationError("Xilinx physical handoff cannot be opened") from error
     connection.row_factory = sqlite3.Row

@@ -16,6 +16,10 @@
 namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
+    {"xilinx-physical-handoff-v1", ArtifactEncoding::kSqlite, 0x454d5550, 1, true},
+    {"rwroute-export-request-v1", ArtifactEncoding::kBinary, 0x31515752554d5545ULL, 1},
+    {"rwroute-input-tsv-v1", ArtifactEncoding::kText, 0, 1},
+    {"rwroute-export-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"exact-capture-validation-v1", ArtifactEncoding::kText, 0, 1},
     {"partition-load-request-v1", ArtifactEncoding::kBinary, 0x3151454c504d5545ULL, 1},
     {"partition-load-summary-v1", ArtifactEncoding::kText, 0, 1},

@@ -1,4 +1,5 @@
 #include "emuflow_core/artifact_io.hpp"
+#include "emuflow_core/hash.hpp"
 
 #include <atomic>
 #include <cerrno>
@@ -17,6 +18,30 @@
 #endif
 
 namespace emuflow::core {
+CheckedRequestReader::CheckedRequestReader(const std::string& path, std::size_t maximum_bytes)
+    : reader_(path) {
+  if (reader_.size() > maximum_bytes || reader_.remaining() < sizeof(std::uint32_t))
+    throw std::runtime_error("native request exceeds bound or is truncated");
+}
+void CheckedRequestReader::ReadBytes(void* destination, std::size_t size) {
+  if (reader_.remaining() < sizeof(std::uint32_t) || size > reader_.remaining() - sizeof(std::uint32_t))
+    throw std::runtime_error("native request is truncated");
+  reader_.ReadBytes(destination, size);
+  UpdateCrc32(crc_, static_cast<const unsigned char*>(destination), size);
+}
+std::string CheckedRequestReader::ReadString32(bool allow_empty) {
+  const auto size = Read<std::uint32_t>();
+  if ((!size && !allow_empty) || size > 1024 * 1024)
+    throw std::runtime_error("native request string exceeds bound or is empty");
+  std::string value(size, '\0');
+  ReadBytes(value.data(), size);
+  return value;
+}
+void CheckedRequestReader::RequireEnd() {
+  const auto expected = reader_.Read<std::uint32_t>();
+  reader_.RequireEnd();
+  if (expected != crc_) throw std::runtime_error("native request checksum disagrees");
+}
 
 void BinaryReader::Seek(std::size_t offset) {
   if (offset > size_) throw std::runtime_error("native input seek is out of bounds");

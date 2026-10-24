@@ -1888,10 +1888,23 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         def old_producer(command, **kwargs):
             Path(command[-1]).write_bytes(struct.pack("<QIIQQ", 0x314E4553464D5545, 1, 0, 0, 0))
             return subprocess.CompletedProcess(command, 0, "", "")
+        from emuflow.phase3_exact_records import read_native_static_exact_cut_node_stream
+        held = []
+        def reader(path):
+            nodes = read_native_static_exact_cut_node_stream(path)
+            held.append((nodes, nodes._native_mapping[0]))
+            return nodes
         with patch("emuflow.combinational_cut.resolve_native_stage_command", return_value=["native"]), patch(
             "emuflow.combinational_cut.subprocess.run", side_effect=old_producer
-        ), self.assertRaisesRegex(ValidationError, "record format v2"):
+        ), patch("emuflow.combinational_cut.read_native_static_exact_cut_node_stream", side_effect=reader), self.assertRaisesRegex(
+            ValidationError, "record format v2"
+        ):
             _build_native_semantic_cut_nodes([], topology, build_static_exact_capture_stream([]))
+        # Retain both the result and its mmap beyond the rejected operation:
+        # NFS retirement must not depend on traceback/GC releasing either.
+        self.assertEqual(len(held), 1)
+        self.assertIsNone(held[0][0]._native_mapping)
+        self.assertTrue(held[0][1].closed)
 
     def test_native_semantic_finalizer_matches_records_and_rejects_bad_input(self):
         with tempfile.TemporaryDirectory() as temporary:

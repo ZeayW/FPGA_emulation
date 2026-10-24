@@ -3088,6 +3088,7 @@ def _build_native_semantic_cut_nodes(ordered_cuts, topology, captures):
     output = root / "cut-nodes.bin"
     capture_cursor = iter(captures.iter_binary_captures())
     capture = next(capture_cursor, None)
+    nodes = None
     try:
         with metadata.open("wb") as stream:
             stream.write(struct.pack("<QII", 0x314D4553464D5545, 1, len(ordered_cuts)))
@@ -3148,6 +3149,8 @@ def _build_native_semantic_cut_nodes(ordered_cuts, topology, captures):
         topology._native_topology_owner.cleanup()
         return nodes
     except BaseException:
+        if nodes is not None:
+            nodes.close()
         owner.cleanup()
         raise
 

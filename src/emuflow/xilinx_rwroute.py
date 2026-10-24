@@ -572,6 +572,38 @@ def export_rwroute_input(
     top = packed.get("top")
     if not isinstance(top, str):
         raise ValidationError("PackedSiteNetlist top is invalid")
+    from .xilinx_netlist import IndexedXilinxMappedNetlist, XILINX_MAPPED_INDEX_SCHEMA
+    if (isinstance(mapped, IndexedXilinxMappedNetlist)
+            and mapped.schema == XILINX_MAPPED_INDEX_SCHEMA
+            and packed_path == placement_path):
+        from .rwroute_native import export_native_rwroute
+        # Production consumes the two authoritative stores directly. The
+        # explicit JSON/reference path below remains an independent oracle;
+        # native failures never fall through to it.
+        return export_native_rwroute(
+            Path(mapped.path), packed_path, output_path, top=top, part=placement["part"],
+            digests=digests, virtual_io_contract=virtual_io_contract,
+            resource_limits=resource_limits,
+        )
+    return _export_rwroute_python_reference(
+        mapped, packed, placement, packed_path, placement_path, output_path,
+        digests=digests, virtual_io_contract=virtual_io_contract,
+        resource_limits=resource_limits, export_started=export_started,
+    )
+
+
+def _export_rwroute_python_reference(
+    mapped, packed, placement, packed_path, placement_path, output_path, *,
+    digests, virtual_io_contract=None, resource_limits=None, export_started=None,
+):
+    """Explicit reference/qualification owner; never a native error fallback.
+
+    The caller supplies already checked headers and source identities. A large
+    differential may use the old typed cursors without constructing full JSON.
+    """
+    if export_started is None:
+        export_started = time.perf_counter()
+    top = packed["top"]
     module = _select_module(mapped, top)
     cells = module["cells"]
     binding_started = time.perf_counter()

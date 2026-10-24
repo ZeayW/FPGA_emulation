@@ -133,7 +133,7 @@ core_sources=(
   emuflow_core/native_pipeline.cpp emuflow_core/schedule_store.cpp
   emuflow_core/route_view.cpp emuflow_core/schedule_model.cpp
   emuflow_core/schedule_ingress.cpp emuflow_core/tool_runtime.cpp
-  emuflow_core/compile.cpp emuflow_core/bookshelf.cpp
+  emuflow_core/compile.cpp emuflow_core/bookshelf.cpp emuflow_core/rwroute_export.cpp
   emuflow_core/patron_ingress.cpp
   emuflow_core/partition_clusters.cpp emuflow_core/primary_cluster_view.cpp
   emuflow_core/partition_loads.cpp emuflow_core/exact_captures.cpp

@@ -294,6 +294,7 @@ add_library(
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/tool_runtime.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/compile.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/bookshelf.cpp"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/rwroute_export.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/patron_ingress.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/partition_clusters.cpp"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/primary_cluster_view.cpp"

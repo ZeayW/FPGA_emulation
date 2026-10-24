@@ -54,6 +54,34 @@ Phase 1–7/7C qualification. The declared real workload, naturally selected cut
 physical gates and original-path timing coverage still need their normal terminal
 acceptance; fixtures and this producer comparison do not replace them.
 
+## Native physical export differential
+
+The offline command
+`PYTHONPATH=src python scripts/validation/qualify_rwroute_native_export.py --mapped MAPPED.sqlite --physical PHYSICAL.sqlite --expected-top TOP --out OUTPUT`
+executes the reference and native exporters in separately supervised processes.
+Pass `--virtual-io-contract` and `--resource-limits` to freeze the actual board
+configuration, `--minimum-logical-cells` for a real-design scale floor, and
+`--source-commit` to require the exact deployed source/runtime. Inputs are hashed
+once before either arm; complete TSV hashing follows the measured export.
+Compact output identities, counts and separate sampled-tree/worker/native metrics
+remain after both workers exit and their TSV/scratch payloads are retired. A
+failed worker cannot publish a passing qualification.
+
+For the typed RWRoute boundary, compare the entire TSV byte stream and every
+cell/expansion/gate/net count against the separately retained Python reference
+using identical mapped index, physical handoff, I/O, resource limits and source
+digests. Cover LUT6_2 pin expansion, RAM integer/binary parameters, CARRY8 shared
+exits, constants, driverless/sinkless/intra-site nets, Unicode identities, fixed
+I/O direction/bit ownership and transitive clock-gate closure. Poison Python
+cell/pin/gate cursors on the normal typed entry to prove it uses the native
+owner. Corrupt request CRC/version/length/generation and input relations; reject
+aliased destinations and preserve prior publications. Retained mapper objects
+must be closed before rejected semantic staging is retired, including on NFS.
+
+Fixture parity is a contract gate. Performance claims require the same real
+NVDLA input and measured export scopes; routing, physical legality, full original
+path timing and complete Phase 1–7/7C qualification remain separate gates.
+
 ## Primary-store handoff differential
 
 `PYTHONPATH=src python scripts/validation/qualify_primary_store_handoff.py --ir INPUT.sqlite --timing-database TIMING.json --platform BOARD.json --oracle MODEL_ORACLE --out OUTPUT --expected-design TOP`

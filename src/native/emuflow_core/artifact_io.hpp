@@ -57,6 +57,24 @@ class BinaryReader {
 // behavior without teaching the shared core any stage-specific payload.
 void ReadAndValidateHeader(BinaryReader& reader, const ArtifactSchema& schema);
 
+// Small versioned requests share the checked reader and trailing CRC protocol.
+// Circuit payloads remain in their owning stores rather than these requests.
+class CheckedRequestReader {
+ public:
+  explicit CheckedRequestReader(const std::string& path, std::size_t maximum_bytes);
+  template <typename T> T Read() {
+    T value{};
+    ReadBytes(&value, sizeof value);
+    return value;
+  }
+  void ReadBytes(void* destination, std::size_t size);
+  std::string ReadString32(bool allow_empty = false);
+  void RequireEnd();
+ private:
+  BinaryReader reader_;
+  std::uint32_t crc_ = 0;
+};
+
 // Publish an already closed same-directory file (including a SQLite store)
 // through the same synchronization/rename boundary as binary artifacts.
 void PublishTemporaryFile(const std::string& temporary, const std::string& target);

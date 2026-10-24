@@ -42,7 +42,8 @@ constexpr const char* kUsage =
     "  phase6 refine-groups --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
     "  phase6 refine-groups --legacy-text INPUT OUTPUT\n"
     "  phase6 rudy INPUT OUTPUT\n"
-    "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n";
+    "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n"
+    "  phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY\n";
 
 int Finish(emuflow::core::StageResult result, const std::string& report) {
   // Invalid requests may name a report which aliases an input/output. Never
@@ -129,6 +130,11 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     request.expected_sha256 = sha;
     return Execute(std::move(request), report);
   };
+  if (phase == "phase7" && operation == "export-rwroute" && argc == 8) {
+    StageRequest request{Stage::kExportRwroute,{argv[3],argv[4],argv[5]},argv[6]};
+    request.auxiliary_output_path=argv[7];
+    return Execute(std::move(request),report);
+  }
   if (phase == "phase3" && operation == "refine-patron-from-primary" && argc == 9)
     return run(Stage::kRefinePatronFromPrimary,{argv[3],argv[4],argv[5],argv[6],argv[7]},argv[8]);
   if (phase == "phase3" && operation == "build-captures" && argc == 8)

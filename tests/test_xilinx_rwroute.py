@@ -35,6 +35,19 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from tests.native_build import emuflow_native
+        cls.native_exporter = emuflow_native()
+
+    def setUp(self):
+        native = mock.patch(
+            "emuflow.rwroute_native.resolve_native_executable",
+            return_value=str(self.native_exporter),
+        )
+        native.start()
+        self.addCleanup(native.stop)
+
     def test_large_typed_export_never_reloads_cells_by_net(self):
         net_count = 100_000
 
@@ -213,12 +226,12 @@ class XilinxRWRouteTest(unittest.TestCase):
                         "placement_sha256": "2" * 64,
                     },
                 )
-                self.assertEqual(physical_cells.call_count, 1)
+                self.assertEqual(physical_cells.call_count, 0)
             rows = output.read_text(encoding="utf-8").splitlines()
 
         self.assertEqual(
             report["runtime_breakdown"]["dataflow"]["safe_names"],
-            "typed-ordinal-cursor",
+            "native-ordinal-cursor",
         )
         self.assertIn("CELL\tc0\ta_src\tLUT1\tSLICE_X0Y0\tA6LUT", rows)
         self.assertIn("CELL\tc1\tz_sink\tFDRE\tSLICE_X0Y1\tAFF", rows)
@@ -885,8 +898,8 @@ class XilinxRWRouteTest(unittest.TestCase):
                     placement_value=placement_view,
                     source_sha256=source_sha256,
                 )
-                self.assertEqual(qualify.call_count, 1)
-                self.assertEqual(routed_pins.call_count, 1)
+                self.assertEqual(qualify.call_count, 0)
+                self.assertEqual(routed_pins.call_count, 0)
             indexed_text = indexed_output.read_text(encoding="utf-8")
         self.assertEqual(report["qualified_clock_gates"], 1)
         self.assertEqual(indexed_report["qualified_clock_gates"], 1)

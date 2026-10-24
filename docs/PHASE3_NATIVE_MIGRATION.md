@@ -133,7 +133,10 @@ The Phase 3 profiler records a nested `static_exact.native_capture_build_and_val
 interval and native capture count. The interval belongs to its enclosing semantic
 operation and must not be added to that enclosing time. Final semantic-node
 metadata construction, other Python semantic traversals and assignment/index
-publication are still separate migration work.
+publication are still separate migration work. Native node-reader rejection
+explicitly releases its mapped views before retiring staging, so NFS cleanup
+cannot mask the original semantic validation error. The reader also releases
+partially constructed mappings on malformed input.
 
 Small/inline and explicitly selected legacy tools, retained diagnostic traces,
 physical-feedback algorithms and explicit legacy input copies keep the reference
@@ -157,6 +160,16 @@ the only summary returned to Python. Existing mapped v2 and private lexical
 atom relations retain their zero application/user PRAGMAs; their stage-owned
 metadata and ordered-record checks remain required. This integration does not
 complete the other physical exporters or full W0/W7 qualification.
+
+`phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY` now owns the complete
+production TSV export from mapped index v2 and the typed physical handoff in the
+shared core. Its small request binds source generations and carries board I/O
+and resource configuration only. Placed cells, RAM properties, LUT6_2 route
+ordinals, closed clock-gate qualification and net/pin rows stay native. The
+explicit Python cursor reference is reserved for compatibility and independent
+differentials; it is not a failed-native fallback. See the authoritative
+[physical export contract](XILINX_PHYSICAL_FLOW.md#native-rwroute-export).
+This closes that exporter boundary, not all physical adapters or W7.
 
 `phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT`
 owns the complete current indexed exact producer. It builds the integer model

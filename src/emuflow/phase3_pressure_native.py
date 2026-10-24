@@ -16,6 +16,8 @@ import sys
 import zlib
 
 from .errors import ValidationError
+# Existing protocol fixtures import this private spelling.
+from .native_protocol import CheckedRequestWriter as _Writer
 from .native_tools import native_file_generation, resolve_native_executable
 from .tool_runtime import NativeToolProcess
 from .resources import RESOURCE_FIELDS
@@ -32,43 +34,6 @@ def supports_native_pressure_model(ir, clusters, timing):
             and clusters.get("policy", {}).get("cut_mode") == CUT_MODE_STATIC_EXACT
             and timing.get("schema") == STA_PATH_DATABASE_INDEX_SCHEMA
             and isinstance(descriptor, dict) and descriptor.get("format") == STA_PATH_DATABASE_SQLITE_FORMAT)
-
-
-class _Writer:
-    def __init__(self, path):
-        self.stream = Path(path).open("wb")
-        self.crc = 0
-
-    def bytes(self, value):
-        chunks = getattr(value, "iter_bytes", None)
-        if chunks is not None:
-            for block in chunks():
-                self.stream.write(block)
-                self.crc = zlib.crc32(block, self.crc)
-            return
-        with memoryview(value).cast("B") as view:
-            self.stream.write(view)
-            self.crc = zlib.crc32(view, self.crc)
-
-    def put(self, layout, *values):
-        self.bytes(struct.pack("<" + layout, *values))
-
-    def text(self, value):
-        encoded = value.encode("utf-8")
-        self.put("I", len(encoded))
-        self.bytes(encoded)
-
-    def catalog(self, values):
-        self.put("I", len(values))
-        for value in values:
-            self.text(value)
-
-    def finish(self):
-        self.stream.write(struct.pack("<I", self.crc))
-        self.stream.close()
-
-    def close(self):
-        self.stream.close()
 
 
 class _NativeClusterOrder(Sequence):

@@ -3,6 +3,7 @@
 #include "emuflow_core/schedule_store.hpp"
 #include "emuflow_core/schedule_ingress.hpp"
 #include "emuflow_core/bookshelf.hpp"
+#include "emuflow_core/rwroute_export.hpp"
 #include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/partition_clusters.hpp"
 #include "emuflow_core/partition_loads.hpp"
@@ -17,6 +18,7 @@ namespace emuflow::native {
 const char* StageName(Stage stage) {
   switch (stage) {
     case Stage::kInvalid: return "native.request";
+    case Stage::kExportRwroute: return "phase7.export-rwroute";
     case Stage::kBuildCaptures: return "phase3.build-captures";
     case Stage::kValidateCaptures: return "phase3.validate-captures";
     case Stage::kReducePartitionLoads: return "phase3.reduce-loads";
@@ -47,6 +49,7 @@ namespace {
 std::vector<std::string> InputSchemas(const StageRequest& request) {
   switch (request.stage) {
     case Stage::kInvalid: break;
+    case Stage::kExportRwroute: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","rwroute-export-request-v1"};
     case Stage::kBuildCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1"};
     case Stage::kValidateCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1","exact-captures-v1"};
     case Stage::kReducePartitionLoads: return {"emuir-compact-v2","partition-cluster-columns-v2","partition-load-request-v1"};
@@ -97,7 +100,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       throw core::StageError(core::ErrorCode::kInvalidRequest, "native stage artifact coverage is invalid");
     std::vector<std::string> paths = request.input_paths;
     if (bound) for (const auto& input : request.input_artifacts) paths.push_back(input.path());
-    if (request.stage == Stage::kExportBookshelf) {
+    if (request.stage == Stage::kExportBookshelf || request.stage == Stage::kExportRwroute) {
       if (!bound) {
         try { for (auto& path : paths) path = core::SqliteFilePath(path); }
         catch (const std::exception& error) {
@@ -105,7 +108,10 @@ core::StageResult ExecuteStage(const StageRequest& request) {
         }
       }
       std::vector<std::string> destinations{
-          request.output_path,request.auxiliary_output_path,request.scratch_path};
+          request.output_path,request.auxiliary_output_path};
+      if (request.stage == Stage::kExportBookshelf) destinations.push_back(request.scratch_path);
+      else if (!request.scratch_path.empty())
+        throw core::StageError(core::ErrorCode::kInvalidRequest,"unexpected RWRoute scratch destination");
       if (!request.report_path.empty()) destinations.push_back(request.report_path);
       const auto same = [&](const auto& a, const auto& b) {
         return Equivalent(a,b) || std::filesystem::weakly_canonical(a) == std::filesystem::weakly_canonical(b);
@@ -115,13 +121,13 @@ core::StageResult ExecuteStage(const StageRequest& request) {
         if (destination.empty() || destination == "-" ||
             !std::filesystem::is_directory(std::filesystem::absolute(destination).parent_path()) ||
             std::filesystem::is_directory(destination))
-          throw core::StageError(core::ErrorCode::kInvalidRequest,"Bookshelf output directory is unavailable");
+          throw core::StageError(core::ErrorCode::kInvalidRequest,"physical export output directory is unavailable");
         for (const auto& input : paths)
           if (same(input,destination))
-            throw core::StageError(core::ErrorCode::kInvalidRequest,"Bookshelf destination aliases an input");
+            throw core::StageError(core::ErrorCode::kInvalidRequest,"physical export destination aliases an input");
         for (std::size_t j=0; j<i; ++j)
           if (same(destinations[j],destination))
-            throw core::StageError(core::ErrorCode::kInvalidRequest,"Bookshelf destinations alias each other");
+            throw core::StageError(core::ErrorCode::kInvalidRequest,"physical export destinations alias each other");
       }
       if (std::filesystem::exists(request.scratch_path) || std::filesystem::is_symlink(request.scratch_path))
         throw core::StageError(core::ErrorCode::kInvalidRequest,"Bookshelf scratch relation already exists");
@@ -180,6 +186,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     const auto path = [&](std::size_t i) -> const std::string& { return inputs.at(i).path(); };
     const auto& output = request.output_path;
     switch (request.stage) {
+      case Stage::kExportRwroute:
+        core::ExportRwroute(inputs[0],inputs[1],inputs[2],output,request.auxiliary_output_path); break;
       case Stage::kReducePartitionLoads: core::ReducePartitionLoads(inputs,output); break;
       case Stage::kBuildCaptures: core::BuildExactCaptures(inputs,output); break;
       case Stage::kValidateCaptures: core::ValidateExactCaptures(inputs,output); break;
@@ -217,6 +225,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
   }, [&]() {
     const char* schema = nullptr;
     switch (request.stage) {
+      case Stage::kExportRwroute: schema = "rwroute-input-tsv-v1"; break;
       case Stage::kReducePartitionLoads: schema = "partition-load-summary-v1"; break;
       case Stage::kBuildCaptures: schema = "exact-captures-v1"; break;
       case Stage::kValidateCaptures: schema = "exact-capture-validation-v1"; break;
@@ -247,6 +256,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       refs.push_back(core::ArtifactRef::Bind(request.output_path + ".sqlite", "exact-capture-index-private-v1"));
     if (request.stage == Stage::kScheduleFromStore)
       refs.push_back(core::ArtifactRef::Bind(request.output_path + ".input", "exact-schedule-input-v1"));
+    if (request.stage == Stage::kExportRwroute)
+      refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path, "rwroute-export-summary-v1"));
     if (request.stage == Stage::kExportBookshelf)
       refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path, "openparf-bookshelf-summary-v1"));
     if (request.stage == Stage::kRefinePatronFromStore || request.stage == Stage::kRefinePatronFromPrimary) {

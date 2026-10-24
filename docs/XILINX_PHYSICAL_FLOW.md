@@ -50,6 +50,43 @@ retain the reference exporter for explicit compatibility and differential tests.
 This removes one graph-sized Python traversal; mapped lowering, physical macro
 preparation, and timing-query preparation are separate stages.
 
+## Native RWRoute export
+
+For mapped index v2 and a single typed physical handoff, the production bridge
+requires `emuflow-native phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY`.
+The shared-core operation reads both immutable stores directly. The checked
+request contains their file generations, source digests, top/part, resource
+limits and fixed differential I/O configuration; it contains no placed-cell,
+safe-name, gate or net population. A selected native failure stops the export.
+The explicit Python reference owner remains available for differential checks
+and legacy JSON inputs; it is never an automatic error fallback.
+
+C++ emits the complete existing RapidWright TSV contract: resource/source META,
+CELL, selected RAM PARAM, IOB, CLOCK_GATE, NET/PIN and EXCLUDED rows. Lexical cell
+order, numeric net order and driver-first pin order are unchanged. LUT6_2 still
+occupies the same two physical LUTs; unsupported routable pins reject. RAM binary
+strings and arbitrarily large integer parameters retain their exact decimal
+meaning. Large INIT payloads are not exported. DSP physical-count expansion and
+CARRY8 shared-exit conflict checks retain their existing meanings.
+
+Clock qualification derives candidates and the FDRE enable/closed-gate-chain
+relation in private file-backed SQLite tables. The net cursor joins that relation
+and route ordinals directly; no gate or safe-name map returns to Python. Native
+memory retains the fixed I/O catalog and one live net's endpoints, rather than
+the circuit-wide endpoint population. The summary records maximum live net
+endpoints. Top-port direction/width/bit bindings, duplicate physical I/O bits,
+source cell/type ownership, schema versions, request CRC and source generations
+are checked before publication. Physical handoff readers use the common escaped
+immutable URI, including paths containing `?`, `#`, `%` or Unicode.
+
+The common stage API owns artifact binding, structured errors/metrics and
+aliased-destination rejection. TSV publication uses the common atomic writer;
+the bounded `emuflow.rwroute-export-summary/v1` is published last. Java/RWRoute
+still owns actual routing,
+and the independent site/BEL/connectivity, resource, DRC and timing gates remain
+required. Native export parity alone does not qualify physical implementation
+or complete the native data-plane migration.
+
 Atomic-source construction, Bookshelf export, and placement validation reuse
 the physical macro derivation owned by the same live immutable mapped reader.
 Consumers receive detached records, so modifying one returned contract cannot
