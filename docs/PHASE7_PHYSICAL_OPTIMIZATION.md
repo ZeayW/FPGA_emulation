@@ -148,6 +148,14 @@ diagnostics: the [UltraScale clock structure](https://docs.amd.com/r/en-US/ug572
 contains segmented routing/distribution tracks, so exact device resources and
 completed routing must establish physical acceptance.
 
+After global-clock routing, the adapter independently counts distinct clock
+nets on each routed PIP endpoint node before starting signal routing. Repeated
+uses by one clock count once. It records shared nodes, maximum distinct users,
+unresolved endpoints, intent counts, and at most eight examples. This census
+does not alter the routes or replace final source-to-sink/resource validation.
+`EmuFlowClockPathProbe --clock-owner-self-test` checks its deduplication and
+shared-owner counters without loading a device.
+
 The academic literature reaches the same conclusion through different
 algorithms:
 

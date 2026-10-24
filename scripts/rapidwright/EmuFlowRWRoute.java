@@ -134,6 +134,23 @@ public final class EmuFlowRWRoute {
         }
         return pips;
     }
+
+    static final class DistinctClockNodeUsers<T> {
+        final Map<T, String> firstOwner = new HashMap<>();
+        final Map<T, Set<String>> sharedOwners = new HashMap<>();
+        int maximumUsers = 0;
+
+        void add(T node, String clock) {
+            String first = firstOwner.putIfAbsent(node, clock);
+            if (first == null) { maximumUsers = Math.max(maximumUsers, 1); return; }
+            if (first.equals(clock)) return;
+            Set<String> owners = sharedOwners.computeIfAbsent(node, ignored -> {
+                Set<String> values = new HashSet<>(); values.add(first); return values;
+            });
+            owners.add(clock);
+            maximumUsers = Math.max(maximumUsers, owners.size());
+        }
+    }
     private static final String[] DSP48E2_COMPONENTS = new String[] {
         "DSP_PREADD_DATA", "DSP_A_B_DATA", "DSP_C_DATA", "DSP_MULTIPLIER",
         "DSP_ALU", "DSP_M_DATA", "DSP_OUTPUT", "DSP_PREADD"
@@ -352,6 +369,35 @@ public final class EmuFlowRWRoute {
         }
 
         private static final int MAX_LCB_SEARCH_DEPTH = 16;
+
+        @Override
+        protected void routeGlobalClkNets() {
+            super.routeGlobalClkNets();
+            DistinctClockNodeUsers<Node> users = new DistinctClockNodeUsers<>();
+            long unresolved = 0;
+            for (Net clock : clkNets) {
+                for (PIP pip : clock.getPIPs()) {
+                    Node start = pip.getStartNode(), end = pip.getEndNode();
+                    if (start == null) unresolved++; else users.add(start, clock.getName());
+                    if (end == null) unresolved++; else users.add(end, clock.getName());
+                }
+            }
+            Map<String, Long> intents = new java.util.TreeMap<>();
+            PriorityQueue<String> examples = new PriorityQueue<>(9, Collections.reverseOrder());
+            for (Map.Entry<Node, Set<String>> entry : users.sharedOwners.entrySet()) {
+                intents.merge(entry.getKey().getIntentCode().name(), 1L, Long::sum);
+                String example = entry.getKey()+" clocks="+new java.util.TreeSet<>(entry.getValue());
+                if (examples.size() < 8) examples.add(example);
+                else if (example.compareTo(examples.peek()) < 0) { examples.poll(); examples.add(example); }
+            }
+            JSONObject summary = new JSONObject().put("clock_nets", clkNets.size())
+                .put("route_nodes", users.firstOwner.size()).put("shared_nodes", users.sharedOwners.size())
+                .put("maximum_clock_users", users.maximumUsers).put("unresolved_pip_endpoints", unresolved)
+                .put("shared_node_intents", new JSONObject(intents));
+            System.out.println("INFO: EmuFlow clock route ownership: "+summary);
+            List<String> ordered = new ArrayList<>(examples); Collections.sort(ordered);
+            for (String example : ordered) System.out.println("INFO: EmuFlow shared clock node: "+example);
+        }
 
         private static final class NodeDepth {
             final Node node;

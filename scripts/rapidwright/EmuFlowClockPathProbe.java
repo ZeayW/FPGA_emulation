@@ -90,6 +90,16 @@ public final class EmuFlowClockPathProbe {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 1 && args[0].equals("--clock-owner-self-test")) {
+            EmuFlowRWRoute.DistinctClockNodeUsers<String> users = new EmuFlowRWRoute.DistinctClockNodeUsers<>();
+            users.add("n0", "a"); users.add("n0", "a"); users.add("n1", "a");
+            users.add("n1", "b"); users.add("n1", "b"); users.add("n1", "a");
+            users.add("n1", "c"); users.add("n2", "b");
+            if (users.firstOwner.size()!=3 || users.sharedOwners.size()!=1 || users.maximumUsers!=3
+                || users.sharedOwners.get("n1").size()!=3) throw new IllegalStateException("clock node ownership lost distinct-user coverage");
+            System.out.println("PASS: repeated PIP endpoints do not duplicate clock users; shared-node ownership is exact");
+            return;
+        }
         if (args.length == 4 && args[0].equals("--audit-site-clocks")) {
             auditSiteClocks(args[1], Path.of(args[2]), Path.of(args[3]));
             return;
