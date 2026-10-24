@@ -1,4 +1,6 @@
 """Explicit qualification of physical and declared ideal FF clock leaf loads."""
+from __future__ import annotations
+
 from collections import defaultdict
 import json
 import os
@@ -148,7 +150,7 @@ def complete_ideal_ff_clock_leaf_loads(
 
 def add_clock_region_policy(
     audit_path: Path, route_input_path: Path, architecture_path: Path, output_path: Path,
-    *, maximum_clocks_per_region: int,
+    *, maximum_clocks_per_region: int, physical_handoff_path: Path | None = None,
 ):
     """Add an explicit region budget to the exact leaf domains for qualification.
 
@@ -205,10 +207,15 @@ def add_clock_region_policy(
     hard_cells = {}
     physical_clocks = set()
     fixed_region_loads = set()
+    route_metadata = {}
     with route_input_path.open(encoding="utf-8") as stream:
         for line in stream:
             row = line.rstrip("\n").split("\t")
-            if row[0] == "CELL" and row[3] in {"DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"}:
+            if row[0] == "META":
+                if len(row) != 3 or row[1] in route_metadata:
+                    raise ValidationError("invalid regional clock route metadata")
+                route_metadata[row[1]] = row[2]
+            elif row[0] == "CELL" and row[3] in {"DSP48E2", "RAMB18E2", "RAMB36E2", "URAM288"}:
                 hard_cells[row[1]] = row[4]
             elif row[0] == "NET" and row[2] == "clock":
                 physical_clocks.add(row[1])
@@ -216,9 +223,39 @@ def add_clock_region_policy(
                   and row[2] in hard_cells and row[4] == "sink"
                   and _is_clock_sink_pin(row[3])):
                 fixed_region_loads.add((hard_cells[row[2]], row[1]))
+    if route_metadata != audit.get("source"):
+        raise ValidationError("clock region policy route metadata differs")
     required_sites = set(sites) | {site for site, _clock in fixed_region_loads}
-    if any(not regions_by_site.get(site) for site in required_sites):
-        raise ValidationError("physical clock load has no source architecture region")
+    missing = sorted(site for site in required_sites if not regions_by_site.get(site))
+    handoff_sha = None
+    if physical_handoff_path is not None:
+        import sqlite3
+        from .xilinx_physical_handoff import validate_xilinx_physical_handoff
+        physical_handoff_path = Path(physical_handoff_path)
+        checked = validate_xilinx_physical_handoff(physical_handoff_path)
+        handoff_sha = checked["physical_handoff_sha256"]
+        if any(audit.get("source", {}).get(field) != handoff_sha
+               for field in ("packed_sha256", "placement_sha256")):
+            raise ValidationError("clock region policy physical handoff identity differs")
+        if missing:
+            with sqlite3.connect(f"file:{physical_handoff_path.resolve()}?mode=ro&immutable=1", uri=True) as connection:
+                placeholders = ",".join("?" for _ in missing)
+                rows = connection.execute(
+                    "SELECT DISTINCT a.physical_site,c.site FROM assignment a "
+                    "JOIN cluster c ON c.ordinal=a.cluster_ordinal "
+                    f"WHERE a.physical_site IN ({placeholders})", missing,
+                )
+                for alias, anchor in rows:
+                    region = regions_by_site.get(anchor)
+                    if not region:
+                        raise ValidationError("physical clock alias anchor has no architecture region")
+                    previous = regions_by_site.get(alias)
+                    if previous is not None and previous != region:
+                        raise ValidationError("physical clock alias maps to different regions")
+                    regions_by_site[alias] = region
+    unresolved = sorted(site for site in required_sites if not regions_by_site.get(site))
+    if unresolved:
+        raise ValidationError("physical clock load has no source architecture region: " + ", ".join(unresolved[:8]))
     regions = sorted({regions_by_site[site] for site in required_sites})
     start = max(capacities, default=-1)+1
     region_ids = {region: start+i for i, region in enumerate(regions)}
@@ -264,7 +301,8 @@ def add_clock_region_policy(
     policy = dict(schema="emuflow.clock-region-placement-policy/v1",
                   maximum_clocks_per_region=maximum_clocks_per_region,
                   architecture_sha256=file_sha256(architecture_path),
-                  source_audit_sha256=file_sha256(audit_path), region_domains=region_ids)
+                  source_audit_sha256=file_sha256(audit_path), region_domains=region_ids,
+                  physical_handoff_sha256=handoff_sha)
     result = dict(audit, qualification="ordinary-leaf-and-configured-clock-region-policy",
                   clock_region_policy=policy, oversubscribed_domains=len(overfull),
                   maximum_excess_clocks=max((len(loads[d])-capacities[d] for d in overfull), default=0),

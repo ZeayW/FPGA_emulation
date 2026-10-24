@@ -122,6 +122,7 @@ An explicit native repair experiment relocates rigid slices from overfull leaf
 domains; it can reserve FF loads of explicitly declared ideal boundary clocks.
 Those reservations do not claim physical clock routes. The experiment can also
 apply an explicit clock-region budget without changing device site capacity.
+Hard-block aliases resolve through the sealed physical handoff.
 Fresh placement certification and clock/routing checks remain required.
 Clock routing negotiates shared clock resources using congestion costs, while
 protecting ordinary signals and foreign clock endpoints. It requires zero

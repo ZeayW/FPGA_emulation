@@ -193,7 +193,11 @@ automatically enabled in the production flow.
 an explicit per-region clock budget. Physical site identities join the same
 source-sealed ArchitectureDB used by placement. The payload adds a region domain
 for every qualified slice and fixed regional loads from modeled DSP/BRAM/URAM
-clock sinks; declared ideal FF reservations remain included. Its region budget
+clock sinks; declared ideal FF reservations remain included. For physical RAM
+aliases absent from ArchitectureDB, `physical_handoff_path` must match both
+packing and placement SHA identities in the frozen route input. Its typed
+assignment-to-cluster join supplies the canonical architecture anchor; aliases
+are never inferred from names or coordinate arithmetic. Its region budget
 is a conservative qualification policy, not a new claim that all segmented clock
 routes above that count are impossible. It does not enable the incompatible
 native UTPlaceFX clock model or remove sites.
