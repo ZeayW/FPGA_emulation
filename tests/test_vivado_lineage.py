@@ -23,7 +23,7 @@ class VivadoLineageTests(unittest.TestCase):
             query, output = root/"query.tsv", root/"timing.tsv"
             query.write_text("endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex\tcone_anchor_kind\tcone_anchor_object_hex\tresolved_start_pins_hex\tresolved_end_pins_hex\tresolved_cone_pins_hex\n"+
                 "\t".join(["70","local","pin","source/Q".encode().hex(),"pin","sink/D".encode().hex(),"","",
-                             ",".join(value.encode().hex() for value in ("a/Q","b/Q")),"y/D".encode().hex(),""])+"\n")
+                             ",".join(value.encode().hex() for value in ("a with space/Q","b with space/Q")),"y/D".encode().hex(),""])+"\n")
             mock = r'''
 # macOS ships Tcl 8.5; emulate only the codec used by the Vivado 8.6 script.
 if {[catch {binary decode hex 61}]} {
@@ -45,7 +45,10 @@ proc get_pins {args} {
 proc get_property {key object} {
   global actual_end
   switch $key {
-    NAME {return $object}
+    NAME {
+      if {[llength $object] == 1} {return [lindex $object 0]}
+      return $object
+    }
     CLASS {return [lrepeat [llength $object] pin]}
     STARTPOINT_PIN {return b/C}
     ENDPOINT_PIN {return $actual_end}
@@ -56,7 +59,7 @@ proc get_property {key object} {
 proc get_timing_paths {args} {
   set from [lindex $args [expr {[lsearch -exact $args -from]+1}]]
   set to [lindex $args [expr {[lsearch -exact $args -to]+1}]]
-  if {$from ne {a/Q b/Q} || $to ne {y/D}} {error "descendant collection was truncated"}
+  if {$from ne {{a with space/Q} {b with space/Q}} || $to ne {y/D}} {error "descendant collection was truncated or nested"}
   return path
 }
 '''

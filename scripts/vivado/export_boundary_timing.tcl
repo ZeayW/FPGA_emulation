@@ -28,7 +28,7 @@ proc emuflow_resolve_cell {name {resolved_hex ""}} {
       set actual [emuflow_hex_decode $candidate]
       set cell [emuflow_resolve_cell $actual]
       if {[llength $cell] != 1 || [get_property NAME $cell] ne $actual} {error "lineage cell identity disagrees: $actual"}
-      lappend result $cell
+      set result [concat $result $cell]
     }
     return $result
   }

@@ -36,7 +36,9 @@ proc emuflow_resolve_object {kind name prefix {resolved_hex ""}} {
       set actual [emuflow_hex_decode $candidate]
       set pin [emuflow_resolve_object pin $actual ""]
       if {[get_property NAME $pin] ne $actual} {error "lineage pin identity disagrees: $actual"}
-      lappend result $pin
+      # get_pins returns an object collection, not an individual object.
+      # Flatten collections rather than nesting them in a Tcl list.
+      set result [concat $result $pin]
     }
     return $result
   }
