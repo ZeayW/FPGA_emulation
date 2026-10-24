@@ -38,8 +38,8 @@ PHASE7C_REPORT_SCHEMA = "emuflow.phase7c-report/v3"
 def system_timing_summary(timing: Dict[str, Any]) -> Dict[str, Any]:
     """Return the bounded Phase 7C view used by orchestration reports.
 
-    ``qor_report.json#/timing`` is the sole owner of the complete per-path
-    system timing database.  Stage and top-level reports carry only this
+    ``qor_report.json#/timing`` selects the canonical indexed path owner for
+    OpenSTA results. Stage and top-level reports carry only this
     bounded view so a caller asking for status or WNS/TNS never has to parse or
     serialize the path population a second time.
     """
@@ -244,7 +244,11 @@ def run_phase7c(
                                           metadata=metadata, routes_artifact_sha256=routes_artifact_sha256)
             if not checks:
                 measurements = ()
-                if global_sta_results_dir is not None:
+                if global_sta_results_dir is None:
+                    sta_dir = output_dir / "global-opensta"
+                    sta_dir.mkdir(parents=True, exist_ok=True)
+                    (sta_dir / "measurements.tsv").write_text("endpoint\tarrival_ns\trequired_ns\tslack_ns\n")
+                else:
                     with (global_sta_results_dir / "measurements.tsv").open() as stream:
                         if next(stream, "").strip() != "endpoint\tarrival_ns\trequired_ns\tslack_ns" or any(line.strip() for line in stream):
                             raise ValidationError("saved OpenSTA results contain checks for eliminated original paths")
@@ -289,7 +293,13 @@ def run_phase7c(
                 qor["status"] = "incomplete"
         output_dir.mkdir(parents=True, exist_ok=True)
         write_json(output_dir / "runtime_contract.json", runtime)
-        write_json(output_dir / "qor_report.json", qor)
+        qor_storage = None
+        if sta_timing is not None:
+            from .system_timing_storage import write_system_qor
+
+            qor_storage = write_system_qor(output_dir / "qor_report.json", qor)
+        else:
+            write_json(output_dir / "qor_report.json", qor)
         if physical_summary is not None:
             write_json(
                 output_dir / "cross_layer_physical_binding.json",
@@ -373,6 +383,8 @@ def run_phase7c(
                 "report": "phase7c_report.json",
             },
         }
+        if qor_storage is not None:
+            report["artifacts"]["system_timing_paths"] = qor_storage["artifact"]
         if physical_summary is not None:
             report["system_timing_summary"] = system_timing_summary(qor["timing"])
             report["system_timing_ref"] = {

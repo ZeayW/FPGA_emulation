@@ -1,7 +1,7 @@
 # Export routed endpoint-to-endpoint DUT logic delays for Phase 7C.
 
 if {$argc < 3 || $argc > 5} {
-  error "usage: export_logic_segment_timing.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV ?HIERARCHY_PREFIX? ?allow-missing?"
+  error "usage: export_logic_segment_timing.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV ?HIERARCHY_PREFIX? ?allow-missing|FIXED_IO_MAP?"
 }
 set input_dcp [file normalize [lindex $argv 0]]
 set query_path [file normalize [lindex $argv 1]]

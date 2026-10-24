@@ -48,6 +48,10 @@ def read_json(path: Path) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{path}: expected a JSON object at the document root")
     schema = value.get("schema")
+    if schema == "emuflow.system-qor-storage/v1":
+        from .system_timing_storage import expand_system_qor
+
+        return expand_system_qor(value, path)
     if schema == "emuflow.managed-json-storage/v1":
         from .managed_json_storage import expand_managed_json
 

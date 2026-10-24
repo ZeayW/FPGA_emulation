@@ -1,7 +1,7 @@
 # Export one routed timing measurement for every EmuFlow TDM endpoint.
 
 if {$argc < 3 || $argc > 5} {
-  error "usage: export_boundary_timing.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV ?HIERARCHY_PREFIX?"
+  error "usage: export_boundary_timing.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV ?HIERARCHY_PREFIX? ?FIXED_IO_MAP?"
 }
 set input_dcp [file normalize [lindex $argv 0]]
 set query_path [file normalize [lindex $argv 1]]

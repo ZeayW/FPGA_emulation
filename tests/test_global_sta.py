@@ -610,9 +610,10 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch):
     monkeypatch.setattr(sta, "compare_system_timing", forbidden)
     monkeypatch.setattr(sta, "adopt_opensta_results", forbidden)
     def bind(*args, metadata, **kwargs):
-        metadata.update(paths={"p": {"path_scope": "cross-fpga",
-            "physical_logic_segments_cone_bound": False}}, source_binding=None,
-            compressed_representative_paths=1)
+        builder = sta._PathMetadataBuilder()
+        builder.append("p", representative_path="p", path_scope="cross-fpga", clock_domain="clk",
+                       target_period_ns=20.0, physical_logic_segments_cone_bound=False)
+        metadata.update(paths=builder.finish(), source_binding=None, compressed_representative_paths=1)
         return example()
     monkeypatch.setattr(sta, "bind_physical_checks", bind)
     def engine(checks, directory, executable, *, verify_arcs):
@@ -1219,3 +1220,66 @@ def test_eliminated_shadow_interface_is_a_proved_disposition_not_a_zero_arc(tmp_
         assert binding["metrics"]["measured_endpoints"] == binding["metrics"]["required_endpoints"]-1
         bound_endpoint = next(r for r in binding["endpoint_bindings"] if r["endpoint"] == endpoint["id"])
         assert bound_endpoint["measured_max_delay_ns"] is None
+
+
+def test_eliminated_phase7c_publishes_header_only_results_and_replays_without_an_engine(tmp_path, monkeypatch):
+    from tests.test_phase7c import Phase7CTest
+    from emuflow.cross_layer_timing import build_cross_layer_timing_contract
+    from emuflow.io import write_json, read_json
+    from emuflow.phase7c import run_phase7c
+    import emuflow.global_sta as sta
+    fixture = Phase7CTest();fixture.setUp()
+    for name, value in {"schedule": fixture.schedule, "platform": fixture.platform.to_dict(),
+                        "physical": fixture._physical_summary(), "routes": fixture.routes, **fixture.reports}.items():
+        write_json(tmp_path/f"{name}.json", value)
+    write_json(tmp_path/"manifest.json", {"clock_periods": {"clk": 20.0}})
+    write_json(tmp_path/"cross_layer_timing.json", build_cross_layer_timing_contract(fixture.routes, fixture.schedule))
+    def forbidden(*args, **kwargs):
+        raise AssertionError("eliminated population invoked a numerical engine or Python composer")
+    monkeypatch.setattr("emuflow.runtime.build_system_timing", forbidden)
+    monkeypatch.setattr(sta, "run_event_checks", forbidden)
+    monkeypatch.setattr(sta, "read_engine_identity", forbidden)
+    def bind(*args, metadata, **kwargs):
+        builder = sta._PathMetadataBuilder()
+        builder.append("p", representative_path="p", path_scope="cross-fpga", clock_domain="clk",
+                       target_period_ns=20.0, physical_logic_segments_cone_bound=False,
+                       optimization_source="s3", optimization_fpga="fpga0")
+        metadata.update(paths=builder.finish(), source_binding=None, compressed_representative_paths=1)
+        return ()
+    monkeypatch.setattr(sta, "bind_physical_checks", bind)
+    inputs = [tmp_path/f"{name}.json" for name in ("schedule", "platform", "phase3", "phase4", "phase5", "phase6")]
+    options = dict(physical_summary_path=tmp_path/"physical.json", routes_path=tmp_path/"routes.json", allow_legacy_phase5_generation=True)
+    report = run_phase7c(*inputs, tmp_path/"out", **options)
+    measurements = tmp_path/"out/global-opensta/measurements.tsv"
+    assert measurements.read_text() == "endpoint\tarrival_ns\trequired_ns\tslack_ns\n"
+    assert not (measurements.parent/"opensta.log").exists()
+    qor = read_json(tmp_path/"out/qor_report.json")
+    assert qor["timing"]["global_opensta"]["engine"]["status"] == "not-invoked"
+    assert qor["timing"]["paths"][0]["system_delay_bound_ns"] is None
+    assert report["artifacts"]["system_timing_paths"].endswith(".sqlite")
+    run_phase7c(*inputs, tmp_path/"replay", global_sta_results_dir=measurements.parent, **options)
+    replay = read_json(tmp_path/"replay/qor_report.json")
+    assert replay == qor
+    qor["timing"]["paths"].close();replay["timing"]["paths"].close()
+    measurements.write_text(measurements.read_text()+"unexpected\t0\t0\t0\n")
+    with pytest.raises(ValidationError, match="eliminated original paths"):
+        run_phase7c(*inputs, tmp_path/"bad-replay", global_sta_results_dir=measurements.parent, **options)
+
+
+def test_measurements_keep_engine_columns_without_a_dictionary_per_check(tmp_path):
+    import math
+    from emuflow.global_sta import _MeasurementScalars
+    checks = example()
+    path = tmp_path/"measurements.tsv"
+    with path.open("w") as stream:
+        stream.write("endpoint\tarrival_ns\trequired_ns\tslack_ns\n")
+        for index, row in enumerate(checks):
+            arrival = math.fsum(row.arcs_ns)
+            required = row.required_ns-row.launch_ns
+            stream.write(f"o{index}\t{arrival:.17g}\t{required:.17g}\t{required-arrival:.17g}\n")
+    values = read_measurements(path, checks)
+    assert isinstance(values, _MeasurementScalars)
+    assert values._rows is checks
+    assert values.typed_payload_bytes == 24*len(checks)
+    assert values[-1] == list(values)[-1]
+    assert values == list(values)

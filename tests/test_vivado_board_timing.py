@@ -18,7 +18,7 @@ class VivadoBoardTimingTest(unittest.TestCase):
         logic = (
             ROOT / "scripts/vivado/export_logic_segment_timing.tcl"
         ).read_text(encoding="utf-8")
-        self.assertIn("$argc != 3 && $argc != 4", boundary)
+        self.assertIn("$argc < 3 || $argc > 5", boundary)
         self.assertIn("$argc < 3 || $argc > 5", logic)
         for script in (boundary, logic):
             self.assertIn("hierarchy_prefix", script)

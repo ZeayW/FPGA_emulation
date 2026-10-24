@@ -254,6 +254,15 @@ board support package. A virtual platform does not supply those facts.
 
 ## Output interpretation
 
+For OpenSTA results, `runtime/qor_report.json` is a compact selector containing
+the summary under `header.timing` and naming one sibling SQLite path store.
+Keep both files when moving results. Python consumers use
+`emuflow.io.read_json` to preserve the logical `timing` interface; `timing.paths`
+is a lazy sequence with ordinal and `by_path(original_id)` access. A summary
+read does not load the path store. See [indexed result ownership](global-opensta-qualification.md#indexed-result-ownership)
+for explicit whole-population validation and all-eliminated results.
+
+
 - Intermediate cut, congestion, TDM, pin-distance, and placement objectives
   are diagnostics.
 - Per-FPGA WNS/TNS describe local physical timing.

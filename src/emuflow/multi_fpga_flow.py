@@ -316,6 +316,18 @@ def _checked_flow_member(root: Path, path: Path, label: str) -> Path:
     return resolved
 
 
+def _runtime_timing_artifacts(runtime_root: Path, flow_root: Path, runtime_report):
+    payload_name = runtime_report.get("artifacts",{}).get("system_timing_paths")
+    if payload_name is None:
+        return {}
+    from .system_timing_storage import system_timing_payload_reference
+    reference = system_timing_payload_reference(runtime_root/"qor_report.json")
+    if payload_name != reference["artifact"]:
+        raise ValidationError("Phase 7C system timing payload reference disagrees")
+    payload = _checked_flow_member(flow_root,runtime_root/payload_name,"system timing paths")
+    return {"system_timing_paths": {"path": payload.relative_to(flow_root).as_posix(), "sha256": reference["sha256"]}}
+
+
 def finalize_multi_fpga_physical_checkpoint(
     flow_root: Path,
     physical_root: Path,
@@ -425,6 +437,7 @@ def finalize_multi_fpga_physical_checkpoint(
             "split_manifest": artifact(paths["split_manifest"]),
             "runtime_contract": artifact(runtime_root / "runtime_contract.json"),
             "qor_report": artifact(runtime_root / "qor_report.json"),
+            **_runtime_timing_artifacts(runtime_root, root, runtime_report),
             "physical_flow_report": artifact(physical_report_path),
             "physical_summary": artifact(physical_summary_path),
         },
@@ -1202,8 +1215,10 @@ def validate_multi_fpga_flow_bundle(
         _checked_flow_member(flow_root, Path("runtime/qor_report.json"), "QoR report")
     )
     standalone_sta = stored_qor.get("timing", {}).get("global_opensta", {}).get("execution") == "standalone"
-    if standalone_sta:
-        for name in ("measurements.tsv", "opensta.log"):
+    empty_sta = stored_qor.get("timing", {}).get("global_opensta", {}).get("authority") == "no-numerical-checks"
+    opensta_result = standalone_sta or empty_sta
+    if opensta_result:
+        for name in (("measurements.tsv", "opensta.log") if standalone_sta else ("measurements.tsv",)):
             _checked_flow_member(flow_root, Path("runtime/global-opensta") / name,
                                  "standalone OpenSTA result")
     with tempfile.TemporaryDirectory(prefix="emuflow-flow-validate-") as temporary:
@@ -1219,45 +1234,45 @@ def validate_multi_fpga_flow_bundle(
             physical_summary_path=physical_summary_path,
             routes_path=routes_path if physical_summary_path is not None else None,
             board_link_timing_path=board_link_timing_path,
-            global_sta_results_dir=flow_root / "runtime/global-opensta" if standalone_sta else None,
-            global_timing_engine="opensta" if standalone_sta else "python",
+            global_sta_results_dir=flow_root / "runtime/global-opensta" if opensta_result else None,
+            global_timing_engine="opensta" if opensta_result else "python",
         )
         replay_qor = read_json(Path(temporary) / "qor_report.json")
-    if "global_opensta" in stored_qor.get("timing", {}) and not standalone_sta:
-        from .global_sta import adopt_opensta_results, bind_physical_checks, compare_system_timing, read_engine_identity, read_measurements
-        if physical_summary_path is None:
-            raise ValidationError("global OpenSTA qualification lacks physical inputs")
-        with read_physical_summary(physical_summary_path) as physical:
-            if board_link_timing_path is not None:
-                physical["board_link_timing"] = read_json(board_link_timing_path)
-            checks = bind_physical_checks(
-                read_json(flow_root / "runtime/runtime_contract.json"),
-                read_json(routes_path), read_json(schedule_path), physical,
-                Platform.load(platform_path),
-            )
-        # Explicit terminal validation reconstructs the binding and checks the
-        # raw engine scalars, without running the same external STA twice.
-        measurements = read_measurements(_checked_flow_member(
-            flow_root, Path("runtime/global-opensta/measurements.tsv"),
-            "global OpenSTA measurements"), checks)
-        if stored_qor["timing"]["global_opensta"].get("authority") == "opensta":
-            gate = adopt_opensta_results(replay_qor["timing"], measurements)
-        else:
-            # Read historical qualification artifacts without preserving an
-            # implicit old producer default.
-            gate = compare_system_timing(measurements, replay_qor["timing"])
-        replay_qor["timing"]["global_opensta"] = gate
-        if gate["status"] != "pass" or replay_qor["timing"]["status"] == "fail":
-            replay_qor["status"] = "fail"
-            replay["status"] = "fail"
-        if "engine" in stored_qor["timing"]["global_opensta"]:
-            replay_qor["timing"]["global_opensta"]["engine"] = read_engine_identity(
-                _checked_flow_member(flow_root, Path("runtime/global-opensta/opensta.log"),
-                                     "global OpenSTA engine log"))
-    if replay_qor != stored_qor:
-        raise ValidationError("independent Phase 7C QoR replay disagrees")
-    if replay.get("status") != report["runtime"].get("status"):
-        raise ValidationError("independent Phase 7C status replay disagrees")
+        if "global_opensta" in stored_qor.get("timing", {}) and not opensta_result:
+            from .global_sta import adopt_opensta_results, bind_physical_checks, compare_system_timing, read_engine_identity, read_measurements
+            if physical_summary_path is None:
+                raise ValidationError("global OpenSTA qualification lacks physical inputs")
+            with read_physical_summary(physical_summary_path) as physical:
+                if board_link_timing_path is not None:
+                    physical["board_link_timing"] = read_json(board_link_timing_path)
+                checks = bind_physical_checks(
+                    read_json(flow_root / "runtime/runtime_contract.json"),
+                    read_json(routes_path), read_json(schedule_path), physical,
+                    Platform.load(platform_path),
+                )
+            # Explicit terminal validation reconstructs the binding and checks the
+            # raw engine scalars, without running the same external STA twice.
+            measurements = read_measurements(_checked_flow_member(
+                flow_root, Path("runtime/global-opensta/measurements.tsv"),
+                "global OpenSTA measurements"), checks)
+            if stored_qor["timing"]["global_opensta"].get("authority") == "opensta":
+                gate = adopt_opensta_results(replay_qor["timing"], measurements)
+            else:
+                # Read historical qualification artifacts without preserving an
+                # implicit old producer default.
+                gate = compare_system_timing(measurements, replay_qor["timing"])
+            replay_qor["timing"]["global_opensta"] = gate
+            if gate["status"] != "pass" or replay_qor["timing"]["status"] == "fail":
+                replay_qor["status"] = "fail"
+                replay["status"] = "fail"
+            if "engine" in stored_qor["timing"]["global_opensta"]:
+                replay_qor["timing"]["global_opensta"]["engine"] = read_engine_identity(
+                    _checked_flow_member(flow_root, Path("runtime/global-opensta/opensta.log"),
+                                         "global OpenSTA engine log"))
+        if replay_qor != stored_qor:
+            raise ValidationError("independent Phase 7C QoR replay disagrees")
+        if replay.get("status") != report["runtime"].get("status"):
+            raise ValidationError("independent Phase 7C status replay disagrees")
 
     return {
         **summary,
@@ -2819,6 +2834,7 @@ def run_multi_fpga_flow(
                 "path": "runtime/qor_report.json",
                 "sha256": _sha256(runtime_root / "qor_report.json"),
             },
+            **_runtime_timing_artifacts(runtime_root, output_dir, runtime_report),
             **(
                 {
                     "cross_stage_report": {

@@ -74,6 +74,39 @@ The historical `cone_bound_logic_paths` aggregate includes conservative endpoint
 collection bounds, as well as cone and local-path bounds; it is excluded from
 `endpoint_exact_logic_paths`. Complete original-member coverage remains required.
 
+## Indexed result ownership
+
+The OpenSTA producer keeps event measurements in three typed scalar columns
+and original-path results in five scalar columns over the canonical metadata.
+Individual dictionaries are projected only for the current consumer row.
+Indexed production measurements must retain contiguous original-path bundles;
+interleaving is rejected rather than building a second population of objects.
+
+`qor_report.json` is an `emuflow.system-qor-storage/v1` selector. Its `header`
+contains the bounded QoR summary; its named sibling
+`qor_report.json.paths.<digest>.sqlite` owns all original-path records. The
+SQLite store uses typed columns and interned metadata strings, including null
+scalars and proof references for optimized-away members. Neither publication
+nor a summary read expands the path population into JSON. The logical schemas
+remain `emuflow.qor-report/v4` and `emuflow.system-timing/v2`.
+
+`emuflow.io.read_json` exposes the logical document with a lazy `timing.paths`
+sequence. Ordinal lookup and `timing.paths.by_path(original_id)` read only the
+selected record; raw JSON tools find summary fields under `header.timing`.
+Move the selector and its named sibling together. Phase 7C and full-flow
+manifests retain the payload reference and its producer-computed seal.
+`validate_system_qor` explicitly scans records with bounded memory to verify
+the logical seal, exact source-ID coverage, counts, null dispositions, and
+WNS/TNS against stored engine scalars. Ordinary summary reads do not open or
+hash the path store. Consumers must keep the owner available until lazy row
+reads and comparisons finish.
+
+When every original member is eliminated, Phase 7C publishes a header-only
+`global-opensta/measurements.tsv`. Terminal validation rebinds the physical
+inputs and requires that file to contain no numerical rows. This preserves
+explicit result validation without invoking OpenSTA or the Python composer;
+there is no fabricated engine log or numerical-execution claim.
+
 ## Qualification
 
 Use hand-computed and adversarial cases for local paths, slot zero, multi-hop

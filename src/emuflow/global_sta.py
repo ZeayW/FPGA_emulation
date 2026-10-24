@@ -1059,8 +1059,44 @@ exit 0
     return rows
 
 
-def read_measurements(path: Path, rows: Sequence[EventCheck], *, verify_arcs=True) -> list[dict]:
-    result = []
+class _MeasurementScalars(Sequence):
+    """Three engine columns; identities stay in the canonical check sequence."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self._columns = tuple(array("d") for _ in range(3))
+
+    def __len__(self):
+        return len(self._columns[0])
+
+    def append_values(self, arrival, required, slack):
+        for column, value in zip(self._columns, (arrival, required, slack)):
+            column.append(value)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        row = self._rows[index]
+        return {"path": row.path, "role": row.role, "event": row.event,
+                **{key: column[index] for key, column in zip(
+                    ("arrival_ns", "required_ns", "slack_ns"), self._columns)}}
+
+    def __eq__(self, other):
+        if not isinstance(other, Sequence) or len(self) != len(other):
+            return False
+        return all(left == right for left, right in zip(self, other))
+
+    @property
+    def typed_payload_bytes(self):
+        return sum(column.itemsize * len(column) for column in self._columns)
+
+
+def read_measurements(path: Path, rows: Sequence[EventCheck], *, verify_arcs=True) -> Sequence[dict]:
+    result = _MeasurementScalars(rows)
     with path.open() as stream:
         if next(stream, "").strip() != "endpoint\tarrival_ns\trequired_ns\tslack_ns":
             raise ValidationError("invalid global STA measurements header")
@@ -1095,16 +1131,7 @@ def read_measurements(path: Path, rows: Sequence[EventCheck], *, verify_arcs=Tru
                         raise ValidationError(
                             f"global STA event binding disagrees at o{index}"
                         )
-            result.append(
-                {
-                    "path": row.path,
-                    "role": row.role,
-                    "event": row.event,
-                    "arrival_ns": numbers[0] + row.launch_ns,
-                    "required_ns": numbers[1] + row.launch_ns,
-                    "slack_ns": numbers[2],
-                }
-            )
+            result.append_values(numbers[0] + row.launch_ns, numbers[1] + row.launch_ns, numbers[2])
     if len(result) != len(rows):
         raise ValidationError("global STA missing/extra/unconstrained endpoints")
     return result
@@ -1270,7 +1297,7 @@ class _ExpandedMeasurementSequence(Sequence):
     second check-sized population of Python dictionaries before stitching.
     """
 
-    def __init__(self, rows: Sequence[EventCheck], representative_values: list[dict],
+    def __init__(self, rows: Sequence[EventCheck], representative_values: Sequence[dict],
                  original_to_representative: Sequence[int]):
         if len(original_to_representative) != len(rows):
             raise ValidationError("global STA expansion population disagrees")
@@ -1316,7 +1343,7 @@ class _ExpandedMeasurementSequence(Sequence):
 
 
 def _write_expanded_measurements(path: Path, rows: Sequence[EventCheck],
-                                 representative_values: list[dict],
+                                 representative_values: Sequence[dict],
                                  original_to_representative: Sequence[int],
                                  representative_checks: Sequence[EventCheck]
                                  | None = None,
@@ -1736,6 +1763,66 @@ the Python event propagator or consume its per-path numerical results.
     return rows
 
 
+_RESULT_SCALARS = ("system_delay_bound_ns", "target_required_time_ns",
+                   "runtime_required_time_ns", "target_clock_slack_bound_ns",
+                   "runtime_clock_slack_bound_ns")
+
+
+class _IndexedTimingResults(Sequence):
+    """Engine scalars over the canonical metadata; project one path at a time."""
+
+    def __init__(self, metadata: _IndexedPathMetadata):
+        self.metadata = metadata
+        self._columns = tuple(array("d", [0.0]) * len(metadata) for _ in _RESULT_SCALARS)
+        self._present = bytearray(len(metadata))
+        self.measured_count = 0
+
+    def __len__(self):
+        return len(self.metadata)
+
+    def _index(self, path):
+        index = bisect_left(self.metadata._paths, path)
+        if index == len(self) or self.metadata._paths[index] != path:
+            raise ValidationError("global STA result references an unknown original path")
+        return index
+
+    def has_result(self, path):
+        return bool(self._present[self._index(path)])
+
+    def append(self, row):
+        index = self._index(row["path"])
+        if self._present[index] or is_optimized_away(self.metadata[row["path"]]):
+            raise ValidationError("global STA duplicate or eliminated numerical result")
+        for name, column in zip(_RESULT_SCALARS, self._columns):
+            value = row[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValidationError("global STA result contains an invalid engine scalar")
+            column[index] = value
+        self._present[index] = 1
+        self.measured_count += 1
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        path = self.metadata._paths[index]
+        info = self.metadata[path]
+        eliminated = is_optimized_away(info)
+        if eliminated:
+            validate_optimization_record(info)
+        elif not self._present[index]:
+            raise ValidationError("global STA result is missing original-path engine scalars")
+        return {"path": path, **info, **{name: None if eliminated else column[index]
+                for name, column in zip(_RESULT_SCALARS, self._columns)}}
+
+    @property
+    def typed_payload_bytes(self):
+        return len(self._present) + sum(c.itemsize * len(c) for c in self._columns)
+
+
 def build_opensta_timing(runtime, metadata, measurements):
     """Build the canonical report directly from engine scalars, never Python timing.
 
@@ -1755,8 +1842,8 @@ def build_opensta_timing(runtime, metadata, measurements):
         # Validate identities within the live bundle and construct the final
         # path row when that bundle ends. This avoids an H-sized identity set
         # and a second P-sized target/runtime record map in production.
-        paths = []
-        completed = set()
+        paths = _IndexedTimingResults(metadata_paths) if isinstance(metadata_paths, _IndexedPathMetadata) else []
+        completed = None if isinstance(paths, _IndexedTimingResults) else set()
         current_path = None
         current_rows = {}
         current_identities = set()
@@ -1780,7 +1867,8 @@ def build_opensta_timing(runtime, metadata, measurements):
                 path[f"{role}_required_time_ns"] = row["required_ns"]
                 path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
             paths.append(path)
-            completed.add(current_path)
+            if completed is not None:
+                completed.add(current_path)
 
         for row in measurements:
             checks += 1
@@ -1798,7 +1886,8 @@ def build_opensta_timing(runtime, metadata, measurements):
                     "global STA invalid standalone measurement population"
                 )
             if path_id != current_path:
-                if path_id in completed:
+                already_completed = paths.has_result(path_id) if completed is None else path_id in completed
+                if already_completed:
                     raise InterleavedMeasurements
                 finish_bundle()
                 current_path = path_id
@@ -1828,16 +1917,19 @@ def build_opensta_timing(runtime, metadata, measurements):
             elif row["slack_ns"] < -1e-3:
                 failures += 1
         finish_bundle()
-        if len(paths) != implemented_count:
+        if (paths.measured_count if isinstance(paths, _IndexedTimingResults) else len(paths)) != implemented_count:
             raise ValidationError(
                 "global STA invalid standalone measurement population"
             )
-        paths.sort(key=lambda path: path["path"])
+        if not isinstance(paths, _IndexedTimingResults):
+            paths.sort(key=lambda path: path["path"])
         return paths, failures, checks
 
     try:
         paths, failures, measurement_count = ordered_paths()
     except InterleavedMeasurements:
+        if isinstance(metadata_paths, _IndexedPathMetadata):
+            raise ValidationError("global STA indexed measurements are not ordered original-path bundles") from None
         # Preserve compatibility for external callers that do not retain the
         # canonical path-bundle order. This is outside the production path.
         observed = {}
@@ -1895,13 +1987,12 @@ def build_opensta_timing(runtime, metadata, measurements):
                 path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
             paths.append(path)
         measurement_count = len(measurements)
-    for path_id, info in metadata_paths.items():
-        if is_optimized_away(info):
-            validate_optimization_record(info)
-            paths.append({"path": path_id, **info, "system_delay_bound_ns": None,
-                          "target_required_time_ns": None, "runtime_required_time_ns": None,
-                          "target_clock_slack_bound_ns": None, "runtime_clock_slack_bound_ns": None})
-    paths.sort(key=lambda path: path["path"])
+    if not isinstance(paths, _IndexedTimingResults):
+        for path_id, info in metadata_paths.items():
+            if is_optimized_away(info):
+                validate_optimization_record(info)
+                paths.append({"path": path_id, **info, **dict.fromkeys(_RESULT_SCALARS)})
+        paths.sort(key=lambda path: path["path"])
     def implemented_paths():
         return (path for path in paths if not is_optimized_away(path))
     source = metadata["source_binding"]

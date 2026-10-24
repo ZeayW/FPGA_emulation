@@ -12,6 +12,8 @@ Optional container launchers support native-tool ABI and Tcl script bindings,
 with runtime selection separate from algorithm settings. See the
 [build instructions](docs/USER_GUIDE.md#complete-build).
 OpenSTA container evidence identifies the native engine and launcher separately.
+Its results use a compact QoR selector and an indexed path owner; see
+[global timing](docs/global-opensta-qualification.md#indexed-result-ownership).
 The indexed Vivado adapter consumes current Phase 6 SQLite contracts with
 canonical net identities, fixed LVDS I/O, native sequential control pins, and
 the common physical-result contract. Real-device qualification is in progress. Its OOC implementation retains abstract external clock sources and
