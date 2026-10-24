@@ -1779,6 +1779,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             )
             native_captures = read_native_static_exact_capture_stream(captures_path)
             self.assertEqual(list(native_captures), list(reference_captures))
+            del native_captures  # Release the mapped fixture before retirement.
             capture_bytes = captures_path.read_bytes()
             for number, payload in enumerate((capture_bytes[:16], capture_bytes + b"extra",
                     capture_bytes[:24] + struct.pack("<Q", 1) + capture_bytes[32:])):
@@ -1829,6 +1830,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             repeated_native = read_native_static_exact_capture_stream(repeated_output)
             self.assertEqual(list(repeated_native), list(repeated_reference))
             self.assertLess(len(repeated_native), len(coordinates))
+            del repeated_native
             database.write_bytes(source_before)
             indexed_input.write_bytes(request_before)
             indexed_output.write_bytes(raw_topology)
