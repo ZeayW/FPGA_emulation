@@ -121,7 +121,7 @@ objects=()
 for source in "${core_sources[@]}"; do
   object="$object_dir/${source//\//_}.o"
   "$selected_cxx" -std=c++17 -O3 -pthread -DEMUFLOW_NATIVE_STAGE_LIBRARY=1 \
-    "${sqlite_flags[@]}" -I"$source_dir/src/native" \
+    ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
     -c "$source_dir/src/native/$source" -o "$object"
   objects+=("$object")
 done
@@ -141,7 +141,7 @@ do
   rm -f "$target"
   "$selected_cxx" -std=c++17 -O3 -pthread \
     -static-libstdc++ -static-libgcc \
-    "${sqlite_flags[@]}" -I"$source_dir/src/native" \
+    ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
     "$source_dir/src/native/$tool.cpp" \
     "$archive" \
     -lsqlite3 -o "$target"
@@ -155,7 +155,7 @@ for entry in emuflow_native.cpp xilinx_bookshelf_exporter.cpp; do
     rm -f "$target"
   fi
   "$selected_cxx" -std=c++17 -O3 -pthread -static-libstdc++ -static-libgcc \
-    "${sqlite_flags[@]}" -I"$source_dir/src/native" \
+    ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
     "$source_dir/src/native/$entry" "$archive" -lsqlite3 -o "$target"
 done
 rm -rf "$object_dir"
