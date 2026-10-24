@@ -88,13 +88,18 @@ resource utilization plus 2.5 percentage points of analytical headroom, bounded
 to `0.40..0.75`. The target is applied to the complete qualified site domain;
 the exporter does not pre-reserve a second fraction of sites by clock region or
 site type. This avoids multiplying two whitespace factors and lets the density
-optimizer decide its spatial distribution. The lower bound prevents a partition whose whole-device LUT
-utilization is about 25% from collapsing into two central SLRs merely to reduce
-HPWL: two SLRs would be about 50% full and therefore legal under the former
-fixed `0.75` target, despite creating a severe local-routing bottleneck.  The
-upper bound preserves the established high-utilization behavior.  Exact
-legalization, detailed placement, and RWRoute remain the acceptance tests, and
-their HPWL and congestion results decide whether the wider placement helped.
+optimizer decide its spatial distribution. The target limits the analytical
+density field; it does not guarantee that a sparse partition will occupy every
+SLR. The NVDLA fpga1 candidate at `0.40`, for example, legally selected the two
+central SLRs. Exact legalization, detailed placement, and RWRoute remain the
+acceptance tests, and their HPWL and congestion results decide whether the
+placement is usable.
+
+The current open backend has no placement-aware physical-synthesis pass between
+the preliminary placement and RWRoute. See
+[the Phase 7 physical-optimization gap and implementation plan](PHASE7_PHYSICAL_OPTIMIZATION.md)
+for the distinction between congestion-aware placement and structural physical
+optimization.
 
 Area adjustment changes the analytical cell areas and resets the nonlinear
 optimizer. Its new overflow values therefore are not comparable to the
