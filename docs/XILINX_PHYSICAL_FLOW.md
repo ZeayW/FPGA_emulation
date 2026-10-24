@@ -284,3 +284,15 @@ unsupported sequential transformations. Selection is capped at 4096 objects;
 the diagnostic reconstructs only one LUT pair at a time. Conditional candidate
 values remain hypotheses in this comparison and still need complete fanout
 coverage before they can become elimination proofs.
+
+`confirm_selected_constant_sources` checks complete direct fanout coverage for
+selected conditional states. Every use must reach a checked retained LUT and
+every native replica must be observed; a direct output port or unsupported
+fanout remains unresolved. The certificate binds the FPGA, mapped source,
+conditional source-model artifact, synthesized checkpoint, source inventory,
+and native observations. Its explicit policy chooses a legal joint
+initialization for unspecified states and confirms the selected substitutions
+at their retained frontiers. It is not equivalence for every initial state.
+A routed consumer must still check its synthesized checkpoint identity and
+import the certificate into the partition proof owner before global timing may
+use these selected states as elimination proofs.

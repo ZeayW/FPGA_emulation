@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import csv
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -16,6 +17,9 @@ import sqlite3
 from typing import Any
 
 from .errors import ValidationError
+
+CONSTANT_CONFIRMATION_SCHEMA = "emuflow.vivado-selected-constant-confirmations/v1"
+CONSTANT_INITIALIZATION_POLICY = "joint-inductive-source-model-with-explicit-vendor-selected-initialization"
 
 
 def _init_bits(value: str, width: int) -> int:
@@ -204,5 +208,113 @@ def compare_selected_constant_frontiers(mapped_path: Path, functions_path: Path,
                 "mapped_index_sha256":mapped_sha256, "frontiers":checked}
     except (ValueError, UnicodeError, OverflowError, sqlite3.DatabaseError) as error:
         raise ValidationError("constant-frontier observation or source index is malformed") from error
+    finally:
+        db.close()
+
+
+def confirm_selected_constant_sources(mapped_path: Path, functions_path: Path,
+                                      candidates_path: Path, observations_path: Path,
+                                      inventory_path: Path, *, mapped_sha256: str,
+                                      candidate_proofs_sha256: str, checkpoint_sha256: str,
+                                      fpga: str, selected_sources) -> dict[str, Any]:
+    """Check every observable use of selected conditional constant states.
+
+    The source model chooses a legal joint initialization for unspecified
+    states. This certificate confirms that replacing the selected absent state
+    outputs by those constants agrees with every retained direct LUT frontier.
+    It is a vendor refinement under that explicit initialization policy, not
+    equivalence for every possible initial state. Unsupported fanouts remain
+    unresolved. A routed consumer must additionally bind the synthesized DCP.
+    """
+    from .io import file_sha256
+    from .vivado_lineage import INVENTORY_HEADER
+    if (not isinstance(fpga, str) or not fpga or not isinstance(selected_sources, Sequence)
+            or isinstance(selected_sources, (str, bytes)) or not 1 <= len(selected_sources) <= 4096
+            or any(not isinstance(s, str) or not re.fullmatch(r"s(?:0|[1-9][0-9]*)", s) for s in selected_sources)
+            or len(set(selected_sources)) != len(selected_sources)):
+        raise ValidationError("constant confirmation needs bounded unique source identities and an FPGA")
+    for value in (mapped_sha256, candidate_proofs_sha256, checkpoint_sha256):
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValidationError("constant confirmation input digest is invalid")
+    if file_sha256(candidates_path) != candidate_proofs_sha256:
+        raise ValidationError("constant confirmation candidate proof artifact differs")
+    db = sqlite3.connect(f"file:{mapped_path.resolve()}?mode=ro&immutable=1", uri=True)
+    try:
+        db.execute("ATTACH DATABASE ? AS proofs", (f"file:{candidates_path.resolve()}?mode=ro&immutable=1",))
+        owner = {key: json.loads(value) for key, value in db.execute("SELECT key,value FROM proofs.metadata")}
+        if (owner.get("stage") != "synthesized" or owner.get("mapped_index_sha256") != mapped_sha256
+                or owner.get("fpga") not in (None, fpga)):
+            raise ValidationError("constant confirmation needs the matching synthesized source model")
+        source_rows = []
+        frontier_origins = set()
+        selected_q = set()
+        for identity in selected_sources:
+            origin = int(identity[1:])
+            candidate = db.execute("SELECT constant_value,initialization FROM proofs.constant_candidates WHERE origin=?", (origin,)).fetchone()
+            outputs = db.execute("SELECT port,port_bit,net_bit,value_kind FROM cell_pins WHERE cell_seq=? AND direction=1", (origin,)).fetchall()
+            if (candidate is None or candidate[0] not in (0, 1)
+                    or candidate[1] not in {"specified", "vendor-dont-care-selection"}
+                    or len(outputs) != 1 or outputs[0][:2] != ("Q", 0) or outputs[0][3] != 0):
+                raise ValidationError("selected source is not a supported conditional constant state")
+            q = outputs[0][2]
+            selected_q.add(q)
+            fanouts = []
+            for row in db.execute("SELECT s.cell_seq,c.type,s.port,s.port_bit FROM cell_pins s JOIN cells c ON c.seq=s.cell_seq WHERE s.net_bit=? AND s.value_kind=0 AND s.direction=0 ORDER BY s.cell_seq,s.port,s.port_bit", (q,)):
+                if row[1] not in {f"LUT{i}" for i in range(1, 7)} or not re.fullmatch(r"I[0-5]", row[2]) or row[3] != 0:
+                    raise ValidationError("conditional source has an unsupported observable fanout")
+                fanouts.append(row[0])
+                if len(fanouts) > 4096:
+                    raise ValidationError("conditional source fanout exceeds diagnostic scope")
+            if not fanouts:
+                raise ValidationError("conditional source lacks an observed functional frontier")
+            frontiers = sorted(set(fanouts))
+            frontier_origins.update(frontiers)
+            if len(frontier_origins) > 4096:
+                raise ValidationError("constant confirmation frontier exceeds diagnostic scope")
+            source_rows.append({"source":identity, "constant_value":int(candidate[0]),
+                                "source_initialization":candidate[1],
+                                "frontier_sources":[f"s{i}" for i in frontiers]})
+        ports = json.loads(db.execute("SELECT value FROM metadata WHERE key='ports_json'").fetchone()[0])
+        if any(bit in selected_q for port in ports.values() if port["direction"] == "output"
+               for bit in port["bits"] if isinstance(bit, int)):
+            raise ValidationError("conditional source directly reaches an unconfirmed output port")
+        expected_objects = []
+        selected_origins = {int(s[1:]) for s in selected_sources}
+        inventory_digest = hashlib.sha256()
+        with inventory_path.open("rb") as stream:
+            def lines():
+                for raw in stream:
+                    inventory_digest.update(raw)
+                    yield raw.decode("utf-8")
+            rows = csv.reader(lines(), delimiter="\t", quoting=csv.QUOTE_NONE)
+            if next(rows, None) != INVENTORY_HEADER:
+                raise ValidationError("constant confirmation inventory header differs")
+            for row in rows:
+                if len(row) != 4 or not re.fullmatch(r"s(?:0|[1-9][0-9]*)", row[2]):
+                    raise ValidationError("constant confirmation inventory row is invalid")
+                origin = int(row[2][1:])
+                if origin in selected_origins:
+                    raise ValidationError("conditional source is still implemented in the selected snapshot")
+                if origin in frontier_origins:
+                    expected_objects.append({"source_origin":row[2], "name":row[0]})
+                    if len(expected_objects) > 4096:
+                        raise ValidationError("constant confirmation replication exceeds diagnostic scope")
+        if inventory_digest.hexdigest() != owner.get("stage_inventory_sha256"):
+            raise ValidationError("constant confirmation inventory belongs to a different source model")
+        if {int(item["source_origin"][1:]) for item in expected_objects} != frontier_origins:
+            raise ValidationError("conditional source has an unobserved or optimized frontier")
+        comparison = compare_selected_constant_frontiers(mapped_path, functions_path, candidates_path, observations_path,
+            mapped_sha256=mapped_sha256, expected_objects=expected_objects)
+        return {"schema":CONSTANT_CONFIRMATION_SCHEMA, "status":"pass", "fpga":fpga,
+                "mapped_index_sha256":mapped_sha256, "source_stage":"synthesized",
+                "initialization_policy":CONSTANT_INITIALIZATION_POLICY,
+                "synthesized_checkpoint_sha256":checkpoint_sha256,
+                "source_candidate_proofs_sha256":candidate_proofs_sha256,
+                "source_inventory_sha256":inventory_digest.hexdigest(),
+                "observations_sha256":file_sha256(observations_path),
+                "sources":sorted(source_rows, key=lambda row:row["source"]),
+                "frontiers":comparison["frontiers"]}
+    except (ValueError, UnicodeError, OverflowError, sqlite3.DatabaseError) as error:
+        raise ValidationError("constant confirmation source evidence is malformed") from error
     finally:
         db.close()

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from emuflow.errors import ValidationError
@@ -65,3 +67,77 @@ def test_selected_native_observations_use_indexed_source_driver_identity(tmp_pat
     with pytest.raises(ValidationError,match="unsupported transformation"): compare()
     row[10] = "";row[4] = "I1";write()
     with pytest.raises(ValidationError,match="input coverage"): compare()
+
+
+def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False):
+    import csv
+    import json
+    from emuflow.yosys import import_yosys_json
+    from emuflow.vivado_netlist import emit_vivado_mapped_verilog
+    from emuflow.vivado_lineage import import_cell_lineage, INVENTORY_HEADER
+    from emuflow.vivado_optimization import build_optimization_proofs
+    import sqlite3
+    cells = {
+        "kept":{"type":"FDRE","parameters":{"INIT":"0"},"attributes":{},
+                "port_directions":{"C":"input","CE":"input","D":"input","R":"input","Q":"output"},
+                "connections":{"C":[2],"CE":["1"],"D":[3],"R":["0"],"Q":[4]}},
+        "conditional":{"type":"FDRE","parameters":{"INIT":"x"},"attributes":{},
+                "port_directions":{"C":"input","CE":"input","D":"input","R":"input","Q":"output"},
+                "connections":{"C":[2],"CE":[3],"D":["0"],"R":["0"],"Q":[5]}},
+        "front":{"type":"LUT2","parameters":{"INIT":"0110"},"attributes":{},
+                "port_directions":{"I0":"input","I1":"input","O":"output"},
+                "connections":{"I0":[5],"I1":[4],"O":[6]}},
+    }
+    source=tmp_path/"source.json"
+    source.write_text(json.dumps({"modules":{"dut":{"attributes":{"top":"1"},"cells":cells,
+        "ports":{"clk":{"direction":"input","bits":[2]},"d":{"direction":"input","bits":[3]},
+                 "q":{"direction":"output","bits":[6,5] if expose_state else [6]}},"netnames":{}}}}))
+    ir=tmp_path/"ir.emuir.sqlite";import_yosys_json(source).save(ir)
+    report=emit_vivado_mapped_verilog(ir,tmp_path/"dut.v")
+    mapped=Path(report["mapped_index"]["path"]);functions=Path(report["source_functions"]["path"])
+    with sqlite3.connect(mapped) as db:origins=dict(db.execute("SELECT id,seq FROM cells"))
+    inventory=tmp_path/"inventory.tsv"
+    with inventory.open("w") as stream:
+        writer=csv.writer(stream,delimiter="\t",lineterminator="\n");writer.writerow(INVENTORY_HEADER)
+        writer.writerow(["p/kept","FDRE",f"s{origins['kept']}",""])
+        writer.writerow(["p/front","LUT2",f"s{origins['front']}",""])
+        if duplicate_frontier:writer.writerow(["p/front_clone","LUT2",f"s{origins['front']}",""])
+    lineage=tmp_path/"lineage.sqlite"
+    digest=report["mapped_index"]["sha256"]
+    import_cell_lineage(mapped,functions,{"synthesized":inventory},lineage,mapped_sha256=digest,retain_stage="synthesized")
+    proof=tmp_path/"proof.sqlite";build_optimization_proofs(mapped,lineage,proof,mapped_sha256=digest,stage="synthesized",fpga="fpga0")
+    observed=tmp_path/"native.tsv"
+    with observed.open("w") as stream:
+        writer=csv.writer(stream,delimiter="\t",lineterminator="\n")
+        writer.writerow(["source_origin","native_cell_hex","ref","init","pin","driver_kind","driver_source","driver_ref","driver_pin","driver_name_hex","driver_transformations_hex","transformations_hex"])
+        for pin,kind,origin,ref,dname in [("I0","zero","","GND","GND/G"),("I1","source",f"s{origins['kept']}","FDRE","p/kept/Q")]:
+            writer.writerow([f"s{origins['front']}","p/front".encode().hex(),"LUT2","4'h6",pin,kind,origin,ref,"Q",dname.encode().hex(),"",""])
+    return mapped,functions,proof,inventory,observed,digest,origins
+
+
+def test_constant_confirmation_checks_complete_source_fanout_and_native_snapshot(tmp_path):
+    from emuflow.vivado_constant_frontier import confirm_selected_constant_sources
+    from emuflow.io import file_sha256
+    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path)
+    def confirm(selected=None):
+        return confirm_selected_constant_sources(mapped,functions,proof,observed,inventory,mapped_sha256=digest,
+            candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,fpga="fpga0",
+            selected_sources=[f"s{origins['conditional']}"] if selected is None else selected)
+    cert=confirm()
+    assert cert["sources"] == [{"source":f"s{origins['conditional']}","constant_value":0,
+                               "source_initialization":"vendor-dont-care-selection","frontier_sources":[f"s{origins['front']}"]}]
+    assert cert["frontiers"][0]["assignments"] == 2
+    for bad in ([{}], ["s00"], [f"s{origins['kept']}"]):
+        with pytest.raises(ValidationError):confirm(bad)
+    observed.write_text(observed.read_text().replace("4'h6","4'h9"))
+    with pytest.raises(ValidationError,match="does not confirm"):confirm()
+
+
+@pytest.mark.parametrize("variant,match", [("output","output port"),("replica","incomplete")])
+def test_unobserved_output_or_native_clone_prevents_constant_confirmation(tmp_path,variant,match):
+    from emuflow.vivado_constant_frontier import confirm_selected_constant_sources
+    from emuflow.io import file_sha256
+    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,expose_state=variant=="output",duplicate_frontier=variant=="replica")
+    with pytest.raises(ValidationError,match=match):
+        confirm_selected_constant_sources(mapped,functions,proof,observed,inventory,mapped_sha256=digest,
+            candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
