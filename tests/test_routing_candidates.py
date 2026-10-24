@@ -15,10 +15,9 @@ from emuflow.routing_batches import (
     build_compact_route_refinement_batches,
     build_route_refinement_batches,
 )
-from emuflow.routing_oracle import exact_route_tree_selection
+from tests.routing_reference import exact_route_tree_selection
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
-    ROUTE_TDM_PROVIDER,
     compress_sta_paths,
     normalize_sta_paths,
     route_system_native,
@@ -110,7 +109,7 @@ class RouteCandidatePoolTest(unittest.TestCase):
                         constraints,
                         timing,
                         executable=str(tlr_router()),
-                        provider=ROUTE_TDM_PROVIDER,
+                        provider=GLOBAL_CANDIDATE_PROVIDER,
                         candidate_pool_path=path,
                     )
                 )
@@ -129,6 +128,9 @@ class RouteCandidatePoolTest(unittest.TestCase):
                     "shortest-path-tree",
                     "delay-demand-balanced",
                     "nearest-terminal-steiner",
+                    "directed-metric-closure",
+                    "shallow-light-tree",
+                    "adaptive-hop-tree",
                     "refined-final",
                 },
             )
@@ -155,7 +157,7 @@ class RouteCandidatePoolTest(unittest.TestCase):
                 constraints,
                 timing,
                 executable=str(tlr_router()),
-                provider=ROUTE_TDM_PROVIDER,
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 candidate_pool_path=path,
             )
             import json

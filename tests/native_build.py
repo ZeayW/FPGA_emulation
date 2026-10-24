@@ -35,33 +35,9 @@ def chimew_bank_channel_assigner() -> Path:
     return _standalone_fixture_program("chimew_bank_channel_assigner")
 
 
-@lru_cache(maxsize=1)
 def tlr_router() -> Path:
-    compiler = (
-        shutil.which("c++")
-        or shutil.which("g++")
-        or shutil.which("clang++")
-    )
-    if compiler is None:
-        raise RuntimeError("a C++17 compiler is required for routing tests")
-    executable = Path(_BUILD_ROOT.name) / "emuflow_tlr_router"
-    subprocess.run(
-        [
-            compiler,
-            "-std=c++17",
-            "-O2",
-            "-pthread",
-            str(ROOT / "src" / "native" / "tlr_router.cpp"),
-            str(ROOT / "src/native/emuflow_core/sqlite.cpp"),
-            "-I",
-            str(ROOT / "src/native"),
-            "-lsqlite3",
-            "-o",
-            str(executable),
-        ],
-        check=True,
-    )
-    return executable
+    """Routing fixtures use the unified stage entry and shared core."""
+    return emuflow_native()
 
 
 @lru_cache(maxsize=1)

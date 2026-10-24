@@ -240,7 +240,14 @@ platform.
 CLI, Python phase APIs and experiment configurations default to timing-driven
 PATRON v14 with a TritonPart initializer, `static-exact-combinational` boundary
 semantics and baseline Phase 6. These defaults also apply to the native compile
-bridge. Select alternatives explicitly.
+bridge. Phase 4 exposes only `timing-aware-global-candidate-v1` at compile,
+phase and experiment entry points. Its shortest-path and balanced trees remain
+internal candidates. `--no-timing-driven` keeps this engine, disables timing
+optimization, and preserves the complete timing population for analysis. Direct
+Python Phase 4 calls may explicitly use `timing_driven=False` for a structural
+qualification without STA input; those results do not claim timing coverage.
+The old `compare-routing-tdm` and `compare-routing-tdm-scale` commands and
+standalone router are removed. Select other supported phase options explicitly.
 Use the bundled OpenROAD build: Phase 3 requires its `-resource_bounds_file`
 interface to enforce independent resource limits inside TritonPart. Illegal
 provider output fails validation instead of being repaired after partitioning.

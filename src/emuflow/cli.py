@@ -278,10 +278,7 @@ from .pin_plan_storage import read_pin_plan
 from .position_hints_storage import read_position_hints
 from .release import run_phase7d
 from .route_artifact import validate_vpr_route_artifacts
-from .routing_tdm_comparison import (
-    build_system_route_tdm_ab_comparison,
-    build_system_route_tdm_scale_comparison,
-)
+
 from .runtime_sync import (
     run_runtime_sync_materialization,
     validate_runtime_sync_provider,
@@ -309,13 +306,7 @@ from .serial_phy_recipe import materialize_serial_phy_recipe
 from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
 from .tdm_schedule_storage import read_tdm_schedule
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
-from .timing_routing import (
-    GLOBAL_CANDIDATE_PROVIDER,
-    NATIVE_ROUTER_PROVIDER,
-    NATIVE_TIMING_EVALUATED_PROVIDER,
-    ROUTE_TDM_PROVIDER,
-    TLR_PROVIDER,
-)
+from .timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from .yosys import import_yosys_json
 from .verilog import emit_mapped_verilog
 from .vtr_architecture import (
@@ -846,7 +837,7 @@ def _build_parser() -> argparse.ArgumentParser:
     route_run.add_argument("--constraints", type=Path)
     route_run.add_argument("--frame-slots", type=int)
     route_run.add_argument("--max-iterations", type=int)
-    route_run.add_argument("--provider")
+    route_run.add_argument("--provider", choices=(GLOBAL_CANDIDATE_PROVIDER,))
     route_run.add_argument("--candidate-workers", type=int, default=1)
     route_run.add_argument("--router")
     route_run.add_argument("--managed-storage", action="store_true")
@@ -860,7 +851,7 @@ def _build_parser() -> argparse.ArgumentParser:
     route_validate.add_argument("--cut-timing", type=Path, required=True)
     route_validate.add_argument("--platform", type=Path, required=True)
     route_validate.add_argument("--constraints", type=Path)
-    route_validate.add_argument("--provider")
+    route_validate.add_argument("--provider", choices=(GLOBAL_CANDIDATE_PROVIDER,))
     route_validate.add_argument("--candidate-workers", type=int)
     route_validate.add_argument("--managed-dag-node", action="store_true")
 
@@ -1815,33 +1806,6 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_validate.add_argument(
         "--require-physical", action="store_true"
     )
-    multi_fpga_compare = multi_fpga_subparsers.add_parser(
-        "compare-routing-tdm",
-        help=(
-            "revalidate and compare frozen baseline/upgrade complete "
-            "Phase-7 routing/TDM flows"
-        ),
-    )
-    multi_fpga_compare.add_argument("--baseline", type=Path, required=True)
-    multi_fpga_compare.add_argument("--upgrade", type=Path, required=True)
-    multi_fpga_compare.add_argument("--output", type=Path, required=True)
-    multi_fpga_scale_compare = multi_fpga_subparsers.add_parser(
-        "compare-routing-tdm-scale",
-        help="independently replay and compare frozen large Phase 4/5 arms",
-    )
-    for name in (
-        "assignment", "platform", "route-constraints", "timing-paths", "baseline-route",
-        "baseline-tdm", "upgrade-route", "upgrade-tdm", "output",
-    ):
-        multi_fpga_scale_compare.add_argument(
-            f"--{name}", type=Path, required=True
-        )
-    multi_fpga_scale_compare.add_argument(
-        "--baseline-runtime-seconds", type=float, required=True
-    )
-    multi_fpga_scale_compare.add_argument(
-        "--upgrade-runtime-seconds", type=float, required=True
-    )
     multi_fpga_finalize = multi_fpga_subparsers.add_parser(
         "finalize-physical",
         help=(
@@ -2102,10 +2066,6 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--route-provider",
         choices=(
-            NATIVE_ROUTER_PROVIDER,
-            NATIVE_TIMING_EVALUATED_PROVIDER,
-            TLR_PROVIDER,
-            ROUTE_TDM_PROVIDER,
             GLOBAL_CANDIDATE_PROVIDER,
         ),
         help=(
@@ -3341,16 +3301,11 @@ def _build_parser() -> argparse.ArgumentParser:
     phase4.add_argument(
         "--provider",
         choices=[
-            NATIVE_ROUTER_PROVIDER,
-            NATIVE_TIMING_EVALUATED_PROVIDER,
-            TLR_PROVIDER,
-            ROUTE_TDM_PROVIDER,
             GLOBAL_CANDIDATE_PROVIDER,
         ],
         default=None,
         help=(
-            f"defaults to {GLOBAL_CANDIDATE_PROVIDER} when --timing-paths is "
-            f"supplied, otherwise {NATIVE_ROUTER_PROVIDER}"
+            f"system routing provider (default: {GLOBAL_CANDIDATE_PROVIDER})"
         ),
     )
     phase4.add_argument(
@@ -3361,8 +3316,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase4.add_argument(
         "--router",
         help=(
-            "explicit comparison override; defaults to the in-tree "
-            "emuflow_tlr_router build"
+            "explicit emuflow-native executable; defaults to the selected native installation"
         ),
     )
     phase4.add_argument(
@@ -3658,13 +3612,10 @@ def _build_parser() -> argparse.ArgumentParser:
     cross_stage_optimize.add_argument(
         "--route-provider",
         choices=(
-            TLR_PROVIDER,
-            ROUTE_TDM_PROVIDER,
             GLOBAL_CANDIDATE_PROVIDER,
         ),
         help=(
-            f"defaults to {GLOBAL_CANDIDATE_PROVIDER}; the historical "
-            f"{ROUTE_TDM_PROVIDER} remains available for rollback"
+            f"system routing provider (default: {GLOBAL_CANDIDATE_PROVIDER})"
         ),
     )
     cross_stage_optimize.add_argument(
@@ -5496,22 +5447,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 )
             )
             return 0
-        if args.multi_fpga_command == "compare-routing-tdm-scale":
-            report = build_system_route_tdm_scale_comparison(
-                args.assignment,
-                args.platform,
-                args.route_constraints,
-                args.timing_paths,
-                args.baseline_route,
-                args.baseline_tdm,
-                args.upgrade_route,
-                args.upgrade_tdm,
-                args.output,
-                baseline_runtime_seconds=args.baseline_runtime_seconds,
-                upgrade_runtime_seconds=args.upgrade_runtime_seconds,
-            )
-            _print_json(report["validation"])
-            return 0
+
         if args.multi_fpga_command == "finalize-physical":
             report = finalize_multi_fpga_physical_checkpoint(
                 args.flow,
@@ -5520,14 +5456,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             _print_json(report["summary"])
             return 0
-        if args.multi_fpga_command == "compare-routing-tdm":
-            report = build_system_route_tdm_ab_comparison(
-                args.baseline,
-                args.upgrade,
-                args.output,
-            )
-            _print_json(report["validation"])
-            return 0
+
         if args.multi_fpga_command == "board-validate":
             _print_json(validate_vivado_board_flow_bundle(args.board))
             return 0

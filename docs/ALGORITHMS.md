@@ -128,7 +128,8 @@ established after routing and TDM assignment, not by a Phase 3 timing proxy.
 
 ## Phase 4: system-level multicast routing
 
-EmuFlow's native C++ router connects each cross-FPGA net's source to its sinks
+The sole Phase 4 production provider, `timing-aware-global-candidate-v1`,
+connects each cross-FPGA net's source to its sinks
 on the BoardDB graph. It supports shortest-path and delay-demand-balanced tree
 construction, additional Steiner-style candidates, and iterative rerouting.
 Candidate costs account for delay, congestion, shared link capacity, and TDM
@@ -141,6 +142,21 @@ and TDM Assignment** (ASP-DAC 2026); links are in the
 [reference list](#research-references). The in-tree implementation
 extends these ideas with EmuFlow's route contracts and candidate selection.
 System routing selects FPGA/die paths; it does not route wires inside an FPGA.
+
+Shortest-path, delay-demand-balanced, Steiner, metric-closure, shallow-light
+and adaptive-hop trees are candidate generators inside this engine. They are
+not separate supported routing providers. The restricted master and conflict
+batch refinement select and improve complete legal multicast routes. Independent
+capacity, direction, hop-bound, timing and candidate checks remain in force.
+
+The timing-oblivious policy uses the same candidate engine without STA costs,
+then independently attaches the original normalized timing records when given.
+It does not select a second load-balanced or post-evaluation provider. A
+zero-demand assignment produces an empty route artifact under the same provider.
+The small exhaustive route oracle lives only in tests.
+Legacy routing input versions, standalone routing executables and the old
+routing/TDM baseline-versus-upgrade comparison commands are retired.
+
 
 ## Phase 5: TDM ratio, lane, and slot assignment
 

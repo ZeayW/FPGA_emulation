@@ -40,7 +40,6 @@ from .routing import load_route_constraints
 from .tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
-    NATIVE_TIMING_EVALUATED_PROVIDER,
 )
 CANONICAL_EXPERIMENT_CONFIG_SCHEMA = "emuflow.canonical-experiment-config/v1"
 

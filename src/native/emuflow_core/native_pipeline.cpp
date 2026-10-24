@@ -67,7 +67,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       if (!request.typed_input)
         throw core::StageError(core::ErrorCode::kInvalidRequest, "PATRON requires typed input");
       return {"patron-input-v1"};
-    case Stage::kRoute: return {"tlr-input-text"};
+    case Stage::kRoute: return {"global-route-input-v1"};
     case Stage::kBuildSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1"};
     case Stage::kAssignBanks: return {request.typed_input ? "chimew-bank-input-v1" : "chimew-bank-legacy-text"};
     case Stage::kGroupSignals: return {request.typed_input ? "chimew-group-input-v1" : "chimew-group-legacy-text"};
@@ -190,7 +190,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kHashSemantics: HashStaticExactSemantics(path(0), path(1), path(2), output); break;
       case Stage::kWriteExactSections: WriteStaticExactSections(path(0), path(1), path(2), output); break;
       case Stage::kRefinePatron: RefinePatron(path(0), output, request.summary_output, request.typed_output); break;
-      case Stage::kRoute: RouteTlr(path(0), output, request.typed_output); break;
+      case Stage::kRoute: RouteTlr(path(0), output); break;
       case Stage::kBuildSchedule: core::BuildExactScheduleStore(path(0),path(1),path(2),output); break;
       case Stage::kAssignBanks: AssignChimewBankChannels(path(0), output, request.typed_input); break;
       case Stage::kGroupSignals: GroupChimewSignals(path(0), output, request.typed_input, request.expected_sha256); break;
@@ -222,7 +222,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kHashSemantics: schema = "exact-sha256-text-v1"; break;
       case Stage::kWriteExactSections: schema = "exact-section-summary-v2"; break;
       case Stage::kRefinePatron: schema = request.typed_output ? "patron-output-v1" : "patron-output-text"; break;
-      case Stage::kRoute: schema = request.typed_output ? "tlr-output-v1" : "tlr-output-text"; break;
+      case Stage::kRoute: schema = "tlr-output-v1"; break;
       case Stage::kBuildSchedule: schema = "tdm-schedule-store-v4"; break;
       case Stage::kAssignBanks: schema = "chimew-bank-output-text"; break;
       case Stage::kGroupSignals: schema = "chimew-group-output-text"; break;

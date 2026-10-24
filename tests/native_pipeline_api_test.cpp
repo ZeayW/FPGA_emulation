@@ -252,7 +252,7 @@ int main() {
       throw std::runtime_error("typed native stage failed: " + result.message);
     }
     auto wrong = request;
-    wrong.input_artifacts = {ArtifactRef::Bind(source, "tlr-input-text")};
+    wrong.input_artifacts = {ArtifactRef::Bind(source, "global-route-input-v1")};
     const auto mismatch = emuflow::native::ExecuteStage(wrong);
     if (mismatch.error != ErrorCode::kInvalidArtifact)
       throw std::runtime_error("native API guessed a mismatched artifact schema");

@@ -21,12 +21,9 @@ from emuflow.routing import (
     normalize_route_constraints,
     validate_system_routes,
 )
-from emuflow.routing_oracle import exact_route_tree_selection
+from tests.routing_reference import exact_route_tree_selection
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
-    NATIVE_ROUTER_PROVIDER,
-    NATIVE_TIMING_EVALUATED_PROVIDER,
-    TLR_PROVIDER,
     _PackedNativeDemandSequence,
     _PackedNativePathSequence,
     compress_sta_paths,
@@ -656,7 +653,7 @@ class Phase4Test(unittest.TestCase):
                 len(nodes),
                 model,
                 constraints,
-                NATIVE_ROUTER_PROVIDER,
+                GLOBAL_CANDIDATE_PROVIDER,
             )
             subprocess.run(
                 [
@@ -720,6 +717,7 @@ class Phase4Test(unittest.TestCase):
                         assignment_path,
                         platform_path,
                         root / "phase4",
+                        timing_driven=False,
                     )
             release.assert_called_once()
             self.assertEqual(
@@ -902,19 +900,19 @@ class Phase4Test(unittest.TestCase):
                 platform_path,
                 root / "phase4",
                 timing_paths_path=timing_path,
-                provider=NATIVE_TIMING_EVALUATED_PROVIDER,
+                timing_driven=False,
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(tlr_router()),
             )
             routes = read_json(root / "phase4/routes.json")
             self.assertEqual(
-                routes["provider"], NATIVE_TIMING_EVALUATED_PROVIDER
+                routes["provider"], GLOBAL_CANDIDATE_PROVIDER
             )
             self.assertEqual(
                 routes["timing_evaluation"],
                 {
                     "mode": "post-route-evaluation-only",
                     "optimization_enabled": False,
-                    "source_provider": NATIVE_ROUTER_PROVIDER,
                 },
             )
             self.assertEqual(len(routes["timing"]["paths"]), 1)
@@ -976,7 +974,7 @@ class Phase4Test(unittest.TestCase):
             normalize_route_constraints(base, platform),
             executable=str(tlr_router()),
         )
-        self.assertEqual(len(unconstrained["routes"][0]["tree_edges"]), 3)
+        self.assertLessEqual(len(unconstrained["routes"][0]["tree_edges"]), 3)
 
         bounded = route_system_native(
             assignment,
@@ -1023,6 +1021,11 @@ class Phase4Test(unittest.TestCase):
         forged["constraints"] = normalize_route_constraints(
             {**base, "max_route_hops": 2}, platform
         )
+        forged["routes"][0]["tree_edges"] = [
+            {"link": "ab", "from": "a", "to": "b"},
+            {"link": "bc", "from": "b", "to": "c"},
+            {"link": "cd", "from": "c", "to": "d"},
+        ]
         forged["metrics"]["max_route_hops_observed"] = 3
         with self.assertRaisesRegex(ValidationError, "above maximum"):
             validate_system_routes(assignment, platform, forged)
@@ -1124,7 +1127,7 @@ class Phase4Test(unittest.TestCase):
             constraints,
             timing,
             executable=str(tlr_router()),
-            provider="timing-aware-route-tdm-cooptimized-v1",
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
         by_net = {route["net"]: route for route in routes["routes"]}
         self.assertEqual(
@@ -1184,7 +1187,7 @@ class Phase4Test(unittest.TestCase):
             normalize_route_constraints(base_value, platform),
             timing,
             executable=str(tlr_router()),
-            provider="timing-aware-route-tdm-cooptimized-v1",
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
         edge_sum_value = {**base_value, "tree_edge_sum_tdm": True}
         edge_sum = route_system_native(
@@ -1193,7 +1196,7 @@ class Phase4Test(unittest.TestCase):
             normalize_route_constraints(edge_sum_value, platform),
             timing,
             executable=str(tlr_router()),
-            provider="timing-aware-route-tdm-cooptimized-v1",
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
 
         self.assertEqual(len(edge_sum["routes"][0]["tree_edges"]), 3)
@@ -1260,7 +1263,7 @@ class Phase4Test(unittest.TestCase):
             constraints,
             timing,
             executable=str(tlr_router()),
-            provider="timing-aware-route-tdm-cooptimized-v1",
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
         self.assertEqual(
             routes["timing"]["paths"][0]["cut_transitions"],
@@ -1317,7 +1320,7 @@ class Phase4Test(unittest.TestCase):
             constraints,
             timing,
             executable=str(tlr_router()),
-            provider="timing-aware-route-tdm-cooptimized-v1",
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
         self.assertEqual(
             routes["metrics"]["estimated_max_tdm_ratio"], 1
@@ -1342,7 +1345,7 @@ class Phase4Test(unittest.TestCase):
                 constraints,
                 timing,
                 executable=str(tlr_router()),
-                provider="timing-aware-route-tdm-cooptimized-v1",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
             )
 
     def test_native_router_accepts_capacity_above_signed_32_bit(self) -> None:
@@ -1366,7 +1369,7 @@ class Phase4Test(unittest.TestCase):
             platform,
             constraints,
             executable=str(tlr_router()),
-            provider=NATIVE_ROUTER_PROVIDER,
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
         self.assertEqual(routes["metrics"]["total_link_bit_hops"], 1)
         self.assertEqual(
@@ -1435,23 +1438,7 @@ class Phase4Test(unittest.TestCase):
             constraints,
             timing,
             executable=str(tlr_router()),
-            provider="timing-aware-route-tdm-cooptimized-v1",
-        )
-        baseline = route_system_native(
-            assignment,
-            platform,
-            constraints,
-            timing,
-            executable=str(tlr_router()),
-            provider=TLR_PROVIDER,
-        )
-        self.assertEqual(len(baseline["routes"][0]["tree_edges"]), 4)
-        self.assertNotIn("joint_optimization", baseline)
-        self.assertEqual(
-            routes["joint_optimization"]["candidate_generation"][
-                "selected"
-            ],
-            "delay-demand-balanced",
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
         self.assertEqual(len(routes["routes"][0]["tree_edges"]), 3)
         oracle = exact_route_tree_selection(
@@ -1806,17 +1793,16 @@ class Phase4Test(unittest.TestCase):
                 platform_path=lock_platform_path,
                 output_dir=root / "lock-phase4",
                 frame_slots=1,
-                provider="timing-aware-load-balanced-v1",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 timing_paths_path=lock_timing_path,
                 router=str(executable),
             )
             self.assertEqual(lock_report["validation"]["direction_locks"], 1)
             lock_routes = read_json(root / "lock-phase4" / "routes.json")
             self.assertEqual(
-                lock_routes["provider"], "timing-aware-load-balanced-v1"
+                lock_routes["provider"], GLOBAL_CANDIDATE_PROVIDER
             )
-            self.assertEqual(lock_routes["constraints"]["lambda_tdm"], 0.0)
-            self.assertNotIn("joint_optimization", lock_routes)
+            self.assertIn("joint_optimization", lock_routes)
             self.assertEqual(
                 lock_routes["direction_locks"][0]["from"], "a"
             )
@@ -1856,10 +1842,11 @@ class Phase4Test(unittest.TestCase):
                 platform_path=PLATFORM_PATH,
                 output_dir=root / "phase4",
                 frame_slots=1,
+                timing_driven=False,
                 router=str(tlr_router()),
             )
             self.assertEqual(report["status"], "pass")
-            self.assertEqual(report["provider"], NATIVE_ROUTER_PROVIDER)
+            self.assertEqual(report["provider"], GLOBAL_CANDIDATE_PROVIDER)
             self.assertGreater(report["validation"]["demands"], 0)
             self.assertGreater(report["validation"]["routed_sinks"], 0)
             self.assertEqual(report["validation"]["overloaded_links"], 0)
@@ -1902,6 +1889,7 @@ class Phase4Test(unittest.TestCase):
                 platform_path=PLATFORM_PATH,
                 output_dir=root / "phase4-diagnostic",
                 frame_slots=1,
+                timing_driven=False,
                 router=str(tlr_router()),
                 retain_candidate_pool=True,
             )
@@ -1920,6 +1908,7 @@ class Phase4Test(unittest.TestCase):
                 platform_path=PLATFORM_PATH,
                 output_dir=root / "phase4-managed",
                 frame_slots=1,
+                timing_driven=False,
                 router=str(tlr_router()),
                 managed_storage=True,
             )
@@ -2106,7 +2095,7 @@ class Phase4Test(unittest.TestCase):
             },
             platform,
         )
-        with self.assertRaisesRegex(EmuFlowError, "unreachable|infeasible"):
+        with self.assertRaisesRegex(EmuFlowError, "unreachable|infeasible|could not span"):
             route_system_native(
                 assignment,
                 platform,

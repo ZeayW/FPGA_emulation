@@ -92,6 +92,9 @@ See the [W0 contract and acceptance gates](docs/FLOW_PLAN.md#shared-native-core-
 Production native stages require `emuflow-native`; an incomplete installation
 does not select an older standalone tool. `EMUFLOW_NATIVE_ROOT` selects one
 authoritative installation. Bookshelf export uses only the unified command.
+Phase 4 supports only `timing-aware-global-candidate-v1` through the unified
+entry. Retired routing providers, their standalone executable and dedicated
+comparison commands are removed; candidate-generation kernels remain shared.
 The typed mapped/physical handoff also feeds a shared-core RWRoute exporter;
 Python sends file references and board I/O configuration. Native export uses a
 compact cell catalog, sparse clock-net reductions and one live net of endpoints.
@@ -131,7 +134,7 @@ execution and handoff validation; published artifacts remain in the flow directo
 | 1 | Synthesize and map RTL; preserve connectivity, primitive parameters, and resource demand in EmuIR | [Yosys/ABC](https://github.com/YosysHQ/yosys); EmuFlow mapping profiles for VTR hard blocks, generic soft logic, and Xilinx UltraScale+ |
 | 2 | Extract timing paths and derive optimization weights | [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA); optional Vivado timing provider; EmuFlow TimingPathDB export |
 | 3 | Cluster and partition against resource and topology constraints | [TritonPart](https://github.com/ABKGroup/TritonPart) initialization → [PATRON](docs/ALGORITHMS.md#phase-3-initial-partitioning-and-post-processing) post-processing |
-| 4 | Route cross-FPGA multicast communication | EmuFlow native C++ router, informed by the [DAC 2025 synergistic router](https://yibolin.com/publications/papers/ROUTE_DAC2025_Wang.pdf) and [ASP-DAC 2026 timing-aware routing](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf) |
+| 4 | Route cross-FPGA multicast communication | EmuFlow global-candidate C++ router, informed by the [DAC 2025 synergistic router](https://yibolin.com/publications/papers/ROUTE_DAC2025_Wang.pdf) and [ASP-DAC 2026 timing-aware routing](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf) |
 | 5 | Assign TDM ratios, lanes, and slots to routed communication | Lagrangian/KKT optimization from [Pui and Young, TODAES 2020](https://doi.org/10.1145/3377551) and the [ASP-DAC 2026 timing-DAG method](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf), followed by EmuFlow legalization and event binding |
 | 6 | Plan pins/lanes, split the netlist, and generate transport RTL | EmuFlow baseline pin/transport flow; optional [Chimew, FPGA 2026](https://doi.org/10.1145/3748173.3779199) provider; static transport, shadow registers, and frame-barrier synchronization |
 | 7 | Implement each FPGA and analyze whole-design timing | [RapidWright](https://github.com/Xilinx/RapidWright), [OpenPARF](https://github.com/PKU-IDEA/OpenPARF), and [RWRoute](https://www.rapidwright.io/docs/RWRoute_timing_driven_routing.html); alternative [VTR/VPR](https://github.com/verilog-to-routing/vtr-verilog-to-routing) or Vivado backends; [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) global timing |

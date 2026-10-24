@@ -31,8 +31,7 @@ void WriteStaticExactSections(const std::string& nodes_path,
                               const std::string& request_path,
                               const std::string& output_path);
 void RouteTlr(const std::string& input_path,
-              const std::string& output_path,
-              bool typed_output = false);
+              const std::string& output_path);
 void AssignChimewBankChannels(const std::string& input_path,
                               const std::string& output_path,
                               bool typed_input);

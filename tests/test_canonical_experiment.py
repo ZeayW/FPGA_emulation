@@ -17,7 +17,6 @@ from emuflow.io import write_json
 from emuflow.tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
-    NATIVE_TIMING_EVALUATED_PROVIDER,
 )
 
 

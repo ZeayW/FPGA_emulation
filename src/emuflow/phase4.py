@@ -10,14 +10,9 @@ from .routing import (
     assignment_has_static_exact_contract,
     demands_from_assignment,
     load_route_constraints,
-    validate_system_routes,
 )
 from .timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
-    NATIVE_ROUTER_PROVIDER,
-    NATIVE_TIMING_EVALUATED_PROVIDER,
-    ROUTE_TDM_PROVIDER,
-    TLR_PROVIDER,
     annotate_system_route_timing,
     load_sta_paths,
     route_system_native,
@@ -59,7 +54,14 @@ def run_phase4(
     candidate_workers: int = 1,
     managed_storage: bool = False,
     retain_candidate_pool: bool = False,
+    timing_driven: bool = True,
 ) -> Dict[str, Any]:
+    if provider is None:
+        provider = GLOBAL_CANDIDATE_PROVIDER
+    if provider != GLOBAL_CANDIDATE_PROVIDER:
+        raise ValueError(f"unsupported Phase 4 routing provider {provider!r}")
+    if not isinstance(timing_driven, bool):
+        raise ValueError("timing_driven must be a boolean")
     assignment = read_phase3_assignment_view(
         assignment_path, include_semantic_contract=False
     )
@@ -76,12 +78,6 @@ def run_phase4(
         frame_slots=frame_slots,
         max_iterations=max_iterations,
     )
-    if provider is None:
-        provider = (
-            GLOBAL_CANDIDATE_PROVIDER
-            if timing_paths_path is not None
-            else NATIVE_ROUTER_PROVIDER
-        )
     exact_mode = assignment_has_static_exact_contract(assignment)
     timing_paths = None
     feedback_source_paths = (
@@ -160,95 +156,22 @@ def run_phase4(
         )
     ):
         raise ValueError("physical feedback requires --tdm-feedback")
-    if provider == NATIVE_ROUTER_PROVIDER:
-        if timing_paths_path is not None:
-            raise ValueError(
-                f"--provider {NATIVE_ROUTER_PROVIDER} does not accept "
-                f"--timing-paths; use {GLOBAL_CANDIDATE_PROVIDER}"
-            )
-        routes = route_system_native(
-            assignment,
-            platform,
-            constraints,
-            executable=router,
-            provider=provider,
-            candidate_pool_path=candidate_pool_path,
-            tdm_feedback=tdm_feedback,
-            candidate_workers=candidate_workers,
-            materialize_result=False,
-        )
-        validation = validate_native_system_routes(
-            assignment,
-            platform,
-            routes,
-        )
-    elif provider == NATIVE_TIMING_EVALUATED_PROVIDER:
-        if timing_paths_path is None:
-            raise ValueError(
-                f"--provider {NATIVE_TIMING_EVALUATED_PROVIDER} requires "
-                "--timing-paths"
-            )
-        if candidate_workers != 1:
-            raise ValueError(
-                "timing-evaluated native routing requires one candidate worker"
-            )
+    if timing_paths_path is not None:
         timing_paths = load_sta_paths(
-            timing_paths_path,
-            demands_from_assignment(assignment, platform),
+            timing_paths_path, demands_from_assignment(assignment, platform)
         )
-        routes = route_system_native(
-            assignment,
-            platform,
-            constraints,
-            executable=router,
-            provider=NATIVE_ROUTER_PROVIDER,
-            candidate_pool_path=candidate_pool_path,
-            materialize_result=False,
-        )
-        routes = annotate_system_route_timing(
-            assignment, platform, routes, timing_paths
-        )
-        validation = validate_native_system_routes(
-            assignment,
-            platform,
-            routes,
-            timing_paths,
-        )
-    elif provider in {
-        TLR_PROVIDER,
-        ROUTE_TDM_PROVIDER,
-        GLOBAL_CANDIDATE_PROVIDER,
-    }:
-        if timing_paths_path is None:
-            raise ValueError(
-                f"--provider {provider} requires --timing-paths"
-            )
-        if provider == TLR_PROVIDER:
-            constraints = {**constraints, "lambda_tdm": 0.0}
-        timing_paths = load_sta_paths(
-            timing_paths_path,
-            demands_from_assignment(assignment, platform),
-        )
-        routes = route_system_native(
-            assignment,
-            platform,
-            constraints,
-            timing_paths,
-            executable=router,
-            provider=provider,
-            candidate_pool_path=candidate_pool_path,
-            tdm_feedback=tdm_feedback,
-            candidate_workers=candidate_workers,
-            materialize_result=False,
-        )
-        validation = validate_native_system_routes(
-            assignment,
-            platform,
-            routes,
-            timing_paths,
-        )
-    else:
-        raise ValueError(f"unsupported Phase 4 provider {provider!r}")
+    elif timing_driven and demands_from_assignment(assignment, platform):
+        raise ValueError("global candidate routing requires --timing-paths")
+    routes = route_system_native(
+        assignment, platform, constraints,
+        timing_paths if timing_driven else None,
+        executable=router, provider=provider,
+        candidate_pool_path=candidate_pool_path, tdm_feedback=tdm_feedback,
+        candidate_workers=candidate_workers, materialize_result=False,
+    )
+    if not timing_driven and timing_paths is not None:
+        routes = annotate_system_route_timing(assignment, platform, routes, timing_paths)
+    validation = validate_native_system_routes(assignment, platform, routes, timing_paths)
     report: Dict[str, Any] = {
         "schema": PHASE4_REPORT_SCHEMA,
         "phase": 4,
@@ -362,54 +285,12 @@ def validate_phase4(
     )
     platform = Platform.load(platform_path)
     routes = read_system_routes(routes_path)
-    provider = routes.get("provider")
-    if provider == NATIVE_ROUTER_PROVIDER:
-        if timing_paths_path is not None:
-            raise ValueError(
-                "native load-balanced route validation does not accept "
-                "--timing-paths"
-            )
-        return validate_native_system_routes(
-            assignment,
-            platform,
-            routes,
-        )
-    if provider == NATIVE_TIMING_EVALUATED_PROVIDER:
-        if timing_paths_path is None:
-            raise ValueError(
-                "validating timing-evaluated native routes requires "
-                "--timing-paths"
-            )
-        timing_paths = load_sta_paths(
-            timing_paths_path,
-            demands_from_assignment(assignment, platform),
-        )
-        return validate_native_system_routes(
-            assignment, platform, routes, timing_paths
-        )
-    if provider in {
-        TLR_PROVIDER,
-        ROUTE_TDM_PROVIDER,
-        GLOBAL_CANDIDATE_PROVIDER,
-    }:
-        if timing_paths_path is None:
-            raise ValueError(
-                f"validating {TLR_PROVIDER} requires --timing-paths"
-            )
-        timing_paths = load_sta_paths(
-            timing_paths_path,
-            demands_from_assignment(assignment, platform),
-        )
-        return validate_native_system_routes(
-            assignment, platform, routes, timing_paths
-        )
-    validation = validate_system_routes(assignment, platform, routes)
-    if timing_paths_path is not None:
-        timing_paths = load_sta_paths(
-            timing_paths_path,
-            demands_from_assignment(assignment, platform),
-        )
-        return reconstruct_system_route_timing(
-            assignment, platform, routes, timing_paths
-        )
-    return validation
+    if routes.get("provider") != GLOBAL_CANDIDATE_PROVIDER:
+        raise ValueError("Phase 4 requires the global candidate provider")
+    timing_paths = (
+        load_sta_paths(timing_paths_path, demands_from_assignment(assignment, platform))
+        if timing_paths_path is not None else None
+    )
+    if timing_paths is None and routes["routes"] and routes.get("timing_evaluation") is None:
+        raise ValueError("global candidate route validation requires --timing-paths")
+    return validate_native_system_routes(assignment, platform, routes, timing_paths)

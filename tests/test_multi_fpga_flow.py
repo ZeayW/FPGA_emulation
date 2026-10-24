@@ -38,8 +38,6 @@ from emuflow.tdm import (
 from emuflow.tdm_ratio import TDM_TIMING_DAG_RATIO_PROVIDER
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
-    NATIVE_ROUTER_PROVIDER,
-    NATIVE_TIMING_EVALUATED_PROVIDER,
 )
 from tests.native_build import (
     tdm_partition_feedback,
@@ -304,7 +302,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 report["stages"]["partition"]["validation"]["cut_nets"],
                 0,
             )
-            self.assertEqual(routes["provider"], NATIVE_ROUTER_PROVIDER)
+            self.assertEqual(routes["provider"], GLOBAL_CANDIDATE_PROVIDER)
             self.assertEqual(routes["routes"], [])
             self.assertEqual(routes["metrics"]["estimated_max_tdm_ratio"], 0)
             self.assertEqual(schedule["provider"], TDM_BASELINE_PROVIDER)
@@ -847,7 +845,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             def fake_phase7c(*args, **kwargs):
                 routes = read_json(kwargs["routes_path"])
                 self.assertEqual(
-                    routes["provider"], NATIVE_TIMING_EVALUATED_PROVIDER
+                    routes["provider"], GLOBAL_CANDIDATE_PROVIDER
                 )
                 self.assertTrue(routes["timing"]["paths"])
                 phase5 = read_json(args[4])
@@ -1274,7 +1272,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             )
             self.assertEqual(
                 report["stages"]["system_route"]["provider"],
-                NATIVE_TIMING_EVALUATED_PROVIDER,
+                GLOBAL_CANDIDATE_PROVIDER,
             )
             self.assertEqual(
                 report["stages"]["tdm"]["provider"],

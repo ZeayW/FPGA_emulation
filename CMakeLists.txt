@@ -24,11 +24,7 @@ option(
   "Build the in-tree CUDD source required by OpenROAD/OpenSTA"
   ON
 )
-option(
-  EMUFLOW_BUILD_TLR_ROUTER
-  "Build the in-tree timing-aware load-balanced system router"
-  ON
-)
+
 option(
   EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER
   "Build the in-tree Lagrangian/KKT TDM ratio optimizer"
@@ -630,24 +626,6 @@ if(EMUFLOW_BUILD_VPR_ROUTE_CHECKER)
   target_compile_options(emuflow_vpr_route_checker PRIVATE -O3)
   set_target_properties(
     emuflow_vpr_route_checker
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_TLR_ROUTER)
-  find_package(Threads REQUIRED)
-  add_executable(
-    emuflow_tlr_router
-    "${CMAKE_SOURCE_DIR}/src/native/tlr_router.cpp"
-  )
-  target_compile_features(emuflow_tlr_router PRIVATE cxx_std_17)
-  target_compile_options(emuflow_tlr_router PRIVATE -O3)
-  target_link_libraries(
-    emuflow_tlr_router PRIVATE emuflow_core Threads::Threads
-  )
-  set_target_properties(
-    emuflow_tlr_router
     PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
   )
@@ -1256,13 +1234,6 @@ if(BUILD_TESTING)
     )
   endforeach()
 
-
-  if(EMUFLOW_BUILD_TLR_ROUTER)
-    add_test(
-      NAME emuflow_tlr_router_cli
-      COMMAND "$<TARGET_FILE:emuflow_tlr_router>" --help
-    )
-  endif()
 
   if(EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER)
     add_test(

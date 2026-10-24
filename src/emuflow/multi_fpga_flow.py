@@ -76,10 +76,7 @@ from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
 from .tdm_schedule_storage import read_tdm_schedule, tdm_schedule_store_path
 from .system_route_storage import read_system_routes, system_route_store_path
 from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
-from .timing_routing import (
-    NATIVE_ROUTER_PROVIDER,
-    NATIVE_TIMING_EVALUATED_PROVIDER,
-)
+from .timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from .sta import (
     derive_partition_net_weights,
     partition_net_weights_payload_path,
@@ -735,7 +732,10 @@ def validate_multi_fpga_flow_report(
             )
             if (
                 stages["system_route"].get("provider")
-                != NATIVE_TIMING_EVALUATED_PROVIDER
+                != GLOBAL_CANDIDATE_PROVIDER
+                or stages["system_route"].get("validation", {}).get(
+                    "timing_optimization_enabled"
+                ) is not False
                 or stages["tdm"].get("provider")
                 != expected_tdm_provider
                 or stages["tdm"].get("timing_validation", {}).get(
@@ -1092,15 +1092,10 @@ def validate_multi_fpga_flow_bundle(
                 "than required"
             )
 
-    route_provider = report["stages"]["system_route"].get("provider")
+    projected_paths = flow_root / "timing/cut-timing-paths.json"
     timing_paths_path = (
-        _checked_flow_member(
-            flow_root,
-            Path("timing/cut-timing-paths.json"),
-            "projected timing paths",
-        )
-        if route_provider != NATIVE_ROUTER_PROVIDER
-        else None
+        _checked_flow_member(flow_root, Path("timing/cut-timing-paths.json"), "projected timing paths")
+        if projected_paths.exists() else None
     )
     phase4_validation = validate_phase4(
         assignment_path,
@@ -1360,6 +1355,8 @@ def _compile_preflight(ctx: _CompileContext):
             "physical-backend=rapidwright requires "
             "mapping-profile=xilinx-ultrascaleplus-open-v1"
         )
+    if ctx.route_provider not in {None, GLOBAL_CANDIDATE_PROVIDER}:
+        raise EmuFlowError("unsupported Phase 4 routing provider; use " + GLOBAL_CANDIDATE_PROVIDER)
     if ctx.phase6_provider not in MULTI_FPGA_PHASE6_PROVIDERS:
         raise EmuFlowError(
             "unsupported Phase 6 provider "
@@ -2029,15 +2026,6 @@ def _compile_route_policy(ctx: _CompileContext):
             )
         )
     if ctx.internal_timing_database and not ctx.timing_driven:
-        if ctx.route_provider not in {
-            None,
-            NATIVE_ROUTER_PROVIDER,
-            NATIVE_TIMING_EVALUATED_PROVIDER,
-        }:
-            raise EmuFlowError(
-                "--no-timing-driven requires the timing-oblivious Phase 4 "
-                "baseline; remove --route-provider"
-            )
         no_timing_tdm_provider = (
             TDM_EXACT_DEPENDENCY_PROVIDER
             if ctx.exact_cut_mode
@@ -2049,17 +2037,13 @@ def _compile_route_policy(ctx: _CompileContext):
                 f"correctness path {no_timing_tdm_provider!r}; remove or "
                 "correct --tdm-provider"
             )
-        if ctx.route_candidate_workers != 1:
-            raise EmuFlowError(
-                "--no-timing-driven requires --route-candidate-workers 1"
-            )
-        ctx.effective_route_provider = NATIVE_TIMING_EVALUATED_PROVIDER
+        ctx.effective_route_provider = GLOBAL_CANDIDATE_PROVIDER
         ctx.effective_tdm_provider = no_timing_tdm_provider
     if not ctx.has_inter_fpga_cuts:
         # Timing-aware interconnect optimization is vacuous for a packed
         # single-FPGA solution.  Keep Phase 4/5 artifacts explicit and
         # independently replayable with the ordinary zero-demand providers.
-        ctx.effective_route_provider = NATIVE_ROUTER_PROVIDER
+        ctx.effective_route_provider = GLOBAL_CANDIDATE_PROVIDER
         ctx.effective_tdm_provider = (
             TDM_EXACT_DEPENDENCY_PROVIDER
             if ctx.exact_cut_mode
@@ -2903,6 +2887,7 @@ def _compile_route(ctx: _CompileContext):
         timing_paths_path=ctx.projected_timing_paths,
         router=ctx.router,
         provider=ctx.effective_route_provider,
+        timing_driven=ctx.timing_driven,
         candidate_workers=(
             ctx.route_candidate_workers if ctx.has_inter_fpga_cuts else 1
         ),

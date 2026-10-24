@@ -141,7 +141,6 @@ struct Objective {
 
 struct Input {
   int node_count = 0;
-  int topology_mode = 0;
   int max_iterations = 20;
   int reroute_rounds = 8;
   double lambda_load = 2.0;
@@ -188,19 +187,8 @@ Input read_input(const std::string& path) {
   }
   std::string magic;
   std::getline(input, magic);
-  const std::string bank_suffix = "_BANKS_V1";
-  const bool bank_input = magic.size() > bank_suffix.size() &&
-      magic.compare(magic.size() - bank_suffix.size(), bank_suffix.size(), bank_suffix) == 0;
-  if (bank_input) magic.resize(magic.size() - bank_suffix.size());
-  const bool input_v9 = magic == "EMUFLOW_TLR_INPUT_V9";
-  const bool input_v8 = magic == "EMUFLOW_TLR_INPUT_V8" || input_v9;
-  const bool input_v7 = magic == "EMUFLOW_TLR_INPUT_V7" || input_v8;
-  const bool input_v6 = magic == "EMUFLOW_TLR_INPUT_V6";
-  const bool input_v5 = magic == "EMUFLOW_TLR_INPUT_V5";
-  const bool input_v4 = magic == "EMUFLOW_TLR_INPUT_V4";
-  if (!input_v9 && !input_v8 && !input_v7 && !input_v6 && !input_v5 && !input_v4 &&
-      magic != "EMUFLOW_TLR_INPUT_V3") {
-    throw std::runtime_error("unsupported input header: " + magic);
+  if (magic != "EMUFLOW_GLOBAL_ROUTE_INPUT_V1") {
+    throw std::runtime_error("unsupported global routing input header: " + magic);
   }
 
   Input model;
@@ -213,14 +201,14 @@ Input read_input(const std::string& path) {
     std::string kind;
     stream >> kind;
     if (kind == "PARAM") {
-      stream >> model.node_count >> model.topology_mode >>
+      stream >> model.node_count >>
           model.max_iterations >>
           model.reroute_rounds >> model.lambda_load >>
           model.lambda_timing >> model.lambda_history >>
           model.lambda_tdm >> model.ratio_quantum >> model.max_ratio >>
           model.slack_positive_scale >> model.slack_negative_scale >>
           model.max_clock_period_ns;
-      if (input_v4 || input_v5 || input_v6 || input_v7) {
+      {
         int tree_edge_sum_tdm = 0;
         stream >> tree_edge_sum_tdm;
         if (tree_edge_sum_tdm != 0 && tree_edge_sum_tdm != 1) {
@@ -229,10 +217,10 @@ Input read_input(const std::string& path) {
         }
         model.tree_edge_sum_tdm = tree_edge_sum_tdm != 0;
       }
-      if (input_v5 || input_v6 || input_v7) {
+      {
         stream >> model.min_ratio;
       }
-      if (input_v6 || input_v7) {
+      {
         int hard_sll_capacity = 0;
         stream >> hard_sll_capacity;
         if (hard_sll_capacity != 0 && hard_sll_capacity != 1) {
@@ -241,14 +229,14 @@ Input read_input(const std::string& path) {
         }
         model.hard_sll_capacity = hard_sll_capacity != 0;
       }
-      if (input_v7) {
+      {
         stream >> model.max_route_hops;
         if (model.max_route_hops < 0) {
           throw std::runtime_error(
               "maximum route hops must be zero or positive");
         }
       }
-      if (input_v9) {
+      {
         stream >> model.candidate_workers;
         if (model.candidate_workers <= 0) {
           throw std::runtime_error(
@@ -263,7 +251,7 @@ Input read_input(const std::string& path) {
           arc.capacity_domain >> arc.direction_group >> arc.opposite_arc >>
           arc.capacity >> arc.lanes >> arc.delay_ns >> arc.beta_ns >> is_sll;
       arc.is_sll = is_sll != 0;
-      if (bank_input) stream >> arc.banks >> arc.wires;
+      stream >> arc.banks >> arc.wires;
       if (index != static_cast<int>(model.arcs.size())) {
         throw std::runtime_error("ARC indices must be contiguous");
       }
@@ -285,7 +273,7 @@ Input read_input(const std::string& path) {
       int index = -1;
       double price = 0.0;
       stream >> index >> price;
-      if (!input_v8 || index != static_cast<int>(model.feedback_price.size()) ||
+      if (index != static_cast<int>(model.feedback_price.size()) ||
           !std::isfinite(price) || price < 0.0) {
         throw std::runtime_error("invalid feedback price");
       }
@@ -309,8 +297,7 @@ Input read_input(const std::string& path) {
       throw std::runtime_error("malformed input record: " + line);
     }
   }
-  if (model.node_count <= 0 || model.topology_mode < 0 ||
-      model.topology_mode > 2 || model.arcs.empty() ||
+  if (model.node_count <= 0 || model.arcs.empty() ||
       model.demands.empty()) {
     throw std::runtime_error("input must contain nodes, arcs, and demands");
   }
@@ -397,7 +384,7 @@ class Router {
     Candidate metric_closure;
     Candidate shallow_light;
     Candidate adaptive_hop;
-    if (model_.topology_mode == 2 && model_.candidate_workers > 1) {
+    if (model_.candidate_workers > 1) {
       using Generated = std::pair<CandidateGenerator, Candidate>;
       const std::vector<CandidateGenerator> generators = {
           CandidateGenerator::kShortestPath,
@@ -461,8 +448,7 @@ class Router {
     }
     shortest_candidate_routes_ = baseline.routes;
     history_ = initial_history;
-    if (model_.topology_mode >= 1 &&
-        !(model_.topology_mode == 2 && model_.candidate_workers > 1)) {
+    if (model_.candidate_workers == 1) {
       balanced = route_candidate(order, true);
       history_ = initial_history;
       steiner = route_candidate(
@@ -473,7 +459,7 @@ class Router {
     metric_closure_candidate_routes_ = metric_closure.routes;
     shallow_light_candidate_routes_ = shallow_light.routes;
     adaptive_hop_candidate_routes_ = adaptive_hop.routes;
-    if (model_.topology_mode == 2 && model_.candidate_workers == 1) {
+    if (model_.candidate_workers == 1) {
       history_ = initial_history;
       metric_closure = route_candidate(
           order, CandidateGenerator::kDirectedMetricClosure);
@@ -499,10 +485,7 @@ class Router {
     metric_closure_candidate_generated_ = metric_closure.generated;
     shallow_light_candidate_generated_ = shallow_light.generated;
     adaptive_hop_candidate_generated_ = adaptive_hop.generated;
-    if (!baseline.feasible && !balanced.feasible &&
-        model_.topology_mode != 2) {
-      throw std::runtime_error("routing infeasible after capacity iterations");
-    }
+
 
     struct NamedCandidate {
       const char* generator;
@@ -520,7 +503,7 @@ class Router {
     // existing deterministic results and switch accounting stay unchanged.
     const Candidate* selected = nullptr;
     const char* selected_generator = nullptr;
-    if (model_.topology_mode == 2 && !baseline.feasible &&
+    if (!baseline.feasible &&
         !balanced.feasible && steiner.feasible) {
       selected = &steiner;
       selected_generator = "nearest-terminal-steiner";
@@ -538,7 +521,7 @@ class Router {
           ? "delay-demand-balanced"
           : "shortest-path-tree";
     }
-    // Topology mode 2 generates three additional complete columns.  If the
+    // The global pool contains three additional complete columns.  If the
     // historical pair did not produce a legal seed, select the best feasible
     // column across the complete pool before entering the large master.
     if (selected == nullptr || !selected->feasible) {
@@ -560,7 +543,7 @@ class Router {
     // small-instance path by seeding it with the first generated column.  A
     // large master, however, must never discard a feasible advanced column
     // merely because the two historical generators were infeasible.
-    if (selected == nullptr && model_.topology_mode == 2) {
+    if (selected == nullptr) {
       for (const NamedCandidate& named : all_candidates) {
         if (named.candidate->generated) {
           selected = named.candidate;
@@ -570,7 +553,7 @@ class Router {
       }
     }
     if (selected == nullptr || !selected->generated) {
-      throw std::runtime_error("routing candidates could not span all sinks");
+      throw std::runtime_error("routing infeasible: candidates could not span all sinks");
     }
     routes_ = selected->routes;
     usage_ = selected->usage;
@@ -579,160 +562,11 @@ class Router {
     selected_balanced_ = selected == &balanced;
     master_selection_.assign(
         model_.demands.size(), selected_generator);
-    if (model_.topology_mode == 2) {
-      run_candidate_master(order);
-    }
-
-    if (model_.topology_mode == 2) {
-      run_batched_refinement();
-      return;
-    }
-    Objective best = objective();
-    for (int round = 0; round < model_.reroute_rounds; ++round) {
-      const int critical_path =
-          model_.lambda_tdm > kEps
-              ? worst_tdm_path_index()
-              : worst_path_index();
-      if (critical_path < 0) {
-        break;
-      }
-      std::vector<int> affected = model_.paths[critical_path].demands;
-      std::sort(affected.begin(), affected.end());
-      affected.erase(std::unique(affected.begin(), affected.end()), affected.end());
-      if (affected.empty()) {
-        break;
-      }
-
-      const std::vector<Route> route_backup = routes_;
-      const std::vector<long long> usage_backup = usage_;
-      std::set<int> discouraged;
-      for (int demand : affected) {
-        for (int arc : routes_[demand].arcs) {
-          discouraged.insert(arc);
-        }
-        add_usage(routes_[demand], -model_.demands[demand].width);
-      }
-      bool reroute_ok = true;
-      try {
-        for (int demand : affected) {
-          routes_[demand] = route_for_generator(
-              demand, master_selection_[demand], discouraged);
-          add_usage(routes_[demand], model_.demands[demand].width);
-        }
-      } catch (const std::runtime_error&) {
-        reroute_ok = false;
-      }
-
-      const Objective candidate = reroute_ok ? objective() : Objective{};
-      if (reroute_ok && capacity_legal() && better(candidate, best)) {
-        best = candidate;
-        ++accepted_reroutes_;
-      } else {
-        routes_ = route_backup;
-        usage_ = usage_backup;
-        ++rolled_back_reroutes_;
-        break;
-      }
-    }
+    run_candidate_master(order);
+    run_batched_refinement();
   }
 
-  void write_output(const std::string& path) const {
-    std::ofstream output(path);
-    if (!output) {
-      throw std::runtime_error("cannot open output: " + path);
-    }
-    output << "EMUFLOW_TLR_OUTPUT_V2\n";
-    output << std::setprecision(17);
-    for (int group = 0; group < static_cast<int>(direction_lock_.size()); ++group) {
-      output << "LOCK " << group << ' ' << direction_lock_[group] << '\n';
-    }
-    for (int demand = 0; demand < static_cast<int>(routes_.size()); ++demand) {
-      output << "ROUTE " << demand << ' ' << routes_[demand].max_delay_ns << ' ';
-      if (routes_[demand].arcs.empty()) {
-        output << '-';
-      } else {
-        for (std::size_t index = 0; index < routes_[demand].arcs.size(); ++index) {
-          if (index) {
-            output << ',';
-          }
-          output << routes_[demand].arcs[index];
-        }
-      }
-      output << '\n';
-    }
-    write_candidate_routes(output, "shortest-path-tree",
-                           shortest_candidate_routes_,
-                           shortest_candidate_generated_);
-    write_candidate_routes(output, "delay-demand-balanced",
-                           balanced_candidate_routes_,
-                           balanced_candidate_generated_);
-    write_candidate_routes(output, "nearest-terminal-steiner",
-                           steiner_candidate_routes_,
-                           steiner_candidate_generated_);
-    write_candidate_routes(output, "directed-metric-closure",
-                           metric_closure_candidate_routes_,
-                           metric_closure_candidate_generated_);
-    write_candidate_routes(output, "shallow-light-tree",
-                           shallow_light_candidate_routes_,
-                           shallow_light_candidate_generated_);
-    write_candidate_routes(output, "adaptive-hop-tree",
-                           adaptive_hop_candidate_routes_,
-                           adaptive_hop_candidate_generated_);
-    write_candidate_routes(output, "refined-final", routes_, true);
-    for (int demand = 0;
-         demand < static_cast<int>(master_selection_.size()); ++demand) {
-      output << "SELECTION " << demand << ' '
-             << master_selection_[demand] << '\n';
-    }
-    for (int path_index = 0;
-         path_index < static_cast<int>(model_.paths.size()); ++path_index) {
-      const auto [delay, slack, normalized] = path_metrics(path_index);
-      output << "PATH " << path_index << ' ' << delay << ' ' << slack << ' '
-             << normalized << ' ' << path_signature(path_index) << '\n';
-    }
-    const Objective final = objective();
-    output << "METRIC iterations " << completed_iterations_ << '\n';
-    output << "METRIC accepted_reroutes " << accepted_reroutes_ << '\n';
-    output << "METRIC rolled_back_reroutes " << rolled_back_reroutes_ << '\n';
-    output << "METRIC baseline_candidate_feasible "
-           << static_cast<int>(baseline_candidate_feasible_) << '\n';
-    output << "METRIC balanced_candidate_feasible "
-           << static_cast<int>(balanced_candidate_feasible_) << '\n';
-    output << "METRIC steiner_candidate_feasible "
-           << static_cast<int>(steiner_candidate_feasible_) << '\n';
-    output << "METRIC metric_closure_candidate_feasible "
-           << static_cast<int>(metric_closure_candidate_feasible_) << '\n';
-    output << "METRIC shallow_light_candidate_feasible "
-           << static_cast<int>(shallow_light_candidate_feasible_) << '\n';
-    output << "METRIC adaptive_hop_candidate_feasible "
-           << static_cast<int>(adaptive_hop_candidate_feasible_) << '\n';
-    output << "METRIC master_rounds " << master_rounds_ << '\n';
-    output << "METRIC master_switches " << master_switches_ << '\n';
-    output << "METRIC master_exact "
-           << static_cast<int>(master_exact_) << '\n';
-    output << "METRIC candidate_workers " << model_.candidate_workers << '\n';
-    output << "METRIC parallel_candidate_tasks "
-           << parallel_candidate_tasks_ << '\n';
-    output << "METRIC reroute_conflict_batches "
-           << reroute_conflict_batches_ << '\n';
-    output << "METRIC maximum_parallel_batch "
-           << maximum_parallel_batch_ << '\n';
-    output << "METRIC parallel_reroute_tasks "
-           << parallel_reroute_tasks_ << '\n';
-    output << "METRIC selected_delay_demand_balanced "
-           << static_cast<int>(selected_balanced_) << '\n';
-    output << "METRIC worst_slack_ns " << final.worst_slack_ns << '\n';
-    output << "METRIC worst_normalized_slack "
-           << final.worst_normalized_slack << '\n';
-    output << "METRIC estimated_worst_tdm_slack_ns "
-           << final.worst_tdm_slack_ns << '\n';
-    output << "METRIC estimated_worst_tdm_normalized_slack "
-           << final.worst_tdm_normalized_slack << '\n';
-    output << "METRIC estimated_max_tdm_ratio "
-           << estimated_max_tdm_ratio() << '\n';
-    output << "METRIC max_utilization " << final.max_utilization << '\n';
-    output << "METRIC total_link_bit_hops " << final.bit_hops << '\n';
-  }
+
 
   void write_typed_output(const std::string& path) const {
     using emuflow::core::SqliteDatabase;
@@ -1242,28 +1076,7 @@ CREATE TABLE metrics(
     return result;
   }
 
-  void write_candidate_routes(
-      std::ostream& output, const std::string& generator,
-      const std::vector<Route>& routes, bool feasible) const {
-    if (!feasible || routes.size() != model_.demands.size()) {
-      return;
-    }
-    for (int demand = 0; demand < static_cast<int>(routes.size()); ++demand) {
-      output << "CANDIDATE " << demand << ' ' << generator << ' '
-             << routes[demand].max_delay_ns << ' ';
-      if (routes[demand].arcs.empty()) {
-        output << '-';
-      } else {
-        for (std::size_t index = 0; index < routes[demand].arcs.size(); ++index) {
-          if (index) {
-            output << ',';
-          }
-          output << routes[demand].arcs[index];
-        }
-      }
-      output << '\n';
-    }
-  }
+
 
   Route route_for_generator(
       int demand, const std::string& generator,
@@ -1356,7 +1169,7 @@ CREATE TABLE metrics(
       enumerate(0);
       if (!found) {
         throw std::runtime_error(
-            "restricted candidate master found no legal combination");
+            "routing infeasible: restricted candidate master found no legal combination");
       }
       routes_ = best_routes;
       master_selection_ = best_selection;
@@ -2741,18 +2554,7 @@ CREATE TABLE metrics(
     return {delay, slack, normalized_slack(path, slack)};
   }
 
-  int worst_path_index() const {
-    int result = -1;
-    double worst = kInf;
-    for (int index = 0; index < static_cast<int>(model_.paths.size()); ++index) {
-      const double normalized = std::get<2>(path_metrics(index));
-      if (normalized < worst) {
-        worst = normalized;
-        result = index;
-      }
-    }
-    return result;
-  }
+
 
   double demand_tdm_delay(int demand_index) const {
     const Demand& demand = model_.demands[demand_index];
@@ -2806,18 +2608,7 @@ CREATE TABLE metrics(
     return {delay, slack, normalized_slack(path, slack)};
   }
 
-  int worst_tdm_path_index() const {
-    int result = -1;
-    double worst = kInf;
-    for (int index = 0; index < static_cast<int>(model_.paths.size()); ++index) {
-      const double normalized = std::get<2>(tdm_path_metrics(index));
-      if (normalized < worst) {
-        worst = normalized;
-        result = index;
-      }
-    }
-    return result;
-  }
+
 
   std::string path_signature(int path_index) const {
     std::ostringstream signature;
@@ -2941,40 +2732,11 @@ CREATE TABLE metrics(
   int parallel_reroute_tasks_ = 0;
 };
 
-void usage(const char* executable) {
-  std::cerr << "usage: " << executable << " INPUT OUTPUT\n";
-}
-
 }  // namespace
 
 void emuflow::native::RouteTlr(const std::string& input_path,
-                               const std::string& output_path,
-                               bool typed_output) {
+                               const std::string& output_path) {
   Router router(read_input(input_path));
   router.run();
-  if (typed_output) {
-    router.write_typed_output(output_path);
-  } else {
-    router.write_output(output_path);
-  }
+  router.write_typed_output(output_path);
 }
-
-#if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
-int main(int argc, char** argv) {
-  if (argc == 2 && std::string(argv[1]) == "--help") {
-    usage(argv[0]);
-    return 0;
-  }
-  if (argc != 3) {
-    usage(argv[0]);
-    return 2;
-  }
-  try {
-    emuflow::native::RouteTlr(argv[1], argv[2], false);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "emuflow_tlr_router: " << error.what() << '\n';
-    return 1;
-  }
-}
-#endif

@@ -97,7 +97,7 @@ constexpr RegisteredSchema schemas[] = {
     {"chimew-refine-input-v1", ArtifactEncoding::kBinary, 0x0032465248434d45ULL, 1},
     // Text compatibility/IPC schemas have stage-owned grammars. Binding does
     // not consume a pipe or duplicate their parser; the body checks the grammar.
-    {"tlr-input-text", ArtifactEncoding::kText, 0, 1},
+    {"global-route-input-v1", ArtifactEncoding::kText, 0, 1},
     {"chimew-bank-legacy-text", ArtifactEncoding::kText, 0, 1},
     {"chimew-group-legacy-text", ArtifactEncoding::kText, 0, 1},
     {"chimew-refine-legacy-text", ArtifactEncoding::kText, 0, 1},
@@ -105,7 +105,6 @@ constexpr RegisteredSchema schemas[] = {
     {"patron-output-v1", ArtifactEncoding::kBinary, 0x3154554f54415045ULL, 1},
     {"patron-output-text", ArtifactEncoding::kText, 0, 1},
     {"tlr-output-v1", ArtifactEncoding::kSqlite, 0x45545252, 1},
-    {"tlr-output-text", ArtifactEncoding::kText, 0, 1},
     {"system-route-store-v3", ArtifactEncoding::kSqlite, 0x454d5552, 3, false,
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.system-routes/v1"},
     {"exact-schedule-generation-request-v1", ArtifactEncoding::kBinary, 0x3147534d44544545ULL, 1},
