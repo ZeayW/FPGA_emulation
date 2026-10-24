@@ -141,3 +141,72 @@ def test_unobserved_output_or_native_clone_prevents_constant_confirmation(tmp_pa
     with pytest.raises(ValidationError,match=match):
         confirm_selected_constant_sources(mapped,functions,proof,observed,inventory,mapped_sha256=digest,
             candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
+
+
+def test_only_checked_constant_sources_can_enter_a_bound_routed_proof(tmp_path):
+    import sqlite3
+    import json
+    import hashlib
+    from emuflow.vivado_constant_frontier import check_constant_sources, CheckedConstantSources
+    from emuflow.vivado_lineage import import_cell_lineage
+    from emuflow.vivado_optimization import build_optimization_proofs, OptimizationProofView
+    from emuflow.io import file_sha256
+    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path)
+    args=(mapped,functions,proof,observed,inventory)
+    kwargs=dict(mapped_sha256=digest,candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,
+                fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
+    checked=check_constant_sources(*args,**kwargs)
+    with pytest.raises(ValidationError,match="semantic checker"):
+        CheckedConstantSources(checked.to_document())
+    copy=checked.to_document();copy["sources"][0]["constant_value"]=1
+    assert checked["sources"][0]["constant_value"] == 0
+    routed_lineage=tmp_path/"routed-lineage.sqlite"
+    import_cell_lineage(mapped,functions,{"synthesized":inventory,"routed":inventory},routed_lineage,mapped_sha256=digest)
+    final=tmp_path/"routed-proof.sqlite"
+    for supplied,checkpoint in [(checked.to_document(),"a"*64),(checked,"b"*64)]:
+        with pytest.raises(ValidationError):
+            build_optimization_proofs(mapped,routed_lineage,final,mapped_sha256=digest,fpga="fpga0",
+                                      checked_constants=supplied,synthesized_checkpoint_sha256=checkpoint)
+    report=build_optimization_proofs(mapped,routed_lineage,final,mapped_sha256=digest,fpga="fpga0",
+                                     checked_constants=checked,synthesized_checkpoint_sha256="a"*64)
+    assert report["vendor_confirmed_constant_state_cells"] == 1
+    assert report["conditional_constant_state_candidates"] == 0
+    with OptimizationProofView(final,expected_fpga="fpga0") as view:
+        result=view.require_eliminated_source(f"s{origins['conditional']}")
+        assert result["constant_value"] == 0
+        assert result["initialization"] == "vendor-confirmed"
+    # Even a refreshed document digest cannot make a different constant
+    # agree with the proof rows sealed by the source-model owner.
+    with sqlite3.connect(final) as db:
+        document=json.loads(db.execute("SELECT document FROM vendor_confirmation_document").fetchone()[0])
+        document["sources"][0]["constant_value"]=1
+        raw=json.dumps(document,sort_keys=True,separators=(",",":"))
+        db.execute("UPDATE vendor_confirmation_document SET document=?",(raw,))
+        db.execute("UPDATE metadata SET value=? WHERE key='vendor_confirmation_document_sha256'",
+                   (json.dumps(hashlib.sha256(raw.encode()).hexdigest()),))
+    with pytest.raises(ValidationError,match="selection differs"):
+        OptimizationProofView(final,expected_fpga="fpga0")
+
+
+def test_synthesized_preflight_does_not_claim_routed_query_resolution(tmp_path):
+    from emuflow.vivado_constant_frontier import check_constant_sources
+    from emuflow.vivado_optimization import build_optimization_proofs, OptimizationProofView
+    from emuflow.vivado_lineage import resolve_timing_query
+    from emuflow.io import file_sha256
+    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path)
+    checked=check_constant_sources(mapped,functions,proof,observed,inventory,mapped_sha256=digest,
+        candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
+    lineage=tmp_path/"lineage.sqlite";final=tmp_path/"confirmed-synth.sqlite"
+    build_optimization_proofs(mapped,lineage,final,mapped_sha256=digest,stage="synthesized",fpga="fpga0",
+                              checked_constants=checked,synthesized_checkpoint_sha256="a"*64)
+    with pytest.raises(ValidationError,match="stage disagrees"):
+        OptimizationProofView(final,expected_fpga="fpga0")
+    query=tmp_path/"query.tsv"
+    query.write_text("endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex\tcone_anchor_kind\tcone_anchor_object_hex\n"+
+                     "\t".join(["p".encode().hex(),"capture","pin","kept/Q".encode().hex(),"pin","conditional/D".encode().hex(),"",""])+"\n")
+    result=resolve_timing_query(mapped,functions,lineage,query,tmp_path/"resolved.tsv",optimization_proofs=final,
+                                allow_eliminated=True,stage="synthesized")
+    assert result["stage"] == "synthesized"
+    assert f"optimized-away:s{origins['conditional']}" in (tmp_path/"resolved.tsv").read_text()
+    with pytest.raises(ValidationError,match="different source or stage"):
+        resolve_timing_query(mapped,functions,lineage,query,tmp_path/"wrong-stage.tsv",optimization_proofs=final,allow_eliminated=True)

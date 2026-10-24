@@ -60,7 +60,8 @@ def _lut_value(cell: Mapping[str, Any], output: str, values: Mapping[str, int | 
 
 def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Path, *,
                               mapped_sha256: str, stage: str = "routed",
-                              fpga: str | None = None) -> dict[str, Any]:
+                              fpga: str | None = None, checked_constants=None,
+                              synthesized_checkpoint_sha256: str | None = None) -> dict[str, Any]:
     """Prove closed unobservable regions and simultaneous constant states.
 
     Graph traversal and state hypotheses live in SQLite. Python reconstructs
@@ -74,6 +75,15 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
         raise ValidationError("invalid Vivado optimization mapped identity")
     if output.exists():
         raise ValidationError("Vivado optimization proof output already exists")
+    confirmation = None
+    if checked_constants is not None:
+        from .vivado_constant_frontier import CheckedConstantSources
+        if not isinstance(checked_constants, CheckedConstantSources):
+            raise ValidationError("constant confirmation must come from the source/native semantic checker")
+        confirmation = checked_constants.to_document()
+        if (confirmation["mapped_index_sha256"] != mapped_sha256 or confirmation["fpga"] != fpga
+                or confirmation["synthesized_checkpoint_sha256"] != synthesized_checkpoint_sha256):
+            raise ValidationError("constant confirmation source, FPGA, or synthesized checkpoint differs")
     temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp")
     db = sqlite3.connect(temporary, uri=True)
     try:
@@ -90,7 +100,7 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
                 origin INTEGER PRIMARY KEY, reason TEXT NOT NULL
                     CHECK(reason IN ('unobservable-source-closure','constant-state')),
                 constant_value INTEGER CHECK(constant_value IN (0,1)),
-                initialization TEXT CHECK(initialization IN ('specified','vendor-dont-care-selection')),
+                initialization TEXT CHECK(initialization IN ('specified','vendor-dont-care-selection','vendor-confirmed')),
                 CHECK((reason='unobservable-source-closure' AND constant_value IS NULL AND initialization IS NULL)
                    OR (reason='constant-state' AND constant_value IS NOT NULL AND initialization IS NOT NULL))
             );
@@ -208,7 +218,26 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
             strict_iterations = refine_states()
             db.execute("INSERT INTO eliminated_sources SELECT origin,'constant-state',value,initialization FROM states")
             db.execute("DELETE FROM constant_candidates WHERE origin IN (SELECT origin FROM eliminated_sources)")
-        constant = db.execute("SELECT count(*) FROM states").fetchone()[0]
+        vendor_confirmed = 0
+        if confirmation is not None:
+            if stage == "synthesized" and confirmation["source_inventory_sha256"] != stage_inventory_sha256:
+                raise ValidationError("constant confirmation belongs to a different synthesized snapshot")
+            for source in confirmation["sources"]:
+                origin = int(source["source"][1:])
+                if db.execute("SELECT 1 FROM eliminated_sources WHERE origin=?", (origin,)).fetchone():
+                    continue
+                if not db.execute("SELECT 1 FROM absent WHERE origin=?", (origin,)).fetchone():
+                    continue
+                candidate = db.execute("SELECT constant_value FROM constant_candidates WHERE origin=?", (origin,)).fetchone()
+                if candidate != (source["constant_value"],):
+                    raise ValidationError("vendor selection does not satisfy the current inductive source model")
+                db.execute("INSERT INTO eliminated_sources VALUES (?,'constant-state',?,'vendor-confirmed')", (origin,source["constant_value"]))
+                db.execute("DELETE FROM constant_candidates WHERE origin=?", (origin,))
+                vendor_confirmed += 1
+            if vendor_confirmed:
+                db.execute("CREATE TABLE vendor_confirmation_document(id INTEGER PRIMARY KEY CHECK(id=0),document TEXT NOT NULL)")
+                db.execute("INSERT INTO vendor_confirmation_document VALUES (0,?)", (json.dumps(confirmation,sort_keys=True,separators=(",",":"),allow_nan=False),))
+        constant = db.execute("SELECT count(*) FROM eliminated_sources WHERE reason='constant-state'").fetchone()[0]
         unretained = db.execute("SELECT count(*) FROM absent").fetchone()[0]
         db.execute("CREATE TABLE source_names(origin INTEGER PRIMARY KEY,name TEXT NOT NULL)")
         db.execute("INSERT INTO source_names SELECT seq,id FROM source.cells WHERE seq IN (SELECT origin FROM eliminated_sources UNION SELECT origin FROM constant_candidates)")
@@ -230,6 +259,13 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
                   "conditional_constant_state_candidates": db.execute("SELECT count(*) FROM constant_candidates").fetchone()[0],
                   "proof_rows_sha256": digest.hexdigest()}
         header["source_names_sha256"] = names_digest.hexdigest()
+        if vendor_confirmed:
+            document = json.dumps(confirmation,sort_keys=True,separators=(",",":"),allow_nan=False)
+            header.update(vendor_confirmed_constant_state_cells=vendor_confirmed,
+                          vendor_confirmation_document_sha256=hashlib.sha256(document.encode()).hexdigest(),
+                          synthesized_checkpoint_sha256=synthesized_checkpoint_sha256,
+                          vendor_initialization_policy=confirmation["initialization_policy"])
+            header["qualification"] += "; selected-vendor-initialization-confirmed-at-complete-retained-frontiers"
         db.executemany("INSERT INTO metadata VALUES (?,?)", ((key,json.dumps(value,separators=(",",":"))) for key,value in header.items()))
         db.commit()
         db.close()
@@ -260,20 +296,87 @@ class OptimizationProofView(Mapping[str, Any]):
             self.header = {key:json.loads(value) for key,value in self.connection.execute("SELECT key,value FROM metadata")}
             if self.header.get("schema") != OPTIMIZATION_PROOF_SCHEMA or self.header.get("stage") != stage or self.header.get("fpga") != expected_fpga:
                 raise ValidationError("Vivado optimization proof partition or stage disagrees")
+            confirmed = {}
+            if "vendor_confirmation_document_sha256" in self.header:
+                from .vivado_constant_frontier import CONSTANT_CONFIRMATION_SCHEMA, CONSTANT_INITIALIZATION_POLICY
+                rows = self.connection.execute("SELECT id,document FROM vendor_confirmation_document").fetchall()
+                if len(rows) != 1 or rows[0][0] != 0 or len(rows[0][1]) > 16 * 1024 * 1024:
+                    raise ValidationError("Vivado vendor confirmation document is invalid")
+                raw = rows[0][1]
+                if hashlib.sha256(raw.encode()).hexdigest() != self.header["vendor_confirmation_document_sha256"]:
+                    raise ValidationError("Vivado vendor confirmation document seal differs")
+                document = json.loads(raw)
+                keys = {"schema","status","fpga","mapped_index_sha256","source_stage","initialization_policy",
+                        "synthesized_checkpoint_sha256","source_candidate_proofs_sha256","source_inventory_sha256",
+                        "observations_sha256","sources","frontiers"}
+                if (not isinstance(document,dict) or set(document) != keys
+                        or document["schema"] != CONSTANT_CONFIRMATION_SCHEMA or document["status"] != "pass"
+                        or document["fpga"] != expected_fpga or document["source_stage"] != "synthesized"
+                        or document["mapped_index_sha256"] != self.header["mapped_index_sha256"]
+                        or document["synthesized_checkpoint_sha256"] != self.header.get("synthesized_checkpoint_sha256")
+                        or document["initialization_policy"] != CONSTANT_INITIALIZATION_POLICY
+                        or self.header.get("vendor_initialization_policy") != CONSTANT_INITIALIZATION_POLICY
+                        or not isinstance(document["sources"],list) or not 1 <= len(document["sources"]) <= 4096
+                        or not isinstance(document["frontiers"],list) or not 1 <= len(document["frontiers"]) <= 4096):
+                    raise ValidationError("Vivado vendor confirmation source or initialization policy differs")
+                import re
+                for key in ("synthesized_checkpoint_sha256","source_candidate_proofs_sha256","source_inventory_sha256","observations_sha256"):
+                    if not isinstance(document[key],str) or not re.fullmatch(r"[0-9a-f]{64}",document[key]):
+                        raise ValidationError("Vivado vendor confirmation digest is invalid")
+                required_frontiers = set()
+                for source in document["sources"]:
+                    if (not isinstance(source,dict) or set(source) != {"source","constant_value","source_initialization","frontier_sources"}
+                            or not isinstance(source["source"],str) or not re.fullmatch(r"s(?:0|[1-9][0-9]*)",source["source"])
+                            or int(source["source"][1:]) > 2**63-1 or isinstance(source["constant_value"],bool)
+                            or not isinstance(source["constant_value"],int) or source["constant_value"] not in (0,1)
+                            or source["source_initialization"] not in {"specified","vendor-dont-care-selection"}
+                            or not isinstance(source["frontier_sources"],list) or not 1 <= len(source["frontier_sources"]) <= 4096
+                            or any(not isinstance(s,str) or not re.fullmatch(r"s(?:0|[1-9][0-9]*)",s) for s in source["frontier_sources"])):
+                        raise ValidationError("Vivado vendor constant source record is invalid")
+                    origin = int(source["source"][1:])
+                    if origin in confirmed or len(set(source["frontier_sources"])) != len(source["frontier_sources"]):
+                        raise ValidationError("Vivado vendor constant source or frontier is duplicated")
+                    confirmed[origin] = source["constant_value"]
+                    required_frontiers.update(source["frontier_sources"])
+                observed_frontiers = set()
+                observed_objects = set()
+                for item in document["frontiers"]:
+                    if (not isinstance(item,dict) or set(item) != {"source_origin","native_cell","variables","assignments"}
+                            or item["source_origin"] not in required_frontiers or not isinstance(item["native_cell"],str) or not item["native_cell"]
+                            or isinstance(item["variables"],bool) or not isinstance(item["variables"],int) or not 0 <= item["variables"] <= 12
+                            or isinstance(item["assignments"],bool) or not isinstance(item["assignments"],int)
+                            or item["assignments"] != 1 << item["variables"]):
+                        raise ValidationError("Vivado vendor functional frontier record is invalid")
+                    key = (item["source_origin"],item["native_cell"])
+                    if key in observed_objects:
+                        raise ValidationError("Vivado vendor functional frontier is duplicated")
+                    observed_objects.add(key)
+                    observed_frontiers.add(item["source_origin"])
+                if observed_frontiers != required_frontiers:
+                    raise ValidationError("Vivado vendor functional frontier coverage differs")
             digest = hashlib.sha256()
             counts = {"unobservable-source-closure":0,"constant-state":0}
+            vendor_count = 0
             for row in self.connection.execute("SELECT origin,reason,constant_value,initialization FROM eliminated_sources ORDER BY origin"):
                 origin,reason,value,initialization = row
                 if (not isinstance(origin,int) or origin < 0 or reason not in counts or
                     (reason == "unobservable-source-closure" and (value is not None or initialization is not None)) or
-                    (reason == "constant-state" and (value not in (0,1) or initialization != "specified"))):
+                    (reason == "constant-state" and (value not in (0,1) or initialization not in {"specified","vendor-confirmed"}))):
                     raise ValidationError("Vivado elimination source proof is invalid or conditional")
+                if initialization == "vendor-confirmed":
+                    if confirmed.get(origin) != value:
+                        raise ValidationError("Vivado vendor constant selection differs from its confirmation")
+                    vendor_count += 1
                 counts[reason] += 1
                 digest.update((json.dumps(row,separators=(",",":"))+"\n").encode())
             if (digest.hexdigest() != self.header.get("proof_rows_sha256") or
                 counts["unobservable-source-closure"] != self.header.get("unobservable_source_cells") or
                 counts["constant-state"] != self.header.get("constant_state_cells")):
                 raise ValidationError("Vivado optimization proof row seal disagrees")
+            declared_vendor_count = self.header.get("vendor_confirmed_constant_state_cells",0)
+            if (isinstance(declared_vendor_count,bool) or not isinstance(declared_vendor_count,int)
+                    or vendor_count != declared_vendor_count or (confirmed and not vendor_count)):
+                raise ValidationError("Vivado vendor confirmed source count differs")
             digest = hashlib.sha256()
             for row in self.connection.execute("SELECT origin,name FROM source_names ORDER BY origin"):
                 if not isinstance(row[1],str) or not row[1]:
@@ -281,6 +384,9 @@ class OptimizationProofView(Mapping[str, Any]):
                 digest.update((json.dumps(row,separators=(",",":"))+"\n").encode())
             if digest.hexdigest() != self.header.get("source_names_sha256"):
                 raise ValidationError("Vivado optimization proof source-name seal disagrees")
+        except (sqlite3.DatabaseError, ValueError, TypeError, KeyError, OverflowError) as error:
+            self.close()
+            raise ValidationError("Vivado optimization proof document is malformed") from error
         except BaseException:
             self.close()
             raise

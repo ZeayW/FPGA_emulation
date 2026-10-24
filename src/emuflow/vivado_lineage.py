@@ -111,13 +111,16 @@ def import_cell_lineage(mapped: Path, functions: Path, inventories: Mapping[str,
 def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: Path,
                          output: Path, *, boundary: bool = False,
                          optimization_proofs: Path | None = None,
-                         allow_eliminated: bool = False) -> dict[str, Any]:
+                         allow_eliminated: bool = False,
+                         stage: str = "routed") -> dict[str, Any]:
     """Resolve requested source pins to all typed descendants or identical inputs.
 
     Candidate collections are measured as a worst physical endpoint bound. A
     changed or missing primitive that cannot be associated is rejected. No
     endpoint is preserved merely to make this query succeed.
     """
+    if stage not in {"synthesized", "routed"}:
+        raise ValidationError("unsupported Vivado timing-query lineage stage")
     connection = sqlite3.connect(f"file:{lineage.resolve()}?mode=ro", uri=True)
     try:
         connection.execute("ATTACH DATABASE ? AS mapped", (f"file:{mapped.resolve()}?mode=ro&immutable=1",))
@@ -128,7 +131,7 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
             connection.execute("ATTACH DATABASE ? AS proofs", (f"file:{optimization_proofs.resolve()}?mode=ro&immutable=1",))
             owner = {key:json.loads(value) for key,value in connection.execute("SELECT key,value FROM proofs.metadata")}
             lineage_owner = dict(connection.execute("SELECT key,value FROM metadata"))
-            if owner.get("mapped_index_sha256") != lineage_owner.get("mapped_index_sha256") or owner.get("stage") != "routed":
+            if owner.get("mapped_index_sha256") != lineage_owner.get("mapped_index_sha256") or owner.get("stage") != stage:
                 raise ValidationError("eliminated timing query proof belongs to a different source or stage")
 
         @lru_cache(maxsize=4096)
@@ -143,11 +146,11 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
                 SELECT DISTINCT a.name,a.transformations,a.ref FROM mapped.cells c
                 JOIN functions.signatures f ON f.seq=c.seq
                 JOIN functions.signatures equivalent ON equivalent.signature=f.signature
-                JOIN objects a ON a.origin=equivalent.seq AND a.stage='routed' AND a.ref=c.type
+                JOIN objects a ON a.origin=equivalent.seq AND a.stage=? AND a.ref=c.type
                 WHERE c.id=? AND (a.origin=c.seq OR NOT EXISTS (
-                    SELECT 1 FROM objects own WHERE own.stage='routed' AND own.origin=c.seq
+                    SELECT 1 FROM objects own WHERE own.stage=? AND own.origin=c.seq
                 )) ORDER BY a.name
-            """, (cell,))
+            """, (stage,cell,stage))
             encoded = []
             for row in rows:
                 changes = row[1].upper()
@@ -188,6 +191,7 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
                     hints = [candidates(bytes.fromhex(row[index+1]).decode(), False, required=index != 6) if row[index]=="pin" else "" for index in (2,4,6)]
                 writer.writerow(row+hints)
                 count += 1
-        return {"status": "pass", "queries": count, "output": str(output), "provider": LINEAGE_POLICY}
+        return {"status": "pass", "queries": count, "output": str(output), "provider": LINEAGE_POLICY,
+                "stage": stage}
     finally:
         connection.close()

@@ -20,6 +20,35 @@ from .errors import ValidationError
 
 CONSTANT_CONFIRMATION_SCHEMA = "emuflow.vivado-selected-constant-confirmations/v1"
 CONSTANT_INITIALIZATION_POLICY = "joint-inductive-source-model-with-explicit-vendor-selected-initialization"
+_CHECKED_CONSTANT_TOKEN = object()
+
+
+class CheckedConstantSources(Mapping[str, Any]):
+    """Immutable in-process result of the source/native semantic checks.
+
+    A saved JSON status report is not this interface. A consumer importing
+    external evidence must run the checker against its bound source first.
+    """
+    def __init__(self, document, *, _token=None):
+        if _token is not _CHECKED_CONSTANT_TOKEN:
+            raise ValidationError("constant sources must be created by the semantic checker")
+        self._canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+    def to_document(self):
+        return json.loads(self._canonical)
+
+    def __getitem__(self, key):
+        return self.to_document()[key]
+
+    def __iter__(self):
+        return iter(self.to_document())
+
+    def __len__(self):
+        return len(self.to_document())
+
+
+def check_constant_sources(*args, **kwargs) -> CheckedConstantSources:
+    return CheckedConstantSources(confirm_selected_constant_sources(*args, **kwargs), _token=_CHECKED_CONSTANT_TOKEN)
 
 
 def _init_bits(value: str, width: int) -> int:

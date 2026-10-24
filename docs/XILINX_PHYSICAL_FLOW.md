@@ -296,3 +296,15 @@ at their retained frontiers. It is not equivalence for every initial state.
 A routed consumer must still check its synthesized checkpoint identity and
 import the certificate into the partition proof owner before global timing may
 use these selected states as elimination proofs.
+
+The proof owner accepts `CheckedConstantSources` from
+`check_constant_sources`, rather than a saved JSON `status: pass`. It binds the
+checked facts to its own FPGA, mapped index, and synthesized checkpoint, verifies
+the selected values against its current inductive model, and seals the compact
+confirmation document inside the partition proof database. Only those selected
+sources can gain `initialization: vendor-confirmed`; other conditional states
+remain unproved. Proof readers verify the document seal, complete frontier
+references, selected values, policy, and counts. A synthesis-only preflight must
+explicitly select the synthesized lineage stage and is never accepted as routed
+proof by a routed consumer. The native producer still needs to connect this
+checked input at its post-implementation import boundary.
