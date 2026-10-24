@@ -1204,6 +1204,9 @@ def run_phase3(
         ir,
         assignment,
     )
+    report["assignment_index_writer_implementation_id"] = assignment_index_summary["writer_implementation"]
+    if "native_writer_metrics" in assignment_index_summary:
+        report["native_assignment_index_metrics"] = assignment_index_summary["native_writer_metrics"]
     persisted_assignment = (
         assignment
         if retain_diagnostics

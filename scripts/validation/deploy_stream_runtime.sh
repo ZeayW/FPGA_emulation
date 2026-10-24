@@ -118,11 +118,14 @@ while IFS= read -r source || test -n "$source"; do
 done < "$source_dir/src/native/emuflow_core/sources.txt"
 test "$core_seen" != " " || { echo "empty shared native source manifest" >&2; exit 2; }
 objects=()
+generated_dir="$object_dir/generated"
+python3 "$source_dir/scripts/generate_assignment_schema_header.py" \
+  "$generated_dir/emuflow_core/assignment_schema.hpp"
 for source in "${core_sources[@]}"; do
   object="$object_dir/${source//\//_}.o"
   "$selected_cxx" -std=c++17 -O3 -pthread -DEMUFLOW_NATIVE_STAGE_LIBRARY=1 \
     ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
-    -c "$source_dir/src/native/$source" -o "$object"
+    -I"$generated_dir" -c "$source_dir/src/native/$source" -o "$object"
   objects+=("$object")
 done
 archive="$runtime_dir/lib/libemuflow_core.a"

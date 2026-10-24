@@ -272,11 +272,24 @@ foreach(source IN LISTS EMUFLOW_CORE_SOURCE_NAMES)
   endif()
   list(APPEND EMUFLOW_CORE_SOURCE_FILES "${CMAKE_SOURCE_DIR}/src/native/${source}")
 endforeach()
+set(EMUFLOW_ASSIGNMENT_SCHEMA_GENERATOR "${CMAKE_SOURCE_DIR}/scripts/generate_assignment_schema_header.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${EMUFLOW_ASSIGNMENT_SCHEMA_GENERATOR}"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/assignment_schema.hpp.in"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_core.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_cuts.sql")
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${EMUFLOW_ASSIGNMENT_SCHEMA_GENERATOR}"
+  "${CMAKE_BINARY_DIR}/generated/emuflow_core/assignment_schema.hpp"
+  RESULT_VARIABLE EMUFLOW_ASSIGNMENT_SCHEMA_STATUS)
+if(NOT EMUFLOW_ASSIGNMENT_SCHEMA_STATUS EQUAL 0)
+  message(FATAL_ERROR "Could not generate shared assignment schema")
+endif()
 add_library(emuflow_core STATIC ${EMUFLOW_CORE_SOURCE_FILES})
 target_compile_features(emuflow_core PUBLIC cxx_std_17)
 target_compile_options(emuflow_core PRIVATE -O3)
 target_include_directories(
   emuflow_core PUBLIC "${CMAKE_SOURCE_DIR}/src/native"
+  PRIVATE "${CMAKE_BINARY_DIR}/generated"
 )
 target_link_libraries(emuflow_core PUBLIC SQLite3::SQLite3)
 if(BUILD_TESTING)
@@ -372,6 +385,7 @@ file(
   "${CMAKE_SOURCE_DIR}/resources/architectures/*"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/platforms/*.json"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/io/*.json"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/*.sql"
   "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
   "${CMAKE_SOURCE_DIR}/scripts/yosys/*"
 )
@@ -420,6 +434,10 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy
     ${EMUFLOW_PYTHON_SOURCES}
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema"
+    "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/schema"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/src/emuflow/data/platforms"

@@ -17,6 +17,7 @@
 namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
+    {"assignment-publication-request-v1", ArtifactEncoding::kBinary, 0x31514241554d5545ULL, 1},
     {"xilinx-physical-handoff-v1", ArtifactEncoding::kSqlite, 0x454d5550, 1, true,
      "SELECT schema FROM manifest WHERE singleton=1","emuflow.xilinx-physical-handoff-sqlite/v1"},
     {"rwroute-export-request-v1", ArtifactEncoding::kBinary, 0x31515752554d5545ULL, 1},

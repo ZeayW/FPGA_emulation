@@ -161,3 +161,123 @@ def test_offline_load_differential_seals_summary_and_retires_payloads(source, tm
         env=dict(os.environ), capture_output=True, text=True)
     assert result.returncode != 0
     assert (failed/'failure.json').is_file() and not (failed/'tmp').exists()
+
+
+def _published_rows(path):
+    import sqlite3
+    from contextlib import closing
+    with closing(sqlite3.connect(path)) as db:
+        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+        return {table: sorted(db.execute('SELECT * FROM '+table), key=repr) for table in tables}
+
+
+@pytest.mark.parametrize('exact', [False, True])
+@pytest.mark.parametrize('mode', ['normal', 'unused-part', 'unicode', 'sparse'])
+def test_native_index_matches_reference_without_host_instance_records(source, tmp_path, exact, mode):
+    import sqlite3
+    from contextlib import closing
+    from emuflow.phase3_assignment_index import write_phase3_assignment_index
+    if mode in ('unicode', 'sparse'):
+        with closing(sqlite3.connect(source[0].path)) as db, db:
+            if mode == 'unicode':
+                db.execute("UPDATE cell_records SET id='é雪😀' WHERE seq=0")
+                db.execute("UPDATE net_records SET id='étude😀' WHERE seq=0")
+            else:
+                db.execute('UPDATE endpoint_records SET ordinal=ordinal*7+3')
+    ir, platform, constraints, clusters, parts = prepare(source)
+    if mode == 'unused-part':
+        parts = _PackedClusterAssignment(('a', 'b'), [1] * len(parts))
+    assignment = build_partition_assignment(ir, platform, clusters, constraints, parts, 'fixture', 7,
+        _include_semantic_contract=exact, _stream_semantic_records=True)
+    # The independent old writer consumes the same logical assignment, but only
+    # this small fixture may expand identities for its reference relation.
+    reference = dict(assignment, instance_assignment=dict(assignment['instance_assignment'].items()))
+    expected, actual = tmp_path/'reference/index.sqlite', tmp_path/'native/index.sqlite'
+    reference_summary = write_phase3_assignment_index(expected, ir, reference)
+    with patch.object(_CompactInstanceAssignment, 'iter_source_assignments', side_effect=AssertionError('host instance row')):
+        summary = write_phase3_assignment_index(actual, ir, assignment)
+    assert summary['writer_implementation'] == 'native-primary-assignment-index-v1'
+    assert reference_summary['writer_implementation'] == 'python-reference-v1'
+    assert {k:v for k,v in summary.items() if k not in ('writer_implementation','native_writer_metrics')} == {
+        k:v for k,v in reference_summary.items() if k not in ('writer_implementation','native_writer_metrics')}
+    assert _published_rows(actual) == _published_rows(expected)
+    if exact:
+        from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
+        assert (actual.parent/EXACT_BINARY_ARTIFACT).read_bytes() == (expected.parent/EXACT_BINARY_ARTIFACT).read_bytes()
+
+
+@pytest.mark.parametrize('kind', ['checksum', 'truncated', 'version', 'ownership', 'generation', 'source-count', 'dangling-predecessor'])
+def test_native_index_failure_preserves_published_pair_without_retry(source, tmp_path, kind):
+    import struct
+    from emuflow.phase3_assignment_index import write_phase3_assignment_index
+    from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
+    from emuflow.tool_runtime import NativeToolProcess
+    import emuflow.phase3_assignment_native as publication
+    ir, platform, constraints, clusters, parts = prepare(source)
+    assignment = build_partition_assignment(ir, platform, clusters, constraints, parts, 'fixture', 7,
+        _include_semantic_contract=False, _stream_semantic_records=True)
+    if kind == 'dangling-predecessor':
+        assignment['cut_nets'] = [dict(c, dependency_level=0, combinational_dependency_depth=0,
+            predecessor_cut_nets=['nonexistent']) for c in assignment['cut_nets']]
+        assert assignment['cut_nets']
+    path=tmp_path/'index.sqlite'; path.write_bytes(b'prior-index')
+    binary=tmp_path/EXACT_BINARY_ARTIFACT; binary.write_bytes(b'prior-exact')
+    def corrupted_process(executable, command, **kwargs):
+        request=Path(command[-2]); data=bytearray(request.read_bytes())
+        if kind == 'checksum': data[-1] ^= 1
+        elif kind == 'truncated': data=data[:-1]
+        elif kind == 'version': struct.pack_into('<I',data,8,9)
+        elif kind == 'generation': data[12] ^= 1
+        elif kind in ('ownership', 'source-count'):
+            offset=12+2*56
+            for _ in range(2):
+                count=struct.unpack_from('<I',data,offset)[0];offset+=4
+                for _ in range(count):
+                    length=struct.unpack_from('<I',data,offset)[0];offset+=4+length
+            if kind == 'ownership': struct.pack_into('<I',data,offset+16,999)
+            else: struct.pack_into('<Q',data,offset+8,999)
+        if kind not in ('checksum', 'truncated'):
+            import zlib
+            struct.pack_into('<I',data,len(data)-4,zlib.crc32(data[:-4]))
+        request.write_bytes(data)
+        return NativeToolProcess(executable, command, **kwargs)
+    with patch.object(publication, 'NativeToolProcess', side_effect=corrupted_process), patch.object(
+            _CompactInstanceAssignment, 'iter_source_assignments', side_effect=AssertionError('reference retry')):
+        with pytest.raises(ValidationError):
+            write_phase3_assignment_index(path, ir, assignment)
+    assert path.read_bytes()==b'prior-index' and binary.read_bytes()==b'prior-exact'
+    assert not list(tmp_path.glob('.*.tmp*'))
+    assert not list(tmp_path.glob('emuflow-assignment-publish-*'))
+
+
+@pytest.mark.parametrize('kind', ['lost-primary', 'stale-primary', 'stale-source', 'validator', 'backup-rename', 'index-rename'])
+def test_native_publication_rejection_preserves_existing_index_and_exact_data(source, tmp_path, kind):
+    import emuflow.phase3_assignment_index as index
+    from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
+    from contextlib import ExitStack
+    ir, platform, constraints, clusters, parts = prepare(source)
+    assignment = build_partition_assignment(ir, platform, clusters, constraints, parts, 'fixture', 7,
+        _include_semantic_contract=True, _stream_semantic_records=True)
+    instance = assignment['instance_assignment']
+    path=tmp_path/'index.sqlite'; path.write_bytes(b'old-index')
+    binary=tmp_path/EXACT_BINARY_ARTIFACT; binary.write_bytes(b'old-exact')
+    if kind == 'lost-primary': instance._native_primary_artifact = None
+    elif kind in ('stale-primary', 'stale-source'):
+        changed=instance._native_primary_artifact if kind=='stale-primary' else ir.path
+        with Path(changed).open('ab') as out: out.write(b'changed')
+    replace=os.replace
+    def fail_selected_rename(src, dst):
+        if (kind=='backup-rename' and Path(src)==binary) or (kind=='index-rename' and Path(dst)==path):
+            raise OSError('injected publication failure')
+        return replace(src,dst)
+    with ExitStack() as patches:
+        patches.enter_context(patch.object(_CompactInstanceAssignment, 'iter_source_assignments', side_effect=AssertionError('reference fallback')))
+        if kind=='validator':
+            patches.enter_context(patch.object(index, 'validate_phase3_assignment_index', side_effect=ValidationError('injected validator rejection')))
+        elif kind.endswith('rename'):
+            patches.enter_context(patch.object(index.os, 'replace', side_effect=fail_selected_rename))
+        with pytest.raises((ValidationError,OSError)):
+            index.write_phase3_assignment_index(path, ir, assignment)
+    assert path.read_bytes()==b'old-index' and binary.read_bytes()==b'old-exact'
+    assert not list(tmp_path.glob('.*.tmp*'))
+    assert not list(tmp_path.glob('.*.previous'))

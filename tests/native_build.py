@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 import re
+import sys
 import shutil
 import subprocess
 import tempfile
@@ -225,11 +226,14 @@ def _build_native_stage_program(entry: Path, executable: Path) -> Path:
     if compiler is None:
         raise RuntimeError("a C++17 compiler is required for native API tests")
     executable.parent.mkdir(parents=True, exist_ok=True)
+    generated = Path(_BUILD_ROOT.name) / "generated"
+    subprocess.run([sys.executable, str(ROOT / 'scripts/generate_assignment_schema_header.py'),
+        str(generated / 'emuflow_core/assignment_schema.hpp')], check=True)
     subprocess.run(
         [compiler, "-std=c++17", "-O2", "-pthread",
          "-DEMUFLOW_NATIVE_STAGE_LIBRARY=1", str(entry),
          *(str(ROOT / "src/native" / source) for source in _NATIVE_STAGE_SOURCES),
-         "-I", str(ROOT / "src/native"), "-lsqlite3", "-o", str(executable)],
+         "-I", str(ROOT / "src/native"), "-I", str(generated), "-lsqlite3", "-o", str(executable)],
         check=True,
     )
     return executable

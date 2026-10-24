@@ -1,0 +1,5 @@
+#pragma once
+namespace emuflow::core {
+inline constexpr const char* kAssignmentCoreDDL = R"EMUFLOW_SQL(@EMUFLOW_ASSIGNMENT_core_DDL@)EMUFLOW_SQL";
+inline constexpr const char* kAssignmentCutsDDL = R"EMUFLOW_SQL(@EMUFLOW_ASSIGNMENT_cuts_DDL@)EMUFLOW_SQL";
+}

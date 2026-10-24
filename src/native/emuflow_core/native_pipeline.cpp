@@ -7,6 +7,7 @@
 #include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/partition_clusters.hpp"
 #include "emuflow_core/partition_loads.hpp"
+#include "emuflow_core/assignment_publish.hpp"
 #include "emuflow_core/exact_captures.hpp"
 #include "emuflow_core/candidate_ids.hpp"
 #include "emuflow_core/sqlite.hpp"
@@ -21,6 +22,7 @@ const char* StageName(Stage stage) {
     case Stage::kExportRwroute: return "phase7.export-rwroute";
     case Stage::kBuildCaptures: return "phase3.build-captures";
     case Stage::kValidateCaptures: return "phase3.validate-captures";
+    case Stage::kPublishAssignmentIndex: return "phase3.publish-assignment";
     case Stage::kReducePartitionLoads: return "phase3.reduce-loads";
     case Stage::kAnalyzeExact: return "phase3.analyze";
     case Stage::kFinalizeExact: return "phase3.finalize-semantics";
@@ -48,6 +50,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kExportRwroute: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","rwroute-export-request-v1"};
     case Stage::kBuildCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1"};
     case Stage::kValidateCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1","exact-captures-v1"};
+    case Stage::kPublishAssignmentIndex: return {"emuir-compact-v2","partition-cluster-columns-v2","assignment-publication-request-v1"};
     case Stage::kReducePartitionLoads: return {"emuir-compact-v2","partition-cluster-columns-v2","partition-load-request-v1"};
     case Stage::kAnalyzeExact:
       return request.indexed_input
@@ -174,6 +177,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     switch (request.stage) {
       case Stage::kExportRwroute:
         core::ExportRwroute(inputs[0],inputs[1],inputs[2],output,request.auxiliary_output_path); break;
+      case Stage::kPublishAssignmentIndex: core::PublishAssignmentIndex(inputs,output); break;
       case Stage::kReducePartitionLoads: core::ReducePartitionLoads(inputs,output); break;
       case Stage::kBuildCaptures: core::BuildExactCaptures(inputs,output); break;
       case Stage::kValidateCaptures: core::ValidateExactCaptures(inputs,output); break;
@@ -208,6 +212,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     const char* schema = nullptr;
     switch (request.stage) {
       case Stage::kExportRwroute: schema = "rwroute-input-tsv-v1"; break;
+      case Stage::kPublishAssignmentIndex: schema = "assignment-index-v4"; break;
       case Stage::kReducePartitionLoads: schema = "partition-load-summary-v1"; break;
       case Stage::kBuildCaptures: schema = "exact-captures-v1"; break;
       case Stage::kValidateCaptures: schema = "exact-capture-validation-v1"; break;

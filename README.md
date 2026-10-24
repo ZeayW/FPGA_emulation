@@ -159,6 +159,9 @@ carries the seal from the assignment index into the split manifest and
 independently rejects missing or changed reservations; Phase 7 streams the synthesized
 transport resource totals from SQLite, rejects any reservation overrun, and
 still checks the combined implementation against the original physical cap.
+Compact production Phase 3 publishes its assignment index through the shared C++ owner,
+reading source instances directly rather than returning instance rows to Python.
+See the [native publication contract](docs/PHASE3_NATIVE_MIGRATION.md#assignment-index-publication).
 
 The table names the principal upstream tools and method sources; EmuFlow's
 integration and extensions are mapped to implementation entry points in the

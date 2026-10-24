@@ -70,7 +70,8 @@ class CheckedRequestReader {
     return value;
   }
   void ReadBytes(void* destination, std::size_t size);
-  std::string ReadString32(bool allow_empty = false);
+  std::string ReadString32(bool allow_empty = false, std::size_t maximum_bytes = 1024*1024);
+  std::size_t remaining() const { return reader_.remaining()>=4 ? reader_.remaining()-4 : 0; }
   void RequireEnd();
  private:
   BinaryReader reader_;

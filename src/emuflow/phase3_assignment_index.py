@@ -58,59 +58,9 @@ _ASSIGNMENT_INDEX_SCHEMA_BY_VERSION = {
 _SQLITE_SIGNED_INTEGER_MAX = (1 << 63) - 1
 
 
-CORE_DDL = """
-CREATE TABLE metadata(
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-) WITHOUT ROWID;
-CREATE TABLE parts(
-  part_index INTEGER PRIMARY KEY,
-  fpga TEXT NOT NULL UNIQUE
-);
-CREATE TABLE copies(
-  source_instance_seq INTEGER NOT NULL,
-  part_index INTEGER NOT NULL,
-  copy_id TEXT NOT NULL,
-  is_replica INTEGER NOT NULL CHECK(is_replica IN (0,1)),
-  PRIMARY KEY(source_instance_seq, copy_id),
-  UNIQUE(copy_id)
-) WITHOUT ROWID;
-CREATE INDEX copies_part_source
-  ON copies(part_index, source_instance_seq);
-CREATE TABLE cut_sinks(
-  net_id TEXT NOT NULL,
-  source_part_index INTEGER NOT NULL,
-  sink_part_index INTEGER NOT NULL,
-  PRIMARY KEY(net_id, sink_part_index)
-) WITHOUT ROWID;
-CREATE INDEX cut_sinks_sink
-  ON cut_sinks(sink_part_index, net_id);
-"""
+CORE_DDL = (Path(__file__).parent / "data/schema/phase3_assignment_core.sql").read_text(encoding="utf-8")
 
-CUT_RECORD_DDL = """
-CREATE TABLE cuts(
-  cut_index INTEGER PRIMARY KEY,
-  net_id TEXT NOT NULL UNIQUE,
-  source_part_index INTEGER NOT NULL,
-  cut_class TEXT NOT NULL,
-  sink_endpoints INTEGER NOT NULL CHECK(sink_endpoints>0),
-  transport_round INTEGER CHECK(transport_round IS NULL OR transport_round>=0),
-  dependency_level INTEGER CHECK(dependency_level IS NULL OR dependency_level>=0),
-  combinational_dependency_depth INTEGER CHECK(
-    combinational_dependency_depth IS NULL OR
-    combinational_dependency_depth>=0
-  )
-);
-CREATE TABLE cut_predecessors(
-  cut_index INTEGER NOT NULL,
-  ordinal INTEGER NOT NULL,
-  predecessor_net_id TEXT NOT NULL,
-  PRIMARY KEY(cut_index,ordinal),
-  UNIQUE(cut_index,predecessor_net_id)
-) WITHOUT ROWID;
-CREATE INDEX cut_predecessors_net
-  ON cut_predecessors(predecessor_net_id,cut_index);
-"""
+CUT_RECORD_DDL = (Path(__file__).parent / "data/schema/phase3_assignment_cuts.sql").read_text(encoding="utf-8")
 
 EXACT_DDL = """
 CREATE TABLE exact_cut_nodes(
@@ -666,19 +616,9 @@ def write_phase3_assignment_index(
         else None
     )
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    connection = sqlite3.connect(temporary)
+    connection = None
+    native_owner = getattr(instance_assignment, "_native_publication", False)
     try:
-        connection.executescript(
-            f"""
-            PRAGMA journal_mode=OFF;
-            PRAGMA synchronous=OFF;
-            PRAGMA temp_store=FILE;
-            PRAGMA cache_size=-65536;
-            PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
-            PRAGMA user_version={ASSIGNMENT_INDEX_USER_VERSION};
-            {CURRENT_DDL}
-            """
-        )
         metadata = {
             "schema": ASSIGNMENT_INDEX_SCHEMA,
             "design": assignment.get("design"),
@@ -710,171 +650,190 @@ def write_phase3_assignment_index(
             ),
             "semantic_contract_binary": exact_binary,
         }
-        connection.executemany(
-            "INSERT INTO metadata(key,value) VALUES (?,?)",
-            ((key, _json(value)) for key, value in sorted(metadata.items())),
-        )
-        connection.executemany(
-            "INSERT INTO parts(part_index,fpga) VALUES (?,?)",
-            enumerate(part_ids),
-        )
-
-        source_instances = ir.value["instances"]
-        if len(source_instances) != len(instance_assignment):
-            raise ValidationError(
-                "Phase 3 assignment instance coverage disagrees with EmuIR"
+        if native_owner:
+            from .phase3_assignment_native import publish_native_assignment_index
+            native_writer_metrics = phase3_runtime_call(
+                "assignment_index.native_publish", publish_native_assignment_index,
+                temporary, ir, assignment, part_ids, metadata,
+            )
+        else:
+            connection = sqlite3.connect(temporary)
+            connection.executescript(
+                f"""
+                PRAGMA journal_mode=OFF;
+                PRAGMA synchronous=OFF;
+                PRAGMA temp_store=FILE;
+                PRAGMA cache_size=-65536;
+                PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
+                PRAGMA user_version={ASSIGNMENT_INDEX_USER_VERSION};
+                {CURRENT_DDL}
+                """
+            )
+            connection.executemany(
+                "INSERT INTO metadata(key,value) VALUES (?,?)",
+                ((key, _json(value)) for key, value in sorted(metadata.items())),
+            )
+            connection.executemany(
+                "INSERT INTO parts(part_index,fpga) VALUES (?,?)",
+                enumerate(part_ids),
             )
 
-        compact_rows = getattr(
-            instance_assignment, "iter_source_assignments", None
-        )
+            source_instances = ir.value["instances"]
+            if len(source_instances) != len(instance_assignment):
+                raise ValidationError(
+                    "Phase 3 assignment instance coverage disagrees with EmuIR"
+                )
 
-        def primary_rows():
-            if callable(compact_rows):
-                observed = 0
-                for source_seq, identity, target in compact_rows():
-                    if source_seq != observed or target not in part_index:
+            compact_rows = getattr(
+                instance_assignment, "iter_source_assignments", None
+            )
+
+            def primary_rows():
+                if callable(compact_rows):
+                    observed = 0
+                    for source_seq, identity, target in compact_rows():
+                        if source_seq != observed or target not in part_index:
+                            raise ValidationError(
+                                "Phase 3 compact assignment coverage is invalid"
+                            )
+                        observed += 1
+                        yield (source_seq, part_index[target], identity, 0)
+                    if observed != len(source_instances):
                         raise ValidationError(
-                            "Phase 3 compact assignment coverage is invalid"
+                            "Phase 3 compact assignment coverage is incomplete"
                         )
-                    observed += 1
+                    return
+                for source_seq, instance in enumerate(source_instances):
+                    identity = instance["id"]
+                    target = instance_assignment.get(identity)
+                    if target is None:
+                        raise ValidationError(
+                            f"Phase 3 assignment omits instance {identity!r}"
+                        )
                     yield (source_seq, part_index[target], identity, 0)
-                if observed != len(source_instances):
-                    raise ValidationError(
-                        "Phase 3 compact assignment coverage is incomplete"
-                    )
-                return
-            for source_seq, instance in enumerate(source_instances):
-                identity = instance["id"]
-                target = instance_assignment.get(identity)
-                if target is None:
-                    raise ValidationError(
-                        f"Phase 3 assignment omits instance {identity!r}"
-                    )
-                yield (source_seq, part_index[target], identity, 0)
 
-        phase3_runtime_call(
-            "assignment_index.write_primary_copies",
-            connection.executemany,
-            "INSERT INTO copies VALUES (?,?,?,?)",
-            primary_rows(),
-        )
-
-        replication = assignment.get("replication")
-        replica_records = (
-            replication.get("replicas", [])
-            if isinstance(replication, Mapping)
-            else []
-        )
-
-        def replica_rows():
-            for record in replica_records:
-                target = record.get("target_fpga")
-                if target not in part_index:
-                    raise ValidationError("replica targets an unknown FPGA")
-                for item in record.get("instances", []):
-                    original = item.get("original_instance")
-                    copy_id = item.get("replica_instance")
-                    if not isinstance(original, str) or not isinstance(
-                        copy_id, str
-                    ):
-                        raise ValidationError("replica instance is invalid")
-                    row = connection.execute(
-                        "SELECT source_instance_seq FROM copies "
-                        "WHERE copy_id=? AND is_replica=0",
-                        (original,),
-                    ).fetchone()
-                    if row is None:
-                        raise ValidationError("replica instance is invalid")
-                    yield (
-                        int(row[0]),
-                        part_index[target],
-                        copy_id,
-                        1,
-                    )
-
-        phase3_runtime_call(
-            "assignment_index.write_replica_copies",
-            connection.executemany,
-            "INSERT INTO copies VALUES (?,?,?,?)",
-            replica_rows(),
-        )
-
-        raw_cuts = assignment.get("cut_nets")
-        if not isinstance(raw_cuts, list):
-            raise ValidationError("cut-net assignment is invalid")
-        cut_digest = hashlib.sha256()
-        cut_rows: list[tuple[Any, ...]] = []
-        sink_rows: list[tuple[Any, ...]] = []
-        predecessor_rows: list[tuple[Any, ...]] = []
-
-        def flush_cut_rows() -> None:
-            if cut_rows:
-                connection.executemany(
-                    "INSERT INTO cuts VALUES (?,?,?,?,?,?,?,?)", cut_rows
-                )
-                cut_rows.clear()
-            if sink_rows:
-                connection.executemany(
-                    "INSERT INTO cut_sinks VALUES (?,?,?)", sink_rows
-                )
-                sink_rows.clear()
-            if predecessor_rows:
-                connection.executemany(
-                    "INSERT INTO cut_predecessors VALUES (?,?,?)",
-                    predecessor_rows,
-                )
-                predecessor_rows.clear()
-
-        previous_net = None
-        for cut_index, cut in enumerate(raw_cuts):
-            normalized = _normalized_cut_record(cut, part_index)
-            net_id = normalized["net"]
-            if previous_net is not None and net_id <= previous_net:
-                raise ValidationError("cut-net assignment order is not canonical")
-            previous_net = net_id
-            encoded = _json(normalized).encode("utf-8")
-            cut_digest.update(encoded)
-            cut_digest.update(b"\n")
-            source_index = part_index[normalized["source_fpgas"][0]]
-            cut_rows.append(
-                (
-                    cut_index,
-                    net_id,
-                    source_index,
-                    normalized["cut_class"],
-                    normalized["sink_endpoints"],
-                    normalized.get("transport_round"),
-                    normalized.get("dependency_level"),
-                    normalized.get("combinational_dependency_depth"),
-                )
+            phase3_runtime_call(
+                "assignment_index.write_primary_copies",
+                connection.executemany,
+                "INSERT INTO copies VALUES (?,?,?,?)",
+                primary_rows(),
             )
-            for sink in normalized["sink_fpgas"]:
-                sink_rows.append((net_id, source_index, part_index[sink]))
-                if len(sink_rows) >= 8192:
-                    flush_cut_rows()
-            for ordinal, predecessor in enumerate(
-                normalized.get("predecessor_cut_nets", [])
-            ):
-                predecessor_rows.append((cut_index, ordinal, predecessor))
-                if len(predecessor_rows) >= 8192:
-                    flush_cut_rows()
-            if len(cut_rows) >= 8192:
-                flush_cut_rows()
-        flush_cut_rows()
-        cut_records_sha256 = cut_digest.hexdigest()
-        connection.executemany(
-            "INSERT INTO metadata(key,value) VALUES (?,?)",
-            (
-                ("cut_records_schema", _json(CUT_RECORDS_SCHEMA)),
-                ("cut_records", _json(len(raw_cuts))),
-                ("cut_records_sha256", _json(cut_records_sha256)),
-            ),
-        )
 
-        phase3_runtime_call(
-            "assignment_index.commit", connection.commit
-        )
+            replication = assignment.get("replication")
+            replica_records = (
+                replication.get("replicas", [])
+                if isinstance(replication, Mapping)
+                else []
+            )
+
+            def replica_rows():
+                for record in replica_records:
+                    target = record.get("target_fpga")
+                    if target not in part_index:
+                        raise ValidationError("replica targets an unknown FPGA")
+                    for item in record.get("instances", []):
+                        original = item.get("original_instance")
+                        copy_id = item.get("replica_instance")
+                        if not isinstance(original, str) or not isinstance(
+                            copy_id, str
+                        ):
+                            raise ValidationError("replica instance is invalid")
+                        row = connection.execute(
+                            "SELECT source_instance_seq FROM copies "
+                            "WHERE copy_id=? AND is_replica=0",
+                            (original,),
+                        ).fetchone()
+                        if row is None:
+                            raise ValidationError("replica instance is invalid")
+                        yield (
+                            int(row[0]),
+                            part_index[target],
+                            copy_id,
+                            1,
+                        )
+
+            phase3_runtime_call(
+                "assignment_index.write_replica_copies",
+                connection.executemany,
+                "INSERT INTO copies VALUES (?,?,?,?)",
+                replica_rows(),
+            )
+
+            raw_cuts = assignment.get("cut_nets")
+            if not isinstance(raw_cuts, list):
+                raise ValidationError("cut-net assignment is invalid")
+            cut_digest = hashlib.sha256()
+            cut_rows: list[tuple[Any, ...]] = []
+            sink_rows: list[tuple[Any, ...]] = []
+            predecessor_rows: list[tuple[Any, ...]] = []
+
+            def flush_cut_rows() -> None:
+                if cut_rows:
+                    connection.executemany(
+                        "INSERT INTO cuts VALUES (?,?,?,?,?,?,?,?)", cut_rows
+                    )
+                    cut_rows.clear()
+                if sink_rows:
+                    connection.executemany(
+                        "INSERT INTO cut_sinks VALUES (?,?,?)", sink_rows
+                    )
+                    sink_rows.clear()
+                if predecessor_rows:
+                    connection.executemany(
+                        "INSERT INTO cut_predecessors VALUES (?,?,?)",
+                        predecessor_rows,
+                    )
+                    predecessor_rows.clear()
+
+            previous_net = None
+            for cut_index, cut in enumerate(raw_cuts):
+                normalized = _normalized_cut_record(cut, part_index)
+                net_id = normalized["net"]
+                if previous_net is not None and net_id <= previous_net:
+                    raise ValidationError("cut-net assignment order is not canonical")
+                previous_net = net_id
+                encoded = _json(normalized).encode("utf-8")
+                cut_digest.update(encoded)
+                cut_digest.update(b"\n")
+                source_index = part_index[normalized["source_fpgas"][0]]
+                cut_rows.append(
+                    (
+                        cut_index,
+                        net_id,
+                        source_index,
+                        normalized["cut_class"],
+                        normalized["sink_endpoints"],
+                        normalized.get("transport_round"),
+                        normalized.get("dependency_level"),
+                        normalized.get("combinational_dependency_depth"),
+                    )
+                )
+                for sink in normalized["sink_fpgas"]:
+                    sink_rows.append((net_id, source_index, part_index[sink]))
+                    if len(sink_rows) >= 8192:
+                        flush_cut_rows()
+                for ordinal, predecessor in enumerate(
+                    normalized.get("predecessor_cut_nets", [])
+                ):
+                    predecessor_rows.append((cut_index, ordinal, predecessor))
+                    if len(predecessor_rows) >= 8192:
+                        flush_cut_rows()
+                if len(cut_rows) >= 8192:
+                    flush_cut_rows()
+            flush_cut_rows()
+            cut_records_sha256 = cut_digest.hexdigest()
+            connection.executemany(
+                "INSERT INTO metadata(key,value) VALUES (?,?)",
+                (
+                    ("cut_records_schema", _json(CUT_RECORDS_SCHEMA)),
+                    ("cut_records", _json(len(raw_cuts))),
+                    ("cut_records_sha256", _json(cut_records_sha256)),
+                ),
+            )
+
+            phase3_runtime_call(
+                "assignment_index.commit", connection.commit
+            )
         summary = phase3_runtime_call(
             "assignment_index.validate",
             validate_phase3_assignment_index,
@@ -884,23 +843,32 @@ def write_phase3_assignment_index(
             validate_binary=False,
             exact_binary_path=exact_binary_temporary,
         )
-        connection.close()
+        if connection is not None:
+            connection.close()
+        summary["writer_implementation"] = (
+            "native-primary-assignment-index-v1" if native_owner else "python-reference-v1"
+        )
+        if native_owner:
+            summary["native_writer_metrics"] = native_writer_metrics
         with temporary.open("rb") as stream:
             os.fsync(stream.fileno())
         previous_binary = path.with_name(
             f".{EXACT_BINARY_ARTIFACT}.{uuid.uuid4().hex}.previous"
         )
         moved_previous = False
+        installed_binary = False
         try:
             if exact_contract is not None:
                 if exact_binary_path.exists():
                     os.replace(exact_binary_path, previous_binary)
                     moved_previous = True
                 os.replace(exact_binary_temporary, exact_binary_path)
+                installed_binary = True
             os.replace(temporary, path)
         except BaseException:
             if exact_contract is not None:
-                exact_binary_path.unlink(missing_ok=True)
+                if installed_binary:
+                    exact_binary_path.unlink(missing_ok=True)
                 if moved_previous:
                     os.replace(previous_binary, exact_binary_path)
             raise
@@ -910,7 +878,8 @@ def write_phase3_assignment_index(
         return summary
     except BaseException:
         try:
-            connection.close()
+            if connection is not None:
+                connection.close()
         finally:
             temporary.unlink(missing_ok=True)
             exact_binary_temporary.unlink(missing_ok=True)

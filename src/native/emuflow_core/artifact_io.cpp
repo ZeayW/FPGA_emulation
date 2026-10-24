@@ -29,9 +29,9 @@ void CheckedRequestReader::ReadBytes(void* destination, std::size_t size) {
   reader_.ReadBytes(destination, size);
   UpdateCrc32(crc_, static_cast<const unsigned char*>(destination), size);
 }
-std::string CheckedRequestReader::ReadString32(bool allow_empty) {
+std::string CheckedRequestReader::ReadString32(bool allow_empty, std::size_t maximum_bytes) {
   const auto size = Read<std::uint32_t>();
-  if ((!size && !allow_empty) || size > 1024 * 1024)
+  if ((!size && !allow_empty) || size > maximum_bytes || size > remaining())
     throw StageError(ErrorCode::kInvalidArtifact,"native request string exceeds bound or is empty");
   std::string value(size, '\0');
   ReadBytes(value.data(), size);

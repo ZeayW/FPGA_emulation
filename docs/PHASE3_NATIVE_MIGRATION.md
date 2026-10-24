@@ -505,6 +505,30 @@ bounded assignment view and typed cursors. Generic JSON materialization is an
 explicit compatibility operation. References bind a complete generation;
 unknown versions, truncation, corruption and mixed generations fail closed.
 
+## Assignment index publication
+
+`emuflow-native phase3 publish-assignment EMUIR PRIMARY REQUEST OUTPUT` publishes
+current assignment v4 through the shared `SqliteArtifactWriter`. Its source-bound
+request carries integer cluster ownership, the FPGA catalog, metadata and ordered
+cut records. The C++ owner joins primary ownership with the paired EmuIR cell
+cursor and writes primary copies directly; Python never expands or transfers
+instance records for this operation. Both native and reference writers use the
+same installed SQL schema. CMake, compiler-only fixture builds and deployment
+builds generate the native header from those authoritative SQL files.
+
+The producer checks source generations, counts, ownership, cut order and
+predecessor coverage. The separate typed-index validator still checks the output,
+canonical cut digest and exact contract. Only then does the host publish the
+index/binary pair and its descriptor. Failed requests or validation preserve the
+previous pair, including failures before the previous binary can be moved aside.
+A selected native failure does not retry through the reference writer.
+
+The phase report records `assignment_index_writer_implementation_id` and native
+writer metrics. This closes the Python instance-row publication boundary; policy
+conversion, host cut-record emission and other remaining publication work retain
+their explicit migration obligations. It does not qualify complete Phase 3 costs
+or complete native compilation without the required real-design measurements.
+
 ## Physical and timing contracts
 
 Mapped indexes, placement certificates and `physical-handoff.sqlite` carry

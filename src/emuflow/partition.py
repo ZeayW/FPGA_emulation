@@ -619,6 +619,13 @@ class _CompactInstanceAssignment(Mapping[str, str]):
         cluster_assignment: Mapping[str, str],
     ) -> None:
         self.path = path
+        self._native_publication = getattr(clusters, "implementation_id", None) == "native-primary-clusters-v1"
+        self._native_primary_artifact = getattr(clusters, "native_artifact", None)
+        if self._native_publication:
+            if self._native_primary_artifact is None:
+                raise ValidationError("native assignment primary ownership is missing")
+            self._native_primary_generation = clusters.native_generation
+            self._native_source_generation = clusters.native_source_generation
         _validate_cluster_assignment_coverage(clusters, cluster_assignment)
         self._cluster_member_offsets = clusters._member_offsets
         if isinstance(cluster_assignment, _PackedClusterAssignment):

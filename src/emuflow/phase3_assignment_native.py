@@ -96,3 +96,69 @@ def reduce_native_partition_loads(clusters, assignment, fpga_ids, *, metrics=Non
             loads_by_part[part] = dict(zip(dimensions, row))
             counts_by_part[part] = count
     return dict(zip(dimensions, totals)), loads_by_part, counts_by_part
+
+
+def publish_native_assignment_index(path, ir, assignment, part_ids, metadata):
+    """Publish current typed ownership without iterating source instances in Python."""
+    from .native_protocol import CheckedRequestWriter
+    from .phase3_assignment_index import _json, _normalized_cut_record
+    instance_assignment = assignment['instance_assignment']
+    source = Path(instance_assignment.path)
+    if instance_assignment._native_primary_artifact is None:
+        raise ValidationError("native assignment primary ownership is missing")
+    primary = Path(instance_assignment._native_primary_artifact)
+    if source != Path(ir.path) or sys.byteorder != 'little':
+        raise ValidationError('native assignment publication source disagrees')
+    generations = (instance_assignment._native_source_generation,
+                   instance_assignment._native_primary_generation)
+    if tuple(native_file_generation(p) for p in (source, primary)) != generations:
+        raise ValidationError('native assignment publication source generation changed')
+    replication = assignment.get('replication')
+    if replication and replication.get('replicas'):
+        raise ValidationError('native assignment publication does not support retired replication')
+    raw_cuts = assignment.get('cut_nets')
+    if not isinstance(raw_cuts, list):
+        raise ValidationError('cut-net assignment is invalid')
+    part_index = {part: index for index, part in enumerate(part_ids)}
+    with tempfile.TemporaryDirectory(prefix='emuflow-assignment-publish-', dir=path.parent) as temporary:
+        request = Path(temporary) / 'request.bin'
+        writer = CheckedRequestWriter(request)
+        try:
+            writer.put('QI', 0x31514241554D5545, 1)
+            for generation in generations:
+                writer.put('3Q4q', *generation)
+            writer.catalog(part_ids)
+            writer.catalog(instance_assignment.part_ids)
+            writer.put('QQ', len(instance_assignment._cluster_parts), len(instance_assignment))
+            writer.bytes(instance_assignment._cluster_parts)
+            writer.put('I', len(metadata))
+            for key, value in sorted(metadata.items()):
+                writer.text(key)
+                writer.text(_json(value))
+            writer.put('Q', len(raw_cuts))
+            for raw in raw_cuts:
+                cut = _normalized_cut_record(raw, part_index)
+                writer.text(cut['net'])
+                writer.text(cut['cut_class'])
+                writer.put('II', part_index[cut['source_fpgas'][0]], len(cut['sink_fpgas']))
+                for sink in cut['sink_fpgas']:
+                    writer.put('I', part_index[sink])
+                writer.put('Qqqq', cut['sink_endpoints'], cut.get('transport_round', -1),
+                           cut.get('dependency_level', -1), cut.get('combinational_dependency_depth', -1))
+                predecessors = cut.get('predecessor_cut_nets', ())
+                writer.put('I', len(predecessors))
+                for predecessor in predecessors:
+                    writer.text(predecessor)
+            writer.finish()
+        finally:
+            writer.close()
+        executable = resolve_native_executable('emuflow-native')
+        command = [executable, 'phase3', 'publish-assignment', str(source), str(primary), str(request), str(path)]
+        with NativeToolProcess(executable, command, environment=dict(os.environ),
+                               timeout_ms=21600000, scratch_parent=Path(temporary)) as process:
+            completed = process.finish()
+        if completed.returncode:
+            raise ValidationError('native assignment publication failed: ' + completed.stdout)
+        if tuple(native_file_generation(p) for p in (source, primary)) != generations:
+            raise ValidationError('native assignment publication source generation changed')
+        return completed.native_metrics
