@@ -58,14 +58,13 @@ int main(int argc,char** argv) {
     }
     const bool emit=argc>1 && std::string(argv[1])=="--signature";
     const int first=emit?2:1, count=argc-first-(emit?0:1);
-    if (count!=4 && count!=5) return 2;
-    const bool primary=count==5;
+    if (count!=5) return 2;
     using emuflow::core::ArtifactRef;
     std::vector<ArtifactRef> refs{
       ArtifactRef::Bind(argv[first],"emuir-compact-v2"), ArtifactRef::Bind(argv[first+1],"timing-path-store-v1"),
-      ArtifactRef::Bind(argv[first+2],primary?"partition-cluster-columns-v2":"patron-cluster-columns-v1")};
-    if (primary) refs.push_back(ArtifactRef::Bind(argv[first+3],"patron-initial-columns-v1"));
-    refs.push_back(ArtifactRef::Bind(argv[first+count-1],primary?"patron-board-request-v2":"patron-board-request-v1"));
+      ArtifactRef::Bind(argv[first+2],"partition-cluster-columns-v2")};
+    refs.push_back(ArtifactRef::Bind(argv[first+3],"patron-initial-columns-v1"));
+    refs.push_back(ArtifactRef::Bind(argv[first+count-1],"patron-board-request-v2"));
     emuflow::core::PatronBuildContext context;
     auto actual=emuflow::core::BuildPatronModel(refs,context);
     const auto signature=Signature(actual);

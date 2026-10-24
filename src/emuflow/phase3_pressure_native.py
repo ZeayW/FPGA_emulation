@@ -1,8 +1,8 @@
 """Native pressure modeling from source-bound, shared primary ownership.
 
 Production references the native primary store and sends packed initial/fixed
-ownership plus bounded board configuration. Explicit reference columns retain
-the v1 snapshot comparison boundary; failures never switch between them.
+ownership plus bounded board configuration. Missing primary ownership is an
+error; no complete membership/resource snapshot is constructed.
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ class _NativeClusterOrder(Sequence):
 
 
 class NativePressureModel(dict):
-    implementation_id = "native-store-model-v1"
+    implementation_id = "native-primary-store-model-v2"
 
     def __init__(self, ir, platform, clusters, constraints, timing, routes, timing_path):
         from . import partition_pressure as ref
@@ -89,14 +89,11 @@ class NativePressureModel(dict):
         normalization = _validate_database_normalization(timing.get("normalization"))
         self.ir = ir
         self.primary_artifact = getattr(clusters["clusters"], "native_artifact", None)
-        if (getattr(clusters["clusters"], "implementation_id", None)=='native-primary-clusters-v1'
-                and self.primary_artifact is None):
-            raise ValidationError('native primary artifact reference is unavailable')
-        if self.primary_artifact is not None:
-            self.implementation_id = "native-primary-store-model-v2"
-            self.primary_generation = clusters["clusters"].native_generation
-            if clusters["clusters"].native_source_generation != native_file_generation(ir.path):
-                raise ValidationError("native primary cluster source generation changed")
+        if self.primary_artifact is None:
+            raise ValidationError("native primary artifact reference is unavailable")
+        self.primary_generation = clusters["clusters"].native_generation
+        if clusters["clusters"].native_source_generation != native_file_generation(ir.path):
+            raise ValidationError("native primary cluster source generation changed")
         self.platform = platform
         self.clusters = clusters["clusters"]
         self.constraints = constraints
@@ -123,7 +120,7 @@ class NativePressureModel(dict):
                         for _key, value in sorted(capacities.items())]
         self.small_route_model = {"capacities": self.domains, "shortest_routes": ref._shortest_routes(platform, routes)}
 
-    def _columns(self, path, initial):
+    def _write_initial_ownership(self, path, initial):
         from .partition import _PackedClusterAssignment
         if sys.byteorder != "little":
             raise ValidationError("native PATRON cluster columns require little-endian storage")
@@ -136,15 +133,11 @@ class NativePressureModel(dict):
             raise ValidationError("native PATRON initial ownership coverage disagrees")
         writer = _Writer(path)
         try:
-            writer.put("QIQQ", 0x315450494E415045 if self.primary_artifact is not None else 0x314C4F4354415045,
-                       1, len(self.clusters), len(self.clusters.source_cluster_indices))
-            values_to_write = ((current.part_indices,) if self.primary_artifact is not None else
-                               (self.clusters._member_offsets, self.clusters.source_cluster_indices,
-                                *self.clusters._resource_columns, current.part_indices))
-            for values in values_to_write:
-                if values.itemsize != 4:
-                    raise ValidationError("native PATRON cluster column width is invalid")
-                writer.bytes(values)
+            writer.put("QIQQ", 0x315450494E415045, 1,
+                       len(self.clusters), len(self.clusters.source_cluster_indices))
+            if current.part_indices.itemsize != 4:
+                raise ValidationError("native PATRON initial column width is invalid")
+            writer.bytes(current.part_indices)
             parts = [fpga.id for fpga in self.partition_fpgas]
             writer.put("Q", len(self.clusters._fixed_by_cluster))
             for cluster, fpga in self.clusters._fixed_by_cluster.items():
@@ -157,18 +150,20 @@ class NativePressureModel(dict):
     def write_requests(self, root, initial, max_moves):
         from . import partition_pressure as ref
         from .routing import route_link_delay_coefficients_ns, route_link_delay_ns
-        columns, board = root / "clusters.bin", root / "board.bin"
-        initial_parts = self._columns(columns, initial)
+        if self.primary_artifact is None:
+            raise ValidationError("selected direct primary ownership is unavailable")
+        if native_file_generation(self.primary_artifact) != self.primary_generation:
+            raise ValidationError("native primary column generation changed")
+        columns, board = root / "initial.bin", root / "board.bin"
+        initial_parts = self._write_initial_ownership(columns, initial)
         parts = [fpga.id for fpga in self.partition_fpgas]
         domain_index = {domain["key"]: i for i, domain in enumerate(self.domains)}
         arc_domain = ref._capacity_key_by_arc(self.small_route_model)
         links = {link.id: link for link in self.platform.links}
         writer = _Writer(board)
         try:
-            writer.put("QI", 0x3151455254415045, 2 if self.primary_artifact is not None else 1)
-            if self.primary_artifact is not None and native_file_generation(self.primary_artifact) != self.primary_generation:
-                raise ValidationError("native primary column generation changed")
-            generations = (*self.generations, *((self.primary_generation,) if self.primary_artifact is not None else ()), native_file_generation(columns))
+            writer.put("QI", 0x3151455254415045, 2)
+            generations = (*self.generations, self.primary_generation, native_file_generation(columns))
             for generation in generations:
                 writer.put("3Q4q", *generation)
             writer.catalog(parts)
@@ -217,15 +212,11 @@ class NativePressureModel(dict):
         return columns, board
 
     def execute(self, root, output, initial, max_moves, timeout_seconds, environment):
-        if self.implementation_id=='native-primary-store-model-v2' and self.primary_artifact is None:
-            raise ValidationError('selected direct primary ownership is unavailable')
         columns, board = self.write_requests(root, initial, max_moves)
         executable = resolve_native_executable("emuflow-native")
-        command = [executable, "phase3", "refine-patron-from-primary" if self.primary_artifact is not None else "refine-patron-from-store",
-                   str(self.ir.path), str(self.timing_path)]
-        if self.primary_artifact is not None:
-            command.append(str(self.primary_artifact))
-        command.extend((str(columns), str(board), str(output)))
+        command = [executable, "phase3", "refine-patron-from-primary",
+                   str(self.ir.path), str(self.timing_path), str(self.primary_artifact),
+                   str(columns), str(board), str(output)]
         with NativeToolProcess(executable, command, environment=environment, timeout_ms=timeout_seconds * 1000,
                                scratch_parent=root) as process:
             completed = process.finish()

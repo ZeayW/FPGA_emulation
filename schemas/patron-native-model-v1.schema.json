@@ -6,7 +6,7 @@
   "required": ["schema", "implementation_id", "clusters", "nets", "paths", "dimensions", "capacity_domains", "model_build", "search"],
   "properties": {
     "schema": {"const": "emuflow.patron-native-model/v1"},
-    "implementation_id": {"const": "native-store-model-v1"},
+    "implementation_id": {"const": "native-primary-store-model-v2"},
     "clusters": {"type": "integer", "minimum": 1},
     "nets": {"type": "integer", "minimum": 1},
     "paths": {"type": "integer", "minimum": 1},

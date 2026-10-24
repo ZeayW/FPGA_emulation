@@ -104,31 +104,17 @@ The probe performs an explicit offline full scan; it must never be inserted into
 normal phase handoffs. Reader parity and overhead do not establish full Phase
 1–7/7C or physical/timing qualification.
 
-`PYTHONPATH=src python scripts/validation/qualify_primary_store_handoff.py --ir INPUT.sqlite --timing-database TIMING.json --platform BOARD.json --oracle MODEL_ORACLE --out OUTPUT --expected-design TOP`
-compares the v1 snapshot reader with direct primary ownership. `MODEL_ORACLE` is
-the test-only `native_patron_ingress_test` linked against the matching shared
-core. Optional `--constraints`, `--route-constraints`, `--minimum-instances` and
-`--source-commit` freeze the admission and versioned runtime.
+The test-only `native_patron_ingress_test` compares the direct primary model
+with an independently generated typed reference model. Complete field
+signatures include every cluster weight, owner, fixed constraint, resource
+bound, route, capacity domain, net member and timing path. This oracle lives in
+tests; the retired membership/resource snapshot reader is not retained for it.
+These contracts do not qualify algorithm-selected cuts, whole-Phase-3 speedup
+or complete Phase 1–7/7C physical/global timing.
 
-The worker builds native primary columns once and runs each model reader in its
-own supervised process. Complete field signatures include every cluster weight,
-owner, fixed constraint, resource bound, route, capacity domain, net member and
-timing path. Reports distinguish emitted request bytes from the referenced
-primary size and retain native engine wall/CPU/maximum-process RSS scopes. These
-timers include model fingerprinting; they are not production search timings.
-Source hashes are computed once outside the model intervals. The parent waits
-for worker/reader exit before removing all circuit scratch, including on failure.
-
-Initial ownership defaults to a declared round-robin diagnostic vector with fixed
-owners preserved. `--initialization tritonpart` runs the normal generalized
-TritonPart initializer at seed 0; optional `--openroad` selects an explicit matching
-engine. Both readers enforce the actual capacity/balance contract; infeasible
-inputs fail without relaxation or automatic initializer fallback. The model
-comparison performs no PATRON search or algorithm-selected-cut qualification. This diagnostic cannot qualify Static Exact, whole-Phase-3
-speedup, a provider comparison or complete Phase 1–7/7C physical/global timing.
-
-The same tool supports `--scope loads --ir INPUT.sqlite --platform BOARD.json
---out OUTPUT --expected-design TOP` without a timing database or model oracle.
+`PYTHONPATH=src python scripts/validation/qualify_primary_loads.py --ir INPUT.sqlite --platform BOARD.json --out OUTPUT --expected-design TOP`
+performs an explicit offline arithmetic differential. Optional `--constraints`,
+`--minimum-instances` and `--source-commit` freeze workload and installation identity.
 It builds the shared primary store once and compares complete per-partition
 cluster/cell/resource sums from independently expanded reference records with
 the native reduction. Both consume the same declared round-robin integer vector.

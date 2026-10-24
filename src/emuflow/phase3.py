@@ -963,7 +963,7 @@ def run_phase3(
                 or not isinstance(change_count, int)
                 or change_count < 0
                 or native_input_transport
-                not in {"typed-binary-pipe", "atomic-text-file", "native-store-model-v1", "native-primary-store-model-v2"}
+                not in {"typed-binary-pipe", "atomic-text-file", "native-primary-store-model-v2"}
                 or isinstance(native_input_bytes, bool)
                 or not isinstance(native_input_bytes, int)
                 or native_input_bytes <= 0

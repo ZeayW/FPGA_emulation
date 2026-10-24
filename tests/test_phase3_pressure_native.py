@@ -46,7 +46,7 @@ def inputs(tmp_path, monkeypatch,request):
         with closing(sqlite3.connect(compact)) as db,db:
             db.execute('UPDATE endpoint_records SET ordinal=ordinal*7+5')
     ir=load_partition_ir(compact)
-    clusters=build_clusters(ir,fixture.constraints,cut_mode=CUT_MODE_STATIC_EXACT)
+    clusters=build_clusters(ir,fixture.constraints,cut_mode=CUT_MODE_STATIC_EXACT,_native_compact_clusters=True)
     initial=build_partition_assignment(ir,fixture.platform,clusters,fixture.constraints,
         {f'c{i:06d}':('a' if i%2==0 else 'b') for i in range(len(clusters['clusters']))},'fixture',7,
         _include_semantic_contract=False,_stream_semantic_records=True,_defer_derived_records=True)
@@ -136,52 +136,6 @@ def test_primary_owner_rejects_corruption_before_publication(inputs,tmp_path,cor
     assert not Path(str(output)+'.summary.json').exists()
 
 
-def test_offline_primary_handoff_tool_compares_complete_models_and_retires_payloads(inputs,tmp_path):
-    args,_initial,timing=inputs
-    platform=tmp_path/'platform.json'; write_json(platform,args[1].to_dict())
-    output=tmp_path/'qualification'
-    script=Path(__file__).resolve().parents[1]/'scripts/validation/qualify_primary_store_handoff.py'
-    import sys
-    result=subprocess.run([sys.executable,str(script),'--ir',str(args[0].path),'--platform',str(platform),
-        '--timing-database',str(timing),'--oracle',str(patron_ingress_oracle()),'--out',str(output),
-        '--expected-design',args[0].value['design']['name']],capture_output=True,text=True)
-    assert result.returncode==0,result.stdout+result.stderr
-    summary=read_json(output/'qualification.json')
-    assert summary['status']=='pass'
-    assert summary['arms']['direct']['signature']==summary['arms']['snapshot']['signature']
-    assert summary['arms']['direct']['emitted_columns_bytes']<summary['arms']['snapshot']['emitted_columns_bytes']
-    assert not (output/'tmp').exists()
-    assert list(output.iterdir())==[output/'qualification.json']
-    fake=tmp_path/'fixture-openroad'
-    fake.write_text('#!'+sys.executable+'\n'+'''import re,sys
-from pathlib import Path
-tcl=Path(sys.argv[-1]).read_text()
-graph=Path(re.search(r'-hypergraph_file \\{(.*?)\\}',tcl).group(1))
-parts=int(re.search(r'-num_parts (\\d+)',tcl).group(1))
-with graph.open() as stream: count=int(stream.readline().split()[1])
-Path(str(graph)+'.part.'+str(parts)).write_text('\\n'.join(str(i%parts) for i in range(count))+'\\n')
-''')
-    fake.chmod(0o755)
-    initialized=tmp_path/'tritonpart-qualification'
-    result=subprocess.run([sys.executable,str(script),'--ir',str(args[0].path),'--platform',str(platform),
-        '--timing-database',str(timing),'--oracle',str(patron_ingress_oracle()),'--out',str(initialized),
-        '--expected-design',args[0].value['design']['name'],'--initialization','tritonpart','--openroad',str(fake)],
-        capture_output=True,text=True)
-    assert result.returncode==0,result.stdout+result.stderr
-    summary=read_json(initialized/'qualification.json')
-    assert summary['initial_ownership']=='normal-generalized-tritonpart-seed0-initializer'
-    assert summary['arms']['direct']['signature']==summary['arms']['snapshot']['signature']
-    assert not (initialized/'tmp').exists()
-    failure=tmp_path/'wrong-design'
-    rejected=subprocess.run([sys.executable,str(script),'--ir',str(args[0].path),'--platform',str(platform),
-        '--timing-database',str(timing),'--oracle',str(patron_ingress_oracle()),'--out',str(failure),
-        '--expected-design','another-design'],capture_output=True,text=True)
-    assert rejected.returncode!=0
-    assert not (failure/'tmp').exists()
-    assert not (failure/'qualification.json').exists()
-    assert read_json(failure/'failure.json')['status']=='fail'
-
-
 def test_selected_primary_owner_does_not_fall_back_when_reference_is_lost(inputs,tmp_path):
     from emuflow.errors import ValidationError
     args,initial,timing=inputs
@@ -214,25 +168,11 @@ def test_native_model_matches_reference_without_python_graph_or_protocol(inputs,
     assert trace['initial_metrics']==reference_trace['initial_metrics']
     assert trace['final_metrics']==reference_trace['final_metrics']
     assert trace['model_counts']==expected_counts
-    assert trace['native_input_transport']=='native-store-model-v1'
+    assert trace['native_input_transport']=='native-primary-store-model-v2'
     assert trace['change_count']==reference_trace['change_count']
     for value in trace['native_model_metrics'].values():
         assert value['wall_seconds']>0
         assert value['rss_scope']=='self-lifetime-high-water'
-
-
-def test_every_native_model_record_matches_independent_python_model(inputs,tmp_path):
-    args,initial,timing=inputs
-    reference=build_partition_pressure_model(*args,independent_validation=False,timing_database_path=timing)
-    expected=tmp_path/'reference.bin'
-    _write_patron_native_input(None,args[1],args[2],args[3],args[5],reference,initial,2,14,
-                              _writer=_NativeBinaryPipeWriter(expected.open('wb')))
-    model=build_partition_pressure_model(*args,independent_validation=False,timing_database_path=timing,native_store_model=True)
-    columns,board=model.write_requests(tmp_path,initial,2)
-    result=subprocess.run([str(patron_ingress_oracle()),str(args[0].path),str(model.timing_path),str(columns),str(board),str(expected)],
-                          capture_output=True,text=True)
-    assert result.returncode==0,result.stderr
-    assert result.stdout=='NATIVE_MODEL_RECORD_PARITY_PASS\n'
 
 
 def test_native_model_summary_schema(inputs,tmp_path):
@@ -242,7 +182,7 @@ def test_native_model_summary_schema(inputs,tmp_path):
     model=build_partition_pressure_model(*args,independent_validation=False,timing_database_path=timing,native_store_model=True)
     columns,board=model.write_requests(tmp_path,initial,0)
     output=tmp_path/'result'
-    result=subprocess.run([str(emuflow_native()),'phase3','refine-patron-from-store',str(args[0].path),str(model.timing_path),str(columns),str(board),str(output)],
+    result=subprocess.run([str(emuflow_native()),'phase3','refine-patron-from-primary',str(args[0].path),str(model.timing_path),str(model.primary_artifact),str(columns),str(board),str(output)],
                           capture_output=True,text=True)
     assert result.returncode==0,result.stderr
     schemas=Path(__file__).resolve().parents[1]/'schemas'
@@ -286,16 +226,15 @@ def test_invalid_sources_are_rejected_without_publishing(inputs,tmp_path,corrupt
         data=bytearray(columns.read_bytes())
         if corruption=='checksum': data[-1]^=1
         else:
-            # Header28 bytes; member_offsets has C+1 uint32 entries.
-            offset=28+4*(len(model.clusters)+1)
-            struct.pack_into('<I',data,offset,len(model.clusters))
+            # The first uint32 after the header is an initial FPGA index.
+            struct.pack_into('<I',data,28,len(model.partition_fpgas))
             struct.pack_into('<I',data,len(data)-4,zlib.crc32(data[:-4]))
         columns.write_bytes(data)
         # Rebind only the columns generation in the private board request so
         # the malformed payload, rather than stale-reference check, is tested.
         from emuflow.native_tools import native_file_generation
         request=bytearray(board.read_bytes())
-        struct.pack_into('<3Q4q',request,12+2*56,*native_file_generation(columns))
+        struct.pack_into('<3Q4q',request,12+3*56,*native_file_generation(columns))
         struct.pack_into('<I',request,len(request)-4,zlib.crc32(request[:-4]))
         board.write_bytes(request)
     elif corruption=='source':
@@ -310,10 +249,31 @@ def test_invalid_sources_are_rejected_without_publishing(inputs,tmp_path,corrupt
         struct.pack_into('<I',request,len(request)-4,zlib.crc32(request[:-4]))
         board.write_bytes(request)
     output=tmp_path/'result'; output.write_text('previous')
-    command=[str(emuflow_native()),'phase3','refine-patron-from-store',str(args[0].path),str(model.timing_path),str(columns),str(board),str(output)]
+    command=[str(emuflow_native()),'phase3','refine-patron-from-primary',str(args[0].path),str(model.timing_path),str(model.primary_artifact),str(columns),str(board),str(output)]
     result=subprocess.run(command,capture_output=True,text=True)
     assert result.returncode!=0
     assert output.read_text()=='previous'
     assert not Path(str(output)+'.order').exists()
     assert not Path(str(output)+'.summary.json').exists()
     assert not list(tmp_path.glob('*.stage.*'))
+
+
+def test_retired_snapshot_command_is_rejected_before_opening_inputs(tmp_path):
+    output=tmp_path/'published';output.write_bytes(b'published-result')
+    result=subprocess.run([str(emuflow_native()),'phase3','refine-patron-from-store',
+        str(tmp_path/'missing-ir'),str(tmp_path/'missing-timing'),
+        str(tmp_path/'missing-columns'),str(tmp_path/'missing-request'),str(output)],
+        capture_output=True,text=True)
+    assert result.returncode==2
+    assert output.read_bytes()==b'published-result'
+    assert not Path(str(output)+'.order').exists()
+    assert not Path(str(output)+'.summary.json').exists()
+
+
+def test_native_pressure_rejects_reference_columns_instead_of_snapshot(inputs):
+    from emuflow.errors import ValidationError
+    args,_initial,timing=inputs
+    reference=build_clusters(args[0],args[3],cut_mode=CUT_MODE_STATIC_EXACT)
+    with pytest.raises(ValidationError,match='native primary artifact reference is unavailable'):
+        build_partition_pressure_model(*args[:2],reference,*args[3:],
+            independent_validation=False,timing_database_path=timing,native_store_model=True)

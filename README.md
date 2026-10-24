@@ -68,6 +68,8 @@ Compact indexed PATRON v14 production builds its pressure model directly in
 the shared core from EmuIR, TimingPathDB and the original native primary store;
 it avoids a second membership/resource snapshot and transposed resource matrix.
 Python carries configuration and packed initial ownership, not a pressure graph.
+The old snapshot-based native model command is retired; direct model construction
+requires the shared primary artifact and rejects missing ownership.
 Assignment summaries and independent capacity/balance validation also reduce
 the shared primary columns in C++, without decoding cluster member records.
 Compact exact captures are produced and independently checked in the shared

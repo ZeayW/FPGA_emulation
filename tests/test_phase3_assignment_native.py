@@ -143,8 +143,8 @@ def test_offline_load_differential_seals_summary_and_retires_payloads(source, tm
     ir, platform, _constraints, _clusters, _assignment = prepare(source)
     board = tmp_path/'board.json'; board.write_text(json.dumps(platform.to_dict()))
     output = tmp_path/'diagnostic'
-    script = Path(__file__).resolve().parents[1]/'scripts/validation/qualify_primary_store_handoff.py'
-    result = subprocess.run([sys.executable, str(script), '--scope', 'loads', '--ir', str(ir.path),
+    script = Path(__file__).resolve().parents[1]/'scripts/validation/qualify_primary_loads.py'
+    result = subprocess.run([sys.executable, str(script), '--ir', str(ir.path),
         '--platform', str(board), '--out', str(output), '--expected-design', ir.value['design']['name']],
         env=dict(os.environ), capture_output=True, text=True)
     assert result.returncode == 0, result.stdout+result.stderr
@@ -156,7 +156,7 @@ def test_offline_load_differential_seals_summary_and_retires_payloads(source, tm
     assert 'not a legal candidate' in summary['scope']
     assert not (output/'tmp').exists()
     failed = tmp_path/'bad-design'
-    result = subprocess.run([sys.executable, str(script), '--scope', 'loads', '--ir', str(ir.path),
+    result = subprocess.run([sys.executable, str(script), '--ir', str(ir.path),
         '--platform', str(board), '--out', str(failed), '--expected-design', 'wrong-design'],
         env=dict(os.environ), capture_output=True, text=True)
     assert result.returncode != 0

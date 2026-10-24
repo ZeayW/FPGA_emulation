@@ -72,8 +72,6 @@ constexpr RegisteredSchema schemas[] = {
      "WHERE name IN ('ordinal','path_id','clock_domain','clock_period_ns','slack_ns','start_instance','end_instance'))=7 "
      "AND (SELECT count(*) FROM pragma_table_info('path_nets') WHERE name IN ('path_ordinal','net_ordinal','net_id'))=3",
      "timing-path-store-v1"},
-    {"patron-cluster-columns-v1", ArtifactEncoding::kBinary, 0x314c4f4354415045ULL, 1},
-    {"patron-board-request-v1", ArtifactEncoding::kBinary, 0x3151455254415045ULL, 1},
     {"patron-cluster-order-v1", ArtifactEncoding::kBinary, 0x3152444f54415045ULL, 1},
     {"patron-model-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"exact-analysis-input-v3", ArtifactEncoding::kBinary, 0x31584553464d5545ULL, 3},

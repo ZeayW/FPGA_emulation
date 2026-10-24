@@ -30,7 +30,6 @@ constexpr const char* kUsage =
     "  phase3 build-candidate-ids EMUIR POLICY OUTPUT\n"
     "  phase3 build-clusters EMUIR REQUEST OUTPUT\n"
     "  phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT\n"
-    "  phase3 refine-patron-from-store EMUIR TIMING CLUSTERS REQUEST OUTPUT\n"
     "  phase4 route --typed-output INPUT OUTPUT\n"
     "  phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT\n"
     "  phase6 assign-banks (--typed-input|--legacy-text) INPUT OUTPUT\n"
@@ -145,8 +144,6 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (phase == "phase3" && operation == "build-clusters" && argc == 6)
     return run(Stage::kBuildPartitionClusters,{argv[3],argv[4]},argv[5]);
   if (phase == "phase3") {
-    if (operation == "refine-patron-from-store" && argc == 8)
-      return run(Stage::kRefinePatronFromStore,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
     if (operation == "analyze" && argc == 5)
       return run(Stage::kAnalyzeExact, {argv[3]}, argv[4]);
     if (operation == "analyze" && argc == 7 && std::string(argv[3]) == "--indexed-input")

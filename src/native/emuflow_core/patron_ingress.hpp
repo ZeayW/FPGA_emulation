@@ -9,6 +9,6 @@ struct PatronBuildContext {
 std::vector<std::uint32_t> CanonicalPatronClusterOrder(std::uint32_t count);
 patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs,
                               PatronBuildContext& context);
-void RefinePatronFromStore(const std::vector<ArtifactRef>& inputs,
+void RefinePatronFromPrimary(const std::vector<ArtifactRef>& inputs,
                            const std::string& output);
 }  // namespace emuflow::core

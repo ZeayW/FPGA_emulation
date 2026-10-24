@@ -109,8 +109,8 @@ producer. `algorithm_validation.model_implementation_id` identifies
 Its input-transport counters describe packed initial/fixed ownership and the
 bounded request; the primary membership/resource columns are referenced. The
 private v2 primary store carries its EmuIR generation and resource totals, so
-TritonPart summary queries do not scan the columns. Explicit v1 snapshot input
-retains `native-store-model-v1`. The native entry
+TritonPart summary queries do not scan the columns. The former snapshot command
+and its input protocols are retired; missing primary ownership is an error. The native entry
 `phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT`
 also writes `OUTPUT.order` (sealed integer identity mapping) and
 `OUTPUT.summary.json` (bounded model counts). These are invocation-owned intermediates.

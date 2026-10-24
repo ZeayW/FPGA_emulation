@@ -70,11 +70,12 @@ process. Normal compact native clustering selects this direct owner. The shared
 copying them into another membership/resource artifact or transposed C++ matrix.
 The Python adapter carries board-sized configuration and packed initial ownership
 plus fixed constraints. It does not create pressure-net/path/name populations,
-derive a second model or stream per-record solver input. The explicit
-`refine-patron-from-store` v1 snapshot boundary remains for compatibility and
-independent qualification. Final semantic/index publication still has Python work.
+derive a second model or stream per-record solver input. The snapshot command,
+cluster-column protocol and v1 board request are retired. Missing primary
+ownership fails without generating a replacement snapshot. Final semantic/index
+publication still has Python work.
 
-The shared model is move-only, and both its typed compatibility reader and direct
+The shared model is move-only, and both its typed pressure-model reader and direct
 store producer call the same search implementation. The producer checks primary
 cell/membership coverage, pin identities, sparse endpoint ordinals, ordered timing
 paths/net references, fixed ownership, resource/balance limits and bank symmetry.
@@ -159,10 +160,9 @@ Small/inline and explicitly selected legacy tools, retained diagnostic traces,
 physical-feedback algorithms and explicit legacy input copies keep the reference
 model path. A selected native producer never retries through that path. Its
 `native_input_transport` is `native-primary-store-model-v2` for direct primary
-ownership, and `native-store-model-v1` for the explicit v1 snapshot path. Input
-bytes count the emitted packed initial/fixed ownership and bounded request on
-the direct path, or the full cluster snapshot and request on v1. Input records
-count those two emitted private artifacts rather than pressure vertices/hops. They are phase-owned scratch,
+ownership. Input bytes count only the emitted packed initial/fixed ownership
+and bounded request; the primary store is referenced. Input records count those
+two emitted private artifacts rather than pressure vertices/hops. They are phase-owned scratch,
 not checkpoints. Full NVDLA runtime/RSS/disk and terminal Phase 7/7C qualification
 remain required before declaring the migration complete.
 

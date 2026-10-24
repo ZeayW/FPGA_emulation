@@ -35,7 +35,6 @@ const char* StageName(Stage stage) {
     case Stage::kRefinePositions: return "phase6.refine-groups";
     case Stage::kRudy: return "phase6.rudy";
     case Stage::kExportBookshelf: return "phase7.export-bookshelf";
-    case Stage::kRefinePatronFromStore: return "phase3.refine-patron-from-store";
     case Stage::kBuildPartitionClusters: return "phase3.build-clusters";
     case Stage::kBuildCandidateIds: return "phase3.build-candidate-ids";
     case Stage::kRefinePatronFromPrimary: return "phase3.refine-patron-from-primary";
@@ -73,8 +72,6 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kBuildPartitionClusters: return {"emuir-compact-v2","partition-cluster-request-v1"};
     case Stage::kRefinePatronFromPrimary:
       return {"emuir-compact-v2","timing-path-store-v1","partition-cluster-columns-v2","patron-initial-columns-v1","patron-board-request-v2"};
-    case Stage::kRefinePatronFromStore:
-      return {"emuir-compact-v2","timing-path-store-v1","patron-cluster-columns-v1","patron-board-request-v1"};
   }
   throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
 }
@@ -143,7 +140,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     }
     if (!request.report_path.empty() && request.output_path != "-" && Equivalent(request.report_path, request.output_path))
       throw core::StageError(core::ErrorCode::kInvalidRequest, "native report aliases the stage output");
-    if (request.stage == Stage::kRefinePatronFromStore || request.stage == Stage::kRefinePatronFromPrimary) {
+    if (request.stage == Stage::kRefinePatronFromPrimary) {
       for (const auto* suffix : {".order",".summary.json"}) {
         const auto auxiliary=request.output_path+suffix;
         for (const auto& path:paths)
@@ -195,8 +192,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kExportBookshelf:
         core::ExportBookshelf(inputs[0],inputs[1],output,request.auxiliary_output_path,request.scratch_path);
         break;
-      case Stage::kRefinePatronFromPrimary:
-      case Stage::kRefinePatronFromStore: core::RefinePatronFromStore(inputs,output); break;
+      case Stage::kRefinePatronFromPrimary: core::RefinePatronFromPrimary(inputs,output); break;
       case Stage::kBuildPartitionClusters: core::BuildPartitionClusters(inputs,output); break;
       case Stage::kBuildCandidateIds: core::BuildCandidateIds(inputs,output); break;
       default: throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
@@ -225,8 +221,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kRefinePositions: schema = "chimew-refine-output-text"; break;
       case Stage::kRudy: schema = "chimew-rudy-output-text"; break;
       case Stage::kExportBookshelf: schema = "openparf-bookshelf-nets-v1"; break;
-      case Stage::kRefinePatronFromPrimary:
-      case Stage::kRefinePatronFromStore: schema = "patron-output-v1"; break;
+      case Stage::kRefinePatronFromPrimary: schema = "patron-output-v1"; break;
       case Stage::kBuildPartitionClusters: schema = "partition-cluster-columns-v2"; break;
       case Stage::kBuildCandidateIds: schema = "candidate-id-columns-v1"; break;
       default: throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
@@ -238,7 +233,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path, "rwroute-export-summary-v1"));
     if (request.stage == Stage::kExportBookshelf)
       refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path, "openparf-bookshelf-summary-v1"));
-    if (request.stage == Stage::kRefinePatronFromStore || request.stage == Stage::kRefinePatronFromPrimary) {
+    if (request.stage == Stage::kRefinePatronFromPrimary) {
       refs.push_back(core::ArtifactRef::Bind(request.output_path+".order","patron-cluster-order-v1"));
       refs.push_back(core::ArtifactRef::Bind(request.output_path+".summary.json","patron-model-summary-v1"));
     }
