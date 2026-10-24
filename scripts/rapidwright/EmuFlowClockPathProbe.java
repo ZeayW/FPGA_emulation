@@ -19,6 +19,8 @@ import com.xilinx.rapidwright.device.Device;
 import com.xilinx.rapidwright.device.Node;
 import com.xilinx.rapidwright.device.PIP;
 import com.xilinx.rapidwright.device.Tile;
+import com.xilinx.rapidwright.device.Site;
+import com.xilinx.rapidwright.device.SiteTypeEnum;
 
 public final class EmuFlowClockPathProbe {
     private static String digest(Path path) throws Exception {
@@ -40,6 +42,79 @@ public final class EmuFlowClockPathProbe {
                 .put("clock_nets", entry.getValue().size()));
         }
         return rows;
+    }
+
+    private static void auditClockBufferAllocation(Path input,Path output) throws Exception {
+        Set<String> gates=new HashSet<>(),clockNets=new HashSet<>(),noncascadeNets=new HashSet<>();
+        Map<String,String[]> cells=new TreeMap<>();Map<String,String> outputs=new TreeMap<>();
+        String part=null;
+        try (BufferedReader reader=Files.newBufferedReader(input,StandardCharsets.UTF_8)) {
+            for (String line;(line=reader.readLine())!=null;) {
+                String[] row=line.split("\\t",-1);
+                if (row[0].equals("META") && row.length==3 && row[1].equals("part")) part=row[2];
+                if (row[0].equals("CLOCK_GATE")) {
+                    if (row.length!=6 || !gates.add(row[1])) throw new IllegalArgumentException("invalid clock gate");
+                }
+            }
+        }
+        if (part==null || gates.isEmpty()) throw new IllegalArgumentException("no part or clock gates");
+        Map<String,String> driverByNet=new TreeMap<>();
+        try (BufferedReader reader=Files.newBufferedReader(input,StandardCharsets.UTF_8)) {
+            for (String line;(line=reader.readLine())!=null;) {
+                String[] row=line.split("\\t",-1);
+                if (row[0].equals("CELL")) {
+                    if (row.length!=6) throw new IllegalArgumentException("invalid cell");
+                    if (gates.contains(row[1])) cells.put(row[1],row);
+                    else if (row[3].equals("BUFGCE")) throw new IllegalArgumentException("unmodeled explicit BUFGCE");
+                } else if (row[0].equals("NET") && row.length==3 && row[2].equals("clock")) clockNets.add(row[1]);
+                else if (row[0].equals("PIN") && row.length==5) {
+                    if (row[4].equals("driver") && gates.contains(row[2]) && row[3].equals("O")) {
+                        if (driverByNet.put(row[1],row[2])!=null || outputs.put(row[2],row[1])!=null)
+                            throw new IllegalArgumentException("duplicate clock gate output");
+                    } else if (row[4].equals("sink") && driverByNet.containsKey(row[1]) && !gates.contains(row[2]))
+                        noncascadeNets.add(row[1]);
+                }
+            }
+        }
+        if (!cells.keySet().equals(gates) || !outputs.keySet().equals(gates))
+            throw new IllegalArgumentException("incomplete gate cell/output coverage");
+        Device device=Device.getDevice(part);
+        List<Site> available=new ArrayList<>(List.of(device.getAllSitesOfType(SiteTypeEnum.BUFGCE)));
+        Map<String,Long> regions=new TreeMap<>();Map<Node,Set<String>> mandatoryUsers=new TreeMap<>(java.util.Comparator.comparing(Node::toString));
+        JSONArray bindings=new JSONArray();
+        // Filtering the adapter's lexically ordered cell list preserves exactly
+        // its BUFGCE allocation order; other supported cells consume no BUFGCE.
+        for (Map.Entry<String,String[]> entry : cells.entrySet()) {
+            String gate=entry.getKey();String[] row=entry.getValue();String net=outputs.get(gate);
+            if (!row[3].equals("LUT2") || !clockNets.contains(net)) throw new IllegalArgumentException("unqualified clock root");
+            Site site=EmuFlowRWRoute.allocateClockBufferSite(device,row[4],available);
+            ClockRegion cr=site.getTile().getClockRegion();String region=cr==null?"@unassigned":cr.getName();
+            regions.merge(region,1L,Long::sum);
+            Node node=site.getConnectedNode("CLK_OUT");Set<Node> visited=new HashSet<>();JSONArray prefix=new JSONArray();
+            for (int depth=0;depth<16 && visited.add(node);depth++) {
+                prefix.put(node.toString());
+                if (noncascadeNets.contains(net)) mandatoryUsers.computeIfAbsent(node,ignored -> new HashSet<>()).add(net);
+                Set<Node> children=new HashSet<>();
+                for (Node child : node.getAllDownhillNodes()) if (EmuFlowRWRoute.isDedicatedClockNode(child)) children.add(child);
+                if (children.size()!=1 || node.getIntentCode().name().equals("NODE_GLOBAL_LEAF")) break;
+                node=children.iterator().next();
+            }
+            bindings.put(new JSONObject().put("safe_cell",gate).put("logical_cell",row[2]).put("clock_net",net)
+                .put("original_site",row[4]).put("bufgce_site",site.getName()).put("tile_clock_region",region)
+                .put("has_noncascade_consumer",noncascadeNets.contains(net)).put("unique_source_prefix",prefix));
+        }
+        JSONObject conflicts=EmuFlowRWRoute.clockConflictSummary(mandatoryUsers,Node::toString,
+            node -> node.getIntentCode().name(),node -> {
+                ClockRegion cr=node.getTile().getClockRegion();return cr==null?null:cr.getName();
+            });
+        JSONObject report=new JSONObject().put("schema","emuflow.clock-buffer-allocation-audit/v1")
+            .put("qualification","deterministic-allocation-and-unique-dedicated-source-prefix-only")
+            .put("input_sha256",digest(input)).put("part",part).put("clock_gates",gates.size())
+            .put("source_tile_region_counts",new JSONObject(regions)).put("mandatory_prefix_conflicts",conflicts)
+            .put("bindings",bindings);
+        Files.writeString(output,report.toString()+"\n",StandardCharsets.UTF_8);
+        System.out.println("clock buffer allocation: gates="+gates.size()+" source_regions="+regions
+            +" mandatory_prefix_conflicts="+conflicts);
     }
 
     private static void auditSiteClocks(String deviceName, Path input, Path output) throws Exception {
@@ -90,6 +165,9 @@ public final class EmuFlowClockPathProbe {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length==3 && args[0].equals("--audit-clock-buffer-allocation")) {
+            auditClockBufferAllocation(Path.of(args[1]),Path.of(args[2]));return;
+        }
         if (args.length >= 3 && args[0].equals("--clock-source-prefix")) {
             Device device=Device.getDevice(args[1]);
             for (int i=2;i<args.length;i++) {

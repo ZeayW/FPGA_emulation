@@ -256,6 +256,12 @@ without loading a device. `--clock-graph DEVICE SOURCE_NODE SINK_NODE` additiona
 checks a concrete device path and its programmable edge directions.
 `--clock-source-prefix DEVICE BUFGCE_SITE...` prints dedicated successors along
 each source's unique prefix, exposing mandatory shared entry resources.
+`--audit-clock-buffer-allocation INPUT OUTPUT` replays the adapter's same BUFGCE
+site allocator in the same cell order without creating or routing a design. It
+reports source tile-region occupancy and up to sixteen unique-successor prefix
+nodes per clock gate. Shared prefix resources are attributed only for clock
+roots with non-gate consumers. This is a dedicated-graph allocation diagnostic;
+source-region counts alone are not hardware capacity or clock-route certificates.
 
 The academic literature reaches the same conclusion through different
 algorithms:

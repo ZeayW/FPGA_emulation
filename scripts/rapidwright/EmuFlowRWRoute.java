@@ -1457,10 +1457,10 @@ public final class EmuFlowRWRoute {
         return physicalPin;
     }
 
-    private static Site allocateClockBufferSite(
-        Design design, String originalSiteName, List<Site> available
+    static Site allocateClockBufferSite(
+        com.xilinx.rapidwright.device.Device device, String originalSiteName, List<Site> available
     ) {
-        Site original = design.getDevice().getSite(originalSiteName);
+        Site original = device.getSite(originalSiteName);
         if (original == null || available.isEmpty()) {
             throw new IllegalStateException("no BUFGCE site is available for " + originalSiteName);
         }
@@ -1492,7 +1492,7 @@ public final class EmuFlowRWRoute {
                 throw new IllegalStateException("invalid qualified clock-gate contract");
             }
             Site site = allocateClockBufferSite(
-                design, row[4], availableClockBufferSites
+                design.getDevice(), row[4], availableClockBufferSites
             );
             Cell prefilter = null;
             Cell cell;

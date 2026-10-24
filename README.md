@@ -118,6 +118,7 @@ source-sealed ArchitectureDB, independent of solver region reindexing.
 A separate native spreading experiment moves ordinary occupied slices as
 rigid LUT/FF groups and preserves their internal BEL assignments.
 Device-backed clock audits check region membership, local leaf demand, and source entry paths.
+An allocation audit checks dedicated-clock source prefixes before routing.
 An explicit native repair experiment relocates rigid slices from overfull leaf
 domains; it can reserve FF loads of explicitly declared ideal boundary clocks.
 Those reservations do not claim physical clock routes. The experiment can also
